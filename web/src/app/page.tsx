@@ -100,7 +100,7 @@ function Overview() {
           tone={!N || notLive ? "absent" : undefined}
           help={!N || notLive ? " " : (leftOutText(o) || "window still open")}
           title="Obligations whose retention window has not ended: no verdict yet. Sampled out: blobs the probe budget drew out of its sample, committed in advance and never counted either way." />
-        <Metric label="Hosts registered"
+        <Metric label="Validators registered"
           value={!vals.data ? "—" : int(reg.count)}
           den={vals.data && reg.of > 0 ? int(reg.of) : undefined}
           tone={!vals.data || reg.count === 0 ? "absent" : undefined}

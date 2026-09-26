@@ -923,7 +923,7 @@ export type Load = {
 
 /** the load tooltip, one place so the table and the page say the same thing */
 export function loadTitle(l: Load): string {
-  return `${int(l.rows_per_blob)} rows of every blob, by stake: ${int(l.promises)} settled blobs in the period, ${bytes(l.bytes)} of row data to receive and store, ${bytes(l.stored_bytes)} held now.`;
+  return `${int(l.rows_per_blob)} rows of every blob, by stake · ${bytes(l.bytes)} received over ${int(l.promises)} settled blobs in the period · ${bytes(l.stored_bytes)} held now`;
 }
 
 export function bytes(n: number): string {
