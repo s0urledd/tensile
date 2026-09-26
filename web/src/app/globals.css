@@ -318,6 +318,9 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
 @media (min-width: 900px) {
   .vt { table-layout: fixed; }
   .vt th:first-child { width: 19%; }
+  /* widths follow what the cells hold: the one-digit counts give room to the provider names */
+  .vt .c-ep { width: 11%; } .vt .c-host { width: 14%; } .vt .c-power { width: 11%; } .vt .c-rows { width: 9%; }
+  .vt .c-rate { width: 12%; } .vt .c-broken { width: 7%; } .vt .c-pend { width: 7%; } .vt .c-end { width: 10%; }
   .vt td:not(:first-child) { overflow: hidden; text-overflow: ellipsis; }
   .vt .hosting { max-width: 100%; vertical-align: middle; }
   .vt .hosting > span:not(.flag):not(.flag-none):not(.cc) { overflow: hidden; text-overflow: ellipsis; }

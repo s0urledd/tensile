@@ -108,8 +108,8 @@ export default function Validators({ rows, window: win, notLive, loading }: { ro
   }, [rows, filter, needle, sort]);
 
   const clickSort = (k: SortKey, dflt: 1 | -1) => setSort((s) => (s.key === k ? { key: k, dir: (s.dir * -1) as 1 | -1 } : { key: k, dir: dflt }));
-  const Th = ({ k, dflt, label, title }: { k: SortKey; dflt: 1 | -1; label: string; title: string }) => (
-    <th className="num" title={title}>
+  const Th = ({ k, dflt, label, title, col }: { k: SortKey; dflt: 1 | -1; label: string; title: string; col: string }) => (
+    <th className={"num " + col} title={title}>
       <button type="button" className="sort" aria-pressed={sort.key === k} onClick={() => clickSort(k, dflt)}>
         {label}{sort.key === k && <span className="arrow" aria-hidden="true">{sort.dir === -1 ? "↓" : "↑"}</span>}
       </button>
@@ -173,14 +173,14 @@ export default function Validators({ rows, window: win, notLive, loading }: { ro
           <thead>
             <tr>
               <th className="col-pin">Validator</th>
-              <th title="The newest handshake with the registered endpoint; the chain's own words (jailed, not bonded) come first.">Endpoint now</th>
-              {showHosting && <th title="Network provider and country of the endpoint. Hover a cell for the network (AS) and address.">Hosting</th>}
-              <Th k="power" dflt={-1} label="Voting power" title="From the staking module. The default order, and never a performance rank." />
-              <Th k="load" dflt={-1} label="Rows / blob" title="Rows of every settled blob this validator is assigned, by stake: its share of the load, to receive and keep for the retention window. From the chain, nothing measured." />
-              {showScores && <Th k="kept" dflt={1} label="Service rate" title="Share of assessed obligations fulfilled in the selected period." />}
-              {showScores && <Th k="broken" dflt={-1} label="Broken" title="Obligations the validator was reached for and did not keep. The only count held against a validator." />}
-              {showScores && <Th k="pending" dflt={-1} label="Pending" title="Obligations whose retention window has not ended: no verdict yet." />}
-              {showScores && <Th k="signed" dflt={-1} label="Endorsed ⅔" title="Promises carrying this validator’s endorsement. Publishers stop at ⅔ of stake, so a low rate is normal, not a fault." />}
+              <th className="c-ep" title="The newest handshake with the registered endpoint; the chain's own words (jailed, not bonded) come first.">Endpoint now</th>
+              {showHosting && <th className="c-host" title="Network provider and country of the endpoint. Hover a cell for the network (AS) and address.">Hosting</th>}
+              <Th col="c-power" k="power" dflt={-1} label="Voting power" title="From the staking module. The default order, and never a performance rank." />
+              <Th col="c-rows" k="load" dflt={-1} label="Rows / blob" title="Rows of every settled blob this validator is assigned, by stake: its share of the load, to receive and keep for the retention window. From the chain, nothing measured." />
+              {showScores && <Th col="c-rate" k="kept" dflt={1} label="Service rate" title="Share of assessed obligations fulfilled in the selected period." />}
+              {showScores && <Th col="c-broken" k="broken" dflt={-1} label="Broken" title="Obligations the validator was reached for and did not keep. The only count held against a validator." />}
+              {showScores && <Th col="c-pend" k="pending" dflt={-1} label="Pending" title="Obligations whose retention window has not ended: no verdict yet." />}
+              {showScores && <Th col="c-end" k="signed" dflt={-1} label="Endorsed ⅔" title="Promises carrying this validator’s endorsement. Publishers stop at ⅔ of stake, so a low rate is normal, not a fault." />}
             </tr>
           </thead>
           <tbody>
