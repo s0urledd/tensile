@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 User=fibre-observer
 EnvironmentFile=/etc/fibre-observer/%i.env
-ExecStart=/usr/local/bin/sentinel-probe -rpc ${RPC} -data-dir ${DATA_DIR} -vantage ${VANTAGE} -policy ${POLICY} -end-read
+ExecStart=/usr/local/bin/sentinel-probe -rpc ${RPC} -data-dir ${DATA_DIR} -vantage ${VANTAGE} -policy ${POLICY} -end-read -end-read-since ${END_READ_SINCE}
 Restart=always
 RestartSec=5
 NoNewPrivileges=true

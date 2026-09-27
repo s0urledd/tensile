@@ -76,6 +76,13 @@ type ScheduleConfig struct {
 	// one retry. It is the reading the chain's own client would take near
 	// the end, once.
 	EndReadOffset time.Duration
+	// EndReadSince limits EndReadOffset to publications settled at or after
+	// it; an earlier one keeps the schedule it was read under. Without it,
+	// a prober switched to the end reading would find every past
+	// publication's "end" point elapsed and never recorded, and write a
+	// NOT_PROBED row for it: thousands of gaps for readings that were never
+	// planned. Zero applies the end reading to every publication.
+	EndReadSince time.Time
 }
 
 // DefaultInWindowFractions: one early reading, then three clustered toward the
@@ -183,7 +190,7 @@ func ScheduleFor(p scan.Publication, cfg ScheduleConfig) []SchedulePoint {
 	}
 	span := msu.Sub(start)
 
-	if cfg.EndReadOffset > 0 {
+	if cfg.EndReadOffset > 0 && !p.SettlementTime.Before(cfg.EndReadSince) {
 		return []SchedulePoint{endReadPoint(start, msu, cfg)}
 	}
 

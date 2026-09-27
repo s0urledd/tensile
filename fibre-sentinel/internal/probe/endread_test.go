@@ -19,6 +19,23 @@ func TestEndReadSchedule(t *testing.T) {
 	}
 }
 
+// A publication settled before EndReadSince keeps the schedule it was read
+// under, so switching a prober with history to the end reading plans nothing
+// new for the past.
+func TestEndReadSince(t *testing.T) {
+	since := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	cfg := ScheduleConfig{EndReadOffset: 10 * time.Minute, EndReadSince: since,
+		InWindowFractions: DefaultInWindowFractions}
+	old := ScheduleFor(pub(since.Add(-time.Hour), since.Add(3*time.Hour)), cfg)
+	if len(old) != len(DefaultInWindowFractions)+2 || old[0].Label != "w1" {
+		t.Fatalf("publication settled before the switch: %+v, want its old schedule", old)
+	}
+	cur := ScheduleFor(pub(since, since.Add(4*time.Hour)), cfg)
+	if len(cur) != 1 || cur[0].Label != "end" {
+		t.Fatalf("publication settled at the switch: %+v, want the end reading", cur)
+	}
+}
+
 // A window shorter than the offset is still read once: LastPointMargin
 // before its end, or half way through when even that is before settlement.
 func TestEndReadScheduleShortWindow(t *testing.T) {

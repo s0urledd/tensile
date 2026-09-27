@@ -56,6 +56,7 @@ func main() {
 		endRead  = flag.Bool("end-read", false, "read every endorsed shard once, at the end of its retention window (-end-read-offset before must_serve_until, late up to the deadline if it must), and nothing before or after; "+
 			"only the validators whose signature the settled promise carries; DownloadShard held to a flat -download-timeout of 15s, the RPCTimeout celestia-app's own client reads with, unless that flag is given")
 		endOffset = flag.Duration("end-read-offset", 10*time.Minute, "with -end-read: how long before must_serve_until the reading is scheduled")
+		endSince  = flag.String("end-read-since", "", "with -end-read: RFC 3339 time; publications settled before it keep the schedule they were read under (empty = every publication, which on a store with history writes a NOT_PROBED row for every past publication's end point)")
 		// The sampling audit rests on a master secret that outlives the
 		// process: rows carry a commitment to the day's secret and the
 		// secret is revealed later. Without a file the secret is new on
@@ -135,6 +136,13 @@ func main() {
 			log.Fatalf("-end-read-offset must be positive")
 		}
 		sched.EndReadOffset = *endOffset
+		if *endSince != "" {
+			t, err := time.Parse(time.RFC3339, *endSince)
+			if err != nil {
+				log.Fatalf("-end-read-since: %v", err)
+			}
+			sched.EndReadSince = t
+		}
 		points = 1 // one reading per shard
 		dlSet := false
 		flag.Visit(func(f *flag.Flag) { dlSet = dlSet || f.Name == "download-timeout" })
