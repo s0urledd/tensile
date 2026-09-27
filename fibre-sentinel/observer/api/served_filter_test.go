@@ -114,4 +114,59 @@ func TestProbesServedNoFollowsTheObligationRule(t *testing.T) {
 	if want := "enderror,endgone,endsilent,w4gone"; strings.Join(got, ",") != want {
 		t.Errorf("served=no lists %v, want %s", got, want)
 	}
+
+	// The blob page's one word per validator is the same rule.
+	var blob struct {
+		Assignments []struct {
+			ValidatorAddress string `json:"validator_address"`
+			Service          string `json:"service"`
+		} `json:"assignments"`
+	}
+	if code := get(t, ts, "/v1/blobs/sn1", &blob); code != 200 {
+		t.Fatalf("blob: %d", code)
+	}
+	want := map[string]string{
+		"endok": "served", "endsilent": "not_served", "endgone": "not_served", "enderror": "not_served",
+		"w4silent": "no_verdict", "w4gone": "not_served", "w4servedok": "served",
+	}
+	if len(blob.Assignments) != len(want) {
+		t.Fatalf("%d assignments, want %d", len(blob.Assignments), len(want))
+	}
+	for _, a := range blob.Assignments {
+		if a.Service != want[a.ValidatorAddress] {
+			t.Errorf("%s: service %q, want %q", a.ValidatorAddress, a.Service, want[a.ValidatorAddress])
+		}
+	}
+}
+
+// On the earlier schedule the word follows the same buckets: a fault is not
+// served, a reading near the end served, readings that stop short of the end
+// no verdict, an unendorsed validator nothing, and a window still running is
+// in its retention window.
+func TestBlobServiceWords(t *testing.T) {
+	ts := obligationsFixture(t)
+	type assignments struct {
+		Assignments []struct {
+			ValidatorAddress string `json:"validator_address"`
+			Service          string `json:"service"`
+		} `json:"assignments"`
+	}
+	var b assignments
+	if code := get(t, ts, "/v1/blobs/obl1", &b); code != 200 {
+		t.Fatalf("obl1: %d", code)
+	}
+	want := map[string]string{"served": "served", "broken": "not_served", "gaplast": "no_verdict", "endun": "no_verdict",
+		"unreach": "no_verdict", "reach": "no_verdict", "unatt": ""}
+	for _, a := range b.Assignments {
+		if w, ok := want[a.ValidatorAddress]; ok && a.Service != w {
+			t.Errorf("obl1 %s: service %q, want %q", a.ValidatorAddress, a.Service, w)
+		}
+	}
+	var p assignments
+	if code := get(t, ts, "/v1/blobs/obl2", &p); code != 200 {
+		t.Fatalf("obl2: %d", code)
+	}
+	if len(p.Assignments) != 1 || p.Assignments[0].Service != "in_retention_window" {
+		t.Errorf("obl2: %+v, want one in_retention_window", p.Assignments)
+	}
 }

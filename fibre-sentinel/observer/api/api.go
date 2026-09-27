@@ -3986,7 +3986,28 @@ type assignmentRow struct {
 	// where the upload went. Null when the scanner could not read the
 	// registry at that height; empty when none was registered.
 	HostAtSettlement *string `json:"host_at_settlement"`
+	// Service is this validator's obligation on this blob, by the rule the
+	// obligation counts use (rollup.ObligationBuckets): served, not_served,
+	// in_retention_window, deadline_unverified, no_verdict (read, but no
+	// reading near the end that counts either way) or not_read. Absent when
+	// nothing is owed (not endorsed) or no reading counts.
+	Service string `json:"service,omitempty"`
+	// Provisional marks a not_served still younger than the settling period.
+	Provisional bool `json:"provisional,omitempty"`
 }
+
+// blobServiceSQL reduces one publication's obligation buckets to one word
+// per validator, in the order ObligationSums partitions them.
+const blobServiceSQL = `SELECT validator_address,
+			CASE WHEN pending THEN 'in_retention_window'
+			     WHEN faults > 0 THEN 'not_served'
+			     WHEN last_cls = 'HEALTHY' AND late_healthy > 0 THEN 'served'
+			     WHEN healthy > 0 THEN 'no_verdict'
+			     WHEN held > 0 THEN 'deadline_unverified'
+			     WHEN attempted > 0 THEN 'no_verdict'
+			     ELSE 'not_read' END,
+			COALESCE(NOT pending AND faults > 0 AND first_fault > ?, 0)
+		FROM (`
 
 func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	hash := strings.ToLower(r.PathValue("hash"))
@@ -4031,15 +4052,11 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	probes, moreProbes := trim(probes, 1000)
-	var params struct {
-		ShardRetentionS        int64 `json:"shard_retention_s"`
-		PaymentPromiseTimeoutS int64 `json:"payment_promise_timeout_s"`
-	}
-	_ = s.st.DB().QueryRowContext(ctx, `SELECT shard_retention_s, payment_promise_timeout_s FROM publications WHERE promise_hash = ?`, hash).Scan(&params.ShardRetentionS, &params.PaymentPromiseTimeoutS)
 	// The points of this blob the correlated-failure guard calls suspect,
 	// tallied as reconstructable tallies them, so the page can show the rows
 	// no verdict counts beside the verdict that left them out.
 	suspect := []suspectPoint{}
+	var ss suspectSet
 	spts, err := rollup.SuspectPoints(ctx, s.st.DB(), `promise_hash = ?`, hash)
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)
@@ -4049,10 +4066,54 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		if reason := p.Reason(); reason != "" {
 			suspect = append(suspect, suspectPoint{At: p.At, Label: p.Label, Validators: p.Validators,
 				Unreachable: rate(p.Unreachable, p.Validators), Fault: rate(p.Faulted, p.Validators), Reason: reason})
+			ss.args = append(ss.args, p.At)
 		}
 	}
+	if err := s.blobService(ctx, hash, ss, assigns); err != nil {
+		s.writeInternal(w, r.URL.Path, err)
+		return
+	}
+	var params struct {
+		ShardRetentionS        int64 `json:"shard_retention_s"`
+		PaymentPromiseTimeoutS int64 `json:"payment_promise_timeout_s"`
+	}
+	_ = s.st.DB().QueryRowContext(ctx, `SELECT shard_retention_s, payment_promise_timeout_s FROM publications WHERE promise_hash = ?`, hash).Scan(&params.ShardRetentionS, &params.PaymentPromiseTimeoutS)
 	writeJSON(w, 200, map[string]any{"blob": blobs[0], "params": params, "assignments": assigns,
 		"probes": probes, "probes_truncated": moreProbes, "suspect_points": suspect, "vantage": s.vantage})
+}
+
+// blobService fills each assignment's Service from the obligation buckets
+// of this one publication, with the same suspect points left out as the
+// page shows, so a validator's word here is the one its counts carry.
+func (s *Server) blobService(ctx context.Context, hash string, ss suspectSet, assigns []assignmentRow) error {
+	var settled string
+	if err := s.st.DB().QueryRowContext(ctx, `SELECT settlement_time FROM publications WHERE promise_hash = ?`, hash).Scan(&settled); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	args := []any{provisionalCutoff(now), store.TS(now), settled, settled, store.TS(now), rollup.RowLowerBound(settled)}
+	args = append(args, ss.args...)
+	rows, err := s.st.DB().QueryContext(ctx, blobServiceSQL+obligationBuckets+ss.clause("pr.scheduled_at")+` AND pr.promise_hash = ?)
+			GROUP BY validator_address, promise_hash)`, append(args, hash)...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	by := map[string]int{}
+	for i, a := range assigns {
+		by[a.ValidatorAddress] = i
+	}
+	for rows.Next() {
+		var addr, service string
+		var prov bool
+		if err := rows.Scan(&addr, &service, &prov); err != nil {
+			return err
+		}
+		if i, ok := by[addr]; ok {
+			assigns[i].Service, assigns[i].Provisional = service, prov
+		}
+	}
+	return rows.Err()
 }
 
 // ---- sampling ----
