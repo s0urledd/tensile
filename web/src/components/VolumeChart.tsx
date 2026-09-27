@@ -49,7 +49,7 @@ export default function VolumeChart({ market, win, metric = "bytes" }: { market:
   // the axis top: a round number of MiB (or GiB) above the largest column, or of settlements
   const mib = 1048576;
   const step = metric === "settlements" ? (max > 50 ? 20 : max > 10 ? 10 : 2)
-    : max >= 1024 * mib ? 512 * mib : max >= 200 * mib ? 100 * mib : 20 * mib;
+    : max >= 1024 * mib ? 512 * mib : max >= 200 * mib ? 256 * mib : 20 * mib;
   const top = Math.max(step, Math.ceil(max / step) * step);
   const fmt = (v: number) => (metric === "bytes" ? bytes(v) : int(v));
   const unit = win === "24h" ? "hour" : "day";
