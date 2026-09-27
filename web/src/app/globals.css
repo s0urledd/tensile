@@ -635,7 +635,13 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
 .diag a { font-weight: 500; }
 /* the filter's counts sit in the button, quieter than its word */
 #evidence .seg { margin-top: 0; }
-#evidence .seg .n { color: var(--text-3); font-variant-numeric: tabular-nums; margin-left: 4px; }
+#evidence .seg .n, #list .seg .n { color: var(--text-3); font-variant-numeric: tabular-nums; margin-left: 4px; }
+
+/* numbered pages under a list: the count on the left, the controls on the right */
+.pager { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; margin-top: 12px; font-size: var(--t-small); color: var(--text-2); }
+.pager .ctl { display: inline-flex; align-items: center; gap: 6px; }
+.pager .at { padding: 0 6px; font-variant-numeric: tabular-nums; }
+.pager .btn:disabled { opacity: .45; cursor: default; }
 #evidence .seg button[aria-pressed="true"] .n { color: inherit; }
 #evidence .tools { align-items: center; }
 @media (max-width: 720px) {
@@ -802,7 +808,7 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
   .bt td { overflow: hidden; text-overflow: ellipsis; }
   .bt.nss th:nth-child(1) { width: 20%; } .bt.nss th:nth-child(2) { width: 12%; } .bt.nss th:nth-child(3) { width: 9%; }
   .bt.nss th:nth-child(4) { width: 16%; } .bt.nss th:nth-child(5) { width: 9%; } .bt.nss th:nth-child(6) { width: 17%; } .bt.nss th:nth-child(7) { width: 17%; }
-  .bt.pubs th:nth-child(1) { width: 14%; } .bt.pubs th:nth-child(2) { width: 14%; } .bt.pubs th:nth-child(3) { width: 8%; } .bt.pubs th:nth-child(4) { width: 11%; } .bt.pubs th:nth-child(5) { width: 7%; } .bt.pubs th:nth-child(6) { width: 7%; } .bt.pubs th:nth-child(7) { width: 7%; } .bt.pubs th:nth-child(8) { width: 6%; } .bt.pubs th:nth-child(9) { width: 12%; } .bt.pubs th:nth-child(10) { width: 14%; }
+  .bt.blist th:nth-child(1) { width: 12%; } .bt.blist th:nth-child(2) { width: 10%; } .bt.blist th:nth-child(3) { width: 12%; } .bt.blist th:nth-child(4) { width: 11%; } .bt.blist th:nth-child(5) { width: 15%; } .bt.blist th:nth-child(6) { width: 8%; } .bt.blist th:nth-child(7) { width: 9%; } .bt.blist th:nth-child(8) { width: 8%; } .bt.blist th:nth-child(9) { width: 15%; }
 }
 .fm-key { margin: 0 0 0 auto; display: flex; gap: 14px; font-size: var(--t-tiny); color: var(--text-3); }
 .fm-key i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: 0; }
