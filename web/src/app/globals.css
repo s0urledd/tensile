@@ -199,10 +199,12 @@ button.dis:hover, a.dis:hover { text-decoration: underline; }
 /* --------------------------------------------------------------- metrics --- */
 /* headline figures and the cell grids below them: each figure in its own light frame, like the facts grid */
 .metrics { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin: 16px 0 0; }
-/* the validator page's Load: three figures under their own heading, flush to it */
-#load { margin-top: 18px; }
-#load .vhead { padding: 0; }
-#load .metrics { grid-template-columns: repeat(3, 1fr); margin-top: 10px; }
+/* the validator page's two groups, each under its own heading: what the chain records, then what Tensile's readings saw */
+.group { margin-top: 22px; }
+.group > .vhead { padding: 0; }
+.group .metrics { margin-top: 10px; }
+/* the chain's figures share the row equally, however many there are */
+#chain .metrics { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
 .metric { padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
 .metric .label { font-size: var(--t-small); color: var(--text-2); font-weight: 500; }
 .metric .value { font-size: var(--t-kpi); font-weight: 500; letter-spacing: -.02em; line-height: 1.1; margin: 6px 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -229,10 +231,6 @@ button.dis:hover, a.dis:hover { text-decoration: underline; }
 .key div { font-size: var(--t-cell); color: var(--text-2); }
 .key .v { display: block; font-size: var(--t-h2); color: var(--text); font-weight: 500; margin-top: 2px; padding-left: 16px; } /* under the word, not the swatch */
 .key .sw { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: -1px; }
-/* the outcome key spans its bar: four equal columns under it */
-.key.okey { grid-template-columns: repeat(4, 1fr); justify-content: stretch; gap: 6px 12px; }
-.key.okey > div { white-space: nowrap; }
-.okey-note { margin: 6px 0 0; font-size: var(--t-small); color: var(--text-3); }
 .sw.s { background: var(--accent); } .sw.b { background: var(--fault); } .sw.u { background: var(--neutral); } .sw.n { background: var(--neutral); opacity: .55; } .sw.p { background: var(--pending); box-shadow: inset 0 0 0 1px var(--line); }
 .blobs { margin: 10px 0 0; font-size: var(--t-cell); color: var(--text-2); }
 .blobs b { font-weight: 500; color: var(--text); }
@@ -371,9 +369,6 @@ tr.suspect td { color: var(--text-3); }
 .facts dd .soft { color: var(--text-3); }
 .copy { font: 500 11px/1.4 var(--sans); color: var(--text-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; margin-left: 6px; vertical-align: 1px; background: var(--wash); cursor: pointer; }
 .copy:hover { color: var(--text); }
-.pts { display: grid; grid-template-columns: auto 1fr 1fr; gap: 6px 18px; font-size: var(--t-cell); margin-top: 12px; }
-.pts .h { color: var(--text-2); font-weight: 500; }
-.pts .n { text-align: right; }
 .periods { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: var(--t-cell); }
 .periods th { font-size: var(--t-small); color: var(--text-2); font-weight: 500; padding: 0 10px 6px 0; border-bottom: 1px solid var(--line-soft); text-align: right; }
 .periods th:first-child, .periods td:first-child { text-align: left; }
@@ -565,7 +560,8 @@ dl.kv dd { margin: 0; word-break: break-all; }
   .title { flex-direction: column; gap: 12px; }
   .head { flex-direction: column; gap: 12px; }
   .status > span { white-space: normal; }
-  .metrics, .cells, .cells.three, .cells.four, .cells.five, #load .metrics { grid-template-columns: repeat(2, 1fr); }
+  .metrics, .cells, .cells.three, .cells.four, .cells.five { grid-template-columns: repeat(2, 1fr); }
+  #chain .metrics { grid-auto-flow: row; grid-template-columns: repeat(2, 1fr); }
   .metric .help { white-space: normal; }
   .band { grid-template-columns: 1fr; }
   .band > div { padding: 0; }
@@ -576,7 +572,6 @@ dl.kv dd { margin: 0; word-break: break-all; }
   .search { width: 100%; }
   .select { flex: 1; }
   .col-pin { min-width: 180px; }
-  .pts { grid-template-columns: auto 1fr 1fr; gap: 6px 10px; }
   .tl .edge.r { display: none; }
   .foot { flex-direction: column; gap: 6px; }
   .charts { grid-template-columns: 1fr; }
@@ -601,34 +596,6 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
   .vt .avatar { display: none; }
   .metric .value { white-space: normal; font-size: 24px; }
 }
-
-/* ------------------------------------------------ day × point heatmap --- */
-/* The validator page's calendar (components/Heatmap). Served is the accent,
-   the one colour the site spends on a kept obligation; only the FAULT share
-   of a cell is --fault, as a band from the bottom whose height is that
-   share. No verdict is flat --pending, no data the gap hatch: neither is red.
-   The grid shrinks with the page; past a month its columns get a floor and
-   the grid scrolls inside .hm-scroll, never the page. */
-.hm-band { padding: 14px 0 14px; border-bottom: 1px solid var(--line-soft); }
-.hm { margin-top: 10px; }
-.hm-scroll { overflow-x: auto; }
-.hm-grid { display: grid; gap: 2px; align-items: center; }
-.hm-grid.wide { gap: 1px; }
-.hm-y { font-size: var(--t-tiny); color: var(--text-2); padding-right: 6px; white-space: nowrap; }
-.hm-y.total, .hm-c.total { margin-top: 4px; }
-.hm-c { position: relative; height: 16px; border-radius: 2px; overflow: hidden; }
-.hm-c.rated { background: var(--accent); }
-.hm-c.rated i { position: absolute; left: 0; right: 0; bottom: 0; background: var(--fault); }
-.hm-c.noverdict { background: var(--pending); }
-.hm-c.nodata { background: var(--gap-hatch); box-shadow: inset 0 0 0 1px var(--line-soft); }
-.hm-x { font-size: var(--t-tiny); color: var(--text-3); white-space: nowrap; overflow: visible; margin-top: 4px; min-width: 0; }
-/* labels in the right half hang leftwards from their column, so the last one is never cut by the frame */
-.hm-x.end { direction: rtl; }
-.hm-k { display: inline-block; position: relative; width: 12px; height: 10px; border-radius: 2px; vertical-align: -1px; overflow: hidden; }
-.hm-k.rated { background: var(--accent); }
-.hm-k.rated i { position: absolute; left: 0; right: 0; bottom: 0; height: 45%; background: var(--fault); }
-.hm-k.noverdict { background: var(--pending); }
-.hm-k.nodata { background: var(--gap-hatch); box-shadow: inset 0 0 0 1px var(--line-soft); }
 
 /* ---------------------------------------- signatures per promise (blobs) --- */
 /* Horizontal bars so the bucket labels stay readable at phone width. The
@@ -746,7 +713,6 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
 .latest dt { color: var(--text-2); }
 .latest dd { margin: 0; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
 .fm-aside { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line-soft); }
-.fm-aside .key.okey { grid-template-columns: repeat(4, auto); justify-content: space-between; gap: 6px 8px; }
 .fm-aside .blobs .soft { display: block; margin: 4px 0 0; }
 .hostmap .fm-side .ready-key { display: grid; gap: 2px; margin-bottom: 18px; }
 
