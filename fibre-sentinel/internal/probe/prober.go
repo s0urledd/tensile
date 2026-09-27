@@ -38,6 +38,12 @@ type Config struct {
 
 	IncludeUnassigned bool
 
+	// EndorsedOnly probes only the validators whose signature the settled
+	// promise carries: the shards the chain records them as having taken on.
+	// A promise recorded before signatures were verified says nothing either
+	// way, and is probed over every assigned validator as before.
+	EndorsedOnly bool
+
 	// Policy, if set, decides which publications are probed (sampling), which
 	// probes fit the byte and request budgets, and when to back off. nil
 	// means probe everything, the pre-policy behaviour.
@@ -990,7 +996,7 @@ func (p *Prober) runDue(ctx context.Context, due []job) int {
 		for _, j := range jobs {
 			key := pointKey(p.cfg.Vantage, ph, j.point.At)
 			for _, t := range targets {
-				if p.store.Has(p.cfg.Vantage, ph, t.AddressHex, j.point.At) {
+				if !p.wants(t) || p.store.Has(p.cfg.Vantage, ph, t.AddressHex, j.point.At) {
 					continue
 				}
 				items = append(items, work{job: j, target: t, coder: coder, commitment: commitment, key: key,
@@ -1498,9 +1504,17 @@ func (p *Prober) recordNotProbed(ctx context.Context, j job, reason string) {
 	p.complete[key] = true
 }
 
+// wants reports whether a target is read at all: under EndorsedOnly only the
+// validators the settled promise names as signers. A target it declines gets
+// no row, probed or NOT_PROBED alike: a validator with nothing to answer for
+// on this promise is not a gap in its coverage.
+func (p *Prober) wants(t Target) bool {
+	return !p.cfg.EndorsedOnly || t.AttestationUnknown || t.Attested
+}
+
 // recordNotProbedTarget writes one NOT_PROBED measurement for a single target.
 func (p *Prober) recordNotProbedTarget(pub scan.Publication, pt SchedulePoint, t Target, reason string) {
-	if p.store.Has(p.cfg.Vantage, pub.PromiseHash, t.AddressHex, pt.At) {
+	if !p.wants(t) || p.store.Has(p.cfg.Vantage, pub.PromiseHash, t.AddressHex, pt.At) {
 		return
 	}
 	m := Measurement{
@@ -1531,6 +1545,9 @@ func (p *Prober) stampSampling(m *Measurement, pub scan.Publication) {
 		return
 	}
 	prob, binding, commitment := p.cfg.Policy.SamplingFor(pub)
+	if commitment == "" {
+		return // no draw was made: a policy that does not sample
+	}
 	m.Sampling = &SamplingDecision{P: prob, Binding: binding, DayCommitment: commitment}
 }
 

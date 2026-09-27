@@ -260,6 +260,27 @@ func TestReconstructBatchMatchesReference(t *testing.T) {
 		},
 	})
 
+	// An end-of-window reading of the endorsed validators alone
+	// (sentinel-probe -end-read) leaves the validators the promise does not
+	// name as signers without a row. They owe the blob nothing, so the point
+	// is complete once every endorsed validator has a result; a missing
+	// endorsed validator still leaves it pending.
+	cases = append(cases, blobCase{
+		name:   "complete without the unendorsed: every endorsed validator was read",
+		needed: 20, total: 160, points: 1, complete: false, want: "yes",
+		vals: []valRows{
+			{addr: "l1", rows: full[:20], attested: 1, served: true},
+			{addr: "l2", rows: full[20:], attested: 0, served: false},
+		},
+	}, blobCase{
+		name:   "pending: an endorsed validator has no result yet",
+		needed: 20, total: 160, points: 1, complete: false, want: "pending",
+		vals: []valRows{
+			{addr: "m1", rows: full[:20], attested: 0, served: true},
+			{addr: "m2", rows: full[20:], attested: 1, served: true},
+		},
+	})
+
 	hashes := make([]string, len(cases))
 	for i, c := range cases {
 		hashes[i] = writeBlob(t, st, i, c)

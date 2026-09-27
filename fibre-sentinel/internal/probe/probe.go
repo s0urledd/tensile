@@ -41,7 +41,9 @@ type StepTimeouts struct {
 	// shard is not judged by the deadline chosen for a 1 MB one.
 	Download time.Duration
 	// MinDownloadBytesPerSec is the slowest transfer the observer is willing
-	// to wait for before recording RPC_DEADLINE (default 1 MiB/s).
+	// to wait for before recording RPC_DEADLINE (default 1 MiB/s). Negative
+	// makes Download the whole deadline, whatever the shard weighs: the rule
+	// celestia-app's own client reads with (RPCTimeout, 15s per DownloadShard).
 	MinDownloadBytesPerSec int64
 }
 
@@ -75,7 +77,7 @@ func (t StepTimeouts) withDefaults() StepTimeouts {
 	if t.Download <= 0 {
 		t.Download = d.Download
 	}
-	if t.MinDownloadBytesPerSec <= 0 {
+	if t.MinDownloadBytesPerSec == 0 {
 		t.MinDownloadBytesPerSec = d.MinDownloadBytesPerSec
 	}
 	return t

@@ -67,6 +67,22 @@ type ScheduleConfig struct {
 	// floor with room, and the same value the grace phase already allows in
 	// the other direction (PruneTolerance).
 	LastPointMargin time.Duration
+	// EndReadOffset, when set, replaces the whole schedule with one reading
+	// at the end of the retention window, this long before
+	// must_serve_until: nothing earlier in the window and nothing after it.
+	// A reading that cannot start on time may still start late, up to the
+	// deadline (Prober.latenessAt), so a short outage of this observer does
+	// not cost it; one that fails on a transport timeout gets the prober's
+	// one retry. It is the reading the chain's own client would take near
+	// the end, once.
+	EndReadOffset time.Duration
+	// EndReadSince limits EndReadOffset to publications settled at or after
+	// it; an earlier one keeps the schedule it was read under. Without it,
+	// a prober switched to the end reading would find every past
+	// publication's "end" point elapsed and never recorded, and write a
+	// NOT_PROBED row for it: thousands of gaps for readings that were never
+	// planned. Zero applies the end reading to every publication.
+	EndReadSince time.Time
 }
 
 // DefaultInWindowFractions: one early reading, then three clustered toward the
@@ -150,7 +166,8 @@ func fallbackSpan(p scan.Publication) time.Duration {
 type SchedulePoint struct {
 	At    time.Time
 	Phase Phase
-	// Label is a short human tag ("w1".."wN", "grace", "post").
+	// Label is a short human tag ("w1".."wN", "grace", "post"; "end" under
+	// EndReadOffset).
 	Label string
 }
 
@@ -172,6 +189,10 @@ func ScheduleFor(p scan.Publication, cfg ScheduleConfig) []SchedulePoint {
 		start = msu.Add(-fallbackSpan(p))
 	}
 	span := msu.Sub(start)
+
+	if cfg.EndReadOffset > 0 && !p.SettlementTime.Before(cfg.EndReadSince) {
+		return []SchedulePoint{endReadPoint(start, msu, cfg)}
+	}
 
 	var pts []SchedulePoint
 	// The latest a last reading may sit and still be a reading of the window:
@@ -211,6 +232,21 @@ func ScheduleFor(p scan.Publication, cfg ScheduleConfig) []SchedulePoint {
 		pts = out
 	}
 	return pts
+}
+
+// endReadPoint is the one point of an end-of-window schedule, labelled
+// "end": EndReadOffset before must_serve_until, or, in a window shorter than
+// that, LastPointMargin before its end (half way through, if even that falls
+// before the settlement), so no publication goes unread.
+func endReadPoint(start, msu time.Time, cfg ScheduleConfig) SchedulePoint {
+	at := msu.Add(-cfg.EndReadOffset)
+	if !at.After(start) {
+		at = msu.Add(-cfg.LastPointMargin)
+	}
+	if !at.After(start) {
+		at = start.Add(msu.Sub(start) / 2)
+	}
+	return SchedulePoint{At: at, Phase: PhaseInWindow, Label: "end"}
 }
 
 // PhaseAt classifies an arbitrary instant against a publication's window, using

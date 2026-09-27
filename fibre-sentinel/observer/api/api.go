@@ -3714,7 +3714,8 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 		return nil, err
 	}
 	sx, sxArgs := rollup.Exclusion("scheduled_at", spts)
-	rows, err := db.QueryContext(ctx, `SELECT scheduled_at, schedule_label, must_serve_until, COUNT(DISTINCT validator_address) FROM probes
+	rows, err := db.QueryContext(ctx, `SELECT scheduled_at, schedule_label, must_serve_until, COUNT(DISTINCT validator_address),
+			COUNT(DISTINCT CASE WHEN attested = 1 THEN validator_address END) FROM probes
 		WHERE promise_hash = ? AND phase = 'in_window' AND assigned = 1
 		  AND classification NOT IN ('NOT_PROBED','PROBE_ERROR')`+pb+sx+`
 		GROUP BY scheduled_at ORDER BY scheduled_at DESC`, append(pargs, sxArgs...)...)
@@ -3727,8 +3728,8 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 	first := true
 	for rows.Next() {
 		var at, lb, m string
-		var n int
-		if err := rows.Scan(&at, &lb, &m, &n); err != nil {
+		var n, nAtt int
+		if err := rows.Scan(&at, &lb, &m, &n, &nAtt); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -3736,7 +3737,7 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 			pointAt, label, msu, probed = at, lb, m, n
 			first = false
 		}
-		if n >= assigned && assigned > 0 {
+		if pointComplete(n, nAtt, assigned, attestationKnown, attested) {
 			pointAt, label, msu, probed = at, lb, m, n
 			complete = true
 			break
@@ -3812,6 +3813,20 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 		rc.Status = "no"
 	}
 	return rc, nil
+}
+
+// pointComplete reports whether a schedule point has heard from everyone it
+// can judge the blob on: every assigned validator, or, where the promise's
+// signatures were verified, every validator it proves obliged. The second
+// is what an end-of-window reading of the endorsed validators alone
+// (sentinel-probe -end-read) can complete; a validator the promise does not
+// name as a signer owes the blob nothing, so its missing row leaves nothing
+// undecided. reconstructBatch applies the same rule.
+func pointComplete(probed, probedAtt, assigned int, attestationKnown bool, attested int) bool {
+	if assigned > 0 && probed >= assigned {
+		return true
+	}
+	return attestationKnown && attested > 0 && probedAtt >= attested
 }
 
 // reconstructSample bounds how many of the newest publications the network

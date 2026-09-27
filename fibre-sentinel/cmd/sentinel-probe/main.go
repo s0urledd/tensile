@@ -53,6 +53,10 @@ func main() {
 		deadline = flag.Duration("deadline", 0, "whole-run wall-clock cap (0 = none)")
 
 		inWindow = flag.Int("in-window-probes", 4, "number of probes inside [settlement, must_serve_until]")
+		endRead  = flag.Bool("end-read", false, "read every endorsed shard once, at the end of its retention window (-end-read-offset before must_serve_until, late up to the deadline if it must), and nothing before or after; "+
+			"only the validators whose signature the settled promise carries; DownloadShard held to a flat -download-timeout of 15s, the RPCTimeout celestia-app's own client reads with, unless that flag is given")
+		endOffset = flag.Duration("end-read-offset", 10*time.Minute, "with -end-read: how long before must_serve_until the reading is scheduled")
+		endSince  = flag.String("end-read-since", "", "with -end-read: RFC 3339 time; publications settled before it keep the schedule they were read under (empty = every publication, which on a store with history writes a NOT_PROBED row for every past publication's end point)")
 		// The sampling audit rests on a master secret that outlives the
 		// process: rows carry a commitment to the day's secret and the
 		// secret is revealed later. Without a file the secret is new on
@@ -124,6 +128,29 @@ func main() {
 	}
 
 	fracs := probe.InWindowFractions(*inWindow)
+	sched := probe.ScheduleConfig{InWindowFractions: fracs, GraceOffset: *graceOff, PruneTolerance: *pruneTol, PostMargin: *postMrg}
+	timeouts := probe.StepTimeouts{DNS: *dnsTO, TCP: *tcpTO, TLS: *tlsTO, Download: *dlTO}
+	points := float64(len(fracs) + 2) // in-window points, the grace point and the post point
+	if *endRead {
+		if *endOffset <= 0 {
+			log.Fatalf("-end-read-offset must be positive")
+		}
+		sched.EndReadOffset = *endOffset
+		if *endSince != "" {
+			t, err := time.Parse(time.RFC3339, *endSince)
+			if err != nil {
+				log.Fatalf("-end-read-since: %v", err)
+			}
+			sched.EndReadSince = t
+		}
+		points = 1 // one reading per shard
+		dlSet := false
+		flag.Visit(func(f *flag.Flag) { dlSet = dlSet || f.Name == "download-timeout" })
+		if !dlSet {
+			timeouts.Download = endReadDownloadTimeout
+		}
+		timeouts.MinDownloadBytesPerSec = -1 // flat, as the chain's client
+	}
 
 	var pol probe.Policy
 	var revealer *policy.Policy
@@ -136,14 +163,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("policy: %v", err)
 		}
-		// in-window points, the grace point and the post point: one request
-		// each per validator per publication
-		cfg.PointsPerPublication = float64(len(fracs) + 2)
+		// one request per point per validator per publication
+		cfg.PointsPerPublication = points
 		// The byte side of the projection: every point, the post one too.
 		// NOT_FOUND is what the post point expects, but a validator that
 		// keeps the blob past the tolerance serves it there in full, and
 		// the projection is a ceiling, so it must count that transfer.
-		cfg.DownloadsPerPublication = float64(len(fracs) + 2)
+		cfg.DownloadsPerPublication = points
 		// The master secret lives in the data directory unless the policy
 		// names somewhere else. It is the only path the unit can write
 		// (fibre-probe@.service: ProtectSystem=strict with
@@ -174,22 +200,16 @@ func main() {
 	}
 
 	pr, err := probe.New(probe.Config{
-		Policy:           pol,
-		RPCURL:           *rpc,
-		PublicationsPath: *pubsPath,
-		RegistryPath:     *regPath,
-		DataDir:          *dataDir,
-		Vantage:          *vantage,
-		Schedule: probe.ScheduleConfig{
-			InWindowFractions: fracs,
-			GraceOffset:       *graceOff,
-			PruneTolerance:    *pruneTol,
-			PostMargin:        *postMrg,
-		},
-		Timeouts: probe.StepTimeouts{
-			DNS: *dnsTO, TCP: *tcpTO, TLS: *tlsTO, Download: *dlTO,
-		},
+		Policy:              pol,
+		RPCURL:              *rpc,
+		PublicationsPath:    *pubsPath,
+		RegistryPath:        *regPath,
+		DataDir:             *dataDir,
+		Vantage:             *vantage,
+		Schedule:            sched,
+		Timeouts:            timeouts,
 		IncludeUnassigned:   *unassigned,
+		EndorsedOnly:        *endRead,
 		Once:                *once,
 		Drain:               *drain,
 		Deadline:            *deadline,
@@ -228,3 +248,8 @@ func main() {
 		log.Fatalf("run: %v", err)
 	}
 }
+
+// endReadDownloadTimeout is the per-call deadline celestia-app's Fibre client
+// gives DownloadShard (fibre.ClientConfig RPCTimeout, default 15s): under
+// -end-read a validator is read the way the chain's own client reads it.
+const endReadDownloadTimeout = 15 * time.Second
