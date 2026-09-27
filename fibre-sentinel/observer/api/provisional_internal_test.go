@@ -43,8 +43,12 @@ func TestIsProvisional(t *testing.T) {
 	now := time.Now()
 	young := store.TS(now.Add(-verdict.FaultSettling + time.Minute))
 	old := store.TS(now.Add(-verdict.FaultSettling - time.Minute))
-	if !isProvisional("FAULT", young, now) || isProvisional("FAULT", old, now) || isProvisional("HEALTHY", young, now) {
+	if !isProvisional("FAULT", "w4", young, now) || isProvisional("FAULT", "w4", old, now) || isProvisional("HEALTHY", "w4", young, now) ||
+		isProvisional("UNREACHABLE", "w4", young, now) {
 		t.Error("provisional is a FAULT younger than the settling period, and nothing else")
+	}
+	if !isProvisional("UNREACHABLE", "end", young, now) || isProvisional("UNREACHABLE", "end", old, now) || isProvisional("SHADOWED_SHARD", "end", young, now) {
+		t.Error("an end reading with no rows settles like a FAULT, and genuine rows are not provisional")
 	}
 	total := provisionalTotal(map[string]*provisionalFaults{
 		"a": {Obligations: 1, Until: "2026-09-24T10:00:00Z"},

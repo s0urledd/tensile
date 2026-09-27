@@ -595,6 +595,17 @@ column:
 This is why the serve rate moved after the audit. It did not get more
 forgiving; it stopped making claims the evidence did not support.
 
+### At the end reading
+
+From 2026-09-27 16:20 UTC an endorsed shard is read once, 10 minutes before
+`must_serve_until`, and its obligation counts as a reader using
+celestia-app's client meets it: no rows back is not served (`UNREACHABLE`,
+`IDENTITY_MISMATCH`, `IDENTITY_EXPIRED`, `SERVER_ERROR`, `THROTTLED` and
+`NOT_REGISTERED` count as `FAULT`), and genuine rows of the blob are served
+(`SHADOWED_SHARD`, `UNMATCHED_GENUINE`). The row keeps its class
+(`probe.EndReadClass`, `rollup.ObligationClass`); the table above holds for
+the earlier schedule's points.
+
 ## Known limits of a probe
 
 These are properties of how the observer measures, not of any validator. They
