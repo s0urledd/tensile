@@ -1,24 +1,26 @@
-# Probe load policy for mocha-5 at Fibre launch. Differs from policy.example.yaml
-# (the mainnet November model) only in the capacity model and the hourly
-# fraction.
+# Probe load policy for mocha-5. The prober runs with -end-read: one reading
+# of every endorsed shard at the end of its retention window, so every
+# validator is asked once per blob it signed for, for the rows it was sent.
+# Nothing here assumes what a validator can serve: no sampling, no
+# per-validator byte budget. What limits the load is the schedule itself, the
+# prober's one connection per validator, the spacing below, and this
+# observer's own global caps.
 # Every per-validator number is PER VANTAGE; run at most three vantages.
-
-capacity_model:
-  floor_rows: 148                 # smallest assignment (MinRowsPerValidator)
-  floor_validator_bps: 53000000   # 53 Mbps: floor validator's launch ingress incl. 20% allowance, Celestia "Fibre requirements" sheet, 14 Sep 2026
-  scale_with_rows: true           # cap(rows) = cap(148) * rows / 148
 
 caps:
   per_validator:
-    requests_per_minute: 30
+    requests_per_minute: 0            # no request budget; the spacing bounds it at 30 a minute
     min_request_spacing: 2s
-    bytes_per_hour_fraction: 0.002    # 0.2% of the launch ingress -> 47.7 MB/h at 148 rows (~9 floor shards of a 128 MiB blob)
-    bytes_per_day_fraction: 0.0015    # -> 859 MB/day at 148 rows
+    bytes_per_hour_fraction: 0        # no per-validator byte budget
+    bytes_per_day_fraction: 0
   global:
     bytes_per_hour: 53687091200       # 50 GiB; binds first in the 128 MiB/min scenario (p ~ 0.4)
     bytes_per_day: 644245094400       # 600 GiB
 
 sampling:
+  # Off: every publication is read. The master secret below stays, so the
+  # draws made while sampling was on can still be revealed and audited.
+  enabled: false
   # A public vantage MUST set this. The commitments published at /v1/sampling
   # are SHA256 of a per-day secret derived from this master; with an empty
   # value the master is random per process, so every restart changes the

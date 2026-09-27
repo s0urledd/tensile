@@ -216,7 +216,7 @@ func TestShippedPoliciesLoad(t *testing.T) {
 		perDay  int64
 	}{
 		{"policy.example.yaml", 2_925_000_000, 52_650_000_000},
-		{"policy.mocha.yaml", 47_700_000, 858_600_000},
+		{"policy.mocha.yaml", 0, 0}, // no per-validator byte budget
 	}
 	for _, c := range cases {
 		cfg, err := Load(c.file)
@@ -240,7 +240,7 @@ func TestValidateRejectsBadConfig(t *testing.T) {
 		name  string
 		mutfn func(*Config)
 	}{
-		{"zero day fraction", func(c *Config) { c.Caps.PerValidator.BytesPerDayFraction = 0 }},
+		{"negative day fraction", func(c *Config) { c.Caps.PerValidator.BytesPerDayFraction = -0.1 }},
 		{"zero global day", func(c *Config) { c.Caps.Global.BytesPerDay = 0 }},
 		{"negative requests", func(c *Config) { c.Caps.PerValidator.RequestsPerMinute = -1 }},
 		{"negative spacing", func(c *Config) { c.Caps.PerValidator.MinRequestSpacing = -time.Second }},

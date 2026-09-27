@@ -16,6 +16,14 @@
 // policy's reason: for a publication drawn out of the sample, one
 // probe.SampledOut line in sampling_decisions.jsonl; for a probe a cap
 // denied, that probe's NOT_PROBED measurement.
+//
+// Sampling and the per-validator byte caps rest on a capacity model: an
+// assumption about what a validator can serve. Both can be turned off
+// (sampling.enabled: false, a per-validator byte fraction of 0), which leaves
+// only limits that assume nothing about the validator: the spacing between
+// two requests to one validator, the request rate, and this observer's own
+// global byte caps. The master secret and the reveal loop stay, so the draws
+// already published remain verifiable.
 package policy
 
 import (
@@ -70,6 +78,10 @@ type Config struct {
 		} `yaml:"global"`
 	} `yaml:"caps"`
 	Sampling struct {
+		// Enabled draws publications out of the sample when the budget
+		// would be exceeded. Off, every publication is admitted and no draw
+		// is made or stamped; the caps below still bound each probe.
+		Enabled          bool   `yaml:"enabled"`
 		MasterSecretFile string `yaml:"master_secret_file"`
 		// AllowEphemeralSecret permits a process-local master secret, which
 		// is only ever right in a test: the day commitments it produces
@@ -105,6 +117,7 @@ func Default() Config {
 	c.Caps.PerValidator.BytesPerDayFraction = 0.0075
 	c.Caps.Global.BytesPerHour = 50 << 30 // 50 GiB
 	c.Caps.Global.BytesPerDay = 600 << 30 // 600 GiB
+	c.Sampling.Enabled = true
 	c.Sampling.ProjectionLookback = time.Hour
 	c.State.UnknownCooldown = 10 * time.Minute
 	return c
@@ -127,17 +140,22 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) validate() error {
-	if c.Capacity.FloorRows <= 0 || c.Capacity.FloorValidatorBps <= 0 {
+	pv := c.Caps.PerValidator
+	// A per-validator byte fraction of 0 means no per-validator byte cap.
+	// Negative is a typo, and would deny every probe.
+	if pv.BytesPerHourFraction < 0 || pv.BytesPerDayFraction < 0 {
+		return errors.New("caps: bytes_per_hour_fraction and bytes_per_day_fraction must not be negative (0 = no per-validator byte cap)")
+	}
+	// The capacity model only sizes the per-validator byte caps; with both
+	// off it is not read.
+	if (pv.BytesPerHourFraction > 0 || pv.BytesPerDayFraction > 0) && (c.Capacity.FloorRows <= 0 || c.Capacity.FloorValidatorBps <= 0) {
 		return errors.New("capacity_model: floor_rows and floor_validator_bps must be positive")
 	}
-	if c.Caps.PerValidator.BytesPerHourFraction <= 0 || c.Caps.Global.BytesPerHour <= 0 {
-		return errors.New("caps: bytes_per_hour_fraction and global.bytes_per_hour must be positive")
-	}
-	// A zero or negative value here does not fail loudly at startup, it makes
+	// A zero or negative global cap does not fail loudly at startup, it makes
 	// every probe fail a budget check (or divide by zero in the sampler), so
 	// the observer would quietly record nothing at all.
-	if c.Caps.PerValidator.BytesPerDayFraction <= 0 || c.Caps.Global.BytesPerDay <= 0 {
-		return errors.New("caps: bytes_per_day_fraction and global.bytes_per_day must be positive")
+	if c.Caps.Global.BytesPerHour <= 0 || c.Caps.Global.BytesPerDay <= 0 {
+		return errors.New("caps: global.bytes_per_hour and global.bytes_per_day must be positive")
 	}
 	if c.Caps.PerValidator.RequestsPerMinute < 0 {
 		return errors.New("caps: requests_per_minute must not be negative (0 = no limit)")
@@ -155,8 +173,11 @@ func (c Config) validate() error {
 }
 
 // bytesPerHourCap is the per-validator hourly byte cap for a validator with
-// rows assigned rows.
+// rows assigned rows; 0 when the cap is off.
 func (c Config) bytesPerHourCap(rows int) int64 {
+	if c.Caps.PerValidator.BytesPerHourFraction <= 0 {
+		return 0
+	}
 	capBytes := float64(c.Capacity.FloorValidatorBps) / 8 * 3600 * c.Caps.PerValidator.BytesPerHourFraction
 	if c.Capacity.ScaleWithRows && rows > c.Capacity.FloorRows {
 		capBytes *= float64(rows) / float64(c.Capacity.FloorRows)
@@ -165,6 +186,9 @@ func (c Config) bytesPerHourCap(rows int) int64 {
 }
 
 func (c Config) bytesPerDayCap(rows int) int64 {
+	if c.Caps.PerValidator.BytesPerDayFraction <= 0 {
+		return 0
+	}
 	capBytes := float64(c.Capacity.FloorValidatorBps) / 8 * 86400 * c.Caps.PerValidator.BytesPerDayFraction
 	if c.Capacity.ScaleWithRows && rows > c.Capacity.FloorRows {
 		capBytes *= float64(rows) / float64(c.Capacity.FloorRows)
@@ -612,6 +636,9 @@ func humanBytes(b int64) string {
 
 // Admit implements probe.Policy.
 func (p *Policy) Admit(pub scan.Publication, alreadyStarted bool) (bool, string) {
+	if !p.cfg.Sampling.Enabled {
+		return true, ""
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if alreadyStarted {
@@ -752,6 +779,10 @@ func (p *Policy) reasonFor(pub scan.Publication, d decision) string {
 // methodology page describes could not be carried out against half the
 // decisions it was supposed to cover.
 func (p *Policy) SamplingFor(pub scan.Publication) (prob float64, binding, commitment string) {
+	if !p.cfg.Sampling.Enabled {
+		// No draw was made, so there is nothing to stamp or to audit.
+		return 1, "sampling_off", ""
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if d, ok := p.decisions[pub.PromiseHash]; ok {
@@ -867,11 +898,15 @@ func (p *Policy) BeforeProbe(pub scan.Publication, t probe.Target, now time.Time
 		rows = vs.rowsLastSeen
 	}
 	est := ShardBytes(pub.Promise.BlobSize, pub.Assignment.ProtocolParams.OriginalRows, rows)
-	if _, hb := p.sumWithPending(vs.events, t.AddressHex, now.Add(-time.Hour)); hb+est > p.cfg.bytesPerHourCap(rows) {
-		return false, "budget:validator_bytes_per_hour"
+	if capH := p.cfg.bytesPerHourCap(rows); capH > 0 {
+		if _, hb := p.sumWithPending(vs.events, t.AddressHex, now.Add(-time.Hour)); hb+est > capH {
+			return false, "budget:validator_bytes_per_hour"
+		}
 	}
-	if _, db := p.sumWithPending(vs.events, t.AddressHex, now.Add(-24*time.Hour)); db+est > p.cfg.bytesPerDayCap(rows) {
-		return false, "budget:validator_bytes_per_day"
+	if capD := p.cfg.bytesPerDayCap(rows); capD > 0 {
+		if _, db := p.sumWithPending(vs.events, t.AddressHex, now.Add(-24*time.Hour)); db+est > capD {
+			return false, "budget:validator_bytes_per_day"
+		}
 	}
 	if _, gh := p.sumWithPending(p.global, "", now.Add(-time.Hour)); gh+est > p.cfg.Caps.Global.BytesPerHour {
 		return false, "budget:global_bytes_per_hour"

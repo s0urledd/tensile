@@ -72,6 +72,7 @@ type blobFacts struct {
 type pointAgg struct {
 	at, label, msu string
 	probed         int // distinct validators with a real result
+	probedAtt      int // of those, how many the promise proves were obliged
 	servedBy       int // distinct validators that served correctly
 	servedAtt      int // of those, how many the promise proves were obliged
 	sumRows        int // sum of their assigned row counts
@@ -218,6 +219,7 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 	rows, err = db.QueryContext(ctx, sel+`
 		SELECT p.promise_hash, p.scheduled_at, p.schedule_label, p.must_serve_until,
 		       COUNT(DISTINCT p.validator_address),
+		       COUNT(DISTINCT CASE WHEN p.attested = 1 THEN p.validator_address END),
 		       COUNT(DISTINCT CASE WHEN `+cls+` = 'UNREACHABLE' THEN p.validator_address END),
 		       COUNT(DISTINCT CASE WHEN `+cls+` = 'FAULT' THEN p.validator_address END),
 		       COUNT(DISTINCT CASE WHEN `+cls+` NOT IN `+rollup.GuardSilentSQL+` THEN p.validator_address END)
@@ -233,7 +235,7 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 		var hash string
 		var pa pointAgg
 		var guard rollup.Point
-		if err := rows.Scan(&hash, &pa.at, &pa.label, &pa.msu, &pa.probed, &guard.Unreachable, &guard.Faulted, &guard.Validators); err != nil {
+		if err := rows.Scan(&hash, &pa.at, &pa.label, &pa.msu, &pa.probed, &pa.probedAtt, &guard.Unreachable, &guard.Faulted, &guard.Validators); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -296,9 +298,10 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 		// The newest point is the default; the newest COMPLETE point wins.
 		// Scanning newest first is what makes "complete" mean "the most recent
 		// moment at which every assigned validator had been heard from".
+		a := atts[hash]
 		chosen, complete := pts[0], false
 		for _, pa := range pts {
-			if f.assigned > 0 && pa.probed >= f.assigned {
+			if pointComplete(pa.probed, pa.probedAtt, f.assigned, a.known > 0, a.attested) {
 				chosen, complete = pa, true
 				break
 			}
@@ -307,7 +310,6 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 
 		windowOver := pin.over(chosen.msu)
 
-		a := atts[hash]
 		rc := &reconstruct{
 			Point: chosen.label, PointAt: chosen.at, WindowOver: windowOver,
 			NeededRows: int(f.needed), TotalRows: int(f.total),
