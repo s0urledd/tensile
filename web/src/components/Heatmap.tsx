@@ -22,10 +22,10 @@ import { int, pctOf } from "@/lib/api";
 // The schedule points by where they fall in the retention window, as the
 // "Through the retention window" table on the same page names them (POINT in
 // validator/page.tsx); the key stays in the tooltip.
-const POINT_LABEL: Record<string, string> = { w1: "12%", w2: "45%", w3: "72%", w4: "end", day: "day" };
+const POINT_LABEL: Record<string, string> = { w1: "12%", w2: "45%", w3: "72%", w4: "last", end: "end", day: "day" };
 const POINT_TITLE: Record<string, string> = {
   w1: "w1 · 12% of the retention window", w2: "w2 · 45% of the window", w3: "w3 · 72% of the window",
-  w4: "w4 · within 2 min 30 s of the deadline", day: "every point of the day together",
+  w4: "w4 · within 2 min 30 s of the deadline", end: "end · the one reading, 10 min before the deadline", day: "every point of the day together",
 };
 
 function dayLabel(d: string): string {
@@ -39,9 +39,9 @@ function cellTitle(day: string, point: string, c: HeatCell | undefined, beforeRa
     return `${where}: no data, no rated or held-out probe`;
   }
   const rated = c.served + c.faults;
-  const held = c.held_out > 0 ? ` · ${int(c.held_out)} held out (no verdict: not endorsed, unreachable, gaps…)` : "";
+  const held = c.held_out > 0 ? ` · ${int(c.held_out)} held out (no verdict)` : "";
   if (rated === 0) return `${where}: no verdict · n = 0 rated · ${int(c.held_out)} probe${c.held_out === 1 ? "" : "s"} held out`;
-  const broken = c.faults > 0 ? ` · ${int(c.faults)} broken` : "";
+  const broken = c.faults > 0 ? ` · ${int(c.faults)} not served` : "";
   return `${where}: n = ${int(rated)} rated · served ${int(c.served)} / ${int(rated)} (${pctOf(c.served, rated)})${broken}${held}${c.rolled ? " · from the daily rollup" : ""}`;
 }
 
@@ -93,7 +93,7 @@ export default function Heatmap({ data }: { data: HeatmapData | undefined }) {
       </div>
       <p className="mklegend hm-legend">
         <span><i className="hm-k rated" /> served</span>
-        <span><i className="hm-k rated"><i /></i> broken share</span>
+        <span><i className="hm-k rated"><i /></i> not-served share</span>
         <span><i className="hm-k noverdict" /> no verdict</span>
         <span><i className="hm-k nodata" /> no data</span>
       </p>

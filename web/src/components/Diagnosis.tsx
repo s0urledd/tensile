@@ -157,7 +157,7 @@ function state(v: Validator, c: EndpointCheck | undefined, decided: number): Sta
   const o = v.obligations;
   return {
     tone: "ok", title: "Reachable, certificate verified",
-    body: <>{host} completed TLS with a certificate endorsed by this validator’s consensus key {v.last_seen_at ? ago(v.last_seen_at) : "at the newest check"}.{o && decided > 0 && o.broken === 0 && <> {int(o.served)} of {int(decided)} assessed obligation{decided === 1 ? "" : "s"} in this period {o.served === 1 ? "was" : "were"} served.</>}</>,
+    body: <>{host} completed TLS with a certificate endorsed by this validator’s consensus key {v.last_seen_at ? ago(v.last_seen_at) : "at the newest check"}.{o && decided > 0 && o.broken === 0 && <> {int(o.served)} of {int(decided)} endorsed shard{decided === 1 ? "" : "s"} read in this period {o.served === 1 ? "was" : "were"} served.</>}</>,
   };
 }
 
@@ -187,10 +187,10 @@ export default function Diagnosis({ v, check, decided, provisional, failedShown,
       <p>{s.body}</p>
       {broken > 0 && (
         <p className="diag-fault">
-          <span className="mk fault" /> <b>{int(broken)} broken obligation{broken === 1 ? "" : "s"} in this period</b>{provisional > 0 && <> ({int(provisional)} still settling)</>}: promises this validator signed for where it answered “not found” while it was still obliged to serve the shard.{" "}
+          <span className="mk fault" /> <b>{int(broken)} endorsed shard{broken === 1 ? "" : "s"} not served in this period</b>{provisional > 0 && <> ({int(provisional)} still settling)</>}: the rows did not come back while this validator still had to serve them.{" "}
           {failedShown > 0
-            ? <a href="#evidence" onClick={onShowFailed}>Show the {int(failedShown)} failed probe row{failedShown === 1 ? "" : "s"} below →</a>
-            : <>None of the newest probe rows below is one of them; <a href={failedHref}>the failed rows are in the API →</a></>}
+            ? <a href="#evidence" onClick={onShowFailed}>Show the {int(failedShown)} not-served reading{failedShown === 1 ? "" : "s"} below →</a>
+            : <>None of the newest readings below is one of them; <a href={failedHref}>they are in the API →</a></>}
         </p>
       )}
     </section>

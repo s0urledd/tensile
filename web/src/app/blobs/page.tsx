@@ -10,29 +10,33 @@ import { Mark, type Tier } from "@/components/Verdict";
 import VolumeChart from "@/components/VolumeChart";
 import { useWindow, WindowSwitch } from "@/lib/window";
 
-// Reconstructability as a mark and a word, in the same channel the verdicts
-// use, so "degraded" on this page means what "held out" means everywhere else.
+// Retrievability as a mark and a word, in the same channel the verdicts use.
+// Retrievable: enough rows were retrieved to reconstruct the blob, in the
+// words of celestia-app's own client ("some rows were retrieved, but not
+// enough to reconstruct" is its word for the other case).
 function recon(b: Blob): { word: string; tier: Tier; title: string } {
   const r = b.reconstructable;
+  const over = new Date(b.must_serve_until).getTime() <= Date.now();
+  const at = (p: string) => (p === "end" ? "the end reading" : `point ${p}`);
   if (b.sampled_out && (!r || r.status === "unknown")) {
-    return { word: "sampled out", tier: "gap", title: `The load policy drew this blob out of its sample at p=${b.sampled_out.p.toFixed(2)}: not probed at any point, recorded once.` };
+    return { word: "sampled out", tier: "gap", title: `The load policy of the time drew this blob out of its sample at p=${b.sampled_out.p.toFixed(2)}: not read, recorded once.` };
   }
-  if (!r || r.status === "unknown") {
-    return b.probe_count === 0
-      ? { word: "not probed", tier: "gap", title: "No probe has run for this blob." }
-      : { word: "unknown", tier: "gap", title: "Row lists were not recorded for this publication, or no in-window point has been probed." };
+  if (!r || r.status === "unknown" || (r.status === "pending" && over)) {
+    return !over && (!r || r.status !== "unknown")
+      ? { word: "in retention window", tier: "gap", title: "Read once, 10 minutes before the retention window ends." }
+      : { word: "not read by Tensile", tier: "gap", title: "No reading of this blob was completed: the observer was offline when it was due, or its row lists were not recorded. Nothing is counted for or against a validator." };
   }
   if (r.status === "pending") {
-    return { word: "not judged yet", tier: "gap", title: `No in-window point is complete yet: ${r.probed_validators} of ${r.assigned_validators} assigned validators have a result at point ${r.point}. A validator without a row is a gap in observation, not a failure to serve.` };
+    return { word: "in retention window", tier: "gap", title: "Read once, 10 minutes before the retention window ends." };
   }
+  const rows = `${r.served_distinct_rows.toLocaleString("en-US")} of ${r.total_rows.toLocaleString("en-US")} rows retrieved at ${at(r.point)}, ${r.needed_rows.toLocaleString("en-US")} needed to reconstruct`;
   if (r.status === "yes") {
-    return { word: "fully served", tier: "kept", title: `${r.served_distinct_rows.toLocaleString("en-US")} distinct rows served; every validator the promise proves owed this blob answered at point ${r.point}.` };
+    return { word: "retrievable", tier: "kept", title: `${rows}; every endorsing validator served its rows.` };
   }
   if (r.status === "degraded") {
-    return { word: "rebuildable", tier: "hold", title: `Enough rows came back to rebuild the blob, but not every validator the promise proves owed it answered at point ${r.point}.` };
+    return { word: "retrievable", tier: "kept", title: `${rows}; ${r.attested_validators - r.served_by_attested} of ${r.attested_validators} endorsing validators did not serve theirs.` };
   }
-  // Not a fault: which validators did not answer, and whether that was this observer's own path, is on the blob's page.
-  return { word: "not rebuildable", tier: "hold", title: `Fewer than the ${r.needed_rows.toLocaleString("en-US")} rows needed came back at point ${r.point}. Unreachable from here is never counted as broken.` };
+  return { word: "not retrievable", tier: "hold", title: `${rows}: not enough to reconstruct.` };
 }
 
 function Page() {

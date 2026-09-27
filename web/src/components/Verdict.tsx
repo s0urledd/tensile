@@ -30,47 +30,47 @@ type Def = { label: string; tier: Tier; def: string };
 const VERDICTS: Record<string, Def> = {
   HEALTHY: {
     label: "healthy", tier: "kept",
-    def: "Assigned rows served correctly while the promise held.",
+    def: "The endorsed rows came back and verified against the blob commitment.",
   },
   FAULT: {
-    label: "fault", tier: "fault",
-    def: "An identity-verified endpoint, for a shard it signed for, said it has no such shard, or returned bytes that verify against neither the blob commitment nor any settled promise's assignment. The only class that counts against a validator. Rows that do verify but are not this promise's set are never a fault: the store serves by promise-hash order, so another promise's shard can answer in this one's place.",
+    label: "not served", tier: "fault",
+    def: "Not found, or rows that do not verify against the blob commitment. At the end reading, any reading that leaves the reader without the rows.",
   },
   UNREACHABLE: {
     label: "unreachable", tier: "hold",
-    def: "This site could not complete a conversation with the endpoint while the validator was under obligation. From one location that is not distinguishable from a route, firewall or peering problem on this site's own path, so it is recorded and shown but kept out of the serve rate.",
+    def: "No answer in time. Not served at the end reading; earlier, kept out of the rate.",
   },
   IDENTITY_EXPIRED: {
     label: "identity expired", tier: "hold",
-    def: "The certificate is endorsed by the right consensus key, but its signed validity window has lapsed or has not started. A renewal running late, not someone else answering on this endpoint.",
+    def: "The right key signed the certificate, but outside its validity window. Not served at the end reading; earlier, kept out of the rate.",
   },
   IDENTITY_MISMATCH: {
     label: "bad certificate", tier: "hold",
-    def: "The certificate is not signed by this validator's consensus key, so no client can download from the endpoint. A statement about the endpoint, shown as its status; not about any shard, so outside the serve rate.",
+    def: "The certificate is not signed by this validator's consensus key. Not served at the end reading; earlier, kept out of the rate.",
   },
   SERVER_ERROR: {
     label: "server error", tier: "hold",
-    def: "The endpoint was reached and answered with an application error instead of the shard. It did not say it lacks the shard; from one probe that is not distinguishable from a transient fault, so it is shown beside the rate, not inside it.",
+    def: "An application error instead of the shard. Not served at the end reading; earlier, kept out of the rate.",
   },
   THROTTLED: {
     label: "rate limited", tier: "hold",
-    def: "The endpoint was reached and refused the download with a rate limit. That says nothing about the shard, so it is shown beside the rate, not inside it, and the prober backs off from a validator that says so.",
+    def: "Refused with a rate limit. Not served at the end reading; earlier, kept out of the rate.",
   },
   UNATTESTED: {
     label: "not endorsed", tier: "held",
-    def: "The settled promise carries no verified endorsement (signature) from this validator, so nothing on chain proves it ever stored the shard. Whatever the probe found is recorded but kept out of the serve rate, in both directions.",
+    def: "No verified endorsement from this validator on the settled promise, so nothing proves it stored the shard. Not rated.",
   },
   NOT_REGISTERED: {
     label: "not registered", tier: "held",
-    def: "The validator had no Fibre host in x/valaddr when the probe ran, so nobody could fetch its rows. Jailing and unbonding remove a provider from the bonded list while the chain keeps the registration, so this is a registry state, not a refusal to serve.",
+    def: "No Fibre host in x/valaddr at the reading. Not served at the end reading; earlier, kept out of the rate.",
   },
   SHADOWED_SHARD: {
     label: "shadowed shard", tier: "held",
-    def: "The rows returned are genuine rows of this blob and are exactly the set another settled promise over the same blob assigns to this validator. DownloadShard is addressed by the commitment alone and the store serves the first shard by promise-hash order, so that promise answers in this one's place; the validator has no way to tell them apart.",
+    def: "Genuine rows of the blob, but another settled promise's set: the store answers by commitment. Served at the end reading; earlier, kept out of the rate.",
   },
   UNMATCHED_GENUINE: {
     label: "unmatched genuine rows", tier: "held",
-    def: "The rows returned are genuine rows of this blob but match no settled promise's assignment for this validator. The store serves the first shard by promise-hash order, and a shard uploaded for a promise that never settled is on disk until its prune and never on chain, so a validator can answer with it honestly. Not a fault the evidence supports; held out of the rate and counted beside it, with the row indices on the row.",
+    def: "Genuine rows of the blob that match no settled promise's set. Served at the end reading; earlier, kept out of the rate.",
   },
   TOLERATED: {
     label: "tolerated", tier: "held",
@@ -82,11 +82,11 @@ const VERDICTS: Record<string, Def> = {
   },
   SERVED_PAST_WINDOW: {
     label: "served after window", tier: "held",
-    def: "Still serving after the obligation ended. Not a fault.",
+    def: "Still serving after the retention window ended. Not counted.",
   },
   UNREACHABLE_POST_WINDOW: {
     label: "unreachable after window", tier: "held",
-    def: "Unreachable after the obligation ended. Not a retention fault.",
+    def: "Unreachable after the retention window ended. Not counted.",
   },
   EXPECTED_UNASSIGNED: {
     label: "unassigned", tier: "held",
@@ -98,15 +98,15 @@ const VERDICTS: Record<string, Def> = {
   },
   PROBE_ERROR: {
     label: "probe error", tier: "gap",
-    def: "The observer's own probe failed. A gap, not a verdict.",
+    def: "Tensile's own reading failed. A gap, not a verdict.",
   },
   NOT_PROBED: {
     label: "not probed", tier: "gap",
-    def: "The slot elapsed unprobed, or the policy sampled it out. A gap, not a verdict.",
+    def: "Tensile did not read this shard. A gap, not a verdict.",
   },
   RETENTION_UNVERIFIED: {
     label: "deadline unverified", tier: "held",
-    def: "Fibre's parameters changed without an event somewhere in a range of heights covering this blob's upload, and this site has not read the parameters at every height in that range. How long the shard had to be kept is computed from those parameters, so this site cannot say when the obligation ended. It publishes neither the failure nor the credit; the verdict returns once the range has been read.",
+    def: "The deadline cannot be computed until an x/fibre parameter range is read. No verdict either way until then.",
   },
 };
 
