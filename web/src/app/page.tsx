@@ -69,27 +69,27 @@ function Overview() {
         <Metric label="Blobs"
           value={none ? "—" : int(M.blobs)}
           tone={none || M.settlements === 0 ? "absent" : undefined}
-          title="Distinct blobs, by BlobID (blob_version and commitment), whose MsgPayForFibre settled in the period. A blob uploaded and paid for twice is one blob and two settlements."
+          title="Blobs published through Fibre in this period. A blob paid for twice counts once."
           help={none ? " " : M.settlements === 0 ? "none in this period" : `${int(M.settlements)} settlement${M.settlements === 1 ? "" : "s"}`} />
         <Metric label="Upload size"
           value={none ? "—" : bytes(M.bytes)}
           tone={none || M.settlements === 0 ? "absent" : undefined}
-          title="The blob_size of every settled promise: the upload size the PaymentPromise pays for, row_size × 4096, padding included and parity not (specs/src/fibre_encoding.md)."
-          help={none ? " " : "paid for by the settled promises"} />
+          title="Total size of the blobs paid for in this period."
+          help={none ? " " : "total blob size"} />
         <Metric label="Fees paid"
           value={none ? "—" : tia(M.fees_settled_utia)}
           tone={none || M.settlements === 0 ? "absent" : undefined}
-          title="Charged to escrow for the settled promises: 650,000 + 45,000 × ⌈blob_size / 256 KiB⌉ utia each (x/fibre)."
+          title="TIA paid for these blobs. It goes to validators and their delegators."
           help={none ? " " : M.paid_per_mib_utia == null ? "none in this period" : `${tia(M.paid_per_mib_utia)} per MiB`} />
         <Metric label="Publishers"
           value={none ? "—" : int(M.publishers_active)}
           tone={none || M.publishers_active === 0 ? "absent" : undefined}
-          title="Distinct escrow owners whose payment promises settled in the period: the account x/fibre charges, derived from the promise's signer public key."
-          help={none ? " " : M.publishers_active === 0 ? "none in this period" : "escrow owners charged"} />
+          title="Accounts that published blobs in this period."
+          help=" " />
         <Metric label="Payment promise timeouts"
           value={none ? "—" : int(M.timeouts)}
           tone={none ? "absent" : undefined}
-          title="MsgPaymentPromiseTimeout: a promise not settled within payment_promise_timeout, charged all the same."
+          title="Payment promises not settled within an hour. The account is charged anyway."
           help={none ? " " : M.timeouts > 0 ? `${tia(M.timed_out_utia)} charged` : "none in this period"} />
       </Metrics>
 

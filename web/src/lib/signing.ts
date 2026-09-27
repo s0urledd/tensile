@@ -9,7 +9,7 @@ import type { Rate, Window } from "./api";
  *
  * Descriptive only: the publisher stops collecting at two thirds of voting
  * power, so an unsigned promise is unproven, never a fault, and this figure
- * ranks nobody below MIN_RATED and accuses nobody at all.
+ * accuses nobody.
  */
 /** no_host: assigned promises that settled while the validator had no Fibre host, outside both sides of the rate */
 /**
