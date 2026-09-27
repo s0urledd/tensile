@@ -4352,6 +4352,12 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 		conds, args = append(conds, rollup.EffectiveClass("")+` = ?`), append(args, strings.ToUpper(c))
 		decisions = strings.ToUpper(c) == "NOT_PROBED"
 	}
+	// served=no: the rows the obligations count as not served
+	// (rollup.ObligationClass), including end readings that returned no rows.
+	if q.Get("served") == "no" {
+		conds = append(conds, rollup.ObligationClass("")+` = 'FAULT'`)
+		decisions = false
+	}
 	// at: one schedule point, exactly as vantage_health.suspect lists it, so
 	// the rows behind an incident are one link away.
 	if at := q.Get("at"); at != "" {
