@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { type Validator, int, pctOf, ago, utcWord, shortMid, MIN_RATED } from "@/lib/api";
+import { type Validator, int, pctOf, ago, utcWord, shortMid } from "@/lib/api";
 import Avatar from "./Avatar";
 import Info from "./Info";
 import { HostingCell } from "./Hosting";
@@ -68,8 +68,9 @@ const time = (s: string | null | undefined) => (s ? new Date(s).getTime() : null
 function sortValue(v: Validator, k: SortKey): number | null {
   switch (k) {
     case "power": return v.voting_power;
-    // Below the sample floor a share is shown, not ranked.
-    case "signed": { const s = v.signing; return s && s.assigned >= MIN_RATED ? s.signed / s.assigned : null; }
+    // Every validator with a settlement in the period is ranked by its share;
+    // one with none has no share and sorts last.
+    case "signed": { const s = v.signing; return s && s.assigned > 0 ? s.signed / s.assigned : null; }
     case "last": return time(v.signing?.last_endorsed_at);
     case "since": return time(v.provider_since);
   }
@@ -111,7 +112,9 @@ export default function Validators({ rows, window: win, notLive, loading }: { ro
       if (av === null && bv === null) return b.voting_power - a.voting_power;
       if (av === null) return 1;
       if (bv === null) return -1;
-      return (av - bv) * sort.dir || b.voting_power - a.voting_power;
+      // Equal shares: the one resting on more settlements first (8 of 8 before 1 of 1).
+      const more = sort.key === "signed" ? (b.signing?.assigned ?? 0) - (a.signing?.assigned ?? 0) : 0;
+      return (av - bv) * sort.dir || more || b.voting_power - a.voting_power;
     });
   }, [rows, filter, needle, sort]);
 
@@ -170,7 +173,7 @@ export default function Validators({ rows, window: win, notLive, loading }: { ro
               <th className="c-ep" title="Whether the validator's Fibre server answered our latest check.">Endpoint now</th>
               {showHosting && <th className="c-host" title="Where the validator's Fibre server is hosted.">Hosting</th>}
               <Th col="c-power" k="power" dflt={-1} label="Voting power" title="The default order. Not a performance ranking." />
-              <Th col="c-end" k="signed" dflt={-1} label="Endorsements" info="Of the blobs assigned to this validator while it had a Fibre provider, the share it signed. A blob settles once validators holding ⅔ of the stake have signed it." />
+              <Th col="c-end" k="signed" dflt={-1} label="Endorsements" info="How often this validator’s signature is in the settlement, counted while it had a Fibre provider. A settlement needs signatures from ⅔ of the stake, and the first validators to respond fill it." />
               <Th col="c-last" k="last" dflt={-1} label="Last endorsement" info="The last time this validator signed a blob, in any period." />
               <Th col="c-since" k="since" dflt={1} label="Provider since" info="When this validator first appeared as a Fibre provider." />
             </tr>
