@@ -210,6 +210,53 @@ var AllClassifications = []Classification{
 	ClassProbeError, ClassNotProbed, ClassUnattested, ClassRetentionUnverified,
 }
 
+// EndReadLabel is the schedule label of the one end-of-window reading
+// (ScheduleConfig.EndReadOffset).
+const EndReadLabel = "end"
+
+// At the end-of-window reading an obligation is judged the way a reader using
+// celestia-app's own client meets the validator (specs/src/fibre_client.md,
+// Download Flow): it asks for the rows, waits RPCTimeout, and moves on with
+// or without them. Rows that verify against the commitment are the reading;
+// anything else leaves the reader without them. The earlier schedule kept
+// no-answer outcomes out of the rate, as one vantage's view of the network;
+// at the end reading they are what the protocol's reader gets, and the
+// correlated-failure guard still sets aside a point where most validators
+// fail at once, which is this observer's own trouble as likely as theirs.
+//
+// EndNoRowsClasses are the end-reading outcomes that return no rows to a
+// reader and so count as not served: nothing answered, a certificate the
+// client rejects (wrong key, or outside its validity window), a server error,
+// a rate limit, no Fibre host registered. FAULT is not listed: it is already
+// not served.
+var EndNoRowsClasses = []Classification{
+	ClassUnreachable, ClassIdentityMismatch, ClassIdentityExpired, ClassServerError, ClassThrottled, ClassNotRegistered,
+}
+
+// EndGenuineRowsClasses are the end-reading outcomes where rows that verify
+// against the commitment came back, though not the ones this promise
+// assigns (another promise over the same blob, or one that never settled,
+// answered first). A reader downloading the blob by BlobID gets genuine rows
+// and rebuilds from them, so they count as served.
+var EndGenuineRowsClasses = []Classification{ClassShadowedShard, ClassUnmatchedGenuine}
+
+// EndReadClass is the class an end reading counts as for its obligation:
+// FAULT for no rows, HEALTHY for genuine rows, otherwise its own.
+// rollup.ObligationClass is the SQL twin.
+func EndReadClass(c Classification) Classification {
+	for _, x := range EndNoRowsClasses {
+		if c == x {
+			return ClassFault
+		}
+	}
+	for _, x := range EndGenuineRowsClasses {
+		if c == x {
+			return ClassHealthy
+		}
+	}
+	return c
+}
+
 // DeadlineDerivedClasses is every classification whose membership of the
 // serve rate depends on which side of must_serve_until the probe fell. It
 // is exactly the two the rate is built from: HEALTHY is SERVED_PAST_WINDOW

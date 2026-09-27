@@ -246,7 +246,7 @@ func endReadPoint(start, msu time.Time, cfg ScheduleConfig) SchedulePoint {
 	if !at.After(start) {
 		at = start.Add(msu.Sub(start) / 2)
 	}
-	return SchedulePoint{At: at, Phase: PhaseInWindow, Label: "end"}
+	return SchedulePoint{At: at, Phase: PhaseInWindow, Label: EndReadLabel}
 }
 
 // PhaseAt classifies an arbitrary instant against a publication's window, using

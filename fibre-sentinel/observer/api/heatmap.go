@@ -76,7 +76,9 @@ func (s *Server) validatorHeatmap(ctx context.Context, addr string, win Window) 
 	if err != nil {
 		return nil, err
 	}
-	cls := rollup.EffectiveClass("")
+	// ObligationClass, so an end-of-window reading is counted in its cell the
+	// way the validator's obligations count it (no rows is a fault).
+	cls := rollup.ObligationClass("")
 	rows, err := db.QueryContext(ctx, `SELECT substr(started_at, 1, 10) AS day, schedule_label,
 			COALESCE(SUM(CASE WHEN `+cls+` = 'HEALTHY' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN `+cls+` = 'FAULT' THEN 1 ELSE 0 END), 0),
@@ -160,10 +162,19 @@ func (s *Server) validatorHeatmap(ctx context.Context, addr string, win Window) 
 		out.Cells = append(out.Cells, *t)
 	}
 
-	// Points: the four in-window points always, in order, so an empty column
-	// is shown as empty; anything else the prober was configured with after.
+	// Points: the four in-window points of the earlier schedule, in order,
+	// so an empty column is shown as empty, whenever the window holds any of
+	// them or nothing at all; then anything else on record, the end-of-window
+	// reading among them. A window of end readings alone does not show four
+	// empty columns for a schedule it was never read under.
+	legacy := len(points) == 0
 	for _, p := range []string{"w1", "w2", "w3", "w4"} {
-		out.Points = append(out.Points, p)
+		legacy = legacy || points[p]
+	}
+	for _, p := range []string{"w1", "w2", "w3", "w4"} {
+		if legacy {
+			out.Points = append(out.Points, p)
+		}
 		delete(points, p)
 	}
 	extra := make([]string, 0, len(points))

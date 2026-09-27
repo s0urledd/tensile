@@ -1385,7 +1385,7 @@ type obligationStats struct {
 // then whatever the caller appends (suspect points, a validator filter).
 // The obligation SQL lives in observer/rollup, which computes the daily
 // rollups with the same statements; see rollup.ObligationBuckets.
-const (
+var (
 	obligationBuckets = rollup.ObligationBuckets
 	obligationSums    = rollup.ObligationSums
 )
@@ -1671,9 +1671,11 @@ func (s *Server) suspectPoints(ctx context.Context, win Window) (vantageHealth, 
 // have their pooled rates reverse relative to their per-stratum ones. The
 // breakdown is published so a reader can look rather than assume.
 func (s *Server) rateByPoint(ctx context.Context, where string, args ...any) ([]stratum, error) {
+	// ObligationClass: an end-of-window reading is rated at its point the way
+	// the obligations count it.
 	rows, err := s.st.DB().QueryContext(ctx, `SELECT schedule_label,
-			COALESCE(SUM(CASE WHEN `+rollup.EffectiveClass("")+` = 'HEALTHY' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN `+rollup.EffectiveClass("")+` = 'FAULT' THEN 1 ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN `+rollup.ObligationClass("")+` = 'HEALTHY' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN `+rollup.ObligationClass("")+` = 'FAULT' THEN 1 ELSE 0 END), 0)
 		FROM probe_rows WHERE `+where+` GROUP BY schedule_label ORDER BY schedule_label`, args...)
 	if err != nil {
 		return nil, err
@@ -2788,10 +2790,12 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 		return nil, err
 	}
 	// The retention profile per validator: the same population as the classes
-	// above, sliced by schedule point.
+	// above, sliced by schedule point, rated as the obligations count it (an
+	// end-of-window reading that returned no rows is not served).
+	ocls := rollup.ObligationClass("")
 	rows, err = db.QueryContext(ctx, `SELECT validator_address, schedule_label,
-			COALESCE(SUM(CASE WHEN `+cls+` = 'HEALTHY' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN `+cls+` = 'FAULT' THEN 1 ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN `+ocls+` = 'HEALTHY' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN `+ocls+` = 'FAULT' THEN 1 ELSE 0 END), 0)
 		FROM probe_rows WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`+sus+vfilter("validator_address")+`
 		GROUP BY validator_address, schedule_label
 		ORDER BY validator_address, schedule_label`, vargs(winArgs...)...)
