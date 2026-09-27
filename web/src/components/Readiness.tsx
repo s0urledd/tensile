@@ -49,7 +49,7 @@ export function ReadyAnswer({ rows, headingId = "readiness-h" }: { rows: Validat
   return (
     <>
       <h2 id={headingId}>Stake with a Fibre provider</h2>
-      <p className="ready-answer" title="Bonded validators with a Fibre provider registered in x/valaddr, by voting power. MsgPayForFibre needs signatures from validators holding ⅔ of it.">
+      <p className="ready-answer" title="Share of the stake held by validators with a Fibre provider. A blob needs signatures from ⅔ of the stake to settle.">
         <b>{pct(regPower)}</b> of voting power · {int(r.registered.length)} of {int(r.bonded.length)} validators
       </p>
       <div className="meter ready-meter" role="img" aria-label={`${pct(regPower)} of stake with a Fibre provider, ${pct(quorum)} needed`}>

@@ -41,7 +41,7 @@ function Overview() {
         <div><dt>Height</dt><dd>{int(last.settlement_height)}</dd></div>
         <div><dt>Time</dt><dd>{whenUTC(last.settlement_time)}</dd></div>
         <div><dt>Upload size</dt><dd>{bytes(last.blob_size)}</dd></div>
-        {last.attested_with_rows != null && <div><dt>Endorsements</dt><dd>{int(last.attested_with_rows)} of {int(last.validators_with_rows)} validators</dd></div>}
+        {last.attested_with_rows != null && <div><dt>Endorsements</dt><dd>{int(last.attested_with_rows)} validator{last.attested_with_rows === 1 ? "" : "s"}</dd></div>}
         {last.attested_voting_power != null && !!last.total_voting_power && <div><dt>Endorsed voting power</dt><dd>{pctOf(last.attested_voting_power, last.total_voting_power)}</dd></div>}
       </dl>
       <p className="blobs">

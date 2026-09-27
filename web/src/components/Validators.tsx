@@ -167,12 +167,12 @@ export default function Validators({ rows, window: win, notLive, loading }: { ro
           <thead>
             <tr>
               <th className="col-pin">Validator</th>
-              <th className="c-ep" title="The newest handshake with the registered endpoint; the chain's own words (jailed, not bonded) come first.">Endpoint now</th>
-              {showHosting && <th className="c-host" title="Network provider and country of the endpoint. Hover a cell for the network (AS) and address.">Hosting</th>}
-              <Th col="c-power" k="power" dflt={-1} label="Voting power" title="From the staking module. The default order, and never a performance rank." />
-              <Th col="c-end" k="signed" dflt={-1} label="Endorsements" info="Share of the settled promises assigned to this validator that carry its signature (validator_signatures in MsgPayForFibre). A promise settles once validators holding ⅔ of voting power have signed it." />
-              <Th col="c-last" k="last" dflt={-1} label="Last endorsement" info="The newest settled promise that carries this validator’s signature, whatever the selected period." />
-              <Th col="c-since" k="since" dflt={1} label="Provider since" info="When this validator first appeared in x/valaddr’s list of bonded Fibre providers, read every minute. A new host or a return to the bonded set does not move it." />
+              <th className="c-ep" title="Whether the validator's Fibre server answered our latest check.">Endpoint now</th>
+              {showHosting && <th className="c-host" title="Where the validator's Fibre server is hosted.">Hosting</th>}
+              <Th col="c-power" k="power" dflt={-1} label="Voting power" title="The default order. Not a performance ranking." />
+              <Th col="c-end" k="signed" dflt={-1} label="Endorsements" info="Of the blobs assigned to this validator while it had a Fibre provider, the share it signed. A blob settles once validators holding ⅔ of the stake have signed it." />
+              <Th col="c-last" k="last" dflt={-1} label="Last endorsement" info="The last time this validator signed a blob, in any period." />
+              <Th col="c-since" k="since" dflt={1} label="Provider since" info="When this validator first appeared as a Fibre provider." />
             </tr>
           </thead>
           <tbody>
@@ -196,7 +196,7 @@ export default function Validators({ rows, window: win, notLive, loading }: { ro
                       <Avatar v={v} />
                       <span>
                         <Link className="mon" href={href(v)}>{v.moniker || shortMid(v.cons_address || v.address, 18, 4)}</Link>
-                        {isSelf(v) && <span className="ours" title="Huginn Tech runs both this validator and Tensile. It is measured by the same code as every other row, never filtered or adjusted.">runs Tensile</span>}
+                        {isSelf(v) && <span className="ours" title="Huginn Tech runs both this validator and Tensile. It is measured like every other row.">runs Tensile</span>}
                         {notLive && v.signaled_upgrade === true && <span className="ours" title="Signalled for the app version that brings Fibre (x/signal, a chain record).">signalled</span>}
                         {notLive && v.signaled_upgrade === false && <span className="ours" title="Has not signalled for the app version that brings Fibre (x/signal, a chain record).">not signalled</span>}
                         {/* The operator address is the one operators and delegators know (explorers list it); the consensus address stays in the tooltip and on the validator page. */}
