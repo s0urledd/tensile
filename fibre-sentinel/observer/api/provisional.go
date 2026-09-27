@@ -40,6 +40,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/verdict"
 )
@@ -58,16 +59,20 @@ type provisionalFaults struct {
 	Note            string `json:"note"`
 }
 
-const provisionalNote = "Broken obligations whose every failed probe is younger than the settling period. They are counted in broken and in the rate, " +
-	"flagged because evidence still on its way can withdraw them: the rest of the schedule point's probes (the correlated-failure guard), " +
-	"an x/fibre params change the scanner has not reconciled yet, or the same rows fetched and verified from a second location. They become final at `until` unless withdrawn."
+const provisionalNote = "Counted in broken and in the rate, and final at `until` unless withdrawn: by an observer-wide failure at the same reading, " +
+	"an x/fibre params change not reconciled yet, or the rows verified from a second location."
 
 // provisionalCutoff is the started_at bound above which a FAULT is
 // provisional at now.
 func provisionalCutoff(now time.Time) string { return store.TS(now.Add(-verdict.FaultSettling)) }
 
-// isProvisional says whether a probe row's FAULT is still settling.
-func isProvisional(classification, startedAt string, now time.Time) bool {
+// isProvisional says whether a probe row's FAULT is still settling. An
+// end-of-window reading counts as its obligation does (probe.EndReadClass),
+// so one that returned no rows settles like a FAULT.
+func isProvisional(classification, label, startedAt string, now time.Time) bool {
+	if label == probe.EndReadLabel {
+		classification = string(probe.EndReadClass(probe.Classification(classification)))
+	}
 	return classification == "FAULT" && startedAt > provisionalCutoff(now)
 }
 

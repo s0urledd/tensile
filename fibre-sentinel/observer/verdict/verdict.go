@@ -105,6 +105,22 @@ func (r Row) EffectiveClass() probe.Classification {
 	return r.Classification
 }
 
+// ObligationClass is the class a row counts as for its obligation: an
+// end-of-window reading as a reader of the chain's own client meets it
+// (probe.EndReadClass), then the same retention hold as EffectiveClass. The
+// SQL twin is rollup.ObligationClass; the class tallies and the
+// correlated-failure guard keep EffectiveClass.
+func (r Row) ObligationClass() probe.Classification {
+	c := r.Classification
+	if r.ScheduleLabel == probe.EndReadLabel {
+		c = probe.EndReadClass(c)
+	}
+	if r.RetentionUnverified && probe.DeadlineDerived(c, r.Outcome) {
+		return probe.ClassRetentionUnverified
+	}
+	return c
+}
+
 // PromiseHeights is the pair a hold is derived from: the interval a
 // publication's upload could have fallen in.
 type PromiseHeights struct{ PromiseHeight, SettlementHeight int64 }
@@ -351,7 +367,7 @@ func ComputeObligations(rows []Row, settled map[string]time.Time, w Window, susp
 			o = &obl{}
 			obls[k] = o
 		}
-		cls := r.EffectiveClass()
+		cls := r.ObligationClass()
 		switch cls {
 		case probe.ClassFault:
 			o.faults++
@@ -383,7 +399,7 @@ func ComputeObligations(rows []Row, settled map[string]time.Time, w Window, susp
 	for k, o := range obls {
 		var b Obligations
 		b.Total = 1
-		last := o.last.EffectiveClass()
+		last := o.last.ObligationClass()
 		switch {
 		case o.pending:
 			b.Pending = 1

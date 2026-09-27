@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/verdict"
 )
@@ -61,7 +62,7 @@ import (
 // reads it; the API uses it to mark a broken obligation provisional while
 // even its oldest fault is younger than verdict.FaultSettling (see
 // observer/api/provisional.go). Sums ignore it, so the rollup is unchanged.
-const ObligationBuckets = `SELECT validator_address, promise_hash,
+var ObligationBuckets = `SELECT validator_address, promise_hash,
 			SUM(cls = 'FAULT')                AS faults,
 			SUM(cls = 'HEALTHY')              AS healthy,
 			SUM(cls = 'RETENTION_UNVERIFIED') AS held,
@@ -74,8 +75,7 @@ const ObligationBuckets = `SELECT validator_address, promise_hash,
 			MIN(CASE WHEN cls = 'FAULT' THEN started_at END)            AS first_fault
 		FROM (
 			SELECT pr.validator_address, pr.promise_hash,
-			       CASE WHEN pr.retention_unverified = 1 AND pr.classification IN ('HEALTHY','FAULT') AND pr.outcome <> 'INVALID_ROWS'
-			            THEN 'RETENTION_UNVERIFIED' ELSE pr.classification END AS cls,
+			       ` + ObligationClass("pr") + ` AS cls,
 			       pr.tls_ok, pr.must_serve_until, pr.started_at,
 			       pr.scheduled_at, pb.settlement_time,
 			       ROW_NUMBER() OVER (PARTITION BY pr.validator_address, pr.promise_hash
@@ -84,6 +84,10 @@ const ObligationBuckets = `SELECT validator_address, promise_hash,
 			WHERE pb.settlement_time >= ? AND pb.settlement_time <= ? AND pr.started_at <= ? AND pr.started_at >= ?
 			  AND pr.assigned = 1 AND pr.phase = 'in_window' AND pr.attested = 1`
 
+// cls is ObligationClass: the effective classification, with an
+// end-of-window reading counted as a reader of the chain's client meets it
+// (probe.EndReadClass).
+//
 // The 4.0 in that SUM is verdict.EndSegmentDivisor, spelled out because a
 // query fragment is a constant; a test in this package holds the two to the
 // same number.
@@ -229,6 +233,33 @@ func EffectiveClass(alias string) string {
 
 // DeadlineDerivedSQL is probe.DeadlineDerivedClasses as a SQL IN list.
 const DeadlineDerivedSQL = `('HEALTHY','FAULT')`
+
+// EndNoRowsSQL and EndGenuineRowsSQL are probe.EndNoRowsClasses and
+// probe.EndGenuineRowsClasses as SQL IN lists; a test holds them to the Go
+// lists.
+const (
+	EndNoRowsSQL      = `('UNREACHABLE','IDENTITY_MISMATCH','IDENTITY_EXPIRED','SERVER_ERROR','THROTTLED','NOT_REGISTERED')`
+	EndGenuineRowsSQL = `('SHADOWED_SHARD','UNMATCHED_GENUINE')`
+)
+
+// ObligationClass is the class a row counts as for its obligation: at the
+// end-of-window reading (schedule label probe.EndReadLabel) no rows is FAULT
+// and genuine rows is HEALTHY (probe.EndReadClass), and over that, the same
+// retention hold as EffectiveClass. It is used by the obligation buckets
+// only; the class tallies and the correlated-failure guard keep
+// EffectiveClass, so they still see what happened on the wire. The Go twin
+// is verdict.Row.ObligationClass.
+func ObligationClass(alias string) string {
+	p := ""
+	if alias != "" {
+		p = alias + "."
+	}
+	mapped := `(CASE WHEN ` + p + `schedule_label = '` + probe.EndReadLabel + `' AND ` + p + `classification IN ` + EndNoRowsSQL + ` THEN 'FAULT'` +
+		` WHEN ` + p + `schedule_label = '` + probe.EndReadLabel + `' AND ` + p + `classification IN ` + EndGenuineRowsSQL + ` THEN 'HEALTHY'` +
+		` ELSE ` + p + `classification END)`
+	return `(CASE WHEN ` + p + `retention_unverified = 1 AND ` + mapped + ` IN ` + DeadlineDerivedSQL +
+		` AND ` + p + `outcome <> 'INVALID_ROWS' THEN 'RETENTION_UNVERIFIED' ELSE ` + mapped + ` END)`
+}
 
 // SuspectPoints tallies every schedule point at which more than one
 // validator was probed, over the assigned in-window rows that `where`

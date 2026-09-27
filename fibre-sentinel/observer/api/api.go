@@ -1274,19 +1274,26 @@ type attestationStats struct {
 // that axis. Grace probes are still recorded and still shown; they just do
 // not move a retention rate.
 var excludedFromRate = []excludedClass{
-	{"UNATTESTED", "the settled promise carries no verified signature from this validator, so nothing proves it ever stored the shard"},
-	{"UNREACHABLE", "the observer could not complete a conversation with the endpoint; from one vantage that is not distinguishable from a problem on the observer's own path"},
-	{"NOT_REGISTERED", "the validator had no Fibre host in x/valaddr at the time of the probe; jailing and unbonding remove a provider from the bonded list; the chain keeps the entry until the validator leaves staking state or has been jailed and unbonded for a week past its unbonding time"},
-	{"SHADOWED_SHARD", "the rows returned verify against the blob commitment but are not this promise's assignment; DownloadShard is addressed by commitment alone, so another promise over the same blob answers in its place"},
-	{"UNMATCHED_GENUINE", "the rows returned verify against the blob commitment but match no settled promise's assignment; the store serves the first shard by promise-hash order and an upload for a promise that never settled is never on chain, so no fault is supported; the row carries the indices"},
-	{"IDENTITY_EXPIRED", "the certificate is endorsed by the right consensus key but its signed validity window has lapsed; endpoint hygiene, not a retention failure"},
-	{"IDENTITY_MISMATCH", "the certificate is not endorsed by this validator's consensus key, so no client can download from the endpoint; a statement about the endpoint, shown as its status, not about any shard"},
-	{"SERVER_ERROR", "the endpoint was reached and answered with an application error instead of the shard; from one probe that is not distinguishable from a transient fault, so it is shown beside the rate"},
-	{"THROTTLED", "the endpoint was reached and refused the download with a rate limit; that says nothing about the shard, and the prober backs off from a validator that says so"},
-	{"NOT_PROBED", "the slot elapsed unprobed or the policy sampled it out; a gap in observation, never a zero"},
-	{"PROBE_ERROR", "the observer's own probe failed"},
-	{"RETENTION_UNVERIFIED", "x/fibre params changed without an event somewhere in a range of heights covering this publication's upload, and this observer has not read the params at every height in that range; must_serve_until is computed from those params, so it cannot say when the obligation ended. Both the fault it would otherwise publish and the credit it would otherwise give are withheld, because withholding only the accusations would raise every rate it touched. The ranges are published under param_uncertainty in /v1/meta, and the verdict returns as an append-only correction once the range has been read"},
+	{"UNATTESTED", "no verified endorsement from this validator: nothing proves it stored the shard"},
+	{"UNREACHABLE", "no answer" + endNotServed},
+	{"NOT_REGISTERED", "no Fibre host in x/valaddr" + endNotServed},
+	{"SHADOWED_SHARD", "genuine rows of the blob, another settled promise's set" + endServed},
+	{"UNMATCHED_GENUINE", "genuine rows of the blob, no settled promise's set" + endServed},
+	{"IDENTITY_EXPIRED", "certificate outside its signed validity window" + endNotServed},
+	{"IDENTITY_MISMATCH", "certificate not endorsed by this validator's consensus key" + endNotServed},
+	{"SERVER_ERROR", "an application error instead of the shard" + endNotServed},
+	{"THROTTLED", "refused with a rate limit" + endNotServed},
+	{"NOT_PROBED", "not read by this observer: a gap, never a zero"},
+	{"PROBE_ERROR", "this observer's own reading failed"},
+	{"RETENTION_UNVERIFIED", "must_serve_until is unknown until an x/fibre params range is read (param_uncertainty in /v1/meta); served and not served are both withheld"},
 }
+
+// What the end-of-window reading makes of a class in obligations
+// (probe.EndReadClass); serve_rate itself counts classes as they happened.
+const (
+	endNotServed = "; in obligations, at the end reading, not served (broken)"
+	endServed    = "; in obligations, at the end reading, served"
+)
 
 type excludedClass struct {
 	Class  string `json:"class"`
@@ -1385,7 +1392,7 @@ type obligationStats struct {
 // then whatever the caller appends (suspect points, a validator filter).
 // The obligation SQL lives in observer/rollup, which computes the daily
 // rollups with the same statements; see rollup.ObligationBuckets.
-const (
+var (
 	obligationBuckets = rollup.ObligationBuckets
 	obligationSums    = rollup.ObligationSums
 )
@@ -1671,9 +1678,11 @@ func (s *Server) suspectPoints(ctx context.Context, win Window) (vantageHealth, 
 // have their pooled rates reverse relative to their per-stratum ones. The
 // breakdown is published so a reader can look rather than assume.
 func (s *Server) rateByPoint(ctx context.Context, where string, args ...any) ([]stratum, error) {
+	// ObligationClass: an end-of-window reading is rated at its point the way
+	// the obligations count it.
 	rows, err := s.st.DB().QueryContext(ctx, `SELECT schedule_label,
-			COALESCE(SUM(CASE WHEN `+rollup.EffectiveClass("")+` = 'HEALTHY' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN `+rollup.EffectiveClass("")+` = 'FAULT' THEN 1 ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN `+rollup.ObligationClass("")+` = 'HEALTHY' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN `+rollup.ObligationClass("")+` = 'FAULT' THEN 1 ELSE 0 END), 0)
 		FROM probe_rows WHERE `+where+` GROUP BY schedule_label ORDER BY schedule_label`, args...)
 	if err != nil {
 		return nil, err
@@ -2788,10 +2797,12 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 		return nil, err
 	}
 	// The retention profile per validator: the same population as the classes
-	// above, sliced by schedule point.
+	// above, sliced by schedule point, rated as the obligations count it (an
+	// end-of-window reading that returned no rows is not served).
+	ocls := rollup.ObligationClass("")
 	rows, err = db.QueryContext(ctx, `SELECT validator_address, schedule_label,
-			COALESCE(SUM(CASE WHEN `+cls+` = 'HEALTHY' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN `+cls+` = 'FAULT' THEN 1 ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN `+ocls+` = 'HEALTHY' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN `+ocls+` = 'FAULT' THEN 1 ELSE 0 END), 0)
 		FROM probe_rows WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`+sus+vfilter("validator_address")+`
 		GROUP BY validator_address, schedule_label
 		ORDER BY validator_address, schedule_label`, vargs(winArgs...)...)
@@ -4278,7 +4289,7 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, args ..
 			return nil, err
 		}
 		p.RetentionUnverified = held == 1
-		p.Provisional = isProvisional(p.Classification, p.StartedAt, now)
+		p.Provisional = isProvisional(p.Classification, p.ScheduleLabel, p.StartedAt, now)
 		p.HostChanged = p.HostAtSettlement != "" && p.ValidatorHost != "" && p.ValidatorHost != p.HostAtSettlement
 		if served.Valid {
 			b := served.Int64 == 1

@@ -46,7 +46,7 @@ const pctFrac = (f: number) => (f >= 1 ? "100%" : `${(f * 100).toFixed(1)}%`);
 
 /** the verdict as a word and a mark; the classification is the observer's, never re-derived here */
 const WORDS: Record<string, [string, string]> = {
-  HEALTHY: ["Served", "ok"], FAULT: ["Broken", "fault"], UNATTESTED: ["Not endorsed", "unsigned"], NOT_PROBED: ["Not probed", "gone"],
+  HEALTHY: ["Served", "ok"], FAULT: ["Not served", "fault"], UNATTESTED: ["Not endorsed", "unsigned"], NOT_PROBED: ["Not probed", "gone"],
   EXPECTED_GONE: ["Expected gone", "gone"], UNREACHABLE: ["Unreachable", "other"], NOT_REGISTERED: ["No endpoint", "none"],
   IDENTITY_EXPIRED: ["Certificate expired", "other"], IDENTITY_MISMATCH: ["Wrong certificate", "other"], THROTTLED: ["Rate limited", "other"],
   SERVER_ERROR: ["Server error", "other"], RETENTION_UNVERIFIED: ["Deadline unverified", "gone"], TOLERATED: ["Tolerated", "other"],
@@ -77,11 +77,26 @@ const wordOf = (cls: string): [string, string] => WORDS[cls] ?? [cls.toLowerCase
 const probeWord = (p: Probe): [string, string] => {
   // a fault the second location fetched and verified: withdrawn, not counted either way
   if (p.cleared_by) return ["Cleared", "gone"];
+  // the end-of-window reading counts as a reader of the chain's client meets it
+  if (endNoRows(p)) return [`Not served · ${wordOf(p.classification)[0].toLowerCase()}`, "fault"];
+  if (endGenuine(p)) return ["Served, genuine rows", "ok"];
   if (p.classification === "UNATTESTED") return (p.outcome === "SERVED_OK" || p.outcome === "PARTIAL") ? ["Served, not endorsed", "unsigned"] : ["Not endorsed", "unsigned"];
   return wordOf(p.classification);
 };
 const PHASE: Record<string, string> = { in_window: "in window", grace: "grace", post: "after window" };
-const POINT: Record<string, string> = { w1: "w1 · 12% of the window", w2: "w2 · 45%", w3: "w3 · 72%", w4: "w4 · within 2 min 30 s of the deadline" };
+const POINT: Record<string, string> = { w1: "w1 · 12% of the window", w2: "w2 · 45%", w3: "w3 · 72%", w4: "w4 · within 2 min 30 s of the deadline", end: "end · 10 min before the deadline" };
+
+/**
+ * The end-of-window reading (schedule label "end") counts as a reader of the
+ * chain's own client meets the validator: no rows back (no answer, a
+ * certificate the client rejects, an error, a rate limit, no endpoint) is
+ * not served, genuine rows of the blob are served. The observer publishes
+ * the same rule (probe.EndReadClass); this is only its wording.
+ */
+const END_NO_ROWS = new Set(["UNREACHABLE", "IDENTITY_MISMATCH", "IDENTITY_EXPIRED", "SERVER_ERROR", "THROTTLED", "NOT_REGISTERED"]);
+const END_GENUINE = new Set(["SHADOWED_SHARD", "UNMATCHED_GENUINE"]);
+const endNoRows = (p: Probe) => p.schedule_label === "end" && END_NO_ROWS.has(p.classification);
+const endGenuine = (p: Probe) => p.schedule_label === "end" && END_GENUINE.has(p.classification);
 const identityWord: Record<string, string> = { verified: "verified", expired: "expired", mismatch: "not this validator’s key", no_tls: "no TLS", unverified: "unverified", unreachable: "unreachable" };
 
 /**
@@ -101,13 +116,13 @@ const identityWord: Record<string, string> = { verified: "verified", expired: "e
  * that is a fault is always in the same place.
  */
 const REACH_FAIL = new Set(["DNS_FAIL", "TCP_REFUSED", "TCP_TIMEOUT", "TCP_UNREACHABLE", "TLS_HANDSHAKE_FAIL", "RPC_UNAVAILABLE", "RPC_ERROR"]);
-const GROUPS = ["served", "unreachable", "certificate rejected", "no endpoint", "pruned after the window", "not found, not endorsed", "answered with an error", "not counted", "other", "broken"] as const;
+const GROUPS = ["served", "unreachable", "certificate rejected", "no endpoint", "pruned after the window", "not found, not endorsed", "answered with an error", "not counted", "other", "not served"] as const;
 type Group = (typeof GROUPS)[number];
 function groupOf(p: Probe, suspect: boolean): Group {
   if (suspect) return "not counted";
   if (p.cleared_by) return "not counted";
-  if (p.classification === "FAULT") return "broken";
-  if (p.classification === "HEALTHY" || p.outcome === "SERVED_OK") return "served";
+  if (p.classification === "FAULT" || endNoRows(p)) return "not served";
+  if (p.classification === "HEALTHY" || p.outcome === "SERVED_OK" || endGenuine(p)) return "served";
   if (p.classification === "NOT_REGISTERED") return "no endpoint";
   if (p.classification.startsWith("IDENTITY_")) return "certificate rejected";
   if (REACH_FAIL.has(p.outcome)) return "unreachable";
@@ -116,11 +131,11 @@ function groupOf(p: Probe, suspect: boolean): Group {
   if (p.classification === "SERVER_ERROR" || p.classification === "THROTTLED") return "answered with an error";
   return "other";
 }
-/** "Newest 50 probes: 43 served, 7 unreachable, 0 broken" */
+/** "Newest 50 probes: 43 served, 7 unreachable, 0 not served" */
 function evidenceSummary(rows: { g: Group }[]): string {
   const n = new Map<Group, number>();
   for (const r of rows) n.set(r.g, (n.get(r.g) ?? 0) + 1);
-  const parts = GROUPS.filter((g) => g === "broken" || (n.get(g) ?? 0) > 0).map((g) => `${int(n.get(g) ?? 0)} ${g}`);
+  const parts = GROUPS.filter((g) => g === "not served" || (n.get(g) ?? 0) > 0).map((g) => `${int(n.get(g) ?? 0)} ${g}`);
   return `Newest ${int(rows.length)} probe${rows.length === 1 ? "" : "s"}: ${parts.join(", ")}`;
 }
 /** " · 12 recent blobs sampled out": listed once each, not as a row per point */
@@ -129,7 +144,7 @@ function sampledText(d: Detail): string {
   if (n === 0) return "";
   return ` · ${int(n)}${d.recent_sampled_out_truncated ? "+" : ""} recent blob${n === 1 ? "" : "s"} sampled out, not probed`;
 }
-/** the recent-evidence table's filter: every row, the FAULT rows (broken), or every row whose shard did not come back */
+/** the recent-evidence table's filter: every row, the rows counted as not served, or every row whose shard did not come back */
 type EvFilter = "all" | "failed" | "notserved";
 
 function Page() {
@@ -171,12 +186,12 @@ function Page() {
   // Each row with its outcome group, once: the summary counts them and the
   // filter selects on the same judgement, so the two cannot disagree.
   const grouped = probes.map((p) => ({ p, g: groupOf(p, suspect.has(p.scheduled_at)) }));
-  const failedN = grouped.filter((r) => r.g === "broken").length;
+  const failedN = grouped.filter((r) => r.g === "not served").length;
   // "Not served" is every row outside the served group, not every row short
   // of HEALTHY: an unsigned probe that got its shard back reads "Served,
   // unsigned", and a filter called Not served must not list it.
   const notServedN = grouped.filter((r) => r.g !== "served").length;
-  const shown = evFilter === "failed" ? grouped.filter((r) => r.g === "broken")
+  const shown = evFilter === "failed" ? grouped.filter((r) => r.g === "not served")
     : evFilter === "notserved" ? grouped.filter((r) => r.g !== "served") : grouped;
   // Every failed row of the period, for when the broken obligations are older
   // than the newest rows this page carries. /v1/probes filters on the class
@@ -184,7 +199,6 @@ function Page() {
   const failedHref = `${API_BASE}/v1/probes?validator=${v.address}&class=FAULT${data.window.start ? `&since=${encodeURIComponent(data.window.start)}` : ""}&limit=1000`;
   const showFailed = () => setEvFilter("failed");
   const points = v.serve_rate_by_point ?? [];
-  const defaultPoints = points.length === 4 && points.every((p, i) => p.key === `w${i + 1}`);
   const measuring = !!o && o.total > 0 && decided < MIN_RATED && o.pending > 0;
   const att = v.attestation;
   const sig = v.signing;
@@ -237,11 +251,11 @@ function Page() {
           tone={notLive || !o || decided === 0 ? "absent" : rateTone(o.served, decided)}
           help={notLive ? " " : !o || o.total === 0 ? "no obligation in this period" : decided === 0 ? "awaiting results" : `${int(o.served)} / ${int(decided)} assessed${refText ? ` · ${refText}` : ""}`}
           title={notLive ? undefined : refTitle} />
-        <Metric label="Broken obligations"
+        <Metric label="Not served"
           value={notLive ? "—" : int(o?.broken ?? 0)} tone={notLive ? "absent" : (o?.broken ?? 0) > 0 ? "fault" : !o || o.total === 0 ? "absent" : undefined}
-          help={notLive ? " " : (o?.broken ?? 0) > 0 ? `${int(faults)} failed probe row${faults === 1 ? "" : "s"}${prov > 0 ? ` · ${int(prov)} provisional` : ""}${clearedText}` : faults > 0 ? `${int(faults)} failed probe row${faults === 1 ? "" : "s"} · none broken in this period${clearedText}` : `none in this period${clearedText}`}
-          title={prov > 0 ? `${int(prov)} of these rest only on failed probes younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes. They count in the rate now, and become final at ${whenUTC(v.provisional_faults!.until)} unless evidence still arriving withdraws them: the rest of the schedule point's probes, an x/fibre params change not yet reconciled, or the same rows fetched and verified from a second location.` : (o?.broken ?? 0) > 0 ? "One obligation counts once, however many probes of it failed. The probe rows are in the evidence below." : faults > 0 ? "A failed probe of an obligation still inside its retention window is not a verdict yet; the obligation is decided at the end of the window." : undefined} />
-        <Metric label="Pending" value={notLive ? "—" : int(o?.pending ?? 0)} tone={notLive || !o || o.total === 0 ? "absent" : undefined} help={notLive ? " " : (leftOutText(o) || "window still open")} title="Obligations whose retention window has not ended: no verdict yet. Sampled out: blobs the probe budget drew out of its sample, committed in advance and never counted either way." />
+          help={notLive ? " " : (o?.broken ?? 0) > 0 ? (prov > 0 ? `${int(prov)} provisional${clearedText}` : `endorsed shards not read back${clearedText}`) : `none in this period${clearedText}`}
+          title={prov > 0 ? `${int(prov)} of these rest only on readings younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes. They count now, and become final at ${whenUTC(v.provisional_faults!.until)} unless evidence still arriving withdraws them.` : "Endorsed shards whose rows did not come back at the end of the retention window: no answer, a certificate the client rejects, an error, not found, or rows that do not verify. One per blob, however many readings of it failed."} />
+        <Metric label="In retention window" value={notLive ? "—" : int(o?.pending ?? 0)} tone={notLive || !o || o.total === 0 ? "absent" : undefined} help={notLive ? " " : (leftOutText(o) || "read at the end of the window")} title="Endorsed shards whose retention window has not ended yet. Each is read once, at the end." />
         <Metric label="Reachability"
           value={!bonded ? "—" : rw && rw.den > 0 ? pctOf(rw.num, rw.den) : "—"}
           tone={!bonded || !rw || rw.den === 0 ? "absent" : undefined}
@@ -273,7 +287,7 @@ function Page() {
           <h2>Obligation outcomes</h2>
           <OutcomeBar o={o} absent={notLive} />
           <table className="periods">
-            <thead><tr><th>Period</th><th>Service rate</th><th>Broken</th><th>Pending</th></tr></thead>
+            <thead><tr><th>Period</th><th>Service rate</th><th>Not served</th><th>In retention window</th></tr></thead>
             <tbody>
               {data.windows.map((w) => {
                 const wo = w.obligations, wd = wo.served + wo.broken;
@@ -282,7 +296,7 @@ function Page() {
                   <tr key={name} className={name === win ? "on" : undefined}>
                     <td><button type="button" className="rowlink" aria-pressed={name === win} onClick={() => setWin(name as typeof win)} title={`show the ${windowLabel(name)} period`}>{windowLabel(name)}</button></td>
                     <td>{notLive || wd === 0 ? "—" : <><span className={rateTone(wo.served, wd)}>{pctOf(wo.served, wd)}</span><span className="den"> · {int(wo.served)}/{int(wd)}</span></>}</td>
-                    <td>{notLive ? "—" : wo.broken > 0 ? <><span className="word fault">{int(wo.broken)}</span>{provisionalNow(w.provisional_faults) > 0 && <span className="den" title="Counted, and still settling: see the broken obligations figure above."> · {int(provisionalNow(w.provisional_faults))} provisional</span>}</> : "0"}</td>
+                    <td>{notLive ? "—" : wo.broken > 0 ? <><span className="word fault">{int(wo.broken)}</span>{provisionalNow(w.provisional_faults) > 0 && <span className="den" title="Counted, and still settling: see the not served figure above."> · {int(provisionalNow(w.provisional_faults))} provisional</span>}</> : "0"}</td>
                     <td>{notLive ? "—" : int(wo.pending)}</td>
                   </tr>
                 );
@@ -299,7 +313,7 @@ function Page() {
               <div className="h">Point</div><div className="h n">Served</div><div className="h n">Served / rated</div>
               {points.map((p) => (
                 <div key={p.key} style={{ display: "contents" }}>
-                  <div>{defaultPoints ? POINT[p.key] ?? p.key : p.key}</div>
+                  <div>{POINT[p.key] ?? p.key}</div>
                   <div className="n">{p.serve_rate.den ? pctOf(p.serve_rate.num, p.serve_rate.den) : "—"}</div>
                   <div className="n soft">{p.serve_rate.den ? `${int(p.serve_rate.num)} / ${int(p.serve_rate.den)}` : "no rated probe"}</div>
                 </div>
@@ -310,7 +324,7 @@ function Page() {
             {lastFault
               ? <>Last failed probe <b>{whenUTC(lastFault.started_at)}</b> · <code>{lastFault.raw_error || lastFault.classification_reason || lastFault.outcome}</code> · blob <Link className="mono" href={`/blob/?hash=${lastFault.promise_hash}`}>{lastFault.promise_hash.slice(0, 10)}…</Link></>
               : probes.length === 0 ? <>No probe of this validator on record yet</>
-              : <>{evidenceSummary(grouped)}{(o?.broken ?? 0) > 0 && <> · the broken obligations are older: <a href={failedHref}>failed rows in the API →</a></>}</>}
+              : <>{evidenceSummary(grouped)}{(o?.broken ?? 0) > 0 && <> · the not-served ones are older: <a href={failedHref}>failed rows in the API →</a></>}</>}
             <br />Last successful probe <b>{lastOk ? whenUTC(lastOk.started_at) : "—"}</b> · last failed handshake <b>{v.last_unreachable_at ? whenUTC(v.last_unreachable_at) : "none on record"}</b>
           </p>
           {data.last_endpoint_check && <EndpointCheckLine c={data.last_endpoint_check} />}
@@ -330,7 +344,7 @@ function Page() {
             {probes.length > 0 && (
               <div className="seg" role="group" aria-label="show rows">
                 <button type="button" aria-pressed={evFilter === "all"} onClick={() => setEvFilter("all")}>All <span className="n">{int(probes.length)}</span></button>
-                <button type="button" aria-pressed={evFilter === "failed"} onClick={() => setEvFilter("failed")} title="Rows the observer classified FAULT: not found while the promise still held. The only rows that are a fault.">Failed <span className="n">{int(failedN)}</span></button>
+                <button type="button" aria-pressed={evFilter === "failed"} onClick={() => setEvFilter("failed")} title="Rows counted as not served: no rows back at the end-of-window reading, or, at an earlier schedule's point, not found or rows that do not verify.">Not served <span className="n">{int(failedN)}</span></button>
                 <button type="button" aria-pressed={evFilter === "notserved"} onClick={() => setEvFilter("notserved")} title="Every row whose shard did not come back: unreachable, no endpoint, certificate rejected, pruned after the window, errors and failures alike. Only the failed ones are faults.">Not served <span className="n">{int(notServedN)}</span></button>
               </div>
             )}
@@ -343,7 +357,7 @@ function Page() {
             <tbody>
               {probes.length === 0 && <tr className="empty"><td colSpan={8}>No probe of this validator on record yet.</td></tr>}
               {probes.length > 0 && shown.length === 0 && <tr className="empty"><td colSpan={8}>{evFilter === "failed"
-                ? <>No failed row among the newest {int(probes.length)}.{(o?.broken ?? 0) > 0 && <> The broken obligations in this period are older: <a href={failedHref}>failed rows in the API →</a></>}</>
+                ? <>No not-served row among the newest {int(probes.length)}.{(o?.broken ?? 0) > 0 && <> The not-served ones in this period are older: <a href={failedHref}>failed rows in the API →</a></>}</>
                 : <>Every one of the newest {int(probes.length)} rows got its shard back.</>}</td></tr>}
               {shown.map(({ p }) => {
                 const sus = suspect.get(p.scheduled_at);

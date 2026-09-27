@@ -19,7 +19,7 @@ type Detail = {
 
 /** one mark per classification; the word is in the title and the legend */
 const MARK: Record<string, [string, string]> = {
-  HEALTHY: ["ok", "served"], FAULT: ["fault", "broken"], UNATTESTED: ["unsigned", "not endorsed"], EXPECTED_GONE: ["gone", "expected gone after the window"],
+  HEALTHY: ["ok", "served"], FAULT: ["fault", "not served"], UNATTESTED: ["unsigned", "not endorsed"], EXPECTED_GONE: ["gone", "expected gone after the window"],
   NOT_REGISTERED: ["none", "no endpoint"], NOT_PROBED: ["gone", "not probed"], SERVER_ERROR: ["other", "server error"], UNREACHABLE: ["other", "unreachable"],
   THROTTLED: ["other", "rate limited"], IDENTITY_EXPIRED: ["other", "certificate expired"], IDENTITY_MISMATCH: ["other", "wrong certificate"],
   TOLERATED: ["gone", "tolerated after the deadline"], UNREACHABLE_POST_WINDOW: ["gone", "unreachable after the window"], SERVED_PAST_WINDOW: ["gone", "served after the window"],
@@ -27,8 +27,19 @@ const MARK: Record<string, [string, string]> = {
   PROBE_ERROR: ["gone", "probe error"], EXPECTED_UNASSIGNED: ["gone", "unassigned"], SERVING_UNASSIGNED: ["other", "serving unassigned"],
 };
 const markOf = (cls: string): [string, string] => MARK[cls] ?? ["other", cls.toLowerCase().replace(/_/g, " ")];
+/**
+ * The end-of-window reading (schedule label "end") counts as a reader of the
+ * chain's own client meets the validator: no rows back is not served, genuine
+ * rows of the blob are served (probe.EndReadClass; this is its wording).
+ */
+const END_NO_ROWS = new Set(["UNREACHABLE", "IDENTITY_MISMATCH", "IDENTITY_EXPIRED", "SERVER_ERROR", "THROTTLED", "NOT_REGISTERED"]);
+const END_GENUINE = new Set(["SHADOWED_SHARD", "UNMATCHED_GENUINE"]);
+/** the reading's name: the end-of-window reading, or the earlier schedule's point */
+const pointName = (k: string) => (k === "end" ? "the end reading" : k);
 /** the mark for one probe: an unsigned probe says what came back and is not rated either way */
 const probeMark = (p: Probe): [string, string] => {
+  if (p.schedule_label === "end" && END_NO_ROWS.has(p.classification)) return ["fault", `not served · ${markOf(p.classification)[1]}`];
+  if (p.schedule_label === "end" && END_GENUINE.has(p.classification)) return ["ok", "served, genuine rows of the blob"];
   if (p.classification === "UNATTESTED") return ["unsigned", (p.outcome === "SERVED_OK" || p.outcome === "PARTIAL") ? "served, not endorsed" : `not endorsed · ${p.outcome.toLowerCase().replace(/_/g, " ")}`];
   return markOf(p.classification);
 };
@@ -61,14 +72,19 @@ function Page() {
   const soText = so ? `p=${so.p.toFixed(2)}` : "";
   const judged = !!rc && (rc.status === "yes" || rc.status === "degraded" || rc.status === "no");
   const over = new Date(b.must_serve_until).getTime() <= Date.now();
+  // Retrievable: enough rows came back to reconstruct the blob ("some rows
+  // were retrieved, but not enough to reconstruct" is the client's own word
+  // for the other case). Whether every endorsing validator served is said
+  // beside it, not folded into it.
   const state: [string, string, string] =
-    rc?.status === "yes" ? ["ok", "Fully served", `Every validator proven to hold a shard served its rows at ${rc.point}.`]
-    : rc?.status === "degraded" ? ["hold", "Rebuildable, not fully served", `Enough distinct rows were observed to rebuild the blob, but not every validator proven to hold a shard served at ${rc.point}.`]
-    : rc?.status === "no" ? ["hold", "Not rebuildable", `Fewer than the ${int(rc.needed_rows)} rows needed came back at ${rc.point}. Which validators answered is in the table below; unreachable from here is never counted as broken.`]
-    : rc?.status === "pending" ? ["none", "Not judged yet", `${int(rc.probed_validators)} of ${int(rc.assigned_validators)} assigned validators have a result at ${rc.point}. A validator without a result is a gap, not a failure.`]
-    : so ? ["none", "Sampled out", `Not probed: the load policy drew this blob out of its sample (${soText}).`]
-    : !over ? ["none", "In window", "The retention window has not ended; nothing is judged before the last in-window point completes."]
-    : ["none", "Not judged", b.probe_count === 0 ? "No probe has run for this blob." : "Row lists were not recorded for this publication, or no in-window point was completed."];
+    rc?.status === "yes" ? ["ok", "Retrievable", `Enough rows were retrieved at ${pointName(rc.point)} to reconstruct the blob, and every endorsing validator served its rows.`]
+    : rc?.status === "degraded" ? ["ok", "Retrievable", `Enough rows were retrieved at ${pointName(rc.point)} to reconstruct the blob; ${int(rc.attested_validators - rc.served_by_attested)} of ${int(rc.attested_validators)} endorsing validators did not serve theirs.`]
+    : rc?.status === "no" ? ["hold", "Not retrievable", `Rows were retrieved at ${pointName(rc.point)}, but fewer than the ${int(rc.needed_rows)} needed to reconstruct the blob.`]
+    : rc?.status === "pending" && !over ? ["none", "In retention window", "Read once, 10 minutes before the retention window ends."]
+    : rc?.status === "pending" ? ["none", "Not read by Tensile", "The observer was offline when this blob's reading was due, and the rows are pruned after the window. Nothing is counted for or against a validator."]
+    : so ? ["none", "Sampled out", `Not read: the load policy of the time drew this blob out of its sample (${soText}).`]
+    : !over ? ["none", "In retention window", "Read once, 10 minutes before the retention window ends."]
+    : ["none", "Not read by Tensile", b.probe_count === 0 ? "No reading was taken for this blob." : "Row lists were not recorded for this publication, or its reading was not completed."];
 
   // the probe points, in the order they ran; a point's time is the earliest probe scheduled for it
   const byLabel = new Map<string, { at: string; phase: string; cls: Record<string, number> }>();
@@ -105,14 +121,18 @@ function Page() {
         </div>
       );
     }
-    const served = c.HEALTHY ?? 0, gone = (c.EXPECTED_GONE ?? 0) + (c.TOLERATED ?? 0), unsigned = c.UNATTESTED ?? 0, broken = c.FAULT ?? 0;
-    const other = Object.entries(c).filter(([n]) => !["HEALTHY", "EXPECTED_GONE", "TOLERATED", "UNATTESTED", "FAULT"].includes(n)).reduce((s, [, n]) => s + n, 0);
+    // at the end reading, no rows back is not served and genuine rows are served
+    const endNo = k === "end" ? [...END_NO_ROWS].reduce((s, n) => s + (c[n] ?? 0), 0) : 0;
+    const endOk = k === "end" ? [...END_GENUINE].reduce((s, n) => s + (c[n] ?? 0), 0) : 0;
+    const served = (c.HEALTHY ?? 0) + endOk, gone = (c.EXPECTED_GONE ?? 0) + (c.TOLERATED ?? 0), unsigned = c.UNATTESTED ?? 0, notServed = (c.FAULT ?? 0) + endNo;
+    const counted = new Set(["HEALTHY", "EXPECTED_GONE", "TOLERATED", "UNATTESTED", "FAULT", ...(k === "end" ? [...END_NO_ROWS, ...END_GENUINE] : [])]);
+    const other = Object.entries(c).filter(([n]) => !counted.has(n)).reduce((s, [, n]) => s + n, 0);
     const post = byLabel.get(k)!.phase === "post";
     return (
       <div key={k}>
         <b>{k} <span className="soft">· {hhmm(byLabel.get(k)!.at).replace(" UTC", "")}</span></b>
         <span>{post ? `${int(gone)} expected gone` : `${int(served)} served`}</span>
-        {broken > 0 && <span className="word fault">{int(broken)} broken</span>}
+        {notServed > 0 && <span className="word fault">{int(notServed)} not served</span>}
         {unsigned > 0 && <span>{int(unsigned)} not endorsed</span>}
         {other > 0 && <span>{int(other)} other</span>}
       </div>
@@ -147,12 +167,12 @@ function Page() {
       <StatusLine meta={meta} metaError={metaErr} snap={null} client={{ error: d.error, fetchedAt: d.fetchedAt }} />
 
       <Metrics>
-        <Metric label="Rows observed" value={rc && (judged || rc.status === "pending") ? int(rc.served_distinct_rows) : "—"} tone={rc && (judged || rc.status === "pending") ? undefined : "absent"}
-          help={rc && rc.total_rows > 0 ? `of ${int(rc.total_rows)} · ${int(rc.needed_rows)} needed` : "no in-window point completed"}
-          title="Distinct rows that came back at the latest complete in-window point; the tick is how many rebuild the blob." />
+        <Metric label="Rows retrieved" value={rc && (judged || rc.status === "pending") ? int(rc.served_distinct_rows) : "—"} tone={rc && (judged || rc.status === "pending") ? undefined : "absent"}
+          help={rc && rc.total_rows > 0 ? `of ${int(rc.total_rows)} · ${int(rc.needed_rows)} needed` : "no reading completed"}
+          title="Distinct rows retrieved at the reading, verified against the commitment; the tick is how many reconstruct the blob." />
         <Metric label="Validators served" value={rc && (judged || rc.status === "pending") ? int(rc.served_by_validators) : "—"} den={rc && (judged || rc.status === "pending") ? int(rc.assigned_validators) : undefined}
           tone={rc && (judged || rc.status === "pending") ? undefined : "absent"}
-          help={rc && (judged || rc.status === "pending") ? `at ${rc.point} · ${hhmm(rc.point_at)}${rc.status === "pending" ? ` · ${int(rc.probed_validators)} with a result` : ""}` : "no in-window point completed"} />
+          help={rc && (judged || rc.status === "pending") ? `at ${pointName(rc.point)} · ${hhmm(rc.point_at)}${rc.status === "pending" ? ` · ${int(rc.probed_validators)} with a result` : ""}` : "no reading completed"} />
         <Metric label="Endorsed" value={signedKnown ? int(signedN) : "—"} den={signedKnown ? int(assignments.length) : undefined}
           tone={signedKnown ? undefined : "absent"}
           help={signedKnown ? "validators endorsed" : "signatures not recorded"}
@@ -190,19 +210,19 @@ function Page() {
           )}
         </div>
         <div>
-          <h2>Rows observed</h2>
+          <h2>Rows retrieved</h2>
           {rc && rc.total_rows > 0 && (judged || rc.status === "pending") ? (
             <>
-              <p className="sub">At {rc.point} · {hhmm(rc.point_at)} · from {int(rc.served_by_validators)} validator{rc.served_by_validators === 1 ? "" : "s"}</p>
+              <p className="sub">At {pointName(rc.point)} · {hhmm(rc.point_at)} · from {int(rc.served_by_validators)} validator{rc.served_by_validators === 1 ? "" : "s"}</p>
               <div className="meter" role="img" aria-label={`${int(rc.served_distinct_rows)} of ${int(rc.total_rows)} rows; ${int(rc.needed_rows)} needed`}>
                 <i style={{ width: `${fill.toFixed(1)}%` }} /><div className="tick" style={{ left: `${tick.toFixed(1)}%` }} />
               </div>
-              <div className="mnums"><span><b>{int(rc.served_distinct_rows)}</b> of {int(rc.total_rows)} rows</span><span>{int(rc.needed_rows)} needed to rebuild</span></div>
-              <p className="errs" title="An observation of the rows that came back at one probe point, not an actual rebuild.">
-                {rc.status === "yes" && <><b>Fully served.</b> Enough rows to rebuild, and all {int(rc.attested_validators)} endorsing validators served.</>}
-                {rc.status === "degraded" && <><b>Rebuildable, not fully served.</b> {int(rc.attested_validators - rc.served_by_attested)} of {int(rc.attested_validators)} endorsing validators did not serve.</>}
-                {rc.status === "no" && <><b>Not rebuildable</b> from the rows that came back at this point.</>}
-                {rc.status === "pending" && <>{int(rc.probed_validators)} of {int(rc.assigned_validators)} validators have a result; waiting for the rest.</>}
+              <div className="mnums"><span><b>{int(rc.served_distinct_rows)}</b> of {int(rc.total_rows)} rows</span><span>{int(rc.needed_rows)} needed to reconstruct</span></div>
+              <p className="errs" title="The rows that came back at one reading, verified against the commitment; not an actual reconstruction.">
+                {rc.status === "yes" && <><b>Retrievable.</b> Enough rows to reconstruct, and all {int(rc.attested_validators)} endorsing validators served.</>}
+                {rc.status === "degraded" && <><b>Retrievable.</b> Enough rows to reconstruct; {int(rc.attested_validators - rc.served_by_attested)} of {int(rc.attested_validators)} endorsing validators did not serve.</>}
+                {rc.status === "no" && <><b>Not retrievable</b>: not enough rows to reconstruct.</>}
+                {rc.status === "pending" && <>{int(rc.probed_validators)} validators read so far; waiting for the rest.</>}
               </p>
             </>
           ) : <p className="errs">{state[2]}</p>}
@@ -244,9 +264,9 @@ function Page() {
         </div>
         <p className="mklegend">
           <span><span className="mk ok" /> served</span>
-          <span><span className="mk fault" /> broken</span>
+          <span title="The endorsed rows did not come back: not found, rows that do not verify, or, at the end reading, no answer, a rejected certificate, an error or no endpoint."><span className="mk fault" /> not served</span>
           <span title="No verified signature on the settled promise, so not rated either way: the publisher stops collecting at two thirds of stake."><span className="mk unsigned" /> not endorsed</span>
-          <span title="Server error, unreachable, rate limited or a certificate problem. Never a fault."><span className="mk other" /> other</span>
+          <span title="At the earlier schedule's points: server error, unreachable, rate limited or a certificate problem, not counted either way."><span className="mk other" /> other</span>
           <span title="Expected gone after the window, not probed, or at a point where the observer does not trust itself. Never a fault."><span className="mk gone" /> not counted</span>
           <span><span className="mk none" /> no endpoint</span>
         </p>
