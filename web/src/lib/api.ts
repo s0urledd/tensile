@@ -312,10 +312,14 @@ export function leftOut(o: Obligations | null | undefined): { sampled: number; n
   return { sampled, notObserved: Math.max(0, undecided(o) - sampled) };
 }
 
-/** "2,023 sampled out · 1 not observed", or "" when nothing is left out */
+/**
+ * "2,023 sampled out before 27 Sep · 1 not read by Tensile", or "" when
+ * nothing is left out. Sampling ended on 27 September 2026, so every
+ * sampled-out blob is from before then.
+ */
 export function leftOutText(o: Obligations | null | undefined): string {
   const { sampled, notObserved } = leftOut(o);
-  return [sampled > 0 ? `${int(sampled)} sampled out` : "", notObserved > 0 ? `${int(notObserved)} not observed` : ""].filter(Boolean).join(" · ");
+  return [sampled > 0 ? `${int(sampled)} sampled out before 27 Sep` : "", notObserved > 0 ? `${int(notObserved)} not read by Tensile` : ""].filter(Boolean).join(" · ");
 }
 
 export function undecided(o: Obligations | null | undefined): number {
