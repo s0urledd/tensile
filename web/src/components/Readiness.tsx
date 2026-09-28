@@ -17,8 +17,9 @@ type WithState = Validator & { endpoint_state?: EndpointState };
 export function endpointState(v: Validator): EndpointState {
   const s = (v as WithState).endpoint_state;
   if (s === "reachable" || s === "unreachable" || s === "none") return s;
-  if (!v.host) return "none";
-  return v.reachable === true ? "reachable" : "unreachable";
+  // a registered host this observer has not checked yet is no one's failure
+  if (!v.host || v.reachable == null) return "none";
+  return v.reachable ? "reachable" : "unreachable";
 }
 
 export function bondedOf(rows: Validator[]): Validator[] {

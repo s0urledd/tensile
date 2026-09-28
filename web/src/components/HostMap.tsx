@@ -23,7 +23,7 @@ type Cluster = { id: string; hosts: Host[]; ux: number; uy: number; locs: number
 /** the visible part of the map, in map units: top-left corner and width (height follows the frame) */
 type View = { x: number; y: number; w: number };
 
-const STATE_WORD: Record<EndpointState, string> = { reachable: "reachable", unreachable: "unreachable", none: "no host" };
+const STATE_WORD: Record<EndpointState, string> = { reachable: "reachable", unreachable: "unreachable", none: "not checked yet" };
 // The table's colours: amber for a host that stopped answering.
 const STATE_VAR: Record<EndpointState, string> = { reachable: "var(--accent)", unreachable: "var(--hold)", none: "var(--pending)" };
 const ORDER: EndpointState[] = ["reachable", "unreachable"];
@@ -446,7 +446,7 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
                             <span className="fm-share">{fmtShare(h.share)}</span>
                             <span className="fm-meta">
                               {[multi ? h.cc : "", h.provider, c.locs > 1 && h.city ? h.city : multi && !h.city ? countryName(h.cc) : "", h.state !== "reachable" ? STATE_WORD[h.state] : ""].filter(Boolean).join(" · ")}
-                              {(h.v.obligations?.broken ?? 0) > 0 && <span className="fm-broken"> · {h.v.obligations.broken} broken</span>}
+                              {(h.v.obligations?.broken ?? 0) > 0 && <span className="fm-broken"> · {h.v.obligations.broken} not served</span>}
                             </span>
                           </li>
                         ))}
