@@ -59,11 +59,11 @@ export function endpoint(v: Validator): { dot: string; word: string; title: stri
     return { dot: "hold", word: c.word, title: `${v.host}: answered TLS with a certificate a client rejects${c.spec ? ` (${c.spec}, Fibre TLS identity)` : ""}${checked}`, warn: true };
   }
   if (v.identity_status && v.identity_status !== "verified") return { dot: "hold", word: "Reachable, unverified", title: `${v.host}: answered TLS; no certificate check recorded yet${checked}`, warn: true };
-  // One failed check after a success still counts as reachable; then the
-  // handshake to date is the last good one, not the newest check.
-  const newestFailed = !!v.last_unreachable_at && !!v.last_seen_at && v.last_unreachable_at >= v.last_seen_at;
-  const when = newestFailed && v.last_reachable_at ? ` · last handshake ${ago(v.last_reachable_at)}; the newest check failed` : checked;
-  return { dot: "ok", word: "Reachable", title: `${v.host}: TLS with this validator's key${v.confirmed_from ? ", from a second location" : ""}${when}` };
+  // Reachable is dated by the last handshake this location completed (one
+  // failed check after it still counts as reachable); a host only a second
+  // location reached has no handshake of ours to date.
+  const when = v.confirmed_from ? ", reached from a second location" : v.last_reachable_at ? ` · last handshake ${ago(v.last_reachable_at)}` : checked;
+  return { dot: "ok", word: "Reachable", title: `${v.host}: TLS with this validator's key${when}` };
 }
 
 const time = (s: string | null | undefined) => (s ? new Date(s).getTime() : null);

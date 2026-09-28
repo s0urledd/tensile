@@ -107,3 +107,62 @@ func TestThePublisherIsTheEscrowOwnerNotTheSubmitter(t *testing.T) {
 		t.Errorf("the submitter's page lists %v, want none", got)
 	}
 }
+
+// A namespace's publishers are the escrow owners that paid, not the account
+// that submitted the settlements: one submitter for two owners is two.
+func TestNamespacePublishersAreEscrowOwners(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	now := time.Now().UTC().Truncate(time.Second)
+	at := now.Add(-time.Hour)
+	var ps []scan.Payment
+	for i, hash := range []string{"n1", "n2"} {
+		key := secp256k1.GenPrivKey().PubKey().(*secp256k1.PubKey)
+		owner, err := scan.PublisherOf(hex.EncodeToString(key.Key))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pub := scan.Publication{
+			SchemaVersion: scan.AttestationSchemaVersion, PromiseHash: hash, SettlementHeight: int64(100 + i), SettlementTime: at,
+			SettlementTxHash: "tx" + hash, MustServeUntil: at.Add(time.Hour), RecordedAt: at, Signer: samplePublisher,
+			Promise: scan.PromiseFields{ChainID: "t", Height: int64(99 + i), Namespace: "ns1", Commitment: "c" + hash, CreationTimestamp: at, BlobSize: 262144,
+				SignerPublicKey: hex.EncodeToString(key.Key)},
+			Assignment: scan.AssignmentTable{
+				ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: 4096, TotalRows: 16384},
+				ValidatorSetHeight: int64(99 + i), TotalVotingPower: 10, Sigma: 148, Distinct: 148, ValidatorsWithRows: 1,
+				Validators: []scan.ValidatorAssignment{{Address: sampleValidator, VotingPower: 10, RowCount: 148}},
+			},
+		}
+		raw, err := json.Marshal(pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.UpsertPublication(pub, raw); err != nil {
+			t.Fatal(err)
+		}
+		ps = append(ps, scan.Payment{SchemaVersion: 1, DedupeKey: "tx" + hash + ":0", Kind: "settlement", Height: int64(100 + i), Time: at,
+			TxHash: "tx" + hash, Publisher: owner, Processor: samplePublisher, PromiseHash: hash, Namespace: "ns1", BlobSize: 262144, Denom: "utia", AmountUtia: 695_000})
+	}
+	if r, err := ingest.Payments(st, writePayments(t, dir, ps), now); err != nil || r.Inserted != 2 {
+		t.Fatalf("ingest payments: inserted=%d err=%v", r.Inserted, err)
+	}
+	ts := httptest.NewServer(api.NewWithVantage(st, api.VantageInfo{Name: "test"}, nil))
+	t.Cleanup(ts.Close)
+	var n struct {
+		Namespaces []struct {
+			Namespace string `json:"namespace"`
+			Blobs     int64  `json:"blobs"`
+			Accounts  int64  `json:"accounts"`
+		} `json:"namespaces"`
+	}
+	if code := get(t, ts, "/v1/namespaces", &n); code != 200 || len(n.Namespaces) != 1 {
+		t.Fatalf("namespaces: %d %+v", code, n)
+	}
+	if got := n.Namespaces[0]; got.Blobs != 2 || got.Accounts != 2 {
+		t.Errorf("namespace %s: %d settlements by %d publishers, want 2 by 2 (two owners, one submitter)", got.Namespace, got.Blobs, got.Accounts)
+	}
+}

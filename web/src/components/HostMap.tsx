@@ -26,7 +26,7 @@ type View = { x: number; y: number; w: number };
 const STATE_WORD: Record<EndpointState, string> = { reachable: "reachable", unreachable: "unreachable", none: "not checked yet" };
 // The table's colours: amber for a host that stopped answering.
 const STATE_VAR: Record<EndpointState, string> = { reachable: "var(--accent)", unreachable: "var(--hold)", none: "var(--pending)" };
-const ORDER: EndpointState[] = ["reachable", "unreachable"];
+const ORDER: EndpointState[] = ["reachable", "unreachable", "none"];
 
 /** the box's height over its width: the whole frame on a wide screen, a taller crop of it on a phone */
 const WIDE = FRAME.h / FRAME.w, TALL = 0.62;
@@ -337,6 +337,8 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
 
   // ---- the land: every country once; hosted ones tinted, the open badge's stronger ----
   const hosted = useMemo(() => new Set(hosts.map((h) => h.cc)), [hosts]);
+  // a registered host this observer has not checked yet gets its own entry in the key
+  const unchecked = hosts.some((h) => h.state === "none");
   const openCcs = useMemo(() => new Set(clusters.find((c) => c.id === open)?.ccs ?? []), [clusters, open]);
   const land = useMemo(() => COUNTRIES.map(([cc, d], i) => (
     <path key={cc || i} d={d} className={openCcs.has(cc) ? "hi" : hosted.has(cc) ? "on" : undefined} />
@@ -478,6 +480,7 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
           <p className="fm-key" aria-hidden="true">
             <span><i style={{ background: STATE_VAR.reachable }} />reachable</span>
             <span><i style={{ background: STATE_VAR.unreachable }} />unreachable</span>
+            {unchecked && <span><i style={{ background: STATE_VAR.none }} />not checked yet</span>}
           </p>
         </div>
       </div>
