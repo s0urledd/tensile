@@ -239,20 +239,6 @@ button.dis:hover, a.dis:hover { text-decoration: underline; }
 .blobs .soft { margin-left: 10px; }
 
 /* the seven-day volume chart */
-.vchart { display: grid; grid-template-columns: 52px 1fr; gap: 0 8px; margin-top: 16px; }
-.vchart .y { position: relative; font-size: var(--t-tiny); color: var(--text-3); text-align: right; height: 140px; }
-.vchart .y span { position: absolute; right: 0; transform: translateY(-50%); line-height: 1; white-space: nowrap; }
-.vchart .plot { position: relative; height: 140px; border-bottom: 1px solid var(--line); display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); align-items: end; }
-.vchart .plot .gl { position: absolute; left: 0; right: 0; border-top: 1px solid var(--line-soft); }
-.vchart .col { position: relative; height: 100%; display: flex; align-items: end; justify-content: center; }
-.vchart .col i { display: block; width: 60%; background: var(--accent); border-radius: 3px 3px 0 0; opacity: .9; }
-.vchart .col.partial i { opacity: .45; border-top: 2px dashed var(--accent); }
-.vchart .col.zero i { height: 2px !important; background: var(--line); }
-.vchart .col.nodata i { background: var(--gap-hatch); opacity: 1; border-radius: 0; }
-.vchart .x { grid-column: 2; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); font-size: var(--t-tiny); color: var(--text-3); text-align: center; margin-top: 6px; min-width: 0; }
-.vchart .x span { overflow: visible; white-space: nowrap; }
-.vchart-empty { font-size: var(--t-cell); color: var(--text-3); margin-top: 22px; }
-.vchart .plot .none { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: var(--t-cell); color: var(--text-3); }
 
 /* ------------------------------------------------------- validators head --- */
 .vhead { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding: 14px 0 10px; flex-wrap: wrap; }
@@ -486,6 +472,7 @@ dl.kv dd { margin: 0; word-break: break-all; }
 .chart { min-width: 0; }
 .chart-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 6px; }
 .chart-head .label { color: var(--text); }
+.chart-head .chart-sub { font-size: var(--t-small); color: var(--text-3); }
 .chart-plot { position: relative; }
 .chart svg { display: block; overflow: visible; }
 .chart svg .grid { stroke: var(--line-soft); stroke-width: 1; }
@@ -531,7 +518,6 @@ dl.kv dd { margin: 0; word-break: break-all; }
   .top .right { gap: 8px; }
   .head h1 { overflow-wrap: anywhere; }
   .head h1 .mono { font-size: 20px; }
-  .vchart .x { font-size: 10px; }
   .title { flex-direction: column; gap: 12px; }
   .head { flex-direction: column; gap: 12px; }
   .status > span { white-space: normal; }

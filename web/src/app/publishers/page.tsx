@@ -102,11 +102,11 @@ function Page() {
         return (
           <div className="charts">
             <div className="card">
-              <Chart title="Fees paid per day (TIA)" series={[{ key: "fees", label: "fees", color: "var(--accent)" }]} rows={feeRows}
+              <Chart title="Fees paid per day (TIA)" sub={`${tia(m.fees_settled_utia)} in the period`} series={[{ key: "fees", label: "fees", color: "var(--accent)" }]} rows={feeRows}
                 fmt={(v) => tia(v)} fmtAxis={axisTia} />
             </div>
             <div className="card">
-              <Chart title="Upload size per day, by publisher" series={series} rows={byteRows} fmt={mib} fmtAxis={axisMib} />
+              <Chart title="Upload size per day, by publisher" sub={`${bytes(m.bytes)} in the period`} series={series} rows={byteRows} fmt={mib} fmtAxis={axisMib} />
             </div>
           </div>
         );

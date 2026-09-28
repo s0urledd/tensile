@@ -6,8 +6,8 @@ import PreLive from "@/components/PreLive";
 import { unit } from "@/components/Unit";
 import { useApi, type Meta, type Market, type Network, type Blob, type NamespaceRow, utc, ago, nsDisplay, bytes, int, tia, shortBech } from "@/lib/api";
 import { Mark, type Tier } from "@/components/Verdict";
-import { Metric, Metrics } from "@/components/Metrics";
-import VolumeChart from "@/components/VolumeChart";
+import Chart from "@/components/Chart";
+import { buckets } from "@/lib/buckets";
 import Pager, { usePage } from "@/components/Pager";
 import { useWindow, WindowSwitch } from "@/lib/window";
 
@@ -45,7 +45,6 @@ function Page() {
   const [win, setWin] = useWindow("7d");
   const [page, setPage] = usePage();
   const [tab, setTab] = useState<"blobs" | "namespaces">("blobs");
-  const [metric, setMetric] = useState<"bytes" | "settlements">("bytes");
   // a new filter starts from the first page, and lives in the address so a link keeps it
   const setNs = (v: string) => {
     setNsRaw(v);
@@ -65,12 +64,14 @@ function Page() {
   const nss = useApi<{ namespaces: NamespaceRow[] }>("/v1/namespaces?limit=100");
   const { data: m } = useApi<Market>(`/v1/market?window=${win}`);
   const { data: net } = useApi<Network>(`/v1/network?window=${win}`);
-  const bs = m?.blob_stats;
   const rc = net?.reconstructable;
-  const pct = (f: number | null | undefined) => (f == null ? "—" : `${(f * 100).toFixed(1)}%`);
+  // the answer for another period, kept while this one loads, is not this chart
+  const series = m && m.window.name === win ? buckets(m, win) : [];
+  const per = win === "24h" ? "hour" : "day";
+  const mib = (v: number) => (v >= 1024 ? `${(v / 1024).toFixed(2)} GiB` : v >= 10 ? `${Math.round(v)} MiB` : `${v.toFixed(2)} MiB`);
+  const axisMib = (v: number) => (v >= 1024 ? `${(v / 1024).toFixed(v % 1024 ? 1 : 0)} GiB` : `${Number.isInteger(v) ? v : v.toFixed(1)} MiB`);
   const nsN = nss.data?.namespaces.length ?? 0;
   const nsMore = !!(nss.data as { truncated?: boolean } | null)?.truncated;
-  const busy = !m; // figures not in yet: a blank line, not "nothing settled"
 
   return (
     <>
@@ -86,32 +87,25 @@ function Page() {
           <div><h2>On chain</h2><p className="sub">The period&rsquo;s settlements.</p></div>
           <WindowSwitch value={win} onChange={setWin} />
         </div>
-        <Metrics>
-          <Metric label="Namespaces" value={bs ? int(bs.namespaces) : "—"} tone={bs && bs.namespaces > 0 ? undefined : "absent"}
-            help={bs ? `in the period · ${int(bs.namespaces_total)} on record` : " "} title="Namespaces the period's blobs were published in." />
-          <Metric label="Upload size" value={bs && bs.upload_size_max > 0 ? bytes(bs.upload_size_median) : "—"} tone={bs && bs.upload_size_max > 0 ? undefined : "absent"}
-            help={busy ? " " : bs && bs.upload_size_max > 0 ? `median · largest ${bytes(bs.upload_size_max)}` : "nothing settled"}
-            title="The size a blob paid for, with padding and without parity: the median of the period's settlements, and the largest." />
-          <Metric label="Endorsed voting power" value={pct(bs?.endorsed_share_median)} tone={bs?.endorsed_share_median != null ? undefined : "absent"}
-            help={busy ? " " : bs?.endorsed_share_min != null ? `median · ${pct(bs.endorsed_share_min)} to ${pct(bs.endorsed_share_max)}` : "nothing settled"}
-            title="Share of voting power whose signature is on the settlement. A settlement needs ⅔." />
-        </Metrics>
+        <div className="charts">
+          <div className="card">
+            <Chart title={`Upload size per ${per}`} sub={m && series.length ? `${bytes(m.bytes)} in the period` : undefined}
+              series={[{ key: "bytes", label: "upload size", color: "var(--accent)" }]}
+              rows={series.map((c) => ({ x: c.title, label: c.label, values: { bytes: c.bytes / (1 << 20) }, note: `${int(c.settlements)} settlement${c.settlements === 1 ? "" : "s"}` }))}
+              fmt={mib} fmtAxis={axisMib} empty={m ? "nothing settled in this period" : "loading…"} />
+          </div>
+          <div className="card">
+            <Chart title={`Settlements per ${per}`} sub={m && series.length ? `${int(m.settlements)} in the period` : undefined}
+              series={[{ key: "n", label: "settlements", color: "var(--accent)" }]}
+              rows={series.map((c) => ({ x: c.title, label: c.label, values: { n: c.settlements }, note: bytes(c.bytes) }))}
+              fmt={(v) => int(v)} empty={m ? "nothing settled in this period" : "loading…"} />
+          </div>
+        </div>
         {rc && rc.recoverable.den > 0 && (
           <p className="observed" title="Settlements Tensile read near the end of their retention window whose rows were enough to reconstruct the blob.">
             Observed by Tensile: <b>{int(rc.recoverable.num)} of {int(rc.recoverable.den)}</b> settlements read were retrievable.
           </p>
         )}
-      </section>
-
-      <section className="group" id="published">
-        <div className="vhead">
-          <div><h2>{metric === "bytes" ? "Upload size" : "Settlements"}</h2><p className="sub">Per UTC {win === "24h" ? "hour" : "day"}</p></div>
-          <div className="seg" role="group" aria-label="chart">
-            <button type="button" aria-pressed={metric === "bytes"} onClick={() => setMetric("bytes")}>Upload size</button>
-            <button type="button" aria-pressed={metric === "settlements"} onClick={() => setMetric("settlements")}>Settlements</button>
-          </div>
-        </div>
-        <VolumeChart market={m ?? null} win={win} metric={metric} />
       </section>
 
       <section id="list">

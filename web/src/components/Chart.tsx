@@ -23,13 +23,15 @@ function niceStep(max: number, ticks: number): number {
   return step * mag;
 }
 
-export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title, empty }: {
+export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title, sub, empty }: {
   series: Series[];
   rows: Row[];
   fmt: (v: number) => string;
   fmtAxis?: (v: number) => string;
   height?: number;
   title: string;
+  /** a figure beside the title: "1.35 GiB in the period" */
+  sub?: string;
   empty?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -68,7 +70,7 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
 
   return (
     <div className="chart" ref={ref}>
-      <div className="chart-head"><span className="label">{title}</span></div>
+      <div className="chart-head"><span className="label">{title}</span>{sub && <span className="chart-sub">{sub}</span>}</div>
       {width > 0 && (
         <div className="chart-plot" style={{ height }}>
           <svg width={width} height={height} role="img" aria-label={title}
