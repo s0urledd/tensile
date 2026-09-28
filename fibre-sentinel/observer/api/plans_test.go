@@ -130,6 +130,17 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 	)
 	scans["load memo candidates"] = []string{"p"}
 	scans["load memo lookup"] = []string{"j"} // the list of hashes passed in
+	// The window's publications still waiting for a reading
+	// (reconstructableCount). Publications are walked whole, as nothing
+	// indexes settlement_time; the readings of each are sought by its hash.
+	cases = append(cases,
+		c{"not yet read", `SELECT COUNT(*) FROM publications WHERE settlement_time >= ? AND settlement_time <= ? AND NOT ` + readableSQL(""), []any{lo, hi},
+			[]string{"probes_promise (promise_hash=?)"}},
+		c{"not yet read, pinned", `SELECT COUNT(*) FROM publications WHERE settlement_time >= ? AND settlement_time <= ? AND NOT ` + readableSQL(" AND r.started_at <= ?"),
+			[]any{lo, hi, hi}, []string{"probes_promise (promise_hash=?)"}},
+	)
+	scans["not yet read"] = []string{"publications"}
+	scans["not yet read, pinned"] = []string{"publications"}
 	for _, tc := range cases {
 		plan, err := st.QueryPlan(ctx, tc.q, tc.args...)
 		if err != nil {

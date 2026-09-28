@@ -55,8 +55,8 @@ func TestLoad_RepeatedDailyClassMapIsNotCollapsed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if got.Probes != 11 || got.Faults != 3 {
-		t.Fatalf("probes=%d faults=%d, want 11/3", got.Probes, got.Faults)
+	if got.Probes != 11 {
+		t.Fatalf("probes=%d, want 11", got.Probes)
 	}
 	if got.Classes["HEALTHY"] != 8 || got.Classes["FAULT"] != 3 {
 		t.Fatalf("classes=%v, want HEALTHY:8 FAULT:3", got.Classes)

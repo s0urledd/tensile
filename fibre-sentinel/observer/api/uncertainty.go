@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
+	"github.com/plsgiveup/fibre/fibre-sentinel/observer/verdict"
 )
 
 // MetaParamHoldsRev is the meta key the collector bumps whenever a hold is
@@ -118,7 +119,9 @@ func (s *Server) activationRevision() string {
 }
 
 // snapshotRevision is what a verdict-carrying snapshot must match to be
-// served: the holds it was computed under and the activation state.
+// served: the holds it was computed under, the activation state, and the
+// rules (verdict.MethodologyVersion), so a snapshot saved under an earlier
+// rule is recomputed after a restart rather than served.
 func (s *Server) snapshotRevision() string {
-	return s.paramHoldsRevision() + "|" + s.activationRevision()
+	return s.paramHoldsRevision() + "|" + s.activationRevision() + "|" + verdict.MethodologyVersion
 }

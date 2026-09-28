@@ -43,7 +43,7 @@ import (
 // third of the stake is unsigned by construction and very often holds the
 // shard all the same. The rate describes how often a validator was among the
 // signatures the publisher kept: roughly, how often it answered an upload
-// before the quorum closed. It is published beside the serve rate, never
+// before the quorum closed. It is published beside the Service rate, never
 // folded into it, and it does not rank anybody.
 //
 // Publications are never pruned (observer/rollup prunes probe rows only), so

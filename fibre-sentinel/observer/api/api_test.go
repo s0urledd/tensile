@@ -85,15 +85,12 @@ func TestMetaAndNetwork(t *testing.T) {
 		t.Fatalf("meta: %+v", meta)
 	}
 	var net struct {
-		ServeRate       struct{ Num, Den int64 } `json:"serve_rate"`
-		Classes         map[string]int64         `json:"classes"`
-		ProbeCount      int64                    `json:"probe_count"`
-		Coverage        struct{ Num, Den int64 } `json:"serve_rate_coverage"`
-		HeldOut         map[string]int64         `json:"serve_rate_held_out"`
+		Classes         map[string]int64 `json:"classes"`
+		ProbeCount      int64            `json:"probe_count"`
 		Reconstructable struct {
-			Rate                 struct{ Num, Den int64 } `json:"rate"`
 			Recoverable          struct{ Num, Den int64 } `json:"recoverable"`
-			Yes, Degraded, No    int64
+			Yes, No              int64
+			NotRead              int64 `json:"not_read"`
 			PublicationsInWindow int64 `json:"publications_in_window"`
 			Examined             int64 `json:"publications_examined"`
 			SampleLimit          int   `json:"sample_limit"`
@@ -102,15 +99,10 @@ func TestMetaAndNetwork(t *testing.T) {
 	if code := get(t, ts, "/v1/network?window=all", &net); code != 200 {
 		t.Fatalf("network: %d", code)
 	}
-	// fixture run: in-window assigned probes are 27 HEALTHY and 9 FAULT. The
-	// 12 TOLERATED are grace probes, which are outside the rate's population:
-	// a grace probe can only ever add HEALTHY, so counting it would reward
-	// over-retention rather than measure retention.
-	if net.ServeRate.Num != 27 || net.ServeRate.Den != 36 {
-		t.Fatalf("serve rate = %+v (classes %v)", net.ServeRate, net.Classes)
-	}
-	if net.Coverage.Num != 36 || net.Coverage.Den != 36 {
-		t.Fatalf("coverage = %+v, want every in-window probe to have produced a verdict", net.Coverage)
+	// fixture run: in-window assigned readings are 27 HEALTHY and 9 FAULT,
+	// published under the classes they were recorded with.
+	if net.Classes["HEALTHY"] != 27 || net.Classes["FAULT"] != 9 {
+		t.Fatalf("classes = %v", net.Classes)
 	}
 	if net.ProbeCount != 60 {
 		t.Fatalf("probe count = %d", net.ProbeCount)
@@ -119,15 +111,10 @@ func TestMetaAndNetwork(t *testing.T) {
 	if net.Reconstructable.SampleLimit == 0 || net.Reconstructable.Examined != net.Reconstructable.PublicationsInWindow {
 		t.Fatalf("reconstructable coverage not disclosed: %+v", net.Reconstructable)
 	}
-	if net.Reconstructable.Rate.Den == 0 {
-		t.Fatalf("reconstructable has no denominator: %+v", net.Reconstructable)
-	}
-	// degraded is reported on its own, never folded into the numerator
-	if net.Reconstructable.Rate.Num+net.Reconstructable.Degraded+net.Reconstructable.No != net.Reconstructable.Rate.Den {
-		t.Fatalf("reconstructable counts do not add up: %+v", net.Reconstructable)
-	}
-	if net.Reconstructable.Recoverable.Num < net.Reconstructable.Rate.Num {
-		t.Fatalf("recoverable must include the fully-served ones: %+v", net.Reconstructable)
+	// three validators of four served at every reading, well over the rows
+	// the blob needs: every blob was Available
+	if r := net.Reconstructable; r.Recoverable.Num != 3 || r.Recoverable.Den != 3 || r.Yes != 3 || r.No != 0 {
+		t.Fatalf("reconstructable = %+v, want 3 of 3 Available", r)
 	}
 	if code := get(t, ts, "/v1/network?window=bogus", nil); code != 400 {
 		t.Fatalf("bad window: %d", code)
@@ -138,11 +125,11 @@ func TestValidatorsAndBlobs(t *testing.T) {
 	ts := serverWithSample(t)
 	var vals struct {
 		Validators []struct {
-			Address        string                   `json:"address"`
-			ServeRate      struct{ Num, Den int64 } `json:"serve_rate"`
-			ProbeCount     int64                    `json:"probe_count"`
-			IdentityStatus string                   `json:"identity_status"`
-			Reachable      *bool                    `json:"reachable"`
+			Address        string           `json:"address"`
+			Classes        map[string]int64 `json:"classes"`
+			ProbeCount     int64            `json:"probe_count"`
+			IdentityStatus string           `json:"identity_status"`
+			Reachable      *bool            `json:"reachable"`
 		} `json:"validators"`
 	}
 	if code := get(t, ts, "/v1/validators?window=all", &vals); code != 200 {
@@ -153,10 +140,10 @@ func TestValidatorsAndBlobs(t *testing.T) {
 	}
 	var faulted, verified int
 	for _, v := range vals.Validators {
-		if v.ServeRate.Den == 0 {
-			t.Fatalf("validator %s has no denominator", v.Address)
+		if v.ProbeCount == 0 {
+			t.Fatalf("validator %s has no readings", v.Address)
 		}
-		if v.ServeRate.Num < v.ServeRate.Den {
+		if v.Classes["FAULT"] > 0 {
 			faulted++
 		}
 		if v.IdentityStatus == "verified" {
@@ -164,7 +151,7 @@ func TestValidatorsAndBlobs(t *testing.T) {
 		}
 	}
 	if faulted != 1 {
-		t.Fatalf("want exactly the killed validator below 100%%, got %d", faulted)
+		t.Fatalf("want exactly the killed validator with a failed reading, got %d", faulted)
 	}
 	if verified < 3 {
 		t.Fatalf("want at least 3 verified identities, got %d", verified)
@@ -177,8 +164,7 @@ func TestValidatorsAndBlobs(t *testing.T) {
 			Count  int64                    `json:"probe_count"`
 			Oblig  struct{ Num, Den int64 } `json:"serve_rate_by_obligation"`
 		} `json:"windows"`
-		Recent   []any            `json:"recent_probes"`
-		Excluded []map[string]any `json:"serve_rate_excluded_classes"`
+		Recent []any `json:"recent_probes"`
 	}
 	// The embedded validator object is built over a window like every other
 	// response, and the window it was built over is echoed at the top level.
@@ -203,9 +189,6 @@ func TestValidatorsAndBlobs(t *testing.T) {
 	// obligation figures are empty rather than counted under older rules.
 	if one.Windows[3].Oblig.Den != 0 {
 		t.Fatalf("obligations counted over records with unknown attestation: %+v", one.Windows[3])
-	}
-	if len(one.Excluded) == 0 {
-		t.Fatal("the detail response must say which classes the rate leaves out")
 	}
 	if code := get(t, ts, "/v1/validators/"+vals.Validators[0].Address+"?window=bogus", nil); code != 400 {
 		t.Fatalf("bad window on the detail endpoint should be a 400")
@@ -238,9 +221,10 @@ func TestValidatorsAndBlobs(t *testing.T) {
 			if b.Reconstructable.NeededRows != 4096 {
 				t.Fatalf("needed rows = %d", b.Reconstructable.NeededRows)
 			}
-			// three of four validators served at the last complete in-window point; 3 × ~3000
-			// distinct rows > 4096 needed, but not everyone answered.
-			if b.Reconstructable.Status != "degraded" || b.Reconstructable.ServedRows < 4096 {
+			// three of four validators served at the last complete in-window
+			// point; 3 × ~3000 distinct rows > 4096 needed: Available,
+			// whoever else did not answer.
+			if b.Reconstructable.Status != "yes" || b.Reconstructable.ServedRows < 4096 {
 				t.Fatalf("blob %s reconstructable = %+v", b.PromiseHash, b.Reconstructable)
 			}
 		}
@@ -269,9 +253,8 @@ func TestValidatorsAndBlobs(t *testing.T) {
 
 type reconResp struct {
 	Status           string `json:"status"`
-	Point            string `json:"point"`
+	PointAt          string `json:"point_at"`
 	ServedBy         int    `json:"served_by_validators"`
-	Assigned         int    `json:"assigned_validators"`
 	ProbedValidators int    `json:"probed_validators"`
 }
 
@@ -297,9 +280,10 @@ func insert(t *testing.T, st *store.Store, m probe.Measurement) {
 	}
 }
 
-// A newer in-window point with a row for only one validator must not flip
-// the blob's verdict: the verdict stays at the last complete point, and a
-// point where every validator was skipped by the policy is not "no".
+// A blob read on the earlier schedule is judged at the newest point every
+// endorsing validator answered at: a newer point with a row for only one
+// validator must not flip its status, and a point where every validator was
+// skipped is not "no".
 func TestReconstructableIgnoresIncompletePoint(t *testing.T) {
 	ts, st := serverAndStore(t)
 	var before struct{ Blobs []blobResp }
@@ -308,7 +292,7 @@ func TestReconstructableIgnoresIncompletePoint(t *testing.T) {
 	}
 	var target blobResp
 	for _, b := range before.Blobs {
-		if b.Reconstructable != nil && (b.Reconstructable.Status == "yes" || b.Reconstructable.Status == "degraded") {
+		if b.Reconstructable != nil && b.Reconstructable.Status == "yes" {
 			target = b
 			break
 		}
@@ -340,7 +324,7 @@ func TestReconstructableIgnoresIncompletePoint(t *testing.T) {
 			continue
 		}
 		r := b.Reconstructable
-		if r.Status != target.Reconstructable.Status || r.Point != target.Reconstructable.Point {
+		if r.Status != target.Reconstructable.Status || r.PointAt != target.Reconstructable.PointAt {
 			t.Fatalf("incomplete point changed the verdict: before %+v after %+v", target.Reconstructable, r)
 		}
 	}
@@ -366,20 +350,18 @@ func TestReconstructableIgnoresIncompletePoint(t *testing.T) {
 		}
 	}
 
-	// a blob whose only in-window point is half done is "pending", not "no"
 	var netAll struct {
 		Reconstructable struct {
-			Rate    struct{ Num, Den int64 } `json:"rate"`
-			Pending int64                    `json:"pending"`
+			Recoverable struct{ Num, Den int64 } `json:"recoverable"`
 		} `json:"reconstructable"`
 	}
 	get(t, ts, "/v1/network?window=all", &netAll)
-	if netAll.Reconstructable.Rate.Den == 0 {
+	if netAll.Reconstructable.Recoverable.Den == 0 {
 		t.Fatal("network reconstructable lost its denominator")
 	}
 }
 
-// Rows from a second vantage never make served_by exceed assigned.
+// Rows from a second vantage never count a validator twice.
 func TestTwoVantagesDoNotDoubleCountReconstructability(t *testing.T) {
 	ts, st := serverAndStore(t)
 	for _, m := range sampleMeasurements(t) {
@@ -389,8 +371,8 @@ func TestTwoVantagesDoNotDoubleCountReconstructability(t *testing.T) {
 	var blobs struct{ Blobs []blobResp }
 	get(t, ts, "/v1/blobs", &blobs)
 	for _, b := range blobs.Blobs {
-		if r := b.Reconstructable; r != nil && r.ServedBy > r.Assigned {
-			t.Fatalf("served_by %d > assigned %d for %s", r.ServedBy, r.Assigned, b.PromiseHash)
+		if r := b.Reconstructable; r != nil && (r.ServedBy > r.ProbedValidators || r.ProbedValidators > 4) {
+			t.Fatalf("served_by %d, asked %d of 4 validators for %s", r.ServedBy, r.ProbedValidators, b.PromiseHash)
 		}
 	}
 	var meta struct {

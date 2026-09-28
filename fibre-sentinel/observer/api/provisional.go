@@ -1,34 +1,35 @@
 package api
 
-// Provisional faults, and the network reference beside a validator's rate.
+// Provisional not-served readings, and the network reference beside a
+// validator's rate.
 //
-// A FAULT younger than verdict.FaultSettling can still be withdrawn by
-// evidence already on its way (the rest of its schedule point's cohort, a
-// params range the scanner has not noticed yet). This file labels it: a
-// probe row carries provisional: true, and a broken obligation whose every
-// FAULT is that young is counted in provisional_faults beside the figure it
-// is already part of.
+// A reading that counts as not served (rollup.CountedClass FAULT) and is
+// younger than verdict.FaultSettling can still be withdrawn by evidence
+// already on its way (a params range the scanner has not noticed yet). This
+// file labels it: a reading carries provisional: true, and a not-served
+// obligation whose every such reading is that young is counted in
+// provisional_faults beside the figure it is already part of.
 //
 // Why the headline keeps them. Three options were weighed against the
 // methodology's own rules:
 //
 //   - Hold provisional faults out of the rate. Rejected: it withholds the
 //     accusation and not the credit, and docs/verdicts.md refuses exactly
-//     that everywhere else (RETENTION_UNVERIFIED, UNATTESTED, grace) because
-//     it raises every rate it touches. A validator faulting now would read
-//     cleaner for half an hour than one that faulted yesterday.
+//     that everywhere else (RETENTION_UNVERIFIED, UNATTESTED) because it
+//     raises every rate it touches. A validator failing now would read
+//     cleaner for half an hour than one that failed yesterday.
 //   - Hold every obligation decided in the last half hour, serves and
 //     faults alike. Symmetric, but it is only a longer "pending": the
 //     headline lags by the settling period for everyone, and the thing a
 //     reader wanted to know — this fault is fresh, it can still move — is
 //     no longer shown at all.
-//   - Count it, flag it. Chosen. A FAULT is conclusive from one reading
-//     (the shard was not there at that minute), and the automatic
-//     withdrawal paths already act on the store — a suspect point drops the
-//     rows from every count, a params range withholds them in the
-//     transaction that records it, and both move the snapshot revision — so
-//     a fault that is withdrawn leaves the headline by itself. The flag says
-//     which part of the figure can still move and until when.
+//   - Count it, flag it. Chosen. A not-served reading is conclusive from
+//     one reading (the blob could not be reconstructed at that minute), and
+//     the automatic withdrawal paths already act on the store — a params
+//     range withholds the rows in the transaction that records it and moves
+//     the snapshot revision — so a reading that is withdrawn leaves the
+//     headline by itself. The flag says which part of the figure can still
+//     move and until when.
 //
 // The label decays with the clock, not with a recomputation: every
 // provisional count carries `until`, the moment its youngest fault settles,
@@ -58,8 +59,8 @@ type provisionalFaults struct {
 	Note            string `json:"note"`
 }
 
-const provisionalNote = "Counted in broken and in the rate, and final at `until` unless withdrawn: by an observer-wide failure at the same reading, " +
-	"an x/fibre params change not reconciled yet, or the rows verified from a second location."
+const provisionalNote = "Counted in broken and in the rate, and final at `until` unless withdrawn: by an x/fibre params change not reconciled yet, " +
+	"or the rows verified from a second location."
 
 // provisionalCutoff is the started_at bound above which a FAULT is
 // provisional at now.

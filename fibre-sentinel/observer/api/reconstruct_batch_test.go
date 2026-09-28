@@ -13,9 +13,9 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
-// The batched reconstructability path exists for speed, so the only thing worth
-// testing about it is that it did not buy speed with a different answer. Every
-// case below is built to land on a particular branch and is compared field by
+// The batched blob status exists for speed, so the only thing worth testing
+// about it is that it did not buy speed with a different answer. Every case
+// below is built to land on a particular branch and is compared field by
 // field against the reference, except served_distinct_rows, which the batch
 // deliberately does not compute: the summary is its only caller and does not
 // publish it, and not computing it is exactly what lets the bounds replace the
@@ -24,7 +24,7 @@ import (
 // The case that matters most is "ambiguous". The bounded path decides from
 // sigma_rows - distinct_rows, and when a blob's served rows land within that
 // many of the threshold the bounds straddle it and the code must fall back to
-// the real union rather than guess. If that fallback ever breaks, this is the
+// the real count rather than guess. If that fallback ever breaks, this is the
 // test that says so.
 
 type valRows struct {
@@ -32,7 +32,7 @@ type valRows struct {
 	rows     []int
 	attested any // 1, 0 or nil
 	served   bool
-	nullRows bool
+	nullRows bool // served, but the row list was not recorded
 	failLast bool // served at every point but the last, where it answers NOT_FOUND
 }
 
@@ -43,6 +43,7 @@ type blobCase struct {
 	vals     []valRows
 	points   int  // how many in-window schedule points to write
 	complete bool // whether every assigned validator has a result at the last point
+	over     bool // the retention window has closed
 	want     string
 }
 
@@ -52,6 +53,9 @@ func writeBlob(t *testing.T, st *store.Store, idx int, c blobCase) string {
 	hash := fmt.Sprintf("%064x", idx+1)
 	now := time.Now().UTC()
 	msu := store.TS(now.Add(2 * time.Hour))
+	if c.over {
+		msu = store.TS(now.Add(-time.Hour))
+	}
 
 	sigma, seen := 0, map[int]struct{}{}
 	for _, v := range c.vals {
@@ -112,8 +116,19 @@ func writeBlob(t *testing.T, st *store.Store, idx int, c blobCase) string {
 				continue
 			}
 			outcome, class := "NOT_FOUND", "FAULT"
-			if v.served && !(last && v.failLast) {
+			serves := v.served && !(last && v.failLast)
+			returned, verified := 0, 0
+			var idx any
+			if serves {
 				outcome, class = "SERVED_OK", "HEALTHY"
+				returned, verified = len(v.rows), 1
+				if !v.nullRows {
+					b, err := json.Marshal(v.rows)
+					if err != nil {
+						t.Fatal(err)
+					}
+					idx = string(b)
+				}
 			}
 			key := fmt.Sprintf("%s-%s-%d", hash, v.addr, p)
 			if _, err := db.Exec(`INSERT INTO probes (
@@ -124,13 +139,13 @@ func writeBlob(t *testing.T, st *store.Store, idx int, c blobCase) string {
 				peer_cert_sha256, identity_ok, identity_reason, download_ok, download_ms,
 				rows_returned, rows_expected, commitment_verified, assignment_verified,
 				phase, outcome, classification, classification_reason, raw_error,
-				total_duration_ms, raw_json, attested
+				total_duration_ms, raw_json, attested, row_indices
 			) VALUES (?, 'v1', ?, ?, 0, ?, 1, ?, 'h:1', 1, ?, ?, ?, ?, ?, 0,
-				1,1,1,1,1,1,'TLS1.3','', 1,'', ?, 1, ?, ?, 1, 1,
-				'in_window', ?, ?, '', '', 1, '{}', ?)`,
+				1,1,1,1,1,1,'TLS1.3','', 1,'', ?, 1, ?, ?, ?, ?,
+				'in_window', ?, ?, '', '', 1, '{}', ?, ?)`,
 				key, hash, hash, msu, v.addr, len(v.rows), fmt.Sprintf("w%d", p+1),
-				at, at, at, boolInt(v.served && !(last && v.failLast)), len(v.rows), len(v.rows),
-				outcome, class, v.attested); err != nil {
+				at, at, at, boolInt(serves), returned, len(v.rows), verified, verified,
+				outcome, class, v.attested, idx); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -160,39 +175,46 @@ func TestReconstructBatchMatchesReference(t *testing.T) {
 		full = append(full, i)
 	}
 	cases := []blobCase{{
-		name:   "yes: every proven-obliged validator served, rows well over the threshold",
+		name:   "yes: enough verified rows came back",
 		needed: 40, total: 160, points: 2, complete: true, want: "yes",
 		vals: []valRows{
 			{addr: "a1", rows: full[:20], attested: 1, served: true},
 			{addr: "a2", rows: full[20:], attested: 1, served: true},
 		},
 	}, {
-		name:   "degraded: rows all came back, but a proven-obliged validator stayed quiet",
-		needed: 20, total: 160, points: 2, complete: true, want: "degraded",
+		name:   "yes: the rows came back though an endorsing validator failed",
+		needed: 20, total: 160, points: 2, complete: true, want: "yes",
 		vals: []valRows{
 			{addr: "b1", rows: full[:20], attested: 1, served: true},
 			{addr: "b2", rows: full[20:], attested: 1, served: false},
 		},
 	}, {
-		name:   "no: fewer rows came back than the blob needs",
+		name:   "no: fewer rows came back than the blob needs, and nobody was left to ask",
 		needed: 35, total: 160, points: 2, complete: true, want: "no",
 		vals: []valRows{
 			{addr: "c1", rows: full[:20], attested: 1, served: true},
 			{addr: "c2", rows: full[20:], attested: 1, served: false},
 		},
 	}, {
-		name:   "pending: no point where every assigned validator has a result",
-		needed: 20, total: 160, points: 1, complete: false, want: "pending",
+		name:   "pending: short, and the validator without a row could still make it up",
+		needed: 30, total: 160, points: 1, complete: false, want: "pending",
 		vals: []valRows{
 			{addr: "d1", rows: full[:20], attested: 1, served: true},
 			{addr: "d2", rows: full[20:], attested: 1, served: true},
 		},
 	}, {
-		name:   "unknown: a served validator has no recorded row list",
-		needed: 20, total: 160, points: 2, complete: true, want: "unknown",
+		name:   "not_read: the same, once the window closed",
+		needed: 30, total: 160, points: 1, complete: false, over: true, want: "not_read",
+		vals: []valRows{
+			{addr: "n1", rows: full[:20], attested: 1, served: true},
+			{addr: "n2", rows: full[20:], attested: 1, served: true},
+		},
+	}, {
+		name:   "pending: served rows without an index list, and the bounds cannot decide",
+		needed: 25, total: 160, points: 2, complete: true, want: "pending",
 		vals: []valRows{
 			{addr: "e1", rows: full[:20], attested: 1, served: true, nullRows: true},
-			{addr: "e2", rows: full[20:], attested: 1, served: true},
+			{addr: "e2", rows: full[:20], attested: 1, served: true, nullRows: true},
 		},
 	}, {
 		name:   "unknown: the publication recorded no protocol params",
@@ -202,17 +224,13 @@ func TestReconstructBatchMatchesReference(t *testing.T) {
 			{addr: "f2", rows: full[20:], attested: 1, served: true},
 		},
 	}, {
-		// Attestation unknown for the whole assignment: the reference falls
-		// back to the assigned set for "whole", and so must the batch.
-		name:   "yes with attestation unrecorded: the assigned set is the denominator",
+		name:   "yes with attestation unrecorded",
 		needed: 20, total: 160, points: 2, complete: true, want: "yes",
 		vals: []valRows{
 			{addr: "g1", rows: full[:20], attested: nil, served: true},
 			{addr: "g2", rows: full[20:], attested: nil, served: true},
 		},
 	}, {
-		// A quiet validator that the promise does NOT prove was obliged must
-		// not demote the verdict.
 		name:   "yes: the only quiet validator was never proven to owe the blob",
 		needed: 20, total: 160, points: 2, complete: true, want: "yes",
 		vals: []valRows{
@@ -221,15 +239,14 @@ func TestReconstructBatchMatchesReference(t *testing.T) {
 		},
 	}}
 
-	// Three of four validators failing at the newest point is a point the
-	// correlated-failure guard calls suspect, and every rate leaves it out.
-	// The verdict is drawn at the newest point that is complete and not
-	// suspect; judged at the suspect one it read "no" (one validator's ten
-	// rows against twenty needed) on what is as likely the observer's own
-	// trouble.
+	// Three of four validators failing at the reading is one the
+	// correlated-failure guard sets aside, and the blob could not be
+	// reconstructed there: nothing is judged. The earlier point is not
+	// judged instead; the blob waits (pending) and, once its window has
+	// closed, was not read by Tensile.
 	cases = append(cases, blobCase{
-		name:   "suspect: the newest complete point is excluded, the one before it judges",
-		needed: 20, total: 160, points: 2, complete: true, want: "yes",
+		name:   "suspect: the reading is set aside, the earlier point does not judge",
+		needed: 20, total: 160, points: 2, complete: true, want: "pending",
 		vals: []valRows{
 			{addr: "j1", rows: full[:10], attested: 1, served: true},
 			{addr: "j2", rows: full[10:20], attested: 1, served: true, failLast: true},
@@ -237,8 +254,8 @@ func TestReconstructBatchMatchesReference(t *testing.T) {
 			{addr: "j4", rows: full[30:40], attested: 1, served: true, failLast: true},
 		},
 	}, blobCase{
-		name:   "suspect: the only point is excluded, nothing is judged",
-		needed: 20, total: 160, points: 1, complete: true, want: "unknown",
+		name:   "suspect: the only reading is set aside, window over",
+		needed: 20, total: 160, points: 1, complete: true, over: true, want: "not_read",
 		vals: []valRows{
 			{addr: "k1", rows: full[:10], attested: 1, served: true},
 			{addr: "k2", rows: full[10:20], attested: 1, served: true, failLast: true},
@@ -248,33 +265,32 @@ func TestReconstructBatchMatchesReference(t *testing.T) {
 	})
 
 	// The ambiguous band. Both validators hold row 0..19, so sigma is 40 and
-	// distinct is 20: excess is 20. One serves, so the bounds on the union are
-	// [20-20, 20] = [0, 20] and needed is 20 — they straddle it exactly, and
-	// only the real union (20) answers. This is the fallback's reason to exist.
+	// distinct is 20: excess is 20. One serves, so the bounds on the distinct
+	// rows are [20-20, 20] = [0, 20] and needed is 20 — they straddle it
+	// exactly, and only the real count (20) answers. This is the fallback's
+	// reason to exist.
 	cases = append(cases, blobCase{
 		name:   "ambiguous: overlapping assignments put the bounds either side of the threshold",
-		needed: 20, total: 160, points: 2, complete: true, want: "degraded",
+		needed: 20, total: 160, points: 2, complete: true, want: "yes",
 		vals: []valRows{
 			{addr: "i1", rows: full[:20], attested: 1, served: true},
 			{addr: "i2", rows: full[:20], attested: 1, served: false},
 		},
 	})
 
-	// An end-of-window reading of the endorsed validators alone
-	// (sentinel-probe -end-read) leaves the validators the promise does not
-	// name as signers without a row. They owe the blob nothing, so the point
-	// is complete once every endorsed validator has a result; a missing
-	// endorsed validator still leaves it pending.
+	// A validator the promise does not name as a signer owes the blob
+	// nothing, and a reading that has enough rows does not ask it; its rows
+	// count when they come back all the same.
 	cases = append(cases, blobCase{
-		name:   "complete without the unendorsed: every endorsed validator was read",
+		name:   "yes: the unendorsed validator was not read",
 		needed: 20, total: 160, points: 1, complete: false, want: "yes",
 		vals: []valRows{
 			{addr: "l1", rows: full[:20], attested: 1, served: true},
 			{addr: "l2", rows: full[20:], attested: 0, served: false},
 		},
 	}, blobCase{
-		name:   "pending: an endorsed validator has no result yet",
-		needed: 20, total: 160, points: 1, complete: false, want: "pending",
+		name:   "yes: rows from a validator the promise does not name count all the same",
+		needed: 20, total: 160, points: 1, complete: false, want: "yes",
 		vals: []valRows{
 			{addr: "m1", rows: full[:20], attested: 0, served: true},
 			{addr: "m2", rows: full[20:], attested: 1, served: true},
@@ -402,16 +418,15 @@ func TestReconstructBatchHonoursTheAsOfPin(t *testing.T) {
 		t.Fatalf("live status = %+v, want yes", live[hash])
 	}
 
-	// Pinned to a minute before the first probe: nothing had been observed,
-	// so there is nothing to say.
+	// Pinned to a minute before the first reading: nothing had been read,
+	// and the window was open, so the blob was in its retention window.
 	before := time.Now().UTC().Add(-time.Minute)
 	pinned, err := s.reconstructBatch(ctx, "", 1, asOfPin{at: store.TS(before), now: before})
 	if err != nil {
 		t.Fatalf("pinned: %v", err)
 	}
-	if pinned[hash] != nil && pinned[hash].Status != "unknown" {
-		t.Fatalf("pinned before any probe: status = %q, want unknown or absent — the verdict was drawn from rows that did not exist yet",
-			pinned[hash].Status)
+	if pinned[hash] == nil || pinned[hash].Status != "pending" {
+		t.Fatalf("pinned before any reading: %+v, want pending — a status drawn from rows that did not exist yet", pinned[hash])
 	}
 
 	// The reference must agree with the batch at the same pin.
@@ -419,8 +434,8 @@ func TestReconstructBatchHonoursTheAsOfPin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reference pinned: %v", err)
 	}
-	if ref.Status != "unknown" {
-		t.Fatalf("reference pinned status = %q, want unknown", ref.Status)
+	if ref.Status != "pending" {
+		t.Fatalf("reference pinned status = %q, want pending", ref.Status)
 	}
 	// And window_over is asked at the pin, not at the clock: the deadline is
 	// two hours out, so it had not passed then and has not passed now.
@@ -429,7 +444,7 @@ func TestReconstructBatchHonoursTheAsOfPin(t *testing.T) {
 	}
 }
 
-// The blob page names the points no verdict counts, tallied as the verdict
+// The blob page names the readings nothing counts at, tallied as the status
 // tallies them, and a publication with nothing assigned is empty lists, not
 // nulls a page has to guard against.
 func TestBlobDetailListsItsSuspectPointsAndNoNullLists(t *testing.T) {
@@ -481,12 +496,29 @@ func TestBlobDetailListsItsSuspectPointsAndNoNullLists(t *testing.T) {
 	}
 	var blob struct {
 		Reconstructable struct {
-			Status string `json:"status"`
-			Point  string `json:"point"`
+			Status  string `json:"status"`
+			PointAt string `json:"point_at"`
 		} `json:"reconstructable"`
 	}
-	if err := json.Unmarshal(got["blob"], &blob); err != nil || blob.Reconstructable.Status != "yes" || blob.Reconstructable.Point != "w1" {
-		t.Fatalf("verdict beside the suspect point: %+v (%v)", blob.Reconstructable, err)
+	var probes []struct {
+		Label   string `json:"schedule_label"`
+		At      string `json:"scheduled_at"`
+		Service string `json:"service"`
+	}
+	if err := json.Unmarshal(got["probes"], &probes); err != nil {
+		t.Fatal(err)
+	}
+	var w2 string
+	for _, p := range probes {
+		if p.Label == "w2" {
+			w2 = p.At
+			if p.Service != "" {
+				t.Errorf("a reading at the suspect point counts as %q", p.Service)
+			}
+		}
+	}
+	if err := json.Unmarshal(got["blob"], &blob); err != nil || blob.Reconstructable.Status != "pending" || blob.Reconstructable.PointAt != w2 {
+		t.Fatalf("status beside the suspect reading: %+v (%v), want pending at %s", blob.Reconstructable, err, w2)
 	}
 
 	got = fetch(empty)

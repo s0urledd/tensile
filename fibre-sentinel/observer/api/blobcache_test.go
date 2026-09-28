@@ -134,8 +134,8 @@ func TestCachedBlobVerdictFollowsLateProbes(t *testing.T) {
 	if first.ProbeCount != 1 || first.Recon.ProbedValidators != 1 {
 		t.Fatalf("first read: probe_count %d, probed %d, want 1 and 1", first.ProbeCount, first.Recon.ProbedValidators)
 	}
-	if first.Recon.Status != "pending" {
-		t.Fatalf("first read status %q, want \"pending\": only one of two assigned validators has been heard from",
+	if first.Recon.Status != "not_read" {
+		t.Fatalf("first read status %q, want \"not_read\": one of two validators was heard from, and the other could have made up the rows",
 			first.Recon.Status)
 	}
 
@@ -160,8 +160,8 @@ func TestCachedBlobVerdictFollowsLateProbes(t *testing.T) {
 		t.Fatalf("after the late probe: probe_count %d, probed %d, want 2 and 2 — the cache did not notice a new row",
 			third.ProbeCount, third.Recon.ProbedValidators)
 	}
-	if third.Recon.Status == "pending" {
-		t.Error("status is still \"pending\" after both assigned validators were heard from: a stale verdict about a settled blob")
+	if third.Recon.Status != "yes" {
+		t.Errorf("status %q after both validators' rows came back: a stale verdict about a settled blob", third.Recon.Status)
 	}
 	if third.Classes["HEALTHY"] != 2 {
 		t.Errorf("classes = %v, want two HEALTHY", third.Classes)

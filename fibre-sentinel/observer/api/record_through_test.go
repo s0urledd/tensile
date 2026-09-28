@@ -53,13 +53,13 @@ func TestEveryFigureSaysThroughWhichBlockItWasComputed(t *testing.T) {
 			t.Fatalf("figure %s rests on %q, which evidence_kinds does not define", figure, kind)
 		}
 	}
-	for _, figure := range []string{"serve_rate", "faults", "reachability", "publications", "signed_shards", "fees_settled", "throughput", "endorsed"} {
+	for _, figure := range []string{"obligations", "reconstructable", "reachability", "publications", "signed_shards", "fees_settled", "throughput", "endorsed"} {
 		if meta.Evidence[figure] == "" {
 			t.Fatalf("headline figure %s has no evidence kind", figure)
 		}
 	}
 	// The three are different claims and the map must keep them apart.
-	if meta.Evidence["reachability"] == meta.Evidence["faults"] || meta.Evidence["faults"] == meta.Evidence["publications"] {
+	if meta.Evidence["reachability"] == meta.Evidence["obligations"] || meta.Evidence["obligations"] == meta.Evidence["publications"] {
 		t.Fatalf("evidence kinds blurred: %v", meta.Evidence)
 	}
 }

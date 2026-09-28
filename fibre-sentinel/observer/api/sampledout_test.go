@@ -197,14 +197,13 @@ func soStore(t *testing.T, f soFixture, asRows bool) *store.Store {
 }
 
 // volatile are the response fields that say when or how fast an answer was
-// computed; the lists of rows and of decisions, where a sampled-out
-// publication is listed once as a decision instead of once per row
-// (TestSampledOutBlobAndProbesListTheDecision checks those); and the
-// store's own row counts in /v1/meta, which are how many rows it holds and
-// are meant to shrink.
+// computed; the lists of rows, where a sampled-out publication's rows are
+// not listed (TestSampledOutBlobsCountTheRowsTheyStandFor checks those); the
+// newest reading row (/v1/meta last_probe_at), which a decision is not; and
+// the store's own row counts in /v1/meta, which are how many rows it holds
+// and are meant to shrink.
 var volatile = map[string]bool{"computed_at": true, "compute_ms": true, "server_time": true,
-	"sampled_out": true, "sampled_out_truncated": true, "recent_probes": true, "recent_probes_truncated": true,
-	"recent_sampled_out": true, "recent_sampled_out_truncated": true, "counts": true}
+	"recent_probes": true, "recent_probes_truncated": true, "last_probe_at": true, "counts": true}
 
 func strip(v any) any {
 	switch x := v.(type) {
@@ -433,10 +432,10 @@ func TestSampledOutFiguresUnchanged(t *testing.T) {
 	compareStores(t, "migrated after rollup", rows, mig)
 }
 
-// Where the site listed a sampled-out blob's 480 marks it now gets the
-// decision once, with the probability it was drawn at; the counts beside it
-// are unchanged.
-func TestSampledOutBlobAndProbesListTheDecision(t *testing.T) {
+// A blob the earlier load policy drew out of its sample was not read: its
+// counts still stand for the NOT_PROBED rows its one decision replaces, and
+// no reading row is listed for it anywhere.
+func TestSampledOutBlobsCountTheRowsTheyStandFor(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	f := sampledOutFixture(now)
 	ts := httptest.NewServer(api.New(soStore(t, f, false), "test"))
@@ -444,64 +443,27 @@ func TestSampledOutBlobAndProbesListTheDecision(t *testing.T) {
 
 	var blob struct {
 		Blob struct {
-			ProbeCount int64            `json:"probe_count"`
-			Classes    map[string]int64 `json:"classes"`
-			SampledOut *struct {
-				P          float64 `json:"p"`
-				Binding    string  `json:"binding"`
-				Commitment string  `json:"day_commitment"`
-				Reason     string  `json:"reason"`
-				Validators int64   `json:"validators"`
-				Points     int64   `json:"points"`
-				Rows       int64   `json:"rows"`
-			} `json:"sampled_out"`
+			ProbeCount      int64            `json:"probe_count"`
+			Classes         map[string]int64 `json:"classes"`
+			Reconstructable struct {
+				Status string `json:"status"`
+			} `json:"reconstructable"`
 		} `json:"blob"`
 		Probes []any `json:"probes"`
 	}
 	get(t, ts, "/v1/blobs/outold", &blob)
-	so := blob.Blob.SampledOut
-	if so == nil || so.P != 0.286 || so.Binding != "validator_bytes_per_day" || so.Commitment != "c0ffee" ||
-		so.Validators != 6 || so.Points != 6 || so.Rows != 36 || !strings.HasPrefix(so.Reason, probe.SampledOutReasonPrefix) {
-		t.Fatalf("sampled_out: %+v", so)
-	}
 	if blob.Blob.ProbeCount != 36 || blob.Blob.Classes["NOT_PROBED"] != 36 || len(blob.Probes) != 0 {
 		t.Fatalf("blob counts %d %v, %d probe rows listed", blob.Blob.ProbeCount, blob.Blob.Classes, len(blob.Probes))
 	}
-	blob.Blob.SampledOut = nil
-	get(t, ts, "/v1/blobs/probedold", &blob)
-	if blob.Blob.SampledOut != nil {
-		t.Fatal("a probed blob reads as sampled out")
+	if blob.Blob.Reconstructable.Status != "not_read" {
+		t.Fatalf("a sampled-out blob whose window closed reads %q, want not_read", blob.Blob.Reconstructable.Status)
 	}
 
 	var probes struct {
-		Probes     []any `json:"probes"`
-		SampledOut []struct {
-			PromiseHash string  `json:"promise_hash"`
-			P           float64 `json:"p"`
-		} `json:"sampled_out"`
+		Probes []any `json:"probes"`
 	}
 	get(t, ts, "/v1/probes?blob=outrecent", &probes)
-	if len(probes.Probes) != 0 || len(probes.SampledOut) != 1 || probes.SampledOut[0].P != 0.311 {
-		t.Fatalf("/v1/probes?blob=outrecent: %+v", probes)
-	}
-	get(t, ts, "/v1/probes?validator="+soAddr(1)+"&limit=1000", &probes)
-	if len(probes.SampledOut) != 3 {
-		t.Fatalf("a validator assigned in three sampled-out blobs lists %d decisions", len(probes.SampledOut))
-	}
-	probes.SampledOut = nil
-	get(t, ts, "/v1/probes?class=HEALTHY&limit=1000", &probes)
-	if len(probes.SampledOut) != 0 {
-		t.Fatal("decisions listed under a class they are not")
-	}
-
-	var val struct {
-		Recent []struct {
-			PromiseHash string `json:"promise_hash"`
-			Rows        int64  `json:"rows"`
-		} `json:"recent_sampled_out"`
-	}
-	get(t, ts, "/v1/validators/"+soAddr(0)+"?window=7d", &val)
-	if len(val.Recent) != 3 || val.Recent[0].PromiseHash != "outpending" || val.Recent[0].Rows != 36 {
-		t.Fatalf("validator page's sampled-out list: %+v", val.Recent)
+	if len(probes.Probes) != 0 {
+		t.Fatalf("/v1/probes?blob=outrecent lists %d rows", len(probes.Probes))
 	}
 }

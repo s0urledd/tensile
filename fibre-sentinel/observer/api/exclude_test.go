@@ -43,12 +43,11 @@ func excludeFixture(t *testing.T) *httptest.Server {
 }
 
 type netFigures struct {
-	Obligations   obligationsJSON          `json:"obligations"`
-	Faults        int64                    `json:"faults"`
-	ProbeCount    int64                    `json:"probe_count"`
-	ServeRate     struct{ Num, Den int64 } `json:"serve_rate"`
-	Excluded      []string                 `json:"excluded"`
-	ExcludeNote   string                   `json:"exclude_note"`
+	Obligations   obligationsJSON  `json:"obligations"`
+	Classes       map[string]int64 `json:"classes"`
+	ProbeCount    int64            `json:"probe_count"`
+	Excluded      []string         `json:"excluded"`
+	ExcludeNote   string           `json:"exclude_note"`
 	VantageHealth struct {
 		Suspect []struct{ Label string } `json:"suspect"`
 	} `json:"vantage_health"`
@@ -69,8 +68,8 @@ func TestExcludeRecomputesTheHeadlineWithoutAValidator(t *testing.T) {
 	if o.Total != 4 || o.Served != 1 || o.Broken != 1 || o.NotCounted != 2 {
 		t.Fatalf("fixture: obligations = %+v, want one served, one not served, two counted neither way", o)
 	}
-	if all.Faults != 1 {
-		t.Fatalf("fixture: faults = %d, want 1", all.Faults)
+	if all.Classes["FAULT"] != 1 {
+		t.Fatalf("fixture: FAULT readings = %d, want 1", all.Classes["FAULT"])
 	}
 	if all.Excluded != nil || all.ExcludeNote != "" {
 		t.Errorf("an unfiltered answer must not claim an exclusion: %v %q", all.Excluded, all.ExcludeNote)
@@ -89,8 +88,8 @@ func TestExcludeRecomputesTheHeadlineWithoutAValidator(t *testing.T) {
 	if l.Rate.Num != 1 || l.Rate.Den != 1 {
 		t.Errorf("excluded rate = %d/%d, want 1/1", l.Rate.Num, l.Rate.Den)
 	}
-	if less.Faults != 0 {
-		t.Errorf("excluded faults = %d, want 0: the only fault was that validator's", less.Faults)
+	if less.Classes["FAULT"] != 0 {
+		t.Errorf("excluded FAULT readings = %d, want 0: the only one was that validator's", less.Classes["FAULT"])
 	}
 	if less.ProbeCount != all.ProbeCount-4 {
 		t.Errorf("excluded probe_count = %d, want %d: four probe rows left with it", less.ProbeCount, all.ProbeCount-4)
@@ -109,9 +108,9 @@ func TestExcludeRecomputesTheHeadlineWithoutAValidator(t *testing.T) {
 	if code := get(t, ts, "/v1/network?window=all", &again); code != 200 {
 		t.Fatalf("network after exclude: %d", code)
 	}
-	if again.Obligations != all.Obligations || again.Faults != all.Faults {
-		t.Errorf("the cached summary was poisoned by a filtered request: %+v (%d faults), want %+v (%d)",
-			again.Obligations, again.Faults, all.Obligations, all.Faults)
+	if again.Obligations != all.Obligations || again.Classes["FAULT"] != all.Classes["FAULT"] {
+		t.Errorf("the cached summary was poisoned by a filtered request: %+v (%d FAULT), want %+v (%d)",
+			again.Obligations, again.Classes["FAULT"], all.Obligations, all.Classes["FAULT"])
 	}
 	if again.Excluded != nil {
 		t.Errorf("the unfiltered answer came back claiming an exclusion: %v", again.Excluded)

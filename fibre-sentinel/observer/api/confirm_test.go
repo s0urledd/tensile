@@ -17,10 +17,8 @@ import (
 )
 
 type confirmNet struct {
-	Obligations obligationsJSON          `json:"obligations"`
-	ServeRate   struct{ Num, Den int64 } `json:"serve_rate"`
-	Faults      int64                    `json:"faults"`
-	Classes     map[string]int64         `json:"classes"`
+	Obligations obligationsJSON  `json:"obligations"`
+	Classes     map[string]int64 `json:"classes"`
 }
 
 func confirmServer(t *testing.T, st *store.Store) *httptest.Server {
@@ -110,8 +108,8 @@ func TestAFaultIsClearedOrConfirmedFromASecondVantage(t *testing.T) {
 	if code := get(t, confirmServer(t, st), "/v1/network?window=all", &before); code != 200 {
 		t.Fatalf("network: %d", code)
 	}
-	if before.Obligations.Broken != 4 || before.Faults != 4 {
-		t.Fatalf("before: broken %d, faults %d; want 4 and 4", before.Obligations.Broken, before.Faults)
+	if before.Obligations.Broken != 4 || before.Classes["FAULT"] != 4 {
+		t.Fatalf("before: broken %d, FAULT readings %d; want 4 and 4", before.Obligations.Broken, before.Classes["FAULT"])
 	}
 
 	// The second vantage's answers, as the pull copies them in.
@@ -163,12 +161,8 @@ func TestAFaultIsClearedOrConfirmedFromASecondVantage(t *testing.T) {
 		t.Errorf("broken %d -> %d, not_counted %d -> %d; want one fault withdrawn to not counted, never to served",
 			b.Broken, a.Broken, b.NotCounted, a.NotCounted)
 	}
-	if after.Faults != 3 {
-		t.Errorf("faults = %d, want 3", after.Faults)
-	}
-	if after.ServeRate.Num != before.ServeRate.Num || after.ServeRate.Den != before.ServeRate.Den-1 {
-		t.Errorf("serve_rate %d/%d -> %d/%d; want the cleared fault out of the denominator and nothing added",
-			before.ServeRate.Num, before.ServeRate.Den, after.ServeRate.Num, after.ServeRate.Den)
+	if after.Classes["FAULT"] != 3 || after.Classes["HEALTHY"] != before.Classes["HEALTHY"] {
+		t.Errorf("classes %v -> %v; want one FAULT withdrawn and nothing added", before.Classes, after.Classes)
 	}
 
 	ts := confirmServer(t, st)
@@ -213,9 +207,9 @@ func TestAFaultIsClearedOrConfirmedFromASecondVantage(t *testing.T) {
 
 	var vals struct {
 		Validators []struct {
-			Address       string `json:"address"`
-			Faults        int64  `json:"faults"`
-			FaultsCleared int64  `json:"faults_cleared"`
+			Address       string           `json:"address"`
+			Classes       map[string]int64 `json:"classes"`
+			FaultsCleared int64            `json:"faults_cleared"`
 		} `json:"validators"`
 	}
 	if code := get(t, ts, "/v1/validators?window=all", &vals); code != 200 {
@@ -229,8 +223,8 @@ func TestAFaultIsClearedOrConfirmedFromASecondVantage(t *testing.T) {
 		case "served":
 			wantFaults = 0
 		}
-		if v.FaultsCleared != wantCleared || v.Faults != wantFaults {
-			t.Errorf("%s: faults %d, faults_cleared %d; want %d, %d", v.Address, v.Faults, v.FaultsCleared, wantFaults, wantCleared)
+		if v.FaultsCleared != wantCleared || v.Classes["FAULT"] != wantFaults {
+			t.Errorf("%s: FAULT readings %d, faults_cleared %d; want %d, %d", v.Address, v.Classes["FAULT"], v.FaultsCleared, wantFaults, wantCleared)
 		}
 	}
 }

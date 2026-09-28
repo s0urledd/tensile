@@ -227,21 +227,51 @@ func BlobReading(point []Row, f BlobFacts, suspect, windowOpen bool) BlobResult 
 }
 
 // ReadingPoint picks the reading a blob is judged at from its rows: the
-// end-of-window reading when there is one, otherwise (a blob read on the
-// earlier schedule) the newest in-window point with an answer from a
-// validator. ok is false when there is none.
-func ReadingPoint(rows []Row) (at time.Time, ok bool) {
+// end-of-window reading when there is one. A blob read on the earlier
+// schedule was read at several points, each written a validator at a time:
+// it is judged at the newest point every endorsing validator answered at,
+// or failing that the newest point any validator answered at. ok is false
+// when there is none.
+func ReadingPoint(rows []Row, f BlobFacts) (at time.Time, ok bool) {
 	for _, r := range rows {
 		if r.ScheduleLabel == probe.EndReadLabel {
 			return r.ScheduledAt.UTC(), true
 		}
 	}
+	answered := map[time.Time]map[string]bool{}
 	for _, r := range rows {
-		if r.Phase == probe.PhaseInWindow && Answered(r) && (!ok || r.ScheduledAt.After(at)) {
-			at, ok = r.ScheduledAt.UTC(), true
+		if !Answered(r) {
+			continue
+		}
+		k := r.ScheduledAt.UTC()
+		if answered[k] == nil {
+			answered[k] = map[string]bool{}
+		}
+		answered[k][r.Validator] = true
+	}
+	var complete, newest time.Time
+	for k, vals := range answered {
+		if k.After(newest) {
+			newest = k
+		}
+		whole := len(f.Endorsed) > 0
+		for v := range f.Endorsed {
+			if !vals[v] {
+				whole = false
+				break
+			}
+		}
+		if whole && k.After(complete) {
+			complete = k
 		}
 	}
-	return at, ok
+	switch {
+	case !complete.IsZero():
+		return complete, true
+	case !newest.IsZero():
+		return newest, true
+	}
+	return time.Time{}, false
 }
 
 // pointKey names one reading: a promise at a scheduled time.

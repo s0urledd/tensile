@@ -179,22 +179,15 @@ func stabilityFixtureStore(t *testing.T) (*httptest.Server, *store.Store) {
 type stabilityValidator struct {
 	Address     string `json:"address"`
 	Attestation struct {
-		Attested        int64                    `json:"attested_probes"`
-		Unattested      int64                    `json:"unattested_probes"`
-		Unknown         int64                    `json:"unknown_probes"`
 		AttestedBlobs   int64                    `json:"attested_blobs"`
 		UnattestedBlobs int64                    `json:"unattested_blobs"`
 		UnknownBlobs    int64                    `json:"unknown_blobs"`
 		BlobCoverage    struct{ Num, Den int64 } `json:"blob_coverage"`
 	} `json:"attestation"`
-	HeldOut       map[string]int64 `json:"serve_rate_held_out"`
+	Classes       map[string]int64 `json:"classes"`
 	Uptime        rateJSON         `json:"reachability_window"`
 	IdentityValid rateJSON         `json:"identity_rate_window"`
 	LastDown      *string          `json:"last_unreachable_at"`
-	ByPoint       []struct {
-		Key  string   `json:"key"`
-		Rate rateJSON `json:"serve_rate"`
-	} `json:"serve_rate_by_point"`
 }
 
 type rateJSON struct {
@@ -218,11 +211,10 @@ func stabilityValidators(t *testing.T, ts *httptest.Server) map[string]stability
 	return out
 }
 
-// The figure a page shows a named operator must be counted in blobs, and the
-// probe count must stay available and stay labelled as probes. Both blobs of
-// v2 are unattested and each was probed four times, so the two units differ by
-// exactly the size of the schedule.
-func TestUnattestedIsCountedPerObligationAndPerProbe(t *testing.T) {
+// The figure a page shows a named operator is counted in blobs, not in
+// readings: both blobs of v2 are unattested, and each was read four times on
+// the earlier schedule.
+func TestUnattestedIsCountedPerObligation(t *testing.T) {
 	vals := stabilityValidators(t, stabilityFixture(t))
 	v2, ok := vals["v2"]
 	if !ok {
@@ -232,13 +224,8 @@ func TestUnattestedIsCountedPerObligationAndPerProbe(t *testing.T) {
 		t.Errorf("unattested_blobs = %d, want 2: v2 is assigned both blobs and proven to hold neither",
 			v2.Attestation.UnattestedBlobs)
 	}
-	if v2.Attestation.Unattested != 8 {
-		t.Errorf("unattested_probes = %d, want 8: two obligations at four schedule points",
-			v2.Attestation.Unattested)
-	}
-	if v2.HeldOut["UNATTESTED"] != 8 {
-		t.Errorf("serve_rate_held_out.UNATTESTED = %d, want 8: it is a probe count and stays one",
-			v2.HeldOut["UNATTESTED"])
+	if v2.Classes["UNATTESTED"] != 8 {
+		t.Errorf("classes.UNATTESTED = %d, want 8: the class tally counts readings", v2.Classes["UNATTESTED"])
 	}
 	if v2.Attestation.BlobCoverage.Num != 0 || v2.Attestation.BlobCoverage.Den != 2 {
 		t.Errorf("blob_coverage = %d/%d, want 0/2", v2.Attestation.BlobCoverage.Num, v2.Attestation.BlobCoverage.Den)
@@ -248,9 +235,6 @@ func TestUnattestedIsCountedPerObligationAndPerProbe(t *testing.T) {
 	if v1.Attestation.AttestedBlobs != 2 || v1.Attestation.UnattestedBlobs != 0 {
 		t.Errorf("v1 attestation by blob = %d attested / %d unattested, want 2/0",
 			v1.Attestation.AttestedBlobs, v1.Attestation.UnattestedBlobs)
-	}
-	if v1.Attestation.Attested != 8 {
-		t.Errorf("v1 attested_probes = %d, want 8", v1.Attestation.Attested)
 	}
 }
 
@@ -301,40 +285,6 @@ func TestReachabilityHistoryIsPublishedPerValidator(t *testing.T) {
 	if net.Now.Num != 1 || net.Now.Den != 2 {
 		t.Errorf("network reachability = %d/%d, want 1/2: v2 is unreachable as of its newest evidence",
 			net.Now.Num, net.Now.Den)
-	}
-}
-
-// A validator that serves early and not late has pruned before it was allowed
-// to. The pooled rate cannot tell that apart from one that is uniformly poor,
-// and pruning early is the failure this observer exists to catch, so the
-// breakdown is published per validator and not only network-wide.
-func TestRetentionProfileIsPublishedPerValidator(t *testing.T) {
-	vals := stabilityValidators(t, stabilityFixture(t))
-	v1 := vals["v1"]
-	if len(v1.ByPoint) != 4 {
-		t.Fatalf("v1 serve_rate_by_point has %d points, want 4: %+v", len(v1.ByPoint), v1.ByPoint)
-	}
-	want := map[string][2]int64{
-		"w1": {2, 2}, "w2": {2, 2}, "w3": {1, 2}, "w4": {1, 2},
-	}
-	for _, p := range v1.ByPoint {
-		w, ok := want[p.Key]
-		if !ok {
-			t.Errorf("unexpected point %q", p.Key)
-			continue
-		}
-		if p.Rate.Num != w[0] || p.Rate.Den != w[1] {
-			t.Errorf("v1 %s = %d/%d, want %d/%d", p.Key, p.Rate.Num, p.Rate.Den, w[0], w[1])
-		}
-	}
-
-	// v2 is unattested throughout, so it has no rated probe at any point and
-	// its profile must be empty rather than a row of zeroes: a validator never
-	// proven to owe anything cannot have failed to retain it.
-	for _, p := range vals["v2"].ByPoint {
-		if p.Rate.Den != 0 {
-			t.Errorf("v2 %s = %d/%d, want an empty rate", p.Key, p.Rate.Num, p.Rate.Den)
-		}
 	}
 }
 

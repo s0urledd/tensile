@@ -334,8 +334,7 @@ func TestAnObligationIsServedOnlyWhenTheEndOfItsWindowWasObserved(t *testing.T) 
 	var net struct {
 		Obligations obligationsJSON          `json:"obligations"`
 		ByObl       struct{ Num, Den int64 } `json:"serve_rate_by_obligation"`
-		ServeRate   struct{ Num, Den int64 } `json:"serve_rate"`
-		Faults      int64                    `json:"faults"`
+		Classes     map[string]int64         `json:"classes"`
 		Vantage     struct {
 			Suspect     []struct{ Label, Reason string } `json:"suspect"`
 			SuspectRows int64                            `json:"suspect_rows"`
@@ -360,9 +359,9 @@ func TestAnObligationIsServedOnlyWhenTheEndOfItsWindowWasObserved(t *testing.T) 
 		}
 	}
 	// Four validators faulting at once at the third blob's points would have
-	// been 16 faults; none may count.
-	if net.Faults != 1 {
-		t.Errorf("faults = %d, want 1: the sixteen at suspect points are the observer's, not the validators'", net.Faults)
+	// been 16 FAULT readings; none is in any figure.
+	if net.Classes["FAULT"] != 1 {
+		t.Errorf("FAULT readings = %d, want 1: the sixteen at suspect points are the observer's, not the validators'", net.Classes["FAULT"])
 	}
 	if o.Served != 1 || o.Broken != 1 || o.NotCounted != 5 {
 		t.Errorf("served/broken/not_counted = %d/%d/%d, want 1/1/5: only the validator answering at the last point is vouched for", o.Served, o.Broken, o.NotCounted)
@@ -372,12 +371,6 @@ func TestAnObligationIsServedOnlyWhenTheEndOfItsWindowWasObserved(t *testing.T) 
 	}
 	if net.ByObl != o.Rate {
 		t.Errorf("serve_rate_by_obligation %+v must repeat obligations.rate %+v", net.ByObl, o.Rate)
-	}
-	// The probe-based rate is still published and still says something
-	// different: 12 HEALTHY (11 from the first blob, 1 from the pending
-	// second) over 13 rated probes; the suspect points' 16 faults are out.
-	if net.ServeRate.Num != 12 || net.ServeRate.Den != 13 {
-		t.Errorf("serve_rate = %d/%d, want 12/13", net.ServeRate.Num, net.ServeRate.Den)
 	}
 
 	var resp struct {

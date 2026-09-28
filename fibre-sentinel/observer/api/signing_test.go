@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/api"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
@@ -215,81 +214,6 @@ func TestSigningDistribution(t *testing.T) {
 	}
 	if code := get(t, ts, "/v1/signing?window=bogus", nil); code != 400 {
 		t.Fatalf("bad window: %d, want 400", code)
-	}
-}
-
-// The heatmap: one cell per (day, point) with rows, the ratio's parts kept
-// apart from what no rate speaks for, a whole-day cell per day, and every day
-// of the window listed whether or not it has rows.
-func TestValidatorHeatmap(t *testing.T) {
-	ts, st, now := signingFixture(t)
-	day := func(d int) time.Time { return now.Add(-time.Duration(d) * 24 * time.Hour) }
-	n := 0
-	put := func(at time.Time, label, class string, attested bool) {
-		n++
-		m := probe.Measurement{
-			SchemaVersion: probe.AttestationSchemaVersion, Vantage: "test",
-			// p1's own deadline: a row whose deadline disagrees with its
-			// publication's is born withheld (store.ProbeHeldAtInsert).
-			PromiseHash: "p1", Commitment: "cp1", MustServeUntil: now.Add(-4 * time.Hour), ValidatorSetHeight: 100,
-			ValidatorAddress: sigV1, ValidatorHost: "v1:443",
-			Assigned: true, Attested: attested, AssignedRowCount: 148,
-			ScheduleLabel: label, ScheduledAt: at.Add(time.Duration(n) * time.Second), StartedAt: at.Add(time.Duration(n) * time.Second),
-			FinishedAt: at.Add(time.Duration(n) * time.Second),
-			Phase:      probe.PhaseInWindow, Outcome: probe.OutcomeServedOK, Classification: probe.Classification(class),
-		}
-		raw, err := json.Marshal(m)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := st.InsertProbe(m, raw); err != nil {
-			t.Fatal(err)
-		}
-	}
-	put(day(1), "w1", "HEALTHY", true)
-	put(day(1), "w1", "FAULT", true)
-	put(day(1), "w4", "UNATTESTED", false)
-	put(day(3), "w2", "HEALTHY", true)
-
-	var det struct {
-		Heatmap struct {
-			Days   []string `json:"days"`
-			Points []string `json:"points"`
-			Cells  []struct {
-				Day     string `json:"day"`
-				Point   string `json:"point"`
-				Served  int64  `json:"served"`
-				Faults  int64  `json:"faults"`
-				HeldOut int64  `json:"held_out"`
-			} `json:"cells"`
-		} `json:"heatmap"`
-	}
-	if code := get(t, ts, "/v1/validators/"+sigV1+"?window=7d", &det); code != 200 {
-		t.Fatalf("detail: %d", code)
-	}
-	hm := det.Heatmap
-	if len(hm.Days) != 8 || hm.Days[len(hm.Days)-1] != now.Format("2006-01-02") {
-		t.Fatalf("days = %v, want the eight UTC days the 7d window touches, ending today", hm.Days)
-	}
-	if len(hm.Points) < 4 || hm.Points[0] != "w1" || hm.Points[3] != "w4" {
-		t.Fatalf("points = %v, want w1..w4 first", hm.Points)
-	}
-	type key struct{ d, p string }
-	cells := map[key][3]int64{}
-	for _, c := range hm.Cells {
-		cells[key{c.Day, c.Point}] = [3]int64{c.Served, c.Faults, c.HeldOut}
-	}
-	d1, d3 := day(1).Format("2006-01-02"), day(3).Format("2006-01-02")
-	for k, want := range map[key][3]int64{
-		{d1, "w1"}: {1, 1, 0}, {d1, "w4"}: {0, 0, 1}, {d1, "day"}: {1, 1, 1},
-		{d3, "w2"}: {1, 0, 0}, {d3, "day"}: {1, 0, 0},
-	} {
-		if cells[k] != want {
-			t.Errorf("cell %v = %v, want %v", k, cells[k], want)
-		}
-	}
-	if len(cells) != 5 {
-		t.Fatalf("cells = %v, want exactly five (no cell for a day or point without rows)", cells)
 	}
 }
 

@@ -87,6 +87,62 @@ func TestProbesServedNoFollowsTheObligationRule(t *testing.T) {
 			t.Errorf("%s: service %q, want %q", a.ValidatorAddress, a.Service, want)
 		}
 	}
+
+	// The Available blob: the validators whose rows came back are served;
+	// the one that timed out and the one that said "no such shard" have no
+	// result either way, and neither has the one the reading never asked.
+	blob.Assignments = nil
+	if code := get(t, ts, "/v1/blobs/sn2", &blob); code != 200 {
+		t.Fatalf("blob sn2: %d", code)
+	}
+	for _, a := range blob.Assignments {
+		want := map[string]string{"availok": "served", "availok2": "served", "availsilent": "", "availgone": "", "never": ""}[a.ValidatorAddress]
+		if a.Service != want {
+			t.Errorf("sn2 %s: service %q, want %q", a.ValidatorAddress, a.Service, want)
+		}
+	}
+	var readings struct {
+		Probes []struct {
+			ValidatorAddress string `json:"validator_address"`
+			Service          string `json:"service"`
+		} `json:"probes"`
+	}
+	if code := get(t, ts, "/v1/probes?blob=sn2&limit=100", &readings); code != 200 || len(readings.Probes) != 4 {
+		t.Fatalf("sn2 readings: %d, %d rows, want the four asked", code, len(readings.Probes))
+	}
+	for _, p := range readings.Probes {
+		want := map[string]string{"availok": "served", "availok2": "served"}[p.ValidatorAddress]
+		if p.Service != want {
+			t.Errorf("sn2 reading of %s: service %q, want %q", p.ValidatorAddress, p.Service, want)
+		}
+	}
+	var vals struct {
+		Validators []struct {
+			Address     string          `json:"address"`
+			Obligations obligationsJSON `json:"obligations"`
+		} `json:"validators"`
+	}
+	if code := get(t, ts, "/v1/validators?window=all", &vals); code != 200 {
+		t.Fatalf("validators: %d", code)
+	}
+	for _, v := range vals.Validators {
+		g := v.Obligations
+		g.Rate = struct{ Num, Den int64 }{}
+		switch v.Address {
+		case "availsilent", "availgone":
+			if g != (obligationsJSON{Total: 1, NotCounted: 1}) {
+				t.Errorf("%s: %+v, want one obligation counted neither way", v.Address, g)
+			}
+		case "endsilent", "endgone", "enderror":
+			if g != (obligationsJSON{Total: 1, Broken: 1}) {
+				t.Errorf("%s: %+v, want one not served", v.Address, g)
+			}
+		case "never":
+			if g.Total != 0 {
+				t.Errorf("never: %+v, want no obligation: the reading did not ask it", g)
+			}
+		}
+	}
 }
 
 // Every validator failing at the same reading is set aside by the
@@ -117,10 +173,11 @@ func TestProbesServedNoLeavesOutASuspectReading(t *testing.T) {
 	}
 }
 
-// On the earlier schedule the word follows the same buckets: a fault is not
-// served, a reading near the end served, readings that stop short of the end
-// no verdict, an unendorsed validator nothing, and a window still running is
-// in its retention window.
+// On the earlier schedule the word follows the same buckets: a fault on an
+// unreadable blob is not served, a reading near the end served, readings
+// that stop short of the end and answers that count neither way no word at
+// all, an unendorsed validator nothing, and a window still running is in its
+// retention window.
 func TestBlobServiceWords(t *testing.T) {
 	ts := obligationsFixture(t)
 	type assignments struct {
@@ -133,8 +190,8 @@ func TestBlobServiceWords(t *testing.T) {
 	if code := get(t, ts, "/v1/blobs/obl1", &b); code != 200 {
 		t.Fatalf("obl1: %d", code)
 	}
-	want := map[string]string{"served": "served", "broken": "not_served", "gaplast": "no_verdict", "endun": "no_verdict",
-		"unreach": "no_verdict", "reach": "no_verdict", "unatt": ""}
+	want := map[string]string{"served": "served", "broken": "not_served", "gaplast": "", "endun": "",
+		"unreach": "", "reach": "", "unatt": ""}
 	for _, a := range b.Assignments {
 		if w, ok := want[a.ValidatorAddress]; ok && a.Service != w {
 			t.Errorf("obl1 %s: service %q, want %q", a.ValidatorAddress, a.Service, w)

@@ -768,14 +768,15 @@ func rollDay(ctx context.Context, db *sql.DB, d, now time.Time, vantage string) 
 		return 0, err
 	}
 	excl, exclArgs = Exclusion("scheduled_at", pts)
+	// probe_daily keeps four columns nothing reads any more: faults (a raw
+	// FAULT count, which counts failures the rule does not) and the
+	// per-reading attestation split (attested, unattested, unknown_att).
+	// They are the table's schema, so they are written as 0.
 	type pd struct {
-		probes, gaps, faults int64
-		classes              map[string]int64
-		beats, beatsUp       int64
-		identityUp           int64
-		attested             int64
-		unattested           int64
-		unknownAtt           int64
+		probes, gaps   int64
+		classes        map[string]int64
+		beats, beatsUp int64
+		identityUp     int64
 	}
 	byVal := map[string]*pd{}
 	get := func(a string) *pd {
@@ -803,22 +804,6 @@ func rollDay(ctx context.Context, db *sql.DB, d, now time.Time, vantage string) 
 		v.probes, v.gaps = n, g
 	}
 	rows.Close()
-	rows, err = tx.QueryContext(ctx, `SELECT validator_address, COUNT(*) FROM probes
-		WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND `+EffectiveClass("")+` = 'FAULT'`+excl+` GROUP BY validator_address`,
-		append([]any{lo, hi}, exclArgs...)...)
-	if err != nil {
-		return 0, err
-	}
-	for rows.Next() {
-		var a string
-		var n int64
-		if err := rows.Scan(&a, &n); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		get(a).faults = n
-	}
-	rows.Close()
 	rows, err = tx.QueryContext(ctx, `SELECT validator_address, `+EffectiveClass("")+`, COUNT(*) FROM probe_rows
 		WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`+excl+` GROUP BY validator_address, `+EffectiveClass(""),
 		append([]any{lo, hi}, exclArgs...)...)
@@ -833,29 +818,6 @@ func rollDay(ctx context.Context, db *sql.DB, d, now time.Time, vantage string) 
 			return 0, err
 		}
 		get(a).classes[c] = n
-	}
-	rows.Close()
-	// The attestation split over exactly the population the classes above
-	// were counted on, suspect exclusion included, so the identity the
-	// response publishes survives the fold-in.
-	rows, err = tx.QueryContext(ctx, `SELECT validator_address,
-			COALESCE(SUM(CASE WHEN attested = 1 THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN attested = 0 THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN attested IS NULL THEN 1 ELSE 0 END), 0)
-		FROM probe_rows WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`+excl+` GROUP BY validator_address`,
-		append([]any{lo, hi}, exclArgs...)...)
-	if err != nil {
-		return 0, err
-	}
-	for rows.Next() {
-		var a string
-		var at, un, unk int64
-		if err := rows.Scan(&a, &at, &un, &unk); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		v := get(a)
-		v.attested, v.unattested, v.unknownAtt = at, un, unk
 	}
 	rows.Close()
 	vq, vargs := "", []any{lo, hi}
@@ -889,8 +851,8 @@ func rollDay(ctx context.Context, db *sql.DB, d, now time.Time, vantage string) 
 			return 0, err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO probe_daily (day, validator_address, probes, gaps, faults, classes_json, beats, beats_up, identity_up, attested, unattested, unknown_att, computed_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, d.Format(dayLayout), a, v.probes, v.gaps, v.faults, string(cj), v.beats, v.beatsUp, v.identityUp,
-			v.attested, v.unattested, v.unknownAtt, store.TS(now)); err != nil {
+			VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, 0, ?)`, d.Format(dayLayout), a, v.probes, v.gaps, string(cj), v.beats, v.beatsUp, v.identityUp,
+			store.TS(now)); err != nil {
 			return 0, err
 		}
 	}
@@ -901,34 +863,25 @@ func rollDay(ctx context.Context, db *sql.DB, d, now time.Time, vantage string) 
 // validator and in total: the figures the "all" window adds to the raw
 // record once rows have been pruned.
 type Rolled struct {
-	Days                 int64
-	Obligations          Obligations
-	ObligationsByVal     map[string]Obligations
-	Probes, Gaps, Faults int64
-	Classes              map[string]int64
-	ProbesByVal          map[string]*RolledProbes
-	Beats, BeatsUp       int64
-	IdentityUp           int64
-	Attested             int64
-	Unattested           int64
-	UnknownAtt           int64
+	Days             int64
+	Obligations      Obligations
+	ObligationsByVal map[string]Obligations
+	Probes, Gaps     int64
+	Classes          map[string]int64
+	ProbesByVal      map[string]*RolledProbes
+	Beats, BeatsUp   int64
+	IdentityUp       int64
 }
 
 // RolledProbes is one validator's rolled row counts.
 type RolledProbes struct {
-	Probes, Gaps, Faults int64
-	Classes              map[string]int64
-	Beats, BeatsUp       int64
+	Probes, Gaps   int64
+	Classes        map[string]int64
+	Beats, BeatsUp int64
 	// IdentityUp is how many of BeatsUp presented a certificate endorsed by
 	// the validator's consensus key: the numerator of identity_rate_window,
 	// whose denominator is BeatsUp itself.
 	IdentityUp int64
-	// The attestation split over the same rows the classes were counted on,
-	// so that attested + unattested + unknown still equals the coverage
-	// denominator once a rolled day is folded into the "all" window.
-	Attested   int64
-	Unattested int64
-	UnknownAtt int64
 }
 
 // Without returns a copy with the named validators taken out of every total,
@@ -962,13 +915,9 @@ func (r *Rolled) Without(addrs []string) *Rolled {
 		out.ProbesByVal[a] = p
 		out.Probes += p.Probes
 		out.Gaps += p.Gaps
-		out.Faults += p.Faults
 		out.Beats += p.Beats
 		out.BeatsUp += p.BeatsUp
 		out.IdentityUp += p.IdentityUp
-		out.Attested += p.Attested
-		out.Unattested += p.Unattested
-		out.UnknownAtt += p.UnknownAtt
 		for c, n := range p.Classes {
 			out.Classes[c] += n
 		}
@@ -1015,13 +964,9 @@ func Load(ctx context.Context, db *sql.DB, before time.Time, only string) (*Roll
 	// group while taking the JSON of one of them, so two days on which a
 	// validator produced the same class distribution — the ordinary shape
 	// of a steady validator, {"HEALTHY":8} day after day — would contribute
-	// both days' probes and one day's classes. The class tally is what the
-	// serve rate and its coverage are drawn from, so that loss moves a
-	// published figure about a named validator in the accusing direction.
-	// The maps are added in Go instead; the row count is days x validators,
-	// which is small.
-	rows, err = db.QueryContext(ctx, `SELECT validator_address, probes, gaps, faults, beats, beats_up, identity_up,
-			attested, unattested, unknown_att, classes_json
+	// both days' readings and one day's classes. The maps are added in Go
+	// instead; the row count is days x validators, which is small.
+	rows, err = db.QueryContext(ctx, `SELECT validator_address, probes, gaps, beats, beats_up, identity_up, classes_json
 		FROM probe_daily WHERE day < ?`+filter, args...)
 	if err != nil {
 		return nil, err
@@ -1029,8 +974,7 @@ func Load(ctx context.Context, db *sql.DB, before time.Time, only string) (*Roll
 	for rows.Next() {
 		var a, cj string
 		var p RolledProbes
-		if err := rows.Scan(&a, &p.Probes, &p.Gaps, &p.Faults, &p.Beats, &p.BeatsUp, &p.IdentityUp,
-			&p.Attested, &p.Unattested, &p.UnknownAtt, &cj); err != nil {
+		if err := rows.Scan(&a, &p.Probes, &p.Gaps, &p.Beats, &p.BeatsUp, &p.IdentityUp, &cj); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -1046,26 +990,18 @@ func Load(ctx context.Context, db *sql.DB, before time.Time, only string) (*Roll
 		}
 		v.Probes += p.Probes
 		v.Gaps += p.Gaps
-		v.Faults += p.Faults
 		v.Beats += p.Beats
 		v.BeatsUp += p.BeatsUp
 		v.IdentityUp += p.IdentityUp
-		v.Attested += p.Attested
-		v.Unattested += p.Unattested
-		v.UnknownAtt += p.UnknownAtt
 		for c, n := range classes {
 			v.Classes[c] += n
 			out.Classes[c] += n
 		}
 		out.Probes += p.Probes
 		out.Gaps += p.Gaps
-		out.Faults += p.Faults
 		out.Beats += p.Beats
 		out.BeatsUp += p.BeatsUp
 		out.IdentityUp += p.IdentityUp
-		out.Attested += p.Attested
-		out.Unattested += p.Unattested
-		out.UnknownAtt += p.UnknownAtt
 	}
 	rows.Close()
 	return out, rows.Err()
