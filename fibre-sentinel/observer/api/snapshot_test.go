@@ -148,7 +148,7 @@ func TestLongWindowsRefreshSlowly(t *testing.T) {
 }
 
 // A cache's own TTL overrides ttlFor for the windows it names, from the first
-// moment: the live keeper's windows must not wait a minute on a new cache.
+// moment: the live lane's windows must not wait a minute on a new cache.
 func TestSnapshotTTLOverride(t *testing.T) {
 	c := newSnapshotCache("t", func(context.Context, Window) (int, error) { return 0, nil })
 	c.ttls = map[string]time.Duration{"24h": liveTTL}

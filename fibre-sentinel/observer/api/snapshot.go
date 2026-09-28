@@ -31,14 +31,14 @@ import (
 // Refreshing happens in the background, never two computations of one window
 // at once, and a stale snapshot keeps being served while its replacement is
 // computed, so a reader never waits for an aggregate. Every window is warmed
-// at startup, so the first visitor does not wait either. After that two
-// keepers refresh every window as its TTL runs out, read or not: a refresh
-// triggered only by a read served the triggering reader a figure as old as
-// the last visit. The slow keeper (keepSnapshotsFresh) takes the network
-// summary and the longer validator windows; the live keeper (keepLiveFresh)
-// takes the 24h validator list and the publisher-side summary, which are what
-// a reader watches move, so a slow window on the other lane can never hold
-// them back.
+// at startup, so the first visitor does not wait either. After that keepers
+// refresh every window as its TTL runs out, read or not: a refresh triggered
+// only by a read served the triggering reader a figure as old as the last
+// visit. A keeper computes its windows one after another, so what a reader
+// watches move each has a keeper of its own — the 24h validator list, the
+// publisher-side summary and the network summary's 24h window — and one more
+// takes the longer windows in turn (newKeepers). A slow computation on one
+// keeper never holds back another's.
 //
 // What this does not yet do: a refresh still recomputes the reconstructability
 // of every publication in the sample, and a publication whose retention window
@@ -53,6 +53,8 @@ import (
 // validator list and the network summary are aggregates over the window's
 // rows (publications, probes, heartbeats), which grow with blobs, so the long
 // windows cost the most; they are also the ones refreshed least often (ttlFor).
+// The day's windows are not cheap either, and the 24h validator list already
+// costs more than its TTL (liveTTL).
 
 // ttlFor is how old a snapshot may be before it is refreshed, for a window its
 // cache gives no TTL of its own (snapshotCache.ttls): a minute for 24h, five
@@ -70,8 +72,8 @@ import (
 // The TTL is a floor, not a promise. A window whose computation outgrows it
 // waits twice its computation instead (stale), and each keeper computes its
 // windows one after another, so a window can be older than its TTL by what
-// the computations ahead of it on its lane cost. Every snapshot says when it
-// was taken (computed_at).
+// the computations ahead of it on its keeper cost. Every snapshot says when
+// it was taken (computed_at).
 //
 // Nor are the windows one moment. Each is refreshed on its own schedule, so
 // the windows of one cache are taken minutes apart, and a longer window can
@@ -88,9 +90,16 @@ func ttlFor(name string) time.Duration {
 	}
 }
 
-// liveTTL is how old the live keeper lets its windows get: the collector's
-// pass interval, so a new block's endorsements are on the table one pass
-// after they are ingested.
+// liveTTL is the live lane's TTL, for the 24h validator list and every window
+// of the publisher-side summary: they are refreshed at most every ten seconds,
+// the collector's pass interval, since nothing they count lands more often.
+//
+// Like every TTL it is a floor (stale): a window whose computation takes
+// longer waits twice its computation. The publisher-side windows cost well
+// under a second and are refreshed every ten seconds or so. The 24h validator
+// list is not: on the observer's store in late September 2026 it took 15 to 22
+// seconds a computation, so it was refreshed about every 35 to 45 seconds, and
+// only a cheaper computation brings that closer to ten.
 const liveTTL = 10 * time.Second
 
 // networkAllTTL is how old the network summary's "all" window may get. It is
@@ -99,8 +108,8 @@ const liveTTL = 10 * time.Second
 // other long windows.
 const networkAllTTL = 5 * time.Minute
 
-// liveInterval is how often the live keeper looks. A tick that finds its
-// window a few milliseconds short of the TTL waits one tick, not one TTL.
+// liveInterval is how often the live lane's keepers look. A tick that finds
+// a window a few milliseconds short of the TTL waits one tick, not one TTL.
 const liveInterval = 2 * time.Second
 
 // warmWindows is every window the dashboard offers, computed once at startup so
@@ -455,28 +464,23 @@ func windowFor(name string, now time.Time) Window {
 	return w
 }
 
-// keeperInterval is how often the slow keeper looks for windows past their
-// TTL. It is well under the shortest TTL on its lane (a minute) on purpose: a
-// window's age runs from the moment its computation started, and a tick as
-// long as the TTL found a window computed a few seconds into the previous
-// tick a few seconds short of due, and left it for another whole TTL.
+// keeperInterval is how often the keepers off the live lane look for windows
+// past their TTL. It is well under the shortest TTL they hold (a minute) on
+// purpose: a window's age runs from the moment its computation started, and a
+// tick as long as the TTL found a window computed a few seconds into the
+// previous tick a few seconds short of due, and left it for another whole TTL.
 const keeperInterval = 5 * time.Second
 
-// lanes is how the two keepers pace themselves: the live lane's TTL and how
-// often the live keeper and the slow keeper look. NewWithVantage uses
-// defaultLanes unless it is handed others (withLanes, for tests).
+// lanes is how the keepers pace themselves: the live lane's TTL, how often
+// the live lane's keepers look (liveEvery) and how often the others do
+// (slowEvery). NewWithVantage uses defaultLanes unless it is handed others
+// (withLanes, for tests).
 type lanes struct{ liveTTL, liveEvery, slowEvery time.Duration }
 
 var defaultLanes = lanes{liveTTL: liveTTL, liveEvery: liveInterval, slowEvery: keeperInterval}
 
 // withLanes sets the keepers' pace.
 func withLanes(l lanes) Option { return func(s *Server) { s.lanes = l } }
-
-// liveVals and slowVals split the validator list between the two keepers.
-var (
-	liveVals = []string{"24h"}
-	slowVals = []string{"7d", "30d", "all"}
-)
 
 // refreshDue recomputes, one at a time and in the order given (warmWindows
 // when only is empty: shortest first), every window whose snapshot is stale,
@@ -517,41 +521,63 @@ func (c *snapshotCache[T]) refreshDue(log logf, now time.Time, only ...string) {
 	}
 }
 
-// keepSnapshotsFresh is the slow keeper: it runs refreshDue for the network
-// summary and the longer validator windows until Close, each window at its
-// own TTL. They take turns, as the warm-up does, and a tick that finds the
-// previous one still computing skips the windows it holds rather than
-// stacking a second copy.
-func (s *Server) keepSnapshotsFresh(every time.Duration) {
-	t := time.NewTicker(every)
-	defer t.Stop()
-	for {
-		select {
-		case <-s.stop:
-			return
-		case <-t.C:
-			// The clock, not the tick: a tick delivered late, behind a
-			// long refresh, would make every window look younger than it is.
-			s.net.refreshDue(s.logf(), time.Now())
-			s.vals.refreshDue(s.logf(), time.Now(), slowVals...)
-		}
+// refresher is what a keeper asks of a cache.
+type refresher interface {
+	refreshDue(log logf, now time.Time, only ...string)
+}
+
+// keeperJob is one cache's windows on a keeper, refreshed in the order given.
+type keeperJob struct {
+	cache   refresher
+	windows []string
+}
+
+// keeper is one goroutine of the schedule: it looks every `every` and
+// refreshes the due windows of its jobs one after another, never two at once.
+// A tick that finds the previous one still computing skips the windows it
+// holds rather than stacking a second copy.
+type keeper struct {
+	name  string
+	every time.Duration
+	jobs  []keeperJob
+}
+
+// newKeepers is the schedule: which keeper refreshes which window. Every
+// window of the three caches is on exactly one keeper, and NewWithVantage
+// starts one goroutine per keeper (keep).
+//
+// What a reader watches move each has a keeper of its own, so nothing
+// computed elsewhere holds it back. On one shared keeper the publisher-side
+// summary, a fraction of a second a window, waited out every computation of
+// the 24h validator list, and the network's 24h window waited behind the
+// longer windows whenever they came due, for over half a minute at a time.
+// The longer windows share a keeper and take turns, as the warm-up does:
+// their TTLs are minutes, and a turn costs them seconds.
+func (s *Server) newKeepers() []keeper {
+	long := []string{"7d", "30d", "all"}
+	return []keeper{
+		{name: "validators 24h", every: s.lanes.liveEvery, jobs: []keeperJob{{s.vals, []string{"24h"}}}},
+		{name: "market", every: s.lanes.liveEvery, jobs: []keeperJob{{s.market, warmWindows}}},
+		{name: "network 24h", every: s.lanes.slowEvery, jobs: []keeperJob{{s.net, []string{"24h"}}}},
+		{name: "longer windows", every: s.lanes.slowEvery, jobs: []keeperJob{{s.net, long}, {s.vals, long}}},
 	}
 }
 
-// keepLiveFresh is the live keeper: the 24h validator list and every window
-// of the publisher-side summary, each at liveTTL. It runs beside the slow
-// keeper, so no computation there, however long, holds these back, and it
-// never runs two computations at once itself.
-func (s *Server) keepLiveFresh(every time.Duration) {
-	t := time.NewTicker(every)
+// keep runs one keeper until Close.
+func (s *Server) keep(k keeper) {
+	t := time.NewTicker(k.every)
 	defer t.Stop()
 	for {
 		select {
 		case <-s.stop:
 			return
 		case <-t.C:
-			s.vals.refreshDue(s.logf(), time.Now(), liveVals...)
-			s.market.refreshDue(s.logf(), time.Now())
+			for _, j := range k.jobs {
+				// The clock, not the tick: a tick delivered late, behind a
+				// long refresh, would make every window look younger than
+				// it is.
+				j.cache.refreshDue(s.logf(), time.Now(), j.windows...)
+			}
 		}
 	}
 }

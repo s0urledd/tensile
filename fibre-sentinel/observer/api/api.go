@@ -100,14 +100,16 @@ type Server struct {
 	origRows originalRowsMemo
 	// recent keeps each validator's newest endorsements (see signing.go).
 	recent endorsementLedger
-	// lanes is the keepers' pace (see snapshot.go).
-	lanes lanes
+	// lanes is the keepers' pace, and keepers the schedule they run (see
+	// snapshot.go).
+	lanes   lanes
+	keepers []keeper
 	// bg counts the server's own background work (the blob-page warm-up,
-	// the snapshot keeper), for Close.
+	// the snapshot keepers), for Close.
 	bg sync.WaitGroup
 	// tip holds the block ticker's answer for a second.
 	tip tipCache
-	// stop ends the snapshot keeper; Close closes it once.
+	// stop ends the snapshot keepers; Close closes it once.
 	stop     chan struct{}
 	stopOnce sync.Once
 }
@@ -182,14 +184,11 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 	s.net.revision = s.snapshotRevision
 	s.vals.revision = s.snapshotRevision
 	s.market.revision = s.activationRevision
-	// The windows that do not take ttlFor's pace: the live keeper's
-	// (keepLiveFresh) and the network's "all", which holds the overview's
-	// Available figure. Set before anything reads the caches: ttl reads
-	// these without the lock.
-	s.vals.ttls = map[string]time.Duration{}
-	for _, name := range liveVals {
-		s.vals.ttls[name] = s.lanes.liveTTL
-	}
+	// The windows that do not take ttlFor's pace: the live lane's (the 24h
+	// validator list and every market window) and the network's "all",
+	// which holds the overview's Available figure. Set before anything reads
+	// the caches: ttl reads these without the lock.
+	s.vals.ttls = map[string]time.Duration{"24h": s.lanes.liveTTL}
 	s.market.ttls = map[string]time.Duration{}
 	for _, name := range warmWindows {
 		s.market.ttls[name] = s.lanes.liveTTL
@@ -210,15 +209,14 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 	// so a quiet night does not leave the first morning visitor a figure
 	// from the evening before.
 	s.stop = make(chan struct{})
-	s.bg.Add(2)
-	go func() {
-		defer s.bg.Done()
-		s.keepSnapshotsFresh(s.lanes.slowEvery)
-	}()
-	go func() {
-		defer s.bg.Done()
-		s.keepLiveFresh(s.lanes.liveEvery)
-	}()
+	s.keepers = s.newKeepers()
+	for _, k := range s.keepers {
+		s.bg.Add(1)
+		go func() {
+			defer s.bg.Done()
+			s.keep(k)
+		}()
+	}
 	// And the first page of blobs, for the same reason: with the verdict cache
 	// empty that page costs six queries per row, which is the one cold path
 	// left on the site. It is a single read of what /v1/blobs answers by

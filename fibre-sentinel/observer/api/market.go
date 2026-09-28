@@ -522,7 +522,7 @@ func marketSnapshotCurrent(r *marketResponse) bool { return r != nil && r.Publis
 // from a snapshot, and the publisher page shows both: its board ("largest
 // publisher 93.6%") from one and its table from the other, minutes apart
 // under a burst of blobs, so the page contradicted itself. Serving both from
-// one snapshot, refreshed on the live keeper, keeps them one moment.
+// one snapshot, refreshed on the live lane, keeps them one moment.
 func (s *Server) computePublishing(ctx context.Context, win Window) (*marketResponse, error) {
 	r, err := s.computeMarket(ctx, win)
 	if err != nil {
