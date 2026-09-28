@@ -1291,7 +1291,7 @@ var excludedFromRate = []excludedClass{
 // What the end-of-window reading makes of a class in obligations
 // (probe.EndReadClass); serve_rate itself counts classes as they happened.
 const (
-	endNotServed = "; in obligations, at the end reading, not served (broken)"
+	endNotServed = "; in obligations, at the end reading, not served"
 	endServed    = "; in obligations, at the end reading, served"
 )
 
@@ -3674,7 +3674,9 @@ func (s *Server) blobRowsAt(ctx context.Context, where string, limit, offset int
 	// so a settled verdict is settled for good. One query fetches a
 	// fingerprint of every row's probes and the rest is a map lookup. See
 	// blobcache.go.
-	fps, err := s.probeFingerprints(ctx, where, limit, args...)
+	// The rows this call read, look-ahead row included: a fingerprint of any
+	// other selection would let a cached verdict outlive a change to these.
+	fps, err := s.probeFingerprints(ctx, where, limit+1, offset, args...)
 	if err != nil {
 		return nil, err
 	}

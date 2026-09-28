@@ -89,16 +89,17 @@ func (c *blobCache) put(hash string, v blobVerdict) {
 	c.m[hash] = v
 }
 
-// probeFingerprints returns, for every publication in the selection, a string
+// probeFingerprints returns, for every publication in the selection (limit
+// rows from the offset-th of blobRows' order), a string
 // that changes if and only if its probe rows have changed. A publication with
 // no probes at all is absent from the map and gets the zero fingerprint, which
 // is still a fingerprint: it stops being the zero one the moment a probe lands.
-func (s *Server) probeFingerprints(ctx context.Context, where string, limit int, args ...any) (map[string]string, error) {
+func (s *Server) probeFingerprints(ctx context.Context, where string, limit, offset int, args ...any) (map[string]string, error) {
 	// The corrected_at and retention_unverified terms are here for the same
 	// reason the amended_at ones are: neither a hold nor a correction adds
 	// a row or moves MAX(rowid), so without them a cached verdict outlives
 	// the moment this observer stopped standing behind it.
-	rows, err := s.st.DB().QueryContext(ctx, blobSel(where, limit)+`
+	rows, err := s.st.DB().QueryContext(ctx, blobSelAt(where, limit, offset)+`
 		SELECT p.promise_hash, COUNT(*), COALESCE(MAX(p.rowid), 0),
 		       COUNT(p.amended_at), COALESCE(MAX(p.amended_at), ''),
 		       COUNT(p.corrected_at), COALESCE(MAX(p.corrected_at), ''),
@@ -128,7 +129,7 @@ func (s *Server) probeFingerprints(ctx context.Context, where string, limit int,
 	// A sampled-out publication's rows are its decision (store/sampledout.go),
 	// which adds no probe row: the decision is part of the fingerprint, or
 	// a verdict cached before it landed would outlive it.
-	drows, err := s.st.DB().QueryContext(ctx, blobSel(where, limit)+`
+	drows, err := s.st.DB().QueryContext(ctx, blobSelAt(where, limit, offset)+`
 		SELECT d.promise_hash, COUNT(*), MAX(d.decided_at)
 		FROM sampling_decisions d JOIN sel ON sel.promise_hash = d.promise_hash
 		GROUP BY d.promise_hash`, args...)

@@ -49,12 +49,19 @@ import (
 // blobSel is the selection every batch query joins against: the same ordering
 // and limit blobRows applies, expressed once as a CTE so the database does the
 // join instead of an IN list with two thousand parameters.
-func blobSel(where string, limit int) string {
+func blobSel(where string, limit int) string { return blobSelAt(where, limit, 0) }
+
+// blobSelAt is blobSel from the offset-th row of the same order.
+func blobSelAt(where string, limit, offset int) string {
 	q := `WITH sel AS (SELECT promise_hash FROM publications`
 	if where != "" {
 		q += " WHERE " + where
 	}
-	return q + ` ORDER BY settlement_height DESC, settlement_tx_index DESC LIMIT ` + strconv.Itoa(limit) + `) `
+	q += ` ORDER BY settlement_height DESC, settlement_tx_index DESC LIMIT ` + strconv.Itoa(limit)
+	if offset > 0 {
+		q += ` OFFSET ` + strconv.Itoa(offset)
+	}
+	return q + `) `
 }
 
 // blobFacts is what the publications row contributes to the verdict.
