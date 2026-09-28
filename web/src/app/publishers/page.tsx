@@ -2,7 +2,6 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { useApi, type Meta, fmtShare, bytes, utc, ago, tia, int, shortBech, publisherName } from "@/lib/api";
-import { Panel } from "@/components/Panel";
 import Chart, { calendar, CATEGORICAL, OTHER_COLOR, type Row, type Series } from "@/components/Chart";
 import Info from "@/components/Info";
 import { WithdrawalQueueCells, pendingLine } from "@/components/Withdrawals";
@@ -10,7 +9,7 @@ import type { MarketWithQueue, PublisherWithQueue } from "@/lib/withdrawals";
 import { useWindow, WindowSwitch } from "@/lib/window";
 import PreLive, { notLiveOf } from "@/components/PreLive";
 import { unit } from "@/components/Unit";
-import { Metric, Metrics } from "@/components/Metrics";
+import { Metric, Figures } from "@/components/Metrics";
 import Pager, { usePage } from "@/components/Pager";
 
 /** "Sep 21": a chart's UTC day, as the Blobs chart labels it */
@@ -42,14 +41,18 @@ function Page() {
 
   return (
     <>
-      <div className="section-head">
-        <div><h1>Publishers</h1><p className="sub">Accounts that publish blobs through Fibre and pay for them from escrow.</p></div>
-        {m && (
-          <Info label="About these figures">
-            <p>Every figure on this page is read from the chain; none was measured by Tensile. <Link href="/methodology/#publishers">How each is counted</Link></p>
-          </Info>
-        )}
-        <span className="spacer" />
+      <div className="page-head">
+        <div>
+          <div className="h1row">
+            <h1>Publishers</h1>
+            {m && (
+              <Info label="About these figures">
+                <p>Every figure on this page is read from the chain; none was measured by Tensile. <Link href="/methodology/#publishers">How each is counted</Link></p>
+              </Info>
+            )}
+          </div>
+          <p className="lede">Accounts that publish blobs through Fibre and pay for them from escrow.</p>
+        </div>
         <WindowSwitch value={win} onChange={setWin} />
       </div>
       <PreLive meta={meta} />
@@ -58,8 +61,8 @@ function Page() {
 
       {/* The escrow side: the network totals (fees paid, upload size,
           publishers) are on the overview and are not repeated here. */}
-      <section className="group" id="summary">
-        <Metrics>
+      <section className="board board--stack" id="summary">
+        <Figures className="row">
           <Metric label="Escrow held" value={pre || !m ? "—" : tia(m.escrow_total_utia ?? m.escrow_held_utia)} tone={pre || !m ? "absent" : undefined}
             help={pre || !m ? " " : `${int(m.escrow_accounts)} escrow account${m.escrow_accounts === 1 ? "" : "s"}`}
             title="Every escrow on the chain, read from the x/fibre module account." />
@@ -69,12 +72,11 @@ function Page() {
           <Metric label="Withdrawals" value={pre || !m ? "—" : tia(m.withdrawals_requested.utia)} tone={pre || !m || m.withdrawals_requested.count === 0 ? "absent" : undefined}
             help={pre || !m ? " " : `${int(m.withdrawals_requested.count)} requested in the period`}
             title="TIA requested out of escrow in the period. What is still waiting to pay out is under Withdrawal queue." />
-          <Metric label="Largest publisher" value={pre || !m || m.largest_poster?.bytes_share == null ? "—" : `${(m.largest_poster.bytes_share * 100).toFixed(1)}%`}
+          <Metric label="Largest publisher" value={pre || !m || m.largest_poster?.bytes_share == null ? "—" : fmtShare(m.largest_poster.bytes_share)}
             tone={pre || !m || !m.largest_poster ? "absent" : undefined}
             help={pre || !m ? " " : m.largest_poster ? `of upload size · ${publisherName(m.largest_poster)}` : "nothing settled"}
             title="The publisher with the most upload size in the period, and its share." />
-        </Metrics>
-      </section>
+        </Figures>
 
       {/* per-day charts need more than one day to say anything: 7d and longer */}
       {m && win !== "24h" && (() => {
@@ -83,7 +85,7 @@ function Page() {
         const byDay = new Map(m.daily.map((d) => [d.day, d]));
         const feeRows: Row[] = days.map((d) => {
           const b = byDay.get(d);
-          return { x: d, label: dayLabel(d), values: { fees: b?.fees_utia ?? 0 },
+          return { x: d, label: dayLabel(d), short: String(Number(d.slice(8))), values: { fees: b?.fees_utia ?? 0 },
             note: b ? `${b.settlements} settlement${b.settlements === 1 ? "" : "s"} · ${bytes(b.bytes)}${b.timeouts ? ` · ${b.timeouts} timed out` : ""}` : "nothing settled" };
         });
         const pubs = m.top_publishers.map((p) => p.publisher);
@@ -94,27 +96,28 @@ function Page() {
           for (const r of m.daily_by_publisher) if (r.day === d) values[r.publisher] = (values[r.publisher] ?? 0) + r.bytes;
           const b = byDay.get(d);
           for (const k of Object.keys(values)) values[k] = values[k] / (1 << 20); // MiB, so the axis steps are round
-          return { x: d, label: dayLabel(d), values, note: b ? `${b.settlements} settlement${b.settlements === 1 ? "" : "s"}` : "nothing settled" };
+          return { x: d, label: dayLabel(d), short: String(Number(d.slice(8))), values, note: b ? `${b.settlements} settlement${b.settlements === 1 ? "" : "s"}` : "nothing settled" };
         });
         const mib = (v: number) => v >= 1024 ? `${(v / 1024).toFixed(2)} GiB` : v >= 100 ? `${Math.round(v)} MiB` : v >= 10 ? `${v.toFixed(1)} MiB` : `${v.toFixed(2)} MiB`;
         const axisTia = (v: number) => v === 0 ? "0" : v >= 100e6 ? Math.round(v / 1e6).toLocaleString("en-US") : v >= 1e6 ? (v / 1e6).toFixed(v % 1e6 ? 1 : 0) : (v / 1e6).toFixed(2);
         const axisMib = (v: number) => v >= 1024 ? `${(v / 1024).toFixed(v % 1024 ? 1 : 0)} GiB` : `${Number.isInteger(v) ? v : v.toFixed(1)} MiB`;
         return (
-          <div className="charts">
-            <div className="card">
-              <Chart title="Fees paid per day (TIA)" series={[{ key: "fees", label: "fees", color: "var(--accent)" }]} rows={feeRows}
-                fmt={(v) => tia(v)} fmtAxis={axisTia} />
-            </div>
-            <div className="card">
-              <Chart title="Upload size per day, by publisher" series={series} rows={byteRows} fmt={mib} fmtAxis={axisMib} />
-            </div>
+          <div className="board-charts">
+            <Chart title="Fees paid per day (TIA)" figure={tia(m.fees_settled_utia)} figureNote="in the period" series={[{ key: "fees", label: "fees", color: "var(--accent)" }]} rows={feeRows}
+              fmt={(v) => tia(v)} fmtAxis={axisTia} height={210} />
+            <Chart title="Upload size per day, by publisher" figure={bytes(m.bytes)} figureNote="in the period" series={series} rows={byteRows} fmt={mib} fmtAxis={axisMib} height={210} />
           </div>
         );
       })()}
+      </section>
 
-      <Panel title="Publishers" right="by fees">
-      <div className="tablewrap">
-        <table>
+      <section className="listing" id="publishers">
+      <div className="sec-head sec-head--table">
+        <h2>Publishers</h2>
+        <span className="sec-note">by fees</span>
+      </div>
+      <div className="tablewrap framed">
+        <table className="pt">
           <thead><tr>
             <th>publisher</th>
             <th className="right">settlements</th>
@@ -156,7 +159,7 @@ function Page() {
         </table>
       </div>
       {list && <Pager total={pubs.length} page={page} size={SIZE} onPage={setPage} noun={pubs.length === 1 ? "account" : "accounts"} />}
-      </Panel>
+      </section>
 
       {/* The withdrawal queue, read from chain state rather than rebuilt from
           events (see WithdrawalQueueCells). Absent until the collector has

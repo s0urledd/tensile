@@ -4,10 +4,12 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import PreLive from "@/components/PreLive";
 import { unit } from "@/components/Unit";
-import { useApi, type Meta, type Market, type Network, type Blob, type NamespaceRow, utc, ago, nsDisplay, bytes, int, tia, shortBech } from "@/lib/api";
-import { Mark, type Tier } from "@/components/Verdict";
-import { Metric, Metrics } from "@/components/Metrics";
-import VolumeChart from "@/components/VolumeChart";
+import { useApi, type Meta, type Market, type Blob, type NamespaceRow, utc, ago, nsDisplay, bytes, int, pctOf, tia, shortBech } from "@/lib/api";
+import { Mark } from "@/components/Verdict";
+import { recon } from "@/lib/status";
+import Chart from "@/components/Chart";
+import { Metric, Figures } from "@/components/Metrics";
+import { buckets } from "@/lib/buckets";
 import Pager, { usePage } from "@/components/Pager";
 import { useWindow, WindowSwitch } from "@/lib/window";
 
@@ -19,33 +21,12 @@ type BlobPage = { blobs: Blob[]; total: number; offset: number; truncated: boole
 /** the last page /v1/blobs serves: its offset stops at 100,000 */
 const MAX_PAGE = Math.floor(100000 / SIZE) + 1;
 
-// Retrievability as a mark and a word, in the same channel the verdicts use.
-// Retrievable: enough rows were retrieved to reconstruct the blob, in the
-// words of celestia-app's own client ("some rows were retrieved, but not
-// enough to reconstruct" is its word for the other case).
-function recon(b: Blob): { word: string; tier: Tier; title: string } {
-  const r = b.reconstructable;
-  const over = new Date(b.must_serve_until).getTime() <= Date.now();
-  if (b.sampled_out && (!r || r.status === "unknown")) {
-    return { word: "sampled out", tier: "gap", title: "The load policy of the time drew this blob out of its sample: not read." };
-  }
-  if (!r || r.status === "unknown" || r.status === "pending") {
-    return !over
-      ? { word: "in retention window", tier: "gap", title: "Read once, 10 minutes before the retention window ends." }
-      : { word: "not read by Tensile", tier: "gap", title: "No reading of this blob was completed. Nothing is counted for or against a validator." };
-  }
-  const rows = `${int(r.served_distinct_rows)} of ${int(r.total_rows)} rows retrieved, ${int(r.needed_rows)} needed to reconstruct`;
-  if (r.status === "yes" || r.status === "degraded") return { word: "retrievable", tier: "kept", title: rows };
-  return { word: "not retrievable", tier: "hold", title: `${rows}: not enough.` };
-}
-
 function Page() {
   const nsParam = useSearchParams().get("namespace") ?? "";
   const [ns, setNsRaw] = useState(nsParam);
   const [win, setWin] = useWindow("7d");
   const [page, setPage] = usePage();
   const [tab, setTab] = useState<"blobs" | "namespaces">("blobs");
-  const [metric, setMetric] = useState<"bytes" | "settlements">("bytes");
   // a new filter starts from the first page, and lives in the address so a link keeps it
   const setNs = (v: string) => {
     setNsRaw(v);
@@ -64,65 +45,62 @@ function Page() {
   const { data: meta } = useApi<Meta>("/v1/meta");
   const nss = useApi<{ namespaces: NamespaceRow[] }>("/v1/namespaces?limit=100");
   const { data: m } = useApi<Market>(`/v1/market?window=${win}`);
-  const { data: net } = useApi<Network>(`/v1/network?window=${win}`);
-  const bs = m?.blob_stats;
-  const rc = net?.reconstructable;
-  const pct = (f: number | null | undefined) => (f == null ? "—" : `${(f * 100).toFixed(1)}%`);
+  // the answer for another period, kept while this one loads, is not this chart
+  const series = m && m.window.name === win ? buckets(m, win) : [];
+  const per = win === "24h" ? "hour" : "day";
+  const mib = (v: number) => (v >= 1024 ? `${(v / 1024).toFixed(2)} GiB` : v >= 10 ? `${Math.round(v)} MiB` : `${v.toFixed(2)} MiB`);
+  const axisMib = (v: number) => (v >= 1024 ? `${(v / 1024).toFixed(v % 1024 ? 1 : 0)} GiB` : `${Number.isInteger(v) ? v : v.toFixed(1)} MiB`);
   const nsN = nss.data?.namespaces.length ?? 0;
   const nsMore = !!(nss.data as { truncated?: boolean } | null)?.truncated;
-  const busy = !m; // figures not in yet: a blank line, not "nothing settled"
 
   return (
     <>
-      <div className="head">
-        <div><h1>Blobs</h1><p className="sub">Blobs published through Fibre and settled on chain.</p></div>
+      <div className="page-head">
+        <div><h1>Blobs</h1><p className="lede">Blobs published through Fibre and settled on chain.</p></div>
       </div>
       <PreLive meta={meta} />
       {error && !data && <p className="notice">The observer API is not answering ({error}); the page retries every 30 seconds. This is an observer outage, not a Fibre network outage.</p>}
       {error && data && <p className="sample">Showing the last list received; the API is not answering right now ({error}).</p>}
 
       <section className="group" id="chain">
-        <div className="vhead">
+        <div className="sec-head">
           <div><h2>On chain</h2><p className="sub">The period&rsquo;s settlements.</p></div>
           <WindowSwitch value={win} onChange={setWin} />
         </div>
-        <Metrics>
-          <Metric label="Namespaces" value={bs ? int(bs.namespaces) : "—"} tone={bs && bs.namespaces > 0 ? undefined : "absent"}
-            help={bs ? `in the period · ${int(bs.namespaces_total)} on record` : " "} title="Namespaces the period's blobs were published in." />
-          <Metric label="Upload size" value={bs && bs.upload_size_max > 0 ? bytes(bs.upload_size_median) : "—"} tone={bs && bs.upload_size_max > 0 ? undefined : "absent"}
-            help={busy ? " " : bs && bs.upload_size_max > 0 ? `median · largest ${bytes(bs.upload_size_max)}` : "nothing settled"}
-            title="The size a blob paid for, with padding and without parity: the median of the period's settlements, and the largest." />
-          <Metric label="Endorsed voting power" value={pct(bs?.endorsed_share_median)} tone={bs?.endorsed_share_median != null ? undefined : "absent"}
-            help={busy ? " " : bs?.endorsed_share_min != null ? `median · ${pct(bs.endorsed_share_min)} to ${pct(bs.endorsed_share_max)}` : "nothing settled"}
-            title="Share of voting power whose signature is on the settlement. A settlement needs ⅔." />
-        </Metrics>
-        {rc && rc.recoverable.den > 0 && (
-          <p className="observed" title="Settlements Tensile read near the end of their retention window whose rows were enough to reconstruct the blob.">
-            Observed by Tensile: <b>{int(rc.recoverable.num)} of {int(rc.recoverable.den)}</b> settlements read were retrievable.
-          </p>
-        )}
-      </section>
-
-      <section className="group" id="published">
-        <div className="vhead">
-          <div><h2>{metric === "bytes" ? "Upload size" : "Settlements"}</h2><p className="sub">Per UTC {win === "24h" ? "hour" : "day"}</p></div>
-          <div className="seg" role="group" aria-label="chart">
-            <button type="button" aria-pressed={metric === "bytes"} onClick={() => setMetric("bytes")}>Upload size</button>
-            <button type="button" aria-pressed={metric === "settlements"} onClick={() => setMetric("settlements")}>Settlements</button>
+        <div className="board board--rail">
+          <Figures className="rail">
+            <Metric size="hero" label="Blobs" value={m ? int(m.blobs) : "—"} tone={m && m.blobs > 0 ? undefined : "absent"}
+              help={m ? `${int(m.settlements)} settlement${m.settlements === 1 ? "" : "s"}` : " "}
+              title="Blobs (BlobID) settled in the period, and the settlements that paid for them." />
+            <Metric label="Namespaces" value={m?.namespaces != null ? int(m.namespaces) : "—"} tone={m?.namespaces ? undefined : "absent"}
+              help={m?.namespaces_total != null ? `${int(m.namespaces_total)} on record` : " "}
+              title="Namespaces the period's settlements used." />
+          </Figures>
+          <div className="board-charts">
+            <Chart title={`Upload size per ${per}`} figure={m && series.length ? bytes(m.bytes) : undefined} figureNote="in the period"
+              series={[{ key: "bytes", label: "upload size", color: "var(--accent)" }]}
+              rows={series.map((c) => ({ x: c.title, label: c.label, short: c.short, values: { bytes: c.bytes / (1 << 20) }, note: `${int(c.settlements)} settlement${c.settlements === 1 ? "" : "s"}` }))}
+              fmt={mib} fmtAxis={axisMib} empty={m ? "nothing settled in this period" : "loading…"} />
+            <Chart title={`Settlements per ${per}`} figure={m && series.length ? int(m.settlements) : undefined} figureNote="in the period"
+              series={[{ key: "n", label: "settlements", color: "var(--accent-2)" }]}
+              rows={series.map((c) => ({ x: c.title, label: c.label, short: c.short, values: { n: c.settlements }, note: bytes(c.bytes) }))}
+              fmt={(v) => int(v)} empty={m ? "nothing settled in this period" : "loading…"} />
           </div>
         </div>
-        <VolumeChart market={m ?? null} win={win} metric={metric} />
       </section>
 
-      <section id="list">
-        <div className="vhead">
-          <div className="seg" role="group" aria-label="list">
+      <section id="list" className="listing">
+        <div className="list-head">
+          <div className="tabs" role="group" aria-label="list">
             <button type="button" aria-pressed={tab === "blobs"} onClick={() => setTab("blobs")}>Blobs</button>
             <button type="button" aria-pressed={tab === "namespaces"} onClick={() => setTab("namespaces")}>Namespaces{nsN ? <span className="n"> {int(nsN)}{nsMore ? "+" : ""}</span> : null}</button>
           </div>
-          <div className="tools">
-            {tab === "blobs" && <input className="nsfilter" type="search" placeholder="Filter by namespace (58 hex)" value={ns} onChange={(e) => setNs(e.target.value)} aria-label="namespace filter" />}
-          </div>
+          {tab === "blobs" && (
+            <label className="field">
+              <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><circle cx="7" cy="7" r="4.75" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="m10.5 10.5 3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+              <input className="nsfilter" type="search" placeholder="Filter by namespace (58 hex)" value={ns} onChange={(e) => setNs(e.target.value)} aria-label="namespace filter" />
+            </label>
+          )}
         </div>
 
         {tab === "blobs" && (
@@ -146,7 +124,7 @@ function Page() {
                         <td title={pub}><Link className="mono" href={`/publisher/?addr=${pub}`}>{shortBech(pub)}</Link></td>
                         <td className="mono">{unit(bytes(b.blob_size))}</td>
                         <td className="mono">{b.charge ? unit(tia(b.charge.fee_utia)) : "—"}</td>
-                        <td className="mono">{b.attested_voting_power != null && b.total_voting_power ? `${(100 * b.attested_voting_power / b.total_voting_power).toFixed(1)}%` : "—"}</td>
+                        <td className="mono">{b.attested_voting_power != null && b.total_voting_power ? pctOf(b.attested_voting_power, b.total_voting_power) : "—"}</td>
                         <td><span className={`verdict verdict--${rc.tier}`} title={rc.title}><Mark tier={rc.tier} /><span className="w">{rc.word}</span></span></td>
                       </tr>
                     );

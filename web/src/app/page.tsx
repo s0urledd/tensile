@@ -4,10 +4,12 @@ import Link from "next/link";
 import { API_BASE, useApi, type Network, type Validator, type Meta, type Market, type Blob, int, pctOf, bytes, tia, ago, whenUTC, MIN_RATED } from "@/lib/api";
 import { useWindow, WindowSwitch } from "@/lib/window";
 import StatusLine from "@/components/StatusLine";
-import { Metric, Metrics } from "@/components/Metrics";
+import { Metric, Metrics, Eye } from "@/components/Metrics";
+import { Mark } from "@/components/Verdict";
 import Validators from "@/components/Validators";
 import PreLive from "@/components/PreLive";
 import HostMap from "@/components/HostMap";
+import { recon } from "@/lib/status";
 
 /**
  * The overview, from the chain's own records: which validators run a Fibre
@@ -20,6 +22,8 @@ function Overview() {
   const [win, setWin] = useWindow("24h");
   const { data: meta, error: metaErr } = useApi<Meta>("/v1/meta");
   const net = useApi<Network>(`/v1/network?window=${win}`);
+  // Tensile's Available figure is "now", not the period: every settlement read so far
+  const whole = useApi<Network>("/v1/network?window=all");
   const vals = useApi<{ validators: Validator[] }>(`/v1/validators?window=${win}`);
   const market = useApi<Market>(`/v1/market?window=${win}`);
   const newest = useApi<{ blobs: Blob[] }>("/v1/blobs?limit=1");
@@ -35,22 +39,49 @@ function Overview() {
   // last, as the chain recorded it. It opens the blob page.
   const last = newest.data?.blobs?.[0];
   const latest = last && (
-    <div id="latest">
-      <h2>Latest blob <span className="soft">· settled {ago(last.settlement_time)}</span></h2>
-      <dl className="latest">
+    <div id="latest" className="ov-latest">
+      <h2 className="ov-latest-h"><span className="ov-eyebrow">Latest blob</span> <span className="ov-when"><span aria-hidden="true">· </span>settled {ago(last.settlement_time)}</span></h2>
+      <dl className="ov-spec">
         <div><dt>Height</dt><dd>{int(last.settlement_height)}</dd></div>
         <div><dt>Time</dt><dd>{whenUTC(last.settlement_time)}</dd></div>
         <div><dt>Upload size</dt><dd>{bytes(last.blob_size)}</dd></div>
-        {last.attested_with_rows != null && <div><dt>Endorsements</dt><dd>{int(last.attested_with_rows)} of {int(last.validators_with_rows)} validators</dd></div>}
-        {last.attested_voting_power != null && !!last.total_voting_power && <div><dt>Endorsed voting power</dt><dd>{pctOf(last.attested_voting_power, last.total_voting_power)}</dd></div>}
+        {last.attested_with_rows != null && <div><dt>Endorsements</dt><dd>{int(last.attested_with_rows)} <span className="ov-of">of {int(last.validators_with_rows)} validators</span></dd></div>}
+        {last.attested_voting_power != null && !!last.total_voting_power && <div className="ov-wide"><dt>Endorsed voting power</dt><dd>{pctOf(last.attested_voting_power, last.total_voting_power)}</dd></div>}
       </dl>
-      <p className="blobs">
-        <Link href={`/blob/?hash=${last.promise_hash}`}>Blob details →</Link>
-        <span className="sep">·</span>
-        <Link href="/blobs/">All blobs →</Link>
+      <p className="ov-links">
+        <Link href={`/blob/?hash=${last.promise_hash}`}>Blob details <span aria-hidden="true">→</span></Link>
+        <Link href="/blobs/">All blobs <span aria-hidden="true">→</span></Link>
       </p>
     </div>
   );
+  // Under the latest blob, Tensile's own readings, marked as such and set quieter than the
+  // chain's: the Available share over every settlement read near the end of its retention
+  // window, and the latest blob's own result, in the Blobs list's words.
+  const rec = whole.data?.reconstructable?.recoverable;
+  const st = last ? recon(last) : null;
+  const observed = (rec || st) && (
+    <aside className="ov-obs" aria-label="Observed by Tensile">
+      <span className="obs-tag"><Eye />Observed by Tensile</span>
+      <dl className="ov-obs-grid">
+        {rec && (
+          <div title="Observed by Tensile: settlements read near the end of their retention window whose rows were enough to reconstruct the blob.">
+            <dt>Available</dt>
+            <dd>
+              <span className={`ov-obs-v num${rec.den > 0 ? "" : " absent"}`}>{pctOf(rec.num, rec.den)}</span>
+              <span className="ov-obs-h">{rec.den > 0 ? `${int(rec.num)} of ${int(rec.den)} read near the window's end` : "none read"}</span>
+            </dd>
+          </div>
+        )}
+        {st && (
+          <div>
+            <dt>Latest blob</dt>
+            <dd><span className={`verdict verdict--${st.tier}`} title={st.title}><Mark tier={st.tier} /><span className="w">{st.word}</span></span></dd>
+          </div>
+        )}
+      </dl>
+    </aside>
+  );
+  const aside = latest || observed ? <>{latest}{observed}</> : null;
   const beside = !!vals.data && !!meta?.fibre_active;
   const none = !M || notLive;
 
@@ -61,7 +92,7 @@ function Overview() {
       <PreLive meta={meta} />
       <StatusLine meta={meta} metaError={metaErr} snap={N} client={{ error: net.error, fetchedAt: net.fetchedAt, status: net.status }} measuring={measuring} />
 
-      {vals.data && <HostMap rows={rows} showReadiness={!!meta?.fibre_active} aside={latest || undefined} />}
+      {vals.data && <HostMap rows={rows} showReadiness={!!meta?.fibre_active} aside={aside || undefined} />}
 
       {/* the period drives every card below it; the map, the stake and the latest blob are now */}
       <div className="period-row"><WindowSwitch value={win} onChange={setWin} /></div>
@@ -94,7 +125,7 @@ function Overview() {
       </Metrics>
 
       {/* Beside the map when it shows the stake panel; on its own otherwise. */}
-      {latest && !beside && <section className="band" id="outcomes"><div>{latest}</div></section>}
+      {aside && !beside && <section className="band" id="outcomes"><div>{aside}</div></section>}
 
       <Validators rows={rows} window={win} notLive={notLive} loading={vals.loading} />
       <p className="tnote"><a href={`${API_BASE}/v1/feed.atom`} type="application/atom+xml">Network events (Atom)</a></p>

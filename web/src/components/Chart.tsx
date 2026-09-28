@@ -1,18 +1,48 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 /**
- * A column chart with axes, gridlines, a hover tooltip and, for more than
+ * A column chart with axes, gridlines, a hover readout and, for more than
  * one series, a stack with a legend. Drawn in pixels from the container's
  * measured width, so text never stretches; nothing here scales a viewBox.
  *
  * Rows are the x categories in order (days); every row is drawn, including
  * empty ones, so a quiet week is a quiet week and not a shorter chart.
+ *
+ * Bars grow from a zero baseline, square at the baseline and rounded only at
+ * the data end. Each bucket is its own bar: nothing is drawn between
+ * buckets, so no value is suggested where there is none. A single series
+ * takes a vertical gradient of its own hue; a stack keeps flat fills so the
+ * identity of each segment stays exact, and is laid out in whole pixels:
+ * exactly as tall as its total's bar, each gap cut from the segment above
+ * it, and no segment thinner than 1px.
+ *
+ * Every bucket is named on the axis when the names fit; when they do not,
+ * a row's `short` form ("22" for "Sep 22") is tried before any is dropped,
+ * the first name and the first of each month kept in full.
+ *
+ * The readout never covers a bar other than the hovered one, nor an axis
+ * label: it goes beside the column on whichever side has room, rising over
+ * the chart's own head when the bars under it are tall.
+ *
+ * The plot is focusable: the arrow keys (and Home / End) walk the buckets
+ * and the readout follows, the same one the pointer gets.
  */
 export type Series = { key: string; label: string; color: string };
-export type Row = { x: string; label?: string; values: Record<string, number>; note?: string };
+/** `short`: the label without its month, "22" for "Sep 22" */
+export type Row = { x: string; label?: string; short?: string; values: Record<string, number>; note?: string };
 
-const PAD = { top: 10, right: 8, bottom: 22, left: 8 };
+const PAD = { top: 12, right: 4, bottom: 26, left: 0 };
+/** the axis text size, --t-tiny */
+const AXIS_PX = 11;
+/** clear space between two axis labels; short day numbers are lighter and need less */
+const LABEL_GAP = 10, SHORT_GAP = 8;
+/** the card showing between two stacked segments, cut from the upper one */
+const SEG_GAP = 2;
+/** clear space kept between the readout and what it must not cover */
+const CLEAR = 6;
+/** the gridlines of an empty chart, as fractions of the plot's height */
+const EMPTY_GRID = [0.25, 0.5, 0.75, 1];
 
 function niceStep(max: number, ticks: number): number {
   if (max <= 0) return 1;
@@ -23,105 +53,333 @@ function niceStep(max: number, ticks: number): number {
   return step * mag;
 }
 
-export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title, empty }: {
+/** a column rounded at the top only: the data end, never the baseline */
+function column(x: number, y: number, w: number, h: number, r: number): string {
+  const rr = Math.max(0, Math.min(r, w / 2, h));
+  return `M${x},${y + h}V${y + rr}A${rr},${rr} 0 0 1 ${x + rr},${y}H${x + w - rr}A${rr},${rr} 0 0 1 ${x + w},${y + rr}V${y + h}Z`;
+}
+
+// Axis text widths, measured in the page's own face (and measured again once
+// the webfont is in), so the label plan is exact rather than guessed.
+const widths = new Map<string, number>();
+let ctx2d: CanvasRenderingContext2D | null | undefined;
+function textWidth(s: string, font: string): number {
+  const k = font + "\u0000" + s;
+  const hit = widths.get(k);
+  if (hit !== undefined) return hit;
+  if (ctx2d === undefined) { try { ctx2d = document.createElement("canvas").getContext("2d"); } catch { ctx2d = null; } }
+  let w = s.length * 6.4;
+  if (ctx2d) { ctx2d.font = font; w = ctx2d.measureText(s).width; }
+  widths.set(k, w);
+  return w;
+}
+
+/**
+ * A stack's segments in whole pixels, bottom first: `ext` is the height a
+ * segment takes including the gap under it, `gap` that gap. The extents add
+ * up to `px`, the total's own bar, so the stack never stands taller than its
+ * total; each segment above the first gives its gap out of its own height;
+ * a segment too small to see keeps 1px, taken from the larger ones. Only a
+ * bar with fewer pixels than segments leaves its smallest undrawn (the
+ * readout still lists them).
+ */
+function stackPx(vals: number[], px: number): { ext: number; gap: number }[] {
+  const out = vals.map(() => ({ ext: 0, gap: 0 }));
+  let keep = vals.map((v, k) => (v > 0 ? k : -1)).filter((k) => k >= 0);
+  if (keep.length === 0 || px <= 0) return out;
+  let gap = SEG_GAP;
+  if (px < 1 + (keep.length - 1) * (1 + gap)) gap = 0;
+  if (px < keep.length) keep = [...keep].sort((a, b) => vals[b] - vals[a]).slice(0, px).sort((a, b) => a - b);
+  const min = (k: number) => (k === keep[0] ? 1 : 1 + gap);
+  // shares in proportion to value; any below its minimum is pinned there and the rest shared again
+  const pinned = new Set<number>();
+  let share = new Map<number, number>();
+  for (;;) {
+    const free = keep.filter((k) => !pinned.has(k));
+    let room = px;
+    pinned.forEach((k) => { room -= min(k); });
+    const sum = free.reduce((a, k) => a + vals[k], 0);
+    share = new Map(free.map((k) => [k, sum > 0 ? (vals[k] / sum) * room : 0]));
+    const low = free.filter((k) => (share.get(k) ?? 0) < min(k));
+    if (low.length === 0) break;
+    low.forEach((k) => pinned.add(k));
+  }
+  // whole pixels, the remainder to the largest fractions
+  const ext = new Map<number, number>();
+  pinned.forEach((k) => ext.set(k, min(k)));
+  let left = px;
+  ext.forEach((e) => { left -= e; });
+  const free = [...share.keys()];
+  free.forEach((k) => { const e = Math.floor(share.get(k) ?? 0); ext.set(k, e); left -= e; });
+  free.sort((a, b) => ((share.get(b) ?? 0) % 1) - ((share.get(a) ?? 0) % 1));
+  for (let j = 0; left > 0 && free.length > 0; j = (j + 1) % free.length, left--) ext.set(free[j], (ext.get(free[j]) ?? 0) + 1);
+  keep.forEach((k) => { out[k] = { ext: ext.get(k) ?? 0, gap: k === keep[0] ? 0 : gap }; });
+  return out;
+}
+
+export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title, sub, figure, figureNote, empty }: {
   series: Series[];
   rows: Row[];
   fmt: (v: number) => string;
   fmtAxis?: (v: number) => string;
   height?: number;
   title: string;
+  /** a line beside the title: "1.35 GiB in the period" (use figure/figureNote to set the figure large) */
+  sub?: string;
+  /** the period's total, printed large under the title: "1.35 GiB" */
+  figure?: string;
+  /** the words after the figure: "in the period" */
+  figureNote?: string;
   empty?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const plotRef = useRef<HTMLDivElement>(null);
+  const tipRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
+  const [family, setFamily] = useState("sans-serif");
+  const [, setFontsIn] = useState(0);
   const [hover, setHover] = useState<number | null>(null);
+  const [keyed, setKeyed] = useState(false);
+  // the readout's measured size, and the height of the chart's head above the plot
+  const [tipBox, setTipBox] = useState({ w: 150, h: 84 });
+  const [headH, setHeadH] = useState(64);
+  const uid = "c" + useId().replace(/[^a-zA-Z0-9]/g, "");
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     const ro = new ResizeObserver((es) => setWidth(Math.floor(es[0].contentRect.width)));
     ro.observe(el);
     setWidth(el.clientWidth);
-    return () => ro.disconnect();
+    setFamily(getComputedStyle(el).fontFamily || "sans-serif");
+    let live = true;
+    document.fonts?.ready.then(() => { if (live) { widths.clear(); setFontsIn((v) => v + 1); } });
+    return () => { live = false; ro.disconnect(); };
   }, []);
+  useLayoutEffect(() => {
+    const p = plotRef.current, t = tipRef.current;
+    if (p && p.offsetTop !== headH) setHeadH(p.offsetTop);
+    if (t && (t.offsetWidth !== tipBox.w || t.offsetHeight !== tipBox.h)) {
+      // a new size is a new place, found before paint: go there, do not glide from where the old size put it
+      t.style.transition = "none";
+      setTipBox({ w: t.offsetWidth, h: t.offsetHeight });
+      requestAnimationFrame(() => requestAnimationFrame(() => { t.style.transition = ""; }));
+    }
+  });
+  const tw = (s: string, weight = 400) => textWidth(s, `${weight} ${AXIS_PX}px ${family}`);
 
   const axisFmt = fmtAxis ?? fmt;
   const totals = rows.map((r) => series.reduce((a, s) => a + (r.values[s.key] ?? 0), 0));
   const max = Math.max(0, ...totals);
+  const hasData = max > 0;
   const step = niceStep(max, 4);
-  const top = max === 0 ? 1 : Math.ceil(max / step) * step;
+  const top = hasData ? Math.ceil(max / step) * step : 1;
+  // an empty chart keeps its scale's floor: the 0 tick, and gridlines with nothing to count
   const ticks: number[] = [];
-  for (let v = 0; v <= top + 1e-9; v += step) ticks.push(v);
-  // Left gutter from the widest tick label, in a 11px mono: ~6.6px a char.
-  const left = PAD.left + Math.max(...ticks.map((t) => axisFmt(t).length)) * 6.6 + 8;
+  if (hasData) for (let v = 0; v <= top + 1e-9; v += step) ticks.push(v); else ticks.push(0);
+  // the left gutter from the widest tick label, and at least 56px, so charts side by side start their plots on one line
+  const left = Math.max(56, Math.ceil(Math.max(...ticks.map((t) => tw(axisFmt(t))))) + 10);
   const plotW = Math.max(0, width - left - PAD.right);
   const plotH = height - PAD.top - PAD.bottom;
+  const base = PAD.top + plotH;
   const n = rows.length;
   const slot = n > 0 ? plotW / n : 0;
-  const bw = Math.max(2, Math.min(28, slot * 0.62));
+  const bw = Math.max(2, Math.round(Math.min(26, slot * 0.58)));
   const y = (v: number) => PAD.top + plotH * (1 - v / top);
-  // One label per 44px at least; the last day is labelled only when it is
-  // a full step past the previous label, so two never print over each other.
-  const every = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(plotW / 44))));
-  const lastDrawn = Math.floor((n - 1) / every) * every;
-  const showLabel = (i: number) => i % every === 0 || (i === n - 1 && i - lastDrawn >= every);
-  const hasData = max > 0;
+  const barPx = (v: number) => (v > 0 ? Math.max(1, Math.round((plotH * v) / top)) : 0);
+  const cxOf = (i: number) => left + slot * i + slot / 2;
+  const colX = (i: number) => Math.round(cxOf(i) - bw / 2);
+  const single = series.length === 1;
+  const lastWithData = (() => { for (let i = n - 1; i >= 0; i--) if (totals[i] > 0) return i; return n - 1; })();
+  // the hovered bucket, if it is one of these rows (another period may have fewer)
+  const on = hasData && hover !== null && hover < n ? hover : null;
+
+  // The axis names: every bucket in full if they fit; else every bucket in
+  // its short form (the first, and the first of a month, in full); else every
+  // k-th bucket in full, the smallest k that fits.
+  const full = rows.map((r) => r.label ?? r.x);
+  const canShort = n > 0 && rows.every((r, i) => !!r.short && full[i].endsWith(r.short));
+  const month = (i: number) => full[i].slice(0, full[i].length - (rows[i].short ?? "").length);
+  const plan = (k: number, short: boolean): Map<number, string> | null => {
+    const out = new Map<number, string>();
+    let prev = -1;
+    for (let i = 0; i < n; i += k) {
+      const s = !short || prev < 0 || month(i) !== month(prev) ? full[i] : (rows[i].short as string);
+      if (prev >= 0 && slot * (i - prev) < (tw(out.get(prev) as string) + tw(s)) / 2 + (short ? SHORT_GAP : LABEL_GAP)) return null;
+      out.set(i, s);
+      prev = i;
+    }
+    return out;
+  };
+  let names = plan(1, false) ?? (canShort ? plan(1, true) : null);
+  for (let k = 2; !names && k <= n; k++) names = plan(k, false);
+  names = names ?? new Map<number, string>();
+  // the hovered bucket is named in full; the names that would touch it make room
+  const onW = on !== null ? tw(full[on], 600) : 0;
+  const showName = (i: number) => i === on || (names.has(i) && (on === null || Math.abs(i - on) * slot >= (tw(names.get(i) as string) + onW) / 2 + 6));
+
+  // The readout's place: beside the hovered column, on either side, as low as
+  // the bars under it allow (up over the chart's head when they are tall),
+  // never over another bar or an axis label; if nowhere is clear, wherever it
+  // covers least, the hovered bar before any other.
+  let tip = { x: 0, y: 0 };
+  if (on !== null && width > 0) {
+    const w = tipBox.w, h = tipBox.h;
+    const yTop = PAD.top - 8;
+    const yLow = -headH;
+    type Box = { x0: number; x1: number; top: number; weight: number };
+    const boxes: Box[] = [{ x0: 0, x1: left - CLEAR, top: y(top) - 8, weight: 50 }];
+    for (let i = 0; i < n; i++) if (totals[i] > 0) boxes.push({ x0: colX(i), x1: colX(i) + bw, top: base - barPx(totals[i]), weight: i === on ? 1 : 5 });
+    const hx0 = colX(on), hx1 = hx0 + bw;
+    const xs = new Set<number>();
+    const clampX = (x: number) => Math.max(0, Math.min(width - w, Math.round(x)));
+    for (let x = 0; x <= width - w; x += 4) xs.add(x);
+    [width - w, hx1 + 10, hx0 - 10 - w, (hx0 + hx1 - w) / 2].forEach((x) => xs.add(clampX(x)));
+    let best = Infinity;
+    xs.forEach((x) => {
+      const hit = boxes.filter((b) => b.x0 < x + w + CLEAR && b.x1 > x - CLEAR);
+      // above the zero stubs (3px over the baseline), whatever the bars
+      let ty = Math.min(yTop, base - 3 - CLEAR - h);
+      hit.forEach((b) => { ty = Math.min(ty, b.top - CLEAR - h); });
+      let cover = 0;
+      if (ty < yLow) {
+        ty = yLow;
+        hit.forEach((b) => {
+          const dx = Math.min(x + w + CLEAR, b.x1) - Math.max(x - CLEAR, b.x0);
+          const dy = Math.min(ty + h + CLEAR, base) - Math.max(ty - CLEAR, b.top);
+          if (dx > 0 && dy > 0) cover += dx * dy * b.weight;
+        });
+      }
+      const away = x >= hx1 ? x - hx1 : x + w <= hx0 ? hx0 - (x + w) : 0;
+      const room = x >= hx1 ? width - hx1 : hx0;
+      const score = cover * 100 + (yTop - ty) * 0.5 + away - room * 0.001;
+      if (score < best) { best = score; tip = { x, y: ty }; }
+    });
+  }
+
+  const move = (to: number) => { setKeyed(true); setHover(Math.min(n - 1, Math.max(0, to))); };
 
   return (
-    <div className="chart" ref={ref}>
-      <div className="chart-head"><span className="label">{title}</span></div>
+    <div className={"chart" + (single ? " chart--single" : "")} ref={ref} style={single ? ({ "--series": series[0].color } as CSSProperties) : undefined}>
+      <div className="chart-head">
+        <div className="chart-title">{single && <i className="chart-key" aria-hidden="true" />}{title}</div>
+        <div className="chart-figure">
+          {figure !== undefined
+            ? <><b className="num">{figure}</b>{figureNote && <span>{figureNote}</span>}</>
+            : sub !== undefined ? <span>{sub}</span> : <b aria-hidden="true">&nbsp;</b>}
+        </div>
+      </div>
+      <div className="chart-plot" ref={plotRef} style={{ height }}>
       {width > 0 && (
-        <div className="chart-plot" style={{ height }}>
-          <svg width={width} height={height} role="img" aria-label={title}
-            onMouseLeave={() => setHover(null)}
+        <>
+          <svg width={width} height={height} role="img" aria-label={hasData ? title : `${title}: ${empty ?? "nothing recorded in this window"}`}
+            tabIndex={n > 0 && hasData ? 0 : -1}
+            className={on !== null ? "hovering" : undefined}
+            onMouseLeave={() => { if (!keyed) setHover(null); }}
             onMouseMove={(e) => {
               const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
               const px = e.clientX - rect.left - left;
-              if (px < 0 || px > plotW || n === 0) { setHover(null); return; }
+              setKeyed(false);
+              if (!hasData || px < 0 || px > plotW || n === 0) { setHover(null); return; }
               setHover(Math.min(n - 1, Math.max(0, Math.floor(px / slot))));
+            }}
+            onFocus={() => { if (n > 0 && hasData) { setKeyed(true); setHover((h) => h ?? lastWithData); } }}
+            onBlur={() => { setKeyed(false); setHover(null); }}
+            onKeyDown={(e) => {
+              if (n === 0 || !hasData) return;
+              const h = hover ?? lastWithData;
+              if (e.key === "ArrowRight") { move(h + 1); e.preventDefault(); }
+              else if (e.key === "ArrowLeft") { move(h - 1); e.preventDefault(); }
+              else if (e.key === "Home") { move(0); e.preventDefault(); }
+              else if (e.key === "End") { move(n - 1); e.preventDefault(); }
+              else if (e.key === "Escape") { setHover(null); }
             }}>
-            {/* an all-zero series has no scale to read: no gridlines or tick labels, the sentence below instead */}
-            {hasData && ticks.map((t) => (
-              <g key={t}>
-                <line x1={left} x2={left + plotW} y1={y(t)} y2={y(t)} className="grid" />
-                <text x={left - 6} y={y(t) + 3.5} textAnchor="end" className="tick">{axisFmt(t)}</text>
-              </g>
-            ))}
+            <defs>
+              {series.map((s, si) => (
+                <linearGradient key={s.key} id={`${uid}-g${si}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" style={{ stopColor: s.color, stopOpacity: 1 }} />
+                  <stop offset="1" style={{ stopColor: s.color, stopOpacity: single ? "var(--bar-fade)" : 1 }} />
+                </linearGradient>
+              ))}
+              <linearGradient id={`${uid}-hl`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" style={{ stopColor: single ? series[0].color : "var(--accent)", stopOpacity: 0 }} />
+                <stop offset="1" style={{ stopColor: single ? series[0].color : "var(--accent)", stopOpacity: "var(--band-op)" }} />
+              </linearGradient>
+            </defs>
+            {hasData
+              ? ticks.map((t) => (
+                <g key={t}>
+                  {t > 0 && <line x1={left} x2={left + plotW} y1={Math.round(y(t)) + 0.5} y2={Math.round(y(t)) + 0.5} className="grid" />}
+                  <text x={left - 10} y={y(t) + 3.5} textAnchor="end" className="tick">{axisFmt(t)}</text>
+                </g>
+              ))
+              : <>
+                {EMPTY_GRID.map((f) => <line key={f} x1={left} x2={left + plotW} y1={Math.round(base - plotH * f) + 0.5} y2={Math.round(base - plotH * f) + 0.5} className="grid" />)}
+                <text x={left - 10} y={base + 3.5} textAnchor="end" className="tick">{axisFmt(0)}</text>
+              </>}
             {rows.map((r, i) => {
-              const cx = left + slot * i + slot / 2;
-              let acc = 0;
-              const segs = series.map((s, si) => {
-                const v = r.values[s.key] ?? 0;
-                const y0 = y(acc), y1 = y(acc + v);
-                acc += v;
-                const h = Math.max(0, y0 - y1 - (si > 0 && v > 0 ? 2 : 0));
-                return v > 0 ? <rect key={s.key} x={cx - bw / 2} y={y1} width={bw} height={h} rx={acc === totals[i] ? 3 : 0} fill={s.color} /> : null;
-              });
+              const cx = cxOf(i);
+              const x0 = colX(i);
+              const isOn = on === i;
+              let bars: ReactNode = null;
+              if (totals[i] > 0) {
+                if (single) {
+                  const h = barPx(totals[i]);
+                  bars = <path className="bar" d={column(x0, base - h, bw, h, 4)} fill={`url(#${uid}-g0)`} />;
+                } else {
+                  const vals = series.map((s) => Math.max(0, r.values[s.key] ?? 0));
+                  const px = stackPx(vals, barPx(totals[i]));
+                  const topK = px.reduce((a, p, k) => (p.ext > 0 ? k : a), -1);
+                  let yb = base;
+                  bars = series.map((s, si) => {
+                    const p = px[si];
+                    if (p.ext <= 0) return null;
+                    const y1 = yb - p.ext;
+                    const h = p.ext - p.gap;
+                    yb = y1;
+                    return <path key={s.key} className="bar" d={column(x0, y1, bw, h, si === topK ? 4 : 0)} fill={`url(#${uid}-g${si})`} />;
+                  });
+                }
+              }
               return (
-                <g key={r.x} className={hover === i ? "col hover" : "col"}>
-                  {hover === i && <rect x={left + slot * i} y={PAD.top} width={slot} height={plotH} className="hl" />}
-                  {segs}
-                  {totals[i] === 0 && <rect x={cx - bw / 2} y={y(0) - 1.5} width={bw} height={1.5} className="quiet" />}
-                  {showLabel(i) && (
-                    <text x={cx} y={height - 6} textAnchor="middle" className="tick">{r.label ?? r.x}</text>
+                <g key={r.x} className={isOn ? "col hover" : "col"}>
+                  {isOn && <rect x={left + slot * i + 1} y={PAD.top - 4} width={Math.max(0, slot - 2)} height={plotH + 4} rx={Math.min(8, slot / 3)} fill={`url(#${uid}-hl)`} className="hl" />}
+                  {bars}
+                  {totals[i] === 0 && <rect x={Math.round(cx - Math.min(bw, 10) / 2)} y={base - 3} width={Math.min(bw, 10)} height={2} rx={1} className="quiet" />}
+                  {showName(i) && (
+                    <text x={cx} y={height - 7} textAnchor="middle" className={isOn ? "tick on" : on !== null ? "tick dim" : "tick"}>{isOn ? full[i] : names.get(i)}</text>
                   )}
                 </g>
               );
             })}
-            <line x1={left} x2={left + plotW} y1={y(0) + 0.5} y2={y(0) + 0.5} className="axis" />
+            <line x1={left} x2={left + plotW} y1={base + 0.5} y2={base + 0.5} className="axis" />
           </svg>
-          {!hasData && <div className="chart-empty">{empty ?? "nothing recorded in this window"}</div>}
-          {hover !== null && rows[hover] && (
-            <div className="chart-tip" style={{ left: Math.min(width - 190, Math.max(0, left + slot * hover + slot / 2 - 90)) }}>
-              <div className="tip-x">{rows[hover].x}</div>
-              {series.length > 1 && [...series].reverse().map((s) => (
-                <div key={s.key} className="tip-row"><i className="sw" style={{ background: s.color }} />{s.label}<b>{fmt(rows[hover].values[s.key] ?? 0)}</b></div>
-              ))}
-              <div className="tip-row total">{series.length > 1 ? "total" : series[0].label}<b>{fmt(totals[hover])}</b></div>
-              {rows[hover].note && <div className="tip-note">{rows[hover].note}</div>}
+          {!hasData && (
+            <div className="chart-empty" style={{ left, right: PAD.right, bottom: PAD.bottom }}>
+              <span className="chart-empty-badge">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2 13.5h12M4 10.5v1M8 8.5v3M12 10.5v1" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+                {empty ?? "nothing recorded in this window"}
+              </span>
             </div>
           )}
-        </div>
+          {on !== null && rows[on] && (
+            <div ref={tipRef} className={"chart-tip" + (single ? " single" : " stack")} style={{ transform: `translate(${Math.round(tip.x)}px, ${Math.round(tip.y)}px)` }} role={keyed ? "status" : undefined}>
+              <div className="tip-x">{rows[on].x}</div>
+              {single ? (
+                <div className="tip-main"><b className="num">{fmt(totals[on])}</b><span>{series[0].label}</span></div>
+              ) : (
+                <>
+                  {[...series].reverse().map((s) => (
+                    <div key={s.key} className="tip-row"><i className="sw" style={{ background: s.color }} /><span className="tip-l">{s.label}</span><b className="num">{fmt(rows[on].values[s.key] ?? 0)}</b></div>
+                  ))}
+                  <div className="tip-row total"><span className="tip-l">total</span><b className="num">{fmt(totals[on])}</b></div>
+                </>
+              )}
+              {rows[on].note && <div className="tip-note">{rows[on].note}</div>}
+            </div>
+          )}
+        </>
       )}
+      </div>
       {series.length > 1 && (
         <ul className="chart-legend">
           {series.map((s) => <li key={s.key}><i className="sw" style={{ background: s.color }} />{s.label}</li>)}

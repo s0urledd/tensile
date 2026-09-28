@@ -530,9 +530,8 @@ func TestMarketBlobsByCommitment(t *testing.T) {
 	}
 }
 
-// blob_stats reads the window's settlements: namespaces used, the median
-// and largest upload size, and the spread of verified endorsed voting power.
-func TestMarketBlobStats(t *testing.T) {
+// The namespaces the window's settlements used, and all on record.
+func TestMarketNamespaces(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "observer.db"))
 	if err != nil {
@@ -540,31 +539,13 @@ func TestMarketBlobStats(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	now := time.Now().UTC().Truncate(time.Second)
-	at := now.Add(-time.Hour)
 	var ps []scan.Payment
 	for i, c := range []struct {
 		hash, ns string
 		size     uint32
-		attested int64
-	}{{"s1", "aa", 262144, 7}, {"s2", "aa", 1048576, 8}, {"s3", "bb", 524288, 9}} {
-		pub := scan.Publication{
-			SchemaVersion: scan.AttestationSchemaVersion, PromiseHash: c.hash, SettlementHeight: int64(100 + i), SettlementTime: at,
-			SettlementTxHash: "tx" + c.hash, MustServeUntil: at.Add(time.Hour), RecordedAt: at, Signer: samplePublisher,
-			Promise: scan.PromiseFields{ChainID: "t", Height: int64(99 + i), Commitment: "c" + c.hash, Namespace: c.ns, CreationTimestamp: at, BlobSize: c.size},
-			Assignment: scan.AssignmentTable{
-				ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: 4096, TotalRows: 16384},
-				ValidatorSetHeight: int64(99 + i), TotalVotingPower: 10, AttestedVotingPower: c.attested, Sigma: 148, Distinct: 148, ValidatorsWithRows: 1,
-				Validators: []scan.ValidatorAssignment{{Address: sampleValidator, VotingPower: 10, RowCount: 148}},
-			},
-		}
-		raw, err := json.Marshal(pub)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := st.UpsertPublication(pub, raw); err != nil {
-			t.Fatal(err)
-		}
-		ps = append(ps, scan.Payment{SchemaVersion: 1, DedupeKey: "tx" + c.hash + ":0", Kind: "settlement", Height: int64(100 + i), Time: at,
+		ago      time.Duration
+	}{{"old", "ns0", 1 << 27, 3 * 24 * time.Hour}, {"a", "ns1", 1 << 20, time.Hour}, {"b", "ns1", 1 << 22, time.Hour}, {"c", "ns2", 1 << 18, time.Hour}} {
+		ps = append(ps, scan.Payment{SchemaVersion: 1, DedupeKey: "tx" + c.hash + ":0", Kind: "settlement", Height: int64(100 + i), Time: now.Add(-c.ago),
 			TxHash: "tx" + c.hash, Publisher: samplePublisher, Processor: samplePublisher, PromiseHash: c.hash, Namespace: c.ns, BlobSize: c.size, Denom: "utia", AmountUtia: 695_000})
 	}
 	if r, err := ingest.Payments(st, writePayments(t, dir, ps), now); err != nil || r.Inserted != int64(len(ps)) {
@@ -573,25 +554,13 @@ func TestMarketBlobStats(t *testing.T) {
 	ts := httptest.NewServer(api.NewWithVantage(st, api.VantageInfo{Name: "test"}, nil))
 	t.Cleanup(ts.Close)
 	var m struct {
-		BlobStats struct {
-			Namespaces      int64    `json:"namespaces"`
-			NamespacesTotal int64    `json:"namespaces_total"`
-			Median          int64    `json:"upload_size_median"`
-			Max             int64    `json:"upload_size_max"`
-			Endorsed        int64    `json:"endorsed_settlements"`
-			Min             *float64 `json:"endorsed_share_min"`
-			Mid             *float64 `json:"endorsed_share_median"`
-			Hi              *float64 `json:"endorsed_share_max"`
-		} `json:"blob_stats"`
+		Namespaces      int64 `json:"namespaces"`
+		NamespacesTotal int64 `json:"namespaces_total"`
 	}
 	if code := get(t, ts, "/v1/market?window=24h", &m); code != 200 {
 		t.Fatalf("market: %d", code)
 	}
-	b := m.BlobStats
-	if b.Namespaces != 2 || b.NamespacesTotal != 2 || b.Median != 524288 || b.Max != 1048576 || b.Endorsed != 3 {
-		t.Fatalf("blob_stats %+v", b)
-	}
-	if b.Min == nil || b.Mid == nil || b.Hi == nil || *b.Min != 0.7 || *b.Mid != 0.8 || *b.Hi != 0.9 {
-		t.Fatalf("endorsed shares %v %v %v, want 0.7 0.8 0.9", b.Min, b.Mid, b.Hi)
+	if m.Namespaces != 2 || m.NamespacesTotal != 3 {
+		t.Errorf("namespaces %d of %d on record, want 2 of 3", m.Namespaces, m.NamespacesTotal)
 	}
 }

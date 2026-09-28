@@ -44,7 +44,7 @@ export default function Methodology() {
         <li><strong>Service rate</strong>: served over served plus not served, per endorsed shard. A rate over fewer than twenty shards sorts after the others.</li>
         <li><strong>In retention window</strong>: not read yet. <strong>Not read by Tensile</strong> and <strong>sampled out</strong>: nothing counted either way. <strong>No verdict</strong>: read, but no reading near the end of the window.</li>
         <li><strong>Provisional</strong>: a not-served reading younger than 30 minutes, counted but still open to withdrawal.</li>
-        <li><strong>Retrievable</strong>: enough rows retrieved to reconstruct the blob, 4096 of 16384 for version 0.</li>
+        <li><strong>Available</strong>: enough rows came back at the reading to reconstruct the blob, 4096 of 16384 for version 0. Otherwise <strong>unavailable</strong>: in celestia-app&rsquo;s words, &ldquo;not enough to reconstruct&rdquo;.</li>
         <li><strong>Reachability</strong>: completed handshakes over attempts, every five minutes per endpoint. One failed check after a success still counts as reachable; two in a row is unreachable.</li>
         <li><strong>Throughput</strong>: median download speed over served shards of 2 MiB or more, from three readings up.</li>
         <li>Every rate is a ratio of sums, with a 95% upper bound on the not-served share.</li>

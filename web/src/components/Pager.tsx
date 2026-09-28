@@ -42,13 +42,13 @@ export default function Pager({ total, page, size, maxPages, onPage, noun }: {
   const to = Math.min(total, at * size);
   return (
     <div className="pager">
-      <span className="count">{total === 0 ? `No ${noun}` : `Showing ${int(from)}–${int(to)} of ${int(total)} ${noun}`}</span>
+      <span className="count">{total === 0 ? `No ${noun}` : <>Showing <b>{int(from)}–{int(to)}</b> of <b>{int(total)}</b> {noun}</>}</span>
       {pages > 1 && (
         <span className="ctl" role="group" aria-label="pages">
           <button type="button" className="btn" disabled={at <= 1} onClick={() => onPage(1)}>First</button>
-          <button type="button" className="btn" disabled={at <= 1} onClick={() => onPage(at - 1)} aria-label="previous page">‹</button>
-          <span className="at">Page {int(at)} of {int(pages)}</span>
-          <button type="button" className="btn" disabled={at >= pages} onClick={() => onPage(at + 1)} aria-label="next page">›</button>
+          <button type="button" className="btn icon" disabled={at <= 1} onClick={() => onPage(at - 1)} aria-label="previous page"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg></button>
+          <span className="at">Page <b>{int(at)}</b> of {int(pages)}</span>
+          <button type="button" className="btn icon" disabled={at >= pages} onClick={() => onPage(at + 1)} aria-label="next page"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg></button>
           <button type="button" className="btn" disabled={at >= pages} onClick={() => onPage(pages)}>Last</button>
         </span>
       )}

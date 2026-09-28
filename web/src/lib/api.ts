@@ -643,17 +643,9 @@ export type Market = {
   largest_poster: PublisherShare | null;
   price_formula: PriceFormula;
   notes: string[];
-  /** the window's settlements from the chain alone: namespaces, upload size, endorsed voting power */
-  blob_stats?: {
-    namespaces: number;
-    namespaces_total: number;
-    upload_size_median: number;
-    upload_size_max: number;
-    endorsed_settlements: number;
-    endorsed_share_min: number | null;
-    endorsed_share_median: number | null;
-    endorsed_share_max: number | null;
-  };
+  /** namespaces the window's settlements used, and any settlement on record */
+  namespaces?: number;
+  namespaces_total?: number;
 };
 
 export type Escrow = { found: boolean; balance_utia: number; available_utia: number; height: number; updated_at: string };
@@ -809,16 +801,22 @@ export function useApi<T>(path: string | null, refreshMs = 30000): Fetch<T> {
 
 // ---- formatting ----
 
-/** the percentage whenever there is anything to divide; the floor only decides
- *  emphasis. One decimal never rounds a record with a fault up to 100.0% or a
- *  record with a success down to 0.0%: those print as bounds. */
+/** a share as a percentage to two decimals: "99.95%". Only all of it reads
+ *  "100%" and only none of it "0%"; a share that two decimals would round to
+ *  either end prints as a bound instead. */
+function pct2(v: number, all: boolean, none: boolean): string {
+  if (all) return "100%";
+  if (none) return "0%";
+  const s = (v * 100).toFixed(2);
+  if (s === "100.00") return ">99.99%";
+  if (s === "0.00") return "<0.01%";
+  return s + "%";
+}
+
+/** the percentage whenever there is anything to divide; the floor only decides emphasis */
 export function fmtPct(r: Rate | undefined | null): string {
   if (!r || r.den === 0 || r.value === null) return "—";
-  if (r.num === r.den) return "100%";
-  const s = (r.value * 100).toFixed(1);
-  if (s === "100.0" && r.num < r.den) return ">99.9%";
-  if (s === "0.0" && r.num > 0) return "<0.1%";
-  return s + "%";
+  return pct2(r.value, r.num === r.den, r.num === 0);
 }
 
 /** whether a rate has enough observations behind it to rank or compare. */
@@ -1040,9 +1038,7 @@ export function publisherName(p: { publisher: string; label?: string }): string 
 
 export function fmtShare(v: number | null | undefined): string {
   if (v == null) return "—";
-  const s = (v * 100).toFixed(1);
-  if (s === "0.0" && v > 0) return "<0.1%";
-  return s + "%";
+  return pct2(v, v >= 1, v <= 0);
 }
 
 /** /v1/tip: the newest block the observer has read, for the header ticker */
