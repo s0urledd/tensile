@@ -20,8 +20,8 @@ type BlobPage = { blobs: Blob[]; total: number; offset: number; truncated: boole
 /** the last page /v1/blobs serves: its offset stops at 100,000 */
 const MAX_PAGE = Math.floor(100000 / SIZE) + 1;
 
-// Retrievability as a mark and a word, in the same channel the verdicts use.
-// Retrievable: enough rows were retrieved to reconstruct the blob, in the
+// Availability as a mark and a word, in the same channel the verdicts use.
+// Available: enough rows came back to reconstruct the blob, in the
 // words of celestia-app's own client ("some rows were retrieved, but not
 // enough to reconstruct" is its word for the other case).
 function recon(b: Blob): { word: string; tier: Tier; title: string } {
@@ -35,9 +35,9 @@ function recon(b: Blob): { word: string; tier: Tier; title: string } {
       ? { word: "in retention window", tier: "gap", title: "Read once, 10 minutes before the retention window ends." }
       : { word: "not read by Tensile", tier: "gap", title: "No reading of this blob was completed. Nothing is counted for or against a validator." };
   }
-  const rows = `${int(r.served_distinct_rows)} of ${int(r.total_rows)} rows retrieved, ${int(r.needed_rows)} needed to reconstruct`;
-  if (r.status === "yes" || r.status === "degraded") return { word: "retrievable", tier: "kept", title: rows };
-  return { word: "not retrievable", tier: "hold", title: `${rows}: not enough.` };
+  const rows = `${int(r.served_distinct_rows)} of ${int(r.total_rows)} rows came back, ${int(r.needed_rows)} needed to reconstruct`;
+  if (r.status === "yes" || r.status === "degraded") return { word: "available", tier: "kept", title: rows };
+  return { word: "unavailable", tier: "hold", title: `${rows}: not enough to reconstruct.` };
 }
 
 function Page() {
@@ -95,7 +95,7 @@ function Page() {
           <Metric label="Namespaces" value={m?.namespaces != null ? int(m.namespaces) : "—"} tone={m?.namespaces ? undefined : "absent"}
             help={m?.namespaces_total != null ? `${int(m.namespaces_total)} on record` : " "}
             title="Namespaces the period's settlements used." />
-          <Metric label="Retrievable" value={rc && rc.recoverable.den > 0 ? int(rc.recoverable.num) : "—"} den={rc && rc.recoverable.den > 0 ? int(rc.recoverable.den) : undefined}
+          <Metric label="Available" value={rc && rc.recoverable.den > 0 ? int(rc.recoverable.num) : "—"} den={rc && rc.recoverable.den > 0 ? int(rc.recoverable.den) : undefined}
             tone={rc && rc.recoverable.den > 0 ? undefined : "absent"}
             help={rc ? (rc.recoverable.den > 0 ? "read by Tensile near the window's end" : "none read in the period") : " "}
             title="Observed by Tensile: settlements read near the end of their retention window whose rows were enough to reconstruct the blob." />

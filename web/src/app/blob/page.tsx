@@ -86,13 +86,13 @@ function Page() {
     : signedN > 0 && served === signedN ? ", and every endorsing validator served its rows."
     : noVerdict > 0 ? `; ${int(served)} of ${int(signedN)} endorsing validators served theirs, ${int(noVerdict)} without a verdict.`
     : ".";
-  // Retrievable: enough rows came back to reconstruct the blob ("some rows
+  // Available: enough rows came back to reconstruct the blob ("some rows
   // were retrieved, but not enough to reconstruct" is the client's own word
   // for the other case). Whether every endorsing validator served is said
   // beside it, not folded into it.
   const state: [string, string, string] =
-    rc?.status === "yes" || rc?.status === "degraded" ? ["ok", "Retrievable", `Enough rows were retrieved to reconstruct the blob${who}`]
-    : rc?.status === "no" ? ["hold", "Not retrievable", `Rows were retrieved, but fewer than the ${int(rc.needed_rows)} needed to reconstruct the blob.`]
+    rc?.status === "yes" || rc?.status === "degraded" ? ["ok", "Available", `Enough rows came back to reconstruct the blob${who}`]
+    : rc?.status === "no" ? ["hold", "Unavailable", `Rows came back, but fewer than the ${int(rc.needed_rows)} needed to reconstruct the blob.`]
     : rc?.status === "pending" && !over ? ["none", "In retention window", "Read once, 10 minutes before the retention window ends."]
     : rc?.status === "pending" ? ["none", "Not read by Tensile", "Tensile was offline when this blob's reading was due, and the rows are pruned after the window. Nothing is counted for or against a validator."]
     : so ? ["none", "Sampled out", "Not read: the load policy of the time drew this blob out of its sample."]
