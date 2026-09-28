@@ -757,6 +757,12 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
 .hostmap { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); padding: 16px 0 18px; }
 .hostmap.solo { grid-template-columns: 1fr; }
 .hostmap .fm-main { position: relative; min-width: 0; }
+/* beside the taller stake and latest-blob panel the map sits in the middle of
+   its column and the ticker row at the foot, so the height left over is shared */
+@media (min-width: 961px) {
+  .hostmap .fm-main { display: flex; flex-direction: column; }
+  .hostmap .fm-main > .fm-box { margin-block: auto; }
+}
 
 /* ---- beside the map: the stake gauge, the latest blob, and Tensile's readings under it ----
    Every rule here is on a class only this panel carries (ov-*, fm-aside), so it
