@@ -66,8 +66,8 @@ func TestExcludeRecomputesTheHeadlineWithoutAValidator(t *testing.T) {
 		t.Fatalf("network: %d", code)
 	}
 	o := all.Obligations
-	if o.Total != 4 || o.Served != 1 || o.Broken != 1 || o.EndUnobserved != 1 || o.UnobservedUnreachable != 1 {
-		t.Fatalf("fixture: obligations = %+v, want one of each of the four shapes", o)
+	if o.Total != 4 || o.Served != 1 || o.Broken != 1 || o.NotCounted != 2 {
+		t.Fatalf("fixture: obligations = %+v, want one served, one not served, two counted neither way", o)
 	}
 	if all.Faults != 1 {
 		t.Fatalf("fixture: faults = %d, want 1", all.Faults)
@@ -83,8 +83,8 @@ func TestExcludeRecomputesTheHeadlineWithoutAValidator(t *testing.T) {
 		t.Fatalf("exclude: %d", code)
 	}
 	l := less.Obligations
-	if l.Total != 3 || l.Served != 1 || l.Broken != 0 || l.EndUnobserved != 1 || l.UnobservedUnreachable != 1 {
-		t.Errorf("excluded obligations = %+v, want the same three shapes without the broken one", l)
+	if l.Total != 3 || l.Served != 1 || l.Broken != 0 || l.NotCounted != 2 {
+		t.Errorf("excluded obligations = %+v, want the same without the not-served one", l)
 	}
 	if l.Rate.Num != 1 || l.Rate.Den != 1 {
 		t.Errorf("excluded rate = %d/%d, want 1/1", l.Rate.Num, l.Rate.Den)

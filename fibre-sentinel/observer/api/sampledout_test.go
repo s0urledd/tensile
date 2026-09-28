@@ -355,12 +355,13 @@ func TestSampledOutFiguresUnchanged(t *testing.T) {
 		t.Fatalf("decision store holds %d probe rows, want only the %d real ones", stored, len(f.real))
 	}
 
-	// The fixture is doing what it is for: sampled-out obligations are
-	// unobserved (or pending), and a suspect point is in the window.
+	// The fixture is doing what it is for: sampled-out obligations are not
+	// read, so not counted (or pending), and a suspect point is in the
+	// window.
 	var net struct {
 		Obligations struct {
-			NotProbed int64 `json:"unobserved_not_probed"`
-			Pending   int64 `json:"pending"`
+			NotCounted int64 `json:"not_counted"`
+			Pending    int64 `json:"pending"`
 		} `json:"obligations"`
 		VantageHealth struct {
 			Suspect []any `json:"suspect"`
@@ -370,7 +371,7 @@ func TestSampledOutFiguresUnchanged(t *testing.T) {
 	tr := httptest.NewServer(api.New(rows, "test"))
 	get(t, tr, "/v1/network?window=7d", &net)
 	tr.Close()
-	if net.Obligations.NotProbed < 10 || net.Obligations.Pending < 5 || len(net.VantageHealth.Suspect) == 0 || net.Classes["NOT_PROBED"] == 0 {
+	if net.Obligations.NotCounted < 10 || net.Obligations.Pending < 5 || len(net.VantageHealth.Suspect) == 0 || net.Classes["NOT_PROBED"] == 0 {
 		t.Fatalf("fixture does not exercise the figures: %+v", net)
 	}
 

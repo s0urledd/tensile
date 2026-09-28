@@ -40,7 +40,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/verdict"
 )
@@ -66,14 +65,10 @@ const provisionalNote = "Counted in broken and in the rate, and final at `until`
 // provisional at now.
 func provisionalCutoff(now time.Time) string { return store.TS(now.Add(-verdict.FaultSettling)) }
 
-// isProvisional says whether a probe row's FAULT is still settling. An
-// end-of-window reading counts as its obligation does (probe.EndReadClass),
-// so one that returned no rows settles like a FAULT.
-func isProvisional(classification, label, startedAt string, now time.Time) bool {
-	if label == probe.EndReadLabel {
-		classification = string(probe.EndReadClass(probe.Classification(classification)))
-	}
-	return classification == "FAULT" && startedAt > provisionalCutoff(now)
+// isProvisional says whether a reading that counts as not served
+// (rollup.CountedClass FAULT) is still settling.
+func isProvisional(counted, startedAt string, now time.Time) bool {
+	return counted == "FAULT" && startedAt > provisionalCutoff(now)
 }
 
 // provisionalByValidator counts, per validator, the broken obligations of the

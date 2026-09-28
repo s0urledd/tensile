@@ -210,27 +210,26 @@ var AllClassifications = []Classification{
 	ClassProbeError, ClassNotProbed, ClassUnattested, ClassRetentionUnverified,
 }
 
-// EndReadLabel is the schedule label of the one end-of-window reading
-// (ScheduleConfig.EndReadOffset).
+// EndReadLabel is the schedule label of the one reading of a blob, 10
+// minutes before its retention window ends (ScheduleConfig.EndReadOffset).
 const EndReadLabel = "end"
 
-// At the end-of-window reading an obligation is judged the way a reader using
-// celestia-app's own client meets the validator (specs/src/fibre_client.md,
-// Download Flow): it asks for the rows, waits RPCTimeout, and moves on with
-// or without them. Rows that verify against the commitment are the reading;
-// anything else leaves the reader without them. The earlier schedule kept
-// no-answer outcomes out of the rate, as one vantage's view of the network;
-// at the end reading they are what the protocol's reader gets, and the
-// correlated-failure guard still sets aside a point where most validators
-// fail at once, which is this observer's own trouble as likely as theirs.
+// At the reading a validator is met the way a reader using celestia-app's
+// own client meets it (fibre/client_download.go): it asks for the rows,
+// waits RPCTimeout, and moves on with or without them. Rows that verify
+// against the commitment are the reading; anything else leaves the reader
+// without them. Whether that counts against the validator is the blob's
+// question, not the row's: only when the blob could not be reconstructed
+// (observer/verdict, BlobReading).
 //
-// EndNoRowsClasses are the end-reading outcomes that return no rows to a
-// reader and so count as not served: nothing answered, a certificate the
-// client rejects (wrong key, or outside its validity window), a server error,
-// a rate limit, no Fibre host registered. FAULT is not listed: it is already
-// not served.
+// EndNoRowsClasses are the reading's outcomes that return no rows to a
+// reader: nothing answered, a certificate the client rejects (wrong key, or
+// outside its validity window), a server error, no Fibre host registered.
+// FAULT is not listed: it is already no rows. A rate limit is not listed
+// either: it may be this observer's own request rate, so it counts neither
+// way.
 var EndNoRowsClasses = []Classification{
-	ClassUnreachable, ClassIdentityMismatch, ClassIdentityExpired, ClassServerError, ClassThrottled, ClassNotRegistered,
+	ClassUnreachable, ClassIdentityMismatch, ClassIdentityExpired, ClassServerError, ClassNotRegistered,
 }
 
 // EndGenuineRowsClasses are the end-reading outcomes where rows that verify

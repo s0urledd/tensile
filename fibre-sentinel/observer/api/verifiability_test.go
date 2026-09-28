@@ -72,7 +72,7 @@ func TestAsOfPinsTheWindow(t *testing.T) {
 	if pinnedNow.ProbeCount != live.ProbeCount || pinnedNow.Obligations != live.Obligations {
 		t.Errorf("pinned at now differs from live:\n%+v\n%+v", pinnedNow, live)
 	}
-	if live.ProbeCount != 16 || live.Obligations.Served != 1 || live.Obligations.Broken != 1 || live.Obligations.EndUnobserved != 2 {
+	if live.ProbeCount != 16 || live.Obligations.Served != 1 || live.Obligations.Broken != 1 || live.Obligations.NotCounted != 2 {
 		t.Errorf("live = %+v", live)
 	}
 	// validators too

@@ -90,16 +90,17 @@ func TestSampledOutDecisionIsExpandedAndItsDrawChecked(t *testing.T) {
 		})
 	}
 
-	// The obligations the rows make: the two attested validators unobserved,
-	// not probed; the unattested one is no obligation.
+	// The obligations the rows make: the two attested validators not read,
+	// so not counted; the unattested one is no obligation.
 	rows, _, _ := expandSampledOut(filepath.Join(dir, probe.SampledOutFile), []scan.Publication{pub}, 10)
 	vrows := make([]verdict.Row, 0, len(rows))
 	for _, m := range rows {
 		vrows = append(vrows, verdict.FromMeasurement(m))
 	}
 	win := verdict.Window{End: settle.Add(24 * time.Hour), All: true}
-	net, _ := verdict.ComputeObligations(vrows, map[string]time.Time{pub.PromiseHash: settle}, win, verdict.SuspectPoints(vrows, win))
-	if net.Total != 2 || net.UnobservedNotProbed != 2 {
+	blobs := verdict.Blobs{pub.PromiseHash: verdict.FactsOf(pub)}
+	net, _ := verdict.ComputeObligations(vrows, map[string]time.Time{pub.PromiseHash: settle}, win, verdict.SuspectPoints(vrows, win, blobs), blobs)
+	if net.Total != 2 || net.NotCounted != 2 {
 		t.Fatalf("obligations: %+v", net)
 	}
 

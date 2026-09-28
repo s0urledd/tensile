@@ -574,7 +574,7 @@ func (s *Server) monikers(ctx context.Context) (map[string]string, error) {
 // once per candidate.
 func (s *Server) firstFaults(ctx context.Context, addr string, now time.Time) (map[string]feed.Entry, error) {
 	db := s.st.DB()
-	faultWhere := `assigned = 1 AND ` + rollup.EffectiveClass("") + ` = 'FAULT'`
+	faultWhere := `assigned = 1 AND ` + rollup.CountedClass("probes") + ` = 'FAULT'`
 	var args []any
 	if addr != "" {
 		faultWhere += ` AND validator_address = ?`
@@ -590,7 +590,7 @@ func (s *Server) firstFaults(ctx context.Context, addr string, now time.Time) (m
 			suspect[p.At] = true
 		}
 	}
-	q := `SELECT validator_address, MIN(day) FROM probe_daily WHERE faults > 0`
+	q := `SELECT validator_address, MIN(day) FROM obligation_daily WHERE broken > 0`
 	if addr != "" {
 		q += ` AND validator_address = ?`
 	}

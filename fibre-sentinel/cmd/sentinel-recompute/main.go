@@ -388,8 +388,9 @@ func main() {
 	for _, p := range pubs {
 		settled[p.PromiseHash] = p.SettlementTime
 	}
-	sus := verdict.SuspectPoints(rows, win)
-	net, byVal := verdict.ComputeObligations(rows, settled, win, sus)
+	blobs := verdict.BlobsOf(pubs)
+	sus := verdict.SuspectPoints(rows, win, blobs)
+	net, byVal := verdict.ComputeObligations(rows, settled, win, sus, blobs)
 	fmt.Printf("obligations| network: %s; %d suspect points left out\n", fmtObl(net), len(sus))
 	for _, p := range sus {
 		fmt.Printf("suspect| %s %s: %d of %d validators unreachable, %d faulted (%s), %d rows\n",
@@ -498,8 +499,8 @@ func phaseNote(m probe.Measurement) string {
 }
 
 func fmtObl(o verdict.Obligations) string {
-	s := fmt.Sprintf("total %d served %d broken %d end_unobserved %d unobserved %d (reachable %d, unreachable %d, not_probed %d) pending %d",
-		o.Total, o.Served, o.Broken, o.EndUnobserved, o.Unobserved, o.UnobservedReachable, o.UnobservedUnreachable, o.UnobservedNotProbed, o.Pending)
+	s := fmt.Sprintf("total %d served %d broken %d held_param_unverified %d not_counted %d pending %d",
+		o.Total, o.Served, o.Broken, o.HeldParamUnverified, o.NotCounted, o.Pending)
 	if r, ok := o.Rate(); ok {
 		s += fmt.Sprintf(" rate %.4f", r)
 	}

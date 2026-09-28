@@ -56,7 +56,7 @@ func judge(t *testing.T, st *store.Store, now time.Time) []store.ConfirmDecision
 //   - cleared: the second vantage got the verified rows five minutes later.
 //     The fault is withdrawn and filed PROBE_ERROR (observer-side, outside
 //     the rate) with cleared_by; the obligation is not credited as served:
-//     it falls to end_unobserved, because the rates are this observer's own
+//     it counts neither way, because the rates are this observer's own
 //     readings and the second vantage adds none.
 //   - confirmed: the second vantage failed too; the fault stands, with
 //     confirmed_by.
@@ -159,9 +159,9 @@ func TestAFaultIsClearedOrConfirmedFromASecondVantage(t *testing.T) {
 	if a.Total != b.Total || a.Served != b.Served || a.Pending != b.Pending {
 		t.Errorf("total/served/pending moved: before %+v after %+v", b, a)
 	}
-	if a.Broken != b.Broken-1 || a.EndUnobserved != b.EndUnobserved+1 {
-		t.Errorf("broken %d -> %d, end_unobserved %d -> %d; want one fault withdrawn to end_unobserved, never to served",
-			b.Broken, a.Broken, b.EndUnobserved, a.EndUnobserved)
+	if a.Broken != b.Broken-1 || a.NotCounted != b.NotCounted+1 {
+		t.Errorf("broken %d -> %d, not_counted %d -> %d; want one fault withdrawn to not counted, never to served",
+			b.Broken, a.Broken, b.NotCounted, a.NotCounted)
 	}
 	if after.Faults != 3 {
 		t.Errorf("faults = %d, want 3", after.Faults)

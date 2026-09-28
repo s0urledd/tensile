@@ -5,7 +5,7 @@ import ProtocolParams from "@/components/ProtocolParams";
 // The rules version, as verdict.MethodologyVersion in the Go code and
 // methodology_version in /v1/meta and every export manifest. Bumped in the
 // same change as any rule that can move a figure.
-const METHODOLOGY_VERSION = "2026-09-27.1";
+const METHODOLOGY_VERSION = "2026-09-29.1";
 
 export const metadata = { title: "Methodology · Tensile · Celestia Fibre" };
 

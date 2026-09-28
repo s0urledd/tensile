@@ -17,12 +17,18 @@ import (
 )
 
 // The correlated-failure guard. At or above UnreachableThreshold of the
-// validators probed at one schedule point being unreachable, or
-// FaultThreshold of them faulting, the likeliest explanation is the
+// validators asked at one reading being unreachable, or FaultThreshold of
+// them failing to hand over rows, the likeliest explanation is the
 // observer's own side (its network, a stale pin, a broken coder) rather
-// than that many independent operators at the same minute; such a point
-// is suspect and every rate leaves its rows out. MinValidators is the
-// floor under which a share is not a signal.
+// than that many independent operators at the same minute; such a reading
+// is suspect and every figure leaves its rows out, unless its blob was
+// Available all the same (verified rows are not the observer's trouble).
+// MinValidators is the floor under which a share is not a signal.
+//
+// This is where a control read would lift the guard: a blob of this
+// observer's own, read from the same validators at the same time, that
+// comes back whole would show the observer's side was fine. The seam is
+// Point.Available in the SQL twin and pointAvailable here.
 const (
 	UnreachableThreshold = 0.5
 	FaultThreshold       = 0.5
@@ -30,36 +36,19 @@ const (
 )
 
 // EndSegmentDivisor cuts the tail off a retention window: the final
-// 1/EndSegmentDivisor of it, which is where a reading has to fall before an
-// obligation counts as served.
+// 1/EndSegmentDivisor of it. It speaks only to blobs read on the earlier
+// schedule, which read each shard at several points of the window: an
+// obligation read that way counts as served only on a HEALTHY reading in
+// that tail, because an early reading says nothing about the hours an early
+// prune would take. A blob read once, 10 minutes before must_serve_until
+// (probe.EndReadLabel), is read inside the tail by construction and counts
+// wherever the reading fell.
 //
-// An obligation is a promise to hold a shard until must_serve_until, so the
-// only reading that speaks to the whole promise is one taken near its end. A
-// HEALTHY probe at the first schedule point says the shard was there minutes
-// after settlement; it says nothing about the hours that follow, which are
-// the part an early prune would take. Crediting it as served is what made the
-// serve rate rise while this observer was down: the obligation kept its early
-// verdict and every later slot was a gap, or — past the prober's backfill
-// horizon — never written at all.
-//
-// So served needs a HEALTHY reading in the last quarter of the window. The
-// published schedule puts its last in-window point at 92% of the window
-// (internal/probe/schedule.go), so a validator that answers the last probe
-// clears this with room; one this observer could not reach at the end does
-// not, and lands in end_unobserved, which is published beside the rate and
-// outside it.
-//
-// The cut is deliberately expressed against the promise's own settlement
-// time and must_serve_until — both on the record, both in every export —
-// rather than against the prober's schedule config, so a third party can
-// redraw the same line from the rows alone and a later change to the
-// fractions cannot move a verdict already published.
-//
-// It can only move an obligation out of served, never into broken: the worst
-// this observer's blindness can now do to an operator is decline to vouch
-// for them, and the figure that says how often that happened is printed
-// beside the rate.
-const EndSegmentDivisor = probe.EndSegmentDivisor
+// The cut is expressed against the promise's own settlement time and
+// must_serve_until, both on the record, so a third party redraws the same
+// line from the rows alone. The SQL twin spells the same number
+// (rollup.ObligationBuckets; a test holds the two together).
+const EndSegmentDivisor = 4.0
 
 // EndSegment is the first moment of that tail for one promise.
 func EndSegment(settled, mustServeUntil time.Time) time.Time {
@@ -88,6 +77,13 @@ type Row struct {
 	// MarkRetentionUnverified, never from the row itself.
 	RetentionUnverified bool
 	TLSOK               bool
+	// What the reading handed over: the rows that came back, whether they
+	// verified against the commitment, and how many rows this validator
+	// holds. The counting rule reads them (BlobReading).
+	RowIndices         []uint32
+	RowsReturned       int
+	CommitmentVerified bool
+	AssignedRowCount   int
 }
 
 // EffectiveClass is the classification every rule below is built from: the
@@ -105,11 +101,11 @@ func (r Row) EffectiveClass() probe.Classification {
 	return r.Classification
 }
 
-// ObligationClass is the class a row counts as for its obligation: an
-// end-of-window reading as a reader of the chain's own client meets it
-// (probe.EndReadClass), then the same retention hold as EffectiveClass. The
-// SQL twin is rollup.ObligationClass; the class tallies and the
-// correlated-failure guard keep EffectiveClass.
+// ObligationClass is the class a row counts as before its blob's reading is
+// taken into account: an end-of-window reading as a reader of the chain's
+// own client meets it (probe.EndReadClass: rows that verify are served, no
+// rows are not), then the same retention hold as EffectiveClass. The SQL
+// twin is rollup.ObligationClass.
 func (r Row) ObligationClass() probe.Classification {
 	c := r.Classification
 	if r.ScheduleLabel == probe.EndReadLabel {
@@ -119,6 +115,39 @@ func (r Row) ObligationClass() probe.Classification {
 		return probe.ClassRetentionUnverified
 	}
 	return c
+}
+
+// CountedClass is the class a row counts as once its blob's reading is
+// known (BlobReading): a failure to hand over rows (FAULT) counts only when
+// the blob was Unavailable at that reading and is NotCounted otherwise, and
+// on an Unavailable blob a validator whose verified rows are fewer than it
+// holds did not serve them. Every other class passes through. unavailable is
+// Reading.Unavailable for the row's own reading. The SQL twin is
+// rollup.CountedClass.
+func (r Row) CountedClass(unavailable bool) probe.Classification {
+	c := r.ObligationClass()
+	switch {
+	case c == probe.ClassFault && !unavailable:
+		return NotCounted
+	case c == probe.ClassHealthy && unavailable && r.shortGenuine():
+		return probe.ClassFault
+	}
+	return c
+}
+
+// shortGenuine is an end reading that returned genuine rows (the rows
+// verify, though not as this promise's assignment) fewer than the validator
+// holds.
+func (r Row) shortGenuine() bool {
+	if r.ScheduleLabel != probe.EndReadLabel || r.RowsReturned >= r.AssignedRowCount {
+		return false
+	}
+	for _, c := range probe.EndGenuineRowsClasses {
+		if r.Classification == c {
+			return true
+		}
+	}
+	return false
 }
 
 // PromiseHeights is the pair a hold is derived from: the interval a
@@ -159,6 +188,8 @@ func FromMeasurement(m probe.Measurement) Row {
 		ScheduledAt: m.ScheduledAt, StartedAt: m.StartedAt, MustServeUntil: m.MustServeUntil,
 		Assigned: m.Assigned, Attested: m.Attested && m.HasAttestation(),
 		Phase: m.Phase, Classification: m.Classification, Outcome: m.Outcome, TLSOK: m.TLS.OK,
+		RowIndices: m.Download.RowIndices, RowsReturned: m.Download.RowsReturned,
+		CommitmentVerified: m.Download.CommitmentVerified, AssignedRowCount: m.AssignedRowCount,
 	}
 }
 
@@ -178,7 +209,7 @@ func (w Window) holds(t time.Time) bool {
 	return w.All || !t.Before(w.Start)
 }
 
-// SuspectPoint is one schedule point the rates leave out.
+// SuspectPoint is one reading the figures leave out.
 type SuspectPoint struct {
 	At          time.Time
 	Label       string
@@ -189,16 +220,30 @@ type SuspectPoint struct {
 	Reason      string
 }
 
+// failedClass reports whether a row left the reader without rows, for the
+// guard's second share: at an end-of-window reading every class that does
+// (the obligation class FAULT), less NOT_REGISTERED, which never reaches
+// the denominator (GuardSilentClasses); at an earlier schedule's point,
+// FAULT alone.
+func failedClass(r Row) bool {
+	return r.Classification != probe.ClassNotRegistered && r.ObligationClass() == probe.ClassFault
+}
+
 // SuspectPoints applies the correlated-failure guard: over assigned
 // in-window rows started in the window, grouped by scheduled time, with
-// more than one validator probed at the point. "Probed" is a row that
+// more than one validator asked at the point. "Asked" is a row that
 // carries a reachability verdict for the endpoint, which is the only kind
 // of row that could land in either numerator — see noReachVerdict. A row
 // that could not be in the numerator whatever happened at the point must
 // not sit in the denominator either, or it drags the share down by its
 // mere presence. Rows counts every row at the point, excluded ones
 // included, because the exclusion removes them all.
-func SuspectPoints(rows []Row, w Window) []SuspectPoint {
+//
+// A point whose every blob was Available is never suspect: the rows that
+// came back verified, and the failures beside them count for nothing
+// anyway. blobs supplies what that needs (BlobFacts); a blob it does not
+// name is not taken as Available.
+func SuspectPoints(rows []Row, w Window, blobs Blobs) []SuspectPoint {
 	type acc struct {
 		label                  string
 		vals, unreach, faulted map[string]bool
@@ -221,13 +266,14 @@ func SuspectPoints(rows []Row, w Window) []SuspectPoint {
 			continue
 		}
 		g.vals[r.Validator] = true
-		switch cls {
-		case probe.ClassUnreachable:
+		if cls == probe.ClassUnreachable {
 			g.unreach[r.Validator] = true
-		case probe.ClassFault:
+		}
+		if failedClass(r) {
 			g.faulted[r.Validator] = true
 		}
 	}
+	var rd *readings
 	var out []SuspectPoint
 	for at, g := range groups {
 		all := len(g.vals)
@@ -248,37 +294,55 @@ func SuspectPoints(rows []Row, w Window) []SuspectPoint {
 		if reason == "" {
 			continue
 		}
+		if rd == nil {
+			rd = newReadings(rows, blobs)
+		}
+		if pointAvailable(rd, at) {
+			continue
+		}
 		out = append(out, SuspectPoint{At: at, Label: g.label, Validators: all, Unreachable: bad, Faulted: faulted, Rows: g.n, Reason: reason})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
 	return out
 }
 
+// pointAvailable reports whether every blob read at a scheduled time was
+// Available there, which sets the guard aside for that point. The SQL twin
+// is rollup's pointAvailableSQL.
+func pointAvailable(rd *readings, at time.Time) bool {
+	found := false
+	for k := range rd.rows {
+		if !k.at.Equal(at.UTC()) {
+			continue
+		}
+		found = true
+		if !rd.at(k.promise, k.at).Available() {
+			return false
+		}
+	}
+	return found
+}
+
 // Obligations are the buckets one validator's (or the network's) proven
 // obligations in a window fall into. See docs/verdicts.md, "Obligations".
+// NotCounted is every obligation decided with no count either way: read,
+// and its failure did not leave the blob unreadable; or not read by this
+// observer.
 type Obligations struct {
-	Total                 int64 `json:"total"`
-	Served                int64 `json:"served"`
-	Broken                int64 `json:"broken"`
-	EndUnobserved         int64 `json:"end_unobserved"`
-	HeldParamUnverified   int64 `json:"held_param_unverified"`
-	Unobserved            int64 `json:"unobserved"`
-	UnobservedReachable   int64 `json:"unobserved_reachable"`
-	UnobservedUnreachable int64 `json:"unobserved_unreachable"`
-	UnobservedNotProbed   int64 `json:"unobserved_not_probed"`
-	Pending               int64 `json:"pending"`
+	Total               int64 `json:"total"`
+	Served              int64 `json:"served"`
+	Broken              int64 `json:"broken"`
+	HeldParamUnverified int64 `json:"held_param_unverified"`
+	NotCounted          int64 `json:"not_counted"`
+	Pending             int64 `json:"pending"`
 }
 
 func (o *Obligations) add(x Obligations) {
 	o.Total += x.Total
 	o.Served += x.Served
 	o.Broken += x.Broken
-	o.EndUnobserved += x.EndUnobserved
 	o.HeldParamUnverified += x.HeldParamUnverified
-	o.Unobserved += x.Unobserved
-	o.UnobservedReachable += x.UnobservedReachable
-	o.UnobservedUnreachable += x.UnobservedUnreachable
-	o.UnobservedNotProbed += x.UnobservedNotProbed
+	o.NotCounted += x.NotCounted
 	o.Pending += x.Pending
 }
 
@@ -337,19 +401,23 @@ func noReachVerdict(c probe.Classification) bool {
 // ComputeObligations buckets every proven obligation: an assigned,
 // attested (validator, promise) pair whose promise settled in the window,
 // judged over its in-window rows started by the window's end, at schedule
-// points that are not suspect. settled maps promise hash to settlement
-// time; a row whose promise is not in it is left out, as the SQL join
-// leaves it out. The network total is the sum over validators.
-func ComputeObligations(rows []Row, settled map[string]time.Time, w Window, suspect []SuspectPoint) (Obligations, map[string]Obligations) {
+// points that are not suspect, each row counted as its blob's reading
+// leaves it (CountedClass). settled maps promise hash to settlement time; a
+// row whose promise is not in it is left out, as the SQL join leaves it
+// out. blobs carries what the reading needs (BlobFacts). The network total
+// is the sum over validators.
+func ComputeObligations(rows []Row, settled map[string]time.Time, w Window, suspect []SuspectPoint, blobs Blobs) (Obligations, map[string]Obligations) {
 	sus := map[time.Time]bool{}
 	for _, p := range suspect {
 		sus[p.At.UTC()] = true
 	}
+	rd := newReadings(rows, blobs)
 	type key struct{ validator, promise string }
 	type obl struct {
-		faults, healthy, lateHealthy, held, attempted, reached int64
-		pending                                                bool
-		last                                                   *Row
+		faults, healthy, lateHealthy, held int64
+		pending                            bool
+		last                               *Row
+		lastCls                            probe.Classification
 	}
 	obls := map[key]*obl{}
 	for i := range rows {
@@ -368,22 +436,20 @@ func ComputeObligations(rows []Row, settled map[string]time.Time, w Window, susp
 			obls[k] = o
 		}
 		cls := r.ObligationClass()
+		if cls == probe.ClassFault || (cls == probe.ClassHealthy && r.shortGenuine()) {
+			// only a row that could fail is worth the reading
+			cls = r.CountedClass(rd.at(r.PromiseHash, r.ScheduledAt).Unavailable())
+		}
 		switch cls {
 		case probe.ClassFault:
 			o.faults++
 		case probe.ClassHealthy:
 			o.healthy++
-			if !r.ScheduledAt.Before(EndSegment(st, r.MustServeUntil)) {
+			if r.ScheduleLabel == probe.EndReadLabel || !r.ScheduledAt.Before(EndSegment(st, r.MustServeUntil)) {
 				o.lateHealthy++
 			}
 		case probe.ClassRetentionUnverified:
 			o.held++
-		}
-		if !isGap(cls) {
-			o.attempted++
-			if r.TLSOK {
-				o.reached++
-			}
 		}
 		if r.MustServeUntil.After(w.End) {
 			o.pending = true
@@ -391,7 +457,7 @@ func ComputeObligations(rows []Row, settled map[string]time.Time, w Window, susp
 		// the newest row: a verdict row before a gap row, then the latest
 		// schedule point, then the latest start
 		if o.last == nil || newer(r, o.last) {
-			o.last = r
+			o.last, o.lastCls = r, cls
 		}
 	}
 	byVal := map[string]Obligations{}
@@ -399,31 +465,21 @@ func ComputeObligations(rows []Row, settled map[string]time.Time, w Window, susp
 	for k, o := range obls {
 		var b Obligations
 		b.Total = 1
-		last := o.last.ObligationClass()
 		switch {
 		case o.pending:
 			b.Pending = 1
 		case o.faults > 0:
 			b.Broken = 1
-		case last == probe.ClassHealthy && o.lateHealthy > 0:
+		case o.lastCls == probe.ClassHealthy && o.lateHealthy > 0:
 			b.Served = 1
-		case o.healthy > 0:
-			b.EndUnobserved = 1
 		// An obligation whose only serve evidence was withheld is not one
 		// this observer failed to observe: it looked, and cannot speak for
-		// what it saw. Filing it under unobserved would report the
-		// observer's own uncertainty about the deadline as a gap in
-		// coverage.
-		case o.held > 0:
+		// what it saw.
+		case o.healthy == 0 && o.held > 0:
 			b.HeldParamUnverified = 1
-		case o.reached > 0:
-			b.UnobservedReachable = 1
-		case o.attempted > 0:
-			b.UnobservedUnreachable = 1
 		default:
-			b.UnobservedNotProbed = 1
+			b.NotCounted = 1
 		}
-		b.Unobserved = b.UnobservedReachable + b.UnobservedUnreachable + b.UnobservedNotProbed
 		v := byVal[k.validator]
 		v.add(b)
 		byVal[k.validator] = v

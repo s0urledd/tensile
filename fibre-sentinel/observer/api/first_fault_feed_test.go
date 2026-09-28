@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http/httptest"
@@ -10,11 +11,13 @@ import (
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/api"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
-// The network feed's first FAULT of a validator is its first genuine one:
+// The network feed's first FAULT of a validator is its first counted one (a
+// blob that could not be reconstructed, not a reading the guard set aside):
 // not hidden because an earlier FAULT at a suspect point fell before the
 // feed's span, not lost behind twenty suspect ones, not a fault still
 // settling, and the same probe on a tie however the rows were written.
@@ -26,9 +29,25 @@ func TestNetworkFeedFirstFault(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	now := time.Now().UTC().Truncate(time.Second)
 	addr := func(i int) string { return fmt.Sprintf("%040x", 0xa0+i) }
+	// Every blob here needs rows nobody served, so a FAULT on it counts:
+	// the blob could not be reconstructed.
+	unreadable := func(hash string, at time.Time) {
+		pub := scan.Publication{SchemaVersion: scan.AttestationSchemaVersion, PromiseHash: hash, SettlementHeight: 100,
+			SettlementTime: at.Add(-3 * time.Hour), MustServeUntil: at.Add(time.Hour), SettlementTxHash: "tx" + hash,
+			Promise: scan.PromiseFields{Commitment: "cc", Height: 99, CreationTimestamp: at.Add(-3 * time.Hour)}}
+		pub.Assignment.ProtocolParams.OriginalRows, pub.Assignment.ProtocolParams.TotalRows = 4, 16
+		raw, _ := json.Marshal(pub)
+		if _, err := st.UpsertPublication(pub, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fault := func(hash, v string, at time.Time) {
+		unreadable(hash, at)
+		insertProbe(t, st, hash, v, at, probe.OutcomeNotFound)
+	}
 	// others fault with v at at, making the point suspect
 	incident := func(at time.Time, hash string, v string) {
-		insertProbe(t, st, hash, v, at, probe.OutcomeNotFound)
+		fault(hash, v, at)
 		for i := 10; i < 13; i++ {
 			insertProbe(t, st, hash, addr(i), at, probe.OutcomeNotFound)
 		}
@@ -39,22 +58,22 @@ func TestNetworkFeedFirstFault(t *testing.T) {
 	v1 := addr(1)
 	incident(now.Add(-40*24*time.Hour), "old", v1)
 	v1First := now.Add(-5 * 24 * time.Hour)
-	insertProbe(t, st, "g1", v1, v1First, probe.OutcomeNotFound)
+	fault("g1", v1, v1First)
 	// v2: 25 FAULTs at suspect points, then its first genuine one.
 	v2 := addr(2)
 	for i := 0; i < 25; i++ {
 		incident(now.Add(-10*24*time.Hour+time.Duration(i)*time.Hour), fmt.Sprintf("s%02d", i), v2)
 	}
 	v2First := now.Add(-2 * 24 * time.Hour)
-	insertProbe(t, st, "g2", v2, v2First, probe.OutcomeNotFound)
+	fault("g2", v2, v2First)
 	// v3: only a FAULT still settling.
 	v3 := addr(3)
-	insertProbe(t, st, "g3", v3, now.Add(-5*time.Minute), probe.OutcomeNotFound)
+	fault("g3", v3, now.Add(-5*time.Minute))
 	// v4: two FAULTs at the same moment, the higher hash written first.
 	v4 := addr(4)
 	v4First := now.Add(-3 * 24 * time.Hour)
-	insertProbe(t, st, "zz", v4, v4First, probe.OutcomeNotFound)
-	insertProbe(t, st, "aa", v4, v4First, probe.OutcomeNotFound)
+	fault("zz", v4, v4First)
+	fault("aa", v4, v4First)
 
 	ts := httptest.NewServer(api.New(st, "test"))
 	defer ts.Close()

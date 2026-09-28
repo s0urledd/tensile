@@ -74,16 +74,12 @@ type heldJSON struct {
 	Faults      int64            `json:"faults"`
 	Classes     map[string]int64 `json:"classes"`
 	Obligations struct {
-		Total                 int64 `json:"total"`
-		Served                int64 `json:"served"`
-		Broken                int64 `json:"broken"`
-		EndUnobserved         int64 `json:"end_unobserved"`
-		HeldParamUnverified   int64 `json:"held_param_unverified"`
-		Unobserved            int64 `json:"unobserved"`
-		UnobservedReachable   int64 `json:"unobserved_reachable"`
-		UnobservedUnreachable int64 `json:"unobserved_unreachable"`
-		UnobservedNotProbed   int64 `json:"unobserved_not_probed"`
-		Pending               int64 `json:"pending"`
+		Total               int64 `json:"total"`
+		Served              int64 `json:"served"`
+		Broken              int64 `json:"broken"`
+		HeldParamUnverified int64 `json:"held_param_unverified"`
+		NotCounted          int64 `json:"not_counted"`
+		Pending             int64 `json:"pending"`
 	} `json:"obligations"`
 	ServeRate struct {
 		Value *float64 `json:"value"`
@@ -134,9 +130,14 @@ func heldFixture(t *testing.T, outcomes map[string][]probe.Outcome) (*store.Stor
 	}
 	sortStrings(addrs)
 	var vals []scan.ValidatorAssignment
+	held := map[string][]uint32{}
 	for i, a := range addrs {
 		vals = append(vals, scan.ValidatorAssignment{Address: a, VotingPower: 10, RowCount: 2, Rows: []int{2 * i, 2*i + 1}, Attested: true})
+		held[a] = []uint32{uint32(2 * i), uint32(2*i + 1)}
 	}
+	// every assigned row is needed (insertProbeSet), so a NOT_FOUND leaves
+	// the blob unreadable at its point and counts
+	needed := 2 * len(vals)
 	pub := scan.Publication{
 		SchemaVersion: scan.AttestationSchemaVersion, PromiseHash: "held1",
 		SettlementHeight: 150, SettlementTime: created, MustServeUntil: msu, RecordedAt: now,
@@ -144,7 +145,7 @@ func heldFixture(t *testing.T, outcomes map[string][]probe.Outcome) (*store.Stor
 		Promise:                 scan.PromiseFields{ChainID: "t", Height: 150, Commitment: "ccheld", CreationTimestamp: created, BlobSize: 4096},
 		ValidatorSignatureCount: len(vals),
 		Assignment: scan.AssignmentTable{
-			ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: 4, TotalRows: 16},
+			ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: needed, TotalRows: 4 * needed},
 			ValidatorSetHeight: 149, TotalVotingPower: int64(10 * len(vals)), Sigma: 2 * len(vals), Distinct: 2 * len(vals),
 			ValidatorsWithRows: len(vals), AttestedWithRows: len(vals), SignatureEntries: len(vals), SignaturesVerified: len(vals),
 			AttestedVotingPower: int64(10 * len(vals)), Validators: vals,
@@ -175,6 +176,7 @@ func heldFixture(t *testing.T, outcomes map[string][]probe.Outcome) (*store.Stor
 			if o == probe.OutcomeServedOK {
 				m.Download.OK, m.Download.RowsReturned, m.Download.RowsExpected = true, 2, 2
 				m.Download.CommitmentVerified, m.Download.AssignmentVerified = true, true
+				m.Download.RowIndices = held[addr]
 			}
 			raw, err := json.Marshal(m)
 			if err != nil {
@@ -282,8 +284,8 @@ func TestTwoValidatorsPruningOnAShortenedRetentionAreNotPublishedAsFaults(t *tes
 	if after.Obligations.Served != 0 {
 		t.Fatalf("served = %d, want 0: withholding only the accusations would raise the rate", after.Obligations.Served)
 	}
-	if after.Obligations.Unobserved != 0 {
-		t.Fatalf("unobserved = %d, want 0: the observer looked, it just cannot speak for what it saw", after.Obligations.Unobserved)
+	if after.Obligations.NotCounted != 0 {
+		t.Fatalf("not_counted = %d, want 0: the observer looked, it just cannot speak for what it saw", after.Obligations.NotCounted)
 	}
 	if n := after.HeldOut["RETENTION_UNVERIFIED"]; n != 32 {
 		t.Fatalf("serve_rate_held_out[RETENTION_UNVERIFIED] = %d, want 32 (8 validators x 4 points)", n)
@@ -370,12 +372,8 @@ func assertReconciles(t *testing.T, r heldJSON) {
 		t.Errorf("serve_rate.den (%d) + held out (%d) = %d, want coverage.den %d", r.ServeRate.Den, out, r.ServeRate.Den+out, r.Coverage.Den)
 	}
 	o := r.Obligations
-	if sum := o.Broken + o.Served + o.EndUnobserved + o.HeldParamUnverified +
-		o.UnobservedReachable + o.UnobservedUnreachable + o.UnobservedNotProbed + o.Pending; sum != o.Total {
+	if sum := o.Broken + o.Served + o.HeldParamUnverified + o.NotCounted + o.Pending; sum != o.Total {
 		t.Errorf("the obligation buckets sum to %d, not total %d", sum, o.Total)
-	}
-	if o.Unobserved != o.UnobservedReachable+o.UnobservedUnreachable+o.UnobservedNotProbed {
-		t.Errorf("unobserved (%d) absorbed something it should not have", o.Unobserved)
 	}
 }
 

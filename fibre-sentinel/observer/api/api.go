@@ -409,11 +409,8 @@ func addRolledObligations(o *obligationStats, r rollup.Obligations) {
 	o.Total += r.Total
 	o.Served += r.Served
 	o.Broken += r.Broken
-	o.EndUnobserved += r.EndUnobserved
 	o.HeldParamUnverified += r.HeldParamUnverified
-	o.UnobservedReachable += r.UnobservedReachable
-	o.UnobservedUnreachable += r.UnobservedUnreachable
-	o.UnobservedNotProbed += r.UnobservedNotProbed
+	o.NotCounted += r.NotCounted()
 	o.Pending += r.Pending
 	o.finish()
 }
@@ -1312,86 +1309,56 @@ func serveRate(c classCounts) Rate {
 	return rate(c["HEALTHY"], c["HEALTHY"]+c["FAULT"])
 }
 
-// obligationStats counts one observation per (validator, blob) rather than
-// one per probe, and says what became of each.
+// obligationStats counts one observation per (validator, blob): whether the
+// validator served the rows it endorsed when this observer read the blob.
 //
-// The schedule visits the same validator and blob four times in window, and
-// every bonded validator is assigned every blob because of the minimum-rows
-// floor, so the probes inside one obligation are near-perfectly correlated: a
-// certificate that lapsed, or a disk that lost a shard, produces four FAULT
-// rows for one event. Counting those as four independent trials makes any
-// confidence interval far narrower than the evidence supports, which is the
-// wrong error to make under a public accusation.
+// A blob is read the way celestia-app's Fibre client downloads one, and
+// what each endorsing validator's answer counts as depends on what the whole
+// reading came to (verdict.BlobReading):
 //
-// The verdict on an obligation is the newest probe of it, the same rule the
-// per-blob reconstructability verdict uses. "Kept when no probe faulted" was
-// the old rule, and it let a validator that served at the first point and
-// answered 500 at the next three count as fully kept: that is the profile of
-// a server that pruned early, and the one this observer exists to notice.
+//	served         its rows came back and verified against the commitment
+//	broken         its rows did not come back, and the blob could not be
+//	               reconstructed from the rows that did: Unavailable
+//	               (Not served on the site)
+//	held_param_unverified
+//	               its only readings sit inside an x/fibre params range this
+//	               observer has not read every height of, so neither the
+//	               failure nor the credit is published
+//	not_counted    decided, with no count either way: its answer failed on a
+//	               blob that was Available all the same, or this observer did
+//	               not read it (its own gap, or a reading set aside by the
+//	               correlated-failure guard)
+//	pending        the retention window has not ended at as_of
 //
-//	served         newest probe HEALTHY, no fault anywhere, and one of the
-//	               HEALTHY readings taken in the tail of the retention window
-//	               (verdict.EndSegmentDivisor)
-//	broken         any probe FAULT
-//	end_unobserved a HEALTHY probe, but not one that speaks for the end of
-//	               the window: the newest probe produced no verdict, or every
-//	               reading was taken too early to say the shard survived
-//	unobserved     never seen serving, and never faulted, split by what the
-//	               probes did see: the endpoint completed TLS and still
-//	               handed nothing over; it never completed TLS; or this
-//	               observer never attempted the download (backoff, budget,
-//	               a slot that elapsed)
-//	pending        the retention window has not ended, so the newest probe
-//	               is not the last one; no verdict yet
-//
-// Only served and broken enter the rate. The rest is published beside it so a
-// reader can see how many obligations the rate does not speak for.
-//
-// The two are not symmetric, and the asymmetry is the point. A FAULT is
-// conclusive from a single reading: the shard was gone at that minute. A
-// serve is a claim about a window, so it needs a reading near the end of one.
-// An obligation this observer watched early and then lost sight of is
-// therefore end_unobserved rather than served — it leaves the rate instead of
-// padding it, which is why an outage here lowers the number of obligations
-// the rate speaks for instead of raising the rate. The direction of the
-// remaining bias is worth stating plainly: while this observer is blind, the
-// obligations it can still judge are enriched for faults, because faults need
-// less evidence than serves do.
+// Only served and broken enter the rate. An endorsing validator the reading
+// never asked (the blob was whole before its turn) has no row and no
+// obligation here at all.
 //
 // The population is obligations the settled promise proves (attested = 1):
 // an unattested one is nothing to keep or break, and a record from before
-// signatures were verified (attested NULL) is not evidence either way, so it
-// is outside this count and reported under attestation.unknown. An
+// signatures were verified (attested NULL) is not evidence either way. An
 // obligation belongs to a window by its publication's settlement time, not
-// by each probe's time, so an obligation is judged whole or not at all: a
-// window cut through the middle of one would decide it on half its probes.
-// The window's end is the moment the verdict is drawn (as_of); an obligation
-// whose must_serve_until is later than that is pending.
+// by each reading's time, so an obligation is judged whole or not at all.
+// The window's end is the moment the verdict is drawn (as_of); an
+// obligation whose must_serve_until is later than that is pending.
 type obligationStats struct {
-	Total         int64 `json:"total"`
-	Served        int64 `json:"served"`
-	Broken        int64 `json:"broken"`
-	EndUnobserved int64 `json:"end_unobserved"`
+	Total  int64 `json:"total"`
+	Served int64 `json:"served"`
+	Broken int64 `json:"broken"`
 	// HeldParamUnverified is obligations whose only serve evidence sits
 	// inside an x/fibre params range this observer has not read every
-	// height of, so it publishes neither the fault nor the credit. It is
-	// deliberately not folded into Unobserved: the observer looked, and
-	// cannot speak for what it saw.
-	HeldParamUnverified   int64 `json:"held_param_unverified"`
-	Unobserved            int64 `json:"unobserved"`
-	UnobservedReachable   int64 `json:"unobserved_reachable"`
-	UnobservedUnreachable int64 `json:"unobserved_unreachable"`
-	UnobservedNotProbed   int64 `json:"unobserved_not_probed"`
-	Pending               int64 `json:"pending"`
+	// height of, so it publishes neither the failure nor the credit.
+	HeldParamUnverified int64 `json:"held_param_unverified"`
+	NotCounted          int64 `json:"not_counted"`
+	Pending             int64 `json:"pending"`
 	// Rate is served / (served + broken).
 	Rate Rate `json:"rate"`
 }
 
 // obligationBuckets is the per-obligation reduction the two obligation
-// queries share: one row per (validator, blob), with the newest probe's class
-// and what the other probes saw. A gap row (NOT_PROBED, PROBE_ERROR) never
-// becomes the newest probe while a real one exists, so a slot this observer
-// missed does not turn a served obligation into an unobserved one.
+// queries share: one row per (validator, blob), with the newest reading's
+// counted class. A gap row (NOT_PROBED, PROBE_ERROR) never becomes the
+// newest while a real one exists.
 //
 // Arguments, in order: as_of (pending cut), window start (settlement_time),
 // then whatever the caller appends (suspect points, a validator filter).
@@ -1403,8 +1370,21 @@ var (
 )
 
 func (o *obligationStats) finish() {
-	o.Unobserved = o.UnobservedReachable + o.UnobservedUnreachable + o.UnobservedNotProbed
 	o.Rate = rate(o.Served, o.Served+o.Broken)
+}
+
+// obligationsOf publishes the nine counts the obligation SQL returns
+// (rollup.ObligationSums).
+func obligationsOf(r rollup.Obligations) obligationStats {
+	o := obligationStats{Total: r.Total, Served: r.Served, Broken: r.Broken, HeldParamUnverified: r.HeldParamUnverified,
+		NotCounted: r.NotCounted(), Pending: r.Pending}
+	o.finish()
+	return o
+}
+
+// scanObligations scans the nine counts in ObligationSums order.
+func scanObligations(r *rollup.Obligations) []any {
+	return []any{&r.Total, &r.Broken, &r.Served, &r.EndUnobserved, &r.HeldParamUnverified, &r.UnobservedReachable, &r.UnobservedUnreachable, &r.UnobservedNotProbed, &r.Pending}
 }
 
 // obligationArgs is the argument list obligationBuckets expects: as_of (the
@@ -1432,15 +1412,14 @@ func (s *Server) obligationArgs(win Window, ss suspectSet, extra ...any) []any {
 // obligationsWhere reduces the window's proven obligations to buckets. extra
 // is appended to the WHERE clause (a validator filter), its arguments last.
 func (s *Server) obligationsWhere(ctx context.Context, win Window, ss suspectSet, extra string, extraArgs ...any) (obligationStats, error) {
-	var o obligationStats
+	var r rollup.Obligations
 	err := s.st.DB().QueryRowContext(ctx, `SELECT `+obligationSums+` FROM (`+obligationBuckets+ss.clause("pr.scheduled_at")+extra+`)
 			GROUP BY validator_address, promise_hash)`, s.obligationArgs(win, ss, extraArgs...)...).
-		Scan(&o.Total, &o.Broken, &o.Served, &o.EndUnobserved, &o.HeldParamUnverified, &o.UnobservedReachable, &o.UnobservedUnreachable, &o.UnobservedNotProbed, &o.Pending)
+		Scan(scanObligations(&r)...)
 	if err != nil {
 		return obligationStats{}, err
 	}
-	o.finish()
-	return o, nil
+	return obligationsOf(r), nil
 }
 
 // obligationsByValidator is obligationsWhere grouped by validator.
@@ -1454,12 +1433,11 @@ func (s *Server) obligationsByValidator(ctx context.Context, win Window, ss susp
 	out := map[string]obligationStats{}
 	for rows.Next() {
 		var addr string
-		var o obligationStats
-		if err := rows.Scan(&addr, &o.Total, &o.Broken, &o.Served, &o.EndUnobserved, &o.HeldParamUnverified, &o.UnobservedReachable, &o.UnobservedUnreachable, &o.UnobservedNotProbed, &o.Pending); err != nil {
+		var r rollup.Obligations
+		if err := rows.Scan(append([]any{&addr}, scanObligations(&r)...)...); err != nil {
 			return nil, err
 		}
-		o.finish()
-		out[addr] = o
+		out[addr] = obligationsOf(r)
 	}
 	return out, rows.Err()
 }
@@ -4387,7 +4365,7 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, args ..
 		COALESCE(shadow_gap, ''), COALESCE(classification_at_probe, ''), COALESCE(amended_at, ''),
 		COALESCE(host_at_settlement, ''), COALESCE(settlement_host_outcome, ''), settlement_host_served,
 		retention_unverified, COALESCE(phase_at_probe, ''), COALESCE(corrected_at, ''),
-		COALESCE(cleared_by, ''), COALESCE(confirmed_by, '')
+		COALESCE(cleared_by, ''), COALESCE(confirmed_by, ''), ` + rollup.CountedClass("probes") + `
 		FROM probes`
 	if where != "" {
 		q += " WHERE " + where
@@ -4409,16 +4387,17 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, args ..
 		var att sql.NullInt64
 		var idxJSON string
 		var served sql.NullInt64
+		var counted string
 		if err := rows.Scan(&p.Vantage, &p.PromiseHash, &p.ValidatorAddress, &p.ValidatorHost, &assigned, &att, &p.AssignedRowCount, &p.ScheduleLabel,
 			&p.ScheduledAt, &p.StartedAt, &p.Phase, &p.Outcome, &p.Classification, &p.Reason, &p.RowsReturned, &p.RowsExpected,
 			&p.TotalDurationMS, &tls, &id, &p.RawError, &p.RetryFirstOutcome, &p.ClockOffsetMS,
 			&idxJSON, &p.RowsSHA256, &p.RPCCode, &p.ShadowedBy, &p.ObserverBuild, &p.AppVersion,
 			&p.ShadowGap, &p.ClassificationAtProbe, &p.AmendedAt, &p.HostAtSettlement, &p.SettlementHostOutcome, &served,
-			&held, &p.PhaseAtProbe, &p.CorrectedAt, &p.ClearedBy, &p.ConfirmedBy); err != nil {
+			&held, &p.PhaseAtProbe, &p.CorrectedAt, &p.ClearedBy, &p.ConfirmedBy, &counted); err != nil {
 			return nil, err
 		}
 		p.RetentionUnverified = held == 1
-		p.Provisional = isProvisional(p.Classification, p.ScheduleLabel, p.StartedAt, now)
+		p.Provisional = isProvisional(counted, p.StartedAt, now)
 		p.HostChanged = p.HostAtSettlement != "" && p.ValidatorHost != "" && p.ValidatorHost != p.HostAtSettlement
 		if served.Valid {
 			b := served.Int64 == 1
@@ -4481,10 +4460,13 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 		conds, args = append(conds, rollup.EffectiveClass("")+` = ?`), append(args, strings.ToUpper(c))
 		decisions = strings.ToUpper(c) == "NOT_PROBED"
 	}
-	// served=no: the rows the obligations count as not served
-	// (rollup.ObligationClass), including end readings that returned no rows.
-	if q.Get("served") == "no" {
-		conds = append(conds, rollup.ObligationClass("")+` = 'FAULT'`)
+	// served=no: the readings the obligations count as not served
+	// (rollup.CountedClass): no rows came back, on a blob that could not be
+	// reconstructed. Readings the correlated-failure guard sets aside are
+	// left out below, as every count leaves them out.
+	notServed := q.Get("served") == "no"
+	if notServed {
+		conds = append(conds, rollup.CountedClass("probes")+` = 'FAULT'`)
 		decisions = false
 	}
 	// at: one schedule point, exactly as vantage_health.suspect lists it, so
@@ -4519,6 +4501,18 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 		}
 		conds, args = append(conds, `started_at < ?`), append(args, store.TS(t))
 		dconds, dargs = append(dconds, `d.decided_at < ?`), append(dargs, store.TS(t))
+	}
+	if notServed {
+		// The guard, tallied over the points that hold one of these rows.
+		pts, err := rollup.SuspectPoints(r.Context(), s.st.DB(), `scheduled_at IN (SELECT scheduled_at FROM probes WHERE `+strings.Join(conds, " AND ")+`)`, args...)
+		if err != nil {
+			s.writeInternal(w, r.URL.Path, err)
+			return
+		}
+		if x, xargs := rollup.Exclusion("scheduled_at", pts); x != "" {
+			conds[len(conds)-1] += x
+			args = append(args, xargs...)
+		}
 	}
 	rows, err := s.probeRows(r.Context(), strings.Join(conds, " AND "), limit, args...)
 	if err != nil {

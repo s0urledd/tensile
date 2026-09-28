@@ -25,7 +25,7 @@ func TestSuspectPoints_GapRowsDoNotDiluteTheShare(t *testing.T) {
 	for _, v := range []string{"e", "f", "g", "h", "i", "j"} {
 		rows = append(rows, row(v, at, probe.ClassNotProbed))
 	}
-	pts := SuspectPoints(rows, w)
+	pts := SuspectPoints(rows, w, nil)
 	if len(pts) != 1 || pts[0].Reason != "fault" {
 		t.Fatalf("three of four probed faulting must be a fault suspect point: %+v", pts)
 	}
@@ -34,7 +34,7 @@ func TestSuspectPoints_GapRowsDoNotDiluteTheShare(t *testing.T) {
 	}
 	// a point where only gap rows exist is no point at all
 	only := []Row{row("a", at, probe.ClassNotProbed), row("b", at, probe.ClassProbeError), row("c", at, probe.ClassNotProbed)}
-	if pts := SuspectPoints(only, w); len(pts) != 0 {
+	if pts := SuspectPoints(only, w, nil); len(pts) != 0 {
 		t.Fatalf("a point of gaps became suspect: %+v", pts)
 	}
 }
@@ -64,7 +64,7 @@ func TestSuspectPoints_RowsThatCannotBeInTheNumeratorAreNotInTheDenominator(t *t
 	add("quiet", 8, probe.ClassUnattested) // probed, but no signature on the promise
 	add("nohost", 2, probe.ClassNotRegistered)
 
-	pts := SuspectPoints(rows, w)
+	pts := SuspectPoints(rows, w, nil)
 	if len(pts) != 1 {
 		t.Fatalf("want one point, got %+v", pts)
 	}
@@ -111,7 +111,7 @@ func TestLateShadow_UnrecordedCandidateIsAGap(t *testing.T) {
 // record: a HEALTHY reading early, then gaps — or, past the prober's backfill
 // horizon, no rows at all after the healthy one. Reading either as a kept
 // promise credits an operator for hours nobody watched, and raises the serve
-// rate exactly while this observer is blind. Both are end_unobserved: the
+// rate exactly while this observer is blind. Both count neither way: the
 // shard was there when we looked, and we did not look at the end.
 func TestObligationServedNeedsAReadingAtTheEndOfTheWindow(t *testing.T) {
 	settled := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
@@ -140,15 +140,15 @@ func TestObligationServedNeedsAReadingAtTheEndOfTheWindow(t *testing.T) {
 		// only the last point was missed
 		obl("lastgap", 0.12, H), obl("lastgap", 0.45, H), obl("lastgap", 0.72, H), obl("lastgap", 0.92, G),
 	}
-	_, by := ComputeObligations(rows, set, w, nil)
+	_, by := ComputeObligations(rows, set, w, nil, nil)
 	for _, c := range []struct {
 		validator string
 		want      Obligations
 	}{
 		{"whole", Obligations{Total: 1, Served: 1}},
-		{"gaps", Obligations{Total: 1, EndUnobserved: 1}},
-		{"silent", Obligations{Total: 1, EndUnobserved: 1}},
-		{"lastgap", Obligations{Total: 1, EndUnobserved: 1}},
+		{"gaps", Obligations{Total: 1, NotCounted: 1}},
+		{"silent", Obligations{Total: 1, NotCounted: 1}},
+		{"lastgap", Obligations{Total: 1, NotCounted: 1}},
 	} {
 		if got := by[c.validator]; got != c.want {
 			t.Errorf("%s: %+v, want %+v", c.validator, got, c.want)
@@ -156,7 +156,7 @@ func TestObligationServedNeedsAReadingAtTheEndOfTheWindow(t *testing.T) {
 	}
 	// The rate speaks for one obligation, not four. Nothing here is a fault:
 	// this observer's blindness can withhold credit, never accuse.
-	net, _ := ComputeObligations(rows, set, w, nil)
+	net, _ := ComputeObligations(rows, set, w, nil, nil)
 	if net.Broken != 0 {
 		t.Errorf("broken = %d, want 0: a missing reading is not a fault", net.Broken)
 	}
