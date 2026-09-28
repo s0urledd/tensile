@@ -1241,6 +1241,14 @@ func (s *Store) UpsertParams(entries []scan.ParamEntry) error {
 // assignment rows in one transaction. raw is the JSONL line as read from the
 // file; it is kept verbatim for provenance. Re-inserting the same promise
 // hash is a no-op.
+//
+// Both rows are write-once, and the API relies on it: it remembers each
+// publication's original_rows from raw_json instead of parsing the record on
+// every snapshot (api/origrows.go), and it keeps each validator's newest
+// endorsements up to date from the assignments added since it last looked
+// (api/signing.go, endorsementLedger). An UPDATE of raw_json, or of an
+// assignment's attested, host, row count or settlement columns, would need
+// both to learn about it.
 func (s *Store) UpsertPublication(p scan.Publication, raw []byte) (inserted bool, err error) {
 	tx, err := s.db.Begin()
 	if err != nil {

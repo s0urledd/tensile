@@ -95,6 +95,11 @@ type Server struct {
 	details detailCache
 	// signing caches /v1/signing (see signing.go).
 	signing signingCache
+	// origRows remembers each publication's original_rows for the load
+	// figures (see origrows.go).
+	origRows originalRowsMemo
+	// recent keeps each validator's newest endorsements (see signing.go).
+	recent endorsementLedger
 	// bg counts the server's own background work (the blob-page warm-up,
 	// the snapshot keeper), for Close.
 	bg sync.WaitGroup
