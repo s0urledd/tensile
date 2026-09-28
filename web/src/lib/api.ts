@@ -602,6 +602,8 @@ export type PublisherShare = {
 export type DayBucket = { day: string; fees_utia: number; bytes: number; settlements: number; timeouts: number; timed_out_utia: number };
 /** one publisher's share of one day; publisher is empty for the folded "other" */
 export type DayPublisher = { day: string; publisher: string; label?: string; fees_utia: number; bytes: number; settlements: number };
+/** one publisher's share of one UTC hour, split as DayPublisher splits a day */
+export type HourPublisher = { hour: string; publisher: string; label?: string; fees_utia: number; bytes: number; settlements: number };
 
 /**
  * The publisher side of Fibre over a window. Every figure is something the
@@ -636,7 +638,9 @@ export type Market = {
   escrow_total_at?: string;
   daily: DayBucket[];
   /** UTC hours, for a window of a day or less */
-  hourly?: { hour: string; bytes: number; settlements: number }[];
+  hourly?: { hour: string; bytes: number; settlements: number; fees_utia: number }[];
+  /** hourly split by publisher as daily_by_publisher splits daily, set with it */
+  hourly_by_publisher?: HourPublisher[];
   daily_by_publisher: DayPublisher[];
   top_publishers: PublisherShare[];
   other_publishers: PublisherShare | null;

@@ -11,6 +11,7 @@ import PreLive, { notLiveOf } from "@/components/PreLive";
 import { unit } from "@/components/Unit";
 import { Metric, Figures } from "@/components/Metrics";
 import Pager, { usePage } from "@/components/Pager";
+import { buckets } from "@/lib/buckets";
 
 /** "Sep 21": a chart's UTC day, as the Blobs chart labels it */
 const dayLabel = (d: string) => new Date(d + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
@@ -25,8 +26,8 @@ const SIZE = 25;
  * notes at the bottom say which ones are floors.
  */
 function Page() {
-  // 7d, not the site's 24h: the page's two charts are per UTC day, and a
-  // 24h window draws one or two bars, which is not a chart.
+  // 7d, not the site's 24h, as on the Blobs page: the charts open on a week
+  // of days; 24h charts the day by the hour.
   const [win, setWinRaw] = useWindow("7d");
   const [page, setPage] = usePage();
   // another period is another list: start from its first page
@@ -78,34 +79,41 @@ function Page() {
             title="The publisher with the most upload size in the period, and its share." />
         </Figures>
 
-      {/* per-day charts need more than one day to say anything: 7d and longer */}
-      {m && win !== "24h" && (() => {
-        const days = calendar(m.window.start.startsWith("0001-") || m.window.name === "all"
-          ? new Date((m.daily[0]?.day ?? m.window.end.slice(0, 10)) + "T00:00:00Z") : new Date(m.window.start), new Date(m.window.end));
-        const byDay = new Map(m.daily.map((d) => [d.day, d]));
-        const feeRows: Row[] = days.map((d) => {
-          const b = byDay.get(d);
-          return { x: d, label: dayLabel(d), short: String(Number(d.slice(8))), values: { fees: b?.fees_utia ?? 0 },
-            note: b ? `${b.settlements} settlement${b.settlements === 1 ? "" : "s"} · ${bytes(b.bytes)}${b.timeouts ? ` · ${b.timeouts} timed out` : ""}` : "nothing settled" };
-        });
+      {/* per UTC day; for 24h per UTC hour, as the Blobs charts are (the period of the answer shown decides) */}
+      {m && (() => {
+        const perHour = m.window.name === "24h";
+        const per = perHour ? "hour" : "day";
+        // Each bar: its axis names, its bucket (absent when nothing happened in it) and its split by publisher.
+        const slots: { x: string; label: string; short?: string; b?: { fees_utia: number; bytes: number; settlements: number; timeouts?: number }; split: { publisher: string; bytes: number }[] }[] = [];
+        if (perHour) {
+          // every hour of the period, the partial first and last included, named as on the Blobs page
+          const byHour = new Map((m.hourly ?? []).map((h) => [h.hour, h]));
+          for (const c of buckets(m, "24h")) slots.push({ x: c.title, label: c.label, short: c.short, b: byHour.get(c.key), split: (m.hourly_by_publisher ?? []).filter((r) => r.hour === c.key) });
+        } else {
+          const days = calendar(m.window.start.startsWith("0001-") || m.window.name === "all"
+            ? new Date((m.daily[0]?.day ?? m.window.end.slice(0, 10)) + "T00:00:00Z") : new Date(m.window.start), new Date(m.window.end));
+          const byDay = new Map(m.daily.map((d) => [d.day, d]));
+          for (const d of days) slots.push({ x: d, label: dayLabel(d), short: String(Number(d.slice(8))), b: byDay.get(d), split: m.daily_by_publisher.filter((r) => r.day === d) });
+        }
+        const feeRows: Row[] = slots.map(({ x, label, short, b }) => ({ x, label, short, values: { fees: b?.fees_utia ?? 0 },
+          note: b ? `${b.settlements} settlement${b.settlements === 1 ? "" : "s"} · ${bytes(b.bytes)}${b.timeouts ? ` · ${b.timeouts} timed out` : ""}` : "nothing settled" }));
         const pubs = m.top_publishers.map((p) => p.publisher);
         const series: Series[] = pubs.map((p, i) => ({ key: p, label: publisherName(m.top_publishers[i]), color: CATEGORICAL[i] }));
         if (m.other_publishers) series.push({ key: "", label: `${m.other_publishers.publishers} other`, color: OTHER_COLOR });
-        const byteRows: Row[] = days.map((d) => {
+        const byteRows: Row[] = slots.map(({ x, label, short, b, split }) => {
           const values: Record<string, number> = {};
-          for (const r of m.daily_by_publisher) if (r.day === d) values[r.publisher] = (values[r.publisher] ?? 0) + r.bytes;
-          const b = byDay.get(d);
+          for (const r of split) values[r.publisher] = (values[r.publisher] ?? 0) + r.bytes;
           for (const k of Object.keys(values)) values[k] = values[k] / (1 << 20); // MiB, so the axis steps are round
-          return { x: d, label: dayLabel(d), short: String(Number(d.slice(8))), values, note: b ? `${b.settlements} settlement${b.settlements === 1 ? "" : "s"}` : "nothing settled" };
+          return { x, label, short, values, note: b ? `${b.settlements} settlement${b.settlements === 1 ? "" : "s"}` : "nothing settled" };
         });
         const mib = (v: number) => v >= 1024 ? `${(v / 1024).toFixed(2)} GiB` : v >= 100 ? `${Math.round(v)} MiB` : v >= 10 ? `${v.toFixed(1)} MiB` : `${v.toFixed(2)} MiB`;
         const axisTia = (v: number) => v === 0 ? "0" : v >= 100e6 ? Math.round(v / 1e6).toLocaleString("en-US") : v >= 1e6 ? (v / 1e6).toFixed(v % 1e6 ? 1 : 0) : (v / 1e6).toFixed(2);
         const axisMib = (v: number) => v >= 1024 ? `${(v / 1024).toFixed(v % 1024 ? 1 : 0)} GiB` : `${Number.isInteger(v) ? v : v.toFixed(1)} MiB`;
         return (
           <div className="board-charts">
-            <Chart title="Fees paid per day (TIA)" figure={tia(m.fees_settled_utia)} figureNote="in the period" series={[{ key: "fees", label: "fees", color: "var(--accent)" }]} rows={feeRows}
+            <Chart title={`Fees paid per ${per} (TIA)`} figure={tia(m.fees_settled_utia)} figureNote="in the period" series={[{ key: "fees", label: "fees", color: "var(--accent)" }]} rows={feeRows}
               fmt={(v) => tia(v)} fmtAxis={axisTia} height={210} />
-            <Chart title="Upload size per day, by publisher" figure={bytes(m.bytes)} figureNote="in the period" series={series} rows={byteRows} fmt={mib} fmtAxis={axisMib} height={210} />
+            <Chart title={`Upload size per ${per}, by publisher`} figure={bytes(m.bytes)} figureNote="in the period" series={series} rows={byteRows} fmt={mib} fmtAxis={axisMib} height={210} />
           </div>
         );
       })()}
