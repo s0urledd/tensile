@@ -7,7 +7,7 @@ import { unit } from "@/components/Unit";
 import { useApi, type Meta, type Market, type Network, type Blob, type NamespaceRow, utc, ago, nsDisplay, bytes, int, tia, shortBech } from "@/lib/api";
 import { Mark, type Tier } from "@/components/Verdict";
 import Chart from "@/components/Chart";
-import { Metric, Metrics } from "@/components/Metrics";
+import { Metric, Figures, Observed } from "@/components/Metrics";
 import { buckets } from "@/lib/buckets";
 import Pager, { usePage } from "@/components/Pager";
 import { useWindow, WindowSwitch } from "@/lib/window";
@@ -76,55 +76,57 @@ function Page() {
 
   return (
     <>
-      <div className="head">
-        <div><h1>Blobs</h1><p className="sub">Blobs published through Fibre and settled on chain.</p></div>
+      <div className="page-head">
+        <div><h1>Blobs</h1><p className="lede">Blobs published through Fibre and settled on chain.</p></div>
       </div>
       <PreLive meta={meta} />
       {error && !data && <p className="notice">The observer API is not answering ({error}); the page retries every 30 seconds. This is an observer outage, not a Fibre network outage.</p>}
       {error && data && <p className="sample">Showing the last list received; the API is not answering right now ({error}).</p>}
 
       <section className="group" id="chain">
-        <div className="vhead">
+        <div className="sec-head">
           <div><h2>On chain</h2><p className="sub">The period&rsquo;s settlements.</p></div>
           <WindowSwitch value={win} onChange={setWin} />
         </div>
-        <Metrics>
-          <Metric label="Blobs" value={m ? int(m.blobs) : "—"} tone={m && m.blobs > 0 ? undefined : "absent"}
-            help={m ? `${int(m.settlements)} settlement${m.settlements === 1 ? "" : "s"}` : " "}
-            title="Blobs (BlobID) settled in the period, and the settlements that paid for them." />
-          <Metric label="Namespaces" value={m?.namespaces != null ? int(m.namespaces) : "—"} tone={m?.namespaces ? undefined : "absent"}
-            help={m?.namespaces_total != null ? `${int(m.namespaces_total)} on record` : " "}
-            title="Namespaces the period's settlements used." />
-          <Metric label="Available" value={rc && rc.recoverable.den > 0 ? int(rc.recoverable.num) : "—"} den={rc && rc.recoverable.den > 0 ? int(rc.recoverable.den) : undefined}
-            tone={rc && rc.recoverable.den > 0 ? undefined : "absent"}
-            help={rc ? (rc.recoverable.den > 0 ? "read by Tensile near the window's end" : "none read in the period") : " "}
-            title="Observed by Tensile: settlements read near the end of their retention window whose rows were enough to reconstruct the blob." />
-        </Metrics>
-        <div className="charts">
-          <div className="card">
-            <Chart title={`Upload size per ${per}`} sub={m && series.length ? `${bytes(m.bytes)} in the period` : undefined}
+        <div className="board board--rail">
+          <Figures className="rail">
+            <Metric size="hero" label="Blobs" value={m ? int(m.blobs) : "—"} tone={m && m.blobs > 0 ? undefined : "absent"}
+              help={m ? `${int(m.settlements)} settlement${m.settlements === 1 ? "" : "s"}` : " "}
+              title="Blobs (BlobID) settled in the period, and the settlements that paid for them." />
+            <Metric label="Namespaces" value={m?.namespaces != null ? int(m.namespaces) : "—"} tone={m?.namespaces ? undefined : "absent"}
+              help={m?.namespaces_total != null ? `${int(m.namespaces_total)} on record` : " "}
+              title="Namespaces the period's settlements used." />
+          </Figures>
+          <div className="board-charts">
+            <Chart title={`Upload size per ${per}`} figure={m && series.length ? bytes(m.bytes) : undefined} figureNote="in the period"
               series={[{ key: "bytes", label: "upload size", color: "var(--accent)" }]}
               rows={series.map((c) => ({ x: c.title, label: c.label, values: { bytes: c.bytes / (1 << 20) }, note: `${int(c.settlements)} settlement${c.settlements === 1 ? "" : "s"}` }))}
               fmt={mib} fmtAxis={axisMib} empty={m ? "nothing settled in this period" : "loading…"} />
-          </div>
-          <div className="card">
-            <Chart title={`Settlements per ${per}`} sub={m && series.length ? `${int(m.settlements)} in the period` : undefined}
-              series={[{ key: "n", label: "settlements", color: "var(--accent)" }]}
+            <Chart title={`Settlements per ${per}`} figure={m && series.length ? int(m.settlements) : undefined} figureNote="in the period"
+              series={[{ key: "n", label: "settlements", color: "var(--accent-2)" }]}
               rows={series.map((c) => ({ x: c.title, label: c.label, values: { n: c.settlements }, note: bytes(c.bytes) }))}
               fmt={(v) => int(v)} empty={m ? "nothing settled in this period" : "loading…"} />
           </div>
         </div>
+        <Observed label="Available" value={rc && rc.recoverable.den > 0 ? int(rc.recoverable.num) : "—"} den={rc && rc.recoverable.den > 0 ? int(rc.recoverable.den) : undefined}
+          absent={!(rc && rc.recoverable.den > 0)}
+          frac={rc && rc.recoverable.den > 0 ? rc.recoverable.num / rc.recoverable.den : undefined}
+          help={rc ? (rc.recoverable.den > 0 ? "read by Tensile near the window's end" : "none read in the period") : undefined}
+          title="Observed by Tensile: settlements read near the end of their retention window whose rows were enough to reconstruct the blob." />
       </section>
 
-      <section id="list">
-        <div className="vhead">
-          <div className="seg" role="group" aria-label="list">
+      <section id="list" className="listing">
+        <div className="list-head">
+          <div className="tabs" role="group" aria-label="list">
             <button type="button" aria-pressed={tab === "blobs"} onClick={() => setTab("blobs")}>Blobs</button>
             <button type="button" aria-pressed={tab === "namespaces"} onClick={() => setTab("namespaces")}>Namespaces{nsN ? <span className="n"> {int(nsN)}{nsMore ? "+" : ""}</span> : null}</button>
           </div>
-          <div className="tools">
-            {tab === "blobs" && <input className="nsfilter" type="search" placeholder="Filter by namespace (58 hex)" value={ns} onChange={(e) => setNs(e.target.value)} aria-label="namespace filter" />}
-          </div>
+          {tab === "blobs" && (
+            <label className="field">
+              <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><circle cx="7" cy="7" r="4.75" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="m10.5 10.5 3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+              <input className="nsfilter" type="search" placeholder="Filter by namespace (58 hex)" value={ns} onChange={(e) => setNs(e.target.value)} aria-label="namespace filter" />
+            </label>
+          )}
         </div>
 
         {tab === "blobs" && (
