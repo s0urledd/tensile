@@ -1,4 +1,4 @@
-import { type Validator, int } from "@/lib/api";
+import type { Validator } from "@/lib/api";
 
 /**
  * How much of the bonded stake has a Fibre provider registered. A
@@ -34,38 +34,4 @@ export function readiness(rows: Validator[]) {
   const quorum = Math.floor((total * 2) / 3);
   const pct = (n: number) => (total > 0 ? `${((100 * n) / total).toFixed(1)}%` : "—");
   return { bonded, total, registered, regPower, quorum, pct };
-}
-
-/** the share, the meter with its ⅔ tick, and the rest */
-export function ReadyAnswer({ rows, headingId = "readiness-h" }: { rows: Validator[]; headingId?: string }) {
-  const r = readiness(rows);
-  if (r.total === 0) return null;
-  const { pct, regPower, quorum, total } = r;
-  const w = (n: number) => `${Math.min(100, (100 * n) / total)}%`;
-  return (
-    <>
-      <h2 id={headingId}>Stake with a Fibre provider</h2>
-      <p className="ready-answer" title="Share of the stake held by validators with a Fibre provider. A blob needs signatures from ⅔ of the stake to settle.">
-        <b>{pct(regPower)}</b> of voting power · {int(r.registered.length)} of {int(r.bonded.length)} validators
-      </p>
-      <div className="meter ready-meter" role="img" aria-label={`${pct(regPower)} of stake with a Fibre provider, ${pct(quorum)} needed`}>
-        <i style={{ width: w(regPower) }} />
-        <span className="tick" style={{ left: w(quorum) }} />
-        <span className="tl2" style={{ left: w(quorum) }}>⅔ needed</span>
-      </div>
-      <p className="sub ready-key">
-        <span><i className="sw p" /> no Fibre provider {pct(total - regPower)} · {int(r.bonded.length - r.registered.length)}</span>
-      </p>
-    </>
-  );
-}
-
-export default function Readiness({ rows }: { rows: Validator[] }) {
-  const r = readiness(rows);
-  if (r.total === 0) return null;
-  return (
-    <section className="band readiness" aria-labelledby="readiness-h">
-      <div><ReadyAnswer rows={rows} /></div>
-    </section>
-  );
 }

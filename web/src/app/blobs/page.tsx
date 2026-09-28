@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import PreLive from "@/components/PreLive";
 import { unit } from "@/components/Unit";
-import { useApi, type Meta, type Market, type Blob, type NamespaceRow, utc, ago, nsDisplay, bytes, int, tia, shortBech } from "@/lib/api";
+import { useApi, type Meta, type Market, type Blob, type NamespaceRow, utc, ago, nsDisplay, bytes, int, pctOf, tia, shortBech } from "@/lib/api";
 import { Mark } from "@/components/Verdict";
 import { recon } from "@/lib/status";
 import Chart from "@/components/Chart";
@@ -124,7 +124,7 @@ function Page() {
                         <td title={pub}><Link className="mono" href={`/publisher/?addr=${pub}`}>{shortBech(pub)}</Link></td>
                         <td className="mono">{unit(bytes(b.blob_size))}</td>
                         <td className="mono">{b.charge ? unit(tia(b.charge.fee_utia)) : "—"}</td>
-                        <td className="mono">{b.attested_voting_power != null && b.total_voting_power ? `${(100 * b.attested_voting_power / b.total_voting_power).toFixed(1)}%` : "—"}</td>
+                        <td className="mono">{b.attested_voting_power != null && b.total_voting_power ? pctOf(b.attested_voting_power, b.total_voting_power) : "—"}</td>
                         <td><span className={`verdict verdict--${rc.tier}`} title={rc.title}><Mark tier={rc.tier} /><span className="w">{rc.word}</span></span></td>
                       </tr>
                     );

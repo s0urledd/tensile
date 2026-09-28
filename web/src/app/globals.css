@@ -73,7 +73,6 @@
   --hold-ink: #8a5a00;
   --obs-bg: rgb(var(--ink) / .035);
   --obs-edge: inset 0 0 0 1px rgb(var(--ink) / .04);
-  --obs-track: rgb(var(--ink) / .08);
   --r-panel: 18px;
   --r-card: 12px;
   --r-ctl: 10px;
@@ -129,7 +128,6 @@
   --hold-ink: #d3a24a;
   --obs-bg: rgb(255 255 255 / .022);
   --obs-edge: inset 0 0 0 1px rgb(255 255 255 / .05);
-  --obs-track: rgb(255 255 255 / .08);
   --text: rgb(var(--ink) / .92);
   --text-2: rgb(var(--ink) / .74);
   --text-3: rgb(var(--ink) / .62); /* 6.35:1 on the paper, 6.02 on --wash */
@@ -435,7 +433,6 @@ tr.suspect td { color: var(--text-3); }
 .meter { position: relative; height: 14px; border-radius: 4px; background: var(--pending); border: 1px solid var(--line-soft); margin: 14px 0 8px; overflow: visible; }
 .meter i { display: block; height: 100%; background: var(--accent); border-radius: 4px 0 0 4px; }
 .meter .tick { position: absolute; top: -5px; width: 1px; height: 24px; background: var(--text); }
-.meter .tl2 { position: absolute; top: 24px; transform: translateX(-50%); font-size: var(--t-tiny); color: var(--text-2); white-space: nowrap; }
 .mnums { display: flex; justify-content: space-between; font-size: var(--t-small); color: var(--text-2); margin-top: 8px; }
 .mnums b { font-weight: 500; color: var(--text); }
 
@@ -736,13 +733,6 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
    answering a lighter accent, no host the pending grey; the ⅔ quorum is the
    meter's tick. */
 .readiness { grid-template-columns: 3fr 2fr; }
-.ready-answer { margin: 6px 0 0; font-size: var(--t-body, 14px); color: var(--text); max-width: 62ch; }
-.ready-answer b { font-weight: 600; }
-.ready-meter { margin-top: 16px; margin-bottom: 30px; }
-.ready-meter .reg { position: absolute; top: 0; height: 100%; background: var(--accent); opacity: .35; }
-.ready-key { display: flex; flex-wrap: wrap; gap: 4px 18px; }
-.ready-key .sw { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
-.sw.reg { background: var(--accent); opacity: .35; }
 @media (max-width: 720px) {
   .readiness { grid-template-columns: 1fr; }
   .readiness > div + div { border-left: 0; padding: 14px 0 0; }
@@ -834,9 +824,11 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
 .ov-obs-v { font-size: 14px; font-weight: 600; line-height: 20px; color: var(--text-2); }
 .ov-obs-v.absent { color: var(--text-3); }
 .ov-obs-h { font-size: var(--t-small); line-height: 16px; color: var(--text-3); }
-/* the latest blob's result as the Blobs list sets it */
-.ov-obs .verdict { gap: 6px; padding: 2px 10px 2px 9px; border-radius: 999px; line-height: 16px; }
+/* the latest blob's result as the Blobs list sets it; in the narrow side column (961-1100px) the words wrap rather than run out of the box */
+.ov-obs .verdict { gap: 6px; padding: 2px 10px 2px 9px; border-radius: 999px; line-height: 16px; white-space: normal; }
 .ov-obs .verdict .w { font-size: var(--t-small); }
+/* when the words wrap, the mark stays on their first line */
+.ov-obs .verdict .mark { align-self: flex-start; margin-top: 3px; }
 .ov-obs .verdict--kept { background: var(--accent-tint); }
 .ov-obs .verdict--kept .w { color: var(--accent-ink); font-weight: 500; }
 .ov-obs .verdict--hold { background: color-mix(in srgb, var(--hold) 13%, transparent); }
@@ -1062,18 +1054,9 @@ body { background: var(--canvas); }
 .figs.row .metric .value { font-size: 34px; }
 .figs.row .metric .help { font-size: var(--t-small); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* Tensile's own observation: a dashed strip under the chain panel */
-.obs { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 24px; margin-top: 14px; padding: 12px 20px 12px 12px; border-radius: var(--r-card); background: var(--obs-bg); box-shadow: var(--obs-edge); font-size: var(--t-cell); color: var(--text-2); }
+/* the "Observed by Tensile" badge on Tensile's own readings */
 .obs-tag { display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 11px 0 9px; border-radius: 999px; background: var(--paper); box-shadow: var(--shadow-sm), 0 0 0 1px var(--border); font-size: var(--t-tiny); font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--text-2); white-space: nowrap; }
 .obs-tag svg { color: var(--accent-ink); flex: none; }
-.obs-fig { display: inline-flex; align-items: baseline; gap: 10px; white-space: nowrap; }
-.obs-label { font-weight: 500; color: var(--text-2); }
-.obs-value { font-size: 20px; font-weight: 600; letter-spacing: -.02em; color: var(--text); }
-.obs-value .den { font-size: var(--t-cell); font-weight: 400; letter-spacing: 0; color: var(--text-3); }
-.obs-value.absent { color: var(--text-3); }
-.obs-meter { flex: 0 1 160px; height: 4px; border-radius: 4px; background: var(--obs-track); overflow: hidden; }
-.obs-meter i { display: block; height: 100%; border-radius: inherit; background: var(--accent); opacity: .7; }
-.obs-help { margin-left: auto; font-size: var(--t-small); color: var(--text-3); }
 
 /* segmented controls (the period switch, the validator filter): a pill track */
 .seg { gap: 2px; padding: 3px; margin-top: 0; border: 0; border-radius: 999px; background: var(--seg-track); overflow: visible; }
@@ -1163,11 +1146,6 @@ body { background: var(--canvas); }
   .figs .metric.hero .value { font-size: 48px; }
   .figs .metric .value, .figs.row .metric .value { font-size: 30px; }
   .list-head .field { width: 100%; }
-  .obs { padding: 12px 14px; gap: 10px 16px; }
-  .obs-tag { flex-basis: auto; }
-  .obs-fig { flex: 1 1 auto; }
-  .obs-meter { flex: 1 1 100%; order: 3; }
-  .obs-help { order: 4; margin-left: 0; }
   .pager { flex-direction: column; align-items: flex-start; }
 }
 @media (max-width: 480px) {
