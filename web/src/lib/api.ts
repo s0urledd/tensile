@@ -7,19 +7,12 @@ import type { Signing } from "./signing";
 export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "/api").replace(/\/$/, "");
 
 export type Rate = { num: number; den: number; value: number | null };
-/** How much of the serve rate's population the chain actually proves is obliged. */
+/**
+ * Per (validator, blob) the validator was assigned rows of: whether the
+ * settled promise carries its verified endorsement (attested), does not
+ * (unattested), or was recorded before signatures were verified (unknown).
+ */
 export type Attestation = {
-  attested_probes: number;
-  unattested_probes: number;
-  unknown_probes: number;
-  coverage: Rate;
-  /**
-   * The same three counts per (validator, blob) obligation rather than per
-   * probe. An obligation is probed at four schedule points, so the probe
-   * counts run about four times these — and it is these that a page may show
-   * an operator. "812 unattested probes" and "203 blobs carried no signature
-   * from you" are the same fact, but only one of them is the fact.
-   */
   attested_blobs: number;
   unattested_blobs: number;
   unknown_blobs: number;
@@ -190,22 +183,15 @@ export type Network = {
   reachability: Rate;
   /** every heartbeat in the window that completed TLS, over every one sent */
   reachability_window: Rate;
-  serve_rate: Rate;
-  /** how much of the rate's own population produced a verdict */
-  serve_rate_coverage: Rate;
-  /** one observation per (validator, blob), judged by the newest probe; the headline */
+  /** one per (validator, blob) endorsed, judged by the blob's reading; the headline */
   obligations: Obligations;
   /** the part of obligations.broken whose faults are all still settling; absent when none (see ProvisionalFaults) */
   provisional_faults?: ProvisionalFaults;
   /** obligations.rate, repeated */
   serve_rate_by_obligation: Rate;
-  /** class -> probes the rate does not speak for */
-  serve_rate_held_out: ClassCounts;
-  serve_rate_excluded_classes: { class: string; reason: string }[];
   attestation: Attestation;
   probe_count: number;
   classes: ClassCounts;
-  faults?: number; // probes: FAULT of an assigned shard in any phase. obligations.broken is the per-obligation count, and the one shown beside a validator's name
   publications: number;
   publication_bytes: number;
   reconstructable: Reconstructable;
@@ -214,7 +200,6 @@ export type Network = {
   vantage_health: VantageHealth;
   /** set when the window rests partly on the daily rollup: past the raw retention, "all" is the rollup for days before raw_from plus the raw rows */
   rolled_up?: RolledUp;
-  serve_rate_by_point: { key: string; serve_rate: Rate }[];
   /** whole-probe duration, dial to verified rows, over HEALTHY probes */
   serve_latency_p50_ms: number | null;
   serve_latency_p95_ms: number | null;
@@ -224,12 +209,11 @@ export type Network = {
     window: Window;
     obligations: Obligations;
     reachability_window: Rate;
-    faults: number;
     serve_latency_p50_ms: number | null;
   };
 };
 
-/** one schedule point the observer does not trust itself at */
+/** one reading the observer does not trust itself at */
 export type SuspectPoint = {
   at: string;
   label: string;
@@ -241,8 +225,9 @@ export type SuspectPoint = {
 };
 
 /**
- * Correlated failures in the window: likely ours, not theirs. Every probe at
- * a suspect point is left out of every rate, bucket and fault count.
+ * Correlated failures in the window: at least half of the validators a
+ * reading asked failed at once, and the blob could not be reconstructed.
+ * Likely ours, not theirs: such a reading is left out of every count.
  */
 export type VantageHealth = {
   worst_point: Rate;
@@ -256,15 +241,20 @@ export type VantageHealth = {
   suspect_rows: number;
 };
 
+/**
+ * The Available tile: over the blobs whose reading decides them (recoverable
+ * = yes over yes plus no), the newest sample_limit of them examined. The rest
+ * say why a blob has no verdict: pending (its window is open), not_read (its
+ * window closed without a reading that decides it: Tensile's own gap),
+ * not_yet_read (its reading is still to come), unknown (no assignment).
+ */
 export type Reconstructable = {
-  /** fully served, over publications with a verdict */
-  rate: Rate;
-  /** enough rows came back to rebuild the blob, whether or not everyone answered */
   recoverable: Rate;
   yes: number;
-  degraded: number;
   no: number;
   pending: number;
+  not_read: number;
+  not_yet_read: number;
   unknown: number;
   publications_in_window: number;
   publications_examined: number;
@@ -272,27 +262,18 @@ export type Reconstructable = {
 };
 
 /**
- * One observation per (validator, blob) the settled promise proves, judged by
- * the newest in-window probe of it. Only served and broken enter the rate;
- * the rest says how many obligations the rate does not speak for.
+ * One per (validator, blob) the settled promise proves the validator owes,
+ * judged by the blob's reading. Only served and broken enter the rate.
  */
 export type Obligations = {
   total: number;
-  /** newest probe healthy, no fault anywhere, and one healthy reading taken in the last quarter of the retention window */
+  /** its rows came back and verified */
   served: number;
-  /** any probe a fault */
+  /** not served: its rows did not come back, and the blob could not be reconstructed */
   broken: number;
-  /** healthy at some point, but no reading that speaks for the end of the window */
-  end_unobserved: number;
-  /** never seen serving, never faulted */
-  unobserved: number;
-  /** ... and the endpoint completed TLS yet handed nothing over */
-  unobserved_reachable: number;
-  /** ... and it never completed TLS */
-  unobserved_unreachable: number;
-  /** ... and we never attempted the download (budget, sampling, a missed slot) */
-  unobserved_not_probed: number;
-  /** the retention window has not ended: no verdict yet, outside the rate */
+  /** counted neither way: not asked because the rows were already enough, a failure on a blob that was available, or no reading that decides it */
+  not_counted: number;
+  /** the retention window has not ended */
   pending: number;
   /** the deadline rests on a parameter range the observer has not read; no verdict either way */
   held_param_unverified?: number;
@@ -300,32 +281,10 @@ export type Obligations = {
   rate: Rate;
 };
 
-/** end-unobserved + never observed + held: the obligations the rate does not speak for, pending aside */
-/**
- * What is left out of the rate after the window closed, split in the two
- * reasons a reader needs apart: sampled out by the probe budget (a design
- * choice, published and checkable) and everything else (not observed).
- */
-export function leftOut(o: Obligations | null | undefined): { sampled: number; notObserved: number } {
-  if (!o) return { sampled: 0, notObserved: 0 };
-  const sampled = o.unobserved_not_probed ?? 0;
-  return { sampled, notObserved: Math.max(0, undecided(o) - sampled) };
-}
-
-/**
- * "25 not read by Tensile · 1 no verdict", or "" when nothing is left out.
- * Not read: no reading at all (sampled out before 27 September 2026, or
- * Tensile offline). No verdict: read, but no reading near the end counts
- * either way, as the blob page says it.
- */
-export function leftOutText(o: Obligations | null | undefined): string {
-  const { sampled, notObserved } = leftOut(o);
-  return [sampled > 0 ? `${int(sampled)} not read by Tensile` : "", notObserved > 0 ? `${int(notObserved)} no verdict` : ""].filter(Boolean).join(" · ");
-}
-
-export function undecided(o: Obligations | null | undefined): number {
-  if (!o) return 0;
-  return o.end_unobserved + o.unobserved + (o.held_param_unverified ?? 0);
+/** "12 not counted", or "" when every closed obligation counts one way or the other */
+export function notCountedText(o: Obligations | null | undefined): string {
+  const n = o ? o.not_counted + (o.held_param_unverified ?? 0) : 0;
+  return n > 0 ? `${int(n)} not counted` : "";
 }
 
 export type Validator = {
@@ -378,25 +337,19 @@ export type Validator = {
   identity_rate_window: Rate;
   last_unreachable_at: string | null;
   last_reachable_at: string | null;
-  serve_rate: Rate;
-  serve_rate_coverage: Rate;
-  /** one observation per (validator, blob), judged by the newest probe; the headline */
+  /** one per (validator, blob) endorsed, judged by the blob's reading; the headline */
   obligations: Obligations;
   /** the part of obligations.broken whose faults are all still settling; absent when none (see ProvisionalFaults) */
   provisional_faults?: ProvisionalFaults;
   /** obligations.rate, repeated */
   serve_rate_by_obligation: Rate;
-  serve_rate_held_out: ClassCounts;
   attestation: Attestation;
   probe_count: number;
   classes: ClassCounts;
-  faults?: number; // probes: FAULT of an assigned shard in any phase. obligations.broken is the per-obligation count, and the one shown beside a validator's name
   /** failed probes of the period a second location cleared: it fetched the same rows and they verified. Not in faults; absent when none */
   faults_cleared?: number;
   assigned_rows_last: number;
   expected_load_band: string;
-  /** this validator's serve rate per schedule point: early vs late retention */
-  serve_rate_by_point: { key: string; serve_rate: Rate }[] | null;
   /**
    * How long this observer waited for a shard it did get. The percentiles are
    * the whole probe — dial, TLS, DownloadShard, row verification — over the
@@ -477,7 +430,9 @@ export type Probe = {
   /** the evidence probe of the settlement host, run when the current host did not serve; never the verdict */
   settlement_host_outcome?: string;
   settlement_host_served?: boolean;
-  /** a FAULT younger than the settling period: counted, and still able to be withdrawn */
+  /** what the reading counts as for the validator: served, not_served, or absent when it counts neither way */
+  service?: "served" | "not_served";
+  /** a not-served reading younger than the settling period: counted, and still able to be withdrawn */
   provisional?: boolean;
   /** the second location fetched the same rows within the confirmation window and they verified: the fault is withdrawn (classification PROBE_ERROR, classification_at_probe FAULT) */
   cleared_by?: string;
@@ -503,23 +458,26 @@ export function rateTone(served: number, assessed: number): RateTone | undefined
   return r >= 0.98 ? "r-good" : r >= 0.9 ? "r-warn" : "r-bad";
 }
 
+/**
+ * A blob's reading: yes (Available: enough rows came back to reconstruct it),
+ * no (Unavailable: every endorsing validator was asked, twice, and too few
+ * came back), pending (its window is open), not_read (its window closed
+ * without a reading that decides it: Tensile's own gap), unknown (no
+ * assignment to judge it by).
+ */
 export type Reconstruct = {
-  status: "yes" | "degraded" | "no" | "pending" | "unknown";
-  point: string;
+  status: "yes" | "no" | "pending" | "not_read" | "unknown";
+  /** when the reading was scheduled */
   point_at: string;
   window_over: boolean;
   served_distinct_rows: number;
   needed_rows: number;
-  served_by_validators: number;
-  assigned_validators: number;
-  /** assigned validators with a real result at the point; "pending" while short of assigned_validators */
-  probed_validators: number;
   /** the blob's encoded row count (16384 for blob v0) */
   total_rows: number;
-  /** assigned validators the settled promise proves stored the blob: the denominator for "yes" */
-  attested_validators: number;
-  attestation_known: boolean;
-  served_by_attested: number;
+  /** validators whose rows came back verified */
+  served_by_validators: number;
+  /** validators the reading asked; it stops once the rows are enough */
+  probed_validators: number;
 };
 
 export type Blob = {
@@ -548,26 +506,6 @@ export type Blob = {
   probe_count: number;
   classes: ClassCounts;
   reconstructable: Reconstruct | null;
-  /** set when the load policy drew this blob out of its sample: recorded once, not probed at any point */
-  sampled_out?: SampledOut;
-};
-
-/**
- * One publication the load policy sampled out: the draw that decided it,
- * recorded once. It stands for a not-probed row per assigned validator per
- * point (rows), which probe_count and classes still count.
- */
-export type SampledOut = {
-  vantage: string;
-  promise_hash: string;
-  decided_at: string;
-  p: number;
-  binding: string;
-  day_commitment: string;
-  reason: string;
-  validators: number;
-  points: number;
-  rows: number;
 };
 
 /**
@@ -997,10 +935,7 @@ export function wilsonLower(num: number, den: number): number | null {
  * could judge went unserved, with 95% confidence". This is the direction an
  * accusation has to be stated in.
  *
- * Pass an obligation-level rate where one is available. The four in-window
- * probes of one (validator, blob) are near copies of each other, so a bound
- * drawn around the probe count claims far more precision than the evidence
- * carries.
+ * Pass an obligation-level rate: one per (validator, blob).
  */
 export function faultRateUpper(r: Rate | undefined | null): number | null {
   if (!r || r.den === 0) return null;
@@ -1068,10 +1003,10 @@ export type EndpointCheck = {
 };
 
 /**
- * Provisional faults: broken obligations whose every failed probe is younger
- * than the observer's settling period (30 minutes). They are counted in
- * broken and in the rate; the flag says evidence still on its way (the rest
- * of the schedule point, an x/fibre params change not yet reconciled) can
+ * Provisional faults: not-served obligations whose every failed reading is
+ * younger than the observer's settling period (30 minutes). They are counted
+ * in broken and in the rate; the flag says evidence still on its way (a
+ * second location's check, an x/fibre params change not yet reconciled) can
  * withdraw them. `until` is when the youngest settles, so a cached answer
  * still tells the page when to drop the badge.
  */

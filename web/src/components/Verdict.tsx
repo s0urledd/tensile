@@ -10,12 +10,16 @@
  * What the tiers encode is the thing a reader actually needs, which is not the
  * class but what the class does to the rate:
  *
- *   kept    counted in the numerator                       HEALTHY
- *   fault   counted against — the only accusation          FAULT
- *   hold    held out: we could not complete the measurement UNREACHABLE, IDENTITY_EXPIRED
- *   held    held out: nothing was owed, not by this promise, or this site
+ *   kept    the rows came back                              HEALTHY
+ *   fault   not found or bad rows — the only accusation     FAULT
+ *   hold    no rows from a server that did not hand them over UNREACHABLE, IDENTITY_EXPIRED
+ *   held    nothing was owed, not by this promise, or this site
  *           cannot say when the obligation ended    RETENTION_UNVERIFIED
  *   gap     not observed at all — a gap, never a verdict    NOT_PROBED, PROBE_ERROR
+ *
+ * Whether a reading counts against the validator is not its class alone: a
+ * failure counts as not served only when the blob could not be
+ * reconstructed (observer/verdict).
  *
  * FAULT owns the only pointed shape in the system and the only status colour
  * allowed to touch a word, so an accusation is pre-attentive and survives total
@@ -33,28 +37,28 @@ const VERDICTS: Record<string, Def> = {
     def: "The endorsed rows came back and verified against the blob commitment.",
   },
   FAULT: {
-    label: "not served", tier: "fault",
-    def: "Not found, or rows that do not verify against the blob commitment. At the end reading, any reading that leaves the reader without the rows.",
+    label: "not found or bad rows", tier: "fault",
+    def: "Not found, or rows that do not verify against the blob commitment. Not served when the blob could not be reconstructed; otherwise counted neither way.",
   },
   UNREACHABLE: {
     label: "unreachable", tier: "hold",
-    def: "No answer in time. Not served at the end reading; earlier, kept out of the rate.",
+    def: "No answer within 15 s, asked twice. Not served when the blob could not be reconstructed; otherwise counted neither way.",
   },
   IDENTITY_EXPIRED: {
     label: "certificate expired", tier: "hold",
-    def: "The right key signed the certificate, but outside its validity window. Not served at the end reading; earlier, kept out of the rate.",
+    def: "The right key signed the certificate, but outside its validity window. Not served when the blob could not be reconstructed; otherwise counted neither way.",
   },
   IDENTITY_MISMATCH: {
     label: "wrong certificate", tier: "hold",
-    def: "The certificate is not signed by this validator's consensus key. Not served at the end reading; earlier, kept out of the rate.",
+    def: "The certificate is not signed by this validator's consensus key. Not served when the blob could not be reconstructed; otherwise counted neither way.",
   },
   SERVER_ERROR: {
     label: "server error", tier: "hold",
-    def: "An application error instead of the shard. Not served at the end reading; earlier, kept out of the rate.",
+    def: "An error, or an answer no client accepts, instead of the shard. Not served when the blob could not be reconstructed; otherwise counted neither way.",
   },
   THROTTLED: {
     label: "rate limited", tier: "hold",
-    def: "Refused with a rate limit. Not served at the end reading; earlier, kept out of the rate.",
+    def: "Refused with a rate limit, which Tensile's own requests may have caused. Counted neither way.",
   },
   UNATTESTED: {
     label: "not endorsed", tier: "held",
@@ -62,31 +66,31 @@ const VERDICTS: Record<string, Def> = {
   },
   NOT_REGISTERED: {
     label: "no endpoint", tier: "held",
-    def: "No Fibre host in x/valaddr at the reading. Not served at the end reading; earlier, kept out of the rate.",
+    def: "No Fibre host in x/valaddr at the reading. Not served when the blob could not be reconstructed; otherwise counted neither way.",
   },
   SHADOWED_SHARD: {
     label: "shadowed", tier: "held",
-    def: "Genuine rows of the blob, but another settled promise's set: the store answers by commitment. Served at the end reading; earlier, kept out of the rate.",
+    def: "Genuine rows of the blob, but another settled promise's set: the store answers by commitment. Served.",
   },
   UNMATCHED_GENUINE: {
     label: "unmatched genuine rows", tier: "held",
-    def: "Genuine rows of the blob that match no settled promise's set. Served at the end reading; earlier, kept out of the rate.",
+    def: "Genuine rows of the blob that match no settled promise's set. Served.",
   },
   TOLERATED: {
     label: "tolerated", tier: "held",
-    def: "Not found or unreachable just after must_serve_until, within the measured prune lag. Not counted against the validator.",
+    def: "Earlier schedule: not found or unreachable just after must_serve_until, within the measured prune lag. Not counted.",
   },
   EXPECTED_GONE: {
     label: "expected gone", tier: "held",
-    def: "Not found after the window plus tolerance. Correct behaviour.",
+    def: "Earlier schedule: not found after the window plus tolerance. Correct behaviour.",
   },
   SERVED_PAST_WINDOW: {
     label: "served after window", tier: "held",
-    def: "Still serving after the retention window ended. Not counted.",
+    def: "Earlier schedule: still serving after the retention window ended. Not counted.",
   },
   UNREACHABLE_POST_WINDOW: {
     label: "unreachable after window", tier: "held",
-    def: "Unreachable after the retention window ended. Not counted.",
+    def: "Earlier schedule: unreachable after the retention window ended. Not counted.",
   },
   EXPECTED_UNASSIGNED: {
     label: "unassigned", tier: "held",
@@ -98,11 +102,11 @@ const VERDICTS: Record<string, Def> = {
   },
   PROBE_ERROR: {
     label: "read failed", tier: "gap",
-    def: "Tensile's own reading failed. A gap, not a verdict.",
+    def: "Tensile's own request failed, or the reading could not finish in time. A gap, not a verdict.",
   },
   NOT_PROBED: {
     label: "not read by Tensile", tier: "gap",
-    def: "Tensile did not read this shard. A gap, not a verdict.",
+    def: "Tensile did not read this blob in time. A gap, not a verdict.",
   },
   RETENTION_UNVERIFIED: {
     label: "deadline unverified", tier: "held",
@@ -157,29 +161,6 @@ export default function Verdict({ cls, title }: { cls: string; title?: string })
     <span className={`verdict verdict--${d.tier}`} title={title ?? d.def}>
       <Mark tier={d.tier} />
       <span className="w">{d.label}</span>
-    </span>
-  );
-}
-
-/**
- * A count that is zero renders as a dot rather than a nought, so a column is
- * blank except where there is something to report. On the fault column that
- * means a single accusation in fifty rows is the only ink in its column.
- */
-/**
- * A count of one tier. Zero and "nothing was rated" used to print the same
- * dot: `rated` says which it is, so a validator with a thousand rated probes
- * and no fault reads 0, and one nobody ever reached reads a dot.
- */
-export function Count({ n, tier, rated }: { n: number | undefined; tier: Tier; rated?: boolean }) {
-  if (!n) {
-    if (rated) return <span className="nil zero" title="none in this window">0</span>;
-    return <span className="nil" title="nothing rated in this window">·</span>;
-  }
-  return (
-    <span className={`verdict verdict--${tier}`}>
-      <Mark tier={tier} />
-      <span className="w mono">{n.toLocaleString("en-US")}</span>
     </span>
   );
 }

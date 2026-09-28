@@ -288,7 +288,10 @@ for p in range(PUBS):
                 stopped = True
     sigcount = sum(1 for a in attested.values() if a)
     pubs.append(dict(ph=ph, cm=cm, ns=ns, created=created, settled=settled,
-                     msu=msu, size=size, assigned=assigned, attested=attested))
+                     msu=msu, size=size, assigned=assigned, attested=attested,
+                     # one blob in forty is lost: no validator serves it, so it is
+                     # unavailable and its endorsing validators are not served
+                     lost=rnd.random() < 0.025))
     att_rows = sum(r for v, r in assigned if attested[v["cons"]])
     att_power = sum(v["power"] for v, _ in assigned if attested[v["cons"]])
     db.execute("""INSERT INTO publications (
@@ -314,9 +317,11 @@ for p in range(PUBS):
         sum(1 for v, _ in assigned if attested[v["cons"]]), att_power,
         sigcount, sigcount, 0, 0))
     cursor = 0
+    idxs = {}
     for v, rows in assigned:
         idx = [(cursor + k) % 16384 for k in range(rows)]
         cursor = (cursor + rows) % 16384
+        idxs[v["cons"]] = idx
         db.execute("""INSERT INTO assignments
             (promise_hash, validator_address, voting_power, row_count, rows_json, attested, settlement_height)
             VALUES (?,?,?,?,?,?,?)""",
@@ -325,11 +330,15 @@ for p in range(PUBS):
              # (migration 22): the validators table finds each one's newest
              # assignment by it
              800_000 + p + 1))
+    pubs[-1]["idx"] = idxs
 
-# --- probes ---------------------------------------------------------------
-# Four in-window points at 12/45/72/92 percent of the retention window, one
-# grace probe and one post probe, which is the shipped schedule.
-POINTS = [("w1", 0.12), ("w2", 0.45), ("w3", 0.72), ("w4", 0.92)]
+# --- readings -------------------------------------------------------------
+# Each blob is read once, 10 minutes before must_serve_until, as the prober
+# reads it: the endorsing validators, largest stake first, until 4096
+# distinct rows came back; when they did not, everyone who did not serve is
+# asked again, and the blob is unavailable if the rows are still short.
+READ_OFFSET = timedelta(minutes=10)
+K = 4096
 counts = {}
 # Probe rows are buffered and inserted in start-time order for the same reason
 # the heartbeats are: rowid order stands in for time in several of the API's
@@ -361,12 +370,13 @@ def add_probe(pub, v, rows, label, at, phase, outcome, cls, **kw):
     if at > NOW:
         return
     counts[cls] = counts.get(cls, 0) + 1
-    key = hashlib.sha256(f"{pub['ph']}{v['cons']}{label}".encode()).hexdigest()
     ok = cls in ("HEALTHY",)
+    idx = json.dumps(pub["idx"][v["cons"]]) if ok else None
+    key = hashlib.sha256(f"{pub['ph']}{v['cons']}{label}".encode()).hexdigest()
     ms = kw["ms"] if "ms" in kw else duration_ms(v, rows, ok)
     PROBE_ROWS.append((at, (
         key, "eu1", pub["ph"], pub["cm"], 0, ts(pub["msu"]), 800_000,
-        v["cons"], kw.get("host", v["host"]), 1, rows, label, ts(at), ts(at),
+        v["cons"], kw.get("host", v["host"]), 1, rows, label, ts(kw.get("sched", at)), ts(at),
         ts(at + timedelta(milliseconds=ms)), rnd.randint(0, 900),
         kw.get("dns", 1), rnd.randint(1, 30), kw.get("tcp", 1), rnd.randint(4, 60),
         kw.get("tls", 1), rnd.randint(8, 90), "TLS1.3" if kw.get("tls", 1) else "",
@@ -379,7 +389,7 @@ def add_probe(pub, v, rows, label, at, phase, outcome, cls, **kw):
         # 512 B a row. One record in fifty predates the byte count, as every
         # record on a store from before schema 8 does; it must fall out of the
         # throughput sample and never read as zero bytes.
-        (rows * 512) if ok and rnd.random() >= 0.02 else None)))
+        (rows * 512) if ok and rnd.random() >= 0.02 else None, idx)))
 
 # What actually happened on the wire for validator v at time `at`, independent
 # of whether the chain proves it was obliged. Attestation decides the class, not
@@ -397,12 +407,14 @@ def wire(b, v, at, frac):
         # identityStatus switch to "mismatch" and put a lapsed renewal on the
         # page as another validator's key.
         return ("IDENTITY_FAIL", dict(idok=0, idreason="cert_expired"))
-    if b == "prunes_early" and frac >= 0.72 and impaired(v["i"], at):
+    if b == "prunes_early" and impaired(v["i"], at):
         return ("NOT_FOUND", {})
     if b == "erroring":
         return ("SERVER_ERROR", dict(err="rpc error: code = Internal desc = shard store: read failed"))
     if b == "throttling" and rnd.random() < 0.8:
         return ("RPC_THROTTLED", dict(err="rpc error: code = ResourceExhausted desc = too many requests"))
+    if frac == "lost":
+        return ("NOT_FOUND", {})
     if b == "faulty" and rnd.random() < 0.30:
         return ("NOT_FOUND", {})
     if b == "flaky" and rnd.random() < 0.05:
@@ -418,7 +430,7 @@ def wire(b, v, at, frac):
 # that gets that backwards teaches the design to expect a class mix the real
 # taxonomy never produces.
 REACH_FAIL = {"DNS_FAIL", "TCP_REFUSED", "TCP_TIMEOUT", "TCP_UNREACHABLE",
-              "TLS_HANDSHAKE_FAIL", "RPC_UNAVAILABLE", "RPC_ERROR"}
+              "TLS_HANDSHAKE_FAIL", "RPC_UNAVAILABLE", "RPC_ERROR", "RPC_TIMEOUT"}
 
 def classify(outcome, phase, attested):
     if outcome == "IDENTITY_FAIL":
@@ -434,19 +446,11 @@ def classify(outcome, phase, attested):
         if outcome == "RPC_THROTTLED": return "THROTTLED"
         if outcome in REACH_FAIL:      return "UNREACHABLE"
         return "PROBE_ERROR"
-    if phase == "grace":
-        if outcome == "SERVED_OK":     return "HEALTHY"
-        return "TOLERATED"               # not found, unreachable: prune lag
-    if outcome == "NOT_FOUND":         return "EXPECTED_GONE"
-    if outcome == "SERVED_OK":         return "SERVED_PAST_WINDOW"
-    if outcome in REACH_FAIL:          return "UNREACHABLE_POST_WINDOW"
-    return "EXPECTED_GONE"
+    return "PROBE_ERROR"
 
 REASONS = {
     "UNATTESTED": "the settled promise carries no verified signature from this validator",
     "FAULT": "no such shard while the promise still held",
-    "TOLERATED": "not found just after must_serve_until, within the measured prune lag",
-    "EXPECTED_GONE": "not found after the window plus tolerance; correct behaviour",
     "NOT_REGISTERED": "no Fibre host registered in x/valaddr when the probe ran",
     "SERVER_ERROR": "the endpoint answered with an application error instead of the shard",
     "THROTTLED": "the endpoint refused the download with a rate limit",
@@ -460,34 +464,44 @@ def emit(pub, v, rows, label, at, phase, outcome, kw, attested):
     add_probe(pub, v, rows, label, at, phase, outcome, cls, **kw)
 
 for pub in pubs:
-    window = (pub["msu"] - pub["created"]).total_seconds()
-    for v, rows in pub["assigned"]:
-        b = BEHAVIOUR[v["i"]]
-        att = pub["attested"][v["cons"]]
-        if b == "unregistered":
-            for label, frac in POINTS:
-                emit(pub, v, rows, label, pub["created"] + timedelta(seconds=window*frac),
-                     "in_window", "NO_REGISTERED_HOST",
-                     dict(host="", dns=0, tcp=0, tls=0, idok=0), att)
-            continue
-        for label, frac in POINTS:
-            at = pub["created"] + timedelta(seconds=window*frac)
-            outcome, kw = wire(b, v, at, frac)
-            emit(pub, v, rows, label, at, "in_window", outcome, kw, att)
-        # grace: an honest server prunes on a one-minute loop, so a shard that
-        # is gone here is a shard pruned on time.
-        g = pub["msu"] + timedelta(seconds=120)
-        outcome, kw = wire(b, v, g, 1.0)
-        if outcome == "SERVED_OK" and rnd.random() < (0.5 if b == "faulty" else 0.0):
-            outcome = "NOT_FOUND"
-        emit(pub, v, rows, "grace", g, "grace", outcome, kw, att)
-        # post: everyone should be pruned by now, so a healthy wire means the
-        # shard is gone rather than that it was served.
-        p_at = pub["msu"] + timedelta(minutes=30)
-        outcome, kw = wire(b, v, p_at, 1.0)
+    at = pub["msu"] - READ_OFFSET
+    endorsing = sorted((v for v, _ in pub["assigned"] if pub["attested"][v["cons"]]), key=lambda v: -v["power"])
+    rows_of = {v["cons"]: r for v, r in pub["assigned"]}
+    # A lost blob: its largest endorsing validators lost the shard, until the
+    # rest hold too few rows to rebuild it. Fewer than half of them, so the
+    # reading is not taken for Tensile's own failure and set aside.
+    lost = set()
+    if pub["lost"]:
+        for v in endorsing:
+            if 2 * (len(lost) + 1) >= len(endorsing):
+                break
+            lost.add(v["cons"])
+            rest = set().union(*(pub["idx"][x["cons"]] for x in endorsing if x["cons"] not in lost))
+            if len(rest) < K:
+                break
+    have, answers = set(), []
+    for n, v in enumerate(endorsing):
+        if len(have) >= K:
+            break                                  # the rest are not asked
+        t = at + timedelta(milliseconds=40 * n)
+        outcome, kw = wire(BEHAVIOUR[v["i"]], v, t, "lost" if v["cons"] in lost else 0.9)
+        answers.append((v, t, outcome, kw))
         if outcome == "SERVED_OK":
-            outcome = "NOT_FOUND"
-        emit(pub, v, rows, "post", p_at, "post", outcome, kw, att)
+            have.update(pub["idx"][v["cons"]])
+    if len(have) < K:
+        # the second pass, a minute later, of those that did not serve
+        again = []
+        for v, t, outcome, kw in answers:
+            if outcome != "SERVED_OK":
+                t = t + timedelta(minutes=1)
+                outcome, kw = wire(BEHAVIOUR[v["i"]], v, t, "lost" if v["cons"] in lost else 0.9)
+                if outcome == "SERVED_OK":
+                    have.update(pub["idx"][v["cons"]])
+            again.append((v, t, outcome, kw))
+        answers = again
+    for v, t, outcome, kw in answers:
+        # every row of a reading carries the reading's own time, as the prober writes it
+        emit(pub, v, rows_of[v["cons"]], "end", t, "in_window", outcome, dict(kw, sched=at), True)
 
 PROBE_ROWS.sort(key=lambda r: r[0])
 db.executemany("""INSERT INTO probes (
@@ -499,8 +513,8 @@ db.executemany("""INSERT INTO probes (
     identity_ok, identity_reason, download_ok, download_ms, rows_returned,
     rows_expected, commitment_verified, assignment_verified, phase,
     outcome, classification, classification_reason, raw_error,
-    total_duration_ms, raw_json, attested, bytes_returned
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+    total_duration_ms, raw_json, attested, bytes_returned, row_indices
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
     [r[1] for r in PROBE_ROWS])
 
 # --- reachability heartbeats ---------------------------------------------

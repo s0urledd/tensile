@@ -6,17 +6,17 @@ import { type Validator, type EndpointCheck, type Meta, int, ago, whenUTC, dateU
  * The first thing on a validator's page: what state its Fibre endpoint is in,
  * in plain words, and what the operator can do about it.
  *
- * The page below is evidence — stage marks, rates, probe rows — and an
+ * The page below is evidence — stage marks, rates, readings — and an
  * operator who arrives from a link in a chat wants the conclusion first. That
  * conclusion is derived here from fields the API already publishes and from
  * nothing else: the chain's own words (jailed, bond status, x/valaddr host)
  * first, then the newest handshake stage by stage, then the certificate check,
- * then broken obligations. It never re-classifies a probe.
+ * then not-served obligations. It never re-classifies a reading.
  *
  * Two rules the copy keeps:
  *
- * - It never states a fault the data does not show. Only a broken obligation
- *   is a fault, and only that line is ever red. Unreachable, a lapsed
+ * - It never states a fault the data does not show. Only a not-served
+ *   obligation is a fault, and only that line is ever red. Unreachable, a lapsed
  *   certificate or a missing registration are states, and the text says so,
  *   because from one location an unreachable endpoint can be this observer's
  *   own path.
@@ -155,11 +155,11 @@ export default function Diagnosis({ v, check, decided, provisional, failedShown,
   decided: number;
   /** broken obligations still settling (provisionalNow) */
   provisional: number;
-  /** failed probe rows among the recent evidence on this page */
+  /** not-served readings among the recent evidence on this page */
   failedShown: number;
   /** switch the evidence table to its failed rows and bring it into view */
   onShowFailed: () => void;
-  /** every failed probe row of the period, in the API */
+  /** every not-served reading of the period, in the API */
   failedHref: string;
 }) {
   const s = state(v, check, decided);
@@ -173,7 +173,7 @@ export default function Diagnosis({ v, check, decided, provisional, failedShown,
       <p>{s.body}</p>
       {broken > 0 && (
         <p className="diag-fault">
-          <span className="mk fault" /> <b>{int(broken)} endorsed shard{broken === 1 ? "" : "s"} not served in this period</b>{provisional > 0 && <> ({int(provisional)} still settling)</>}: the rows did not come back while this validator still had to serve them.{" "}
+          <span className="mk fault" /> <b>{int(broken)} endorsed shard{broken === 1 ? "" : "s"} not served in this period</b>{provisional > 0 && <> ({int(provisional)} still settling)</>}: the rows did not come back, and the blob could not be reconstructed.{" "}
           {failedShown > 0
             ? <a href="#evidence" onClick={onShowFailed}>Show the {int(failedShown)} not-served reading{failedShown === 1 ? "" : "s"} below →</a>
             : <>None of the newest readings below is one of them; <a href={failedHref}>they are in the API →</a></>}

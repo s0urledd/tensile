@@ -43,12 +43,3 @@ export type SigningDistribution = {
   note: string;
 };
 
-/**
- * The validator page's day × point grid (detail.heatmap). A cell exists only
- * where there are rows; served / (served + faults) is its ratio and
- * faults / (served + faults) the only part that may be drawn red. held_out
- * is everything no rate speaks for. Point "day" is the whole day; on a day
- * before raw_from it is the only cell (the rollup keeps no per-point split).
- */
-export type HeatCell = { day: string; point: string; served: number; faults: number; held_out: number; rolled?: boolean };
-export type Heatmap = { days: string[]; points: string[]; cells: HeatCell[]; raw_from?: string };

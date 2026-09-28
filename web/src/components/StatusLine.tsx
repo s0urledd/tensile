@@ -22,7 +22,7 @@ export type Snapshot = {
  *
  * What still earns a line, in order: the API not answering; the observer's
  * own checks failing, by name; the chain halted for the upgrade that brings
- * Fibre; figures withheld (a stale assignment pin, points left out, scan
+ * Fibre; figures withheld (a stale assignment pin, readings set aside, scan
  * gaps). Each says what it means for the numbers below it.
  */
 /**
@@ -63,7 +63,7 @@ export default function StatusLine({ meta, metaError, snap, client }: {
   const IMPACT: Record<string, string> = {
     scanner: "new blobs are not being read from the chain",
     scanner_lag: "the observer is catching up with the chain",
-    prober: "validators are not being probed",
+    prober: "blobs are not being read",
     heartbeat: "endpoint checks are paused",
     collector: "figures are not being updated",
     disk: "the observer is short of disk",
@@ -111,8 +111,8 @@ export default function StatusLine({ meta, metaError, snap, client }: {
   if (suspect.length > 0) {
     lines.push(
       <p className="notice soft" key="suspect">
-        <b>{int(suspect.length)} probe point{suspect.length === 1 ? "" : "s"} left out</b> ({int(suspectRows)} rows): at least half of the validators asked {suspect.some((s) => s.reason.includes("fault")) ? "failed" : "were unreachable"} at once, which from one location cannot be told from this observer&rsquo;s own network, so nothing at those points counts in any figure. Rows kept:{" "}
-        {suspect.map((s, i) => <span key={s.at}>{i > 0 ? ", " : ""}<a href={`${API_BASE}/v1/probes?at=${encodeURIComponent(s.at)}&limit=1000`}>{s.label} {hhmm(s.at)}</a></span>)}.
+        <b>{int(suspect.length)} reading{suspect.length === 1 ? "" : "s"} set aside</b> ({int(suspectRows)} rows): at least half of the validators asked {suspect.some((s) => s.reason.includes("fault")) ? "failed" : "were unreachable"} at once and the blob could not be reconstructed, which from one location cannot be told from this observer&rsquo;s own network, so nothing in {suspect.length === 1 ? "it" : "them"} counts in any figure. Rows kept:{" "}
+        {suspect.map((s, i) => <span key={s.at}>{i > 0 ? ", " : ""}<a href={`${API_BASE}/v1/probes?at=${encodeURIComponent(s.at)}&limit=1000`}>{hhmm(s.at)}</a></span>)}.
       </p>,
     );
   }
