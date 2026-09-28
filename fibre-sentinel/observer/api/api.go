@@ -4009,7 +4009,8 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
-	out := map[string]any{"vantage": s.vantage, "blobs": blobs, "limit": limit, "offset": offset, "total": total, "truncated": truncated}
+	out := map[string]any{"vantage": s.vantage, "blobs": blobs, "limit": limit, "offset": offset, "total": total, "truncated": truncated,
+		"namespace": strings.ToLower(r.URL.Query().Get("namespace"))}
 	if truncated && len(blobs) > 0 {
 		// The cursor this route already takes, filled in so a caller does not
 		// have to read the last row to build it.

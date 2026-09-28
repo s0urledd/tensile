@@ -18,8 +18,10 @@ function columns(market: Market, win: WindowName): Col[] {
   const out: Col[] = [];
   if (win === "24h") {
     const byHour = new Map((market.hourly ?? []).map((h) => [h.hour, h]));
-    // every hour the window touches, the first and the last partial ones included
-    const h0 = Math.floor(start / 3600_000), h1 = Math.floor(end / 3600_000);
+    // every hour the window touches, the first and the last partial ones
+    // included: 25 at most, whatever the start says
+    const h1 = Math.floor(end / 3600_000);
+    const h0 = unbounded ? h1 - 23 : Math.max(Math.floor(start / 3600_000), h1 - 24);
     for (let h = h0; h <= h1; h++) {
       const key = new Date(h * 3600_000).toISOString().slice(0, 13);
       const c = byHour.get(key);
@@ -48,7 +50,8 @@ function columns(market: Market, win: WindowName): Col[] {
 }
 
 export default function VolumeChart({ market, win, metric = "bytes" }: { market: Market | null; win: WindowName; metric?: "bytes" | "settlements" }) {
-  if (!market) return <p className="vchart-empty">Loading…</p>;
+  // the answer for another period, kept while this one loads, is not this chart
+  if (!market || market.window.name !== win) return <p className="vchart-empty">Loading…</p>;
   const list = columns(market, win);
   const val = (c: Col) => (metric === "bytes" ? c.bytes : c.settlements);
   const max = Math.max(0, ...list.map(val));

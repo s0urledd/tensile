@@ -46,8 +46,7 @@ function Page() {
         <div><h1>Publishers</h1><p className="sub">Accounts that publish blobs through Fibre and pay for them from escrow.</p></div>
         {m && (
           <Info label="About these figures">
-            <p>Everything on this page is a count of something the chain recorded; none of it was measured by this observer.</p>
-            <ul>{m.notes.map((n) => <li key={n}>{n}</li>)}</ul>
+            <p>Every figure on this page is read from the chain; none was measured by Tensile. <Link href="/methodology/#publishers">How each is counted</Link></p>
           </Info>
         )}
         <span className="spacer" />

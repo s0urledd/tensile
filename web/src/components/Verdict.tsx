@@ -41,7 +41,7 @@ const VERDICTS: Record<string, Def> = {
     def: "No answer in time. Not served at the end reading; earlier, kept out of the rate.",
   },
   IDENTITY_EXPIRED: {
-    label: "identity expired", tier: "hold",
+    label: "certificate expired", tier: "hold",
     def: "The right key signed the certificate, but outside its validity window. Not served at the end reading; earlier, kept out of the rate.",
   },
   IDENTITY_MISMATCH: {
@@ -61,11 +61,11 @@ const VERDICTS: Record<string, Def> = {
     def: "No verified endorsement from this validator on the settled promise, so nothing proves it stored the shard. Not rated.",
   },
   NOT_REGISTERED: {
-    label: "not registered", tier: "held",
+    label: "no endpoint", tier: "held",
     def: "No Fibre host in x/valaddr at the reading. Not served at the end reading; earlier, kept out of the rate.",
   },
   SHADOWED_SHARD: {
-    label: "shadowed shard", tier: "held",
+    label: "shadowed", tier: "held",
     def: "Genuine rows of the blob, but another settled promise's set: the store answers by commitment. Served at the end reading; earlier, kept out of the rate.",
   },
   UNMATCHED_GENUINE: {

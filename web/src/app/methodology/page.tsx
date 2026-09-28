@@ -42,7 +42,7 @@ export default function Methodology() {
       <h2 id="rates">Rates</h2>
       <ul>
         <li><strong>Service rate</strong>: served over served plus not served, per endorsed shard. A rate over fewer than twenty shards sorts after the others.</li>
-        <li><strong>In retention window</strong>: not read yet. <strong>Not read by Tensile</strong> and <strong>sampled out</strong>: no verdict either way. <strong>No verdict</strong>: read, but no reading near the end counts either way.</li>
+        <li><strong>In retention window</strong>: not read yet. <strong>Not read by Tensile</strong> and <strong>sampled out</strong>: nothing counted either way. <strong>No verdict</strong>: read, but no reading near the end of the window.</li>
         <li><strong>Provisional</strong>: a not-served reading younger than 30 minutes, counted but still open to withdrawal.</li>
         <li><strong>Retrievable</strong>: enough rows retrieved to reconstruct the blob, 4096 of 16384 for version 0.</li>
         <li><strong>Reachability</strong>: completed handshakes over attempts, every five minutes per endpoint. One failed check after a success still counts as reachable; two in a row is unreachable.</li>
@@ -51,7 +51,7 @@ export default function Methodology() {
       </ul>
 
       <h2 id="gaps">Gaps</h2>
-      <p>When Tensile could not read (its own downtime or errors, or earlier sampling), the row is <strong>NOT_PROBED</strong> or <strong>PROBE_ERROR</strong>: shown, never a zero, never in a rate. A reading where at least half the validators failed at once is treated as Tensile&rsquo;s own failure and left out. Health is at <code>/api/v1/health</code>.</p>
+      <p>When Tensile could not read (its own downtime or errors, or earlier sampling), the row is <strong>not read by Tensile</strong> or <strong>read failed</strong>: shown, never a zero, never in a rate. A reading where at least half the validators failed at once is treated as Tensile&rsquo;s own failure and left out. Health is at <code>/api/v1/health</code>.</p>
 
       <h2 id="sampling">Load on validators</h2>
       <p>Each endorsed shard is read once, so a validator is asked for about what publishers sent it, over one connection with 2 s between requests. Before 27 September, blobs above a per-validator budget were sampled; the daily sampling secrets are at <code>/api/v1/sampling</code>.</p>
@@ -68,7 +68,7 @@ export default function Methodology() {
       </ul>
 
       <h2 id="evidence">Evidence behind each figure</h2>
-      <p>Pages show what the chain records under <strong>On chain</strong>, and Tensile&rsquo;s own readings under <strong>Observed by Tensile</strong>. Every snapshot names the block it was computed through (<code>record_through</code>). Daily exports are signed, <code>/api/v1/exports</code>, and <code>sentinel-recompute</code> re-derives every verdict and figure from them.</p>
+      <p>The validator, blob and Blobs pages show what the chain records under <strong>On chain</strong>, and Tensile&rsquo;s own readings under <strong>Observed by Tensile</strong>. Every snapshot names the block it was computed through (<code>record_through</code>). Daily exports are signed, <code>/api/v1/exports</code>, and <code>sentinel-recompute</code> re-derives every verdict and figure from them.</p>
 
       <h2 id="vantage">Two locations</h2>
       <p>Endpoints are checked every five minutes from two locations; a host is unreachable only when both fail. A not-found or bad-rows reading is re-checked from the second location within twenty minutes and withdrawn if the rows verify there. Rates use this location&rsquo;s readings. Locations are in <code>/api/v1/meta</code>.</p>

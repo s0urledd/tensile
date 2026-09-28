@@ -24,15 +24,17 @@ export function usePage(): [number, (p: number) => void] {
 }
 
 /** "Showing 26–50 of 153 settlements on record" and First ‹ Page 2 of 7 › Last */
-export default function Pager({ total, page, size, onPage, noun }: {
+export default function Pager({ total, page, size, maxPages, onPage, noun }: {
   total: number;
   page: number;
   size: number;
+  /** the last page the API serves, when it stops before the list does */
+  maxPages?: number;
   onPage: (p: number) => void;
   /** what the rows are, plural: "settlements" */
   noun: string;
 }) {
-  const pages = Math.max(1, Math.ceil(total / size));
+  const pages = Math.min(maxPages ?? Infinity, Math.max(1, Math.ceil(total / size)));
   // a page past the end (an old link, a smaller period) goes to the last one
   useEffect(() => { if (page > pages) onPage(pages); }, [page, pages, onPage]);
   const at = Math.min(page, pages);

@@ -39,6 +39,13 @@ func TestBlobsPageByOffset(t *testing.T) {
 	if second.Blobs[0].PromiseHash != all.Blobs[2].PromiseHash {
 		t.Errorf("offset 2 is %s, the third row is %s", second.Blobs[0].PromiseHash, all.Blobs[2].PromiseHash)
 	}
+	// the answer says which namespace it is for, so a page can tell its rows from the last ones
+	var filtered struct {
+		Namespace string `json:"namespace"`
+	}
+	if code := get(t, ts, "/v1/blobs?namespace=ABCD", &filtered); code != 200 || filtered.Namespace != "abcd" {
+		t.Errorf("namespace filter echo: %d %q, want abcd", code, filtered.Namespace)
+	}
 	for _, bad := range []string{"-1", "x", "100001"} {
 		if code := get(t, ts, "/v1/blobs?offset="+bad, nil); code != 400 {
 			t.Errorf("offset=%s: %d, want 400", bad, code)

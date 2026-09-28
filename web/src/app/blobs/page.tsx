@@ -14,7 +14,10 @@ import { useWindow, WindowSwitch } from "@/lib/window";
 /** rows per page of the blob list */
 const SIZE = 25;
 
-type BlobPage = { blobs: Blob[]; total: number; offset: number; truncated: boolean };
+type BlobPage = { blobs: Blob[]; total: number; offset: number; truncated: boolean; namespace?: string };
+
+/** the last page /v1/blobs serves: its offset stops at 100,000 */
+const MAX_PAGE = Math.floor(100000 / SIZE) + 1;
 
 // Retrievability as a mark and a word, in the same channel the verdicts use.
 // Retrievable: enough rows were retrieved to reconstruct the blob, in the
@@ -54,10 +57,10 @@ function Page() {
     } catch { /* fine */ }
   };
   const nsq = ns.trim() ? `&namespace=${encodeURIComponent(ns.trim())}` : "";
-  const offset = (page - 1) * SIZE;
+  const offset = (Math.min(page, MAX_PAGE) - 1) * SIZE;
   const { data, error, loading } = useApi<BlobPage>(`/v1/blobs?limit=${SIZE}&offset=${offset}${nsq}`);
   // the rows of the page asked for, not the last one received while the next loads
-  const rows = data && data.offset === offset ? data.blobs : null;
+  const rows = data && data.offset === offset && (data.namespace ?? "") === ns.trim().toLowerCase() ? data.blobs : null;
   const { data: meta } = useApi<Meta>("/v1/meta");
   const nss = useApi<{ namespaces: NamespaceRow[] }>("/v1/namespaces?limit=100");
   const { data: m } = useApi<Market>(`/v1/market?window=${win}`);
@@ -151,7 +154,7 @@ function Page() {
                 </tbody>
               </table>
             </div>
-            {data && <Pager total={data.total} page={page} size={SIZE} onPage={setPage} noun={data.total === 1 ? "settlement on record" : "settlements on record"} />}
+            {data && <Pager total={data.total} page={page} size={SIZE} maxPages={MAX_PAGE} onPage={setPage} noun={data.total === 1 ? "settlement on record" : "settlements on record"} />}
           </>
         )}
 
