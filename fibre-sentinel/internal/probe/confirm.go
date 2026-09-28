@@ -372,6 +372,13 @@ func (c *Confirmer) pass(ctx context.Context) error {
 				return nil // over the hourly cap: the rest waits for the next pass
 			}
 			m = c.run(ctx, in, coder, c.cfg.Timeouts)
+			if redials(m.Outcome) && ctx.Err() == nil {
+				// the client's one re-dial (blobread.go, redials)
+				first := m
+				m = c.run(ctx, in, coder, c.cfg.Timeouts)
+				m.Retry = &RetryInfo{Attempts: 2, DelayMS: m.StartedAt.Sub(first.StartedAt).Milliseconds(), FirstStartedAt: first.StartedAt,
+					FirstOutcome: first.Outcome, FirstError: first.RawError, FirstDurationMS: first.TotalDurationMS}
+			}
 			if ctx.Err() != nil && m.Classification == ClassProbeError {
 				return nil // abandoned by shutdown: asked again on the next start
 			}
@@ -561,6 +568,9 @@ func (c *Confirmer) input(ctx context.Context, r ConfirmRequest) (Input, *Coder,
 		MaxMessageSize:      maxMessageSizeFor(pp),
 		ClockOffsetMS:       c.clockOffset.Milliseconds(),
 		Observer:            c.observer,
+		// read as the Fibre client reads, like the reading it confirms
+		ClientRules:    true,
+		RequestTimeout: ClientRPCTimeout,
 	}, coder, nil
 }
 

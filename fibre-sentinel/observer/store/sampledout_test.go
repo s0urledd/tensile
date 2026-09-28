@@ -42,7 +42,7 @@ func sampledFixture(hash string, settle time.Time) (scan.Publication, probe.Samp
 		Sampling: probe.SamplingDecision{P: 0.286, Binding: "validator_bytes_per_day", DayCommitment: "c0ffee"},
 		Reason:   "budget:p=0.286:validator_bytes_per_day:day_commitment=c0ffee", Validators: 3,
 	}
-	for _, pt := range probe.ScheduleFor(pub, probe.ScheduleConfig{}) {
+	for _, pt := range earlierSchedule(pub) {
 		d.Points = append(d.Points, probe.SampledOutPoint{Label: pt.Label, At: pt.At, Phase: probe.PhaseAt(pt.At, pub, probe.ScheduleConfig{})})
 	}
 	return pub, d
@@ -387,4 +387,17 @@ func TestSampledOutNotStoredBesideRows(t *testing.T) {
 	if n := count(t, st, `SELECT COUNT(*) FROM probe_rows`); n != 1 {
 		t.Fatalf("probe_rows %d", n)
 	}
+}
+
+// earlierSchedule is the schedule the sampled-out decisions on record were
+// made under: four in-window points, a grace point and a post point.
+func earlierSchedule(pub scan.Publication) []probe.SchedulePoint {
+	span := pub.MustServeUntil.Sub(pub.SettlementTime)
+	var pts []probe.SchedulePoint
+	for i, f := range []float64{0.12, 0.45, 0.72, 0.92} {
+		pts = append(pts, probe.SchedulePoint{At: pub.SettlementTime.Add(time.Duration(float64(span) * f)), Phase: probe.PhaseInWindow, Label: fmt.Sprintf("w%d", i+1)})
+	}
+	return append(pts,
+		probe.SchedulePoint{At: pub.MustServeUntil.Add(30 * time.Second), Phase: probe.PhaseGrace, Label: "grace"},
+		probe.SchedulePoint{At: pub.MustServeUntil.Add(210 * time.Second), Phase: probe.PhasePost, Label: "post"})
 }

@@ -14,7 +14,7 @@ import (
 // A day's secret is published once its reveal delay has passed, once, and
 // what is published hashes to the commitment the rows carried.
 func TestRevealDue(t *testing.T) {
-	cfg := Default()
+	var cfg Config
 	cfg.Sampling.AllowEphemeralSecret = true
 	p, err := New(cfg)
 	if err != nil {

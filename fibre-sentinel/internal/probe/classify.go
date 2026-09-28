@@ -30,8 +30,19 @@ const (
 	// would hide a limit set tight enough to keep real clients out.
 	OutcomeThrottled Outcome = "RPC_THROTTLED"
 	// OutcomeRPCDeadline: the download did not finish within the observer's
-	// own deadline (base + size-scaled). Never a verdict about the validator.
+	// own deadline (base + size-scaled), on the earlier schedule. Never a
+	// verdict about the validator.
 	OutcomeRPCDeadline Outcome = "RPC_DEADLINE"
+	// OutcomeRPCTimeout: the request, dial and DownloadShard together, did
+	// not finish within the RPCTimeout celestia-app's Fibre client gives it
+	// (15 s), after the connection was made. The client moves on without
+	// the rows, and so does the reading.
+	OutcomeRPCTimeout Outcome = "RPC_TIMEOUT"
+	// OutcomeMalformedShard: the server answered with something the Fibre
+	// client cannot use as a shard: empty, unparseable, rows outside the
+	// code, or a reply larger than the protocol's message bound. The client
+	// skips such a shard, and so does the reading.
+	OutcomeMalformedShard Outcome = "MALFORMED_SHARD"
 	// OutcomeNoHost: the validator has no fibre host registered in x/valaddr,
 	// so nobody can fetch its rows.
 	OutcomeNoHost Outcome = "NO_REGISTERED_HOST"
@@ -55,6 +66,7 @@ var AllOutcomes = []Outcome{
 	OutcomeServedOK, OutcomeNotFound, OutcomeWrongRows, OutcomeInvalidRows, OutcomePartial,
 	OutcomeDNSFail, OutcomeTCPRefused, OutcomeTCPTimeout, OutcomeTCPUnreachable, OutcomeTLSFail,
 	OutcomeIdentityFail, OutcomeRPCUnavailable, OutcomeServerError, OutcomeThrottled, OutcomeRPCDeadline,
+	OutcomeRPCTimeout, OutcomeMalformedShard,
 	OutcomeNoHost, OutcomeBadHost, OutcomeRPCError, OutcomeProbeError, OutcomeMissed, OutcomeReachable,
 }
 
@@ -313,10 +325,17 @@ func (o Outcome) served() bool {
 func (o Outcome) reachFailure() bool {
 	switch o {
 	case OutcomeDNSFail, OutcomeTCPRefused, OutcomeTCPTimeout, OutcomeTCPUnreachable,
-		OutcomeTLSFail, OutcomeRPCUnavailable, OutcomeRPCError:
+		OutcomeTLSFail, OutcomeRPCUnavailable, OutcomeRPCError, OutcomeRPCTimeout:
 		return true
 	}
 	return false
+}
+
+// answeredWrong reports an outcome where the endpoint was reached and
+// answered with something other than the shard: an application error, or a
+// shard the client cannot use.
+func (o Outcome) answeredWrong() bool {
+	return o == OutcomeServerError || o == OutcomeMalformedShard
 }
 
 // Evidence is everything the taxonomy needs about one probe. It is a struct
@@ -451,7 +470,7 @@ func Classify(in Evidence) (Classification, string) {
 			return ClassExpectedUnassigned, "validator not assigned this shard; NOT_FOUND expected"
 		case o.served() || o == OutcomeWrongRows || o == OutcomeInvalidRows:
 			return ClassServingUnassigned, "validator returned data for a shard it was not assigned — misassignment or over-serving"
-		case o.reachFailure() || o == OutcomeServerError || o == OutcomeThrottled:
+		case o.reachFailure() || o.answeredWrong() || o == OutcomeThrottled:
 			return ClassExpectedUnassigned, "validator not assigned this shard; reachability not required"
 		default:
 			// An outcome the taxonomy does not know says nothing, not even
@@ -497,6 +516,8 @@ func Classify(in Evidence) (Classification, string) {
 			return ClassFault, "returned rows that verify against neither the commitment nor this promise's assignment"
 		case o == OutcomeServerError:
 			return ClassServerError, "endpoint reached and identity verified; the server answered with an application error instead of the shard, which from one probe is not distinguishable from a transient fault"
+		case o == OutcomeMalformedShard:
+			return ClassServerError, "endpoint reached and identity verified; the server answered with a shard the Fibre client cannot use (empty, unparseable, or larger than the protocol's message bound)"
 		case o == OutcomeThrottled:
 			return ClassThrottled, "endpoint reached and identity verified; the server refused the download with a rate limit, which says nothing about the shard"
 		case o.reachFailure():
@@ -520,7 +541,7 @@ func Classify(in Evidence) (Classification, string) {
 			return ClassUnmatchedGenuine, "returned genuine rows of this blob, but not the set this promise assigns, and no settled promise over this commitment assigns them; not an accusation the evidence supports under hash-order serving: held out of the rate, indices on the row"
 		case o == OutcomeWrongRows || o == OutcomePartial:
 			return ClassFault, "returned rows that verify against neither the commitment nor this promise's assignment"
-		case o == OutcomeServerError:
+		case o.answeredWrong():
 			return ClassTolerated, "server error within prune-lag tolerance after must_serve_until"
 		case o == OutcomeThrottled:
 			return ClassTolerated, "rate limited within prune-lag tolerance after must_serve_until"
@@ -549,7 +570,7 @@ func Classify(in Evidence) (Classification, string) {
 			return ClassServedPastWindow, "served rows of this blob outside this promise's assignment after the obligation ended; DownloadShard enforces no assignment, so this is not a rule the validator broke"
 		case o == OutcomePartial:
 			return ClassServedPastWindow, "still serving (part of the shard) after the obligation ended"
-		case o == OutcomeServerError:
+		case o.answeredWrong():
 			return ClassUnreachablePostWindow, "server error after the obligation ended"
 		case o == OutcomeThrottled:
 			return ClassUnreachablePostWindow, "rate limited after the obligation ended"

@@ -113,43 +113,6 @@ func TestRequestConfirmation_DeadlineStopsAtTheEndOfGrace(t *testing.T) {
 	}
 }
 
-// The request is written by the probe path itself: a NOT_FOUND in the
-// window from an attested validator is a FAULT, and it is queued.
-func TestRunOne_FaultQueuesAConfirmationRequest(t *testing.T) {
-	consPub, consPriv, _ := ed25519.GenerateKey(rand.Reader)
-	now := time.Now()
-	cert := fibreCert(t, consPriv, "test-chain", now.Add(-time.Hour), now.Add(24*time.Hour))
-	host, _ := startFibre(t, cert, &fakeFibre{download: func(context.Context, *fibretypes.DownloadShardRequest) (*fibretypes.DownloadShardResponse, error) {
-		return nil, status.Error(codes.NotFound, "shard not found")
-	}})
-	p := testProber(t)
-	p.chainID = "test-chain"
-	p.feed = newPubFeed(filepath.Join(t.TempDir(), "publications.jsonl"))
-	p.cfg.AllowUnroutableHosts = true
-	path := filepath.Join(p.cfg.DataDir, ConfirmRequestsFile)
-	p.requests = &requestLog{path: path}
-	defer p.requests.close()
-
-	pb := pub(now.Add(-time.Hour), now.Add(time.Hour))
-	pb.Assignment.ProtocolParams = scan.ProtocolParamsSnapshot{OriginalRows: 4, TotalRows: 8}
-	pt := SchedulePoint{At: now, Label: "w2", Phase: PhaseInWindow}
-	tg := Target{AddressHex: "aa", Host: host, Assigned: true, Attested: true, RowCount: 2, AssignedRows: []int{0, 3}, PubKey: consPub}
-	it := work{job: job{pb, pt}, target: tg, coder: mustCoder(t), key: pointKey("v1", pb.PromiseHash, pt.At)}
-	p.runOne(context.Background(), it)
-
-	ms, err := LoadMeasurements(filepath.Join(p.cfg.DataDir, "measurements.jsonl"))
-	if err != nil || len(ms) != 1 || ms[0].Classification != ClassFault {
-		t.Fatalf("measurements = %+v, %v; want one FAULT", ms, err)
-	}
-	got := readRequests(t, path)
-	if len(got) != 1 {
-		t.Fatalf("got %d requests after a FAULT, want 1", len(got))
-	}
-	if got[0].ValidatorHost != host || got[0].ChainID != "test-chain" || got[0].Outcome != OutcomeNotFound {
-		t.Errorf("request = %+v", got[0])
-	}
-}
-
 // ---- the confirming side ----
 
 type fakeConfirmChain struct {

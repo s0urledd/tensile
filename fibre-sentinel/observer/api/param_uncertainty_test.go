@@ -25,10 +25,10 @@ import (
 
 // shortWindow is the retention the params really carried from height 150.
 // The fixture's window is 90 minutes and its in-window points sit at
-// probe.DefaultInWindowFractions, so the last two land at 64.8 and 82.8
-// minutes. 55 minutes puts both of them past the deadline and past the
-// five-minute prune tolerance, which is what turns their NOT_FOUND from a
-// fault into an expected prune.
+// the earlier schedule's fractions (0.12, 0.45, 0.72, 0.92), so the last
+// two land at 64.8 and 82.8 minutes. 55 minutes puts both of them past
+// the deadline and past the five-minute prune tolerance, which is what
+// turns their NOT_FOUND from a fault into an expected prune.
 const shortWindow = 55 * time.Minute
 
 // seedParams puts one params value into the store's history, as ingesting

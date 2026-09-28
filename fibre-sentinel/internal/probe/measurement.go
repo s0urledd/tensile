@@ -77,7 +77,7 @@ type Measurement struct {
 	AssignedRowCount   int  `json:"assigned_row_count"`
 
 	// scheduling
-	ScheduleLabel string    `json:"schedule_label"` // w1..wN, grace, post
+	ScheduleLabel string    `json:"schedule_label"` // "end" for the one reading of a blob; earlier rows w1..w4, grace, post
 	ScheduledAt   time.Time `json:"scheduled_at"`
 	StartedAt     time.Time `json:"started_at"`
 	FinishedAt    time.Time `json:"finished_at"`
@@ -103,13 +103,10 @@ type Measurement struct {
 	RawError             string         `json:"raw_error,omitempty"`
 	TotalDurationMS      int64          `json:"total_duration_ms"`
 
-	// Sampling records the admission decision this publication was probed (or
-	// not probed) under: the probability, the cap that bound it, and the
-	// commitment to that day's secret. Every row carries it, admitted or
-	// denied, so that once the secret for a day is published anyone can
-	// recompute which publications should have been in the sample and check
-	// this observer against it. Empty when no policy was configured, which
-	// means everything was probed.
+	// Sampling is the admission draw a row of the earlier sampling was made
+	// under: the probability, the cap that bound it, and the commitment to
+	// that day's secret, so the draw can be checked once the secret is
+	// revealed. Nothing is sampled any more; new rows leave it empty.
 	Sampling *SamplingDecision `json:"sampling,omitempty"`
 
 	// ClockOffsetMS is the observer's clock minus the chain's latest block
@@ -126,6 +123,49 @@ type Measurement struct {
 	// A classification is a function of the code; a row that does not say
 	// which code cannot be re-derived. Additive, omitempty.
 	Observer *ObserverInfo `json:"observer,omitempty"`
+
+	// Read says where this request sat in its blob's reading (blobread.go):
+	// the pass, the validator's place in the client's order, and what the
+	// reading came to. For audit only; no figure is computed from it.
+	// Additive, omitempty.
+	Read *ReadInfo `json:"read,omitempty"`
+
+	// novel is how many of the returned rows the blob's reading had not
+	// already seen. Not recorded.
+	novel int
+}
+
+// ReadInfo places one validator's answer in its blob's reading.
+type ReadInfo struct {
+	// Pass is 1, or 2 for the second pass a minute later.
+	Pass int `json:"pass"`
+	// Order is the validator's place in the order the reading asked in
+	// (celestia-app's validator.Set.Select), from 0.
+	Order int `json:"order"`
+	// Redialed is set when the request was made again at once, as the
+	// client does after a failed dial or an unreachable or timed-out peer.
+	Redialed bool `json:"redialed,omitempty"`
+	// NovelRows is how many of this validator's rows the reading had not
+	// already had; BlobHaveAfter how many distinct verified rows the reading
+	// held once this answer was in.
+	NovelRows     int `json:"novel_rows"`
+	BlobHaveAfter int `json:"blob_have_after"`
+	// BlobResult is what the whole reading came to: available, or
+	// unavailable (every endorsed validator asked, twice, and too few rows),
+	// or incomplete (the reading could not finish in time).
+	BlobResult string `json:"blob_result"`
+	// Attempts are the earlier answers of this validator in the reading
+	// (the first before a re-dial, the first pass before the second).
+	Attempts []Attempt `json:"attempts,omitempty"`
+}
+
+// Attempt is one earlier answer.
+type Attempt struct {
+	Pass       int       `json:"pass"`
+	StartedAt  time.Time `json:"started_at"`
+	Outcome    Outcome   `json:"outcome"`
+	RawError   string    `json:"raw_error,omitempty"`
+	DurationMS int64     `json:"duration_ms"`
 }
 
 // ObserverInfo is the build that wrote a measurement and the chain it
@@ -161,8 +201,11 @@ type ObserverInfo struct {
 	PinStale bool `json:"pin_stale,omitempty"`
 }
 
-// RetryInfo records the first attempt of a probe that was retried once after
-// a transport timeout. The enclosing Measurement is the second attempt.
+// RetryInfo records the first attempt of a validator that was asked more
+// than once in a reading (a re-dial, the second pass): FirstOutcome is the
+// very first answer, which the store keeps as retry_first_outcome. The
+// enclosing Measurement is the last attempt; ReadInfo.Attempts has them
+// all. Rows of the earlier schedule carry the transport-timeout retry here.
 type RetryInfo struct {
 	Attempts        int       `json:"attempts"` // always 2
 	DelayMS         int64     `json:"delay_ms"`
@@ -437,6 +480,41 @@ func (s *MeasurementStore) Append(m Measurement) error {
 // take hours).
 func (s *MeasurementStore) AppendDeferred(m Measurement) error {
 	return s.append(m, false)
+}
+
+// AppendReading writes every row of one blob's reading in one write and one
+// fsync, skipping rows already on record, so a reading lands whole or, torn
+// by a crash, is repaired to the rows before the tear.
+func (s *MeasurementStore) AppendReading(ms []Measurement) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var buf []byte
+	var kept []Measurement
+	for _, m := range ms {
+		if s.seen[m.PromiseHash][m.DedupeKey()] {
+			continue
+		}
+		b, err := json.Marshal(m)
+		if err != nil {
+			return fmt.Errorf("marshal measurement: %w", err)
+		}
+		buf = append(append(buf, b...), '\n')
+		kept = append(kept, m)
+	}
+	if len(buf) == 0 {
+		return nil
+	}
+	if _, err := s.f.Write(buf); err != nil {
+		return fmt.Errorf("write measurements: %w", err)
+	}
+	if err := s.f.Sync(); err != nil {
+		return fmt.Errorf("fsync measurements: %w", err)
+	}
+	s.dirty = false
+	for _, m := range kept {
+		s.remember(m)
+	}
+	return nil
 }
 
 func (s *MeasurementStore) append(m Measurement, sync bool) error {

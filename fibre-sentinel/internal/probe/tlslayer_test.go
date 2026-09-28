@@ -275,56 +275,6 @@ func TestRun_NoTLSIsATransportFailure(t *testing.T) {
 	}
 }
 
-// A validator that re-registered since the promise settled is judged at
-// its current host, and when that host does not serve, the host the upload
-// went to is asked as evidence on the same row.
-func TestRun_SettlementHostIsProbedAsEvidenceWhenTheCurrentHostDoesNotServe(t *testing.T) {
-	consPub, consPriv, _ := ed25519.GenerateKey(rand.Reader)
-	now := time.Now()
-	cert := fibreCert(t, consPriv, "test-chain", now.Add(-time.Hour), now.Add(24*time.Hour))
-	notFound := func(context.Context, *fibretypes.DownloadShardRequest) (*fibretypes.DownloadShardResponse, error) {
-		return nil, status.Error(codes.NotFound, "shard not found")
-	}
-	current, lnCur := startFibre(t, cert, &fakeFibre{download: notFound})
-	old, lnOld := startFibre(t, cert, &fakeFibre{download: func(context.Context, *fibretypes.DownloadShardRequest) (*fibretypes.DownloadShardResponse, error) {
-		return nil, status.Error(codes.Internal, "disk")
-	}})
-	in := probeInput(current, consPub)
-	in.Target.HostAtSettlement = old
-	in.Target.HostSource = "bonded"
-	m := Run(context.Background(), in, mustCoder(t), StepTimeouts{})
-	if m.Outcome != OutcomeNotFound {
-		t.Fatalf("outcome = %s", m.Outcome)
-	}
-	if !hostChanged(in.Target) {
-		t.Fatal("host change not detected")
-	}
-	m.HostAtSettlement = in.Target.HostAtSettlement
-	m.SettlementHost, _ = settlementProbe(context.Background(), in, mustCoder(t), StepTimeouts{})
-	if m.SettlementHost == nil || m.SettlementHost.Host != old || m.SettlementHost.Outcome != OutcomeServerError {
-		t.Fatalf("settlement probe = %+v", m.SettlementHost)
-	}
-	if lnCur.accepted.Load() != 1 || lnOld.accepted.Load() != 1 {
-		t.Errorf("connections: current %d, old %d, want one each", lnCur.accepted.Load(), lnOld.accepted.Load())
-	}
-	note := hostChangeNote(in.Target, m.SettlementHost)
-	if !strings.Contains(note, "host changed since settlement") || !strings.Contains(note, "SERVER_ERROR") {
-		t.Errorf("note = %q", note)
-	}
-	// the current host serving means no evidence probe; a validator whose
-	// host is the settlement one has not moved
-	same := in.Target
-	same.Host = old
-	if hostChanged(same) {
-		t.Error("same host reported as changed")
-	}
-	fallback := in.Target
-	fallback.HostSource = "settlement"
-	if hostChanged(fallback) {
-		t.Error("a target resolved from the settlement host itself is not a change")
-	}
-}
-
 func bigShard(n int) *fibretypes.DownloadShardResponse {
 	return &fibretypes.DownloadShardResponse{Shard: &fibretypes.BlobShard{Rlcs: make([]byte, n)}}
 }

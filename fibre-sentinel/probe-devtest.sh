@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 #
-# End-to-end check for the Sentinel probe scheduler + measurement store, with
+# End-to-end check for the Sentinel prober's reading + measurement store, with
 # fault injection.
 #
 #   1. start multi-node-fibre.sh
 #   2. run sentinel-scan (follow) so publications.jsonl fills
 #   3. publish COUNT blobs
 #   4. run sentinel-probe (--drain) against the same data dir
-#   5. mid-window, kill ONE assigned validator's fibre server
-#   6. let the prober drain its whole schedule (in-window + grace + post)
-#   7. sentinel-measure-check: the killed validator shows an in_window FAULT,
-#      live validators stay HEALTHY in window, post-window NOT_FOUND is
-#      EXPECTED_GONE, grace NOT_FOUND is TOLERATED
+#   5. before the blobs are read (half way through the 10-minute window),
+#      kill ONE validator's fibre server
+#   6. let the prober read every blob once and drain
+#   7. sentinel-measure-check: every blob is available from the live
+#      validators, and the killed one is never served and never a FAULT (on
+#      an available blob no failure counts against anyone)
 #   8. tear down
 #
-# Runs ~16-18 min (retention floor is 10m + prune tolerance + post margin).
+# Runs ~10 min (each blob is read half way through its 10-minute window).
 # Every wait has a timeout and dumps the relevant log tail on failure.
 #
 # Prereqs in PATH: celestia-appd, fibre, multi-node-fibre.sh, sentinel-scan,
@@ -130,12 +131,8 @@ done
 
 # ---- 4. prober (drain) ----
 echo "--> starting sentinel-probe (--drain)"
-# grace-offset 120s puts the grace probe AFTER the ~90s prune lag, so this run
-# actually exercises the TOLERATED class (NOT_FOUND in the grace window), not
-# just FAULT / HEALTHY / EXPECTED_GONE.
 sentinel-probe -rpc "$RPC" -data-dir "$DATA_DIR" -vantage devtest --drain \
-  -deadline 22m -in-window-probes 3 -grace-offset 120s -prune-tolerance 210s -post-margin 45s \
-  -max-sleep 15s -max-lateness 60s > "$LOGDIR/probe.log" 2>&1 &
+  -deadline 16m -max-sleep 15s -allow-unroutable-hosts > "$LOGDIR/probe.log" 2>&1 &
 PROBE_PID=$!
 sleep 3
 kill -0 "$PROBE_PID" 2>/dev/null || fail "sentinel-probe exited immediately"
@@ -150,23 +147,23 @@ taskkill //F //PID "$KPID" >/dev/null 2>&1 || kill -9 "$KPID" 2>/dev/null || tru
 echo "--> >>> FAULT: killed fibre :${KILL_PORT} (pid ${KPID}) at ${KILL_AT}"
 
 # ---- 6. let the prober drain ----
-echo -n "--> waiting for sentinel-probe to drain (up to ~21m) "
+echo -n "--> waiting for sentinel-probe to drain (up to ~15m) "
 DRAINED=0
-for _ in $(seq 1 260); do   # 260 * 5s = ~21m
+for _ in $(seq 1 180); do   # 180 * 5s = ~15m
   if ! kill -0 "$PROBE_PID" 2>/dev/null; then echo " exited"; PROBE_PID=""; break; fi
   echo -n "." ; sleep 5
 done
-[ -z "$PROBE_PID" ] || fail "sentinel-probe did not exit within ~21m"
+[ -z "$PROBE_PID" ] || fail "sentinel-probe did not exit within ~15m"
 grep -q 'done (--drain)' "$LOGDIR/probe.log" || fail "sentinel-probe exited without draining cleanly"
 
 # ---- 7. verify ----
 kill "$SCAN_PID" 2>/dev/null || true ; SCAN_PID=""
 echo "--> sentinel-measure-check"
-sentinel-measure-check -data-dir "$DATA_DIR" -killed-host "$KILL_HOST" -kill-at "$KILL_AT" -min-probes 8 \
+sentinel-measure-check -data-dir "$DATA_DIR" -killed-host "$KILL_HOST" -kill-at "$KILL_AT" -min-probes 3 \
   || fail "sentinel-measure-check reported problems"
 
 echo ""
 echo "=================================================="
-echo "  PASS: probe schedule + measurements + taxonomy"
-echo "        fault injection detected, live validators healthy"
+echo "  PASS: one reading per blob + measurements + taxonomy"
+echo "        available from the live validators, the killed one not counted"
 echo "=================================================="

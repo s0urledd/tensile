@@ -58,7 +58,7 @@ func soPub(hash string, height int64, settle, msu time.Time) scan.Publication {
 func soRows(pub scan.Publication, wires []wire, at func(label string, w wire) wire) []probe.Measurement {
 	var out []probe.Measurement
 	for i, v := range pub.Assignment.Validators {
-		for _, pt := range probe.ScheduleFor(pub, probe.ScheduleConfig{}) {
+		for _, pt := range earlierSchedule(pub) {
 			w := wires[i]
 			ph := probe.PhaseAt(pt.At, pub, probe.ScheduleConfig{})
 			if ph != probe.PhaseInWindow {
@@ -101,7 +101,7 @@ func soDecision(pub scan.Publication, p float64) probe.SampledOut {
 		Sampling:  probe.SamplingDecision{P: p, Binding: "validator_bytes_per_day", DayCommitment: "c0ffee"},
 		Reason:    fmt.Sprintf("budget:p=%.3f:validator_bytes_per_day:day_commitment=c0ffee", p), Validators: 6,
 	}
-	for _, pt := range probe.ScheduleFor(pub, probe.ScheduleConfig{}) {
+	for _, pt := range earlierSchedule(pub) {
 		d.Points = append(d.Points, probe.SampledOutPoint{Label: pt.Label, At: pt.At, Phase: probe.PhaseAt(pt.At, pub, probe.ScheduleConfig{})})
 	}
 	return d
@@ -466,4 +466,17 @@ func TestSampledOutBlobsCountTheRowsTheyStandFor(t *testing.T) {
 	if len(probes.Probes) != 0 {
 		t.Fatalf("/v1/probes?blob=outrecent lists %d rows", len(probes.Probes))
 	}
+}
+
+// earlierSchedule is the schedule the sampled-out decisions on record were
+// made under: four in-window points, a grace point and a post point.
+func earlierSchedule(pub scan.Publication) []probe.SchedulePoint {
+	span := pub.MustServeUntil.Sub(pub.SettlementTime)
+	var pts []probe.SchedulePoint
+	for i, f := range []float64{0.12, 0.45, 0.72, 0.92} {
+		pts = append(pts, probe.SchedulePoint{At: pub.SettlementTime.Add(time.Duration(float64(span) * f)), Phase: probe.PhaseInWindow, Label: fmt.Sprintf("w%d", i+1)})
+	}
+	return append(pts,
+		probe.SchedulePoint{At: pub.MustServeUntil.Add(30 * time.Second), Phase: probe.PhaseGrace, Label: "grace"},
+		probe.SchedulePoint{At: pub.MustServeUntil.Add(210 * time.Second), Phase: probe.PhasePost, Label: "post"})
 }
