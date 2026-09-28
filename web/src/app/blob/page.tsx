@@ -65,7 +65,7 @@ function Page() {
   }
   const b = data.blob;
   // the escrow owner, who paid; the transaction itself can be sent by anyone
-  const pub = b.charge?.publisher || b.signer;
+  const pub = b.publisher || b.charge?.publisher || b.signer;
   const probes = data.probes ?? [];
   const assignments = data.assignments ?? [];
   // signatures are a fact of the settled promise, not of any probe: read them from the assignments

@@ -16,7 +16,7 @@ type namespaceRow struct {
 	Bytes     int64  `json:"bytes"` // padded blob size, as charged
 	Blobs24h  int64  `json:"blobs_24h"`
 	Bytes24h  int64  `json:"bytes_24h"`
-	Accounts  int64  `json:"accounts"` // distinct paying accounts
+	Accounts  int64  `json:"accounts"` // distinct publishers: the escrow owner that paid, not the tx submitter
 	FirstSeen string `json:"first_seen"`
 	LastBlob  string `json:"last_blob"`
 }
@@ -29,12 +29,14 @@ func (s *Server) handleNamespaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	since := store.TS(time.Now().UTC().Add(-24 * time.Hour))
-	rows, err := s.st.DB().QueryContext(r.Context(), `SELECT namespace, COUNT(*), COALESCE(SUM(blob_size), 0),
-			COALESCE(SUM(CASE WHEN settlement_time >= ? THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN settlement_time >= ? THEN blob_size ELSE 0 END), 0),
-			COUNT(DISTINCT signer), MIN(settlement_time), MAX(settlement_time)
-		FROM publications GROUP BY namespace
-		ORDER BY MAX(settlement_height) DESC, namespace LIMIT ?`, since, since, limit+1)
+	rows, err := s.st.DB().QueryContext(r.Context(), `SELECT pub.namespace, COUNT(*), COALESCE(SUM(pub.blob_size), 0),
+			COALESCE(SUM(CASE WHEN pub.settlement_time >= ? THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN pub.settlement_time >= ? THEN pub.blob_size ELSE 0 END), 0),
+			COUNT(DISTINCT COALESCE(pay.publisher, pub.signer)), MIN(pub.settlement_time), MAX(pub.settlement_time)
+		FROM publications pub
+		LEFT JOIN payments pay ON pay.promise_hash = pub.promise_hash AND pay.kind = 'settlement'
+		GROUP BY pub.namespace
+		ORDER BY MAX(pub.settlement_height) DESC, pub.namespace LIMIT ?`, since, since, limit+1)
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
