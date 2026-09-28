@@ -11,19 +11,15 @@ import { type Validator, int } from "@/lib/api";
  */
 
 /** the endpoint's standing, from the API's endpoint_state when it sends one */
-export type EndpointState = "reachable" | "flaky" | "unreachable" | "none";
+export type EndpointState = "reachable" | "unreachable" | "none";
 type WithState = Validator & { endpoint_state?: EndpointState };
 
 export function endpointState(v: Validator): EndpointState {
   const s = (v as WithState).endpoint_state;
-  if (s === "reachable" || s === "flaky" || s === "unreachable" || s === "none") return s;
-  if (!v.host) return "none";
-  if (v.reachable === true) {
-    // Answering now, but missing a noticeable share of the window's handshakes.
-    const w = v.reachability_window;
-    return w && w.den >= 12 && w.value !== null && w.value < 0.9 ? "flaky" : "reachable";
-  }
-  return "unreachable";
+  if (s === "reachable" || s === "unreachable" || s === "none") return s;
+  // a registered host this observer has not checked yet is no one's failure
+  if (!v.host || v.reachable == null) return "none";
+  return v.reachable ? "reachable" : "unreachable";
 }
 
 export function bondedOf(rows: Validator[]): Validator[] {

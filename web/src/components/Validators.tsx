@@ -53,14 +53,17 @@ export function endpoint(v: Validator): { dot: string; word: string; title: stri
   if (v.reachable === null) return { dot: "none", word: "Not checked yet", title: `${v.host}: no handshake attempted yet.` };
   const checked = v.last_seen_at ? ` · checked ${ago(v.last_seen_at)}` : "";
   if (v.reachable === false) return { dot: "hold", word: "Unreachable", title: `${v.host}: no TLS handshake in the last two checks${v.last_reachable_at ? `; last reachable ${ago(v.last_reachable_at)}` : ""}${checked}`, warn: true };
-  if (v.endpoint_state === "flaky") return { dot: "flaky", word: "Flaky", title: `${v.host}: the last check failed, the one before passed${checked}` };
   if (v.identity_status === "no_tls") return { dot: "hold", word: "No TLS", title: `${v.host}: answered TCP, but no TLS handshake completed${checked}`, warn: true };
   if (v.identity_status === "expired" || v.identity_status === "mismatch") {
     const c = certificate(v.identity_reason);
     return { dot: "hold", word: c.word, title: `${v.host}: answered TLS with a certificate a client rejects${c.spec ? ` (${c.spec}, Fibre TLS identity)` : ""}${checked}`, warn: true };
   }
   if (v.identity_status && v.identity_status !== "verified") return { dot: "hold", word: "Reachable, unverified", title: `${v.host}: answered TLS; no certificate check recorded yet${checked}`, warn: true };
-  return { dot: "ok", word: "Reachable", title: `${v.host}: TLS with this validator's key${v.confirmed_from ? ", from a second location" : ""}${checked}` };
+  // One failed check after a success still counts as reachable; then the
+  // handshake to date is the last good one, not the newest check.
+  const newestFailed = !!v.last_unreachable_at && !!v.last_seen_at && v.last_unreachable_at >= v.last_seen_at;
+  const when = newestFailed && v.last_reachable_at ? ` · last handshake ${ago(v.last_reachable_at)}; the newest check failed` : checked;
+  return { dot: "ok", word: "Reachable", title: `${v.host}: TLS with this validator's key${v.confirmed_from ? ", from a second location" : ""}${when}` };
 }
 
 const time = (s: string | null | undefined) => (s ? new Date(s).getTime() : null);

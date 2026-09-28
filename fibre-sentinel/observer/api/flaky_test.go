@@ -10,7 +10,7 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
-// One failed check after a good one is flaky and still up; two in a row is
+// One failed check after a good one is still reachable; two in a row is
 // unreachable; a good newest check is reachable.
 func TestEndpointStateDebouncesASingleFailure(t *testing.T) {
 	dir := t.TempDir()
@@ -49,7 +49,7 @@ func TestEndpointStateDebouncesASingleFailure(t *testing.T) {
 	want := map[string]struct {
 		state string
 		up    bool
-	}{flaky: {"flaky", true}, down: {"unreachable", false}, up: {"reachable", true}}
+	}{flaky: {"reachable", true}, down: {"unreachable", false}, up: {"reachable", true}}
 	for addr, w := range want {
 		var body struct {
 			V struct {
@@ -65,7 +65,7 @@ func TestEndpointStateDebouncesASingleFailure(t *testing.T) {
 			t.Errorf("%s: state %q reachable %v, want %q %v", addr, body.V.EndpointState, body.V.Reachable, w.state, w.up)
 		}
 		if addr == flaky && body.V.Identity != "verified" {
-			t.Errorf("flaky keeps the last good check's identity, got %q", body.V.Identity)
+			t.Errorf("one failed check keeps the last good check's identity, got %q", body.V.Identity)
 		}
 	}
 }

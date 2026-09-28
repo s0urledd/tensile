@@ -154,7 +154,7 @@ button { font: inherit; color: inherit; }
 .theme svg { width: 16px; height: 16px; }
 .tag { font-size: var(--t-tiny); font-weight: 500; letter-spacing: .04em; text-transform: uppercase; color: var(--text-2); background: var(--tag-bg); padding: 4px 8px; border-radius: 4px; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: 0; margin-right: 7px; background: var(--neutral); flex: none; }
-.dot.ok { background: var(--ok); } .dot.hold { background: var(--hold); } .dot.flaky { background: var(--hold); opacity: .5; } .dot.none { background: var(--neutral); } .dot.fault { background: var(--fault); }
+.dot.ok { background: var(--ok); } .dot.hold { background: var(--hold); } .dot.none { background: var(--neutral); } .dot.fault { background: var(--fault); }
 /* the header's block ticker: the one figure that moves by itself */
 .blocktick { display: flex; align-items: center; gap: 7px; font-size: var(--t-cell); color: var(--text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .blocktick .dot { margin-right: 0; }
@@ -662,7 +662,7 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
    Countries are flat ink at low opacity, separated by paper-coloured
    hairlines; a country with a host is tinted with the accent, the open
    badge's countries a little more. A badge's ring is split by endpoint
-   state: accent reachable, amber flaky, a muted grey unreachable. Red appears
+   state: accent reachable, a muted grey unreachable. Red appears
    only as the small pip on a badge whose hosts have a broken obligation. */
 :root, :root[data-theme="light"] {
   --map-land: rgb(var(--ink) / .085); --map-on: rgb(0 106 116 / .20); --map-hi: rgb(0 106 116 / .34);

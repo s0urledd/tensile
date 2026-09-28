@@ -135,7 +135,7 @@ function state(v: Validator, c: EndpointCheck | undefined, decided: number): Sta
     };
   }
   if (v.identity_status !== "verified") {
-    return { tone: "none", title: "Reachable; certificate not checked yet", body: <>{host} completed TLS {v.last_seen_at && ago(v.last_seen_at)}; the consensus-key check has not run on it yet.</> };
+    return { tone: "none", title: "Reachable; certificate not checked yet", body: <>{host} completed TLS {(v.last_reachable_at || v.last_seen_at) && ago(v.last_reachable_at || v.last_seen_at)}; the consensus-key check has not run on it yet.</> };
   }
   if (v.confirmed_from) {
     return {
@@ -157,7 +157,7 @@ function state(v: Validator, c: EndpointCheck | undefined, decided: number): Sta
   const o = v.obligations;
   return {
     tone: "ok", title: "Reachable, certificate verified",
-    body: <>{host} completed TLS with a certificate endorsed by this validator’s consensus key {v.last_seen_at ? ago(v.last_seen_at) : "at the newest check"}.{o && decided > 0 && o.broken === 0 && <> {int(o.served)} of {int(decided)} endorsed shard{decided === 1 ? "" : "s"} read in this period {o.served === 1 ? "was" : "were"} served.</>}</>,
+    body: <>{host} completed TLS with a certificate endorsed by this validator’s consensus key {(v.last_reachable_at || v.last_seen_at) ? ago(v.last_reachable_at || v.last_seen_at) : "at the newest check"}.{o && decided > 0 && o.broken === 0 && <> {int(o.served)} of {int(decided)} endorsed shard{decided === 1 ? "" : "s"} read in this period {o.served === 1 ? "was" : "were"} served.</>}</>,
   };
 }
 

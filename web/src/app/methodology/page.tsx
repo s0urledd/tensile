@@ -45,7 +45,7 @@ export default function Methodology() {
         <li><strong>In retention window</strong>: not read yet. <strong>Not read by Tensile</strong> and <strong>sampled out</strong>: no verdict either way.</li>
         <li><strong>Provisional</strong>: a not-served reading younger than 30 minutes, counted but still open to withdrawal.</li>
         <li><strong>Retrievable</strong>: enough rows retrieved to reconstruct the blob, 4096 of 16384 for version 0.</li>
-        <li><strong>Reachability</strong>: completed handshakes over attempts, every five minutes per endpoint. One failed check after a success is <strong>flaky</strong>; two in a row is unreachable.</li>
+        <li><strong>Reachability</strong>: completed handshakes over attempts, every five minutes per endpoint. One failed check after a success still counts as reachable; two in a row is unreachable.</li>
         <li><strong>Throughput</strong>: median download speed over served shards of 2 MiB or more, from three readings up.</li>
         <li>Every rate is a ratio of sums, with a 95% upper bound on the not-served share.</li>
       </ul>

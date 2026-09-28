@@ -2076,9 +2076,10 @@ type reachState struct {
 	source         string // heartbeat | probe
 	// flaky: the newest check failed but the one before it, on the same
 	// host, succeeded. One timeout is not an outage (a 10s TLS deadline
-	// meets a transient path loss often enough), so a flaky endpoint still
-	// counts as up, shows amber, and keeps the identity verdict of that
-	// last good check. It is down after two failures in a row.
+	// meets a transient path loss often enough), so the endpoint still
+	// counts as up, is published as reachable, and keeps the identity
+	// verdict of that last good check. It is down after two failures in a
+	// row.
 	flaky bool
 	// confirmedFrom names the other vantage whose recent check of the same
 	// host completed TCP and TLS while this observer's own checks were
@@ -2380,9 +2381,9 @@ type validatorRow struct {
 	VotingPower      int64   `json:"voting_power"` // from the latest assignment seen
 	LastSeenAt       *string `json:"last_seen_at"`
 	Reachable        *bool   `json:"reachable"` // debounced: up at the newest check, or failed only once since the one before; null if never probed
-	// EndpointState says which: reachable | flaky (the newest check failed,
-	// the one before succeeded) | unreachable (two failures in a row, or no
-	// success on record). Empty when never checked.
+	// EndpointState says which: reachable (one failed check after a success
+	// still counts) | unreachable (two failures in a row, or no success on
+	// record). Empty when never checked.
 	EndpointState  string `json:"endpoint_state,omitempty"`
 	IdentityStatus string `json:"identity_status"` // verified | expired | mismatch | unverified | no_tls | unreachable | unknown
 	IdentityReason string `json:"identity_reason,omitempty"`
@@ -3022,10 +3023,8 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 		r := st.up()
 		v.Reachable = &r
 		switch {
-		case st.reachable:
+		case st.reachable || st.flaky:
 			v.EndpointState = "reachable"
-		case st.flaky:
-			v.EndpointState = "flaky"
 		default:
 			v.EndpointState = "unreachable"
 		}
