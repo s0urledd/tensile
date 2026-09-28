@@ -302,7 +302,32 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
   const tallest = FRAME.h / hostsWidth(hosts.map((h) => [h.ux, h.uy]));
   const aspect = narrow ? TALL : Math.round(1000 * Math.min(Math.max(WIDE, tallest), Math.max(WIDE, boxH / Math.max(1, width)))) / 1000;
   const height = width * aspect;
-  const home = useMemo(() => homeView(hosts.map((h) => [h.ux, h.uy]), aspect, !narrow), [hosts, aspect, narrow]);
+  const base = useMemo(() => homeView(hosts.map((h) => [h.ux, h.uy]), aspect, !narrow), [hosts, aspect, narrow]);
+  // The key and zoom sit over the map's corner. A disc of the home view that would fall under
+  // them lifts the whole map clear of them, as far as the northernmost disc allows; where that
+  // is not far enough (the narrowest phones) the map also steps back a little, at most a fifth.
+  const [home, homeClusters] = useMemo((): [View, Cluster[]] => {
+    const first = cluster(hosts, width / base.w, narrow);
+    if (!toolsAt) return [base, first];
+    const [tx, ty, tw] = toolsAt, mid = base.x + base.w / 2;
+    let last: [View, Cluster[]] = [base, first];
+    for (let i = 0; i <= 5; i++) {
+      const w = base.w / (1 - 0.04 * i), s = width / w, x = Math.min(FRAME.w - w, Math.max(0, mid - w / 2));
+      const cs = i === 0 ? first : cluster(hosts, s, narrow);
+      // lo: the least lift that clears the key; hi: the most that keeps every disc and its halo in the box
+      let lo = base.y, hi = Infinity;
+      for (const c of cs) {
+        const px = (c.ux - x) * s, r = drawn(c.hosts.length, narrow) / 2 + 2;
+        if (px < -r || px > width + r) continue;
+        hi = Math.min(hi, c.uy - r / s);
+        if (px + r > tx - 2 && px - r < tx + tw + 2) lo = Math.max(lo, c.uy + (r + 2 - ty) / s);
+      }
+      if (i === 0 && lo <= base.y) return last;
+      last = [{ x, y: Math.min(lo, Math.max(hi, base.y)), w }, cs];
+      if (lo <= Math.max(hi, base.y)) break;
+    }
+    return last;
+  }, [base, hosts, toolsAt, width, narrow]);
 
   // ---- view: where the map is looking, animated toward a target ----
   const [view, setView] = useState<View>(home);
@@ -311,10 +336,11 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
   viewRef.current = view;
   const raf = useRef(0);
   // A new shape of box starts again from its home view; a data refresh that leaves home where it was does not.
-  const homeKey = `${aspect}|${Math.round(home.x)}|${Math.round(home.w)}`;
+  const homeKey = `${aspect}|${Math.round(home.x)}|${Math.round(home.y)}|${Math.round(home.w)}`;
   useLayoutEffect(() => { cancelAnimationFrame(raf.current); setView(home); setTarget(home); }, [homeKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const go = (to: View) => {
-    const t = clampView(to, aspect), from = viewRef.current;
+    // zoomed back out to the home view's width is the home view itself
+    const t = to.w >= home.w - 1 ? home : clampView(to, aspect), from = viewRef.current;
     setTarget(t);
     cancelAnimationFrame(raf.current);
     if (reducedMotion()) { setView(t); return; }
@@ -335,7 +361,7 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
   const toPx = (ux: number, uy: number): [number, number] => [(ux - view.x) * scale, (uy - view.y) * scale];
 
   // Discs merge by the zoom the view is heading to, so they do not re-merge mid-flight.
-  const clusters = useMemo(() => cluster(hosts, width / target.w, narrow), [hosts, width, target.w, narrow]);
+  const clusters = useMemo(() => (target.w === home.w ? homeClusters : cluster(hosts, width / target.w, narrow)), [homeClusters, home.w, hosts, width, target.w, narrow]);
 
   // ---- drag to pan, once zoomed in ----
   const drag = useRef<{ id: number; x: number; y: number; v: View; moved: boolean } | null>(null);
@@ -554,7 +580,7 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
           </p>
         </div>
         <div className={`ov-atlas${zoomed ? " zoomed" : ""}`} ref={box}
-          style={{ aspectRatio: `1 / ${narrow ? TALL : WIDE}`, maxHeight: narrow ? undefined : Math.ceil(width * Math.max(WIDE, tallest)) }}
+          style={{ aspectRatio: `1 / ${narrow ? TALL : WIDE}`, maxHeight: Math.ceil(width * (narrow ? TALL : Math.max(WIDE, tallest))) }}
           onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
           <div className="ov-vp">
             <svg className="ov-land" viewBox={`${view.x} ${view.y} ${view.w} ${view.w * aspect}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false">
@@ -562,7 +588,7 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
               {land}
             </svg>
           </div>
-          <ul className="ov-pins" aria-label="Fibre providers by location" aria-describedby="ov-pins-keys">
+          <ul className="ov-pins" aria-label="Fibre providers by location">
             {placed.map(({ c, x, y, d, s }) => {
               const isOpen = open === c.id;
               const fault = c.hosts.some((h) => (h.v.obligations?.broken ?? 0) > 0);
@@ -585,7 +611,7 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
                   style={{ left: x, top: y, zIndex: isOpen ? 30 : undefined }}
                   onMouseEnter={() => openNow(c.id)} onMouseLeave={closeSoon}>
                   {glow > 0 && <span className="ov-glow" aria-hidden="true" style={{ width: s + 76 * glow, height: s + 76 * glow, opacity: 0.35 + 0.65 * glow }} />}
-                  <button type="button" className="ov-b" aria-expanded={split ? undefined : isOpen}
+                  <button type="button" className="ov-b" aria-expanded={split ? undefined : isOpen} aria-describedby="ov-pins-keys"
                     aria-label={`${place}${cities.length ? ` (${cities.map(([k, m]) => (m > 1 ? `${k} ${m}` : k)).join(", ")})` : ""}: ${n} Fibre provider${one ? "" : "s"}, ${counts.map(([st, k]) => `${k} ${STATE_WORD[st]}`).join(", ")}${split ? ". Zoom in" : ""}`}
                     style={{ width: d, height: d, "--s": `${s}px`, "--ring": ring(c.hosts) } as React.CSSProperties}
                     tabIndex={c.id === (placed.some((q) => q.c.id === roving) ? roving : placed[0]?.c.id) ? 0 : -1}
@@ -649,7 +675,7 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
           {cur && (
             <p className="ov-live" key={`${cur.v.address}|${cur.at}|${cur.event ?? ""}`}>
               <i className="ov-dot" style={{ background: cur.event === "last reachable" ? "var(--hold)" : "var(--accent)" }} />
-              <span className="ov-who"><Link href={valLink(cur.v)}>{name(cur.v)}</Link>{cur.event && <> {cur.event}</>}</span>
+              <span><Link href={valLink(cur.v)}>{name(cur.v)}</Link>{cur.event && <> {cur.event}</>}</span>
               {cur.host?.cc && <span>{countryName(cur.host.cc)}</span>}
               {!cur.event && cur.host?.provider && <span>{cur.host.provider}</span>}
               <span className="ov-ago" title={utcWord(cur.at)}>{ago(cur.at)}</span>

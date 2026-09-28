@@ -1006,8 +1006,8 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
 .ov-zoom button:disabled { opacity: .38; cursor: default; }
 .ov-zoom button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-/* under the map, on a line of its own: the newest event */
-.ov-map-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px; margin-top: auto; padding-top: 12px; font-size: var(--t-small); }
+/* under the map, on a line of its own: the newest event, its line kept while it loads so nothing moves when it arrives */
+.ov-map-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px; min-height: 30px; margin-top: auto; padding-top: 12px; font-size: var(--t-small); }
 .ov-live { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 0 8px; min-width: 0; margin: 0; color: var(--text-2); animation: ov-in .35s ease-out; }
 .ov-live > .ov-dot { width: 7px; height: 7px; margin-right: 2px; box-shadow: 0 0 0 3px var(--accent-tint); }
 .ov-live > span:not(:last-child)::after { content: "·"; margin-left: 8px; color: var(--text-3); }
@@ -1054,10 +1054,9 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
 @media (max-width: 720px) {
   .ov-counts { gap: 2px 20px; }
   .ov-counts b { font-size: 22px; }
-  .ov-map-foot { padding-top: 10px; }
+  .ov-map-foot { min-height: 28px; padding-top: 10px; }
   .ov-atlas > .ov-map-tools { right: 6px; bottom: 6px; gap: 8px; padding-left: 10px; }
   .ov-key { gap: 8px; }
-  .ov-pop { max-width: none; }
 }
 
 /* the validator page: its avatar beside the name */
