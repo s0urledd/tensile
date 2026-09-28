@@ -530,9 +530,8 @@ func TestMarketBlobsByCommitment(t *testing.T) {
 	}
 }
 
-// The Blobs page's facts: namespaces used in the window and on record, and
-// the window's largest settlement.
-func TestMarketNamespacesAndLargestBlob(t *testing.T) {
+// The namespaces the window's settlements used, and all on record.
+func TestMarketNamespaces(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "observer.db"))
 	if err != nil {
@@ -557,18 +556,11 @@ func TestMarketNamespacesAndLargestBlob(t *testing.T) {
 	var m struct {
 		Namespaces      int64 `json:"namespaces"`
 		NamespacesTotal int64 `json:"namespaces_total"`
-		LargestBlob     *struct {
-			PromiseHash string `json:"promise_hash"`
-			UploadSize  int64  `json:"upload_size"`
-		} `json:"largest_blob"`
 	}
 	if code := get(t, ts, "/v1/market?window=24h", &m); code != 200 {
 		t.Fatalf("market: %d", code)
 	}
 	if m.Namespaces != 2 || m.NamespacesTotal != 3 {
 		t.Errorf("namespaces %d of %d on record, want 2 of 3", m.Namespaces, m.NamespacesTotal)
-	}
-	if m.LargestBlob == nil || m.LargestBlob.PromiseHash != "b" || m.LargestBlob.UploadSize != 1<<22 {
-		t.Errorf("largest blob %+v, want b at 4 MiB (the 128 MiB one is outside the window)", m.LargestBlob)
 	}
 }

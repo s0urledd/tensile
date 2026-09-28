@@ -166,15 +166,6 @@ type marketResponse struct {
 	// NamespacesTotal how many any settlement on record has used.
 	Namespaces      int64 `json:"namespaces"`
 	NamespacesTotal int64 `json:"namespaces_total"`
-	// LargestBlob is the window's settlement with the largest upload size.
-	LargestBlob *largestBlob `json:"largest_blob"`
-}
-
-// largestBlob is one settlement: its promise, upload size and time.
-type largestBlob struct {
-	PromiseHash string `json:"promise_hash"`
-	UploadSize  int64  `json:"upload_size"`
-	SettledAt   string `json:"settled_at"`
 }
 
 var marketNotes = []string{
@@ -316,15 +307,6 @@ func (s *Server) computeMarket(ctx context.Context, win Window) (*marketResponse
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT namespace) FROM payments
 		WHERE kind = 'settlement' AND namespace <> '' AND time <= ?`, end).Scan(&r.NamespacesTotal); err != nil {
 		return nil, fmt.Errorf("namespaces on record: %w", err)
-	}
-	var lb largestBlob
-	switch err := db.QueryRowContext(ctx, `SELECT promise_hash, blob_size, time FROM payments
-		WHERE kind = 'settlement' AND time >= ? AND time <= ?
-		ORDER BY blob_size DESC, time DESC LIMIT 1`, start, end).Scan(&lb.PromiseHash, &lb.UploadSize, &lb.SettledAt); {
-	case err == nil:
-		r.LargestBlob = &lb
-	case !errors.Is(err, sql.ErrNoRows):
-		return nil, fmt.Errorf("largest blob: %w", err)
 	}
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT COALESCE(pub.blob_version || ':' || pub.commitment, 'promise:' || pay.promise_hash))
 		FROM payments pay LEFT JOIN publications pub ON pub.promise_hash = pay.promise_hash

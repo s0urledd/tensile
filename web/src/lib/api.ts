@@ -646,8 +646,6 @@ export type Market = {
   /** namespaces the window's settlements used, and any settlement on record */
   namespaces?: number;
   namespaces_total?: number;
-  /** the window's settlement with the largest upload size */
-  largest_blob?: { promise_hash: string; upload_size: number; settled_at: string } | null;
 };
 
 export type Escrow = { found: boolean; balance_utia: number; available_utia: number; height: number; updated_at: string };
