@@ -5,7 +5,8 @@ import { useSearchParams } from "next/navigation";
 import PreLive from "@/components/PreLive";
 import { unit } from "@/components/Unit";
 import { useApi, type Meta, type Market, type Blob, type NamespaceRow, utc, ago, nsDisplay, bytes, int, tia, shortBech } from "@/lib/api";
-import { Mark, type Tier } from "@/components/Verdict";
+import { Mark } from "@/components/Verdict";
+import { recon } from "@/lib/status";
 import Chart from "@/components/Chart";
 import { Metric, Figures } from "@/components/Metrics";
 import { buckets } from "@/lib/buckets";
@@ -19,26 +20,6 @@ type BlobPage = { blobs: Blob[]; total: number; offset: number; truncated: boole
 
 /** the last page /v1/blobs serves: its offset stops at 100,000 */
 const MAX_PAGE = Math.floor(100000 / SIZE) + 1;
-
-// Availability as a mark and a word, in the same channel the verdicts use.
-// Available: enough rows came back to reconstruct the blob, in the
-// words of celestia-app's own client ("some rows were retrieved, but not
-// enough to reconstruct" is its word for the other case).
-function recon(b: Blob): { word: string; tier: Tier; title: string } {
-  const r = b.reconstructable;
-  const over = new Date(b.must_serve_until).getTime() <= Date.now();
-  if (b.sampled_out && (!r || r.status === "unknown")) {
-    return { word: "sampled out", tier: "gap", title: "The load policy of the time drew this blob out of its sample: not read." };
-  }
-  if (!r || r.status === "unknown" || r.status === "pending") {
-    return !over
-      ? { word: "in retention window", tier: "gap", title: "Read once, 10 minutes before the retention window ends." }
-      : { word: "not read by Tensile", tier: "gap", title: "No reading of this blob was completed. Nothing is counted for or against a validator." };
-  }
-  const rows = `${int(r.served_distinct_rows)} of ${int(r.total_rows)} rows came back, ${int(r.needed_rows)} needed to reconstruct`;
-  if (r.status === "yes" || r.status === "degraded") return { word: "available", tier: "kept", title: rows };
-  return { word: "unavailable", tier: "hold", title: `${rows}: not enough to reconstruct.` };
-}
 
 function Page() {
   const nsParam = useSearchParams().get("namespace") ?? "";

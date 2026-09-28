@@ -256,7 +256,7 @@ function Page() {
           <Metric label="Service rate"
             value={notLive || !o || o.total === 0 || decided === 0 ? "—" : pctOf(o.served, decided)}
             tone={notLive || !o || decided === 0 ? "absent" : rateTone(o.served, decided)}
-            help={notLive ? " " : !o || o.total === 0 ? "nothing endorsed in this period" : decided === 0 ? "not read yet" : `${int(o.served)} / ${int(decided)} read${refText ? ` · ${refText}` : ""}`}
+            help={notLive ? " " : !o || o.total === 0 ? ((v.signing?.signed ?? 0) > 0 ? "not read yet" : "nothing endorsed in this period") : decided === 0 ? "not read yet" : `${int(o.served)} / ${int(decided)} read${refText ? ` · ${refText}` : ""}`}
             title="Endorsed shards served at the end reading, over those read." />
           <Metric label="Not served"
             value={notLive ? "—" : int(o?.broken ?? 0)} tone={notLive ? "absent" : (o?.broken ?? 0) > 0 ? "fault" : !o || o.total === 0 ? "absent" : undefined}

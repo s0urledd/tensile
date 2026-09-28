@@ -72,7 +72,7 @@ function Page() {
           <Metric label="Withdrawals" value={pre || !m ? "—" : tia(m.withdrawals_requested.utia)} tone={pre || !m || m.withdrawals_requested.count === 0 ? "absent" : undefined}
             help={pre || !m ? " " : `${int(m.withdrawals_requested.count)} requested in the period`}
             title="TIA requested out of escrow in the period. What is still waiting to pay out is under Withdrawal queue." />
-          <Metric label="Largest publisher" value={pre || !m || m.largest_poster?.bytes_share == null ? "—" : `${(m.largest_poster.bytes_share * 100).toFixed(1)}%`}
+          <Metric label="Largest publisher" value={pre || !m || m.largest_poster?.bytes_share == null ? "—" : fmtShare(m.largest_poster.bytes_share)}
             tone={pre || !m || !m.largest_poster ? "absent" : undefined}
             help={pre || !m ? " " : m.largest_poster ? `of upload size · ${publisherName(m.largest_poster)}` : "nothing settled"}
             title="The publisher with the most upload size in the period, and its share." />

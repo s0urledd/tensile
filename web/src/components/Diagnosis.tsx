@@ -27,9 +27,6 @@ import { type Validator, type EndpointCheck, type Meta, int, ago, whenUTC, dateU
  */
 
 /** Celestia's own operator guide for the Fibre server; the anchors are its section ids. */
-
-/** a run of this many assigned blobs without an endorsement opens the box */
-const ENDORSE_RUN = 10;
 export const FIBRE_DOCS = "https://docs.celestia.org/operate/consensus-validators/fibre";
 const REGISTER_DOCS = `${FIBRE_DOCS}#register-the-public-address`;
 const TLS_DOCS = `${FIBRE_DOCS}#transport-security-tls`;
@@ -141,17 +138,6 @@ function state(v: Validator, c: EndpointCheck | undefined, decided: number): Sta
     return {
       tone: "hold", title: "Reachable from a second location only",
       body: <>The main check could not complete TLS with {host}, but a second location did {v.last_seen_at ? ago(v.last_seen_at) : "within the last 15 minutes"}, with this validator’s certificate. It counts as reachable. If some publishers fail too, look for firewall rules, geo-blocking or routing that treat source addresses differently.</>,
-    };
-  }
-  // The chain's record, nothing inferred: the newest assigned promises and
-  // how many carry this validator's endorsement. Only a full run of zeros
-  // opens the box; a quorum closing before it answered now and then does not.
-  const r = v.signing?.recent;
-  if (r && r.assigned >= ENDORSE_RUN && r.endorsed === 0) {
-    const last = v.signing?.last_endorsed_at;
-    return {
-      tone: "hold", title: last ? `No endorsement since ${whenUTC(last)}` : "No endorsement on record",
-      body: <>0 of the last {int(r.assigned)} blobs assigned to this validator carry its endorsement.</>,
     };
   }
   const o = v.obligations;

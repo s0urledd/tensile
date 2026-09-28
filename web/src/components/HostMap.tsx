@@ -1,12 +1,13 @@
 "use client";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { type Validator, type Probe, API_BASE, useApi, ago, utcWord } from "@/lib/api";
+import { type Validator, type Probe, API_BASE, useApi, ago, utcWord, int } from "@/lib/api";
 import type { Hosting } from "@/lib/hosting";
 import { FRAME, COUNTRIES, project, countryPoint } from "@/lib/map/project";
 import { verdictDef } from "@/components/Verdict";
 import { countryName } from "@/components/Flag";
-import { type EndpointState, endpointState, readiness, ReadyAnswer } from "@/components/Readiness";
+import Info from "@/components/Info";
+import { type EndpointState, endpointState, readiness } from "@/components/Readiness";
 
 /**
  * The overview's host map: every registered Fibre host of the bonded set,
@@ -16,7 +17,45 @@ import { type EndpointState, endpointState, readiness, ReadyAnswer } from "@/com
  * badge whose ring is split by endpoint state; a badge that holds several
  * places zooms in on them, so a dense region comes apart into countries and
  * cities. Beside the badges, a flag and a place name wherever they fit.
+ *
+ * Beside the map, the stake gauge, then the latest blob (`aside`).
  */
+
+/** ⅔ set from the text face's own numerals, on its baseline: the font's fraction glyph falls back heavier and off the line */
+function Frac() {
+  return <b className="ov-frac"><span className="ov-frac-n">2</span><span className="ov-frac-s">⁄</span><span className="ov-frac-d">3</span></b>;
+}
+
+/**
+ * The stake gauge: the share of voting power with a Fibre provider as the
+ * panel's lead figure, then one bar on a ruler of tenths with the ⅔ a blob
+ * needs to settle drawn as a needle through it. Both halves are the chain's
+ * own records (x/staking, x/valaddr); see Readiness.tsx.
+ */
+function StakeGauge({ rows }: { rows: Validator[] }) {
+  const r = readiness(rows);
+  if (r.total === 0) return null;
+  const { pct, regPower, quorum, total } = r;
+  const at = (n: number) => `${Math.min(100, Math.max(0, (100 * n) / total))}%`;
+  const vars = { "--v": at(regPower), "--q": at(quorum) } as React.CSSProperties;
+  return (
+    <div className="ov-stake">
+      <h2 id="readiness-h" className="ov-eyebrow">Stake with a Fibre provider<Info label="Stake with a Fibre provider"><p>Share of the stake held by validators with a Fibre provider. A blob needs signatures from ⅔ of the stake to settle.</p></Info></h2>
+      <p className="ov-hero">
+        <b className="ov-fig">{pct(regPower)}</b>
+        <span className="ov-hero-help"> of voting power · {int(r.registered.length)} of {int(r.bonded.length)} validators</span>
+      </p>
+      <div className="ov-gauge" style={vars} role="img" aria-label={`${pct(regPower)} of stake with a Fibre provider, ${pct(quorum)} needed`}>
+        <span className="ov-needle"><span><Frac /> needed</span></span>
+        <span className="ov-track"><i /></span>
+        <span className="ov-ruler">{Array.from({ length: 11 }, (_, i) => <i key={i} />)}</span>
+      </div>
+      <p className="ov-rest">
+        <span><i className="ov-sw" /> no Fibre provider {pct(total - regPower)} · {int(r.bonded.length - r.registered.length)}</span>
+      </p>
+    </div>
+  );
+}
 
 type Host = { v: Validator; state: EndpointState; share: number; cc: string; city: string; loc: string; lon: number; lat: number; ux: number; uy: number; provider: string };
 type Cluster = { id: string; hosts: Host[]; ux: number; uy: number; locs: number; ccs: string[] };
@@ -349,7 +388,7 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
     // Nothing to place yet: the readiness answer alone, as before.
     return showReadiness ? (
       <section className="band readiness" aria-labelledby="readiness-h">
-        <div><ReadyAnswer rows={rows} />{aside && <div className="fm-aside">{aside}</div>}</div>
+        <div className="fm-side ov-solo"><StakeGauge rows={rows} />{aside && <div className="fm-aside">{aside}</div>}</div>
       </section>
     ) : null;
   }
@@ -486,7 +525,7 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
       </div>
       {showReadiness && (
         <div className="fm-side">
-          <ReadyAnswer rows={rows} />
+          <StakeGauge rows={rows} />
           {aside && <div className="fm-aside">{aside}</div>}
         </div>
       )}
