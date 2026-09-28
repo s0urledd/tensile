@@ -139,7 +139,7 @@ function evidenceSummary(rows: { g: Group }[]): string {
 function sampledText(d: Detail): string {
   const n = d.recent_sampled_out?.length ?? 0;
   if (n === 0) return "";
-  return ` · ${int(n)}${d.recent_sampled_out_truncated ? "+" : ""} recent blob${n === 1 ? "" : "s"} sampled out`;
+  return ` · ${int(n)}${d.recent_sampled_out_truncated ? "+" : ""} assigned blob${n === 1 ? "" : "s"} sampled out before 27 Sep`;
 }
 
 function Page() {
