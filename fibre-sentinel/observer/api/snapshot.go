@@ -462,6 +462,16 @@ func windowFor(name string, now time.Time) Window {
 // tick a few seconds short of due, and left it for another whole TTL.
 const keeperInterval = 5 * time.Second
 
+// lanes is how the two keepers pace themselves: the live lane's TTL and how
+// often the live keeper and the slow keeper look. NewWithVantage uses
+// defaultLanes unless it is handed others (withLanes, for tests).
+type lanes struct{ liveTTL, liveEvery, slowEvery time.Duration }
+
+var defaultLanes = lanes{liveTTL: liveTTL, liveEvery: liveInterval, slowEvery: keeperInterval}
+
+// withLanes sets the keepers' pace.
+func withLanes(l lanes) Option { return func(s *Server) { s.lanes = l } }
+
 // liveVals and slowVals split the validator list between the two keepers.
 var (
 	liveVals = []string{"24h"}

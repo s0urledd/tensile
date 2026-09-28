@@ -2,10 +2,14 @@ package api
 
 import (
 	"context"
+	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
 // A snapshot nobody reads must still be refreshed as its TTL runs out:
@@ -149,4 +153,72 @@ func TestLiveLaneIsNotHeldBackBySlowWindows(t *testing.T) {
 	}
 	close(release)
 	<-done
+}
+
+// NewWithVantage wires the schedule: the 24h validator list and every market
+// window on the live lane, at its TTL; the network summary and the longer
+// validator windows on the slow lane, 24h at a minute, 7d at five, 30d and
+// "all" at fifteen, except the network's "all" (the overview's Available
+// figure) at five; and both keepers running, so the 24h list is refreshed
+// with nobody reading it.
+func TestServerWiresTheLanes(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if defaultLanes.liveTTL != 10*time.Second {
+		t.Errorf("the live lane refreshes every %s, want ten seconds", defaultLanes.liveTTL)
+	}
+	l := lanes{liveTTL: 50 * time.Millisecond, liveEvery: 5 * time.Millisecond, slowEvery: 5 * time.Millisecond}
+	s := NewWithVantage(st, VantageInfo{Name: "test"}, nil, withLanes(l))
+	defer s.Close()
+	schedule := map[string]struct{ vals, market, net time.Duration }{
+		"24h": {l.liveTTL, l.liveTTL, time.Minute},
+		"7d":  {5 * time.Minute, l.liveTTL, 5 * time.Minute},
+		"30d": {15 * time.Minute, l.liveTTL, 15 * time.Minute},
+		"all": {15 * time.Minute, l.liveTTL, 5 * time.Minute},
+	}
+	for _, w := range warmWindows {
+		want, ok := schedule[w]
+		if !ok {
+			t.Fatalf("window %s has no place in the schedule", w)
+		}
+		if got := s.vals.ttl(w); got != want.vals {
+			t.Errorf("validators %s: ttl %s, want %s", w, got, want.vals)
+		}
+		if got := s.market.ttl(w); got != want.market {
+			t.Errorf("market %s: ttl %s, want %s", w, got, want.market)
+		}
+		if got := s.net.ttl(w); got != want.net {
+			t.Errorf("network %s: ttl %s, want %s", w, got, want.net)
+		}
+		// Every validator window is on exactly one keeper, and only the
+		// 24h list is on the live one.
+		live, slow := slices.Contains(liveVals, w), slices.Contains(slowVals, w)
+		if live == slow || live != (w == "24h") {
+			t.Errorf("validators %s: on the live lane %v, on the slow lane %v", w, live, slow)
+		}
+	}
+	at := func() time.Time {
+		s.vals.mu.Lock()
+		defer s.vals.mu.Unlock()
+		if e := s.vals.entries["24h"]; e != nil {
+			return e.at
+		}
+		return time.Time{}
+	}
+	// The first computation is the warm-up's; the next is the keeper's.
+	var first time.Time
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		a := at()
+		if first.IsZero() {
+			first = a
+		} else if a.After(first) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("the 24h validator list was computed at %s and not again, with nobody reading it", first)
 }

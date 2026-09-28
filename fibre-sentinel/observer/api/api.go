@@ -100,6 +100,8 @@ type Server struct {
 	origRows originalRowsMemo
 	// recent keeps each validator's newest endorsements (see signing.go).
 	recent endorsementLedger
+	// lanes is the keepers' pace (see snapshot.go).
+	lanes lanes
 	// bg counts the server's own background work (the blob-page warm-up,
 	// the snapshot keeper), for Close.
 	bg sync.WaitGroup
@@ -146,6 +148,9 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 	for _, o := range opts {
 		o(s)
 	}
+	if s.lanes == (lanes{}) {
+		s.lanes = defaultLanes
+	}
 	// The cached summary is the unfiltered one. A `?exclude=` answer is
 	// computed per request and never stored here: writing it into the shared
 	// snapshot would publish one reader's filter as everyone's headline.
@@ -183,11 +188,11 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 	// these without the lock.
 	s.vals.ttls = map[string]time.Duration{}
 	for _, name := range liveVals {
-		s.vals.ttls[name] = liveTTL
+		s.vals.ttls[name] = s.lanes.liveTTL
 	}
 	s.market.ttls = map[string]time.Duration{}
 	for _, name := range warmWindows {
-		s.market.ttls[name] = liveTTL
+		s.market.ttls[name] = s.lanes.liveTTL
 	}
 	s.net.ttls = map[string]time.Duration{"all": networkAllTTL}
 	// Serve the previous process's snapshots at once, then warm every window
@@ -208,11 +213,11 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 	s.bg.Add(2)
 	go func() {
 		defer s.bg.Done()
-		s.keepSnapshotsFresh(keeperInterval)
+		s.keepSnapshotsFresh(s.lanes.slowEvery)
 	}()
 	go func() {
 		defer s.bg.Done()
-		s.keepLiveFresh(liveInterval)
+		s.keepLiveFresh(s.lanes.liveEvery)
 	}()
 	// And the first page of blobs, for the same reason: with the verdict cache
 	// empty that page costs six queries per row, which is the one cold path
