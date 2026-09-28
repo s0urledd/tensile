@@ -851,23 +851,32 @@ export function held(s: string | null | undefined): string {
   if (h < 48) return `${h} h`;
   return `${Math.round(h / 24)} d`;
 }
-/** "just now", "12 min", "3 h 12 min", "2 d": how long since s, without the word */
+/** "just now", "12 min", "3 h 12 min", "2 d": how long since s, without the word.
+ *  Whole minutes, never rounded up: anything under a minute is "just now", and
+ *  59 minutes is "59 min", not "1 h". */
 export function since(s: string | null | undefined): string {
   if (!s) return "";
   const ms = Date.now() - new Date(s).getTime();
   if (isNaN(ms)) return "";
-  const m = Math.max(0, Math.round(Math.abs(ms) / 60000));
+  const m = Math.floor(Math.abs(ms) / 60000);
   if (m < 1) return "just now";
   if (m < 60) return `${m} min`;
   const h = Math.floor(m / 60), rm = m % 60;
   if (h < 24) return rm ? `${h} h ${rm} min` : `${h} h`;
   return `${Math.floor(h / 24)} d`;
 }
-/** "12 min ago" for the past, "in 12 min" for the future, "just now" within a minute */
+/** how far ahead of the reader's clock a past event may appear and still read
+ *  "just now": clock skew between the reader and the chain */
+const SKEW_MS = 5000;
+/** "12 min ago" for the past, "in 12 min" for the future; under a minute,
+ *  "just now" for the past (and a few seconds of clock skew ahead), "in under a
+ *  minute" for the future */
 export function ago(s: string | null | undefined): string {
   const w = since(s);
-  if (w === "" || w === "just now") return w;
-  return new Date(s!).getTime() > Date.now() ? `in ${w}` : `${w} ago`;
+  if (w === "") return w;
+  const ahead = new Date(s!).getTime() - Date.now();
+  if (w === "just now") return ahead > SKEW_MS ? "in under a minute" : w;
+  return ahead > 0 ? `in ${w}` : `${w} ago`;
 }
 /** "09:09 UTC" today, "Sep 21 09:09 UTC" on any other UTC day: a time that says which day it is */
 export function whenUTC(s: string | null | undefined): string {

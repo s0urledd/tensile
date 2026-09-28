@@ -11,6 +11,10 @@ import PreLive from "@/components/PreLive";
 import HostMap from "@/components/HostMap";
 import { recon } from "@/lib/status";
 
+/** how often the overview reads what moves with every block: the 24h
+ *  validator list and the newest blob */
+const LIVE_POLL_MS = 15000;
+
 /**
  * The overview, from the chain's own records: which validators run a Fibre
  * provider and how much stake that is (x/valaddr, x/staking), the newest
@@ -24,9 +28,12 @@ function Overview() {
   const net = useApi<Network>(`/v1/network?window=${win}`);
   // Tensile's Available figure is "now", not the period: every settlement read so far
   const whole = useApi<Network>("/v1/network?window=all");
-  const vals = useApi<{ validators: Validator[] }>(`/v1/validators?window=${win}`);
+  // The 24h list is refreshed every ten seconds on the observer (endorsements
+  // move with every block), so it is read more often than the longer periods,
+  // whose snapshots move every few minutes.
+  const vals = useApi<{ validators: Validator[] }>(`/v1/validators?window=${win}`, win === "24h" ? LIVE_POLL_MS : undefined);
   const market = useApi<Market>(`/v1/market?window=${win}`);
-  const newest = useApi<{ blobs: Blob[] }>("/v1/blobs?limit=1");
+  const newest = useApi<{ blobs: Blob[] }>("/v1/blobs?limit=1", LIVE_POLL_MS);
 
   const N = net.data;
   const M = market.data;
