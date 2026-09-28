@@ -95,6 +95,10 @@ function Page() {
           <Metric label="Namespaces" value={m?.namespaces != null ? int(m.namespaces) : "—"} tone={m?.namespaces ? undefined : "absent"}
             help={m?.namespaces_total != null ? `${int(m.namespaces_total)} on record` : " "}
             title="Namespaces the period's settlements used." />
+          <Metric label="Retrievable" value={rc && rc.recoverable.den > 0 ? int(rc.recoverable.num) : "—"} den={rc && rc.recoverable.den > 0 ? int(rc.recoverable.den) : undefined}
+            tone={rc && rc.recoverable.den > 0 ? undefined : "absent"}
+            help={rc ? (rc.recoverable.den > 0 ? "read by Tensile near the window's end" : "none read in the period") : " "}
+            title="Observed by Tensile: settlements read near the end of their retention window whose rows were enough to reconstruct the blob." />
         </Metrics>
         <div className="charts">
           <div className="card">
@@ -110,11 +114,6 @@ function Page() {
               fmt={(v) => int(v)} empty={m ? "nothing settled in this period" : "loading…"} />
           </div>
         </div>
-        {rc && rc.recoverable.den > 0 && (
-          <p className="observed" title="Settlements Tensile read near the end of their retention window whose rows were enough to reconstruct the blob.">
-            Observed by Tensile: <b>{int(rc.recoverable.num)} of {int(rc.recoverable.den)}</b> settlements read were retrievable.
-          </p>
-        )}
       </section>
 
       <section id="list">
