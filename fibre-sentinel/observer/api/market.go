@@ -16,6 +16,8 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/celestiaorg/celestia-app/v10/pkg/appconsts"
+
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 )
 
 // The publisher side of Fibre. Everything on these endpoints is a count of
@@ -594,6 +596,30 @@ type blobCharge struct {
 	Processor string `json:"processor,omitempty"` // who submitted the timeout
 }
 
+// unpaidPublicationsOf lists the publications with no settlement payment on
+// record whose promise was signed by the key of addr. They are few (records
+// from before payments were kept), and the key is only readable in Go.
+func (s *Server) unpaidPublicationsOf(ctx context.Context, addr string) ([]string, error) {
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT promise_hash, signer_public_key FROM publications pub
+		WHERE NOT EXISTS (SELECT 1 FROM payments p WHERE p.promise_hash = pub.promise_hash AND p.kind = 'settlement')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var h string
+		var key sql.NullString
+		if err := rows.Scan(&h, &key); err != nil {
+			return nil, err
+		}
+		if p, err := scan.PublisherOf(key.String); err == nil && p == addr {
+			out = append(out, h)
+		}
+	}
+	return out, rows.Err()
+}
+
 // chargesFor looks up the fee side of a set of promise hashes in one query.
 func (s *Server) chargesFor(ctx context.Context, hashes []string) (map[string]*blobCharge, error) {
 	out := map[string]*blobCharge{}
@@ -836,7 +862,23 @@ func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
-	blobs, err := s.blobRows(ctx, `signer = ?`, 50, addr)
+	// The blobs this account paid for: by the charge on record, or, for a
+	// publication with no payment row, by the key that signed its promise,
+	// as each blob row names its publisher. Not by the submitter: anyone can
+	// submit a settlement, typically an endorsing validator.
+	unpaid, err := s.unpaidPublicationsOf(ctx, addr)
+	if err != nil {
+		s.writeInternal(w, r.URL.Path, err)
+		return
+	}
+	where, wargs := `promise_hash IN (SELECT promise_hash FROM payments WHERE kind = 'settlement' AND publisher = ?)`, []any{addr}
+	if len(unpaid) > 0 {
+		where += ` OR promise_hash IN (?` + strings.Repeat(", ?", len(unpaid)-1) + `)`
+		for _, h := range unpaid {
+			wargs = append(wargs, h)
+		}
+	}
+	blobs, err := s.blobRows(ctx, "("+where+")", 50, wargs...)
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return

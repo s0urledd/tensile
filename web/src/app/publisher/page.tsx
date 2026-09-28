@@ -128,7 +128,7 @@ function Page() {
         <Panel title="Recent blobs" right={<>{data.recent_blobs.length} most recent · <Link href={`/blobs/`}>all blobs →</Link></>}>
         <div className="tablewrap">
           <table>
-            <thead><tr><th>promise</th><th>settled (UTC)</th><th>namespace</th><th className="right">size</th><th className="right">fee</th><th className="right">validators</th><th className="right">probes</th></tr></thead>
+            <thead><tr><th>blob</th><th>settled (UTC)</th><th>namespace</th><th className="right">upload size</th><th className="right">fee paid</th><th className="right">validators</th></tr></thead>
             <tbody>
               {data.recent_blobs.map((b) => (
                 <tr key={b.promise_hash}>
@@ -138,7 +138,6 @@ function Page() {
                   <td className="right mono">{bytes(b.blob_size)}</td>
                   <td className="right mono">{b.charge ? tia(b.charge.fee_utia) : <span className="faint">—</span>}</td>
                   <td className="right mono">{b.validators_with_rows}</td>
-                  <td className="right mono">{b.probe_count}</td>
                 </tr>
               ))}
             </tbody>

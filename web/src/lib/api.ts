@@ -533,7 +533,10 @@ export type Blob = {
   commitment: string;
   namespace: string;
   blob_size: number;
+  /** MsgPayForFibre.signer: the account that submitted the settlement, not necessarily who paid */
   signer: string;
+  /** who paid: the escrow owner, whose key signed the promise */
+  publisher?: string;
   settlement_height: number;
   settlement_time: string;
   creation_timestamp: string;

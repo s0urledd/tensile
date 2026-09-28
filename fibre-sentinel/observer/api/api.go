@@ -3512,11 +3512,17 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 // ---- blobs ----
 
 type blobRow struct {
-	PromiseHash      string `json:"promise_hash"`
-	Commitment       string `json:"commitment"`
-	Namespace        string `json:"namespace"`
-	BlobSize         int64  `json:"blob_size"`
-	Signer           string `json:"signer"`
+	PromiseHash string `json:"promise_hash"`
+	Commitment  string `json:"commitment"`
+	Namespace   string `json:"namespace"`
+	BlobSize    int64  `json:"blob_size"`
+	// Signer is MsgPayForFibre.signer, the account that submitted the
+	// settlement. Anyone can submit one, typically an endorsing validator,
+	// so it is not necessarily who paid.
+	Signer string `json:"signer"`
+	// Publisher is who paid: the escrow owner, whose key signed the promise
+	// (scan.PublisherOf; the payment's publisher when there is one).
+	Publisher        string `json:"publisher"`
 	SettlementHeight int64  `json:"settlement_height"`
 	// SettlementTxIndex is the other half of this route's cursor, published
 	// so a caller paging with before_height/before_tx_index does not have to
@@ -3590,7 +3596,7 @@ type reconstruct struct {
 }
 
 func (s *Server) blobRows(ctx context.Context, where string, limit int, args ...any) ([]blobRow, error) {
-	q := `SELECT promise_hash, commitment, namespace, blob_size, signer, settlement_height, settlement_tx_index, settlement_time, creation_timestamp,
+	q := `SELECT promise_hash, commitment, namespace, blob_size, signer, signer_public_key, settlement_height, settlement_tx_index, settlement_time, creation_timestamp,
 		must_serve_until, validators_with_rows, sigma_rows, distinct_rows, assignment_error, attested_voting_power, total_voting_power, attested_with_rows FROM publications`
 	if where != "" {
 		q += " WHERE " + where
@@ -3605,9 +3611,16 @@ func (s *Server) blobRows(ctx context.Context, where string, limit int, args ...
 	var out []blobRow
 	for rows.Next() {
 		var b blobRow
-		if err := rows.Scan(&b.PromiseHash, &b.Commitment, &b.Namespace, &b.BlobSize, &b.Signer, &b.SettlementHeight, &b.SettlementTxIndex, &b.SettlementTime,
+		var key sql.NullString
+		if err := rows.Scan(&b.PromiseHash, &b.Commitment, &b.Namespace, &b.BlobSize, &b.Signer, &key, &b.SettlementHeight, &b.SettlementTxIndex, &b.SettlementTime,
 			&b.CreationTimestamp, &b.MustServeUntil, &b.ValidatorsWithRows, &b.SigmaRows, &b.DistinctRows, &b.AssignmentError, &b.AttestedPower, &b.TotalPower, &b.AttestedWithRows); err != nil {
 			return nil, err
+		}
+		// Who paid, from the promise's own key. A row whose key cannot be
+		// read keeps the submitter, the only account on record for it.
+		b.Publisher = b.Signer
+		if p, err := scan.PublisherOf(key.String); err == nil {
+			b.Publisher = p
 		}
 		out = append(out, b)
 	}
@@ -3624,6 +3637,10 @@ func (s *Server) blobRows(ctx context.Context, where string, limit int, args ...
 	}
 	for i := range out {
 		out[i].Charge = charges[out[i].PromiseHash]
+		// the account the chain charged, where a payment is on record
+		if c := out[i].Charge; c != nil && c.Publisher != "" {
+			out[i].Publisher = c.Publisher
+		}
 	}
 	sampledOut, err := s.sampledOutFor(ctx, hashes)
 	if err != nil {

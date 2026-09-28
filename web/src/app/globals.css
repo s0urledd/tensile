@@ -518,6 +518,8 @@ dl.kv dd { margin: 0; word-break: break-all; }
 /* ----------------------------------------------------------- responsive --- */
 @media (max-width: 1000px) {
   .metrics { grid-template-columns: repeat(3, 1fr); }
+  /* five figures do not fit one row here: wrap them like any other grid */
+  .group .metrics { grid-auto-flow: row; grid-template-columns: repeat(3, 1fr); }
   .cells, .cells.four, .cells.five { grid-template-columns: repeat(3, 1fr); }
 }
 @media (max-width: 720px) {
@@ -545,7 +547,9 @@ dl.kv dd { margin: 0; word-break: break-all; }
   .search { width: 100%; }
   .select { flex: 1; }
   .col-pin { min-width: 180px; }
-  .foot { flex-direction: column; gap: 6px; }
+  /* one column, as wide as the screen, its links wrapping, so a phone page never scrolls sideways */
+  .foot { flex-direction: column; flex-wrap: nowrap; gap: 6px; }
+  .foot > div { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 4px; max-width: 100%; }
   .charts { grid-template-columns: 1fr; }
   dl.kv { grid-template-columns: 1fr; }
   .legend > div { grid-template-columns: 1fr; gap: 4px; }
@@ -662,7 +666,7 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
    Countries are flat ink at low opacity, separated by paper-coloured
    hairlines; a country with a host is tinted with the accent, the open
    badge's countries a little more. A badge's ring is split by endpoint
-   state: accent reachable, a muted grey unreachable. Red appears
+   state: accent reachable, amber unreachable, grey not checked yet. Red appears
    only as the small pip on a badge whose hosts have a broken obligation. */
 :root, :root[data-theme="light"] {
   --map-land: rgb(var(--ink) / .085); --map-on: rgb(0 106 116 / .20); --map-hi: rgb(0 106 116 / .34);

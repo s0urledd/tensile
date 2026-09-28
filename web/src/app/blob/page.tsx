@@ -65,7 +65,7 @@ function Page() {
   }
   const b = data.blob;
   // the escrow owner, who paid; the transaction itself can be sent by anyone
-  const pub = b.charge?.publisher || b.signer;
+  const pub = b.publisher || b.charge?.publisher || b.signer;
   const probes = data.probes ?? [];
   const assignments = data.assignments ?? [];
   // signatures are a fact of the settled promise, not of any probe: read them from the assignments
@@ -159,7 +159,10 @@ function Page() {
       </section>
 
       <section className="group" id="observed">
-        <div className="vhead"><div><h2>Observed by Tensile</h2><p className="sub">{endRead ? "Each endorsed shard is read once, near the end of the retention window." : "Read on the earlier schedule, at several points in the retention window."}</p></div></div>
+        <div className="vhead"><div><h2>Observed by Tensile</h2><p className="sub">{endRead ? "Each endorsed shard is read once, near the end of the retention window."
+            : probes.length > 0 ? "Read on the earlier schedule, at several points in the retention window."
+            : so ? "Not read: the load policy of the time drew this blob out of its sample."
+            : "Not read by Tensile."}</p></div></div>
         <Metrics>
           <Metric label="Rows retrieved" value={shown ? int(rc!.served_distinct_rows) : "—"} tone={shown ? undefined : "absent"}
             help={shown ? `of ${int(rc!.total_rows)} · ${int(rc!.needed_rows)} needed${rc!.point_at ? ` · read ${hhmm(rc!.point_at)}` : ""}` : !over ? `read before ${hhmm(b.must_serve_until)}` : "no reading completed"}
@@ -208,7 +211,7 @@ function Page() {
                     <td className="id col-pin"><Link className="mon" href={`/validator/?addr=${a.validator_address}`}>{a.moniker || shortMid(a.validator_address, 12, 4)}</Link></td>
                     <td className="num">{int(a.voting_power)}</td>
                     <td className="num">{int(a.row_count)}</td>
-                    <td title={a.attested === true ? "Signature verified against the consensus key." : a.attested === false ? "No verified signature on the settlement: nothing owed. A settlement needs signatures from ⅔ of the stake." : "Recorded before signatures were verified."}>{a.attested === true ? "yes" : a.attested === false ? <span className="soft">no</span> : "—"}</td>
+                    <td title={a.attested === true ? "Signature verified against the consensus key." : a.attested === false ? "No verified signature on the settlement: nothing owed. A settlement needs ⅔ of the voting power." : "Recorded before signatures were verified."}>{a.attested === true ? "yes" : a.attested === false ? <span className="soft">no</span> : "—"}</td>
                     <td title={[sv?.[2], detail].filter(Boolean).join(" · ") || (a.attested === false ? "Not endorsed: nothing owed." : "No reading that counts.")}>
                       {sv ? <><span className={"mk " + sv[0]} /> <span className={"word" + (sv[0] === "fault" ? " fault" : "")}>{word}</span></> : <span className="soft">—</span>}
                     </td>

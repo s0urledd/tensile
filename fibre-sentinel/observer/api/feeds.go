@@ -288,7 +288,7 @@ func (s *Server) validatorFeed(ctx context.Context, addr, authority string, now 
 		// long outside the feed's thirty.)
 		es = append(es, feed.Entry{ID: id("first-reachable"), Kind: "first-reachable", At: at, Link: link,
 			Title:   name + ": Fibre endpoint reachable for the first time",
-			Summary: "The first heartbeat on record that completed a TLS handshake with this validator's registered Fibre host, from this observer's vantage."})
+			Summary: "The first heartbeat on record that completed a TLS handshake with this validator's registered Fibre host."})
 	}
 
 	// Reachability and identity transitions over the feed's span, with a
@@ -326,14 +326,14 @@ func (s *Server) validatorFeed(ctx context.Context, addr, authority string, now 
 		e := feed.Entry{Kind: ev.Kind, At: ev.At, Link: link, ID: id(ev.Kind, idTime(ev.At))}
 		switch ev.Kind {
 		case feed.KindUnreachable:
-			e.Title = name + ": Fibre endpoint unreachable from this vantage"
+			e.Title = name + ": Fibre endpoint unreachable"
 			e.Summary = fmt.Sprintf("%s did not complete a TLS handshake on %d consecutive heartbeats starting %s. "+
-				"Seen from one location; not counted as a broken obligation.", ev.Host, ev.Beats, ev.At.Format(time.RFC3339))
+				"An endpoint check, not a reading of any shard.", ev.Host, ev.Beats, ev.At.Format(time.RFC3339))
 		case feed.KindRecovered:
 			e.Title = name + ": Fibre endpoint reachable again"
 			e.Summary = fmt.Sprintf("%s completed TLS handshakes again from %s", ev.Host, ev.At.Format(time.RFC3339))
 			if !ev.Since.IsZero() {
-				e.Summary += fmt.Sprintf(", after %s unreachable from this vantage", feed.Span(ev.At.Sub(ev.Since)))
+				e.Summary += fmt.Sprintf(", after %s unreachable", feed.Span(ev.At.Sub(ev.Since)))
 			}
 			e.Summary += "."
 		case feed.KindIdentityProblem:
@@ -367,7 +367,7 @@ func (s *Server) validatorFeed(ctx context.Context, addr, authority string, now 
 	f := &feed.Feed{
 		ID:       feed.TagID(authority, feedTagDate, "tensile", fm.chainID, addr),
 		Title:    "Tensile · " + name + " · Fibre endpoint events",
-		Subtitle: "State changes of this validator's Fibre endpoint on " + fm.chainID + ", as observed from vantage " + s.vantage + ". Derived from stored observations; newest 50 of the last 30 days.",
+		Subtitle: "State changes of this validator's Fibre endpoint on " + fm.chainID + ", as Tensile observed them. Newest 50 of the last 30 days.",
 		SelfHref: "feed.atom",
 		AltHref:  link,
 		Author:   "Tensile observer (" + s.vantage + ")",
