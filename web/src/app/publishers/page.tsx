@@ -82,6 +82,11 @@ function Page() {
       {/* per UTC day; for 24h per UTC hour, as the Blobs charts are (the period of the answer shown decides) */}
       {m && (() => {
         const perHour = m.window.name === "24h";
+        // An API from before the hours carried fees and a publisher split sends
+        // hours without the split: no chart then, as 24h had none before, rather
+        // than empty hours under the period's totals. An hour with a settlement
+        // is always in the split, so a period with no hours has nothing to miss.
+        if (perHour && m.hourly?.length && !m.hourly_by_publisher) return null;
         const per = perHour ? "hour" : "day";
         // Each bar: its axis names, its bucket (absent when nothing happened in it) and its split by publisher.
         const slots: { x: string; label: string; short?: string; b?: { fees_utia: number; bytes: number; settlements: number; timeouts?: number }; split: { publisher: string; bytes: number }[] }[] = [];
