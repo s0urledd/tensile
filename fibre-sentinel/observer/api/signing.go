@@ -95,24 +95,36 @@ const recentEndorsements = 20
 const signingPopulation = `p.settlement_time >= ? AND p.settlement_time <= ?
 	AND p.settlement_tx_code = 0 AND p.assignment_error = ''`
 
-// signingByValidator counts signing participation per validator over win,
-// only for one validator when only is set.
-func (s *Server) signingByValidator(ctx context.Context, win Window, only string) (map[string]signingStats, error) {
+// signingByValidatorSQL is signingByValidator's query; filter narrows it to
+// one validator.
+//
+// It starts from the window's publications and seeks their assignments by
+// primary key. Joined the other way round it walked every assignment ever
+// stored (assignments_validator), and assignments are never pruned, so a
+// day's figure cost the whole history. Every figure here is a count, so the
+// join order cannot move one.
+func signingByValidatorSQL(filter string) string {
 	// host_at_settlement is '' when no host was registered, NULL when the
 	// registry could not be read at that height.
-	q := `SELECT a.validator_address,
+	return `SELECT a.validator_address,
 			COALESCE(SUM(CASE WHEN a.attested IS NOT NULL AND a.host_at_settlement IS NOT '' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN a.attested = 1 AND a.host_at_settlement IS NOT '' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN a.attested IS NULL AND a.host_at_settlement IS NOT '' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN a.host_at_settlement = '' THEN 1 ELSE 0 END), 0)
-		FROM assignments a JOIN publications p ON p.promise_hash = a.promise_hash
-		WHERE ` + signingPopulation + ` AND a.row_count > 0`
-	args := []any{win.startArg(), win.endArg()}
+		FROM publications p CROSS JOIN assignments a ON a.promise_hash = p.promise_hash
+		WHERE ` + signingPopulation + ` AND a.row_count > 0` + filter + `
+		GROUP BY a.validator_address`
+}
+
+// signingByValidator counts signing participation per validator over win,
+// only for one validator when only is set.
+func (s *Server) signingByValidator(ctx context.Context, win Window, only string) (map[string]signingStats, error) {
+	filter, args := "", []any{win.startArg(), win.endArg()}
 	if only != "" {
-		q += ` AND a.validator_address = ?`
+		filter = ` AND a.validator_address = ?`
 		args = append(args, only)
 	}
-	rows, err := s.st.DB().QueryContext(ctx, q+` GROUP BY a.validator_address`, args...)
+	rows, err := s.st.DB().QueryContext(ctx, signingByValidatorSQL(filter), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -135,41 +147,170 @@ func (s *Server) signingByValidator(ctx context.Context, win Window, only string
 
 // recentSigning adds LastEndorsedAt and Recent to every validator in out
 // (and to any validator with an endorsement that out lacks): the newest
-// record, not the window.
+// record, not the window. The figures come from the endorsement ledger,
+// brought up to date first.
 func (s *Server) recentSigning(ctx context.Context, only string, out map[string]signingStats) error {
-	filter, args := "", []any{recentEndorsements}
-	if only != "" {
-		filter = ` AND a.validator_address = ?`
-		args = []any{only, recentEndorsements}
+	return s.recent.fill(ctx, s.st.DB(), only, out)
+}
+
+// recentPopulationSQL is the assignments recentSigning describes: a settled
+// promise whose assignment was computed, rows given to the validator while it
+// had a host (or the registry could not be read), and signatures verified.
+const recentPopulationSQL = `p.settlement_tx_code = 0 AND p.assignment_error = '' AND a.row_count > 0
+	AND a.host_at_settlement IS NOT '' AND a.attested IS NOT NULL`
+
+// endorsementLedger is what recentSigning publishes, kept per validator and
+// brought up to date from the assignments stored since it last looked.
+//
+// Both figures are about the whole record, not the window: the newest
+// endorsement's settlement time, and the newest recentEndorsements assigned
+// promises in settlement order. Computed from scratch they walked every
+// assignment ever stored with two window functions over it, on every
+// snapshot, and assignments are never pruned, so the one column the table
+// is read for ("Last endorsement") grew slowest to refresh. Kept here, a
+// refresh reads only the assignments added since the last one.
+//
+// That is exact because every input is written once. Assignments are
+// inserted with their publication in one transaction (UpsertPublication),
+// both with ON CONFLICT DO NOTHING; no UPDATE touches attested,
+// host_at_settlement, row_count, or the publication's settlement columns,
+// transaction code or assignment error; and nothing deletes either. So the
+// newest endorsement over old rows and new rows is the newer of the two, and
+// the newest twenty of all rows are the newest twenty of the old twenty and
+// the new rows. Rowids only grow: a rowid table without deletes takes
+// max(rowid)+1, and the one writer commits in order, so every row with a
+// rowid at or below the highest one a read sees was committed before it.
+//
+// The ledger does not assume block times increase: the newest endorsement is
+// the largest settlement time, compared as SQLite compared it (bytewise), and
+// the order of "newest" is (settlement height, transaction index), as it was.
+// A tie on both, which the chain does not produce, is broken by rowid, newest
+// first, where the window function left it to the plan.
+//
+// The zero value is ready to use.
+type endorsementLedger struct {
+	mu sync.Mutex
+	// upTo is the highest assignments rowid folded in.
+	upTo int64
+	vals map[string]*ledgerEntry
+}
+
+type ledgerEntry struct {
+	// top is the newest assigned promises, newest first, at most
+	// recentEndorsements of them.
+	top []ledgerRow
+	// last is the settlement time of the newest endorsement; set says there
+	// is one.
+	last string
+	set  bool
+}
+
+type ledgerRow struct {
+	height, txIndex, rowid, attested int64
+}
+
+// newer orders ledger rows newest first.
+func (r ledgerRow) newer(o ledgerRow) bool {
+	if r.height != o.height {
+		return r.height > o.height
 	}
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT validator_address, COUNT(*), COALESCE(SUM(attested), 0), MAX(last_endorsed)
-		FROM (SELECT a.validator_address AS validator_address, a.attested AS attested,
-				MAX(CASE WHEN a.attested = 1 THEN p.settlement_time END) OVER (PARTITION BY a.validator_address) AS last_endorsed,
-				ROW_NUMBER() OVER (PARTITION BY a.validator_address ORDER BY p.settlement_height DESC, p.settlement_tx_index DESC) AS rn
-			FROM assignments a JOIN publications p ON p.promise_hash = a.promise_hash
-			WHERE p.settlement_tx_code = 0 AND p.assignment_error = '' AND a.row_count > 0
-			  AND a.host_at_settlement IS NOT '' AND a.attested IS NOT NULL`+filter+`)
-		WHERE rn <= ? GROUP BY validator_address`, args...)
+	if r.txIndex != o.txIndex {
+		return r.txIndex > o.txIndex
+	}
+	return r.rowid > o.rowid
+}
+
+// add folds one row in. Adding a row that is already there changes nothing,
+// so a refresh that failed half way can be run again.
+func (e *ledgerEntry) add(r ledgerRow, at string) {
+	if r.attested == 1 && (!e.set || at > e.last) {
+		e.last, e.set = at, true
+	}
+	i := 0
+	for i < len(e.top) && e.top[i].newer(r) {
+		i++
+	}
+	if i < len(e.top) && e.top[i].rowid == r.rowid {
+		return
+	}
+	if i >= recentEndorsements {
+		return
+	}
+	e.top = append(e.top, ledgerRow{})
+	copy(e.top[i+1:], e.top[i:])
+	e.top[i] = r
+	if len(e.top) > recentEndorsements {
+		e.top = e.top[:recentEndorsements]
+	}
+}
+
+// refresh folds in every assignment stored since the last refresh. The
+// caller holds l.mu.
+func (l *endorsementLedger) refresh(ctx context.Context, db *sql.DB) error {
+	var hi int64
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(rowid), 0) FROM assignments`).Scan(&hi); err != nil {
+		return err
+	}
+	if hi < l.upTo || l.vals == nil {
+		// Fewer rows than already read: the table is not the one this
+		// ledger was built from. Start again.
+		l.upTo, l.vals = 0, map[string]*ledgerEntry{}
+	}
+	if hi == l.upTo {
+		return nil
+	}
+	rows, err := db.QueryContext(ctx, `SELECT a.rowid, a.validator_address, a.attested,
+			p.settlement_height, p.settlement_tx_index, p.settlement_time
+		FROM assignments a JOIN publications p ON p.promise_hash = a.promise_hash
+		WHERE a.rowid > ? AND a.rowid <= ? AND `+recentPopulationSQL, l.upTo, hi)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var addr string
-		var r recentEndorsement
-		var last sql.NullString
-		if err := rows.Scan(&addr, &r.Assigned, &r.Endorsed, &last); err != nil {
+		var addr, at string
+		var r ledgerRow
+		if err := rows.Scan(&r.rowid, &addr, &r.attested, &r.height, &r.txIndex, &at); err != nil {
 			return err
 		}
+		e := l.vals[addr]
+		if e == nil {
+			e = &ledgerEntry{}
+			l.vals[addr] = e
+		}
+		e.add(r, at)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	l.upTo = hi
+	return nil
+}
+
+// fill brings the ledger up to date and sets Recent and LastEndorsedAt on
+// out, for one validator when only is set.
+func (l *endorsementLedger) fill(ctx context.Context, db *sql.DB, only string, out map[string]signingStats) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := l.refresh(ctx, db); err != nil {
+		return err
+	}
+	for addr, e := range l.vals {
+		if only != "" && addr != only {
+			continue
+		}
 		st := out[addr]
-		st.Recent = r
-		if last.Valid {
-			v := last.String
+		st.Recent = recentEndorsement{Assigned: int64(len(e.top))}
+		for _, r := range e.top {
+			st.Recent.Endorsed += r.attested
+		}
+		if e.set {
+			v := e.last
 			st.LastEndorsedAt = &v
 		}
 		out[addr] = st
 	}
-	return rows.Err()
+	return nil
 }
 
 // fillSigning sets Signing on every row validatorRows built. A validator with

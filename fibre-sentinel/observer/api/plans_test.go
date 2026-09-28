@@ -38,6 +38,9 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 		want []string
 	}
 	var cases []c
+	// scans names, per case, tables it may walk whole; the reason is on the
+	// cases that fill it.
+	scans := map[string][]string{}
 	for _, tb := range []struct{ table, ok, vantage, idx string }{
 		{"reachability", `outcome <> 'PROBE_ERROR'`, "ut-1", "reachability_latest_answer"},
 		{"probes", `outcome NOT IN ('MISSED','PROBE_ERROR')`, "", "probes_latest_answer"},
@@ -89,6 +92,44 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 		c{"one point's rows with sampled-out rows", `SELECT COUNT(*) FROM probe_rows WHERE scheduled_at = ?`,
 			[]any{lo}, []string{"probes_scheduled (scheduled_at=?)", "sampling_decision_points_scheduled (scheduled_at=?)"}},
 	)
+	// The per-snapshot statements the validator list and the network summary
+	// read chain records with. Each may walk publications whole: nothing
+	// indexes settlement_time, and a walk that reads each row's local payload
+	// and never its raw_json costs about a millisecond per thousand
+	// publications. What they must not do is walk assignments, which grow by
+	// one row per validator per blob and are never pruned: the assignments
+	// are sought from the publications selected, by primary key.
+	const now = "2026-09-08T00:00:00.000Z"
+	for _, only := range []string{"", " AND a.validator_address = ?5"} {
+		args := []any{lo, hi, now, "{}"}
+		if only != "" {
+			args = append(args, "ab")
+		}
+		cases = append(cases, c{"load one pass" + only, loadSQL(only), args,
+			[]string{"MATERIALIZE pb", "SCAN pb", "SEARCH a USING INDEX", "(promise_hash=?"}})
+		scans["load one pass"+only] = []string{"p", "json_each", "pb"}
+	}
+	for _, only := range []string{"", " AND a.validator_address = ?"} {
+		args := []any{lo, hi}
+		if only != "" {
+			args = append(args, "ab")
+		}
+		cases = append(cases, c{"signing by validator" + only, signingByValidatorSQL(only), args,
+			[]string{"SCAN p", "SEARCH a USING INDEX", "(promise_hash=?"}})
+		scans["signing by validator"+only] = []string{"p"}
+	}
+	cases = append(cases,
+		c{"load memo candidates", `SELECT p.promise_hash FROM publications p WHERE ` + loadPopulationSQL, []any{lo, hi, now},
+			[]string{"SCAN p"}},
+		c{"load memo lookup", `SELECT p.promise_hash, ` + originalRowsSQL + ` FROM json_each(?) j JOIN publications p ON p.promise_hash = j.value`, []any{"[]"},
+			[]string{"SEARCH p USING INDEX sqlite_autoindex_publications_1 (promise_hash=?)"}},
+		c{"endorsement ledger", `SELECT a.rowid, a.validator_address, a.attested, p.settlement_height, p.settlement_tx_index, p.settlement_time
+			FROM assignments a JOIN publications p ON p.promise_hash = a.promise_hash
+			WHERE a.rowid > ? AND a.rowid <= ? AND ` + recentPopulationSQL,
+			[]any{0, 10}, []string{"SEARCH a USING INTEGER PRIMARY KEY (rowid>? AND rowid<?)", "SEARCH p USING INDEX sqlite_autoindex_publications_1 (promise_hash=?)"}},
+	)
+	scans["load memo candidates"] = []string{"p"}
+	scans["load memo lookup"] = []string{"j"} // the list of hashes passed in
 	for _, tc := range cases {
 		plan, err := st.QueryPlan(ctx, tc.q, tc.args...)
 		if err != nil {
@@ -97,7 +138,7 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 		joined := strings.Join(plan, "\n")
 		// probe_rows is the co-routine a UNION ALL view runs as: its arms are
 		// the plan steps above it, and those are what must not walk a table.
-		if bad := store.FullScans(plan, []string{"v", "m", "w", "vp", "vr", "probe_rows"}, apiPartial); len(bad) > 0 {
+		if bad := store.FullScans(plan, append([]string{"v", "m", "w", "vp", "vr", "probe_rows"}, scans[tc.name]...), apiPartial); len(bad) > 0 {
 			t.Errorf("%s walks a whole table or index: %v\nplan:\n%s", tc.name, bad, joined)
 		}
 		for _, w := range tc.want {

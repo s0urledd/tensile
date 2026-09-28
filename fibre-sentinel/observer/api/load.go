@@ -34,31 +34,87 @@ type loadStats struct {
 }
 
 // rowBytesSQL is the row data one assigned row carries: blob_size over the
-// promise's original rows, as recorded with its assignment.
-const rowBytesSQL = `(p.blob_size * 1.0 / NULLIF(json_extract(p.raw_json, '$.assignment.protocol_params.original_rows'), 0))`
+// promise's original rows, as recorded with its assignment. The original rows
+// come from originalRowsMemo when the memo passed them (m, which loadSQL
+// joins) and from the record itself otherwise. The memo only ever holds what
+// json_extract returned for the same record, so the two cannot differ.
+const rowBytesSQL = `(p.blob_size * 1.0 / NULLIF(CASE WHEN m.promise_hash IS NOT NULL THEN m.original_rows
+			ELSE json_extract(p.raw_json, '$.assignment.protocol_params.original_rows') END, 0))`
+
+// loadPopulationSQL selects the publications loadSQL reads: settled, with an
+// assignment, and either in the window (?1, ?2) or still under retention at
+// ?3. originalRowsMemo.doc selects the same set, to know which entries to
+// pass.
+const loadPopulationSQL = `p.settlement_tx_code = 0 AND p.assignment_error = ''
+			AND ((p.settlement_time >= ?1 AND p.settlement_time <= ?2) OR p.must_serve_until > ?3)`
+
+// loadSQL is every figure loadByValidator reads from assignments, in one
+// statement; filter narrows it to one validator (?5).
+//
+// It used to be two statements, the window's figures and what is held now.
+// Each walked every assignment ever stored and parsed its publication's
+// raw_json, about 100 KB, once per assignment row: the same record some 80
+// times per statement, and a minute per validator snapshot at 900
+// publications. Now pb reads each selected publication once, with its row
+// size and which of the two sums it belongs to, and the assignments are
+// sought from it by primary key, so the cost follows the publications
+// selected rather than the whole assignment history.
+//
+// The float sums are pinned to assignment rowid order (ORDER BY a.rowid
+// inside SUM). That is the order the two statements summed in on a deployed
+// store, whose plan walked assignments_validator (validator_address, rowid),
+// and pinning it keeps every figure the same whatever access path SQLite
+// picks here. Each term is the same IEEE operation on the same double as
+// before, and a CASE without ELSE adds NULL, which SUM skips, so a validator
+// with rows on only one side gets the zeros it had when the other statement
+// did not list it.
+func loadSQL(filter string) string {
+	return `WITH m AS MATERIALIZED (SELECT key AS promise_hash, value AS original_rows FROM json_each(?4)),
+		pb AS MATERIALIZED (
+			SELECT p.promise_hash, ` + rowBytesSQL + ` AS rb,
+				(p.settlement_time >= ?1 AND p.settlement_time <= ?2) AS in_win,
+				(p.must_serve_until > ?3) AS held
+			FROM publications p LEFT JOIN m ON m.promise_hash = p.promise_hash
+			WHERE ` + loadPopulationSQL + `)
+		SELECT a.validator_address,
+			COUNT(CASE WHEN pb.in_win THEN 1 END),
+			COALESCE(SUM(CASE WHEN pb.in_win THEN a.row_count END), 0),
+			COALESCE(CAST(SUM(CASE WHEN pb.in_win THEN a.row_count * pb.rb END ORDER BY a.rowid) AS INTEGER), 0),
+			COALESCE(CAST(SUM(CASE WHEN pb.held THEN a.row_count * pb.rb END ORDER BY a.rowid) AS INTEGER), 0)
+		FROM pb CROSS JOIN assignments a ON a.promise_hash = pb.promise_hash
+		WHERE a.row_count > 0 AND a.attested = 1` + filter + `
+		GROUP BY a.validator_address`
+}
 
 // loadByValidator computes loadStats per validator over win, for one
 // validator when only is set.
 func (s *Server) loadByValidator(ctx context.Context, win Window, only string) (map[string]loadStats, error) {
+	return s.loadByValidatorAt(ctx, win, only, time.Now())
+}
+
+// loadByValidatorAt is loadByValidator with "held now" asked at now.
+func (s *Server) loadByValidatorAt(ctx context.Context, win Window, only string, now time.Time) (map[string]loadStats, error) {
 	db := s.st.DB()
-	filter, args := "", []any{win.startArg(), win.endArg()}
+	// held now: retention not over at now, whatever the window
+	nowArg := store.TS(now.UTC())
+	doc, err := s.origRows.doc(ctx, db, win.startArg(), win.endArg(), nowArg)
+	if err != nil {
+		return nil, err
+	}
+	filter, args := "", []any{win.startArg(), win.endArg(), nowArg, doc}
 	if only != "" {
-		filter = ` AND a.validator_address = ?`
+		filter = ` AND a.validator_address = ?5`
 		args = append(args, only)
 	}
 	out := map[string]loadStats{}
-	rows, err := db.QueryContext(ctx, `SELECT a.validator_address, COUNT(*), COALESCE(SUM(a.row_count), 0),
-			COALESCE(CAST(SUM(a.row_count * `+rowBytesSQL+`) AS INTEGER), 0)
-		FROM assignments a JOIN publications p ON p.promise_hash = a.promise_hash
-		WHERE `+signingPopulation+` AND a.row_count > 0 AND a.attested = 1`+filter+`
-		GROUP BY a.validator_address`, args...)
+	rows, err := db.QueryContext(ctx, loadSQL(filter), args...)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var addr string
 		var l loadStats
-		if err := rows.Scan(&addr, &l.Promises, &l.Rows, &l.Bytes); err != nil {
+		if err := rows.Scan(&addr, &l.Promises, &l.Rows, &l.Bytes, &l.StoredBytes); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -67,33 +123,7 @@ func (s *Server) loadByValidator(ctx context.Context, win Window, only string) (
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-
-	// held now: retention not over, whatever the window
-	nowArgs := []any{store.TS(time.Now().UTC())}
-	if only != "" {
-		nowArgs = append(nowArgs, only)
-	}
-	rows, err = db.QueryContext(ctx, `SELECT a.validator_address,
-			COALESCE(CAST(SUM(a.row_count * `+rowBytesSQL+`) AS INTEGER), 0)
-		FROM assignments a JOIN publications p ON p.promise_hash = a.promise_hash
-		WHERE p.settlement_tx_code = 0 AND p.assignment_error = '' AND p.must_serve_until > ?
-		  AND a.row_count > 0 AND a.attested = 1`+filter+`
-		GROUP BY a.validator_address`, nowArgs...)
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-		var addr string
-		var b int64
-		if err := rows.Scan(&addr, &b); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		l := out[addr]
-		l.StoredBytes = b
-		out[addr] = l
-	}
-	if err := rows.Close(); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
