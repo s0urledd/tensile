@@ -87,29 +87,19 @@ sudo cp deploy/publishers.yaml.example /etc/fibre-observer/publishers-mocha.yaml
 Edit `mocha.env`: set `NETWORK`, `RPC`, `VANTAGE`, `DATA_DIR`
 (`/var/lib/fibre-observer/mocha`), `POLICY`
 (`/etc/fibre-observer/policy-mocha.yaml`), `API_LISTEN` (a port of its
-own), and, when you have them, `ALERT_WEBHOOK` and `BACKUP_REMOTE`. Point
-`sampling.master_secret_file` in the policy at
-`<DATA_DIR>/sampling-master.key`; the prober creates it with mode 0600 on
-first run. Keep it there. The file must live under the data directory,
-because the units mount `/etc/fibre-observer` read-only and the service
-user cannot write there.
+own), and, when you have them, `ALERT_WEBHOOK` and `BACKUP_REMOTE`.
 
-That file is what makes the sample auditable. The commitments published at
-`/v1/sampling` are SHA-256 of a per-day secret derived from it, so if the
-master is regenerated on every restart the commitments change with it and
-nobody can ever check a day's draw against them. The prober now refuses to
-start with a sampling policy that sets no `master_secret_file`, rather than
-running on a process-local secret and producing commitments that quietly
-cannot be verified; `-allow-ephemeral-sampling` overrides that, and is only
-for a test. The prober publishes each
-day's secret seven days after the day ends (`-reveal-after`), to
-`<DATA_DIR>/sampling-secrets.jsonl`; the collector serves it beside the
-day's commitment. The reveal runs with the sampling policy, so a prober
-started without `-policy` (probe everything) has nothing to reveal and
-writes no file. Only the day secrets are ever revealed, never the master. It is also the reason the
-sample is unpredictable: a publisher who learned the master in advance could
-work out which of its blobs would be probed, so do not put it anywhere the
-publishers can read, and do not include it in a backup that leaves the host.
+The prober reads every blob; nothing is sampled or budgeted. The policy file
+is read only for the earlier sampling's master secret
+(`<DATA_DIR>/sampling-master.key` unless the policy names another file),
+so the prober can keep publishing each day's secret seven days after the day
+ends (`-reveal-after`, to `<DATA_DIR>/sampling-secrets.jsonl`, served at
+`/v1/sampling`) and the draws made before 27 September 2026 stay
+auditable. A new vantage, which never sampled, can run without `-policy`.
+Only the day secrets are ever revealed, never the master: keep it off
+anything the publishers can read and out of any backup that leaves the host.
+Once the last day that had a draw is revealed, the key (and the old
+`probe-budget.json`) can be deleted and `-policy` dropped.
 
 `host_at_settlement` on every assignment comes from the chain's
 `set_fibre_provider_info` events, read in the same `block_results` pass
@@ -123,10 +113,11 @@ the tip, which the scan needs anyway (a block the node cannot serve is a
 recorded gap, and a registration inside a gap makes the hosts of later
 settlements unknown until the gap is re-scanned).
 
-Leave `-probe-unassigned` off on a public vantage. The read-path rate
-limiting Celestia is designing (forum topic 2295) treats requests for
-shards a validator was never assigned as illegitimate; probing only real,
-in-window, correctly assigned commitments is what keeps the observer's
+The prober asks a validator only for rows it endorsed, in window, one
+request at a time from this observer, and stops once a blob's rows are
+enough. The read-path rate limiting Celestia is designing (forum topic 2295)
+treats requests for shards a validator was never assigned as illegitimate;
+reading only real, in-window, endorsed commitments keeps the observer's
 traffic on the right side of it.
 
 ## 4. systemd
@@ -260,7 +251,7 @@ Nothing is shared between them but the binaries and the static export; a
 data directory belongs to one chain and the scanner refuses to resume it
 against another. Disk: a mocha instance grows by a few GB a month, a
 mainnet instance by what its publication rate makes it (see "Backups"). Two
-instances double the probe bandwidth budget.
+instances double the reading traffic.
 
 ## 6. docker compose (alternative)
 
@@ -276,10 +267,11 @@ project (it binds 80 and 443); for two networks on one host use systemd.
 ## 7. Backups, retention, rebuild
 
 Budget for disk: one measurement is about 1.5 KB in `measurements.jsonl`
-and about twice that again in the database. At a stress scenario
-(60 publications an hour, 100 validators, 6 points) that is about 1.3 GB a
-day of JSONL plus the database; at a realistic mocha rate it is a few GB a
-month. The JSONL files are the record; the three biggest are kept bounded
+and about twice that again in the database, one per validator a reading
+asks. At mocha's current rate (about 350 publications an hour, 11 to 27
+validators asked each) that is about 0.25 GB a day of JSONL plus the
+database; the earlier schedule, six readings of every endorsing validator,
+wrote several times that. The JSONL files are the record; the three biggest are kept bounded
 by moving their older lines into compressed segments under `archive/`
 (below), never by deleting a line. `/v1/health` fails the `disk` check
 under 5% free so the alert arrives before a write does. When a disk fills,

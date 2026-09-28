@@ -1,8 +1,9 @@
 # fibre-sentinel
 
 The measurement core of Tensile. It watches the chain for Fibre publications
-and then, from the outside, checks whether the assigned validators keep serving
-each blob for its retention window. The observer service built on it (store,
+and then, from the outside, reads each blob near the end of its retention
+window the way celestia-app's own client downloads it, and records which
+validators served their rows. The observer service built on it (store,
 collector, API) lives in `observer/` and `cmd/observer-*`.
 
 ```
@@ -20,9 +21,10 @@ Two core programs:
   RPC endpoint, finds every publication (a transaction whose sole message is
   `MsgPayForFibre`), decodes the full `PaymentPromise`, and writes one record
   per publication to `publications.jsonl`. Never contacts a validator.
-- **`sentinel-probe`** — measurement. Turns each record into a probe schedule
-  over that blob's retention window and appends one raw `Measurement` per probe
-  to `measurements.jsonl`, classified against a fault taxonomy.
+- **`sentinel-probe`** — measurement. Reads each recorded blob once, 10
+  minutes before its retention window ends, and appends one raw
+  `Measurement` per validator asked to `measurements.jsonl`, classified
+  against a fault taxonomy.
 
 ---
 
@@ -51,19 +53,25 @@ validator. Everything it needs — the validator set, each validator's registere
 host, the consensus key that endorses each TLS identity, the assignment — it
 reads from the chain and recomputes itself (`fibre-assign`, `fibre-tlsverify`).
 
-### Why repeated measurement across the window
+### Why one reading, as the client makes it
 
-The obligation is to serve **continuously for the whole window**, not to serve
-at some single moment. One probe at `t + 2min` says nothing about `t + 3h`. A
-validator could answer only when it senses a probe, or go dark for an hour in
-the middle, or prune early under disk pressure.
+What a Fibre blob promises its reader is that it can be downloaded until its
+deadline. So the Sentinel downloads it the way a reader does, with
+celestia-app's own rules (`fibre/download.go`): the validators that endorsed
+the promise, in the client's order (`validator.Set.Select`), the next one
+asked while the rows still wanted outnumber the rows on their way, 15 s per
+request, one re-dial after a failed dial or a timeout, every row verified
+against the commitment, and the download done at the rows that reconstruct
+the blob (4096 of 16384 for blob version 0). It reads **once, 10 minutes
+before the deadline**, where a validator that pruned early or moved on shows.
+When every endorsing validator has been asked and the rows are still short,
+it asks those that did not serve once more a minute later; only then is the
+blob **unavailable**.
 
-So the Sentinel probes **several points spread across each blob's own window**,
-and the points are packed toward the deadline (`x^0.7` spacing, configurable).
-That is deliberate: retention breaches concentrate near the end of the window —
-a validator under storage pressure prunes early, a validator that has "moved on"
-stops responding as the deadline approaches. An evenly-spaced schedule spends
-probes on the easy early period where almost nothing fails.
+A validator counts as **not served** only on an unavailable blob, when its
+rows did not come back. On an available blob a validator that failed, or one
+the reading did not need to ask, counts neither way: the blob was there for
+any reader.
 
 ### Why the tolerance is set from the *measured* prune lag
 
@@ -85,7 +93,8 @@ fault, it would raise a false alarm on **every single publication**, because
 that lag *is* the honest behaviour. So the **grace window** — the span after
 `must_serve_until` where `NOT_FOUND` is tolerated, not faulted — is set from the
 measured lag plus margin (`-prune-tolerance`, default **2m30s**), never from the
-protocol number. This is the line between a monitor operators trust and one they
+protocol number. The reading stays clear of it: no request starts later than
+60 s before the deadline. This is the line between a monitor operators trust and one they
 mute. Run against a network with a different `shard_retention` or prune cadence,
 re-measure, and set `-prune-tolerance` to match.
 
@@ -161,18 +170,22 @@ every record embeds the fingerprint so it is self-describing.
 
 ## sentinel-probe
 
-Each cycle, for every publication:
+Each cycle it plans every publication's reading and hands the due ones to a
+dispatcher (`internal/probe/prober.go`, `blobread.go`):
 
-**1. Derives a probe schedule** from that record's window
-`[settlement_time, must_serve_until]` — a few in-window points (`x^0.7` spacing,
-`-in-window-probes`), one **grace** point (`must_serve_until + -grace-offset`),
-one **post** point (`must_serve_until + -prune-tolerance + -post-margin`, where
-`NOT_FOUND` is the expected answer). The window comes from the record, so the
-cadence follows the on-chain params that were in force when the blob was
-published.
+**1. When.** `must_serve_until - 10 min` (`-end-read-offset`), half way
+through a shorter window. A reading that cannot start by `must_serve_until -
+3 min` (`-read-deadline`) is not made: its endorsing validators get a
+`NOT_PROBED` row, this observer's gap. Publications settled before
+`-end-read-since` were read on the earlier schedule and are left alone.
 
-**2. Probes each assigned validator**, layer by layer, each timed and judged on
-its own:
+**2. Who, in what order.** The validators whose signature the settled promise
+carries, in the order celestia-app's client uses (`ClientOrder`, which calls
+`validator.Set.Select` over the set at the promise height), each expected to
+return its assigned rows.
+
+**3. Each request**, layer by layer, each timed and judged on its own, 15 s in
+all (`-download-timeout`, the client's `RPCTimeout`):
 
 | layer | check |
 |---|---|
@@ -180,47 +193,47 @@ its own:
 | L2 TCP | connect |
 | L3 TLS | TLS 1.3 handshake (raw), record version / cipher / peer-cert fingerprint + validity |
 | L3 identity | `fibre-tlsverify` — the peer cert's extension must be endorsed by the validator's consensus key for this chain ID |
-| L4 retrievability | `DownloadShard`, then verify the returned rows against the commitment (`pkg/rsema1d`) **and** against the recomputed `fibre-assign` assignment |
+| L4 retrievability | `DownloadShard`, then verify the returned rows against the commitment with the reading's shared `rsema1d` Reconstructor **and** against the recomputed `fibre-assign` assignment |
 
-Hosts come from `x/valaddr` `AllBondedFibreProviders` (latest height, cached);
-consensus keys from `/validators` at the promise height. The assignment is
-**recomputed** here and cross-checked against the row counts in the scan record
-— a mismatch is a hard error, not a silent divergence.
+A failed dial, an unreachable peer or a timeout is asked again at once, as the
+client re-dials. Hosts come from `x/valaddr` `AllBondedFibreProviders`
+(latest height, cached); consensus keys from `/validators` at the promise
+height. The assignment is **recomputed** here and cross-checked against the
+row counts in the scan record — a mismatch is a hard error, not a silent
+divergence.
 
-**3. Appends one raw `Measurement`** per probe: vantage, scheduled/started/
-finished times + lateness, each layer's separate duration and result, the
-identity verdict (with the claimed validity window even on failure), rows
-returned and both verification results, and the raw error text. **No scores** —
-the observer derives rates and obligation verdicts from these records
-(`observer/verdict`, `observer/rollup`).
+**4. Enough.** The reading stops at `original_rows` distinct verified rows.
+Short after every endorsing validator was asked, those that did not serve are
+asked again `-retry-after` (60 s) later, if that pass can start by
+`must_serve_until - 90 s`; otherwise the reading is incomplete and its
+failures are `PROBE_ERROR`.
 
-**Transport-timeout retry.** A Fibre server's default connection cap (16) is
-filled by a single 16-signer upload, so a probe that arrives during an upload
-waits for a slot and can time out at TCP or TLS without saying anything about
-retention. When the first attempt ends in a transport timeout (TCP connect
-timeout, TLS handshake timeout, or gRPC `Unavailable` caused by a timeout) the
-prober waits `-retry-delay` (20s) and runs the probe once more; the second
-attempt is the recorded measurement and carries the first in its `retry`
-field. The retry is skipped when it would land in a different schedule phase
-than the first attempt. `-retry-transport-timeout=false` disables it. A
-download that started and then ran out of time is retried only at a point in
-the last quarter of the retention window, the reading the served verdict
-rests on; earlier in the window the later points show the same thing.
+**5. The record.** One raw `Measurement` per validator asked, all of a
+reading's rows in one write: vantage, scheduled/started/finished times, each
+layer's duration and result, the identity verdict, rows returned and both
+verification results, the raw error text, and `read` (the pass, the place in
+the order, the rows this answer added, what the reading came to). **No
+scores** — the observer derives the blob's status and the obligation verdicts
+from these records (`observer/verdict`, `observer/rollup`). When the reading
+ends unavailable, each `FAULT` is queued for the second vantage to confirm.
 
 ### Error-class taxonomy
 
-Classification is a fact about one probe (given whether the validator is
+Classification is a fact about one request (given whether the validator is
 assigned this shard, whether the settled promise *proves* it stored the shard,
-and which phase the probe's *actual start time* falls in), never an aggregate:
+and which phase the request's *actual start time* falls in), never an
+aggregate. Whether it counts against the validator is decided from the whole
+reading (below the table). The grace, post and unassigned rows come from the
+earlier schedule only:
 
 | assigned | attested | phase | outcome | classification |
 |---|---|---|---|---|
 | yes | no | any | any | **UNATTESTED** (no proof this validator ever stored the shard; outside every rate, in both directions) |
 | yes | yes | in-window (`t < must_serve_until`) | `NOT_FOUND` / `INVALID_ROWS` | **FAULT** (identity verified, and it did not serve what the chain proves it holds; a `NOT_FOUND` within 30 s of the deadline is `TOLERATED`) |
-| yes | yes | in-window | `SERVER_ERROR` | **SERVER_ERROR** (reached, answered with an application error; not distinguishable from a hiccup from one probe) |
+| yes | yes | in-window | `SERVER_ERROR` | **SERVER_ERROR** (reached, answered with an error or an answer no client accepts) |
 | yes | yes | in-window | `RPC_THROTTLED` | **THROTTLED** (reached, refused with a rate limit; says nothing about the shard) |
 | any | any | any | certificate not endorsed by this validator's consensus key | **IDENTITY_MISMATCH** (an unusable endpoint, shown as its status; not a fault) |
-| yes | yes | in-window | `DNS_FAIL` / `TCP_*` / `TLS_HANDSHAKE_FAIL` / `RPC_UNAVAILABLE` / `RPC_ERROR` | **UNREACHABLE** (not a fault: from one vantage this is our path too) |
+| yes | yes | in-window | `DNS_FAIL` / `TCP_*` / `TLS_HANDSHAKE_FAIL` / `RPC_UNAVAILABLE` / `RPC_TIMEOUT` / `RPC_ERROR` | **UNREACHABLE** (from one vantage this is our path too) |
 | yes | yes | any | `NO_REGISTERED_HOST` | **NOT_REGISTERED** (jailing and unbonding drop the bonded entry) |
 | yes | yes | any | `WRONG_ROWS` / `PARTIAL` whose rows verify against the commitment | **SHADOWED_SHARD** (another promise over the same blob answered) |
 | yes | yes | any | lapsed but correctly signed certificate | **IDENTITY_EXPIRED** (a late renewal, not impersonation) |
@@ -232,14 +245,15 @@ and which phase the probe's *actual start time* falls in), never an aggregate:
 | yes | yes | post | `SERVED_OK` | **SERVED_PAST_WINDOW** (fine; affects disk accounting) |
 | no | — | any | `NOT_FOUND` | **EXPECTED_UNASSIGNED** |
 | no | — | any | `SERVED_OK` | **SERVING_UNASSIGNED** (flagged for review) |
-| any | — | any | probe could not run / slot elapsed | **PROBE_ERROR** / **NOT_PROBED** |
+| any | — | any | request could not run / reading not made in time | **PROBE_ERROR** / **NOT_PROBED** |
 
-A **fault** is the only thing said against a validator, and it means both
-halves of one sentence: the observer *reached* it, and it failed to hand over
-a shard the chain *proves* it stored. Anything short of that has its own class
-and stays out of the serve rate in both directions. The rate's population is
-in-window probes only; a grace probe can only ever add HEALTHY, so counting
-grace rewarded over-retention instead of measuring retention.
+**Not served** is the only thing said against a validator: the chain *proves*
+it stored rows of a blob, the blob could *not be reconstructed* from what the
+reading brought back, and its rows did not come back — not found, bad rows,
+no answer, a rejected certificate, an error or no registered host, as a
+reader using the client meets them. On an available blob none of those counts
+either way, and a rate limit never does. Only served and not served enter the
+service rate.
 
 "Attested" means the observer verified a signature from that validator over the
 settled promise against its consensus key. A Fibre server writes the shard to
@@ -251,25 +265,28 @@ than counting the entries the transaction carries.
 
 ### Load shape
 
-Probes run on `-concurrency` (16) workers across validators, never more than
-one connection to a validator at a time. `publications.jsonl`
-is tailed incrementally and a publication is forgotten once every slot of
-its schedule has a row. On a (re)start every elapsed slot without a row gets
-a `NOT_PROBED` row, however old, so an obligation the prober never reached
-is counted as unobserved rather than missing from the obligation total;
-`-backfill-missed` (default 0, unbounded) caps how far back that goes for a
-fresh prober pointed at a data directory with days of history.
-A publication whose settlement tx failed, or whose promise names another
-chain than the RPC's, is skipped with one log line.
+A reading asks only as many validators as it needs, so a validator is asked
+for some blobs, not all of them. At most 16 blobs (`-blob-concurrency`) and
+64 requests (`-concurrency`) are in flight at once, with 512 MiB of shards
+(`-in-flight-mib`), and one validator gets one request from this observer
+at a time (`-per-validator`): a validator busy with another reading is
+passed over and come back to. These only pace the reading; they never drop
+one. `publications.jsonl` is tailed incrementally and a publication is
+forgotten once its reading is on record. On a (re)start every reading that
+was not made gets its `NOT_PROBED` rows, however old;
+`-backfill-missed` (default 0, unbounded) caps how far back that goes. A
+publication whose settlement tx failed, or whose promise names another chain
+than the RPC's, is skipped with one log line.
 
-The gRPC receive limit matches the reference client
-(`ProtocolParams.MaxMessageSize()`, about 139 MB), and the download deadline
-grows with the expected shard size (`-download-timeout` plus one second per
-MiB); a download that still does not finish is `RPC_DEADLINE`, a
-`PROBE_ERROR`-class gap, never a fault. Every resolved address of a host is
-tried, IPv4 first, and the download talks to the address the TLS check
-passed on. A validator with no `x/valaddr` host is `NO_REGISTERED_HOST`,
-which counts as unreachable.
+The gRPC receive limit is the protocol's message bound
+(`ProtocolParams.MaxMessageSize()`, about 139 MB), as the client's; an
+answer over it, or one the client cannot parse, is `MALFORMED_SHARD`. Every
+resolved address of a host is tried, IPv4 first, and the download talks to
+the address the TLS check passed on. A validator with no `x/valaddr` host
+is `NO_REGISTERED_HOST`.
+
+`-read-now` reads every publication whose window still leaves room for a
+request at once and exits: a dry run, for a scratch data directory.
 
 Every measurement records `clock_offset_ms` (the observer's clock minus the
 chain's latest block time). Phase boundaries are seconds to minutes wide and
@@ -278,19 +295,15 @@ probes silently; past 30 seconds of offset the prober logs a warning.
 
 ### Restart / no hangs
 
-The pending-probe queue is **never persisted** — it is re-derived every cycle
-from `publications.jsonl` + `measurements.jsonl`, so a restart resumes exactly.
-Each measurement's dedupe key is `(vantage, promise_hash, validator,
-scheduled_at)`. Every wait is bounded: the loop sleeps at most `-max-sleep`
-(30s) between cycles, every probe layer has its own timeout, a schedule point
-older than its lateness allowance is recorded `MISSED` instead of probed
-(`-max-lateness`, 90s, raised to `-max-lateness-fraction` of the blob's own
-window when that is longer: 12 minutes on a 4-hour window, so the tail of a
-hundred-validator point is not dropped because a few dead endpoints held
-the worker pool; the phase is decided from the actual start, and the check
-is repeated right before each probe), and
-SIGINT/SIGTERM stops cleanly. `-once` probes everything currently due and exits;
-`-drain` runs until every schedule is in the past; `-deadline` caps the run.
+The queue of readings is **never persisted** — it is re-derived every cycle
+from `publications.jsonl` + `measurements.jsonl`, so a restart resumes
+exactly; a reading under way when the process stopped is made again if its
+window allows. Each measurement's dedupe key is `(vantage, promise_hash,
+validator, scheduled_at)`. Every wait is bounded: the loop sleeps at most
+`-max-sleep` (30s) between cycles, every request has its own 15 s, and
+SIGINT/SIGTERM stops cleanly. `-once` reads everything currently due and
+exits; `-drain` runs until every known reading is in the past; `-deadline`
+caps the run.
 
 Run one prober per vantage point (`-vantage <name>` is recorded on every
 measurement); several probers writing to independent data dirs give you
@@ -308,8 +321,10 @@ multi-vantage coverage.
 
 **Unit** (`go test ./...`): param-history ordering incl. same-block updates,
 `must_serve_until` derivation, `EventUpdateFibreParams` JSON parse, the
-assignment-table builder, store dedupe/resume, schedule shape/ordering/spacing,
-`PhaseAt` boundaries, the full taxonomy table, and the observer's store,
+assignment-table builder, store dedupe/resume, the reading (against real
+Fibre servers on loopback with encoded shards: the stop at K, the second pass,
+the re-dial, the one-request-per-validator pace), `PhaseAt` boundaries, the
+full taxonomy table, and the observer's store,
 rollup, API and export packages.
 
 **End-to-end, scanner** — `./devtest.sh 4 4`: fresh `multi-node-fibre.sh` devnet,
@@ -318,11 +333,15 @@ rollup, API and export packages.
 (`sigma == distinct == 12291`, all 4 validators hold rows), `sentinel-verify`
 green.
 
-**End-to-end, prober + fault injection** — `./probe-devtest.sh 4 3` (**~14 min**;
-the retention floor is 10 min): scanner + prober against a fresh devnet, then one
-assigned validator's fibre server killed mid-window. The prober drains its whole
-schedule — 3 blobs × 5 schedule points × 4 validators = **60 measurements** —
-and `sentinel-measure-check` confirms the taxonomy held with **zero
+**End-to-end, prober + fault injection** — `./probe-devtest.sh 4 3` (**~10 min**;
+the retention floor is 10 min): scanner + prober against a fresh devnet, one
+validator's fibre server killed before the blobs are read, and each blob read
+once, half way through its window. `sentinel-measure-check` confirms every
+blob was available from the live validators and the killed one was never
+served and never a `FAULT`.
+
+An earlier run, on the earlier schedule (3 blobs × 5 schedule points × 4
+validators = 60 measurements), held the taxonomy with **zero
 misclassifications**:
 
 | classification | count | meaning |
@@ -341,21 +360,21 @@ Sample outputs from that run are committed under [`sample/`](sample/).
 
 ```
 cmd/sentinel-scan          the scanner CLI
-cmd/sentinel-probe         the probe scheduler / measurement service
+cmd/sentinel-probe         the reader: one reading per blob, the Fibre client's way
 cmd/sentinel-pub           devnet publish helper (fibre.Client.Upload + MsgPayForFibre; -abandon / -timeout / -withdraw for the escrow side)
 cmd/sentinel-verify        checks publications.jsonl against expected commitments
 cmd/sentinel-verify-export checks a downloaded daily export offline: sidecar, members vs manifest, ed25519 signature (docs/exports-signing.md)
 cmd/sentinel-anchor        builds and prints (never broadcasts) the PayForBlobs that would anchor an export's manifest digest on Celestia
-cmd/sentinel-measure-check checks measurements.jsonl against the taxonomy
+cmd/sentinel-measure-check checks the readings in measurements.jsonl against the rule
 cmd/sentinel-recompute     re-derives every verdict and figure from the record or a daily export, optionally against the live API
 cmd/sentinel-synth         writes a synthetic network-scale record for load and correctness tests
 cmd/observer-collector     tails the record files into SQLite and polls the endpoint registry
 cmd/observer-heartbeat     dials every registered endpoint (DNS, TCP, TLS, identity) every few minutes
 cmd/observer-api           the read-only JSON API
 internal/scan              scanner, param history, record schema, store, CometBFT RPC client
-internal/probe             schedule, layered probe, measurement store, classifier, prober loop
+internal/probe             reading, client order, layered request, measurement store, classifier, prober loop
 internal/uploadprobe       upload-side measurement groundwork: per-validator results from the fibre client's spans
-observer/                  store, ingest, verdicts, rollups, load policy, exports, API
+observer/                  store, ingest, verdicts, rollups, exports, API (policy: the earlier sampling's master secret)
 sample/                    outputs from a real devtest / probe-devtest run
 ```
 
