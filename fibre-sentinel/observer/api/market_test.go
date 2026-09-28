@@ -529,3 +529,46 @@ func TestMarketBlobsByCommitment(t *testing.T) {
 		t.Fatalf("settlements %d blobs %d, want 4 and 3", m.Settlements, m.Blobs)
 	}
 }
+
+// The Blobs page's facts: namespaces used in the window and on record, and
+// the window's largest settlement.
+func TestMarketNamespacesAndLargestBlob(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	now := time.Now().UTC().Truncate(time.Second)
+	var ps []scan.Payment
+	for i, c := range []struct {
+		hash, ns string
+		size     uint32
+		ago      time.Duration
+	}{{"old", "ns0", 1 << 27, 3 * 24 * time.Hour}, {"a", "ns1", 1 << 20, time.Hour}, {"b", "ns1", 1 << 22, time.Hour}, {"c", "ns2", 1 << 18, time.Hour}} {
+		ps = append(ps, scan.Payment{SchemaVersion: 1, DedupeKey: "tx" + c.hash + ":0", Kind: "settlement", Height: int64(100 + i), Time: now.Add(-c.ago),
+			TxHash: "tx" + c.hash, Publisher: samplePublisher, Processor: samplePublisher, PromiseHash: c.hash, Namespace: c.ns, BlobSize: c.size, Denom: "utia", AmountUtia: 695_000})
+	}
+	if r, err := ingest.Payments(st, writePayments(t, dir, ps), now); err != nil || r.Inserted != int64(len(ps)) {
+		t.Fatalf("ingest payments: inserted=%d err=%v", r.Inserted, err)
+	}
+	ts := httptest.NewServer(api.NewWithVantage(st, api.VantageInfo{Name: "test"}, nil))
+	t.Cleanup(ts.Close)
+	var m struct {
+		Namespaces      int64 `json:"namespaces"`
+		NamespacesTotal int64 `json:"namespaces_total"`
+		LargestBlob     *struct {
+			PromiseHash string `json:"promise_hash"`
+			UploadSize  int64  `json:"upload_size"`
+		} `json:"largest_blob"`
+	}
+	if code := get(t, ts, "/v1/market?window=24h", &m); code != 200 {
+		t.Fatalf("market: %d", code)
+	}
+	if m.Namespaces != 2 || m.NamespacesTotal != 3 {
+		t.Errorf("namespaces %d of %d on record, want 2 of 3", m.Namespaces, m.NamespacesTotal)
+	}
+	if m.LargestBlob == nil || m.LargestBlob.PromiseHash != "b" || m.LargestBlob.UploadSize != 1<<22 {
+		t.Errorf("largest blob %+v, want b at 4 MiB (the 128 MiB one is outside the window)", m.LargestBlob)
+	}
+}

@@ -7,6 +7,7 @@ import { unit } from "@/components/Unit";
 import { useApi, type Meta, type Market, type Network, type Blob, type NamespaceRow, utc, ago, nsDisplay, bytes, int, tia, shortBech } from "@/lib/api";
 import { Mark, type Tier } from "@/components/Verdict";
 import Chart from "@/components/Chart";
+import { Metric, Metrics } from "@/components/Metrics";
 import { buckets } from "@/lib/buckets";
 import Pager, { usePage } from "@/components/Pager";
 import { useWindow, WindowSwitch } from "@/lib/window";
@@ -68,6 +69,10 @@ function Page() {
   // the answer for another period, kept while this one loads, is not this chart
   const series = m && m.window.name === win ? buckets(m, win) : [];
   const per = win === "24h" ? "hour" : "day";
+  // the bucket with the most upload size, the latest of equals
+  const busiest = series.reduce<(typeof series)[number] | null>((b, c) => (c.bytes > 0 && (!b || c.bytes >= b.bytes) ? c : b), null);
+  const lb = m?.largest_blob;
+  const dayOf = (t: string) => new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
   const mib = (v: number) => (v >= 1024 ? `${(v / 1024).toFixed(2)} GiB` : v >= 10 ? `${Math.round(v)} MiB` : `${v.toFixed(2)} MiB`);
   const axisMib = (v: number) => (v >= 1024 ? `${(v / 1024).toFixed(v % 1024 ? 1 : 0)} GiB` : `${Number.isInteger(v) ? v : v.toFixed(1)} MiB`);
   const nsN = nss.data?.namespaces.length ?? 0;
@@ -87,6 +92,17 @@ function Page() {
           <div><h2>On chain</h2><p className="sub">The period&rsquo;s settlements.</p></div>
           <WindowSwitch value={win} onChange={setWin} />
         </div>
+        <Metrics>
+          <Metric label="Largest blob" value={lb ? bytes(lb.upload_size) : "—"} tone={lb ? undefined : "absent"}
+            help={lb ? <><Link href={`/blob/?hash=${lb.promise_hash}`}>{lb.promise_hash.slice(0, 10)}…</Link> · {dayOf(lb.settled_at)}</> : m ? "nothing settled" : " "}
+            title="The settlement with the largest upload size in the period." />
+          <Metric label="Namespaces" value={m?.namespaces != null ? int(m.namespaces) : "—"} tone={m?.namespaces ? undefined : "absent"}
+            help={m?.namespaces_total != null ? `in the period · ${int(m.namespaces_total)} on record` : " "}
+            title="Namespaces the period's settlements used." />
+          <Metric label={`Busiest ${per}`} value={busiest ? busiest.label : "—"} tone={busiest ? undefined : "absent"}
+            help={busiest ? `${bytes(busiest.bytes)} · ${int(busiest.settlements)} settlement${busiest.settlements === 1 ? "" : "s"}` : m ? "nothing settled" : " "}
+            title={`The ${per} with the most upload size settled.`} />
+        </Metrics>
         <div className="charts">
           <div className="card">
             <Chart title={`Upload size per ${per}`} sub={m && series.length ? `${bytes(m.bytes)} in the period` : undefined}
