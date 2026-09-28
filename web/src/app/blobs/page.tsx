@@ -136,7 +136,7 @@ function Page() {
                   {rows && rows.length === 0 && <tr><td colSpan={9} className="muted">No blob recorded{ns.trim() ? " in this namespace" : ""}.</td></tr>}
                   {rows?.map((b) => {
                     const rc = recon(b);
-                    const pub = b.charge?.publisher || b.signer;
+                    const pub = b.publisher || b.charge?.publisher || b.signer;
                     return (
                       <tr key={b.promise_hash}>
                         <td className="mono" title={b.promise_hash}><Link href={`/blob/?hash=${b.promise_hash}`}>{b.promise_hash.slice(0, 10)}…</Link></td>
