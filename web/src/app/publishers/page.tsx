@@ -1,8 +1,8 @@
 "use client";
 import { Suspense } from "react";
 import Link from "next/link";
-import { useApi, type Meta, fmtPct, fmtCount, fmtShare, bytes, utc, ago, tia, shortBech, publisherName, through } from "@/lib/api";
-import { Panel, Cell } from "@/components/Panel";
+import { useApi, type Meta, fmtShare, bytes, utc, ago, tia, int, shortBech, publisherName } from "@/lib/api";
+import { Panel } from "@/components/Panel";
 import Chart, { calendar, CATEGORICAL, OTHER_COLOR, type Row, type Series } from "@/components/Chart";
 import Info from "@/components/Info";
 import { WithdrawalQueueCells, pendingLine } from "@/components/Withdrawals";
@@ -10,6 +10,14 @@ import type { MarketWithQueue, PublisherWithQueue } from "@/lib/withdrawals";
 import { useWindow, WindowSwitch } from "@/lib/window";
 import PreLive, { notLiveOf } from "@/components/PreLive";
 import { unit } from "@/components/Unit";
+import { Metric, Metrics } from "@/components/Metrics";
+import Pager, { usePage } from "@/components/Pager";
+
+/** "Sep 21": a chart's UTC day, as the Blobs chart labels it */
+const dayLabel = (d: string) => new Date(d + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+
+/** rows per page of the publisher list */
+const SIZE = 25;
 
 /**
  * The publisher side of Fibre: who pays for storage, what it costs, and
@@ -20,24 +28,25 @@ import { unit } from "@/components/Unit";
 function Page() {
   // 7d, not the site's 24h: the page's two charts are per UTC day, and a
   // 24h window draws one or two bars, which is not a chart.
-  const [win, setWin] = useWindow("24h");
+  const [win, setWinRaw] = useWindow("7d");
+  const [page, setPage] = usePage();
+  // another period is another list: start from its first page
+  const setWin = (w: typeof win) => { setWinRaw(w); setPage(1); };
   const { data: meta } = useApi<Meta>("/v1/meta");
   // Before activation every market figure is a zero of a module that does not exist yet: one line says so, the tiles show a dash.
   const pre = notLiveOf(meta);
-  const { data: m, error, loading } = useApi<MarketWithQueue>(`/v1/market?window=${win}`);
+  const { data: m, error } = useApi<MarketWithQueue>(`/v1/market?window=${win}`);
   const { data: list } = useApi<{ publishers: PublisherWithQueue[] }>(`/v1/publishers?window=${win}`);
-  const busy = loading && !m;
   const pubs = list?.publishers ?? [];
+  const shown = pubs.slice((page - 1) * SIZE, page * SIZE);
 
   return (
     <>
       <div className="section-head">
-        <h1>Publishers</h1>
+        <div><h1>Publishers</h1><p className="sub">Accounts that publish blobs through Fibre and pay for them from escrow.</p></div>
         {m && (
           <Info label="About these figures">
-            <p>Everything on this page is a count of something the chain recorded; none of it was measured by this observer.</p>
-            <ul>{m.notes.map((n) => <li key={n}>{n}</li>)}</ul>
-            <p className="mono">fee = ({m.price_formula.base_gas.toLocaleString("en-US")} + {m.price_formula.gas_per_chunk.toLocaleString("en-US")} × ⌈size / {bytes(m.price_formula.chunk_bytes)}⌉) gas × {m.price_formula.utia_per_gas} utia</p>
+            <p>Every figure on this page is read from the chain; none was measured by Tensile. <Link href="/methodology/#publishers">How each is counted</Link></p>
           </Info>
         )}
         <span className="spacer" />
@@ -47,69 +56,25 @@ function Page() {
 
       {error && <div className="note hold"><span className="label">Observer</span><p>Cannot reach the observer API: {error}. Nothing below is current.</p></div>}
 
-      {pre ? (
-      <Panel title="Market">
-      <div className="cells three">
-        {["Fees settled", "Publishers", "Paid per MiB", "Timed out", "Settlement rate", "Escrow held"].map((l) => <Cell key={l} label={l} value="—" tone="absent" />)}
-      </div>
-      </Panel>
-      ) : <>
-      <Panel title="Market">
-      <div className="cells three">
-        <Cell label="Fees settled" loading={busy}
-          value={m ? tia(m.fees_settled_utia, { unit: false }) : "—"} unit={m ? "TIA" : undefined}
-          tone={m && m.settlements === 0 ? "absent" : undefined}
-          sub={m ? `${m.settlements.toLocaleString("en-US")} settlement${m.settlements === 1 ? "" : "s"} · ${bytes(m.bytes)}` : undefined}
-          info={<>
-            <p>What publishers paid for the blobs settled in this window, charged from their escrow when the <code>MsgPayForFibre</code> landed.</p>
-            <p>The chain records no amount on a settlement. Each fee is recomputed from the blob&rsquo;s padded size with the module&rsquo;s own formula, which is exactly what it charges.</p>
-            <p><Link href="/methodology/#publishers">Where these numbers come from</Link></p>
-          </>} />
-        <Cell label="Publishers" loading={busy}
-          value={m ? m.publishers_active.toLocaleString("en-US") : "—"}
-          sub={m ? `${m.escrow_accounts} escrow account${m.escrow_accounts === 1 ? "" : "s"}` : undefined}
-          info={<p>Accounts that settled at least one blob in the window. The account charged is the one whose key signed the promise, whoever broadcast the transaction.</p>} />
-        <Cell label="Paid per MiB" loading={busy}
-          value={m?.paid_per_mib_utia != null ? tia(m.paid_per_mib_utia, { unit: false }) : "—"} unit={m?.paid_per_mib_utia != null ? "TIA" : undefined}
-          tone={m?.paid_per_mib_utia == null ? "absent" : undefined}
-          sub={m ? (m.paid_per_mib_utia != null ? "fees over bytes settled" : "nothing settled") : undefined}
-          info={<>
-            <p>Fees settled divided by bytes settled. It falls as blobs get larger: the fee has a fixed part, so a 64 KiB blob pays far more per byte than a 128 MiB one.</p>
-            <p>Sizes are the padded upload size the module charges for, not the payload.</p>
-          </>} />
-        <Cell label="Timed out" loading={busy}
-          value={m ? m.timeouts.toLocaleString("en-US") : "—"}
-          tone={m && m.timeouts > 0 ? "fault" : "absent"}
-          sub={m ? (m.timeouts > 0 ? `${tia(m.timed_out_utia)} charged` : "none reported") : undefined}
-          detail={m && m.timeouts > 0 ? `${tia(m.timed_out_utia)} charged on abandoned promises, reported by ${m.timeout_processors} account${m.timeout_processors === 1 ? "" : "s"}.` : undefined}
-          info={<>
-            <p>Promises a publisher obtained signatures for and never settled, charged anyway once anyone submits the timeout; the chain pays nothing for doing so.</p>
-            <p>This is a floor. A promise nobody reports leaves no trace on chain at all.</p>
-          </>} />
-        <Cell label="Settlement rate" loading={busy}
-          value={m?.settlement_rate.den ? fmtPct(m.settlement_rate) : "—"}
-          tone={m?.settlement_rate.den ? undefined : "absent"}
-          sub={m?.settlement_rate.den ? `${fmtCount(m.settlement_rate)} promises` : "nothing to rate"}
-          info={<p>Settlements over settlements plus reported timeouts. Because unreported timeouts are invisible, this can only overstate how often publishers pay.</p>} />
-        <Cell label="Escrow held" loading={busy}
-          value={m ? tia(m.escrow_total_utia ?? m.escrow_held_utia, { unit: false }) : "—"} unit={m ? "TIA" : undefined}
-          tone={m && (m.escrow_total_utia ?? m.escrow_held_utia) === 0 ? "absent" : undefined}
-          sub={m ? `${tia(m.deposits.utia)} deposited · ${tia(m.withdrawals_requested.utia)} requested out · ${tia(m.withdrawals_executed.utia)} paid out` : undefined}
-          detail={m && m.withdrawals_requested.count > 0 ? `${m.withdrawals_requested.count.toLocaleString("en-US")} withdrawal request${m.withdrawals_requested.count === 1 ? "" : "s"} in the window, ${m.withdrawals_executed.count.toLocaleString("en-US")} paid out. A request pays out after the withdrawal delay; a settlement can shrink a queued request when the balance runs short, which the chain does not announce.` : undefined}
-          info={<>
-            {m?.escrow_total_utia != null
-              ? <p>Every escrow on the chain: the balance of the x/fibre module account, which every deposit is paid into and every settlement, timeout and withdrawal is paid out of{m.escrow_total_at ? <>, read {ago(m.escrow_total_at)}</> : null}. {tia(m.escrow_held_utia)} of it belongs to the {m.escrow_accounts} account{m.escrow_accounts === 1 ? "" : "s"} this observer has seen publish.</p>
-              : <p>The balance the chain holds for every publisher this observer has seen in a payment, read by state query, until the module account&rsquo;s total has been read.</p>}
-            <p>Deposits, withdrawal requests and payouts are the window&rsquo;s.</p>
-          </>} />
-      </div>
-      </Panel>
-
-      {/* The withdrawal queue, read from chain state rather than rebuilt from
-          events (see WithdrawalQueueCells). Absent until the collector has
-          read it, and on a pinned window. */}
-      {m?.withdrawal_queue && <WithdrawalQueueCells q={m.withdrawal_queue} win={win} />}
-      </>}
+      {/* The escrow side: the network totals (fees paid, upload size,
+          publishers) are on the overview and are not repeated here. */}
+      <section className="group" id="summary">
+        <Metrics>
+          <Metric label="Escrow held" value={pre || !m ? "—" : tia(m.escrow_total_utia ?? m.escrow_held_utia)} tone={pre || !m ? "absent" : undefined}
+            help={pre || !m ? " " : `${int(m.escrow_accounts)} escrow account${m.escrow_accounts === 1 ? "" : "s"}`}
+            title="Every escrow on the chain, read from the x/fibre module account." />
+          <Metric label="Deposits" value={pre || !m ? "—" : tia(m.deposits.utia)} tone={pre || !m || m.deposits.count === 0 ? "absent" : undefined}
+            help={pre || !m ? " " : `${int(m.deposits.count)} in the period`}
+            title="TIA paid into escrow accounts in the period." />
+          <Metric label="Withdrawals" value={pre || !m ? "—" : tia(m.withdrawals_requested.utia)} tone={pre || !m || m.withdrawals_requested.count === 0 ? "absent" : undefined}
+            help={pre || !m ? " " : `${int(m.withdrawals_requested.count)} requested in the period`}
+            title="TIA requested out of escrow in the period. What is still waiting to pay out is under Withdrawal queue." />
+          <Metric label="Largest publisher" value={pre || !m || m.largest_poster?.bytes_share == null ? "—" : `${(m.largest_poster.bytes_share * 100).toFixed(1)}%`}
+            tone={pre || !m || !m.largest_poster ? "absent" : undefined}
+            help={pre || !m ? " " : m.largest_poster ? `of upload size · ${publisherName(m.largest_poster)}` : "nothing settled"}
+            title="The publisher with the most upload size in the period, and its share." />
+        </Metrics>
+      </section>
 
       {/* per-day charts need more than one day to say anything: 7d and longer */}
       {m && win !== "24h" && (() => {
@@ -118,7 +83,7 @@ function Page() {
         const byDay = new Map(m.daily.map((d) => [d.day, d]));
         const feeRows: Row[] = days.map((d) => {
           const b = byDay.get(d);
-          return { x: d, label: d.slice(5), values: { fees: b?.fees_utia ?? 0 },
+          return { x: d, label: dayLabel(d), values: { fees: b?.fees_utia ?? 0 },
             note: b ? `${b.settlements} settlement${b.settlements === 1 ? "" : "s"} · ${bytes(b.bytes)}${b.timeouts ? ` · ${b.timeouts} timed out` : ""}` : "nothing settled" };
         });
         const pubs = m.top_publishers.map((p) => p.publisher);
@@ -129,7 +94,7 @@ function Page() {
           for (const r of m.daily_by_publisher) if (r.day === d) values[r.publisher] = (values[r.publisher] ?? 0) + r.bytes;
           const b = byDay.get(d);
           for (const k of Object.keys(values)) values[k] = values[k] / (1 << 20); // MiB, so the axis steps are round
-          return { x: d, label: d.slice(5), values, note: b ? `${b.settlements} settlement${b.settlements === 1 ? "" : "s"}` : "nothing settled" };
+          return { x: d, label: dayLabel(d), values, note: b ? `${b.settlements} settlement${b.settlements === 1 ? "" : "s"}` : "nothing settled" };
         });
         const mib = (v: number) => v >= 1024 ? `${(v / 1024).toFixed(2)} GiB` : v >= 100 ? `${Math.round(v)} MiB` : v >= 10 ? `${v.toFixed(1)} MiB` : `${v.toFixed(2)} MiB`;
         const axisTia = (v: number) => v === 0 ? "0" : v >= 100e6 ? Math.round(v / 1e6).toLocaleString("en-US") : v >= 1e6 ? (v / 1e6).toFixed(v % 1e6 ? 1 : 0) : (v / 1e6).toFixed(2);
@@ -137,26 +102,26 @@ function Page() {
         return (
           <div className="charts">
             <div className="card">
-              <Chart title="Fees settled per day (TIA)" series={[{ key: "fees", label: "fees", color: "var(--accent)" }]} rows={feeRows}
+              <Chart title="Fees paid per day (TIA)" series={[{ key: "fees", label: "fees", color: "var(--accent)" }]} rows={feeRows}
                 fmt={(v) => tia(v)} fmtAxis={axisTia} />
             </div>
             <div className="card">
-              <Chart title="Bytes settled per day, by publisher" series={series} rows={byteRows} fmt={mib} fmtAxis={axisMib} />
+              <Chart title="Upload size per day, by publisher" series={series} rows={byteRows} fmt={mib} fmtAxis={axisMib} />
             </div>
           </div>
         );
       })()}
 
-      <Panel title="Publishers" right={`${pubs.length} · by fees`}>
+      <Panel title="Publishers" right="by fees">
       <div className="tablewrap">
         <table>
           <thead><tr>
             <th>publisher</th>
-            <th className="right">blobs</th>
-            <th className="right">bytes</th>
-            <th className="right">of bytes</th>
-            <th className="right">fees</th>
-            <th className="right">of fees</th>
+            <th className="right">settlements</th>
+            <th className="right">upload size</th>
+            <th className="right">share</th>
+            <th className="right">fees paid</th>
+            <th className="right">share</th>
             <th className="right">per MiB</th>
             <th className="right">timed out</th>
             <th className="right">escrow</th>
@@ -166,7 +131,7 @@ function Page() {
           </tr></thead>
           <tbody>
             {pubs.length === 0 && <tr><td colSpan={12} className="muted">{list ? "No escrow movement recorded in this window." : "Loading…"}</td></tr>}
-            {pubs.map((p) => (
+            {shown.map((p) => (
               <tr key={p.publisher}>
                 <td className="mono">
                   <Link href={`/publisher/?addr=${p.publisher}`} title={p.publisher}>{p.label ? <span className="sans">{p.label}</span> : shortBech(p.publisher)}</Link>
@@ -190,8 +155,13 @@ function Page() {
           </tbody>
         </table>
       </div>
+      {list && <Pager total={pubs.length} page={page} size={SIZE} onPage={setPage} noun={pubs.length === 1 ? "account" : "accounts"} />}
       </Panel>
 
+      {/* The withdrawal queue, read from chain state rather than rebuilt from
+          events (see WithdrawalQueueCells). Absent until the collector has
+          read it, and on a pinned window. */}
+      {!pre && m?.withdrawal_queue && <WithdrawalQueueCells q={m.withdrawal_queue} win={win} />}
     </>
   );
 }

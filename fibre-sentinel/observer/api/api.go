@@ -1291,7 +1291,7 @@ var excludedFromRate = []excludedClass{
 // What the end-of-window reading makes of a class in obligations
 // (probe.EndReadClass); serve_rate itself counts classes as they happened.
 const (
-	endNotServed = "; in obligations, at the end reading, not served (broken)"
+	endNotServed = "; in obligations, at the end reading, not served"
 	endServed    = "; in obligations, at the end reading, served"
 )
 
@@ -3595,7 +3595,15 @@ type reconstruct struct {
 	ServedByAttested int `json:"served_by_attested"`
 }
 
+// maxBlobOffset bounds ?offset=: deep pages are what the cursor is for.
+const maxBlobOffset = 100000
+
 func (s *Server) blobRows(ctx context.Context, where string, limit int, args ...any) ([]blobRow, error) {
+	return s.blobRowsAt(ctx, where, limit, 0, args...)
+}
+
+// blobRowsAt is blobRows from the offset-th row of the same order.
+func (s *Server) blobRowsAt(ctx context.Context, where string, limit, offset int, args ...any) ([]blobRow, error) {
 	q := `SELECT promise_hash, commitment, namespace, blob_size, signer, signer_public_key, settlement_height, settlement_tx_index, settlement_time, creation_timestamp,
 		must_serve_until, validators_with_rows, sigma_rows, distinct_rows, assignment_error, attested_voting_power, total_voting_power, attested_with_rows FROM publications`
 	if where != "" {
@@ -3603,6 +3611,9 @@ func (s *Server) blobRows(ctx context.Context, where string, limit int, args ...
 	}
 	// One more than asked: see probeRows. The caller trims and reports it.
 	q += " ORDER BY settlement_height DESC, settlement_tx_index DESC LIMIT " + strconv.Itoa(limit+1)
+	if offset > 0 {
+		q += " OFFSET " + strconv.Itoa(offset)
+	}
 	rows, err := s.st.DB().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -3663,7 +3674,9 @@ func (s *Server) blobRows(ctx context.Context, where string, limit int, args ...
 	// so a settled verdict is settled for good. One query fetches a
 	// fingerprint of every row's probes and the rest is a map lookup. See
 	// blobcache.go.
-	fps, err := s.probeFingerprints(ctx, where, limit, args...)
+	// The rows this call read, look-ahead row included: a fingerprint of any
+	// other selection would let a cached verdict outlive a change to these.
+	fps, err := s.probeFingerprints(ctx, where, limit+1, offset, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -3966,7 +3979,19 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 		where += `(settlement_height < ? OR (settlement_height = ? AND settlement_tx_index < ?))`
 		args = append(args, h, h, idx)
 	}
-	blobs, err := s.blobRows(r.Context(), where, limit, args...)
+	// offset: numbered pages over the same order. total counts every
+	// publication the filters select, cursor included, so a page reads
+	// "51–75 of total".
+	offset := 0
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		o, err := strconv.Atoi(raw)
+		if err != nil || o < 0 || o > maxBlobOffset {
+			writeErr(w, 400, fmt.Sprintf("offset must be an integer from 0 to %d", maxBlobOffset))
+			return
+		}
+		offset = o
+	}
+	blobs, err := s.blobRowsAt(r.Context(), where, limit, offset, args...)
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
@@ -3975,7 +4000,17 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 		blobs = []blobRow{}
 	}
 	blobs, truncated := trim(blobs, limit)
-	out := map[string]any{"vantage": s.vantage, "blobs": blobs, "limit": limit, "truncated": truncated}
+	var total int64
+	countQ := `SELECT COUNT(*) FROM publications`
+	if where != "" {
+		countQ += " WHERE " + where
+	}
+	if err := s.st.DB().QueryRowContext(r.Context(), countQ, args...).Scan(&total); err != nil {
+		s.writeInternal(w, r.URL.Path, err)
+		return
+	}
+	out := map[string]any{"vantage": s.vantage, "blobs": blobs, "limit": limit, "offset": offset, "total": total, "truncated": truncated,
+		"namespace": strings.ToLower(r.URL.Query().Get("namespace"))}
 	if truncated && len(blobs) > 0 {
 		// The cursor this route already takes, filled in so a caller does not
 		// have to read the last row to build it.
@@ -4069,8 +4104,8 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	probes, moreProbes := trim(probes, 1000)
 	// The points of this blob the correlated-failure guard calls suspect,
-	// tallied as reconstructable tallies them, so the page can show the rows
-	// no verdict counts beside the verdict that left them out.
+	// tallied as reconstructable tallies them: published with the blob, and
+	// left out of each validator's service word as every count leaves them out.
 	suspect := []suspectPoint{}
 	var ss suspectSet
 	spts, err := rollup.SuspectPoints(ctx, s.st.DB(), `promise_hash = ?`, hash)

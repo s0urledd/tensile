@@ -162,6 +162,78 @@ type marketResponse struct {
 	Notes        []string         `json:"notes"`
 	// LargestPoster is the publisher with the most bytes in the window.
 	LargestPoster *publisherShare `json:"largest_poster"`
+	// BlobStats is what the window's settled blobs looked like.
+	BlobStats blobStats `json:"blob_stats"`
+}
+
+// blobStats describes the settlements of a window from the chain alone: how
+// many namespaces they used, the upload size a settlement typically paid
+// for and the largest one, and how far above two thirds of voting power
+// their verified endorsements landed. The endorsement shares cover the
+// settlements whose signatures were verified; Endorsed counts them.
+type blobStats struct {
+	Namespaces       int64    `json:"namespaces"`
+	NamespacesTotal  int64    `json:"namespaces_total"`
+	UploadSizeMedian int64    `json:"upload_size_median"`
+	UploadSizeMax    int64    `json:"upload_size_max"`
+	Endorsed         int64    `json:"endorsed_settlements"`
+	EndorsedMin      *float64 `json:"endorsed_share_min"`
+	EndorsedMedian   *float64 `json:"endorsed_share_median"`
+	EndorsedMax      *float64 `json:"endorsed_share_max"`
+}
+
+// median of a sorted slice: the middle value, or the mean of the two.
+func median[T int64 | float64](xs []T) T {
+	n := len(xs)
+	if n%2 == 1 {
+		return xs[n/2]
+	}
+	return (xs[n/2-1] + xs[n/2]) / 2
+}
+
+// computeBlobStats reads one row per settlement in the window.
+func computeBlobStats(ctx context.Context, db *sql.DB, start, end string) (blobStats, error) {
+	var out blobStats
+	rows, err := db.QueryContext(ctx, `SELECT COALESCE(pay.namespace, ''), pay.blob_size, pub.attested_voting_power, pub.total_voting_power
+		FROM payments pay LEFT JOIN publications pub ON pub.promise_hash = pay.promise_hash
+		WHERE pay.kind = 'settlement' AND pay.time >= ? AND pay.time <= ?`, start, end)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	ns := map[string]bool{}
+	var sizes []int64
+	var shares []float64
+	for rows.Next() {
+		var n string
+		var size int64
+		var att, total sql.NullInt64
+		if err := rows.Scan(&n, &size, &att, &total); err != nil {
+			return out, err
+		}
+		if n != "" {
+			ns[n] = true
+		}
+		sizes = append(sizes, size)
+		if att.Valid && total.Valid && total.Int64 > 0 {
+			shares = append(shares, float64(att.Int64)/float64(total.Int64))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	out.Namespaces = int64(len(ns))
+	if len(sizes) > 0 {
+		sort.Slice(sizes, func(i, j int) bool { return sizes[i] < sizes[j] })
+		out.UploadSizeMedian, out.UploadSizeMax = median(sizes), sizes[len(sizes)-1]
+	}
+	if len(shares) > 0 {
+		sort.Float64s(shares)
+		lo, mid, hi := shares[0], median(shares), shares[len(shares)-1]
+		out.Endorsed, out.EndorsedMin, out.EndorsedMedian, out.EndorsedMax = int64(len(shares)), &lo, &mid, &hi
+	}
+	err = db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT namespace) FROM payments WHERE kind = 'settlement' AND namespace <> '' AND time <= ?`, end).Scan(&out.NamespacesTotal)
+	return out, err
 }
 
 var marketNotes = []string{
@@ -296,6 +368,11 @@ func (s *Server) computeMarket(ctx context.Context, win Window) (*marketResponse
 		return nil, fmt.Errorf("settlements: %w", err)
 	}
 	r.PaidPerMiBUtia = perMiB(r.FeesSettledUtia, r.Bytes)
+	bs, err := computeBlobStats(ctx, db, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("blob stats: %w", err)
+	}
+	r.BlobStats = bs
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT COALESCE(pub.blob_version || ':' || pub.commitment, 'promise:' || pay.promise_hash))
 		FROM payments pay LEFT JOIN publications pub ON pub.promise_hash = pay.promise_hash
 		WHERE pay.kind = 'settlement' AND pay.time >= ? AND pay.time <= ?`, start, end).Scan(&r.Blobs); err != nil {

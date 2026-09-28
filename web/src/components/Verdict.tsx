@@ -29,7 +29,7 @@ type Def = { label: string; tier: Tier; def: string };
 
 const VERDICTS: Record<string, Def> = {
   HEALTHY: {
-    label: "healthy", tier: "kept",
+    label: "served", tier: "kept",
     def: "The endorsed rows came back and verified against the blob commitment.",
   },
   FAULT: {
@@ -41,11 +41,11 @@ const VERDICTS: Record<string, Def> = {
     def: "No answer in time. Not served at the end reading; earlier, kept out of the rate.",
   },
   IDENTITY_EXPIRED: {
-    label: "identity expired", tier: "hold",
+    label: "certificate expired", tier: "hold",
     def: "The right key signed the certificate, but outside its validity window. Not served at the end reading; earlier, kept out of the rate.",
   },
   IDENTITY_MISMATCH: {
-    label: "bad certificate", tier: "hold",
+    label: "wrong certificate", tier: "hold",
     def: "The certificate is not signed by this validator's consensus key. Not served at the end reading; earlier, kept out of the rate.",
   },
   SERVER_ERROR: {
@@ -61,11 +61,11 @@ const VERDICTS: Record<string, Def> = {
     def: "No verified endorsement from this validator on the settled promise, so nothing proves it stored the shard. Not rated.",
   },
   NOT_REGISTERED: {
-    label: "not registered", tier: "held",
+    label: "no endpoint", tier: "held",
     def: "No Fibre host in x/valaddr at the reading. Not served at the end reading; earlier, kept out of the rate.",
   },
   SHADOWED_SHARD: {
-    label: "shadowed shard", tier: "held",
+    label: "shadowed", tier: "held",
     def: "Genuine rows of the blob, but another settled promise's set: the store answers by commitment. Served at the end reading; earlier, kept out of the rate.",
   },
   UNMATCHED_GENUINE: {
@@ -97,11 +97,11 @@ const VERDICTS: Record<string, Def> = {
     def: "Validator returned a shard it was not assigned. Flagged for review.",
   },
   PROBE_ERROR: {
-    label: "probe error", tier: "gap",
+    label: "read failed", tier: "gap",
     def: "Tensile's own reading failed. A gap, not a verdict.",
   },
   NOT_PROBED: {
-    label: "not probed", tier: "gap",
+    label: "not read by Tensile", tier: "gap",
     def: "Tensile did not read this shard. A gap, not a verdict.",
   },
   RETENTION_UNVERIFIED: {

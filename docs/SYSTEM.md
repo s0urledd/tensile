@@ -296,8 +296,8 @@ GET /v1/network               the window summary
 GET /v1/validators            one row per validator
 GET /v1/validators/{addr}     one validator, four windows (addr: consensus hex or
                               valcons1…, operator valoper1…, account address)
-GET /v1/blobs                 publication list
-GET /v1/blobs/{hash}          one blob, per-validator probe matrix
+GET /v1/blobs                 publication list (?limit=, ?offset=, ?namespace=; total)
+GET /v1/blobs/{hash}          one blob: each assigned validator's service word, its probe rows
 GET /v1/probes                raw rows (?blob=, ?at=, ?validator=)
 GET /v1/runs                  every process start/stop with its config
 GET /v1/sampling              day commitments, and secrets once revealed
@@ -358,7 +358,7 @@ Next.js `output: "export"` — plain files, all data fetched in the browser from
 |---|---|
 | `/` | `/v1/meta`, `/v1/network`, `/v1/validators`, `/v1/market` |
 | `/validator/?addr=` | `/v1/validators/{addr}` |
-| `/blobs/` | `/v1/blobs` |
+| `/blobs/` | `/v1/blobs`, `/v1/namespaces`, `/v1/market`, `/v1/network` |
 | `/blob/?hash=` | `/v1/blobs/{hash}` |
 | `/publishers/` | `/v1/market`, `/v1/publishers` |
 | `/publisher/?addr=` | `/v1/publishers/{addr}` |

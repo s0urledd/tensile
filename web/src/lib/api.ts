@@ -643,6 +643,17 @@ export type Market = {
   largest_poster: PublisherShare | null;
   price_formula: PriceFormula;
   notes: string[];
+  /** the window's settlements from the chain alone: namespaces, upload size, endorsed voting power */
+  blob_stats?: {
+    namespaces: number;
+    namespaces_total: number;
+    upload_size_median: number;
+    upload_size_max: number;
+    endorsed_settlements: number;
+    endorsed_share_min: number | null;
+    endorsed_share_median: number | null;
+    endorsed_share_max: number | null;
+  };
 };
 
 export type Escrow = { found: boolean; balance_utia: number; available_utia: number; height: number; updated_at: string };
