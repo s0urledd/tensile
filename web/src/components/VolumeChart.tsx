@@ -54,7 +54,7 @@ export default function VolumeChart({ market, win, metric = "bytes" }: { market:
   const fmt = (v: number) => (metric === "bytes" ? bytes(v) : int(v));
   const unit = win === "24h" ? "hour" : "day";
   return (
-    <div className="vchart" role="img" aria-label={`${metric === "bytes" ? "bytes published" : "settlements"} per ${unit} over the selected period`}>
+    <div className="vchart" role="img" aria-label={`${metric === "bytes" ? "upload size" : "settlements"} per ${unit} over the selected period`}>
       {/* With nothing settled in the period an axis would only label an empty box: no tick labels, one sentence. */}
       <div className="y" aria-hidden={max === 0}>{max > 0 && <><span style={{ top: 0 }}>{fmt(top)}</span><span style={{ top: "50%" }}>{fmt(top / 2)}</span><span style={{ top: "100%" }}>0</span></>}</div>
       <div className="plot">

@@ -13,6 +13,9 @@ import { unit } from "@/components/Unit";
 import { Metric, Metrics } from "@/components/Metrics";
 import Pager, { usePage } from "@/components/Pager";
 
+/** "Sep 21": a chart's UTC day, as the Blobs chart labels it */
+const dayLabel = (d: string) => new Date(d + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+
 /** rows per page of the publisher list */
 const SIZE = 25;
 
@@ -34,7 +37,6 @@ function Page() {
   const { data: list } = useApi<{ publishers: PublisherWithQueue[] }>(`/v1/publishers?window=${win}`);
   const pubs = list?.publishers ?? [];
   const shown = pubs.slice((page - 1) * SIZE, page * SIZE);
-  const queued = m?.withdrawal_queue?.pending;
 
   return (
     <>
@@ -54,20 +56,22 @@ function Page() {
 
       {error && <div className="note hold"><span className="label">Observer</span><p>Cannot reach the observer API: {error}. Nothing below is current.</p></div>}
 
+      {/* The escrow side: the network totals (fees paid, upload size,
+          publishers) are on the overview and are not repeated here. */}
       <section className="group" id="summary">
         <Metrics>
-          <Metric label="Fees" value={pre || !m ? "—" : tia(m.fees_settled_utia)} tone={pre || !m ? "absent" : undefined}
-            help={pre || !m ? " " : `${int(m.settlements)} settlement${m.settlements === 1 ? "" : "s"} · ${m.timeouts > 0 ? `${int(m.timeouts)} timed out` : "none timed out"}`}
-            title="Paid from the publishers' escrow for the blobs settled in the period; not the settlement transaction's own fee." />
-          <Metric label="Bytes published" value={pre || !m ? "—" : bytes(m.bytes)} tone={pre || !m ? "absent" : undefined}
-            help={pre || !m ? " " : m.paid_per_mib_utia != null ? `${tia(m.paid_per_mib_utia)} per MiB` : "nothing settled"}
-            title="The padded blob size publishers paid for, without parity." />
-          <Metric label="Publishers" value={pre || !m ? "—" : int(m.publishers_active)} tone={pre || !m ? "absent" : undefined}
-            help={pre || !m ? " " : `with a blob in the period · ${int(m.escrow_accounts)} escrow account${m.escrow_accounts === 1 ? "" : "s"}`}
-            title="Escrow owners whose blobs settled in the period." />
           <Metric label="Escrow held" value={pre || !m ? "—" : tia(m.escrow_total_utia ?? m.escrow_held_utia)} tone={pre || !m ? "absent" : undefined}
-            help={pre || !m ? " " : queued && queued.count > 0 ? `${tia(queued.utia)} queued to withdraw` : "nothing queued to withdraw"}
+            help={pre || !m ? " " : `${int(m.escrow_accounts)} escrow account${m.escrow_accounts === 1 ? "" : "s"}`}
             title="Every escrow on the chain, read from the x/fibre module account." />
+          <Metric label="Deposits" value={pre || !m ? "—" : tia(m.deposits.utia)} tone={pre || !m || m.deposits.count === 0 ? "absent" : undefined}
+            help={pre || !m ? " " : `${int(m.deposits.count)} in the period`}
+            title="TIA paid into escrow accounts in the period." />
+          <Metric label="Withdrawals" value={pre || !m ? "—" : tia(m.withdrawals_requested.utia)} tone={pre || !m || m.withdrawals_requested.count === 0 ? "absent" : undefined}
+            help={pre || !m ? " " : `${int(m.withdrawals_requested.count)} requested in the period`}
+            title="TIA requested out of escrow in the period. What is still waiting to pay out is under Withdrawal queue." />
+          <Metric label="Paid per MiB" value={pre || !m || m.paid_per_mib_utia == null ? "—" : tia(m.paid_per_mib_utia)} tone={pre || !m || m.paid_per_mib_utia == null ? "absent" : undefined}
+            help={pre || !m ? " " : m.paid_per_mib_utia != null ? "fees paid over upload size" : "nothing settled"}
+            title="Fees paid in the period divided by upload size. It falls as blobs get larger: the fee has a fixed part." />
         </Metrics>
       </section>
 
@@ -78,7 +82,7 @@ function Page() {
         const byDay = new Map(m.daily.map((d) => [d.day, d]));
         const feeRows: Row[] = days.map((d) => {
           const b = byDay.get(d);
-          return { x: d, label: d.slice(5), values: { fees: b?.fees_utia ?? 0 },
+          return { x: d, label: dayLabel(d), values: { fees: b?.fees_utia ?? 0 },
             note: b ? `${b.settlements} settlement${b.settlements === 1 ? "" : "s"} · ${bytes(b.bytes)}${b.timeouts ? ` · ${b.timeouts} timed out` : ""}` : "nothing settled" };
         });
         const pubs = m.top_publishers.map((p) => p.publisher);
@@ -89,7 +93,7 @@ function Page() {
           for (const r of m.daily_by_publisher) if (r.day === d) values[r.publisher] = (values[r.publisher] ?? 0) + r.bytes;
           const b = byDay.get(d);
           for (const k of Object.keys(values)) values[k] = values[k] / (1 << 20); // MiB, so the axis steps are round
-          return { x: d, label: d.slice(5), values, note: b ? `${b.settlements} settlement${b.settlements === 1 ? "" : "s"}` : "nothing settled" };
+          return { x: d, label: dayLabel(d), values, note: b ? `${b.settlements} settlement${b.settlements === 1 ? "" : "s"}` : "nothing settled" };
         });
         const mib = (v: number) => v >= 1024 ? `${(v / 1024).toFixed(2)} GiB` : v >= 100 ? `${Math.round(v)} MiB` : v >= 10 ? `${v.toFixed(1)} MiB` : `${v.toFixed(2)} MiB`;
         const axisTia = (v: number) => v === 0 ? "0" : v >= 100e6 ? Math.round(v / 1e6).toLocaleString("en-US") : v >= 1e6 ? (v / 1e6).toFixed(v % 1e6 ? 1 : 0) : (v / 1e6).toFixed(2);
@@ -97,11 +101,11 @@ function Page() {
         return (
           <div className="charts">
             <div className="card">
-              <Chart title="Fees per day (TIA)" series={[{ key: "fees", label: "fees", color: "var(--accent)" }]} rows={feeRows}
+              <Chart title="Fees paid per day (TIA)" series={[{ key: "fees", label: "fees", color: "var(--accent)" }]} rows={feeRows}
                 fmt={(v) => tia(v)} fmtAxis={axisTia} />
             </div>
             <div className="card">
-              <Chart title="Bytes published per day, by publisher" series={series} rows={byteRows} fmt={mib} fmtAxis={axisMib} />
+              <Chart title="Upload size per day, by publisher" series={series} rows={byteRows} fmt={mib} fmtAxis={axisMib} />
             </div>
           </div>
         );
@@ -113,10 +117,10 @@ function Page() {
           <thead><tr>
             <th>publisher</th>
             <th className="right">blobs</th>
-            <th className="right">bytes</th>
-            <th className="right">of bytes</th>
-            <th className="right">fees</th>
-            <th className="right">of fees</th>
+            <th className="right">upload size</th>
+            <th className="right">share</th>
+            <th className="right">fees paid</th>
+            <th className="right">share</th>
             <th className="right">per MiB</th>
             <th className="right">timed out</th>
             <th className="right">escrow</th>

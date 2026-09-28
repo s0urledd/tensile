@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import PreLive from "@/components/PreLive";
 import { unit } from "@/components/Unit";
-import { useApi, type Meta, type Market, type Blob, type NamespaceRow, utc, ago, nsDisplay, bytes, int, tia, shortBech } from "@/lib/api";
+import { useApi, type Meta, type Market, type Network, type Blob, type NamespaceRow, utc, ago, nsDisplay, bytes, int, tia, shortBech } from "@/lib/api";
 import { Mark, type Tier } from "@/components/Verdict";
 import { Metric, Metrics } from "@/components/Metrics";
 import VolumeChart from "@/components/VolumeChart";
@@ -53,6 +53,10 @@ function Page() {
   const { data: meta } = useApi<Meta>("/v1/meta");
   const nss = useApi<{ namespaces: NamespaceRow[] }>("/v1/namespaces?limit=100");
   const { data: m } = useApi<Market>(`/v1/market?window=${win}`);
+  const { data: net } = useApi<Network>(`/v1/network?window=${win}`);
+  const bs = m?.blob_stats;
+  const rc = net?.reconstructable;
+  const pct = (f: number | null | undefined) => (f == null ? "—" : `${(f * 100).toFixed(1)}%`);
   const nsN = nss.data?.namespaces.length ?? 0;
 
   return (
@@ -66,23 +70,26 @@ function Page() {
 
       <section className="group" id="summary">
       <Metrics>
-        <Metric label="Blobs" value={m ? int(m.blobs) : "—"} tone={m ? undefined : "absent"}
-          help={m ? `${int(m.settlements)} settlement${m.settlements === 1 ? "" : "s"} in the period` : " "} title="Distinct blobs (BlobID) settled in the period." />
-        <Metric label="Bytes published" value={m ? bytes(m.bytes) : "—"} tone={m ? undefined : "absent"}
-          help="padded size, as charged" title="The padded blob size publishers paid for, without parity." />
-        <Metric label="Fees" value={m ? tia(m.fees_settled_utia) : "—"} tone={m ? undefined : "absent"}
-          help={m?.paid_per_mib_utia != null ? `${tia(m.paid_per_mib_utia)} per MiB` : "nothing settled"}
-          title="Paid from the publishers' escrow for these blobs; not the settlement transaction's own fee." />
-        <Metric label="Publishers" value={m ? int(m.publishers_active) : "—"} tone={m ? undefined : "absent"}
-          help="with a blob in the period" title="Escrow owners whose blobs settled in the period." />
+        <Metric label="Namespaces" value={bs ? int(bs.namespaces) : "—"} tone={bs ? undefined : "absent"}
+          help={bs ? `in the period · ${int(bs.namespaces_total)} on record` : " "} title="Namespaces the period's blobs were published in." />
+        <Metric label="Upload size" value={bs && bs.upload_size_max > 0 ? bytes(bs.upload_size_median) : "—"} tone={bs && bs.upload_size_max > 0 ? undefined : "absent"}
+          help={bs && bs.upload_size_max > 0 ? `median · largest ${bytes(bs.upload_size_max)}` : "nothing settled"}
+          title="The size a blob paid for, with padding and without parity: the median of the period's settlements, and the largest." />
+        <Metric label="Endorsed voting power" value={pct(bs?.endorsed_share_median)} tone={bs?.endorsed_share_median != null ? undefined : "absent"}
+          help={bs?.endorsed_share_min != null ? `median · ${pct(bs.endorsed_share_min)} to ${pct(bs.endorsed_share_max)}` : "nothing settled"}
+          title="Share of voting power whose signature is on the settlement. A settlement needs ⅔; the publisher stops collecting once it is reached, so the share lands just above it." />
+        <Metric label="Retrievable" value={rc && rc.recoverable.den > 0 ? int(rc.recoverable.num) : "—"} den={rc && rc.recoverable.den > 0 ? int(rc.recoverable.den) : undefined}
+          tone={rc && rc.recoverable.den > 0 ? undefined : "absent"}
+          help={rc ? (rc.recoverable.den > 0 ? `blobs read by Tensile${rc.unknown > 0 ? ` · ${int(rc.unknown)} not read` : ""}` : "none read in the period") : " "}
+          title="Blobs Tensile read near the end of their retention window whose rows were enough to reconstruct them." />
       </Metrics>
       </section>
 
       <section className="group" id="published">
         <div className="vhead">
-          <div><h2>{metric === "bytes" ? "Bytes published" : "Settlements"}</h2><p className="sub">Per UTC {win === "24h" ? "hour" : "day"}</p></div>
+          <div><h2>{metric === "bytes" ? "Upload size" : "Settlements"}</h2><p className="sub">Per UTC {win === "24h" ? "hour" : "day"}</p></div>
           <div className="seg" role="group" aria-label="chart">
-            <button type="button" aria-pressed={metric === "bytes"} onClick={() => setMetric("bytes")}>Bytes</button>
+            <button type="button" aria-pressed={metric === "bytes"} onClick={() => setMetric("bytes")}>Upload size</button>
             <button type="button" aria-pressed={metric === "settlements"} onClick={() => setMetric("settlements")}>Settlements</button>
           </div>
         </div>
@@ -104,7 +111,7 @@ function Page() {
           <>
             <div className="tablewrap framed">
               <table className="bt blist">
-                <thead><tr><th>Blob</th><th>Height</th><th>Settled (UTC)</th><th>Namespace</th><th>Publisher</th><th>Size</th><th>Fee</th>
+                <thead><tr><th>Blob</th><th>Height</th><th>Settled (UTC)</th><th>Namespace</th><th>Publisher</th><th>Upload size</th><th>Fee paid</th>
                   <th title="Share of voting power whose signature on the settlement verified. A settlement needs ⅔.">Endorsed</th><th>Status</th></tr></thead>
                 <tbody>
                   {loading && !data && <tr><td colSpan={9} className="muted">Loading…</td></tr>}
