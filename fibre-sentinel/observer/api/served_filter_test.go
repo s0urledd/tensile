@@ -170,3 +170,58 @@ func TestBlobServiceWords(t *testing.T) {
 		t.Errorf("obl2: %+v, want one in_retention_window", p.Assignments)
 	}
 }
+
+// Before its first reading, an endorsed validator of a blob whose window is
+// still running is in its retention window; an unendorsed one owes nothing.
+func TestBlobServiceBeforeTheFirstReading(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	now := time.Now().UTC().Truncate(time.Second)
+	created := now.Add(-5 * time.Minute)
+	pub := scan.Publication{
+		SchemaVersion: scan.AttestationSchemaVersion, PromiseHash: "new1",
+		SettlementHeight: 100, SettlementTime: created, MustServeUntil: created.Add(4 * time.Hour), RecordedAt: now,
+		SettlementTxHash: "tx", Signer: "celestia1pub",
+		Promise:                 scan.PromiseFields{ChainID: "t", Height: 99, Commitment: "cc", CreationTimestamp: created, BlobSize: 4096},
+		ValidatorSignatureCount: 1,
+		Assignment: scan.AssignmentTable{
+			ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: 4, TotalRows: 16},
+			ValidatorSetHeight: 99, TotalVotingPower: 20, Sigma: 4, Distinct: 4,
+			ValidatorsWithRows: 2, AttestedWithRows: 1, SignatureEntries: 1, SignaturesVerified: 1, AttestedVotingPower: 10,
+			Validators: []scan.ValidatorAssignment{
+				{Address: "endorsed", VotingPower: 10, RowCount: 2, Rows: []int{0, 1}, Attested: true},
+				{Address: "unendorsed", VotingPower: 10, RowCount: 2, Rows: []int{2, 3}, Attested: false},
+			},
+		},
+	}
+	raw, err := json.Marshal(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertPublication(pub, raw); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(api.New(st, "test"))
+	t.Cleanup(ts.Close)
+	var b struct {
+		Assignments []struct {
+			ValidatorAddress string `json:"validator_address"`
+			Service          string `json:"service"`
+		} `json:"assignments"`
+	}
+	if code := get(t, ts, "/v1/blobs/new1", &b); code != 200 {
+		t.Fatalf("new1: %d", code)
+	}
+	want := map[string]string{"endorsed": "in_retention_window", "unendorsed": ""}
+	if len(b.Assignments) != 2 {
+		t.Fatalf("%d assignments", len(b.Assignments))
+	}
+	for _, a := range b.Assignments {
+		if a.Service != want[a.ValidatorAddress] {
+			t.Errorf("%s: service %q, want %q", a.ValidatorAddress, a.Service, want[a.ValidatorAddress])
+		}
+	}
+}

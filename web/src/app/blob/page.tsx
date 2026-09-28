@@ -22,6 +22,9 @@ type Detail = {
   suspect_points?: { at: string; label: string; reason: string }[] | null;
 };
 
+/** when the single end-of-window reading began (END_READ_SINCE on the observer) */
+const END_READ_SINCE = "2026-09-27T16:20:28Z";
+
 /** the service word and its mark */
 const SERVICE: Record<string, [string, string, string]> = {
   served: ["ok", "Served", "The endorsed rows came back and verified against the commitment."],
@@ -61,6 +64,8 @@ function Page() {
     );
   }
   const b = data.blob;
+  // the escrow owner, who paid; the transaction itself can be sent by anyone
+  const pub = b.charge?.publisher || b.signer;
   const probes = data.probes ?? [];
   const assignments = data.assignments ?? [];
   // signatures are a fact of the settled promise, not of any probe: read them from the assignments
@@ -73,13 +78,20 @@ function Page() {
   const so = b.sampled_out;
   const judged = !!rc && (rc.status === "yes" || rc.status === "degraded" || rc.status === "no");
   const over = new Date(b.must_serve_until).getTime() <= Date.now();
+  // Who served is read from the same service words the table shows, so the
+  // sentence, the figures and the rows cannot disagree.
+  const count = (s: string) => assignments.filter((a) => a.service === s).length;
+  const served = count("served"), notServed = count("not_served"), noVerdict = count("no_verdict");
+  const who = notServed > 0 ? `; ${int(notServed)} of ${int(signedN)} endorsing validators did not serve theirs.`
+    : signedN > 0 && served === signedN ? ", and every endorsing validator served its rows."
+    : noVerdict > 0 ? `; ${int(served)} of ${int(signedN)} endorsing validators served theirs, ${int(noVerdict)} without a verdict.`
+    : ".";
   // Retrievable: enough rows came back to reconstruct the blob ("some rows
   // were retrieved, but not enough to reconstruct" is the client's own word
   // for the other case). Whether every endorsing validator served is said
   // beside it, not folded into it.
   const state: [string, string, string] =
-    rc?.status === "yes" ? ["ok", "Retrievable", "Enough rows were retrieved to reconstruct the blob, and every endorsing validator served its rows."]
-    : rc?.status === "degraded" ? ["ok", "Retrievable", `Enough rows were retrieved to reconstruct the blob; ${int(rc.attested_validators - rc.served_by_attested)} of ${int(rc.attested_validators)} endorsing validators did not serve theirs.`]
+    rc?.status === "yes" || rc?.status === "degraded" ? ["ok", "Retrievable", `Enough rows were retrieved to reconstruct the blob${who}`]
     : rc?.status === "no" ? ["hold", "Not retrievable", `Rows were retrieved, but fewer than the ${int(rc.needed_rows)} needed to reconstruct the blob.`]
     : rc?.status === "pending" && !over ? ["none", "In retention window", "Read once, 10 minutes before the retention window ends."]
     : rc?.status === "pending" ? ["none", "Not read by Tensile", "Tensile was offline when this blob's reading was due, and the rows are pruned after the window. Nothing is counted for or against a validator."]
@@ -97,14 +109,16 @@ function Page() {
     const rank = (x: Probe) => (x.schedule_label === "end" ? "1" : "0") + x.started_at;
     if (!cur || rank(p) > rank(cur)) reading.set(p.validator_address, p);
   }
-  const count = (s: string) => assignments.filter((a) => a.service === s).length;
-  const served = count("served"), notServed = count("not_served");
-  const decided = served + notServed;
+  const decided = served + notServed + noVerdict;
+  // Blobs settled since the end reading began are read once, near the end;
+  // earlier ones were read at several points of the window.
+  const endRead = probes.some((p) => p.schedule_label === "end") || (probes.length === 0 && b.settlement_time >= END_READ_SINCE);
   const rows = [...assignments].sort((a, c) => c.voting_power - a.voting_power || a.validator_address.localeCompare(c.validator_address));
   const winLen = dur(b.settlement_time, b.must_serve_until);
   const fill = rc && rc.total_rows > 0 ? Math.min(100, rc.served_distinct_rows / rc.total_rows * 100) : 0;
   const tick = rc && rc.total_rows > 0 ? Math.min(100, rc.needed_rows / rc.total_rows * 100) : 0;
-  const shown = !!rc && rc.total_rows > 0 && (judged || rc.status === "pending");
+  // the rows of a reading still in progress, never of one the window closed on
+  const shown = !!rc && rc.total_rows > 0 && (judged || (rc.status === "pending" && !over));
 
   return (
     <>
@@ -119,7 +133,7 @@ function Page() {
         </div>
       </div>
       <dl className="facts">
-        <div><dt>Publisher</dt><dd title={b.signer}><Link className="mono" href={`/publisher/?addr=${b.signer}`}>{shortMid(b.signer, 14, 6)}</Link></dd></div>
+        <div><dt>Publisher</dt><dd title={pub}><Link className="mono" href={`/publisher/?addr=${pub}`}>{shortMid(pub, 14, 6)}</Link></dd></div>
         <div><dt>Namespace</dt><dd title={b.namespace}><span className="mono">{nsDisplay(b.namespace)}</span><Copy text={b.namespace} label="namespace" /></dd></div>
         <div><dt>Commitment</dt><dd title={b.commitment}><span className="mono">{shortMid(b.commitment, 8, 6)}</span><Copy text={b.commitment} label="commitment" /></dd></div>
         <div><dt>Settled</dt><dd title={utcWord(b.settlement_time)}><span className="mono">#{int(b.settlement_height)}</span><span className="soft"> · {hhmm(b.settlement_time)}</span></dd></div>
@@ -131,30 +145,30 @@ function Page() {
       <section className="group" id="chain">
         <div className="vhead"><div><h2>On chain</h2><p className="sub">Read from the chain, nothing measured.</p></div></div>
         <Metrics>
-          <Metric label="Blob size" value={bytes(b.blob_size)} help="as charged" title="The padded upload size the module charges for, not the payload." />
-          <Metric label="Fee" value={b.charge ? tia(b.charge.fee_utia) : "—"} tone={b.charge ? undefined : "absent"}
-            help={b.charge ? `${int(b.charge.gas_units)} gas · ${b.charge.timed_out ? "timed out" : b.charge.settled ? "settled" : "pending"}` : "recorded before payments were kept"} />
+          <Metric label="Upload size" value={bytes(b.blob_size)} help="with padding, without parity" title="The size the blob paid for." />
+          <Metric label="Fee paid" value={b.charge ? tia(b.charge.fee_utia) : "—"} tone={b.charge ? undefined : "absent"}
+            help={b.charge ? `${int(b.charge.gas_units)} gas · ${b.charge.timed_out ? "timed out" : b.charge.settled ? "settled" : "not settled yet"}` : "recorded before payments were kept"}
+            title="Charged to the publisher's escrow; not the settlement transaction's own fee." />
           <Metric label="Endorsements" value={stake != null ? pctOf(b.attested_voting_power ?? 0, b.total_voting_power ?? 0) : signedKnown ? int(signedN) : "—"}
             tone={stake != null || signedKnown ? undefined : "absent"}
-            help={signedKnown ? `of stake · ${int(signedN)} of ${int(assignments.length)} validators` : "signatures not recorded"}
-            title="Stake whose signature on the settlement verified. A settlement needs signatures from ⅔ of the stake." />
+            help={signedKnown ? `of voting power · ${int(signedN)} of ${int(assignments.length)} validators` : "signatures not recorded"}
+            title="Voting power whose signature on the settlement verified. A settlement needs ⅔." />
           <Metric label="Retention window" value={winLen} help={`${hhmm(b.settlement_time).replace(" UTC", "")} → ${hhmm(b.must_serve_until)}${over ? " · over" : ""}`}
             title="How long the endorsing validators must serve the blob's rows." />
         </Metrics>
       </section>
 
       <section className="group" id="observed">
-        <div className="vhead"><div><h2>Observed by Tensile</h2><p className="sub">Each endorsed shard is read once, near the end of the retention window.</p></div></div>
+        <div className="vhead"><div><h2>Observed by Tensile</h2><p className="sub">{endRead ? "Each endorsed shard is read once, near the end of the retention window." : "Read on the earlier schedule, at several points in the retention window."}</p></div></div>
         <Metrics>
           <Metric label="Rows retrieved" value={shown ? int(rc!.served_distinct_rows) : "—"} tone={shown ? undefined : "absent"}
-            help={rc && rc.total_rows > 0 ? `of ${int(rc.total_rows)} · ${int(rc.needed_rows)} needed` : "no reading completed"}
+            help={shown ? `of ${int(rc!.total_rows)} · ${int(rc!.needed_rows)} needed${rc!.point_at ? ` · read ${hhmm(rc!.point_at)}` : ""}` : !over ? `read before ${hhmm(b.must_serve_until)}` : "no reading completed"}
             title="Distinct rows retrieved and verified against the commitment." />
-          <Metric label="Served" value={decided > 0 ? int(served) : "—"} den={decided > 0 ? int(decided) : undefined} tone={decided > 0 ? undefined : "absent"}
-            help={decided > 0 ? "endorsing validators" : !over ? "read at the end of the window" : "no verdict"} title="Endorsing validators whose rows came back, over those read." />
+          <Metric label="Served" value={decided > 0 ? int(served) : "—"} den={decided > 0 ? int(signedN) : undefined} tone={decided > 0 ? undefined : "absent"}
+            help={decided > 0 ? (noVerdict > 0 ? `endorsing validators · ${int(noVerdict)} without a verdict` : "endorsing validators") : !over ? "read at the end of the window" : "no verdict"}
+            title="Endorsing validators whose rows came back." />
           <Metric label="Not served" value={decided > 0 ? int(notServed) : "—"} tone={decided === 0 ? "absent" : notServed > 0 ? "fault" : undefined}
             help={decided > 0 ? (notServed > 0 ? "endorsed rows did not come back" : "none") : " "} title="Endorsing validators whose rows did not come back." />
-          <Metric label="Read at" value={rc?.point_at ? hhmm(rc.point_at).replace(" UTC", "") : "—"} tone={rc?.point_at ? undefined : "absent"}
-            help={rc?.point_at ? "UTC" : !over ? `due before ${hhmm(b.must_serve_until)}` : "not read"} title={rc?.point_at ? utcWord(rc.point_at) : undefined} />
         </Metrics>
         <div className="retrieved">
           {shown ? (
@@ -195,7 +209,7 @@ function Page() {
                     <td className="num">{int(a.voting_power)}</td>
                     <td className="num">{int(a.row_count)}</td>
                     <td title={a.attested === true ? "Signature verified against the consensus key." : a.attested === false ? "No verified signature on the settlement: nothing owed. A settlement needs signatures from ⅔ of the stake." : "Recorded before signatures were verified."}>{a.attested === true ? "yes" : a.attested === false ? <span className="soft">no</span> : "—"}</td>
-                    <td title={[sv?.[2], detail].filter(Boolean).join(" · ") || (a.attested === false ? "Not endorsed: nothing owed, not read." : "No reading that counts.")}>
+                    <td title={[sv?.[2], detail].filter(Boolean).join(" · ") || (a.attested === false ? "Not endorsed: nothing owed." : "No reading that counts.")}>
                       {sv ? <><span className={"mk " + sv[0]} /> <span className={"word" + (sv[0] === "fault" ? " fault" : "")}>{word}</span></> : <span className="soft">—</span>}
                     </td>
                     <td className="mono soft">{a.host_at_settlement ? a.host_at_settlement : a.host_at_settlement === "" ? <span title="no endpoint registered when the promise settled">—</span> : <span className="sans" title="the registry could not be read at that height">not read</span>}</td>

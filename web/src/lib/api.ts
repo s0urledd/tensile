@@ -313,13 +313,14 @@ export function leftOut(o: Obligations | null | undefined): { sampled: number; n
 }
 
 /**
- * "2,023 sampled out before 27 Sep · 1 not read by Tensile", or "" when
- * nothing is left out. Sampling ended on 27 September 2026, so every
- * sampled-out blob is from before then.
+ * "25 not read by Tensile · 1 no verdict", or "" when nothing is left out.
+ * Not read: no reading at all (sampled out before 27 September 2026, or
+ * Tensile offline). No verdict: read, but no reading near the end counts
+ * either way, as the blob page says it.
  */
 export function leftOutText(o: Obligations | null | undefined): string {
   const { sampled, notObserved } = leftOut(o);
-  return [sampled > 0 ? `${int(sampled)} sampled out before 27 Sep` : "", notObserved > 0 ? `${int(notObserved)} not read by Tensile` : ""].filter(Boolean).join(" · ");
+  return [sampled > 0 ? `${int(sampled)} not read by Tensile` : "", notObserved > 0 ? `${int(notObserved)} no verdict` : ""].filter(Boolean).join(" · ");
 }
 
 export function undecided(o: Obligations | null | undefined): number {

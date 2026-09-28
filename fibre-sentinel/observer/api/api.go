@@ -4086,8 +4086,8 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 // of this one publication, with the same suspect points left out as the
 // page shows, so a validator's word here is the one its counts carry.
 func (s *Server) blobService(ctx context.Context, hash string, ss suspectSet, assigns []assignmentRow) error {
-	var settled string
-	if err := s.st.DB().QueryRowContext(ctx, `SELECT settlement_time FROM publications WHERE promise_hash = ?`, hash).Scan(&settled); err != nil {
+	var settled, msu string
+	if err := s.st.DB().QueryRowContext(ctx, `SELECT settlement_time, must_serve_until FROM publications WHERE promise_hash = ?`, hash).Scan(&settled, &msu); err != nil {
 		return err
 	}
 	now := time.Now().UTC()
@@ -4113,7 +4113,19 @@ func (s *Server) blobService(ctx context.Context, hash string, ss suspectSet, as
 			assigns[i].Service, assigns[i].Provisional = service, prov
 		}
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	// Before its first reading an endorsed validator has no bucket yet; while
+	// the window runs it owes the blob all the same.
+	if msu > store.TS(now) {
+		for i, a := range assigns {
+			if a.Service == "" && a.Attested != nil && *a.Attested {
+				assigns[i].Service = "in_retention_window"
+			}
+		}
+	}
+	return nil
 }
 
 // ---- sampling ----
