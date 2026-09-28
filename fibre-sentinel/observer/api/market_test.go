@@ -564,3 +564,83 @@ func TestMarketNamespaces(t *testing.T) {
 		t.Errorf("namespaces %d of %d on record, want 2 of 3", m.Namespaces, m.NamespacesTotal)
 	}
 }
+
+// The publisher page shows /v1/market's board and /v1/publishers' table side
+// by side. Both come from one snapshot, so they describe the same moment: a
+// settlement that lands after it moves neither until the snapshot is
+// refreshed, and then both at once.
+func TestPublishersAndMarketAreOneSnapshot(t *testing.T) {
+	ts, st := marketServer(t, nil)
+	type board struct {
+		Window     struct{ End time.Time } `json:"window"`
+		ComputedAt string                  `json:"computed_at"`
+		Fees       int64                   `json:"fees_settled_utia"`
+		Top        []struct {
+			Publisher string   `json:"publisher"`
+			FeesShare *float64 `json:"fees_share"`
+		} `json:"top_publishers"`
+		Publishers json.RawMessage `json:"publishers"`
+	}
+	type table struct {
+		Window     struct{ End time.Time } `json:"window"`
+		ComputedAt string                  `json:"computed_at"`
+		Publishers []struct {
+			Publisher string   `json:"publisher"`
+			FeesUtia  int64    `json:"fees_utia"`
+			FeesShare *float64 `json:"fees_share"`
+		} `json:"publishers"`
+	}
+	read := func() (board, table) {
+		t.Helper()
+		var b board
+		var tb table
+		if code := get(t, ts, "/v1/market?window=7d", &b); code != 200 {
+			t.Fatalf("market: %d", code)
+		}
+		if code := get(t, ts, "/v1/publishers?window=7d", &tb); code != 200 {
+			t.Fatalf("publishers: %d", code)
+		}
+		return b, tb
+	}
+	agree := func(b board, tb table) {
+		t.Helper()
+		if b.Publishers != nil {
+			t.Fatalf("/v1/market carries the publisher list: %s", b.Publishers)
+		}
+		if b.ComputedAt == "" || b.ComputedAt != tb.ComputedAt || !b.Window.End.Equal(tb.Window.End) {
+			t.Fatalf("market computed %s over a window ending %s, publishers %s ending %s: not one snapshot",
+				b.ComputedAt, b.Window.End, tb.ComputedAt, tb.Window.End)
+		}
+		var sum int64
+		share := map[string]float64{}
+		for _, p := range tb.Publishers {
+			sum += p.FeesUtia
+			if p.FeesShare != nil {
+				share[p.Publisher] = *p.FeesShare
+			}
+		}
+		if sum != b.Fees {
+			t.Fatalf("the table's fees add up to %d, the board says %d", sum, b.Fees)
+		}
+		for _, p := range b.Top {
+			if p.FeesShare == nil || share[p.Publisher] != *p.FeesShare {
+				t.Fatalf("%s: board share %v, table share %v", p.Publisher, p.FeesShare, share[p.Publisher])
+			}
+		}
+	}
+	b1, t1 := read()
+	agree(b1, t1)
+
+	// A settlement lands after the snapshot: both still show the snapshot.
+	settle := time.Now().Add(-time.Minute)
+	ps := []scan.Payment{{SchemaVersion: 1, DedupeKey: "late", Kind: "settlement", Height: 99, Time: settle, TxHash: "ff",
+		Publisher: samplePublisher, Processor: samplePublisher, PromiseHash: "late", BlobSize: 1 << 20, GasUnits: 830_000, Denom: "utia", AmountUtia: 830_000}}
+	if r, err := ingest.Payments(st, writePayments(t, t.TempDir(), ps), time.Now()); err != nil || r.Inserted != 1 {
+		t.Fatalf("ingest: %+v %v", r, err)
+	}
+	b2, t2 := read()
+	agree(b2, t2)
+	if b2.ComputedAt == b1.ComputedAt && b2.Fees != b1.Fees {
+		t.Fatalf("the board moved without its snapshot: %d → %d", b1.Fees, b2.Fees)
+	}
+}

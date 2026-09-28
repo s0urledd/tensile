@@ -166,6 +166,12 @@ type marketResponse struct {
 	// NamespacesTotal how many any settlement on record has used.
 	Namespaces      int64 `json:"namespaces"`
 	NamespacesTotal int64 `json:"namespaces_total"`
+	// Publishers is /v1/publishers over the same window, computed in the
+	// same pass (computePublishing), so the publisher page's board and its
+	// table cannot describe two moments. It is not part of /v1/market
+	// (handleMarket drops it); it is kept in the snapshot, and in its file,
+	// so a restarted API serves both at once.
+	Publishers []publisherRow `json:"publishers,omitempty"`
 }
 
 var marketNotes = []string{
@@ -497,6 +503,33 @@ func (s *Server) computeMarket(ctx context.Context, win Window) (*marketResponse
 	return r, nil
 }
 
+// computePublishing is the market snapshot: computeMarket and the publisher
+// list over the same window, one right after the other.
+//
+// /v1/publishers used to be computed per request while /v1/market was served
+// from a snapshot, and the publisher page shows both: its board ("largest
+// publisher 93.6%") from one and its table from the other, minutes apart
+// under a burst of blobs, so the page contradicted itself. Serving both from
+// one snapshot, refreshed on the live keeper, keeps them one moment.
+func (s *Server) computePublishing(ctx context.Context, win Window) (*marketResponse, error) {
+	r, err := s.computeMarket(ctx, win)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.publisherRows(ctx, win, "")
+	if err != nil {
+		return nil, fmt.Errorf("publishers: %w", err)
+	}
+	if rows == nil {
+		rows = []publisherRow{}
+	}
+	if err := s.attachPending(ctx, rows); err != nil {
+		return nil, err
+	}
+	r.Publishers = rows
+	return r, nil
+}
+
 // publisherRows lists every publisher with a settlement, timeout, deposit or
 // withdrawal in the window (only narrows to one address).
 func (s *Server) publisherRows(ctx context.Context, win Window, only string) ([]publisherRow, error) {
@@ -748,6 +781,7 @@ func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 	}
 	cp := *resp
 	cp.ComputedAt, cp.ComputeMs = at.UTC().Format(time.RFC3339), ms
+	cp.Publishers = nil // /v1/publishers' half of the snapshot
 	writeJSON(w, 200, cp)
 }
 
@@ -757,22 +791,41 @@ func (s *Server) handlePublishers(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	// Uncached and, on a pinned window, unbounded work: the same ration as
-	// every other route that computes an aggregate on demand.
-	if win.AsOf {
-		if !s.asOf.allow(time.Now()) {
-			w.Header().Set("Retry-After", "2")
-			writeErr(w, 429, "as_of requests are limited to one every two seconds")
+	if !win.AsOf {
+		// The market snapshot's publisher list: the same pass as
+		// /v1/market for this window, so the two agree (computePublishing).
+		// The window is the one the rows were selected with, and
+		// computed_at says when.
+		snap, at, ms, err := s.market.get(r.Context(), s.logf(), win)
+		if err != nil {
+			s.writeInternal(w, r.URL.Path, err)
 			return
 		}
-		if !s.asOf.enter() {
-			w.Header().Set("Retry-After", "5")
-			writeErr(w, 429, "as_of computations already in flight; try again shortly")
-			return
+		rows := snap.Publishers
+		if rows == nil {
+			rows = []publisherRow{}
 		}
-		defer s.asOf.leave()
-		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, 200, map[string]any{
+			"window": snap.Window, "publishers": rows, "count": len(rows),
+			"source": marketSource, "price_formula": formula, "notes": marketNotes, "vantage": s.vantage,
+			"computed_at": at.UTC().Format(time.RFC3339), "compute_ms": ms,
+		})
+		return
 	}
+	// A pinned window is computed on demand, unbounded work: the same ration
+	// as every other route that computes an aggregate on demand.
+	if !s.asOf.allow(time.Now()) {
+		w.Header().Set("Retry-After", "2")
+		writeErr(w, 429, "as_of requests are limited to one every two seconds")
+		return
+	}
+	if !s.asOf.enter() {
+		w.Header().Set("Retry-After", "5")
+		writeErr(w, 429, "as_of computations already in flight; try again shortly")
+		return
+	}
+	defer s.asOf.leave()
+	w.Header().Set("Cache-Control", "no-store")
 	rows, err := s.publisherRows(r.Context(), win, "")
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)

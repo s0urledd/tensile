@@ -156,7 +156,10 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 		}
 		return resp, err
 	})
-	s.market = newSnapshotCache("market", s.computeMarket)
+	// The publisher-side summary and the publisher list are one snapshot, so
+	// the publisher page's board and its table describe the same moment.
+	s.market = newSnapshotCache("market", s.computePublishing)
+	s.market.accept = func(r *marketResponse) bool { return r != nil && r.Publishers != nil }
 	s.vals = newSnapshotCache("validators", func(ctx context.Context, win Window) (validatorSnapshot, error) {
 		rows, err := s.validatorRows(ctx, win, "")
 		if err != nil {
