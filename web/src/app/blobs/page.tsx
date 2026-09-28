@@ -4,10 +4,10 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import PreLive from "@/components/PreLive";
 import { unit } from "@/components/Unit";
-import { useApi, type Meta, type Market, type Network, type Blob, type NamespaceRow, utc, ago, nsDisplay, bytes, int, tia, shortBech } from "@/lib/api";
+import { useApi, type Meta, type Market, type Blob, type NamespaceRow, utc, ago, nsDisplay, bytes, int, tia, shortBech } from "@/lib/api";
 import { Mark, type Tier } from "@/components/Verdict";
 import Chart from "@/components/Chart";
-import { Metric, Figures, Observed } from "@/components/Metrics";
+import { Metric, Figures } from "@/components/Metrics";
 import { buckets } from "@/lib/buckets";
 import Pager, { usePage } from "@/components/Pager";
 import { useWindow, WindowSwitch } from "@/lib/window";
@@ -64,8 +64,6 @@ function Page() {
   const { data: meta } = useApi<Meta>("/v1/meta");
   const nss = useApi<{ namespaces: NamespaceRow[] }>("/v1/namespaces?limit=100");
   const { data: m } = useApi<Market>(`/v1/market?window=${win}`);
-  const { data: net } = useApi<Network>(`/v1/network?window=${win}`);
-  const rc = net?.reconstructable;
   // the answer for another period, kept while this one loads, is not this chart
   const series = m && m.window.name === win ? buckets(m, win) : [];
   const per = win === "24h" ? "hour" : "day";
@@ -100,19 +98,14 @@ function Page() {
           <div className="board-charts">
             <Chart title={`Upload size per ${per}`} figure={m && series.length ? bytes(m.bytes) : undefined} figureNote="in the period"
               series={[{ key: "bytes", label: "upload size", color: "var(--accent)" }]}
-              rows={series.map((c) => ({ x: c.title, label: c.label, values: { bytes: c.bytes / (1 << 20) }, note: `${int(c.settlements)} settlement${c.settlements === 1 ? "" : "s"}` }))}
+              rows={series.map((c) => ({ x: c.title, label: c.label, short: c.short, values: { bytes: c.bytes / (1 << 20) }, note: `${int(c.settlements)} settlement${c.settlements === 1 ? "" : "s"}` }))}
               fmt={mib} fmtAxis={axisMib} empty={m ? "nothing settled in this period" : "loading…"} />
             <Chart title={`Settlements per ${per}`} figure={m && series.length ? int(m.settlements) : undefined} figureNote="in the period"
               series={[{ key: "n", label: "settlements", color: "var(--accent-2)" }]}
-              rows={series.map((c) => ({ x: c.title, label: c.label, values: { n: c.settlements }, note: bytes(c.bytes) }))}
+              rows={series.map((c) => ({ x: c.title, label: c.label, short: c.short, values: { n: c.settlements }, note: bytes(c.bytes) }))}
               fmt={(v) => int(v)} empty={m ? "nothing settled in this period" : "loading…"} />
           </div>
         </div>
-        <Observed label="Available" value={rc && rc.recoverable.den > 0 ? int(rc.recoverable.num) : "—"} den={rc && rc.recoverable.den > 0 ? int(rc.recoverable.den) : undefined}
-          absent={!(rc && rc.recoverable.den > 0)}
-          frac={rc && rc.recoverable.den > 0 ? rc.recoverable.num / rc.recoverable.den : undefined}
-          help={rc ? (rc.recoverable.den > 0 ? "read by Tensile near the window's end" : "none read in the period") : undefined}
-          title="Observed by Tensile: settlements read near the end of their retention window whose rows were enough to reconstruct the blob." />
       </section>
 
       <section id="list" className="listing">

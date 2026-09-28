@@ -63,6 +63,8 @@
   /* a single-series bar fades towards its baseline to this opacity */
   --bar-fade: .58;
   --band-op: .12;
+  /* an axis name stepping back while another is hovered: still 3:1 on the panel (3.4 on white) */
+  --tick-dim: rgb(var(--ink) / .5);
   --glow-op: 0%;
   --seg-track: rgb(var(--ink) / .055);
   --seg-on: #ffffff;
@@ -118,6 +120,7 @@
   --accent-2: #a39bff;
   --bar-fade: .26;
   --band-op: .18;
+  --tick-dim: rgb(var(--ink) / .46); /* 4.0:1 on the panel */
   --glow-op: 55%;
   --seg-track: rgb(255 255 255 / .04);
   --seg-on: rgb(51 179 191 / .16);
@@ -532,7 +535,7 @@ dl.kv dd { margin: 0; word-break: break-all; }
    a soft band in its own hue, the other bars step back, and the readout
    opens beside the bar, value first. */
 .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin: 16px 0 22px; }
-.chart { min-width: 0; }
+.chart { position: relative; min-width: 0; }
 .chart-head { display: grid; gap: 4px; margin-bottom: 14px; }
 .chart-title { display: flex; align-items: center; gap: 8px; font-size: var(--t-cell); font-weight: 600; color: var(--text-2); letter-spacing: .005em; }
 .chart-key { margin-left: -16px; width: 8px; height: 8px; border-radius: 2px; flex: none; background: var(--series, var(--accent)); box-shadow: 0 0 8px color-mix(in srgb, var(--series, var(--accent)) var(--glow-op), transparent); }
@@ -547,16 +550,16 @@ dl.kv dd { margin: 0; word-break: break-all; }
 .chart svg .axis { stroke: var(--baseline); stroke-width: 1; }
 .chart svg .tick { font-family: var(--sans); font-size: var(--t-tiny); fill: var(--text-3); font-variant-numeric: tabular-nums; transition: fill var(--dur); }
 .chart svg .tick.on { fill: var(--text); font-weight: 600; }
-.chart svg .tick.dim { opacity: .35; }
+.chart svg .tick.dim { fill: var(--tick-dim); }
 .chart svg .bar { transition: opacity var(--dur) ease-out, filter var(--dur) ease-out; }
 .chart svg.hovering .col:not(.hover) .bar { opacity: .42; }
 .chart--single svg .col.hover .bar { filter: drop-shadow(0 0 10px color-mix(in srgb, var(--series, var(--accent)) var(--glow-op), transparent)); }
 .chart svg .quiet { fill: var(--baseline); opacity: .7; }
-.chart-empty { position: absolute; inset: 0 0 26px; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+.chart-empty { position: absolute; inset: 0 4px 26px 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
 .chart-empty-badge { display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px; border-radius: 999px; background: var(--paper); box-shadow: var(--shadow-sm), 0 0 0 1px var(--border); font-size: var(--t-small); color: var(--text-2); }
 .chart-empty-badge svg { color: var(--text-3); }
 .chart-tip {
-  position: absolute; top: 4px; left: 0; width: 176px; padding: 10px 12px; border-radius: 10px; box-sizing: border-box;
+  position: absolute; top: 0; left: 0; width: max-content; min-width: 156px; max-width: 232px; padding: 9px 12px 10px; border-radius: 10px; box-sizing: border-box;
   background: color-mix(in srgb, var(--paper) 92%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
   box-shadow: var(--shadow-pop); border: 1px solid var(--border);
   font-size: var(--t-small); pointer-events: none; z-index: 2;
@@ -564,16 +567,17 @@ dl.kv dd { margin: 0; word-break: break-all; }
 }
 @keyframes tip-in { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .chart-tip { animation: none; transition: none; } .chart svg .bar { transition: none; } }
-.chart-tip .tip-x { color: var(--text-3); font-size: var(--t-tiny); letter-spacing: .02em; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.chart-tip .tip-main { display: grid; gap: 1px; }
-.chart-tip .tip-main b { font-size: 18px; font-weight: 600; letter-spacing: -.02em; color: var(--text); line-height: 1.2; }
+.chart-tip.stack { min-width: 184px; }
+.chart-tip .tip-x { color: var(--text-3); font-size: var(--t-tiny); line-height: 14px; letter-spacing: .02em; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chart-tip .tip-main { display: flex; align-items: baseline; gap: 7px; white-space: nowrap; }
+.chart-tip .tip-main b { font-size: 18px; font-weight: 600; letter-spacing: -.02em; color: var(--text); line-height: 22px; }
 .chart-tip .tip-main span { color: var(--text-2); }
 .chart-tip .tip-row { display: flex; align-items: center; gap: 8px; color: var(--text-2); padding: 1px 0; }
 .chart-tip .tip-row .tip-l { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chart-tip .tip-row b { margin-left: auto; font-weight: 600; color: var(--text); white-space: nowrap; }
 .chart-tip .tip-row .sw { width: 10px; height: 3px; border-radius: 2px; }
 .chart-tip .tip-row.total { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 5px; }
-.chart-tip .tip-note { color: var(--text-3); margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
+.chart-tip .tip-note { color: var(--text-3); line-height: 16px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
 .chart-legend .sw { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex: none; }
 .chart-legend { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; font-size: var(--t-small); color: var(--text-2); }
 .chart-legend li { display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px 3px 8px; border-radius: 999px; background: var(--seg-track); white-space: nowrap; }

@@ -85,7 +85,7 @@ function Page() {
         const byDay = new Map(m.daily.map((d) => [d.day, d]));
         const feeRows: Row[] = days.map((d) => {
           const b = byDay.get(d);
-          return { x: d, label: dayLabel(d), values: { fees: b?.fees_utia ?? 0 },
+          return { x: d, label: dayLabel(d), short: String(Number(d.slice(8))), values: { fees: b?.fees_utia ?? 0 },
             note: b ? `${b.settlements} settlement${b.settlements === 1 ? "" : "s"} · ${bytes(b.bytes)}${b.timeouts ? ` · ${b.timeouts} timed out` : ""}` : "nothing settled" };
         });
         const pubs = m.top_publishers.map((p) => p.publisher);
@@ -96,7 +96,7 @@ function Page() {
           for (const r of m.daily_by_publisher) if (r.day === d) values[r.publisher] = (values[r.publisher] ?? 0) + r.bytes;
           const b = byDay.get(d);
           for (const k of Object.keys(values)) values[k] = values[k] / (1 << 20); // MiB, so the axis steps are round
-          return { x: d, label: dayLabel(d), values, note: b ? `${b.settlements} settlement${b.settlements === 1 ? "" : "s"}` : "nothing settled" };
+          return { x: d, label: dayLabel(d), short: String(Number(d.slice(8))), values, note: b ? `${b.settlements} settlement${b.settlements === 1 ? "" : "s"}` : "nothing settled" };
         });
         const mib = (v: number) => v >= 1024 ? `${(v / 1024).toFixed(2)} GiB` : v >= 100 ? `${Math.round(v)} MiB` : v >= 10 ? `${v.toFixed(1)} MiB` : `${v.toFixed(2)} MiB`;
         const axisTia = (v: number) => v === 0 ? "0" : v >= 100e6 ? Math.round(v / 1e6).toLocaleString("en-US") : v >= 1e6 ? (v / 1e6).toFixed(v % 1e6 ? 1 : 0) : (v / 1e6).toFixed(2);
