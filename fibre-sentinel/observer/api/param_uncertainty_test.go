@@ -856,7 +856,7 @@ func TestTheDisclosureSurvivesTheRangeThatCausedIt(t *testing.T) {
 // verdicts published for as long as it is down.
 //
 // The second half is the same scenario with the answer already cached. The
-// window snapshots run to a thirty-minute TTL, so a hold that commits while
+// window snapshots run to a fifteen-minute TTL, so a hold that commits while
 // the snapshot holding the fault stays valid publishes the accusation it
 // exists to withdraw.
 func TestRecordingARangeWithholdsTheRowsAlreadyStored(t *testing.T) {

@@ -164,12 +164,12 @@ and `retention_unverified`, none of which adds a row or moves `MAX(rowid)`.
 The API's window snapshots run to a fifteen-minute TTL and key on
 `meta.param_holds_rev`, which every path that raises or lifts a hold moves;
 without that a withheld fault would stay on the front page for up to a
-quarter of an hour after the hold landed. It is a counter incremented inside SQLite, not a
-timestamp: the collector stamps one `time.Now()` at the top of a pass and
-threads it through every record it ingests, so two ranges landing in the
-same pass wrote the same nanosecond and a snapshot computed between them
-stayed valid across the second one. The API treats the value as an opaque
-token and only compares it for equality.
+quarter of an hour after the hold landed. It is a counter incremented
+inside SQLite, not a timestamp: the collector stamps one `time.Now()` at
+the top of a pass and threads it through every record it ingests, so two
+ranges landing in the same pass wrote the same nanosecond and a snapshot
+computed between them stayed valid across the second one. The API treats
+the value as an opaque token and only compares it for equality.
 
 ---
 
@@ -311,12 +311,23 @@ GET /v1/params                x/fibre params + change log (heights, block times)
 
 **Windows**: `24h`, `7d`, `30d`, `all`.
 
-**Snapshots.** `/v1/network`, `/v1/validators` and `/v1/market` are aggregates
-over hundreds of thousands of rows, so they are computed on a schedule and
-served from `snapshotCache` — with the moment they were taken and how long
-they took published, rather than implied. TTLs: 1m / 5m / 15m / 30m, scaled
-down while the cache is young. Persisted to `<data-dir>/snapshots/` so a
-restart serves the last figures at once; the warm-up then replaces them.
+**Snapshots.** `/v1/network`, `/v1/validators`, `/v1/market` and the
+`/v1/publishers` list are aggregates over hundreds of thousands of rows, so
+they are computed on a schedule and served from `snapshotCache` — with the
+moment they were taken and how long they took published, rather than implied.
+The market and the publisher list are one snapshot, so the publisher page's
+board and table describe the same moment. Keepers refresh every window as its
+TTL runs out, read or not (`newKeepers` in `snapshot.go`): the 24h validator
+list and every market window at 10 s (the live lane), network 24h at 1 min,
+7d at 5 min, 30d and `all` at 15 min except network `all` (the overview's
+Available figure) at 5 min. The 24h validator list, the market and network
+24h each have a keeper of their own; the longer windows share one and take
+turns. A TTL is a floor, not a promise: a computation longer than its TTL
+waits twice its cost (the 24h validator list took 15–22 s in September 2026,
+so it refreshes about every 35–45 s), and the windows of one cache are taken
+at different moments, so a longer window can count less than a shorter one
+until its next refresh. Persisted to `<data-dir>/snapshots/` so a restart
+serves the last figures at once; the warm-up then replaces them.
 
 **Two paths bypass the cache and are rationed** (4-burst, then one per 2s;
 429 with `Retry-After`):

@@ -28,9 +28,10 @@ function Overview() {
   const net = useApi<Network>(`/v1/network?window=${win}`);
   // Tensile's Available figure is "now", not the period: every settlement read so far
   const whole = useApi<Network>("/v1/network?window=all");
-  // The 24h list is refreshed every ten seconds on the observer (endorsements
-  // move with every block), so it is read more often than the longer periods,
-  // whose snapshots move every few minutes.
+  // The 24h list is refreshed as often as every ten seconds on the observer
+  // (endorsements move with every block; in September 2026 its 15-22 s
+  // computation held it to about every 35-45 s), so it is read more often than
+  // the longer periods, whose snapshots move every few minutes.
   const vals = useApi<{ validators: Validator[] }>(`/v1/validators?window=${win}`, win === "24h" ? LIVE_POLL_MS : undefined);
   const market = useApi<Market>(`/v1/market?window=${win}`);
   const newest = useApi<{ blobs: Blob[] }>("/v1/blobs?limit=1", LIVE_POLL_MS);
