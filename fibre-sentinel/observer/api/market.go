@@ -172,6 +172,12 @@ type marketResponse struct {
 	// (handleMarket drops it); it is kept in the snapshot, and in its file,
 	// so a restarted API serves both at once.
 	Publishers []publisherRow `json:"publishers,omitempty"`
+	// PublishersListed says computePublishing filled Publishers. An empty list
+	// is left out of the snapshot file (omitempty), so the list alone cannot
+	// tell this build's file for a window with no publisher from an older
+	// build's, which never carried one; this can. Not part of /v1/market
+	// either.
+	PublishersListed bool `json:"publishers_listed,omitempty"`
 }
 
 var marketNotes = []string{
@@ -503,6 +509,12 @@ func (s *Server) computeMarket(ctx context.Context, win Window) (*marketResponse
 	return r, nil
 }
 
+// marketSnapshotCurrent vets a market snapshot read back from disk: a file
+// from before computePublishing carries no publisher list, and serving it
+// would answer /v1/publishers with an empty table until the warm-up
+// replaced it.
+func marketSnapshotCurrent(r *marketResponse) bool { return r != nil && r.PublishersListed }
+
 // computePublishing is the market snapshot: computeMarket and the publisher
 // list over the same window, one right after the other.
 //
@@ -526,7 +538,7 @@ func (s *Server) computePublishing(ctx context.Context, win Window) (*marketResp
 	if err := s.attachPending(ctx, rows); err != nil {
 		return nil, err
 	}
-	r.Publishers = rows
+	r.Publishers, r.PublishersListed = rows, true
 	return r, nil
 }
 
@@ -781,7 +793,7 @@ func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 	}
 	cp := *resp
 	cp.ComputedAt, cp.ComputeMs = at.UTC().Format(time.RFC3339), ms
-	cp.Publishers = nil // /v1/publishers' half of the snapshot
+	cp.Publishers, cp.PublishersListed = nil, false // /v1/publishers' half of the snapshot
 	writeJSON(w, 200, cp)
 }
 

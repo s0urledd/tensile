@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -298,5 +300,68 @@ func TestAReaderAfterAHoldDoesNotTakeTheRefreshStartedBeforeIt(t *testing.T) {
 	c.bg.Wait()
 	if r.err != nil || r.v != 3 {
 		t.Fatalf("the reader after the hold got %d (%v) after %d computations, want the figure computed after the hold", r.v, r.err, computed.Load())
+	}
+}
+
+// A market snapshot of a window in which no publisher did anything is read
+// back after a restart like any other: its empty publisher list is left out
+// of the file, and the file still says it carries one. A file from before the
+// list was kept in the snapshot is still refused.
+func TestMarketSnapshotWithNoPublisherIsReloaded(t *testing.T) {
+	s := newSnapshotServer(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	s.market = newSnapshotCache("market", s.computePublishing)
+	s.market.accept = marketSnapshotCurrent
+	s.market.persistTo(dir, nil)
+	win := testWindow("24h")
+	v, _, _, err := s.market.get(ctx, nil, win)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Publishers) != 0 || !v.PublishersListed {
+		t.Fatalf("an empty store gave %d publishers, listed %v", len(v.Publishers), v.PublishersListed)
+	}
+	b, err := os.ReadFile(s.market.file("24h"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Value map[string]json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(b, &file); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := file.Value["publishers"]; ok {
+		t.Fatal("the empty list was written to the file; this no longer tests what omitempty leaves out")
+	}
+	if string(file.Value["publishers_listed"]) != "true" {
+		t.Fatalf("the file does not say it carries the list: %s", file.Value["publishers_listed"])
+	}
+	calls := 0
+	c2 := newSnapshotCache("market", func(ctx context.Context, w Window) (*marketResponse, error) {
+		calls++
+		return s.computePublishing(ctx, w)
+	})
+	c2.accept = marketSnapshotCurrent
+	c2.persistTo(dir, nil)
+	if _, _, _, err := c2.get(ctx, nil, win); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatal("the snapshot of a window with no publisher was not read back; it was computed again")
+	}
+
+	old := *v
+	old.Publishers, old.PublishersListed = nil, false
+	s.market.persist("24h", &snap[*marketResponse]{v: &old, at: time.Now(), ms: 1})
+	c3 := newSnapshotCache[*marketResponse]("market", nil)
+	c3.accept = marketSnapshotCurrent
+	c3.persistTo(dir, nil)
+	c3.mu.Lock()
+	n := len(c3.entries)
+	c3.mu.Unlock()
+	if n != 0 {
+		t.Fatal("an older build's market snapshot, without the publisher list, was loaded")
 	}
 }
