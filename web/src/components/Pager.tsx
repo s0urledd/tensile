@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { int } from "@/lib/api";
 
@@ -23,7 +23,7 @@ export function usePage(): [number, (p: number) => void] {
   return [page, set];
 }
 
-/** "Showing 26–50 of 153 settlements" and First ‹ Page 2 of 7 › Last */
+/** "Showing 26–50 of 153 settlements on record" and First ‹ Page 2 of 7 › Last */
 export default function Pager({ total, page, size, onPage, noun }: {
   total: number;
   page: number;
@@ -33,18 +33,21 @@ export default function Pager({ total, page, size, onPage, noun }: {
   noun: string;
 }) {
   const pages = Math.max(1, Math.ceil(total / size));
-  const from = total === 0 ? 0 : (page - 1) * size + 1;
-  const to = Math.min(total, page * size);
+  // a page past the end (an old link, a smaller period) goes to the last one
+  useEffect(() => { if (page > pages) onPage(pages); }, [page, pages, onPage]);
+  const at = Math.min(page, pages);
+  const from = total === 0 ? 0 : (at - 1) * size + 1;
+  const to = Math.min(total, at * size);
   return (
     <div className="pager">
       <span className="count">{total === 0 ? `No ${noun}` : `Showing ${int(from)}–${int(to)} of ${int(total)} ${noun}`}</span>
       {pages > 1 && (
         <span className="ctl" role="group" aria-label="pages">
-          <button type="button" className="btn" disabled={page <= 1} onClick={() => onPage(1)}>First</button>
-          <button type="button" className="btn" disabled={page <= 1} onClick={() => onPage(page - 1)} aria-label="previous page">‹</button>
-          <span className="at">Page {int(Math.min(page, pages))} of {int(pages)}</span>
-          <button type="button" className="btn" disabled={page >= pages} onClick={() => onPage(page + 1)} aria-label="next page">›</button>
-          <button type="button" className="btn" disabled={page >= pages} onClick={() => onPage(pages)}>Last</button>
+          <button type="button" className="btn" disabled={at <= 1} onClick={() => onPage(1)}>First</button>
+          <button type="button" className="btn" disabled={at <= 1} onClick={() => onPage(at - 1)} aria-label="previous page">‹</button>
+          <span className="at">Page {int(at)} of {int(pages)}</span>
+          <button type="button" className="btn" disabled={at >= pages} onClick={() => onPage(at + 1)} aria-label="next page">›</button>
+          <button type="button" className="btn" disabled={at >= pages} onClick={() => onPage(pages)}>Last</button>
         </span>
       )}
     </div>

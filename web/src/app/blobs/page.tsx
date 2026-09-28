@@ -26,13 +26,10 @@ function recon(b: Blob): { word: string; tier: Tier; title: string } {
   if (b.sampled_out && (!r || r.status === "unknown")) {
     return { word: "sampled out", tier: "gap", title: "The load policy of the time drew this blob out of its sample: not read." };
   }
-  if (!r || r.status === "unknown" || (r.status === "pending" && over)) {
-    return !over && (!r || r.status !== "unknown")
+  if (!r || r.status === "unknown" || r.status === "pending") {
+    return !over
       ? { word: "in retention window", tier: "gap", title: "Read once, 10 minutes before the retention window ends." }
       : { word: "not read by Tensile", tier: "gap", title: "No reading of this blob was completed. Nothing is counted for or against a validator." };
-  }
-  if (r.status === "pending") {
-    return { word: "in retention window", tier: "gap", title: "Read once, 10 minutes before the retention window ends." };
   }
   const rows = `${int(r.served_distinct_rows)} of ${int(r.total_rows)} rows retrieved, ${int(r.needed_rows)} needed to reconstruct`;
   if (r.status === "yes" || r.status === "degraded") return { word: "retrievable", tier: "kept", title: rows };
@@ -46,10 +43,21 @@ function Page() {
   const [page, setPage] = usePage();
   const [tab, setTab] = useState<"blobs" | "namespaces">("blobs");
   const [metric, setMetric] = useState<"bytes" | "settlements">("bytes");
-  // a new filter starts from the first page
-  const setNs = (v: string) => { setNsRaw(v); setPage(1); };
+  // a new filter starts from the first page, and lives in the address so a link keeps it
+  const setNs = (v: string) => {
+    setNsRaw(v);
+    setPage(1);
+    try {
+      const u = new URL(window.location.href);
+      if (v.trim()) u.searchParams.set("namespace", v.trim()); else u.searchParams.delete("namespace");
+      window.history.replaceState(null, "", u.pathname + u.search + u.hash);
+    } catch { /* fine */ }
+  };
   const nsq = ns.trim() ? `&namespace=${encodeURIComponent(ns.trim())}` : "";
-  const { data, error, loading } = useApi<BlobPage>(`/v1/blobs?limit=${SIZE}&offset=${(page - 1) * SIZE}${nsq}`);
+  const offset = (page - 1) * SIZE;
+  const { data, error, loading } = useApi<BlobPage>(`/v1/blobs?limit=${SIZE}&offset=${offset}${nsq}`);
+  // the rows of the page asked for, not the last one received while the next loads
+  const rows = data && data.offset === offset ? data.blobs : null;
   const { data: meta } = useApi<Meta>("/v1/meta");
   const nss = useApi<{ namespaces: NamespaceRow[] }>("/v1/namespaces?limit=100");
   const { data: m } = useApi<Market>(`/v1/market?window=${win}`);
@@ -58,31 +66,38 @@ function Page() {
   const rc = net?.reconstructable;
   const pct = (f: number | null | undefined) => (f == null ? "—" : `${(f * 100).toFixed(1)}%`);
   const nsN = nss.data?.namespaces.length ?? 0;
+  const nsMore = !!(nss.data as { truncated?: boolean } | null)?.truncated;
+  const busy = !m; // figures not in yet: a blank line, not "nothing settled"
 
   return (
     <>
       <div className="head">
         <div><h1>Blobs</h1><p className="sub">Blobs published through Fibre and settled on chain.</p></div>
-        <WindowSwitch value={win} onChange={setWin} />
       </div>
       <PreLive meta={meta} />
       {error && !data && <p className="notice">The observer API is not answering ({error}); the page retries every 30 seconds. This is an observer outage, not a Fibre network outage.</p>}
+      {error && data && <p className="sample">Showing the last list received; the API is not answering right now ({error}).</p>}
 
-      <section className="group" id="summary">
-      <Metrics>
-        <Metric label="Namespaces" value={bs ? int(bs.namespaces) : "—"} tone={bs ? undefined : "absent"}
-          help={bs ? `in the period · ${int(bs.namespaces_total)} on record` : " "} title="Namespaces the period's blobs were published in." />
-        <Metric label="Upload size" value={bs && bs.upload_size_max > 0 ? bytes(bs.upload_size_median) : "—"} tone={bs && bs.upload_size_max > 0 ? undefined : "absent"}
-          help={bs && bs.upload_size_max > 0 ? `median · largest ${bytes(bs.upload_size_max)}` : "nothing settled"}
-          title="The size a blob paid for, with padding and without parity: the median of the period's settlements, and the largest." />
-        <Metric label="Endorsed voting power" value={pct(bs?.endorsed_share_median)} tone={bs?.endorsed_share_median != null ? undefined : "absent"}
-          help={bs?.endorsed_share_min != null ? `median · ${pct(bs.endorsed_share_min)} to ${pct(bs.endorsed_share_max)}` : "nothing settled"}
-          title="Share of voting power whose signature is on the settlement. A settlement needs ⅔; the publisher stops collecting once it is reached, so the share lands just above it." />
-        <Metric label="Retrievable" value={rc && rc.recoverable.den > 0 ? int(rc.recoverable.num) : "—"} den={rc && rc.recoverable.den > 0 ? int(rc.recoverable.den) : undefined}
-          tone={rc && rc.recoverable.den > 0 ? undefined : "absent"}
-          help={rc ? (rc.recoverable.den > 0 ? `blobs read by Tensile${rc.unknown > 0 ? ` · ${int(rc.unknown)} not read` : ""}` : "none read in the period") : " "}
-          title="Blobs Tensile read near the end of their retention window whose rows were enough to reconstruct them." />
-      </Metrics>
+      <section className="group" id="chain">
+        <div className="vhead">
+          <div><h2>On chain</h2><p className="sub">The period&rsquo;s settlements.</p></div>
+          <WindowSwitch value={win} onChange={setWin} />
+        </div>
+        <Metrics>
+          <Metric label="Namespaces" value={bs ? int(bs.namespaces) : "—"} tone={bs && bs.namespaces > 0 ? undefined : "absent"}
+            help={bs ? `in the period · ${int(bs.namespaces_total)} on record` : " "} title="Namespaces the period's blobs were published in." />
+          <Metric label="Upload size" value={bs && bs.upload_size_max > 0 ? bytes(bs.upload_size_median) : "—"} tone={bs && bs.upload_size_max > 0 ? undefined : "absent"}
+            help={busy ? " " : bs && bs.upload_size_max > 0 ? `median · largest ${bytes(bs.upload_size_max)}` : "nothing settled"}
+            title="The size a blob paid for, with padding and without parity: the median of the period's settlements, and the largest." />
+          <Metric label="Endorsed voting power" value={pct(bs?.endorsed_share_median)} tone={bs?.endorsed_share_median != null ? undefined : "absent"}
+            help={busy ? " " : bs?.endorsed_share_min != null ? `median · ${pct(bs.endorsed_share_min)} to ${pct(bs.endorsed_share_max)}` : "nothing settled"}
+            title="Share of voting power whose signature is on the settlement. A settlement needs ⅔." />
+        </Metrics>
+        {rc && rc.recoverable.den > 0 && (
+          <p className="observed" title="Settlements Tensile read near the end of their retention window whose rows were enough to reconstruct the blob.">
+            Observed by Tensile: <b>{int(rc.recoverable.num)} of {int(rc.recoverable.den)}</b> settlements read were retrievable.
+          </p>
+        )}
       </section>
 
       <section className="group" id="published">
@@ -99,11 +114,11 @@ function Page() {
       <section id="list">
         <div className="vhead">
           <div className="seg" role="group" aria-label="list">
-            <button type="button" aria-pressed={tab === "blobs"} onClick={() => setTab("blobs")}>Blobs{data ? <span className="n"> {int(data.total)}</span> : null}</button>
-            <button type="button" aria-pressed={tab === "namespaces"} onClick={() => setTab("namespaces")}>Namespaces{nsN ? <span className="n"> {int(nsN)}</span> : null}</button>
+            <button type="button" aria-pressed={tab === "blobs"} onClick={() => setTab("blobs")}>Blobs</button>
+            <button type="button" aria-pressed={tab === "namespaces"} onClick={() => setTab("namespaces")}>Namespaces{nsN ? <span className="n"> {int(nsN)}{nsMore ? "+" : ""}</span> : null}</button>
           </div>
           <div className="tools">
-            {tab === "blobs" && <input className="nsfilter" type="search" placeholder="Filter by namespace (56 hex)" value={ns} onChange={(e) => setNs(e.target.value)} aria-label="namespace filter" />}
+            {tab === "blobs" && <input className="nsfilter" type="search" placeholder="Filter by namespace (58 hex)" value={ns} onChange={(e) => setNs(e.target.value)} aria-label="namespace filter" />}
           </div>
         </div>
 
@@ -114,9 +129,9 @@ function Page() {
                 <thead><tr><th>Blob</th><th>Height</th><th>Settled (UTC)</th><th>Namespace</th><th>Publisher</th><th>Upload size</th><th>Fee paid</th>
                   <th title="Share of voting power whose signature on the settlement verified. A settlement needs ⅔.">Endorsed</th><th>Status</th></tr></thead>
                 <tbody>
-                  {loading && !data && <tr><td colSpan={9} className="muted">Loading…</td></tr>}
-                  {data && data.blobs.length === 0 && <tr><td colSpan={9} className="muted">No blob recorded{ns.trim() ? " in this namespace" : ""}.</td></tr>}
-                  {data?.blobs.map((b) => {
+                  {!rows && (loading || !!data) && <tr><td colSpan={9} className="muted">Loading…</td></tr>}
+                  {rows && rows.length === 0 && <tr><td colSpan={9} className="muted">No blob recorded{ns.trim() ? " in this namespace" : ""}.</td></tr>}
+                  {rows?.map((b) => {
                     const rc = recon(b);
                     const pub = b.charge?.publisher || b.signer;
                     return (
@@ -136,14 +151,14 @@ function Page() {
                 </tbody>
               </table>
             </div>
-            {data && <Pager total={data.total} page={page} size={SIZE} onPage={setPage} noun={data.total === 1 ? "settlement" : "settlements"} />}
+            {data && <Pager total={data.total} page={page} size={SIZE} onPage={setPage} noun={data.total === 1 ? "settlement on record" : "settlements on record"} />}
           </>
         )}
 
         {tab === "namespaces" && (
           <div className="tablewrap framed">
             <table className="bt nss">
-              <thead><tr><th>Namespace</th><th>Data</th><th>Blobs</th><th>Last 24h</th><th>Accounts</th><th>First seen</th><th>Last blob</th></tr></thead>
+              <thead><tr><th>Namespace</th><th>Upload size</th><th>Settlements</th><th>Last 24h</th><th>Publishers</th><th>First seen</th><th>Last blob</th></tr></thead>
               <tbody>
                 {!nss.data && <tr><td colSpan={7} className="muted">Loading…</td></tr>}
                 {nss.data?.namespaces.map((n) => (

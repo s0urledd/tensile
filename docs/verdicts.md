@@ -978,7 +978,7 @@ A `FAULT` younger than **30 minutes** (`verdict.FaultSettling`, measured from
 the probe's `started_at`) is *provisional*: `provisional: true` on the probe
 row, `provisional_faults` (`obligations`, `until`, `settling_seconds`) on the
 network row, on every validator row and on each span of the validator page,
-and "Broken · provisional" on the site. A broken obligation is provisional
+and "Not served · provisional" on the site. A broken obligation is provisional
 when **every** FAULT behind it is that young; one settled fault makes it final.
 After `until` the label is gone, whatever snapshot is being served.
 

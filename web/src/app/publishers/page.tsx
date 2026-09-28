@@ -28,8 +28,10 @@ const SIZE = 25;
 function Page() {
   // 7d, not the site's 24h: the page's two charts are per UTC day, and a
   // 24h window draws one or two bars, which is not a chart.
-  const [win, setWin] = useWindow("7d");
+  const [win, setWinRaw] = useWindow("7d");
   const [page, setPage] = usePage();
+  // another period is another list: start from its first page
+  const setWin = (w: typeof win) => { setWinRaw(w); setPage(1); };
   const { data: meta } = useApi<Meta>("/v1/meta");
   // Before activation every market figure is a zero of a module that does not exist yet: one line says so, the tiles show a dash.
   const pre = notLiveOf(meta);
@@ -46,7 +48,6 @@ function Page() {
           <Info label="About these figures">
             <p>Everything on this page is a count of something the chain recorded; none of it was measured by this observer.</p>
             <ul>{m.notes.map((n) => <li key={n}>{n}</li>)}</ul>
-            <p className="mono">fee = ({m.price_formula.base_gas.toLocaleString("en-US")} + {m.price_formula.gas_per_chunk.toLocaleString("en-US")} × ⌈size / {bytes(m.price_formula.chunk_bytes)}⌉) gas × {m.price_formula.utia_per_gas} utia</p>
           </Info>
         )}
         <span className="spacer" />
@@ -69,9 +70,10 @@ function Page() {
           <Metric label="Withdrawals" value={pre || !m ? "—" : tia(m.withdrawals_requested.utia)} tone={pre || !m || m.withdrawals_requested.count === 0 ? "absent" : undefined}
             help={pre || !m ? " " : `${int(m.withdrawals_requested.count)} requested in the period`}
             title="TIA requested out of escrow in the period. What is still waiting to pay out is under Withdrawal queue." />
-          <Metric label="Paid per MiB" value={pre || !m || m.paid_per_mib_utia == null ? "—" : tia(m.paid_per_mib_utia)} tone={pre || !m || m.paid_per_mib_utia == null ? "absent" : undefined}
-            help={pre || !m ? " " : m.paid_per_mib_utia != null ? "fees paid over upload size" : "nothing settled"}
-            title="Fees paid in the period divided by upload size. It falls as blobs get larger: the fee has a fixed part." />
+          <Metric label="Largest publisher" value={pre || !m || m.largest_poster?.bytes_share == null ? "—" : `${(m.largest_poster.bytes_share * 100).toFixed(1)}%`}
+            tone={pre || !m || !m.largest_poster ? "absent" : undefined}
+            help={pre || !m ? " " : m.largest_poster ? `of upload size · ${publisherName(m.largest_poster)}` : "nothing settled"}
+            title="The publisher with the most upload size in the period, and its share." />
         </Metrics>
       </section>
 
@@ -116,7 +118,7 @@ function Page() {
         <table>
           <thead><tr>
             <th>publisher</th>
-            <th className="right">blobs</th>
+            <th className="right">settlements</th>
             <th className="right">upload size</th>
             <th className="right">share</th>
             <th className="right">fees paid</th>
@@ -154,7 +156,7 @@ function Page() {
           </tbody>
         </table>
       </div>
-      {list && <Pager total={pubs.length} page={page} size={SIZE} onPage={setPage} noun={pubs.length === 1 ? "publisher" : "publishers"} />}
+      {list && <Pager total={pubs.length} page={page} size={SIZE} onPage={setPage} noun={pubs.length === 1 ? "account" : "accounts"} />}
       </Panel>
 
       {/* The withdrawal queue, read from chain state rather than rebuilt from

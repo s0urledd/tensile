@@ -29,7 +29,7 @@ type Def = { label: string; tier: Tier; def: string };
 
 const VERDICTS: Record<string, Def> = {
   HEALTHY: {
-    label: "healthy", tier: "kept",
+    label: "served", tier: "kept",
     def: "The endorsed rows came back and verified against the blob commitment.",
   },
   FAULT: {
@@ -45,7 +45,7 @@ const VERDICTS: Record<string, Def> = {
     def: "The right key signed the certificate, but outside its validity window. Not served at the end reading; earlier, kept out of the rate.",
   },
   IDENTITY_MISMATCH: {
-    label: "bad certificate", tier: "hold",
+    label: "wrong certificate", tier: "hold",
     def: "The certificate is not signed by this validator's consensus key. Not served at the end reading; earlier, kept out of the rate.",
   },
   SERVER_ERROR: {
@@ -97,11 +97,11 @@ const VERDICTS: Record<string, Def> = {
     def: "Validator returned a shard it was not assigned. Flagged for review.",
   },
   PROBE_ERROR: {
-    label: "probe error", tier: "gap",
+    label: "read failed", tier: "gap",
     def: "Tensile's own reading failed. A gap, not a verdict.",
   },
   NOT_PROBED: {
-    label: "not probed", tier: "gap",
+    label: "not read by Tensile", tier: "gap",
     def: "Tensile did not read this shard. A gap, not a verdict.",
   },
   RETENTION_UNVERIFIED: {

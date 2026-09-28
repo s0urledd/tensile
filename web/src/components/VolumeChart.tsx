@@ -2,7 +2,7 @@ import { type Market, bytes, int } from "@/lib/api";
 import type { WindowName } from "@/lib/window";
 
 /**
- * Bytes published (or settlements) over the selected period: the padded size the module
+ * Upload size (or settlements) over the selected period: the padded size the module
  * charges for, from the chain's own records. A day is one column per UTC
  * hour; longer periods are one column per UTC day (seven or thirty, or every
  * day on record for "all"). The newest column is partial and drawn so; a
@@ -11,32 +11,38 @@ import type { WindowName } from "@/lib/window";
 type Col = { key: string; label: string; bytes: number; settlements: number; partial: boolean; tick: boolean };
 
 function columns(market: Market, win: WindowName): Col[] {
-  const end = new Date(market.window.end);
+  const end = new Date(market.window.end).getTime();
+  const start = new Date(market.window.start).getTime();
+  // "all" has no start of its own: the first day on record
+  const unbounded = win === "all" || market.window.start.startsWith("0001-");
+  const out: Col[] = [];
   if (win === "24h") {
     const byHour = new Map((market.hourly ?? []).map((h) => [h.hour, h]));
-    const now = end.toISOString().slice(0, 13);
-    const out: Col[] = [];
-    for (let i = 23; i >= 0; i--) {
-      const key = new Date(end.getTime() - i * 3600_000).toISOString().slice(0, 13);
-      const h = byHour.get(key);
-      out.push({ key, label: `${key.slice(11)}:00`, bytes: h?.bytes ?? 0, settlements: h?.settlements ?? 0, partial: key === now, tick: Number(key.slice(11)) % 4 === 0 });
+    // every hour the window touches, the first and the last partial ones included
+    const h0 = Math.floor(start / 3600_000), h1 = Math.floor(end / 3600_000);
+    for (let h = h0; h <= h1; h++) {
+      const key = new Date(h * 3600_000).toISOString().slice(0, 13);
+      const c = byHour.get(key);
+      out.push({ key, label: `${key.slice(11)}:00`, bytes: c?.bytes ?? 0, settlements: c?.settlements ?? 0,
+        partial: h === h1 || (h === h0 && start % 3600_000 !== 0), tick: Number(key.slice(11)) % 4 === 0 });
     }
     return out;
   }
   const byDay = new Map(market.daily.map((d) => [d.day, d]));
-  const today = end.toISOString().slice(0, 10);
-  let days = win === "30d" ? 30 : 7;
-  if (win === "all" && market.daily.length > 0) {
-    const first = new Date(market.daily[0].day + "T00:00:00Z").getTime();
-    days = Math.max(7, Math.floor((end.getTime() - first) / 86400_000) + 1);
+  const d1 = Math.floor(end / 86400_000);
+  let d0 = Math.floor(start / 86400_000);
+  if (unbounded) {
+    const first = market.daily.length > 0 ? Math.floor(new Date(market.daily[0].day + "T00:00:00Z").getTime() / 86400_000) : d1;
+    d0 = Math.min(first, d1 - 6);
   }
-  const every = days > 14 ? Math.ceil(days / 8) : 1;
-  const out: Col[] = [];
-  for (let i = days - 1; i >= 0; i--) {
-    const key = new Date(end.getTime() - i * 86400_000).toISOString().slice(0, 10);
-    const d = byDay.get(key);
+  const n = d1 - d0 + 1;
+  const every = n > 14 ? Math.ceil(n / 8) : 1;
+  for (let d = d0; d <= d1; d++) {
+    const key = new Date(d * 86400_000).toISOString().slice(0, 10);
+    const c = byDay.get(key);
     const label = new Date(key + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
-    out.push({ key, label, bytes: d?.bytes ?? 0, settlements: d?.settlements ?? 0, partial: key === today, tick: i % every === 0 });
+    out.push({ key, label, bytes: c?.bytes ?? 0, settlements: c?.settlements ?? 0,
+      partial: d === d1 || (!unbounded && d === d0 && start % 86400_000 !== 0), tick: (d1 - d) % every === 0 });
   }
   return out;
 }

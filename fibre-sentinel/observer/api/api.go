@@ -4103,8 +4103,8 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	probes, moreProbes := trim(probes, 1000)
 	// The points of this blob the correlated-failure guard calls suspect,
-	// tallied as reconstructable tallies them, so the page can show the rows
-	// no verdict counts beside the verdict that left them out.
+	// tallied as reconstructable tallies them: published with the blob, and
+	// left out of each validator's service word as every count leaves them out.
 	suspect := []suspectPoint{}
 	var ss suspectSet
 	spts, err := rollup.SuspectPoints(ctx, s.st.DB(), `promise_hash = ?`, hash)

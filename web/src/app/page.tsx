@@ -75,7 +75,7 @@ function Overview() {
           value={none ? "—" : bytes(M.bytes)}
           tone={none || M.settlements === 0 ? "absent" : undefined}
           title="Total size of the blobs paid for in this period."
-          help={none ? " " : "total blob size"} />
+          help={none ? " " : "total upload size"} />
         <Metric label="Fees paid"
           value={none ? "—" : tia(M.fees_settled_utia)}
           tone={none || M.settlements === 0 ? "absent" : undefined}
