@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -98,4 +99,54 @@ func TestSnapshotRevisionCarriesHoldsAndActivation(t *testing.T) {
 	if s.snapshotRevision() == before {
 		t.Error("activation did not change the revision the network and validator snapshots are served under")
 	}
+}
+
+// refreshDue with windows named refreshes those and nothing else.
+func TestRefreshDueOnlyTheNamedWindows(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string]int{}
+	c := newSnapshotCache("t", func(ctx context.Context, win Window) (int64, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		seen[win.Name]++
+		return 1, nil
+	})
+	c.refreshDue(nil, time.Now(), "24h")
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 1 || seen["24h"] != 1 {
+		t.Fatalf("refreshDue(24h) computed %v, want only 24h once", seen)
+	}
+}
+
+// The live keeper's window is never held back by the slow keeper: with the
+// "all" window stuck computing, 24h still refreshes, over and over.
+func TestLiveLaneIsNotHeldBackBySlowWindows(t *testing.T) {
+	release := make(chan struct{})
+	var live atomic.Int64
+	c := newSnapshotCache("validators", func(ctx context.Context, win Window) (int64, error) {
+		switch win.Name {
+		case "all":
+			<-release
+		case "24h":
+			live.Add(1)
+		}
+		return 1, nil
+	})
+	c.ttls = map[string]time.Duration{"24h": time.Millisecond}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.refreshDue(nil, time.Now(), slowVals...) // what keepSnapshotsFresh runs
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for live.Load() < 3 && time.Now().Before(deadline) {
+		c.refreshDue(nil, time.Now(), liveVals...) // what keepLiveFresh runs
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := live.Load(); got < 3 {
+		t.Errorf("24h refreshed %d times while all was computing, want it to keep refreshing", got)
+	}
+	close(release)
+	<-done
 }

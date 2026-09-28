@@ -131,35 +131,54 @@ func TestStaleSnapshotIsServedWhileRefreshing(t *testing.T) {
 	t.Error("a stale snapshot was served but no refresh replaced it")
 }
 
-func TestSnapshotTTLGrowsWithTheWindow(t *testing.T) {
-	// A minute of new data moves a day's figure and does not move a month's, so
-	// the month must not be recomputed as often as the day.
-	if ttlFor("24h") >= ttlFor("7d") || ttlFor("7d") >= ttlFor("30d") || ttlFor("30d") >= ttlFor("all") {
-		t.Errorf("TTLs do not increase with the window: 24h=%v 7d=%v 30d=%v all=%v",
-			ttlFor("24h"), ttlFor("7d"), ttlFor("30d"), ttlFor("all"))
-	}
-	if ttlFor("something-new") != ttlFor("all") {
-		t.Error("an unrecognised window should get the most conservative refresh rate, not the cheapest")
+// Only the current figures need to be fresh: 24h refreshes every minute, 7d
+// every five, 30d and "all" every fifteen, and a window added later takes the
+// slowest pace rather than the most expensive one.
+func TestLongWindowsRefreshSlowly(t *testing.T) {
+	for name, want := range map[string]time.Duration{
+		"24h": time.Minute, "7d": 5 * time.Minute, "30d": 15 * time.Minute, "all": 15 * time.Minute,
+		"something-new": 15 * time.Minute,
+	} {
+		if got := ttlFor(name); got != want {
+			t.Errorf("ttlFor(%s) = %s, want %s", name, got, want)
+		}
 	}
 }
 
-// A cache younger than the long windows' TTLs refreshes them faster: a fresh
-// deployment's "all" window is minutes of data, not months.
-func TestSnapshotTTLScalesWithCacheAge(t *testing.T) {
+// A cache's own TTL overrides ttlFor for the windows it names, from the first
+// moment: the live keeper's windows must not wait a minute on a new cache.
+func TestSnapshotTTLOverride(t *testing.T) {
 	c := newSnapshotCache("t", func(context.Context, Window) (int, error) { return 0, nil })
-	if got := c.ttl("all"); got != time.Minute {
-		t.Fatalf("new cache: ttl(all) = %s, want 1m", got)
+	c.ttls = map[string]time.Duration{"24h": liveTTL}
+	if got := c.ttl("24h"); got != liveTTL {
+		t.Fatalf("ttl(24h) = %s, want the override %s", got, liveTTL)
 	}
-	c.born = time.Now().Add(-100 * time.Minute)
-	if got := c.ttl("all"); got < 10*time.Minute || got > 10*time.Minute+time.Second {
-		t.Fatalf("100 min old: ttl(all) = %s, want about 10m", got)
+	if got := c.ttl("7d"); got != ttlFor("7d") {
+		t.Fatalf("ttl(7d) = %s, want ttlFor's %s", got, ttlFor("7d"))
 	}
-	c.born = time.Now().Add(-48 * time.Hour)
-	if got := c.ttl("all"); got != ttlFor("all") {
-		t.Fatalf("two days old: ttl(all) = %s, want %s", got, ttlFor("all"))
+	now := time.Now()
+	s := &snap[int]{at: now.Add(-liveTTL - time.Millisecond), ms: 5}
+	if !c.stale(s, "24h", now) {
+		t.Error("a 24h snapshot past the override is not stale")
 	}
-	if got := c.ttl("24h"); got != time.Minute {
-		t.Fatalf("24h never below its own floor: %s", got)
+	if c.stale(s, "7d", now) {
+		t.Error("a 7d snapshot ten seconds old is stale")
+	}
+}
+
+// A computation that takes longer than its TTL is not rerun back to back: its
+// window waits twice the computation.
+func TestSlowComputationWaitsTwiceItsCost(t *testing.T) {
+	c := newSnapshotCache("t", func(context.Context, Window) (int, error) { return 0, nil })
+	c.ttls = map[string]time.Duration{"24h": liveTTL}
+	now := time.Now()
+	s := &snap[int]{at: now.Add(-15 * time.Second), ms: 12_000}
+	if c.stale(s, "24h", now) {
+		t.Error("a 12s computation was due again 15s after it started")
+	}
+	s.at = now.Add(-25 * time.Second)
+	if !c.stale(s, "24h", now) {
+		t.Error("a 12s computation was not due 25s after it started")
 	}
 }
 

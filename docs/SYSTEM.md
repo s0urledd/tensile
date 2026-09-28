@@ -161,10 +161,10 @@ lets the retention prune delete the log of amendments it once published.
 Anything that caches per-publication results has to account for all of it —
 see `blobcache.go`'s fingerprint, which carries `amended_at`, `corrected_at`
 and `retention_unverified`, none of which adds a row or moves `MAX(rowid)`.
-The API's window snapshots run to a thirty-minute TTL and key on
+The API's window snapshots run to a fifteen-minute TTL and key on
 `meta.param_holds_rev`, which every path that raises or lifts a hold moves;
-without that a withheld fault would stay on the front page for half an hour
-after the hold landed. It is a counter incremented inside SQLite, not a
+without that a withheld fault would stay on the front page for up to a
+quarter of an hour after the hold landed. It is a counter incremented inside SQLite, not a
 timestamp: the collector stamps one `time.Now()` at the top of a pass and
 threads it through every record it ingests, so two ranges landing in the
 same pass wrote the same nanosecond and a snapshot computed between them

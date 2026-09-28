@@ -8,8 +8,8 @@ import (
 )
 
 // bumpHoldsRevision tells the API that a hold was raised or lifted, or a
-// verdict moved. Its cached aggregates run to a thirty-minute TTL, and a
-// withheld fault republished for half an hour after the hold landed is the
+// verdict moved. Its cached aggregates run to a fifteen-minute TTL, and a
+// withheld fault republished for minutes after the hold landed is the
 // accusation the hold exists to stop.
 //
 // It goes through the store's counter, like every other path that moves
