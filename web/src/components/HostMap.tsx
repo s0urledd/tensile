@@ -23,10 +23,10 @@ type Cluster = { id: string; hosts: Host[]; ux: number; uy: number; locs: number
 /** the visible part of the map, in map units: top-left corner and width (height follows the frame) */
 type View = { x: number; y: number; w: number };
 
-const STATE_WORD: Record<EndpointState, string> = { reachable: "reachable", flaky: "flaky", unreachable: "unreachable", none: "no host" };
-// The table's colours: amber for a host that stopped answering, faded amber for one failed check.
-const STATE_VAR: Record<EndpointState, string> = { reachable: "var(--accent)", flaky: "color-mix(in srgb, var(--hold) 50%, transparent)", unreachable: "var(--hold)", none: "var(--pending)" };
-const ORDER: EndpointState[] = ["reachable", "flaky", "unreachable"];
+const STATE_WORD: Record<EndpointState, string> = { reachable: "reachable", unreachable: "unreachable", none: "no host" };
+// The table's colours: amber for a host that stopped answering.
+const STATE_VAR: Record<EndpointState, string> = { reachable: "var(--accent)", unreachable: "var(--hold)", none: "var(--pending)" };
+const ORDER: EndpointState[] = ["reachable", "unreachable"];
 
 /** the box's height over its width: the whole frame on a wide screen, a taller crop of it on a phone */
 const WIDE = FRAME.h / FRAME.w, TALL = 0.62;
@@ -477,7 +477,6 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
           )}
           <p className="fm-key" aria-hidden="true">
             <span><i style={{ background: STATE_VAR.reachable }} />reachable</span>
-            <span><i style={{ background: STATE_VAR.flaky }} />flaky</span>
             <span><i style={{ background: STATE_VAR.unreachable }} />unreachable</span>
           </p>
         </div>

@@ -53,7 +53,6 @@ export function endpoint(v: Validator): { dot: string; word: string; title: stri
   if (v.reachable === null) return { dot: "none", word: "Not checked yet", title: `${v.host}: no handshake attempted yet.` };
   const checked = v.last_seen_at ? ` · checked ${ago(v.last_seen_at)}` : "";
   if (v.reachable === false) return { dot: "hold", word: "Unreachable", title: `${v.host}: no TLS handshake in the last two checks${v.last_reachable_at ? `; last reachable ${ago(v.last_reachable_at)}` : ""}${checked}`, warn: true };
-  if (v.endpoint_state === "flaky") return { dot: "flaky", word: "Flaky", title: `${v.host}: the last check failed, the one before passed${checked}` };
   if (v.identity_status === "no_tls") return { dot: "hold", word: "No TLS", title: `${v.host}: answered TCP, but no TLS handshake completed${checked}`, warn: true };
   if (v.identity_status === "expired" || v.identity_status === "mismatch") {
     const c = certificate(v.identity_reason);
