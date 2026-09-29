@@ -407,7 +407,7 @@ func (w *statusWriter) WriteHeader(status int) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.ResponseWriter.WriteHeader(status)
-		_, _ = w.ResponseWriter.Write([]byte(`{"error":"no such endpoint; see /v1/meta"}` + "\n"))
+		_, _ = w.ResponseWriter.Write([]byte(`{"error":"no such endpoint"}` + "\n"))
 		return
 	}
 	w.ResponseWriter.WriteHeader(status)
