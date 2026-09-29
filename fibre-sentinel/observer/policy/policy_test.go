@@ -41,20 +41,12 @@ budget_state:
 	}
 }
 
-func TestEphemeralSecretIsRefusedOutsideTests(t *testing.T) {
+func TestAPolicyNeedsItsSecretFile(t *testing.T) {
 	var cfg Config
 	if _, err := New(cfg); err == nil {
 		t.Fatal("a policy with no master_secret_file was accepted")
 	} else if !strings.Contains(err.Error(), "master_secret_file") {
 		t.Fatalf("the refusal does not name what to set: %v", err)
-	}
-	cfg.Sampling.AllowEphemeralSecret = true
-	p, err := New(cfg)
-	if err != nil {
-		t.Fatalf("an ephemeral secret was not permitted: %v", err)
-	}
-	if !p.EphemeralSecret() {
-		t.Fatal("a process-local secret does not report itself as one")
 	}
 
 	var cfg2 Config
@@ -62,9 +54,6 @@ func TestEphemeralSecretIsRefusedOutsideTests(t *testing.T) {
 	p2, err := New(cfg2)
 	if err != nil {
 		t.Fatalf("a configured secret file was refused: %v", err)
-	}
-	if p2.EphemeralSecret() {
-		t.Fatal("a secret read from a file reports itself as process-local")
 	}
 	p3, err := New(cfg2)
 	if err != nil {

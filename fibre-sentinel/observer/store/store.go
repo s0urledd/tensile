@@ -322,7 +322,7 @@ var migrations = []migration{
 			// probe_daily: one row per (start day, validator) with the row
 			// counts the "all" window prints: every row, the in-window
 			// assigned population by class (JSON), faults, gaps, and the
-			// heartbeats. Suspect points are left out as they are live.
+			// heartbeats.
 			`CREATE TABLE IF NOT EXISTS probe_daily (
 				day               TEXT NOT NULL,
 				validator_address TEXT NOT NULL,

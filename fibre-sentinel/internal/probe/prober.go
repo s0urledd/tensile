@@ -1010,19 +1010,6 @@ func short(s string) string {
 	return s
 }
 
-// sleepCtx waits d or until ctx is done; it reports whether the full wait
-// completed.
-func sleepCtx(ctx context.Context, d time.Duration) bool {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
-	}
-}
-
 // ---- the queue ----
 
 // readQueue holds the readings waiting to start, earliest first, and the

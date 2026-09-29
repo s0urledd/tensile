@@ -5,8 +5,8 @@
 //
 // Nothing is sampled any more, and no budget or cap decides what is read:
 // every blob is read the way celestia-app's Fibre client reads it
-// (internal/probe, blobread.go), paced only by this observer's own request,
-// byte and per-validator connection limits. Once the last day that had a
+// (internal/probe, blobread.go); this observer's own limits on requests and
+// shard bytes in flight only delay a request. Once the last day that had a
 // draw is revealed, the secret file can be deleted and this package with
 // it.
 package policy
@@ -31,10 +31,6 @@ import (
 type Config struct {
 	Sampling struct {
 		MasterSecretFile string `yaml:"master_secret_file"`
-		// AllowEphemeralSecret permits a process-local master secret, which
-		// is only ever right in a test: the day secrets it reveals would not
-		// be the ones the draws used. Not settable from YAML.
-		AllowEphemeralSecret bool `yaml:"-"`
 	} `yaml:"sampling"`
 }
 
@@ -56,37 +52,25 @@ func Load(path string) (Config, error) {
 
 // Policy holds the master secret.
 type Policy struct {
-	master    []byte
-	ephemeral bool
+	master []byte
 }
 
-// EphemeralSecret reports whether the master secret is process-local.
-func (p *Policy) EphemeralSecret() bool { return p.ephemeral }
-
 // New reads the master secret from cfg.Sampling.MasterSecretFile, or
-// creates it (0600) when the file is absent. With no path the secret is
-// process-local, which is refused unless the caller says this is a test: the
-// secrets it revealed would not be the ones the draws used.
+// creates it (0600) when the file is absent. With no path it is refused:
+// the day secrets revealed would not be the ones the draws used.
 func New(cfg Config) (*Policy, error) {
-	if cfg.Sampling.MasterSecretFile == "" && !cfg.Sampling.AllowEphemeralSecret {
+	if cfg.Sampling.MasterSecretFile == "" {
 		return nil, errors.New("sampling: master_secret_file is not set, so the day secrets revealed would not be " +
-			"the ones the draws used; set it (deploy/README.md) or allow an ephemeral secret for a test")
+			"the ones the draws used; set it (deploy/README.md)")
 	}
 	master, err := loadOrCreateSecret(cfg.Sampling.MasterSecretFile)
 	if err != nil {
 		return nil, err
 	}
-	return &Policy{master: master, ephemeral: cfg.Sampling.MasterSecretFile == ""}, nil
+	return &Policy{master: master}, nil
 }
 
 func loadOrCreateSecret(path string) ([]byte, error) {
-	if path == "" {
-		b := make([]byte, 32)
-		if _, err := rand.Read(b); err != nil {
-			return nil, err
-		}
-		return b, nil
-	}
 	b, err := os.ReadFile(path)
 	if err == nil {
 		if len(b) < 16 {

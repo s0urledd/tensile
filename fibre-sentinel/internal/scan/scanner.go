@@ -659,10 +659,13 @@ const paramReconcileEvery = 60
 // rewritten: when the window got shorter, the observer's must_serve_until
 // for them is later than the server's prune time, and a NOT_FOUND between
 // the two would be published as a fault. The log names the interval and
-// counts those publications; every validator prunes at the same moment, so
-// such a point is normally caught by the correlated-failure guard as a
-// fault suspect point, and a re-scan from the interval's start rewrites
-// nothing (the record is append-only), so the log line is the record.
+// counts those publications. Such a reading is judged as the client meets
+// it: every validator has pruned, so the blob is Unavailable and every
+// endorser not served. What keeps that off the record is the uncertainty
+// range recorded here, which holds every publication in it
+// (RETENTION_UNVERIFIED) until the params of every height are read; a
+// re-scan from the interval's start rewrites nothing (the record is
+// append-only), so the log line and the range are the record.
 func (s *Scanner) reconcileParams(ctx context.Context, h int64) {
 	s.reconcileParamsWith(h, func() (fibretypes.Params, error) {
 		var live fibretypes.Params

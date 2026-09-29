@@ -15,7 +15,7 @@ import (
 // what is published hashes to the commitment the rows carried.
 func TestRevealDue(t *testing.T) {
 	var cfg Config
-	cfg.Sampling.AllowEphemeralSecret = true
+	cfg.Sampling.MasterSecretFile = filepath.Join(t.TempDir(), "sampling-master.key")
 	p, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)

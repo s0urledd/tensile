@@ -28,8 +28,8 @@ import (
 //
 // It is a file of its own rather than a second kind of line in
 // measurements.jsonl because every reader of that file (the prober's own
-// restart index, the collector, sentinel-recompute, the confirm service, the
-// backup and restore checks) takes each line to be one Measurement keyed by
+// restart index, the collector, sentinel-recompute, the backup and restore
+// checks) takes each line to be one Measurement keyed by
 // (vantage, promise, validator, scheduled_at). A different shape inside it
 // would have to be taught to all of them, and one that was not taught would
 // read a decision as a malformed probe.
