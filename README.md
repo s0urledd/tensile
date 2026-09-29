@@ -19,8 +19,8 @@ Live at **https://tensile.huginn.tech**.
   against the on-chain commitment and the recomputed assignment.
 - **Verdicts** per blob (available or unavailable) and per validator, from a
   fixed taxonomy in which a validator counts as not served only when the blob
-  could not be reconstructed and its rows did not come back
-  ([`docs/verdicts.md`](docs/verdicts.md)).
+  could not be reconstructed, its rows did not come back, and a second
+  location did not get them either ([`docs/verdicts.md`](docs/verdicts.md)).
 - **Signed daily exports** of the full record, so every figure can be
   recomputed offline ([`docs/exports-signing.md`](docs/exports-signing.md)).
 - **A public API**: read-only JSON at `https://tensile.huginn.tech/api/v1/`, with every rate published

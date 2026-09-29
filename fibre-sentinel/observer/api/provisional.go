@@ -24,9 +24,11 @@ package api
 //     headline lags by the settling period for everyone, and the thing a
 //     reader wanted to know — this fault is fresh, it can still move — is
 //     no longer shown at all.
-//   - Count it, flag it. Chosen. A not-served reading is conclusive from
-//     one reading (the blob could not be reconstructed at that minute), and
-//     the automatic withdrawal paths already act on the store — a params
+//   - Count it, flag it. Chosen. A not-served count rests on two
+//     locations (the blob could not be reconstructed at that minute, and
+//     the second location did not get the rows either before
+//     must_serve_until), and the automatic withdrawal paths already act on
+//     the store — a params
 //     range withholds the rows in the transaction that records it and moves
 //     the snapshot revision — so a reading that is withdrawn leaves the
 //     headline by itself. The flag says which part of the figure can still

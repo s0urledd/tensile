@@ -72,7 +72,8 @@ is the blob **unavailable** (the client's "not enough shards to reconstruct
 blob").
 
 A validator counts as **not served** only when it endorsed the promise, the
-blob was unavailable, and its rows did not come back. On an available blob a
+blob was unavailable, its rows did not come back, and the second vantage did
+not get them either (below). On an available blob a
 validator that failed, or one the reading did not need to ask, counts
 neither way: the blob was there for any reader. A validator that did not
 endorse owes nothing and is never counted.
@@ -221,7 +222,8 @@ the order, the rows this answer added, what the reading came to). **No
 scores** — the observer derives the blob's status and the obligation verdicts
 from these records (`observer/verdict`, `observer/rollup`). When the reading
 ends unavailable, every endorsing validator's not-served row is queued for the
-second vantage to confirm (`probe.ConfirmationDue`); it counts only once
+second vantage to confirm (`probe.ConfirmationDue`), unless the
+correlated-failure guard sets the reading aside for good; it counts only once
 confirmed.
 
 ### Error-class taxonomy

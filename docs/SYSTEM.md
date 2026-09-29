@@ -102,6 +102,7 @@ derived index of them.
 | `host_history.jsonl` | host registration | `time` |
 | `param_uncertainty.jsonl` | a height range whose `x/fibre` params the observer cannot vouch for, and what came of closing it | `detected_at` |
 | `corrections.jsonl` | a deadline or verdict a verified range moved, and the `range_corrected` line that closes the range | `judged_at` |
+| `vantages/<name>/measurements.jsonl` | the second location's answer to a confirmation request, copied in; every export carries it, since a not-served row counts only once it is confirmed | `started_at` |
 
 `state.json` is **not** a record file: it is the scanner's current param
 history, scan gaps, host seed and frontier. Every export carries it as a
@@ -222,11 +223,12 @@ endorsing validator answered at.
 ```
 pending      must_serve_until > as_of
 served       its rows came back verified at the blob's reading
-broken       not served: the blob was unavailable and its rows did not
-             come back
+broken       not served: the blob was unavailable, its rows did not come
+             back, and the second location confirmed it (confirmed_by)
 not_counted  the rest: not asked (the rows were enough before its turn), a
-             failure on a blob that was available, a reading the guard set
-             aside, or no reading that decides the blob
+             failure on a blob that was available, a failure the second
+             location did not confirm, a reading the guard set aside, or no
+             reading that decides the blob
 ```
 
 Rate is `served / (served + broken)`. Everything else is printed beside it.
@@ -268,11 +270,14 @@ Fibre client downloads it:
   takes it: no rows, never re-asked in the same pass
 - pacing, never dropping: 16 blobs and 64 requests at once, 512 MiB of shards
   in flight, one request per validator from this observer at a time (a busy
-  validator is passed over and come back to)
+  validator is passed over and come back to; one the pass that decides an
+  unavailable reading never gets back to is recorded `PASSED_OVER`, this
+  observer's gap, and the correlated-failure guard counts it as failed)
 
 The rows of a reading are appended together in one write and one fsync
-(`MeasurementStore.AppendReading`), one per validator asked, with `read`
-saying where each sat in it. Blobs settled before `-end-read-since` were
+(`MeasurementStore.AppendReading`), one per validator asked and, on an
+unavailable reading, one per validator passed over, with `read` saying
+where each sat in it. Blobs settled before `-end-read-since` were
 read on the earlier schedule (four in-window points, grace and post) and are
 not read again; their rows are judged by the same rule.
 
@@ -364,15 +369,22 @@ blob is unavailable once the endorsers holding the most rows fail: 36 % to
 55 % of them (median 48 %; 161 of the newest 400 publications of 28
 September need half or more). Where it takes at least half of those asked,
 the guard sets the reading aside and nobody is counted not served; where it
-takes fewer, the failures count. Until a control read can tell this
-observer's side apart, a mass failure counts neither way.
+takes fewer, each failure counts once the second location confirms it.
+Until a control read can tell this observer's side apart, a mass failure
+counts neither way.
 
 "Asked" is the denominator, and it holds only the rows that carry a
 reachability verdict — the rows that could themselves have been in a
 numerator. `verdict.GuardSilentClasses` names the four that cannot
 (`NOT_PROBED`, `PROBE_ERROR`, `NOT_REGISTERED`, `UNATTESTED`) and
 `rollup.GuardSilentSQL` is the same list spelled for the SQL twin, held to
-it by `TestTheSQLAndTheGoTwinExcludeTheSameClassesFromTheGuard`.
+it by `TestTheSQLAndTheGoTwinExcludeTheSameClassesFromTheGuard`. One
+`PROBE_ERROR` is in it: an endorser the deciding pass passed over
+(`PASSED_OVER`, `probe.GuardPassedOver`, `rollup.PassedOverSQL`), counted
+as failed. The validators a busy pass passes over are the ones this
+observer's own requests to still hold, which a slower pace asks and finds
+unreachable; left out, they made whether a reading was set aside depend on
+how busy this observer was.
 `UNATTESTED` mattered at scale under the earlier schedule, which read every
 assigned validator: a publisher stops collecting signatures at two thirds of
 stake, so about a third of every point's rows were `UNATTESTED`, and in the
@@ -553,7 +565,9 @@ Stated here because they are properties of the machine, not of any validator.
 - **Quorum selection bias.** Publishers stop collecting signatures at 2/3
   stake, so the measured population is selected for speed.
 - **One vantage.** A failed request means *this* path failed; half of every
-  reachability verdict is the observer's own network.
+  reachability verdict is the observer's own network. That is why a
+  not-served reading counts only once the second location, asked the same
+  rows before `must_serve_until`, did not get them either.
 - **A power cut looks exactly like an early prune.** The Fibre server commits
   its shard markers with `pebbledb.NoSync`, so a validator that lost power can
   answer `NotFound` for a shard still on its disk. The shape that separates

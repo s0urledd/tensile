@@ -20,7 +20,8 @@ package api
 //     heartbeats, and recovering; the certificate stopping being endorsed
 //     by the validator's key (expired, or not its key) and being put right;
 //   - the first reading on record that counts as not served (its rows did
-//     not come back and the blob could not be reconstructed), skipping any
+//     not come back, the blob could not be reconstructed, and the second
+//     location confirmed it), skipping any
 //     reading the observer distrusts itself at (the correlated-failure
 //     guard).
 //

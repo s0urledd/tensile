@@ -32,7 +32,8 @@ import (
 // appended to the WHERE.
 //
 // Each row counts as its blob's reading leaves it (CountedClass): a failure
-// to hand over rows counts only when the blob could not be reconstructed.
+// to hand over rows counts only when the blob could not be reconstructed
+// and the second location confirmed it.
 //
 // The rows are obligation_rows: the stored probes plus the NOT_PROBED rows a
 // sampled-out publication's one decision stands for (store/sampledout.go),

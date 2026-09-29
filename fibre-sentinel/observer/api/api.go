@@ -5,7 +5,8 @@
 // once, the way celestia-app's Fibre client downloads it, and is Available
 // when enough distinct rows came back verified to reconstruct it. A
 // validator is served when its rows came back verified, and not served only
-// when they did not on a blob that could not be reconstructed; the Service
+// when they did not on a blob that could not be reconstructed and the
+// second location did not get them either; the Service
 // rate is served over served plus not served, per (validator, blob).
 // Readings this observer could not make (NOT_PROBED, PROBE_ERROR) are
 // reported as gaps, never folded into a figure.

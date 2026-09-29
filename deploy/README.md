@@ -733,16 +733,24 @@ systemctl daemon-reload && systemctl enable --now fibre-vantage-pull@mocha.timer
 Every not-served row (an endorsing validator whose rows did not come back
 from a blob that could not be reconstructed: not found, bad rows, no answer,
 a rejected certificate, an error, a rate limit) is asked once more from the
-second vantage, and counts only once the vantage confirms it
-(docs/verdicts.md, "Not-served readings confirmed from a second location").
-Only those are re-checked, never routine readings, so the load is one
-request per not-served row, at most 60 an hour to any one validator, eight
-validators at a time; a request the vantage cannot answer before
-must_serve_until lapses, and that row never counts.
+second vantage, unless the correlated-failure guard sets the reading aside
+for good, and counts only once the vantage confirms it (docs/verdicts.md,
+"Not-served readings confirmed from a second location"). Only those are
+re-checked, never routine readings, so the load is one request per
+not-served row, at most 60 an hour to any one validator, eight validators
+at a time, with new requests picked up while a pass runs; a request the
+vantage cannot answer before must_serve_until lapses, and that row never
+counts.
 
 The vantage's answer confirms only when its row says it was read under the
 client's rules (`client_rules`), which a build from before this rule does
 not write: until the vantage runs this build, nothing counts not served.
+The collector draws every stored answer again under its own rule at each
+start, so the order the prober, the collector and the vantage are upgraded
+in does not matter: an answer an older collector judged counts only if this
+rule confirms it. Each daily export carries the vantage's answers
+(`vantages/<name>/measurements.jsonl`), so `sentinel-recompute` over an
+export reproduces the not-served counts.
 
 The exchange rides the same timer and sftp account as the pull:
 

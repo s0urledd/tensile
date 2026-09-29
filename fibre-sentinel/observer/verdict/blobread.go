@@ -26,7 +26,8 @@ import (
 //     open) or nothing at all (not read by Tensile).
 //
 // A failure to hand over rows counts against a validator only when it
-// endorsed the promise (it owes the blob) and the blob was Unavailable: when
+// endorsed the promise (it owes the blob), the blob was Unavailable, and the
+// second location confirmed it (Row.Confirmed, confirm.go): when
 // the blob could be rebuilt, a reader was not left without the data, and a
 // failure then is as likely this observer's own path as the validator. A
 // validator whose rows came back is served either way. The SQL twin is
