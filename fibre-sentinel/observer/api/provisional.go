@@ -189,13 +189,14 @@ func networkReferenceFrom(win Window, rows []validatorRow, at time.Time) *networ
 // (the same rows /v1/validators serves, so the page and the table agree).
 // A pinned window has no snapshot and computing every validator's row per
 // page view is what the as_of limiter exists to prevent, so it is omitted
-// there rather than computed.
-func (s *Server) networkReference(ctx context.Context, win Window) *networkReference {
+// there rather than computed. So is a live window whose snapshot is still
+// being computed: the validator page does not wait for one.
+func (s *Server) networkReference(win Window) *networkReference {
 	if win.AsOf {
 		return nil
 	}
-	snap, at, _, err := s.vals.get(ctx, s.logf(), win)
-	if err != nil {
+	snap, at, _, ok := s.vals.peek(s.logf(), win)
+	if !ok {
 		return nil
 	}
 	return networkReferenceFrom(snap.Window, snap.Rows, at)

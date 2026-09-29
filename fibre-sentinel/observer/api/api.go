@@ -365,9 +365,9 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(v)
+	// Compact: indenting made every body about 2.3 times larger, and a
+	// reader who wants it laid out has a tool for that.
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 func writeErr(w http.ResponseWriter, status int, msg string) {
@@ -2922,7 +2922,20 @@ func (s *Server) endorsedInRetention(ctx context.Context, addr string, at time.T
 // validatorDetail builds the /v1/validators/{addr} answer: the row over win,
 // the four standard spans beside it, and the newest readings. status is 200,
 // or 404 with an error body when nothing about addr is on record.
+//
+// A live window is answered from the validator snapshots when they list addr
+// (detailFromSnapshots); a pinned window, or a validator the snapshots do not
+// list yet, is computed here.
 func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, now time.Time) (int, any, error) {
+	if !win.AsOf {
+		out, ok, err := s.detailFromSnapshots(ctx, addr, win, now)
+		if err != nil {
+			return 0, nil, err
+		}
+		if ok {
+			return 200, out, nil
+		}
+	}
 	// The spans beside the row are anchored on the same moment the row is:
 	// the pin when there is one, the clock otherwise. Anchoring them on the
 	// clock while the row was pinned put a rewound validator beside four
@@ -2932,20 +2945,8 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 	if win.AsOf {
 		spanEnd = win.End
 	}
-	type span struct {
-		Window Window `json:"window"`
-		// Count is every assigned in-window reading in this window, not every
-		// row for the validator (validator.probe_count).
-		Count        int64           `json:"probe_count"`
-		Obligations  obligationStats `json:"obligations"`
-		ByObligation Rate            `json:"serve_rate_by_obligation"`
-		Classes      classCounts     `json:"classes"`
-		RolledUp     *rolledUp       `json:"rolled_up,omitempty"`
-		// Provisional is the part of obligations.broken still settling.
-		Provisional *provisionalFaults `json:"provisional_faults,omitempty"`
-	}
-	var spans []span
-	for _, name := range []string{"24h", "7d", "30d", "all"} {
+	var spans []detailSpan
+	for _, name := range detailSpans {
 		sw := Window{Name: name, Span: windows[name], End: spanEnd, AsOf: win.AsOf}
 		if sw.Span > 0 {
 			sw.Start = spanEnd.Add(-sw.Span)
@@ -2976,7 +2977,7 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 			}
 			addRolledObligations(&obl, rolled.ObligationsByVal[addr])
 		}
-		spans = append(spans, span{
+		spans = append(spans, detailSpan{
 			Window: sw, Count: total, Obligations: obl, ByObligation: obl.Rate, Classes: classes,
 			RolledUp: label, Provisional: prov[addr],
 		})
@@ -2988,6 +2989,43 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 	if len(rows) == 0 {
 		return 404, map[string]any{"error": validatorNotSeen}, nil
 	}
+	out := map[string]any{
+		"window":         win,
+		"record_through": s.recordThrough(ctx),
+		"validator":      rows[0],
+		"windows":        spans,
+	}
+	if win.AsOf {
+		out["as_of_note"] = AsOfNote
+	}
+	if err := s.detailReadings(ctx, addr, win, spanEnd, out); err != nil {
+		return 0, nil, err
+	}
+	return 200, out, nil
+}
+
+// detailSpans are the spans every validator answer carries beside its row.
+var detailSpans = []string{"24h", "7d", "30d", "all"}
+
+// detailSpan is one of them: the validator's obligations and readings over
+// that span.
+type detailSpan struct {
+	Window Window `json:"window"`
+	// Count is every assigned in-window reading in this window, not every
+	// row for the validator (validator.probe_count).
+	Count        int64           `json:"probe_count"`
+	Obligations  obligationStats `json:"obligations"`
+	ByObligation Rate            `json:"serve_rate_by_obligation"`
+	Classes      classCounts     `json:"classes"`
+	RolledUp     *rolledUp       `json:"rolled_up,omitempty"`
+	// Provisional is the part of obligations.broken still settling.
+	Provisional *provisionalFaults `json:"provisional_faults,omitempty"`
+}
+
+// detailReadings adds what a validator answer reads per request whichever
+// way its figures were built: the newest readings, the shards still in
+// retention, the newest endpoint check, and the network's rate beside it.
+func (s *Server) detailReadings(ctx context.Context, addr string, win Window, spanEnd time.Time, out map[string]any) error {
 	// The readings this validator was asked for. A reading this observer did
 	// not make in time (NOT_PROBED) is its own gap, not the validator's
 	// result, and is left out; probe_gaps counts it.
@@ -2998,33 +3036,30 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 	}
 	probes, err := s.probeRows(ctx, probeWhere, 50, probeArgs...)
 	if err != nil {
-		return 0, nil, err
+		return err
 	}
 	probes, moreProbes := trim(probes, 50)
+	// The row indices and their hash are most of a reading's bytes and the
+	// page shows neither; /v1/probes, where "the rest in the API" leads,
+	// carries them.
+	for i := range probes {
+		probes[i].RowIndices, probes[i].RowsSHA256 = nil, ""
+	}
 	inWindow, err := s.endorsedInRetention(ctx, addr, spanEnd)
 	if err != nil {
-		return 0, nil, err
+		return err
 	}
-	out := map[string]any{
-		"window":                  win,
-		"record_through":          s.recordThrough(ctx),
-		"validator":               rows[0],
-		"windows":                 spans,
-		"recent_probes":           probes,
-		"recent_probes_truncated": moreProbes,
-		"vantage":                 s.vantage,
-		// in_retention_window is the endorsed shards whose retention window
-		// has not ended at the answer's moment, from the chain's record: a
-		// blob is read 10 minutes before its window ends, so these are
-		// mostly not read yet, and none of them is counted either way.
-		"in_retention_window": inWindow,
-	}
-	if win.AsOf {
-		out["as_of_note"] = AsOfNote
-	}
+	out["recent_probes"] = probes
+	out["recent_probes_truncated"] = moreProbes
+	out["vantage"] = s.vantage
+	// in_retention_window is the endorsed shards whose retention window
+	// has not ended at the answer's moment, from the chain's record: a
+	// blob is read 10 minutes before its window ends, so these are
+	// mostly not read yet, and none of them is counted either way.
+	out["in_retention_window"] = inWindow
 	// The network's rate over the same window from the same vantage, for the
 	// page's service-rate context (provisional.go).
-	if ref := s.networkReference(ctx, win); ref != nil {
+	if ref := s.networkReference(win); ref != nil {
 		out["network_reference"] = ref
 	}
 	if c, err := s.lastEndpointCheck(ctx, addr, win); err == nil && c != nil {
@@ -3033,7 +3068,7 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 	if _, label, err := s.rolledFor(ctx, win, addr); err == nil && label != nil {
 		out["rolled_up"] = label
 	}
-	return 200, out, nil
+	return nil
 }
 
 // ---- blobs ----

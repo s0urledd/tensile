@@ -366,7 +366,7 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
   .vt th:first-child { width: 20%; }
   /* widths follow what the cells hold */
   .vt .c-ep { width: 11.5%; } .vt .c-host { width: 13%; } .vt .c-power { width: 10.5%; }
-  .vt .c-com { width: 13.5%; } .vt .c-end { width: 15.5%; } .vt .c-last { width: 16%; }
+  .vt .c-shard { width: 13.5%; } .vt .c-end { width: 15.5%; } .vt .c-last { width: 16%; }
   .vt td:not(:first-child) { overflow: hidden; text-overflow: ellipsis; }
   .vt .hosting { max-width: 100%; vertical-align: middle; }
   .vt .hosting > span:not(.flag):not(.flag-none):not(.cc) { overflow: hidden; text-overflow: ellipsis; }
@@ -390,7 +390,8 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
 .vt .rowcover:focus { outline: none; }
 .vt td [title], .vt td a:not(.rowcover), .vt td[title] > * { position: relative; z-index: 1; }
 .u { color: var(--text-3); font-weight: 400; }
-.col-pin { position: sticky; left: 0; z-index: 1; background: var(--paper); }
+/* above the cells it scrolls over: a cell with its own title sits at z-index 1 (above the row cover) and would draw on top of it */
+.col-pin { position: sticky; left: 0; z-index: 2; background: var(--paper); }
 tbody tr:hover .col-pin { background: color-mix(in srgb, var(--paper) 96%, var(--text)); }
 tr.warn .col-pin { background: color-mix(in srgb, var(--paper) 93%, var(--hold)); }
 .tnote { font-size: var(--t-small); color: var(--text-2); margin: 8px 0 0; }
@@ -1145,6 +1146,8 @@ body { background: var(--canvas); }
 /* a table on a surface: quiet uppercase heads, air in the rows, a tinted hover */
 .tablewrap.framed { margin-top: 0; background: var(--paper); border: 1px solid var(--border); border-radius: var(--r-card); box-shadow: var(--shadow-sm); }
 .tablewrap.framed th { background: transparent; padding-top: 13px; padding-bottom: 11px; font-size: var(--t-tiny); font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); border-bottom: 1px solid var(--border); }
+/* the pinned heading keeps the surface under it, or the headings it scrolls over show through */
+.tablewrap.framed th.col-pin { background: var(--paper); }
 .tablewrap.framed th:first-child, .tablewrap.framed td:first-child { padding-left: 18px; }
 .tablewrap.framed th:last-child, .tablewrap.framed td:last-child { padding-right: 18px; }
 .tablewrap.framed td { padding-top: 12px; padding-bottom: 12px; border-bottom-color: var(--border); }

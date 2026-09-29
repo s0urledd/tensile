@@ -355,7 +355,7 @@ export type Validator = {
   timeouts_enforced?: number;
   /** signing participation over the period: see lib/signing.ts. Descriptive, never a fault. */
   signing?: Signing;
-  /** row data it committed to store in the period (its endorsed blobs) and what it holds now (from the chain) */
+  /** the shard data it stored and endorsed in the period and what it holds now (from the chain) */
   load?: Load;
   /** network and country the open endpoint resolved into, from this vantage; absent when the lookup is off */
   hosting?: import("./hosting").Hosting;
@@ -854,7 +854,7 @@ export function shortBech(s: string): string {
   return `${s.slice(0, i)} ••• ${s.slice(-4)}`;
 }
 /**
- * What a validator committed to store: the rows of every settled blob it
+ * A validator's shard data: the rows it stored of every settled blob it
  * endorsed, kept for the retention window. From the chain, nothing measured. Mocha's own figures: the mainnet
  * sizing belongs to its own page.
  */

@@ -216,11 +216,11 @@ function Page() {
           {load && <>
             <Metric label="Rows per blob" value={int(load.rows_per_blob)} help="of every settled blob, by stake"
               title="Rows the assignment gives this validator on the newest settled blob. Rows follow stake, not blob size." />
-            <Metric label="Committed" value={notLive ? "—" : bytes(load.bytes)} tone={notLive ? "absent" : undefined}
+            <Metric label="Shard data" value={notLive ? "—" : bytes(load.bytes)} tone={notLive ? "absent" : undefined}
               help={`${int(load.promises)} endorsed blobs in the period`}
-              title="Row data of the settled blobs this validator endorsed in the period: what its signature undertook to store." />
+              title="Bytes of the shards this validator stored and endorsed, over the settled blobs of the period." />
             <Metric label="Held now" value={bytes(load.stored_bytes)} help="retention window still running"
-              title="Row data this validator must hold at this moment: endorsed blobs whose retention window has not ended." />
+              title="Shard data this validator must hold at this moment: endorsed blobs whose retention window has not ended." />
           </>}
           {(v.timeouts_enforced ?? 0) > 0 && <Metric label="Timeouts reported" value={int(v.timeouts_enforced)} help="payment promise timeouts"
             title="MsgPaymentPromiseTimeout submitted by this validator’s operator account in the period." />}

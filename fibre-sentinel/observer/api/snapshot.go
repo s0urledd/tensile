@@ -296,10 +296,13 @@ func (c *snapshotCache[T]) rev() string {
 	return c.revision()
 }
 
-func (c *snapshotCache[T]) get(ctx context.Context, log logf, win Window) (T, time.Time, int64, error) {
-	var zero T
-	rev := c.rev()
+// current is the snapshot win may serve now under rev, or nil, with a
+// refresh started behind one that has gone stale. With startMissing a window
+// with nothing to serve starts its computation in the background too, for a
+// caller that will not wait for it.
+func (c *snapshotCache[T]) current(log logf, win Window, rev string, startMissing bool) *snap[T] {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	s := c.entries[win.Name]
 	if s != nil && s.rev != rev {
 		// Computed under a different revision: a hold landed, or a
@@ -308,7 +311,8 @@ func (c *snapshotCache[T]) get(ctx context.Context, log logf, win Window) (T, ti
 		delete(c.entries, win.Name)
 		s = nil
 	}
-	if s != nil && c.stale(s, win.Name, time.Now()) && !c.refreshing[win.Name] {
+	due := s != nil && c.stale(s, win.Name, time.Now())
+	if (due || (s == nil && startMissing)) && !c.refreshing[win.Name] {
 		c.refreshing[win.Name] = true
 		c.bg.Add(1)
 		go func() {
@@ -316,8 +320,22 @@ func (c *snapshotCache[T]) get(ctx context.Context, log logf, win Window) (T, ti
 			c.background(log, win)
 		}()
 	}
-	c.mu.Unlock()
-	if s != nil {
+	return s
+}
+
+// peek is get for a reader that must not wait: the snapshot if win has one,
+// else ok false and the computation started for the next reader.
+func (c *snapshotCache[T]) peek(log logf, win Window) (v T, at time.Time, ms int64, ok bool) {
+	if s := c.current(log, win, c.rev(), true); s != nil {
+		return s.v, s.at, s.ms, true
+	}
+	return v, at, ms, false
+}
+
+func (c *snapshotCache[T]) get(ctx context.Context, log logf, win Window) (T, time.Time, int64, error) {
+	var zero T
+	rev := c.rev()
+	if s := c.current(log, win, rev, false); s != nil {
 		return s.v, s.at, s.ms, nil
 	}
 
