@@ -6,6 +6,7 @@ import { useApi, type Blob, type Probe, type Meta, int, bytes, tia, utcWord, hhm
 import StatusLine from "@/components/StatusLine";
 import { Metric, Metrics } from "@/components/Metrics";
 import Copy from "@/components/Copy";
+import { SHOW_SERVICE } from "@/lib/service";
 
 type Assignment = {
   validator_address: string; moniker?: string; voting_power: number; row_count: number; attested: boolean | null; host_at_settlement: string | null;
@@ -82,7 +83,9 @@ function Page() {
   // sentence, the figures and the rows cannot disagree.
   const count = (s: string) => assignments.filter((a) => a.service === s).length;
   const served = count("served"), notServed = count("not_served"), noVerdict = count("no_verdict");
-  const who = notServed > 0 ? `; ${int(notServed)} of ${int(signedN)} endorsing validators did not serve theirs.`
+  // with the service figures off (lib/service) the sentence says availability alone
+  const who = !SHOW_SERVICE ? "."
+    : notServed > 0 ? `; ${int(notServed)} of ${int(signedN)} endorsing validators did not serve theirs.`
     : signedN > 0 && served === signedN ? ", and every endorsing validator served its rows."
     : noVerdict > 0 ? `; ${int(served)} of ${int(signedN)} endorsing validators served theirs, ${int(noVerdict)} without a verdict.`
     : ".";
@@ -167,11 +170,14 @@ function Page() {
           <Metric label="Rows retrieved" value={shown ? int(rc!.served_distinct_rows) : "—"} tone={shown ? undefined : "absent"}
             help={shown ? `of ${int(rc!.total_rows)} · ${int(rc!.needed_rows)} needed${rc!.point_at ? ` · read ${hhmm(rc!.point_at)}` : ""}` : !over ? `read before ${hhmm(b.must_serve_until)}` : "no reading completed"}
             title="Distinct rows retrieved and verified against the commitment." />
-          <Metric label="Served" value={decided > 0 ? int(served) : "—"} den={decided > 0 ? int(signedN) : undefined} tone={decided > 0 ? undefined : "absent"}
-            help={decided > 0 ? (noVerdict > 0 ? `endorsing validators · ${int(noVerdict)} without a verdict` : "endorsing validators") : !over ? "read at the end of the window" : "no verdict"}
-            title="Endorsing validators whose rows came back." />
-          <Metric label="Not served" value={decided > 0 ? int(notServed) : "—"} tone={decided === 0 ? "absent" : notServed > 0 ? "fault" : undefined}
-            help={decided > 0 ? (notServed > 0 ? "endorsed rows did not come back" : "none") : " "} title="Endorsing validators whose rows did not come back." />
+          {/* the service counts, off until the protocol-level reading ships (lib/service) */}
+          {SHOW_SERVICE && <>
+            <Metric label="Served" value={decided > 0 ? int(served) : "—"} den={decided > 0 ? int(signedN) : undefined} tone={decided > 0 ? undefined : "absent"}
+              help={decided > 0 ? (noVerdict > 0 ? `endorsing validators · ${int(noVerdict)} without a verdict` : "endorsing validators") : !over ? "read at the end of the window" : "no verdict"}
+              title="Endorsing validators whose rows came back." />
+            <Metric label="Not served" value={decided > 0 ? int(notServed) : "—"} tone={decided === 0 ? "absent" : notServed > 0 ? "fault" : undefined}
+              help={decided > 0 ? (notServed > 0 ? "endorsed rows did not come back" : "none") : " "} title="Endorsing validators whose rows did not come back." />
+          </>}
         </Metrics>
         <div className="retrieved">
           {shown ? (
@@ -201,18 +207,21 @@ function Page() {
               {rows.length === 0 && <tr className="empty"><td colSpan={7}>No assignment recorded{b.assignment_error ? `: ${b.assignment_error}` : ""}.</td></tr>}
               {rows.map((a) => {
                 const p = reading.get(a.validator_address);
+                // with the service figures off (lib/service) a not-served validator shows nothing: no word, no mark, no reading
+                const hidden = !SHOW_SERVICE && a.service === "not_served";
+                const fault = !hidden && a.service === "not_served";
                 // a blob the earlier load policy drew out of its sample was not read by design
-                const sv = a.service === "not_read" && so ? ["gone", "Sampled out", "Not read: the load policy of the time drew this blob out of its sample."] : a.service ? SERVICE[a.service] : null;
-                const reason = a.service === "not_served" ? reasonOf(p) : "";
+                const sv = hidden ? null : a.service === "not_read" && so ? ["gone", "Sampled out", "Not read: the load policy of the time drew this blob out of its sample."] : a.service ? SERVICE[a.service] : null;
+                const reason = fault ? reasonOf(p) : "";
                 const word = sv ? `${sv[1]}${reason ? ` · ${reason}` : ""}${a.provisional ? " · provisional" : ""}` : "";
                 const detail = p ? `${p.schedule_label === "end" ? "end reading" : `reading ${p.schedule_label}`} · ${utcWord(p.started_at)} · ${int(p.rows_returned)} / ${int(p.rows_expected)} rows · ${int(p.total_duration_ms)} ms${p.raw_error ? ` · ${p.raw_error}` : ""}` : "";
                 return (
-                  <tr key={a.validator_address} className={a.service === "not_served" ? "fault-row" : undefined}>
+                  <tr key={a.validator_address} className={fault ? "fault-row" : undefined}>
                     <td className="id col-pin"><Link className="mon" href={`/validator/?addr=${a.validator_address}`}>{a.moniker || shortMid(a.validator_address, 12, 4)}</Link></td>
                     <td className="num">{int(a.voting_power)}</td>
                     <td className="num">{int(a.row_count)}</td>
                     <td title={a.attested === true ? "Signature verified against the consensus key." : a.attested === false ? "No verified signature on the settlement: nothing owed. A settlement needs ⅔ of the voting power." : "Recorded before signatures were verified."}>{a.attested === true ? "yes" : a.attested === false ? <span className="soft">no</span> : "—"}</td>
-                    <td title={[sv?.[2], detail].filter(Boolean).join(" · ") || (a.attested === false ? "Not endorsed: nothing owed." : "No reading that counts.")}>
+                    <td title={hidden ? undefined : [sv?.[2], detail].filter(Boolean).join(" · ") || (a.attested === false ? "Not endorsed: nothing owed." : "No reading that counts.")}>
                       {sv ? <><span className={"mk " + sv[0]} /> <span className={"word" + (sv[0] === "fault" ? " fault" : "")}>{word}</span></> : <span className="soft">—</span>}
                     </td>
                     <td className="mono soft">{a.host_at_settlement ? a.host_at_settlement : a.host_at_settlement === "" ? <span title="no endpoint registered when the promise settled">—</span> : <span className="sans" title="the registry could not be read at that height">not read</span>}</td>
