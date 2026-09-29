@@ -140,6 +140,15 @@ keeps up at three times today's rate with nothing queued; at 16 blobs and 64
 requests at once (`-blob-concurrency`, `-concurrency`) the limits are the
 validators' own single connections and the link, not the reading.
 
+A validator that times out holds its one connection for 30 s (the request
+and the client's re-dial). A reading does not wait for it when even its rows
+could not make the blob whole, and the most urgent reading due starts
+first, so an unavailable blob is still read at 20 a minute beside a
+validator that hangs (`TestAnUnavailableBlobIsReadWhileAValidatorTimesOut`).
+Each blob being read, or waiting for its second pass, also holds its
+verifier and the first shard it verified, up to about 11 MiB, beside the
+`-in-flight-mib` budget.
+
 ## 4. systemd
 
 ```bash
@@ -724,9 +733,16 @@ systemctl daemon-reload && systemctl enable --now fibre-vantage-pull@mocha.timer
 Every not-served row (an endorsing validator whose rows did not come back
 from a blob that could not be reconstructed: not found, bad rows, no answer,
 a rejected certificate, an error, a rate limit) is asked once more from the
-second vantage before it counts (docs/verdicts.md, "Faults re-checked from a
-second location"). Only those are re-checked, never routine readings, so the
-load is one request per not-served row, capped at 60 an hour on the vantage.
+second vantage, and counts only once the vantage confirms it
+(docs/verdicts.md, "Not-served readings confirmed from a second location").
+Only those are re-checked, never routine readings, so the load is one
+request per not-served row, at most 60 an hour to any one validator, eight
+validators at a time; a request the vantage cannot answer before
+must_serve_until lapses, and that row never counts.
+
+The vantage's answer confirms only when its row says it was read under the
+client's rules (`client_rules`), which a build from before this rule does
+not write: until the vantage runs this build, nothing counts not served.
 
 The exchange rides the same timer and sftp account as the pull:
 
@@ -740,8 +756,9 @@ The exchange rides the same timer and sftp account as the pull:
   failed rows once, with the same checks as the prober, reading the validator
   set from its own Mocha RPC, and appends its answers to `measurements.jsonl`
   in its data dir;
-- the collector ingests `<data-dir>/vantages/*/measurements.jsonl` and clears
-  or confirms each not-served row; a cleared one is logged in `amendments.jsonl`.
+- the collector ingests `<data-dir>/vantages/*/measurements.jsonl` and marks
+  each not-served row confirmed (`confirmed_by`, it counts) or fetched
+  (`cleared_by`, it does not); nothing is rewritten.
 
 On the vantage host, the inbox is a directory the sftp account writes through
 the group and the confirm service only reads (the unit mounts it read-only):

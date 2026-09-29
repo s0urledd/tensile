@@ -67,8 +67,9 @@ the blob (4096 of 16384 for blob version 0). It reads **once, 10 minutes
 before the deadline**, where a validator that pruned early or moved on shows.
 When every validator has been asked and the rows are still short, it asks
 those that did not serve once more a minute later; only when that second
-pass has asked every one of them again is the blob **unavailable** (the
-client's "not enough shards to reconstruct blob").
+pass has asked every one of them again whose rows could have made it whole
+is the blob **unavailable** (the client's "not enough shards to reconstruct
+blob").
 
 A validator counts as **not served** only when it endorsed the promise, the
 blob was unavailable, and its rows did not come back. On an available blob a
@@ -220,7 +221,8 @@ the order, the rows this answer added, what the reading came to). **No
 scores** — the observer derives the blob's status and the obligation verdicts
 from these records (`observer/verdict`, `observer/rollup`). When the reading
 ends unavailable, every endorsing validator's not-served row is queued for the
-second vantage to confirm (`probe.Confirmable`).
+second vantage to confirm (`probe.ConfirmationDue`); it counts only once
+confirmed.
 
 ### Error-class taxonomy
 

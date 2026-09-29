@@ -579,7 +579,7 @@ Stated here because they are properties of the machine, not of any validator.
   closes a range in the pass that opens it, and why a range it cannot read
   is recorded `unresolvable` rather than left open.
 - **Unavailable needs a finished reading.** A blob is unavailable only after
-  every validator the assignment gives rows was asked, twice; a reading this
+  every validator whose rows could have made it whole was asked, twice; a reading this
   observer could not finish is its own gap, and nothing in it counts. While the observer is
   blind it can withhold credit, never manufacture an accusation.
 - **The rows a reading did not need say nothing.** A reading stops at enough
