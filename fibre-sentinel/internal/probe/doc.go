@@ -13,7 +13,8 @@
 // the reading done at K distinct verified rows. When every validator has
 // been asked and the rows are still short, the validators that did not serve
 // are asked once more a minute later; only when that second pass has asked
-// every one of them again is the blob Unavailable.
+// every one of them again whose rows could have made the blob whole is the
+// blob Unavailable.
 //
 // The queue of readings is never stored. The Prober re-derives it every cycle
 // from publications.jsonl and the existing measurements.jsonl, so a restart
@@ -45,6 +46,7 @@
 // reading every answer without rows leaves the reader without them
 // (EndReadClass), and whether that counts against an endorsing validator is
 // decided from the whole reading (observer/verdict): only when the blob was
-// Unavailable. A validator that did not endorse is asked like the rest and
-// is never counted (UNATTESTED).
+// Unavailable, and only once a second location confirmed it (confirm.go). A
+// validator that did not endorse is asked like the rest and is never
+// counted (UNATTESTED).
 package probe

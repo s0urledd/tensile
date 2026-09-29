@@ -2,22 +2,28 @@ package probe
 
 // Not-served readings confirmed from a second vantage.
 //
-// A not-served reading is the one thing held against a validator, and it
-// rests on one reading from one place: a timeout or a refused connection
-// there may be this observer's own path. The primary prober appends a
-// ConfirmRequest for every row that counts not served (Confirmable: an
-// endorsing validator whose rows did not come back from a blob that could
-// not be reconstructed) to <data-dir>/vantage-requests.jsonl;
-// deploy/vantage-pull.sh copies new lines to each second vantage, where
-// sentinel-probe -confirm-requests (Confirmer) fetches exactly those rows
-// from that validator once, with the same probe (Run: DNS, TCP, TLS, the
+// A not-served reading rests on one reading from one place, and a timeout
+// or a refused connection there may be this observer's own path. So it
+// counts against a validator only once a second location has confirmed it
+// (verdict.ConfirmNotServed); until then it counts neither way. The primary
+// prober appends a ConfirmRequest for every row that can count not served
+// (ConfirmationDue: an endorsing validator whose rows did not come back
+// from a blob that could not be reconstructed, at a reading the
+// correlated-failure guard does not set aside) to
+// <data-dir>/vantage-requests.jsonl; deploy/vantage-pull.sh copies new
+// lines to each second vantage, where sentinel-probe -confirm-requests
+// (Confirmer) fetches exactly those rows from that validator once, with the
+// same probe under the same client rules (Run: DNS, TCP, TLS, the
 // consensus-key identity check, DownloadShard and the row verification
-// against the commitment and the assignment), and appends the result to its
-// own measurements.jsonl, stamped with its own vantage. The collector reads
-// that file back and applies the rule in observer/verdict (ConfirmFault).
+// against the commitment and the assignment; the client's RPCTimeout and
+// its one re-dial), and appends the result to its own measurements.jsonl,
+// stamped with its own vantage. The collector reads that file back and
+// applies the rule in observer/verdict (ConfirmNotServed).
 //
 // Only failures are re-checked, never routine probes, so the load a second
-// vantage adds is one request per not-served row.
+// vantage adds is one request per not-served row. A request it cannot
+// answer before its deadline (must_serve_until at the latest) lapses, and
+// that row never counts.
 //
 // The vantage keeps no state of the primary's: the request names the
 // promise, the blob, the validator and the host, and everything a verdict
@@ -52,15 +58,10 @@ import (
 // requests, under its data dir.
 const ConfirmRequestsFile = "vantage-requests.jsonl"
 
-// ConfirmWindow is how long after a FAULT's probe started a confirming
-// probe from another vantage still answers it. A confirming probe started
-// later is no answer, and the fault stands as it was recorded.
-//
-// It is shorter than verdict.FaultSettling (thirty minutes) by the time an
-// answer takes to come back — the vantage's poll, the pull timer's minute
-// each way, the collector's pass — so a fault a second vantage clears is
-// withdrawn while it is still labelled provisional, and a fault that has
-// settled stays settled. verdict's tests hold the two apart by that margin.
+// ConfirmWindow is how long after a not-served reading started a confirming
+// probe from another vantage still answers it; the probe must also start
+// before must_serve_until. A confirming probe started later is no answer,
+// and the reading never counts.
 const ConfirmWindow = 20 * time.Minute
 
 // ConfirmRequestSchemaVersion is bumped when the request's JSON shape
@@ -71,9 +72,9 @@ const ConfirmRequestSchemaVersion = 1
 type ConfirmRequest struct {
 	SchemaVersion int       `json:"schema_version"`
 	RequestedAt   time.Time `json:"requested_at"`
-	// Deadline is the last moment a confirming probe may start: the fault's
-	// start plus ConfirmWindow, or the end of the grace phase if that is
-	// sooner, since past it no answer could clear anything.
+	// Deadline is the last moment a confirming probe may start: the
+	// reading's start plus ConfirmWindow, or must_serve_until if that is
+	// sooner, since only an answer from inside the window confirms.
 	Deadline    time.Time `json:"deadline"`
 	FromVantage string    `json:"from_vantage"`
 	ChainID     string    `json:"chain_id"`
@@ -136,8 +137,8 @@ func (r ConfirmRequest) validate() error {
 // NewConfirmRequest builds the request for a not-served row.
 func NewConfirmRequest(pub scan.Publication, t Target, m Measurement, chainID string, pruneTolerance time.Duration, now time.Time) ConfirmRequest {
 	deadline := m.StartedAt.Add(ConfirmWindow)
-	if end := pub.MustServeUntil.Add(pruneTolerance); end.Before(deadline) {
-		deadline = end
+	if pub.MustServeUntil.Before(deadline) {
+		deadline = pub.MustServeUntil
 	}
 	return ConfirmRequest{
 		SchemaVersion: ConfirmRequestSchemaVersion, RequestedAt: now.UTC(), Deadline: deadline.UTC(),
@@ -192,10 +193,9 @@ func (l *requestLog) close() {
 
 // requestConfirmation queues a not-served row for a second vantage. A
 // failure to write it is logged and nothing more: without a request the row
-// stands as recorded, which is what it did before there was a second
-// vantage.
+// is never confirmed, and never counts.
 func (p *Prober) requestConfirmation(pub scan.Publication, t Target, m Measurement) {
-	if !Confirmable(m.ScheduleLabel, m.Classification) || p.requests == nil {
+	if !ConfirmationDue(m) || p.requests == nil {
 		return
 	}
 	now := time.Now()
@@ -227,12 +227,16 @@ type ConfirmConfig struct {
 	Timeouts     StepTimeouts
 	// PollEvery is how often the requests file is read again.
 	PollEvery time.Duration
-	// MaxPerHour bounds the confirming probes in any hour. A validator that
-	// lost everything faults at every point of every blob, and the second
-	// vantage must not turn that into a download storm against it; requests
-	// past the cap wait, and those whose deadline passes meanwhile are
-	// dropped, which leaves their faults standing.
+	// MaxPerHour bounds the confirming probes of any one validator in an
+	// hour. A validator that lost everything is not served on every blob,
+	// and the second vantage must not turn that into a download storm
+	// against it; its requests past the cap wait, and those whose deadline
+	// passes meanwhile lapse, so those readings never count.
 	MaxPerHour int
+	// Workers is how many validators are asked at once (default 8). One
+	// validator is asked one request at a time, the oldest deadline first,
+	// as the primary asks it.
+	Workers int
 	// AllowUnroutableHosts: tests and a local devnet only, as for the prober.
 	AllowUnroutableHosts bool
 	Once                 bool // one pass over what is due, then exit
@@ -253,12 +257,16 @@ type Confirmer struct {
 	chainID     string
 	clockOffset time.Duration
 	observer    ObserverInfo
-	coders      map[[2]int]*Coder
 
-	offset  int64                     // bytes of the requests file consumed
+	offset int64 // bytes of the requests file consumed
+	status *status.Writer
+
+	// mu guards what a pass's workers share: the requests not yet probed,
+	// the starts of each validator's probes of the last hour, the coders.
+	mu      sync.Mutex
 	pending map[string]ConfirmRequest // by Key, not yet probed
-	spent   []time.Time               // starts of the probes of the last hour
-	status  *status.Writer
+	spent   map[string][]time.Time    // by validator
+	coders  map[[2]int]*Coder
 }
 
 // NewConfirmer builds a Confirmer over a chain client.
@@ -268,6 +276,9 @@ func NewConfirmer(cfg ConfirmConfig, chain ConfirmChain, log *scan.Logger) (*Con
 	}
 	if cfg.MaxPerHour <= 0 {
 		cfg.MaxPerHour = 60
+	}
+	if cfg.Workers <= 0 {
+		cfg.Workers = 8
 	}
 	if cfg.Vantage == "" {
 		return nil, errors.New("a confirming vantage needs a name")
@@ -282,7 +293,7 @@ func NewConfirmer(cfg ConfirmConfig, chain ConfirmChain, log *scan.Logger) (*Con
 	return &Confirmer{
 		cfg: cfg, log: log, chain: chain, store: st, run: Run, now: time.Now,
 		observer: ObserverInfo{Build: status.BuildRevision(), AssignPin: assign.PinnedCelestiaAppCommit},
-		coders:   map[[2]int]*Coder{}, pending: map[string]ConfirmRequest{},
+		coders:   map[[2]int]*Coder{}, pending: map[string]ConfirmRequest{}, spent: map[string][]time.Time{},
 	}, nil
 }
 
@@ -302,7 +313,7 @@ func (c *Confirmer) Run(ctx context.Context) error {
 		} else {
 			c.status.OK()
 		}
-		c.status.Set("pending", len(c.pending))
+		c.status.Set("pending", c.pendingLen())
 		if c.cfg.Once {
 			return nil
 		}
@@ -312,12 +323,14 @@ func (c *Confirmer) Run(ctx context.Context) error {
 	}
 }
 
-// pass reads new requests and probes what is due, within the hourly cap.
+// pass reads new requests and probes what is due: Workers validators at a
+// time, one request per validator at a time, the oldest deadline first,
+// each validator within its hourly cap.
 func (c *Confirmer) pass(ctx context.Context) error {
 	if err := c.readRequests(); err != nil {
 		return fmt.Errorf("read %s: %w", c.cfg.RequestsPath, err)
 	}
-	if len(c.pending) == 0 {
+	if c.pendingLen() == 0 {
 		return nil
 	}
 	if c.chainID == "" {
@@ -336,82 +349,156 @@ func (c *Confirmer) pass(ctx context.Context) error {
 	}
 
 	// Oldest deadline first: the request closest to expiring is the one a
-	// cap is most likely to cost.
-	due := make([]ConfirmRequest, 0, len(c.pending))
+	// cap or a queue is most likely to cost.
+	c.mu.Lock()
+	queue := make([]ConfirmRequest, 0, len(c.pending))
 	for _, r := range c.pending {
-		due = append(due, r)
+		queue = append(queue, r)
 	}
-	sort.Slice(due, func(i, j int) bool {
-		if !due[i].Deadline.Equal(due[j].Deadline) {
-			return due[i].Deadline.Before(due[j].Deadline)
+	c.mu.Unlock()
+	sort.Slice(queue, func(i, j int) bool {
+		if !queue[i].Deadline.Equal(queue[j].Deadline) {
+			return queue[i].Deadline.Before(queue[j].Deadline)
 		}
-		return due[i].Key() < due[j].Key()
+		return queue[i].Key() < queue[j].Key()
 	})
-	for _, r := range due {
-		if ctx.Err() != nil {
-			return nil
-		}
-		now := c.now()
-		if !now.Before(r.Deadline) {
-			c.log.Printf("confirm %s %s %s: deadline %s passed before it could be probed; the fault stands",
-				short(r.PromiseHash), short(r.ValidatorAddress), r.ScheduleLabel, r.Deadline.Format(time.RFC3339))
-			delete(c.pending, r.Key())
-			continue
-		}
-		in, coder, err := c.input(ctx, r)
-		var m Measurement
-		switch {
-		case errors.Is(err, errChainRead):
-			// The chain did not answer; nothing is known about the
-			// validator yet. Asked again next pass, until the deadline.
-			c.log.Printf("confirm %s %s: %v; retried next pass", short(r.PromiseHash), short(r.ValidatorAddress), err)
-			continue
-		case err != nil:
-			// The chain does not bear the request out: refused, with no
-			// connection to the validator, and recorded, so the refusal is
-			// on the record rather than only in a log.
-			m = c.refused(r, err)
-		default:
-			if !c.admit(now) {
-				return nil // over the hourly cap: the rest waits for the next pass
+
+	var (
+		mu       sync.Mutex
+		cond     = sync.NewCond(&mu)
+		busy     = map[string]bool{}
+		firstErr error
+		wg       sync.WaitGroup
+	)
+	// next takes the oldest request whose validator is not being asked, and
+	// waits while every one left is for a validator that is.
+	next := func() (ConfirmRequest, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		for {
+			if ctx.Err() != nil || firstErr != nil || len(queue) == 0 {
+				return ConfirmRequest{}, false
 			}
-			m = c.run(ctx, in, coder, c.cfg.Timeouts)
-			if redials(m.Outcome) && ctx.Err() == nil {
-				// the client's one re-dial (blobread.go, redials)
-				first := m
-				m = c.run(ctx, in, coder, c.cfg.Timeouts)
-				m.Retry = &RetryInfo{Attempts: 2, DelayMS: m.StartedAt.Sub(first.StartedAt).Milliseconds(), FirstStartedAt: first.StartedAt,
-					FirstOutcome: first.Outcome, FirstError: first.RawError, FirstDurationMS: first.TotalDurationMS}
+			for i, r := range queue {
+				if !busy[r.ValidatorAddress] {
+					queue = append(queue[:i], queue[i+1:]...)
+					busy[r.ValidatorAddress] = true
+					return r, true
+				}
 			}
-			if ctx.Err() != nil && m.Classification == ClassProbeError {
-				return nil // abandoned by shutdown: asked again on the next start
-			}
-			m.ClassificationReason = fmt.Sprintf("confirmation from %s of the %s not-served reading recorded by %s at %s: %s",
-				c.cfg.Vantage, r.Outcome, r.FromVantage, r.StartedAt.UTC().Format(time.RFC3339), m.ClassificationReason)
+			cond.Wait()
 		}
-		if err := c.store.Append(m); err != nil {
-			return fmt.Errorf("append measurement: %w", err)
-		}
-		delete(c.pending, r.Key())
-		c.log.Printf("CONFIRM %s val=%s %s (fault %s from %s) -> %s / %s",
-			short(r.PromiseHash), short(r.ValidatorAddress), r.ScheduleLabel, r.Outcome, r.FromVantage, m.Outcome, m.Classification)
 	}
+	for w := 0; w < c.cfg.Workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				r, ok := next()
+				if !ok {
+					return
+				}
+				err := c.answer(ctx, r)
+				mu.Lock()
+				busy[r.ValidatorAddress] = false
+				if err != nil && firstErr == nil {
+					firstErr = err
+				}
+				cond.Broadcast()
+				mu.Unlock()
+			}
+		}()
+	}
+	// A worker waiting on a busy validator is woken when that request ends;
+	// a stop wakes every one of them.
+	stop := context.AfterFunc(ctx, func() {
+		mu.Lock()
+		cond.Broadcast()
+		mu.Unlock()
+	})
+	wg.Wait()
+	stop()
+	return firstErr
+}
+
+// answer probes one request, or drops it once its deadline has passed. A
+// request left for later (the chain did not answer, the validator's cap,
+// a shutdown) stays pending. The error is a failure to write the answer.
+func (c *Confirmer) answer(ctx context.Context, r ConfirmRequest) error {
+	now := c.now()
+	if !now.Before(r.Deadline) {
+		c.log.Printf("confirm %s %s %s: deadline %s passed before it could be probed; the reading is never counted",
+			short(r.PromiseHash), short(r.ValidatorAddress), r.ScheduleLabel, r.Deadline.Format(time.RFC3339))
+		c.forget(r)
+		return nil
+	}
+	in, coder, err := c.input(ctx, r)
+	var m Measurement
+	switch {
+	case errors.Is(err, errChainRead):
+		// The chain did not answer; nothing is known about the validator
+		// yet. Asked again next pass, until the deadline.
+		c.log.Printf("confirm %s %s: %v; retried next pass", short(r.PromiseHash), short(r.ValidatorAddress), err)
+		return nil
+	case err != nil:
+		// The chain does not bear the request out: refused, with no
+		// connection to the validator, and recorded, so the refusal is on
+		// the record rather than only in a log.
+		m = c.refused(r, err)
+	default:
+		if !c.admit(r.ValidatorAddress, now) {
+			return nil // over this validator's hourly cap: it waits for a later pass
+		}
+		m = c.run(ctx, in, coder, c.cfg.Timeouts)
+		if redials(m.Outcome) && ctx.Err() == nil {
+			// the client's one re-dial (blobread.go, redials)
+			first := m
+			m = c.run(ctx, in, coder, c.cfg.Timeouts)
+			m.Retry = &RetryInfo{Attempts: 2, DelayMS: m.StartedAt.Sub(first.StartedAt).Milliseconds(), FirstStartedAt: first.StartedAt,
+				FirstOutcome: first.Outcome, FirstError: first.RawError, FirstDurationMS: first.TotalDurationMS}
+		}
+		if ctx.Err() != nil && m.Classification == ClassProbeError {
+			return nil // abandoned by shutdown: asked again on the next start
+		}
+		m.ClassificationReason = fmt.Sprintf("confirmation from %s of the %s not-served reading recorded by %s at %s: %s",
+			c.cfg.Vantage, r.Outcome, r.FromVantage, r.StartedAt.UTC().Format(time.RFC3339), m.ClassificationReason)
+	}
+	if err := c.store.Append(m); err != nil {
+		return fmt.Errorf("append measurement: %w", err)
+	}
+	c.forget(r)
+	c.log.Printf("CONFIRM %s val=%s %s (%s from %s) -> %s / %s",
+		short(r.PromiseHash), short(r.ValidatorAddress), r.ScheduleLabel, r.Outcome, r.FromVantage, m.Outcome, m.Classification)
 	return nil
 }
 
-// admit applies the hourly cap and records the start.
-func (c *Confirmer) admit(now time.Time) bool {
-	keep := c.spent[:0]
-	for _, t := range c.spent {
+func (c *Confirmer) forget(r ConfirmRequest) {
+	c.mu.Lock()
+	delete(c.pending, r.Key())
+	c.mu.Unlock()
+}
+
+func (c *Confirmer) pendingLen() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.pending)
+}
+
+// admit applies a validator's hourly cap and records the start.
+func (c *Confirmer) admit(validator string, now time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	keep := c.spent[validator][:0]
+	for _, t := range c.spent[validator] {
 		if now.Sub(t) < time.Hour {
 			keep = append(keep, t)
 		}
 	}
-	c.spent = keep
-	if len(c.spent) >= c.cfg.MaxPerHour {
+	if len(keep) >= c.cfg.MaxPerHour {
+		c.spent[validator] = keep
 		return false
 	}
-	c.spent = append(c.spent, now)
+	c.spent[validator] = append(keep, now)
 	return true
 }
 
@@ -473,12 +560,14 @@ func (c *Confirmer) readRequests() error {
 		if !c.now().Before(req.Deadline) {
 			continue // too late to say anything
 		}
+		c.mu.Lock()
 		c.pending[req.Key()] = req
+		c.mu.Unlock()
 	}
 }
 
 // refused records a request the chain does not bear out as PROBE_ERROR: no
-// answer, so the fault stands.
+// answer, so the reading is not confirmed.
 func (c *Confirmer) refused(r ConfirmRequest, err error) Measurement {
 	now := c.now().UTC()
 	return Measurement{
@@ -549,13 +638,16 @@ func (c *Confirmer) input(ctx context.Context, r ConfirmRequest) (Input, *Coder,
 		return Input{}, nil, fmt.Errorf("the assignment recomputed from the chain (%d rows) is not the one the request names (%d rows)", len(rows), len(r.AssignedRows))
 	}
 	k := [2]int{pp.OriginalRows, pp.TotalRows}
+	c.mu.Lock()
 	coder, ok := c.coders[k]
 	if !ok {
 		if coder, err = NewCoder(pp.OriginalRows, pp.TotalRows); err != nil {
+			c.mu.Unlock()
 			return Input{}, nil, fmt.Errorf("coder: %v", err)
 		}
 		c.coders[k] = coder
 	}
+	c.mu.Unlock()
 	return Input{
 		Vantage: c.cfg.Vantage, ChainID: c.chainID, PromiseHash: r.PromiseHash,
 		Commitment: commitment, CommitmentHex: r.Commitment, BlobVersion: r.BlobVersion,

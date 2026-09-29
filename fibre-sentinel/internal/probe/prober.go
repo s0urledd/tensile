@@ -60,8 +60,13 @@ type Config struct {
 	// reading (default 64), and BlobConcurrency how many blobs are being
 	// read at once (default 16). PerValidator is how many requests one
 	// validator has from this observer at a time (default 1): one of the
-	// server's bounded connection slots, as a client holds one. These only
-	// pace the reading; they never drop one.
+	// server's bounded connection slots, as a client holds one. They pace
+	// the reading, and they can cost one: a reading that cannot start before
+	// its latest start, or cannot ask in time every validator whose rows
+	// could have made its blob whole, is not read by Tensile (this
+	// observer's gap, counted neither way). The most urgent reading due
+	// starts first (popDue), and a pass stops waiting for busy validators
+	// whose rows could not change its outcome (blobReading.run).
 	Concurrency     int
 	BlobConcurrency int
 	PerValidator    int
@@ -726,24 +731,29 @@ func (p *Prober) dispatch(ctx context.Context) {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	for {
-		j, wait := p.sched.popDue(time.Now())
-		if j == nil {
+		// A slot first, then the reading: the one popped is the most urgent
+		// of those due at the moment it can start (popDue).
+		select {
+		case slots <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
+		var j *readJob
+		for j == nil {
+			var wait time.Duration
+			if j, wait = p.sched.popDue(time.Now()); j != nil {
+				break
+			}
 			if wait <= 0 || wait > time.Second {
 				wait = time.Second
 			}
 			select {
 			case <-ctx.Done():
+				<-slots
 				return
 			case <-p.sched.wake:
 			case <-time.After(wait):
 			}
-			continue
-		}
-		select {
-		case slots <- struct{}{}:
-		case <-ctx.Done():
-			p.sched.done(j.pub.PromiseHash)
-			return
 		}
 		if time.Now().After(j.latest) {
 			<-slots
@@ -812,13 +822,17 @@ func (p *Prober) readBlob(ctx context.Context, j *readJob, release func()) {
 		p.sched.done(j.pub.PromiseHash)
 		return
 	}
+	// A validator the pass did not ask (busy with another reading until the
+	// pass ended, or its time up) matters only if its rows could have made
+	// the blob whole: shortEvenWithGaps counts them as if they had served.
+	decided := b.askedIn(pass, candidates) || b.shortEvenWithGaps(pass, candidates)
 	switch {
 	case b.enough():
 		p.finish(b, ReadAvailable, "")
-	case !b.askedIn(pass, candidates) && pass == 1:
-		p.finish(b, ReadIncomplete, "the reading could not ask every validator before its deadline (this observer's own gap)")
-	case !b.askedIn(pass, candidates):
-		p.finish(b, ReadIncomplete, "the second pass could not ask again every validator that had not served before its deadline (this observer's own gap)")
+	case !decided && pass == 1:
+		p.finish(b, ReadIncomplete, "the reading could not ask, before its deadline, every validator whose rows could have made the blob whole (this observer's own gap)")
+	case !decided:
+		p.finish(b, ReadIncomplete, "the second pass could not ask again, before its deadline, every validator whose rows could have made the blob whole (this observer's own gap)")
 	case pass == 1:
 		retryAt := time.Now().Add(cfg.RetryAfter)
 		if last := j.pub.MustServeUntil.Add(-cfg.RetryDeadline); !retryAt.After(last) {
@@ -827,16 +841,17 @@ func (p *Prober) readBlob(ctx context.Context, j *readJob, release func()) {
 			return
 		}
 		p.finish(b, ReadIncomplete, "the second pass could not be made before the reading's deadline (this observer's own gap)")
-	case b.shortEvenWithGaps():
+	case b.shortEvenWithGaps(pass, candidates):
+		b.settle(pass, candidates)
 		p.finish(b, ReadUnavailable, "")
 	default:
 		p.finish(b, ReadIncomplete, "a validator could not be read for a reason on this observer's side, and its rows would have been enough")
 	}
 }
 
-// finish writes a reading's rows, all together, and queues the counted
-// not-served ones for a second vantage. The caller has taken the reading
-// off the queue (popDue); finish gives it back.
+// finish writes a reading's rows, all together, and queues the not-served
+// ones for a second vantage, without which they never count. The caller has
+// taken the reading off the queue (popDue); finish gives it back.
 func (p *Prober) finish(b *blobReading, result, why string) {
 	defer p.sched.done(b.pub.PromiseHash)
 	ms := b.rows(result, why)
@@ -846,13 +861,23 @@ func (p *Prober) finish(b *blobReading, result, why string) {
 		}
 	}
 	p.counters.done.Add(1)
-	p.log.Printf("READ %s: %s, %d distinct rows held (%d needed), %d validators asked of %d (%d endorsing)",
-		short(b.pub.PromiseHash), result, b.have(), b.pub.Assignment.ProtocolParams.OriginalRows, len(ms), len(b.targets), b.endorsing())
+	// A reading the correlated-failure guard sets aside counts neither way,
+	// whatever a second location says, so its rows are not sent there: the
+	// second location's time goes to the rows that can count.
+	confirm := result == ReadUnavailable && !GuardSetsAside(ms)
+	note := ""
+	if result == ReadUnavailable && !confirm {
+		note = "; set aside by the correlated-failure guard"
+	}
+	p.log.Printf("READ %s: %s, %d distinct rows held (%d needed), %d validators asked of %d (%d endorsing)%s",
+		short(b.pub.PromiseHash), result, b.have(), b.pub.Assignment.ProtocolParams.OriginalRows, len(ms), len(b.targets), b.endorsing(), note)
 	for _, m := range ms {
 		p.logMeasurement(m)
-		if result == ReadUnavailable {
+		if confirm {
 			// After the row is on disk, so a request never names a row that
-			// is not. Only an endorsing validator's row counts not served.
+			// is not. Only an endorsing validator's row can count not
+			// served. A request lost here (a crash before it is written)
+			// leaves its row unconfirmed, and it never counts.
 			for _, t := range b.targets {
 				if t.AddressHex == m.ValidatorAddress && t.endorsing {
 					p.requestConfirmation(b.pub, t.Target, m)
@@ -924,6 +949,14 @@ func (p *Prober) releaseValidator(addr string) {
 // defaultInFlightBytes is the shard-byte ceiling: half a gibibyte of shards
 // being transferred at once, which with the receive buffer and the
 // unmarshalled copy is about a gibibyte resident at the peak.
+//
+// It does not count what a reading holds besides its transfers: each blob
+// being read, and each waiting for its second pass, keeps its verifier
+// (about 4.3 MiB at K = 4096, N = 12288) and the rows of the first shard it
+// verified (up to about 7 MiB at mocha's largest shard) until it finishes.
+// Readings are bounded by BlobConcurrency and second passes by the blobs
+// that come back short, so at 16 running and 20 waiting that is about
+// 400 MiB more.
 const defaultInFlightBytes = 512 << 20
 
 // byteSem admits work by weight as well as by count. A single item heavier
@@ -1127,7 +1160,9 @@ func (q *readQueue) push(j *readJob) {
 	}
 }
 
-// popDue returns the earliest reading if it is due, or how long until it is.
+// popDue returns, of the readings due, the one whose last start comes
+// first (a second pass, whose deadline is the harder, before a first pass
+// that can still wait), or how long until the earliest is due.
 func (q *readQueue) popDue(now time.Time) (*readJob, time.Duration) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -1137,8 +1172,17 @@ func (q *readQueue) popDue(now time.Time) (*readJob, time.Duration) {
 	if j := q.h[0]; j.start.After(now) {
 		return nil, j.start.Sub(now)
 	}
+	best := -1
+	for i, j := range q.h {
+		if j.start.After(now) {
+			continue
+		}
+		if b := q.h[max(best, 0)]; best < 0 || j.latest.Before(b.latest) || (j.latest.Equal(b.latest) && j.start.Before(b.start)) {
+			best = i
+		}
+	}
 	q.taken++
-	return heap.Pop(&q.h).(*readJob), 0
+	return heap.Remove(&q.h, best).(*readJob), 0
 }
 
 // done ends a popped reading's pass, and forgets the blob unless its second

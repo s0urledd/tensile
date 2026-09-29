@@ -130,6 +130,13 @@ type Measurement struct {
 	// Additive, omitempty.
 	Read *ReadInfo `json:"read,omitempty"`
 
+	// ClientRules says the request was made and judged under the Fibre
+	// client's rules (Input.ClientRules: the client's RPCTimeout, its
+	// receive bound, its re-dial). A second location's answer counts toward
+	// a not-served reading only when it says so (verdict.ConfirmNotServed):
+	// a build without it read by other rules. Additive, omitempty.
+	ClientRules bool `json:"client_rules,omitempty"`
+
 	// novel is how many of the returned rows the blob's reading had not
 	// already seen. Not recorded.
 	novel int

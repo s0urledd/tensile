@@ -353,8 +353,14 @@ func TestASecondPassComesBeforeUnavailable(t *testing.T) {
 			t.Fatalf("validator %d asked %d times, want once per pass", i, c.Load())
 		}
 	}
-	if got := readRequests(t, ConfirmRequestsPath(p.cfg.DataDir)); len(got) != 4 {
-		t.Fatalf("%d confirmation requests, want one per validator not served", len(got))
+	// Every validator failed at once: the correlated-failure guard sets the
+	// reading aside, so none of it can count, and nothing is sent for
+	// confirmation.
+	if !GuardSetsAside(ms) {
+		t.Fatal("the guard does not set aside a reading every validator failed")
+	}
+	if got := readRequests(t, ConfirmRequestsPath(p.cfg.DataDir)); len(got) != 0 {
+		t.Fatalf("%d confirmation requests for a reading the guard sets aside, want none", len(got))
 	}
 }
 

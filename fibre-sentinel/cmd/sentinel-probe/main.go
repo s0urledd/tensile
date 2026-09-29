@@ -12,10 +12,11 @@
 // resumes exactly.
 //
 // Every not-served row of a blob that could not be read (an endorsing
-// validator whose rows did not come back, probe.Confirmable) is also queued
-// in <data-dir>/vantage-requests.jsonl for a second vantage to confirm. With
-// -confirm-requests the command is that second vantage instead: it answers
-// those requests (internal/probe/confirm.go).
+// validator whose rows did not come back, probe.ConfirmationDue) is also
+// queued in <data-dir>/vantage-requests.jsonl for a second vantage to
+// confirm; it counts only once confirmed. With -confirm-requests the
+// command is that second vantage instead: it answers those requests
+// (internal/probe/confirm.go).
 package main
 
 import (
@@ -84,7 +85,8 @@ func main() {
 		// schedule. It answers the primary's confirmation requests (one
 		// request per not-served row) and writes <data-dir>/measurements.jsonl.
 		confirmReqs  = flag.String("confirm-requests", "", "confirm mode: answer the confirmation requests in this file (the primary's vantage-requests.jsonl, copied in) instead of reading blobs")
-		confirmMax   = flag.Int("confirm-max-per-hour", 60, "confirm mode: confirming requests in any hour at most; requests past it wait, and lapse at their deadline")
+		confirmMax   = flag.Int("confirm-max-per-hour", 60, "confirm mode: confirming requests to any one validator in an hour at most; requests past it wait, and lapse at their deadline")
+		confirmWork  = flag.Int("confirm-workers", 8, "confirm mode: validators asked at once; one validator is asked one request at a time")
 		confirmEvery = flag.Duration("confirm-poll", 20*time.Second, "confirm mode: how often the requests file is read again")
 	)
 	flag.Parse()
@@ -106,7 +108,7 @@ func main() {
 		c, err := probe.NewConfirmer(probe.ConfirmConfig{
 			RequestsPath: *confirmReqs, DataDir: *dataDir, Vantage: *vantage,
 			Timeouts:  timeouts,
-			PollEvery: *confirmEvery, MaxPerHour: *confirmMax, AllowUnroutableHosts: *localHosts,
+			PollEvery: *confirmEvery, MaxPerHour: *confirmMax, Workers: *confirmWork, AllowUnroutableHosts: *localHosts,
 			Once: *once, RunConfig: flagConfig(),
 		}, chain, log)
 		if err != nil {

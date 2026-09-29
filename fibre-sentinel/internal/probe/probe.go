@@ -289,6 +289,7 @@ func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measur
 		Phase:              phase,
 		ClockOffsetMS:      in.ClockOffsetMS,
 		LatenessMS:         now.Sub(in.SchedulePoint.At).Milliseconds(),
+		ClientRules:        in.ClientRules && in.RequestTimeout > 0,
 	}
 	if in.Observer != (ObserverInfo{}) {
 		o := in.Observer
@@ -715,7 +716,7 @@ func downloadAndVerify(ctx context.Context, in Input, coder *Coder, conn net.Con
 		r.RPCCode = rpcCodeOf(err)
 		r.outcome, r.rawErr = classifyDownloadError(err), err.Error()
 		if in.ClientRules {
-			r.outcome = clientRulesOutcome(err, r.outcome)
+			r.outcome = clientRulesOutcome(err, r.outcome, dctx.Err() == nil)
 		}
 		return r
 	}
@@ -980,14 +981,19 @@ func rpcCodeOf(err error) string {
 // meets it (Input.ClientRules): running out of the request's time after
 // connecting is the validator's slowness, a refusal as malformed or
 // unimplemented is the server's error, and a reply over the protocol's
-// message bound is one no client accepts. Everything else keeps its
-// earlier reading; the caller's own cancel stays a gap.
-func clientRulesOutcome(err error, o Outcome) Outcome {
+// message bound is one no client accepts. A CANCELLED status while the
+// request's own context is still alive (alive) was sent by the server: the
+// client meets it as a failed shard and skips it, so it is the server's
+// error too. Everything else keeps its earlier reading; the caller's own
+// cancel stays a gap (Run reads it from the caller's context).
+func clientRulesOutcome(err error, o Outcome, alive bool) Outcome {
 	ls := strings.ToLower(err.Error())
 	switch {
 	case o == OutcomeRPCDeadline:
 		return OutcomeRPCTimeout
 	case status.Code(err) == codes.InvalidArgument, status.Code(err) == codes.Unimplemented:
+		return OutcomeServerError
+	case status.Code(err) == codes.Canceled && alive:
 		return OutcomeServerError
 	case strings.Contains(ls, "received message larger than max"), strings.Contains(ls, "after decompression larger than max"):
 		return OutcomeMalformedShard

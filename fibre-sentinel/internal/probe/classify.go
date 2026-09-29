@@ -261,15 +261,96 @@ func OwnAnswer(phase Phase, c Classification, verified bool) bool {
 	return verified || (c != ClassNotProbed && c != ClassProbeError)
 }
 
-// Confirmable reports whether a row is re-checked from a second location
-// (confirm.go): a FAULT on any schedule, and at the end reading every class
-// that left the reader without rows (EndReadClass FAULT), less
-// NOT_REGISTERED, which names no host another location could ask.
+// Confirmable reports whether a class leaves the reader without rows in a
+// way a second location can ask about again (confirm.go): a FAULT on any
+// schedule, and at the end reading every class that left the reader
+// without rows (EndReadClass FAULT), less NOT_REGISTERED, which names no
+// host another location could ask. A second location's answer in one of
+// these classes is also the only kind that confirms a not-served reading
+// (verdict.ConfirmNotServed).
 func Confirmable(label string, c Classification) bool {
 	if c == ClassFault {
 		return true
 	}
 	return label == EndReadLabel && c != ClassNotRegistered && EndReadClass(c) == ClassFault
+}
+
+// ConfirmationDue reports whether a row of an endorsing validator, on an
+// end reading that left its blob Unavailable, is sent to a second location:
+// every row that can count not served there. That is a class without rows
+// (Confirmable), and an answer whose rows verified but were fewer than the
+// validator holds, which counts not served once its deferred verdict is
+// drawn (verdict.Row.CountedClass). Nothing counts not served until the
+// second location has confirmed it.
+func ConfirmationDue(m Measurement) bool {
+	if m.ScheduleLabel != EndReadLabel || !m.Assigned || m.Phase != PhaseInWindow {
+		return false
+	}
+	if Confirmable(m.ScheduleLabel, m.Classification) {
+		return true
+	}
+	return m.Download.CommitmentVerified && m.Download.RowsReturned < m.AssignedRowCount
+}
+
+// The correlated-failure guard (the owner's decision until a control read
+// exists; observer/verdict applies it over stored rows, SuspectPoints). At
+// or above GuardShare of the validators asked at one reading being
+// unreachable, or GuardShare of them leaving the reader without rows, the
+// likeliest explanation is this observer's own side, and the reading
+// counts neither way. GuardMinValidators is the floor under which a share
+// is not a signal.
+const (
+	GuardShare         = 0.5
+	GuardMinValidators = 3
+)
+
+// GuardSilentClasses are the classes that leave the observer without a
+// reachability verdict for the endpoint, so a row in one of them is in
+// neither the numerator nor the denominator of the guard's shares (see
+// verdict.GuardSilentClasses for why each is here).
+var GuardSilentClasses = []Classification{
+	ClassNotProbed, ClassProbeError, ClassNotRegistered, ClassUnattested, ClassRetentionUnverified,
+}
+
+// GuardSilent reports whether a class is one of GuardSilentClasses.
+func GuardSilent(c Classification) bool {
+	for _, s := range GuardSilentClasses {
+		if c == s {
+			return true
+		}
+	}
+	return false
+}
+
+// GuardSetsAside reports whether the correlated-failure guard sets one
+// reading aside, from its rows as the prober writes them: the verdict's
+// guard (verdict.SuspectPoints) over one reading, drawn from this
+// observer's own reading alone. The caller asks it of a reading that did
+// not reconstruct its blob; a reading that did is never set aside.
+func GuardSetsAside(rows []Measurement) bool {
+	vals, unreach, failed := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, m := range rows {
+		if !m.Assigned || m.Phase != PhaseInWindow || GuardSilent(m.Classification) {
+			continue
+		}
+		vals[m.ValidatorAddress] = true
+		if m.Classification == ClassUnreachable {
+			unreach[m.ValidatorAddress] = true
+		}
+		oc := m.Classification
+		if m.ScheduleLabel == EndReadLabel {
+			oc = EndReadClass(oc)
+		}
+		if oc == ClassFault {
+			failed[m.ValidatorAddress] = true
+		}
+	}
+	n := len(vals)
+	if n <= 1 {
+		return false
+	}
+	share := func(k int) bool { return float64(k)/float64(n) >= GuardShare && k >= GuardMinValidators }
+	return share(len(unreach)) || share(len(failed))
 }
 
 // EndGenuineRowsClasses are the end-reading outcomes where rows that verify

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -45,71 +46,91 @@ func readRequests(t *testing.T, path string) []ConfirmRequest {
 	return out
 }
 
-// Only a FAULT is re-checked from another vantage; every other class, the
-// ones held out of the rate included, costs the second vantage nothing.
-func TestRequestConfirmation_OnlyForFault(t *testing.T) {
-	for _, cls := range AllClassifications {
-		t.Run(string(cls), func(t *testing.T) {
-			p := testProber(t)
-			path := filepath.Join(p.cfg.DataDir, ConfirmRequestsFile)
-			p.requests = &requestLog{path: path}
-			defer p.requests.close()
-			now := time.Now().UTC()
-			pb := pub(now.Add(-time.Hour), now.Add(time.Hour))
-			m := rowFor(pb, "v1", "aa", SchedulePoint{At: now, Label: "w2"})
-			m.Classification = cls
-			p.requestConfirmation(pb, Target{AddressHex: "aa", AssignedRows: []int{1, 2}}, m)
-			got := readRequests(t, path)
-			if cls == ClassFault {
-				if len(got) != 1 {
-					t.Fatalf("a FAULT wrote %d requests, want 1", len(got))
+// Every end-reading row that can count not served is sent to another
+// vantage: a class without rows (Confirmable), and verified rows fewer than
+// the validator holds. Every other class, and every row of the earlier
+// schedule, costs the second vantage nothing.
+func TestRequestConfirmation_ForEveryRowThatCanCountNotServed(t *testing.T) {
+	due := map[Classification]bool{ClassFault: true, ClassUnreachable: true, ClassIdentityMismatch: true, ClassIdentityExpired: true,
+		ClassServerError: true, ClassThrottled: true}
+	for _, label := range []string{EndReadLabel, "w2"} {
+		for _, cls := range AllClassifications {
+			t.Run(label+"/"+string(cls), func(t *testing.T) {
+				p := testProber(t)
+				path := filepath.Join(p.cfg.DataDir, ConfirmRequestsFile)
+				p.requests = &requestLog{path: path}
+				defer p.requests.close()
+				now := time.Now().UTC()
+				pb := pub(now.Add(-time.Hour), now.Add(time.Hour))
+				m := rowFor(pb, "v1", "aa", SchedulePoint{At: now, Label: label})
+				m.Assigned, m.Classification = true, cls
+				p.requestConfirmation(pb, Target{AddressHex: "aa", AssignedRows: []int{1, 2}}, m)
+				got := readRequests(t, path)
+				if label == EndReadLabel && due[cls] {
+					if len(got) != 1 {
+						t.Fatalf("a not-served %s wrote %d requests, want 1", cls, len(got))
+					}
+					r := got[0]
+					if r.PromiseHash != pb.PromiseHash || r.ValidatorAddress != "aa" || !r.ScheduledAt.Equal(m.ScheduledAt) ||
+						r.FromVantage != "v1" || len(r.AssignedRows) != 2 || r.Classification != cls {
+						t.Errorf("request = %+v", r)
+					}
+					if want := m.StartedAt.Add(ConfirmWindow); !r.Deadline.Equal(want) {
+						t.Errorf("deadline %s, want the reading's start plus the window %s", r.Deadline, want)
+					}
+					return
 				}
-				r := got[0]
-				if r.PromiseHash != pb.PromiseHash || r.ValidatorAddress != "aa" || !r.ScheduledAt.Equal(m.ScheduledAt) ||
-					r.FromVantage != "v1" || len(r.AssignedRows) != 2 || r.Classification != ClassFault {
-					t.Errorf("request = %+v", r)
+				if len(got) != 0 {
+					t.Fatalf("%s %s wrote %d confirmation requests, want none", label, cls, len(got))
 				}
-				if want := m.StartedAt.Add(ConfirmWindow); !r.Deadline.Equal(want) {
-					t.Errorf("deadline %s, want the fault's start plus the window %s", r.Deadline, want)
-				}
-				return
-			}
-			if len(got) != 0 {
-				t.Fatalf("%s wrote %d confirmation requests, want none", cls, len(got))
-			}
-		})
+			})
+		}
 	}
-}
-
-// A fault whose grace phase is already over cannot be cleared by any
-// answer, so no request is sent; one near the end of its window gets the
-// end of the grace phase as its deadline.
-func TestRequestConfirmation_DeadlineStopsAtTheEndOfGrace(t *testing.T) {
+	// verified rows, fewer than it holds: its deferred verdict can count it
+	// not served, so it is asked about too
 	p := testProber(t)
 	path := filepath.Join(p.cfg.DataDir, ConfirmRequestsFile)
 	p.requests = &requestLog{path: path}
 	defer p.requests.close()
-	tol := p.schedCfg().PruneTolerance
+	now := time.Now().UTC()
+	pb := pub(now.Add(-time.Hour), now.Add(time.Hour))
+	m := rowFor(pb, "v1", "aa", SchedulePoint{At: now, Label: EndReadLabel})
+	m.Assigned, m.Classification, m.Outcome = true, ClassProbeError, OutcomePartial
+	m.AssignedRowCount, m.Download.RowsReturned, m.Download.CommitmentVerified = 4, 2, true
+	p.requestConfirmation(pb, Target{AddressHex: "aa", AssignedRows: []int{1, 2, 3, 4}}, m)
+	if got := readRequests(t, path); len(got) != 1 {
+		t.Fatalf("a short verified answer wrote %d requests, want 1", len(got))
+	}
+}
+
+// Only an answer from inside the window confirms, so the deadline is
+// must_serve_until at the latest, and a reading whose window has closed is
+// not sent at all.
+func TestRequestConfirmation_DeadlineStopsAtMustServeUntil(t *testing.T) {
+	p := testProber(t)
+	path := filepath.Join(p.cfg.DataDir, ConfirmRequestsFile)
+	p.requests = &requestLog{path: path}
+	defer p.requests.close()
 	now := time.Now().UTC()
 
-	late := pub(now.Add(-5*time.Hour), now.Add(-tol-time.Minute))
-	m := rowFor(late, "v1", "aa", SchedulePoint{At: now, Label: "grace"})
-	m.Classification = ClassFault
+	late := pub(now.Add(-5*time.Hour), now.Add(-time.Second))
+	m := rowFor(late, "v1", "aa", SchedulePoint{At: now.Add(-10 * time.Minute), Label: EndReadLabel})
+	m.Assigned, m.Classification = true, ClassFault
 	p.requestConfirmation(late, Target{AddressHex: "aa", AssignedRows: []int{1}}, m)
 	if got := readRequests(t, path); len(got) != 0 {
-		t.Fatalf("a fault past its grace phase was sent for confirmation: %+v", got)
+		t.Fatalf("a reading past its window was sent for confirmation: %+v", got)
 	}
 
 	near := pub(now.Add(-4*time.Hour), now.Add(2*time.Minute))
-	m = rowFor(near, "v1", "aa", SchedulePoint{At: now, Label: "w4"})
-	m.Classification = ClassFault
+	m = rowFor(near, "v1", "aa", SchedulePoint{At: now, Label: EndReadLabel})
+	m.Assigned, m.Classification = true, ClassUnreachable
 	p.requestConfirmation(near, Target{AddressHex: "aa", AssignedRows: []int{1}}, m)
 	got := readRequests(t, path)
 	if len(got) != 1 {
 		t.Fatalf("got %d requests, want 1", len(got))
 	}
-	if want := near.MustServeUntil.Add(tol); !got[0].Deadline.Equal(want) {
-		t.Errorf("deadline %s, want the end of the grace phase %s", got[0].Deadline, want)
+	if !got[0].Deadline.Equal(near.MustServeUntil) {
+		t.Errorf("deadline %s, want must_serve_until %s", got[0].Deadline, near.MustServeUntil)
 	}
 }
 
@@ -119,12 +140,15 @@ type fakeConfirmChain struct {
 	chainID string
 	set     []scan.ValSetMember
 	setErr  error
+	mu      sync.Mutex
 	heights []int64
 }
 
 func (f *fakeConfirmChain) Status(context.Context) (string, int64, error) { return f.chainID, 100, nil }
 func (f *fakeConfirmChain) ValidatorSet(_ context.Context, h int64) ([]scan.ValSetMember, error) {
+	f.mu.Lock()
 	f.heights = append(f.heights, h)
+	f.mu.Unlock()
 	return f.set, f.setErr
 }
 func (f *fakeConfirmChain) LatestBlockTime(context.Context) (time.Time, error) {
