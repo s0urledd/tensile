@@ -497,7 +497,7 @@ export default function Developers() {
           <Topic id="limits" title="Limits">
             <li>Per client address: bursts of up to 120 requests, then 10 a second, and 16 at once. Beyond that the answer is <code>429</code> with <code>Retry-After: 5</code>.</li>
             <li><code>as_of</code> answers are computed on request and rationed across everyone: 4 in a burst, then one every 2 seconds, 2 at a time.</li>
-            <li>A request that runs past 60 seconds ends in <code>502</code>.</li>
+            <li>An answer that has not started within 60 seconds ends in <code>502</code>; one that has started, such as an export download, runs on.</li>
           </Topic>
           <Topic id="freshness" title="Caching and freshness">
             <li>Answers may be cached for 15 seconds, <code>/hosting</code> for 60 and the feeds for 5 minutes. <code>/tip</code>, <code>/health</code>, <code>as_of</code> answers and errors are never cached; export archives are cached for a day.</li>
