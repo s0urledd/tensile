@@ -57,23 +57,21 @@ reads from the chain and recomputes itself (`fibre-assign`, `fibre-tlsverify`).
 
 What a Fibre blob promises its reader is that it can be downloaded until its
 deadline. So the Sentinel downloads it the way a reader does, with
-celestia-app's own rules (`fibre/download.go`): every validator the
-assignment gives rows, endorsing or not, in the client's order
-(`validator.Set.Select`), the next one asked while the rows still wanted
-outnumber the rows on their way, 15 s per request (connect and TLS
-included), one re-dial after a failed dial or a timeout, every row verified
-against the commitment, and the download done at the rows that reconstruct
-the blob (4096 of 16384 for blob version 0). It reads **once, 10 minutes
-before the deadline**, where a validator that pruned early or moved on shows.
-When every validator has been asked and the rows are still short, it asks
-those that did not serve once more a minute later; only when that second
-pass has asked every one of them again whose rows could have made it whole
-is the blob **unavailable** (the client's "not enough shards to reconstruct
-blob").
+celestia-app's own rules (`fibre/download.go`): the whole validator set in
+the client's order (`validator.Set.Select`), the next one asked while the
+rows still wanted outnumber the rows on their way, 15 s per request
+(connect and TLS included), one re-dial after a failed dial or a timeout,
+every row verified against the commitment, and the download done at the
+rows that reconstruct the blob (4096 of 16384 for blob version 0). It reads
+**once, 10 minutes before the deadline**, where a validator that pruned
+early or moved on shows. The result is the client's: **available**, or
+**unavailable** with the client's error, "no shards retrieved" or "not
+enough shards to reconstruct blob". A reading in which every request failed
+on this observer's side, or one the prober missed, did not happen: the blob
+was not read by Tensile.
 
 A validator counts as **not served** only when it endorsed the promise, the
-blob was unavailable, its rows did not come back, and the second vantage did
-not get them either (below). On an available blob a
+blob was unavailable, and its rows did not come back. On an available blob a
 validator that failed, or one the reading did not need to ask, counts
 neither way: the blob was there for any reader. A validator that did not
 endorse owes nothing and is never counted.
@@ -207,24 +205,17 @@ height. The assignment is **recomputed** here and cross-checked against the
 row counts in the scan record — a mismatch is a hard error, not a silent
 divergence.
 
-**4. Enough.** The reading stops at `original_rows` distinct verified rows.
-Short after every validator was asked, those that did not serve are asked
-again `-retry-after` (60 s) later, if that pass can start by
-`must_serve_until - 90 s`; otherwise, or when that pass cannot ask every one
-of them again before `must_serve_until - 60 s`, the reading is incomplete
-and its failures are `PROBE_ERROR`.
+**4. Enough.** The reading stops at `original_rows` distinct verified rows,
+or when every validator has been asked.
 
 **5. The record.** One raw `Measurement` per validator asked, all of a
 reading's rows in one write: vantage, scheduled/started/finished times, each
 layer's duration and result, the identity verdict, rows returned and both
-verification results, the raw error text, and `read` (the pass, the place in
-the order, the rows this answer added, what the reading came to). **No
-scores** — the observer derives the blob's status and the obligation verdicts
-from these records (`observer/verdict`, `observer/rollup`). When the reading
-ends unavailable, every endorsing validator's not-served row is queued for the
-second vantage to confirm (`probe.ConfirmationDue`), unless the
-correlated-failure guard sets the reading aside for good; it counts only once
-confirmed.
+verification results, the raw error text, and `read` (the place in the
+order, the rows this answer added, what the reading came to and the
+client's error). **No scores** — the observer derives the blob's status and
+the obligation verdicts from these records (`observer/verdict`,
+`observer/rollup`).
 
 ### Error-class taxonomy
 
@@ -276,10 +267,9 @@ than counting the entries the transaction carries.
 A reading asks only as many validators as it needs, so a validator is asked
 for some blobs, not all of them. At most 16 blobs (`-blob-concurrency`) and
 64 requests (`-concurrency`) are in flight at once, with 512 MiB of shards
-(`-in-flight-mib`), and one validator gets one request from this observer
-at a time (`-per-validator`): a validator busy with another reading is
-passed over and come back to. These only pace the reading; they never drop
-one. `publications.jsonl` is tailed incrementally and a publication is
+(`-in-flight-mib`). These only delay a request, never drop one, and there is
+no limit per validator, as the client has none. `publications.jsonl` is
+tailed incrementally and a publication is
 forgotten once its reading is on record. On a (re)start every reading that
 was not made gets its `NOT_PROBED` rows, however old;
 `-backfill-missed` (default 0, unbounded) caps how far back that goes. A
@@ -330,8 +320,9 @@ multi-vantage coverage.
 **Unit** (`go test ./...`): param-history ordering incl. same-block updates,
 `must_serve_until` derivation, `EventUpdateFibreParams` JSON parse, the
 assignment-table builder, store dedupe/resume, the reading (against real
-Fibre servers on loopback with encoded shards: the stop at K, the second pass,
-the re-dial, the one-request-per-validator pace), `PhaseAt` boundaries, the
+Fibre servers on loopback with encoded shards: the stop at K, the three
+outcomes, the re-dial, a reading no request left, limits that only delay),
+`PhaseAt` boundaries, the
 full taxonomy table, and the observer's store,
 rollup, API and export packages.
 

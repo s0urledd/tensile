@@ -115,8 +115,8 @@ recorded gap, and a registration inside a gap makes the hosts of later
 settlements unknown until the gap is re-scanned).
 
 The prober asks a validator only for a blob it was assigned rows of, in
-window, one request at a time from this observer, and stops once a blob's
-rows are enough. The read-path rate limiting Celestia is designing (forum
+window, as the client asks, and stops once a blob's rows are enough. The
+read-path rate limiting Celestia is designing (forum
 topic 2295) treats requests for shards a validator was never assigned as
 illegitimate; reading only real, in-window, assigned commitments keeps the
 observer's traffic on the right side of it.
@@ -128,26 +128,25 @@ validator holds its rows, 20 when the third that did not endorse holds
 nothing) and moves about 19 MiB, the rows needed plus the requests already
 on their way: at 20 blobs a minute that is 240 to 400 requests and about
 380 MiB a minute, about 50 Mbit/s. The validator with the most stake is
-asked for nearly every blob, one request at a time, and is busy about 60 %
-of the time at that rate; past about 30 blobs a minute it is passed over and
-the readings go on with the others. A scheduler run on the observer (82
-shared fake validators with mocha's row shape scaled to 1/16, 1.0 to 1.8 s
-per shard, production timeouts and pacing, loopback) read 60 of 60 blobs at
-20 a minute (reading p50 1.9 s, max 3.0 s, no start lag) and 180 of 180 at
-60 a minute (p50 2.5 s, max 4.3 s, no start lag); at 120 a minute every blob
-was still read but the start lag grew to 30 s in two minutes. So the prober
-keeps up at three times today's rate with nothing queued; at 16 blobs and 64
-requests at once (`-blob-concurrency`, `-concurrency`) the limits are the
-validators' own single connections and the link, not the reading.
+asked for nearly every blob; there is no limit per validator, as the client
+has none. A scheduler run on the observer (82 shared fake validators with
+mocha's row shape scaled to 1/16, 1.0 to 1.8 s per shard, production
+timeouts, loopback) read 60 of 60 blobs at 20 a minute (reading p50 1.9 s,
+max 3.0 s, no start lag) and 180 of 180 at 60 a minute (p50 2.5 s, max
+4.3 s, no start lag) under the earlier one-request-per-validator pacing,
+which only slowed it; at 120 a minute every blob was still read but the
+start lag grew to 30 s in two minutes. So the prober keeps up at three times
+today's rate with nothing queued. The limits it keeps, 16 blobs and 64
+requests at once and 512 MiB of shards in flight (`-blob-concurrency`,
+`-concurrency`, `-in-flight-mib`), only delay a request: its 15 s start once
+it is let go, and it is never dropped.
 
-A validator that times out holds its one connection for 30 s (the request
-and the client's re-dial). A reading does not wait for it when even its rows
-could not make the blob whole, and the most urgent reading due starts
-first, so an unavailable blob is still read at 20 a minute beside a
+A validator that times out holds a request for 30 s (the request and the
+client's re-dial). The other readings go on beside it, as other clients'
+would, so an unavailable blob is still read at 20 a minute beside a
 validator that hangs (`TestAnUnavailableBlobIsReadWhileAValidatorTimesOut`).
-Each blob being read, or waiting for its second pass, also holds its
-verifier and the first shard it verified, up to about 11 MiB, beside the
-`-in-flight-mib` budget.
+Each blob being read also holds its verifier and the first shard it
+verified, up to about 11 MiB, beside the `-in-flight-mib` budget.
 
 ## 4. systemd
 
@@ -432,6 +431,8 @@ mocha host on 29 September, and how to remove it once the owner approves:
 | columns `probe_daily.faults`, `attested`, `unattested`, `unknown_att` | none yet (no day rolled) | nothing: written as 0 | a migration that bumps the schema, whenever the table is next changed |
 | columns `obligation_daily.end_unobserved`, `unobserved_reachable`, `unobserved_unreachable`, `unobserved_not_probed` | none yet | summed into `not_counted` | the same; one `not_counted` column would do |
 | `snapshots/` | 1.0 MB, 12 files | the API, which rewrites every file on start and on each refresh | nothing to do: none is left from an earlier model |
+| table `probe_confirmations`, columns `probes.cleared_by` and `probes.confirmed_by`, index `probes_cleared` | empty (0 rows; every value NULL) | nothing: the second location's confirmation of failed readings is gone | a migration that bumps the schema, whenever `probes` is next changed |
+| `vantages/de-1/measurements.jsonl` | 0 B | nothing | `rm` it; the pull no longer fetches it |
 
 ### Archive: bounded live files
 
@@ -728,76 +729,13 @@ cp deploy/systemd/fibre-vantage-pull@.{service,timer} /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now fibre-vantage-pull@mocha.timer
 ```
 
-### Second vantage: fault confirmation
+The second vantage runs the heartbeat and nothing else. A blob's reading is
+this observer's own, as one client's download is, and nothing asks the
+second vantage to read it again. Earlier builds pushed confirmation requests
+to `vantage/<name>/inbox/`; nothing writes or reads that inbox now, and
+`VANTAGE_PUSH` in the env file is ignored.
 
-Every not-served row (an endorsing validator whose rows did not come back
-from a blob that could not be reconstructed: not found, bad rows, no answer,
-a rejected certificate, an error, a rate limit) is asked once more from the
-second vantage, unless the correlated-failure guard sets the reading aside
-for good, and counts only once the vantage confirms it (docs/verdicts.md,
-"Not-served readings confirmed from a second location"). Only those are
-re-checked, never routine readings, so the load is one request per
-not-served row, at most 60 an hour to any one validator, eight validators
-at a time, with new requests picked up while a pass runs; a request the
-vantage cannot answer before must_serve_until lapses, and that row never
-counts.
-
-The vantage's answer confirms only when its row says it was read under the
-client's rules (`client_rules`), which a build from before this rule does
-not write: until the vantage runs this build, nothing counts not served.
-The collector draws every stored answer again under its own rule at each
-start, so the order the prober, the collector and the vantage are upgraded
-in does not matter: an answer an older collector judged counts only if this
-rule confirms it. Each daily export carries the vantage's answers
-(`vantages/<name>/measurements.jsonl`), so `sentinel-recompute` over an
-export reproduces the not-served counts.
-
-The exchange rides the same timer and sftp account as the pull:
-
-- the prober appends one request per not-served row to
-  `<data-dir>/vantage-requests.jsonl` (built in, nothing to configure);
-- `fibre-vantage-pull` pushes the new lines to
-  `vantage/<name>/inbox/requests.jsonl` (sftp `reput`, mode 0640) and pulls
-  `vantage/<name>/measurements.jsonl` back beside the reachability record;
-  `VANTAGE_PUSH=0` in the env file turns the push off;
-- `sentinel-probe -confirm-requests` on the vantage host fetches exactly the
-  failed rows once, with the same checks as the prober, reading the validator
-  set from its own Mocha RPC, and appends its answers to `measurements.jsonl`
-  in its data dir;
-- the collector ingests `<data-dir>/vantages/*/measurements.jsonl` and marks
-  each not-served row confirmed (`confirmed_by`, it counts) or fetched
-  (`cleared_by`, it does not); nothing is rewritten.
-
-On the vantage host, the inbox is a directory the sftp account writes through
-the group and the confirm service only reads (the unit mounts it read-only):
-
-```
-install -d -o tensile-vantage -g tensile-vantage -m 2770 /srv/tensile-vantage/de-1/inbox
-install -m 0755 sentinel-probe /usr/local/bin/tensile-probe
-cp deploy/systemd/tensile-vantage-confirm@.service /etc/systemd/system/
-systemctl daemon-reload && systemctl enable --now tensile-vantage-confirm@de-1
-# unit: User=tensile-vantage, Group=tensile-vantage, UMask=0027, ProtectSystem=strict,
-#   ReadWritePaths=/srv/tensile-vantage/de-1, ReadOnlyPaths=/srv/tensile-vantage/de-1/inbox
-```
-
-The service writes `measurements.jsonl`, `status/confirm.json` and its lines
-in `runs.jsonl` under `/srv/tensile-vantage/de-1` (0640, group
-`tensile-vantage`, which the sftp account can read). It is never in group
-`tensile-backup`. Change the RPC with a drop-in (`Environment=RPC=...`).
-
-On the observer, install the new `deploy/vantage-pull.sh` over
-`/usr/local/bin/fibre-vantage-pull`; the timer and the env file stay as they
-are. To check the channel end to end:
-
-```
-ls -l /var/lib/fibre-observer/mocha/vantage-requests.jsonl       # appears with the first not-served row
-cat /var/lib/fibre-observer/mocha/vantages/de-1/requests.pushed   # bytes the vantage has
-journalctl -u tensile-vantage-confirm@de-1 | grep CONFIRM          # on the vantage host
-sqlite3 /var/lib/fibre-observer/mocha/observer.db \
-  "SELECT vantage, classification, judged FROM probe_confirmations ORDER BY started_at DESC LIMIT 5"
-```
-
-`deploy/test/vantage-sync.sh` checks the push and pull against a fake sftp.
+`deploy/test/vantage-sync.sh` checks the pull against a fake sftp.
 
 ## 8. Checks after deploy
 

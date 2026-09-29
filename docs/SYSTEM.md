@@ -29,7 +29,7 @@ The processes share files, not memory, and only one of them writes SQLite.
 | process | binary | writes | reads |
 |---|---|---|---|
 | scanner | `sentinel-scan` | `publications.jsonl`, `payments.jsonl`, `host_history.jsonl`, `state.json` | chain RPC |
-| prober | `sentinel-probe` | `measurements.jsonl`, `vantage-requests.jsonl`, `sampling-secrets.jsonl` (reveals of the earlier draws) | `publications.jsonl`, `state.json`, `registry.jsonl`, `sampling-master.key`, chain RPC |
+| prober | `sentinel-probe` | `measurements.jsonl`, `sampling-secrets.jsonl` (reveals of the earlier draws) | `publications.jsonl`, `state.json`, `registry.jsonl`, `sampling-master.key`, chain RPC |
 | heartbeat | `observer-heartbeat` | `reachability.jsonl` | chain RPC (registry) |
 | collector | `observer-collector` | `observer.db`, `registry.jsonl`, `amendments.jsonl`, `exports/` | every `.jsonl`, `state.json`, chain RPC |
 | API | `observer-api` | `snapshots/*.json` | `observer.db` (read-only), status files |
@@ -59,11 +59,11 @@ chain block
   prober: re-derives the queue of readings every cycle from publications.jsonl
           + measurements.jsonl (never stored)
        ├─ ReadPoint(publication)  → must_serve_until - 10 min
-       ├─ ClientOrder  → every validator with rows, in validator.Set.Select order
+       ├─ ClientOrder  → the whole validator set, in validator.Set.Select order
        ├─ per request, probe.Run  → DNS · TCP · TLS 1.3 · consensus-key identity
        │                            · DownloadShard, 15 s in all, one re-dial
        ├─ rows verified by the blob's shared Reconstructor; stop at K distinct rows
-       ├─ short after the whole set: the rest asked again a minute later
+       ├─ result: available, or unavailable with the client's error
        ├─ Classify(Evidence) → one classification + a reason per validator asked
        └─→ measurements.jsonl (a reading's rows together)
 
@@ -102,7 +102,6 @@ derived index of them.
 | `host_history.jsonl` | host registration | `time` |
 | `param_uncertainty.jsonl` | a height range whose `x/fibre` params the observer cannot vouch for, and what came of closing it | `detected_at` |
 | `corrections.jsonl` | a deadline or verdict a verified range moved, and the `range_corrected` line that closes the range | `judged_at` |
-| `vantages/<name>/measurements.jsonl` | the second location's answer to a confirmation request, copied in; every export carries it, since a not-served row counts only once it is confirmed | `started_at` |
 
 `state.json` is **not** a record file: it is the scanner's current param
 history, scan gaps, host seed and frontier. Every export carries it as a
@@ -208,14 +207,15 @@ predicate rather than from a list repeated per call site. Which rows are
 (`verdict.CountedClass`): on an unavailable blob every answer that left the
 reader without the validator's rows; on an available one none.
 
-**Blob reading** — `verdict.BlobReading`, one per publication: **available**
-when the distinct verified rows reach `original_rows`; **unavailable** when
-the verified rows plus the rows of every validator with no answer of its own
-(`probe.OwnAnswer`: not asked, or this observer's own failure; a validator
-whose verified rows are in hand has answered) still fall short, over the
-whole set the client asks, endorsing or not; `pending` while the window is
-open; `not_read` after. A reading of the earlier schedule is judged at the newest point every
-endorsing validator answered at.
+**Blob reading** — `verdict.BlobReading`, one per publication, the Fibre
+client's result: **available** when the distinct verified rows reach
+`original_rows`; **unavailable** with the client's error, `no shards
+retrieved` or `not enough shards to reconstruct blob`, when they do not. A
+reading that did not happen (the prober missed it, `NOT_PROBED`, or every
+request failed on this observer's side, `probe.OwnAnswer` for none) is
+`pending` while the window is open and `not_read` after. A reading of the
+earlier schedule is judged at the newest point every endorsing validator
+answered at.
 
 **Obligation bucket** — one per `(validator, promise)` pair, in
 `observer/verdict` and in SQL in `observer/rollup`:
@@ -223,12 +223,10 @@ endorsing validator answered at.
 ```
 pending      must_serve_until > as_of
 served       its rows came back verified at the blob's reading
-broken       not served: the blob was unavailable, its rows did not come
-             back, and the second location confirmed it (confirmed_by)
+broken       not served: the blob was unavailable and its rows did not come
+             back
 not_counted  the rest: not asked (the rows were enough before its turn), a
-             failure on a blob that was available, a failure the second
-             location did not confirm, a reading the guard set aside, or no
-             reading that decides the blob
+             failure on a blob that was available, or a blob not read
 ```
 
 Rate is `served / (served + broken)`. Everything else is printed beside it.
@@ -249,35 +247,33 @@ Fibre client downloads it:
 - at `must_serve_until - 10 min` (`ReadPoint`; half way through a shorter
   window); a reading that cannot start by `must_serve_until - 3 min` is not
   made, and its endorsing validators get a `NOT_PROBED` row
-- every validator the assignment gives rows, endorsing or not, in
-  `validator.Set.Select` order (`ClientOrder`, celestia-app's own code),
-  the next one asked while the rows still wanted outnumber the rows on their
-  way; a validator that did not endorse is asked like the rest, its rows
-  count toward the blob, and it is never counted (`UNATTESTED`)
+- the whole validator set, in `validator.Set.Select` order (`ClientOrder`,
+  celestia-app's own code), the next one asked while the rows still wanted
+  outnumber the rows on their way; a validator that did not endorse is
+  asked like the rest, its rows count toward the blob, and it is never
+  counted (`UNATTESTED`)
 - each request, connect, TLS and `DownloadShard` together, gets 15 s (the
   client's `RPCTimeout`; only the DNS lookup has a bound of its own), and
   is made again at once after a failed dial, an unreachable peer or a
-  timeout, even past the cutoff; no request starts after
-  `must_serve_until - 60 s`
+  timeout
 - every row is verified against the commitment by one Reconstructor the
   reading shares; the reading stops at `original_rows` distinct rows
-- short after every validator was asked: the ones that did not serve are
-  asked again 60 s later, if that pass can start by
-  `must_serve_until - 90 s`; otherwise, or when that pass cannot ask every
-  one of them again before the cutoff, the reading is incomplete and its
-  failures are `PROBE_ERROR`, this observer's gap
-- a rate limit (`RPC_THROTTLED`) is the validator's answer, as the client
-  takes it: no rows, never re-asked in the same pass
-- pacing, never dropping: 16 blobs and 64 requests at once, 512 MiB of shards
-  in flight, one request per validator from this observer at a time (a busy
-  validator is passed over and come back to; one the pass that decides an
-  unavailable reading never gets back to is recorded `PASSED_OVER`, this
-  observer's gap, and the correlated-failure guard counts it as failed)
+- a rate limit, a `CANCELLED` the server sends, a timeout or "no route to
+  host" from a validator is that validator's rows not coming back, as the
+  client sees it
+- load, never dropping: 16 blobs and 64 requests at once, 512 MiB of shards
+  in flight; a request waits for room and its time starts once it is let
+  go. There is no limit per validator, as the client has none
+
+The reading ends as the client's `Download` does: available, or
+unavailable with the client's error. When every request failed on this
+observer's side before it reached a validator (its resolver, no route out)
+the reading did not happen, and the blob was not read by Tensile.
 
 The rows of a reading are appended together in one write and one fsync
-(`MeasurementStore.AppendReading`), one per validator asked and, on an
-unavailable reading, one per validator passed over, with `read` saying
-where each sat in it. Blobs settled before `-end-read-since` were
+(`MeasurementStore.AppendReading`), one per validator asked, with `read`
+saying where each sat in it and what the reading came to. Blobs settled
+before `-end-read-since` were
 read on the earlier schedule (four in-window points, grace and post) and are
 not read again; their rows are judged by the same rule.
 
@@ -351,44 +347,6 @@ restart serves the last figures at once; the warm-up then replaces them.
 Both are `Cache-Control: no-store`. The cache is keyed by window alone, so
 writing either into it would publish one reader's view as everyone's
 headline. Tests hold both paths off the cache.
-
-**The correlated-failure guard** (the owner's decision until a control read
-exists). A reading of a blob that could not be reconstructed, where ≥3
-validators were asked and ≥50% were unreachable, or ≥50% failed (any answer
-without rows), is *suspect* — the likeliest explanation is this observer's
-own network, a stale pin or a broken coder, not that many independent
-operators at one minute. Every count leaves those rows out and the blob
-reads `not_read`; the readings are published at `vantage_health.suspect`.
-A reading whose blob was available is never set aside: nothing in it counts
-against anyone. `rollup.Point.Available` is where a control reading of a
-blob this observer uploaded itself would plug in; none is made yet.
-
-Its limit, stated plainly: the shares count validators, not the rows they
-hold. When the validators that did not endorse have no rows to give, a mocha
-blob is unavailable once the endorsers holding the most rows fail: 36 % to
-55 % of them (median 48 %; 161 of the newest 400 publications of 28
-September need half or more). Where it takes at least half of those asked,
-the guard sets the reading aside and nobody is counted not served; where it
-takes fewer, each failure counts once the second location confirms it.
-Until a control read can tell this observer's side apart, a mass failure
-counts neither way.
-
-"Asked" is the denominator, and it holds only the rows that carry a
-reachability verdict — the rows that could themselves have been in a
-numerator. `verdict.GuardSilentClasses` names the four that cannot
-(`NOT_PROBED`, `PROBE_ERROR`, `NOT_REGISTERED`, `UNATTESTED`) and
-`rollup.GuardSilentSQL` is the same list spelled for the SQL twin, held to
-it by `TestTheSQLAndTheGoTwinExcludeTheSameClassesFromTheGuard`. One
-`PROBE_ERROR` is in it: an endorser the deciding pass passed over
-(`PASSED_OVER`, `probe.GuardPassedOver`, `rollup.PassedOverSQL`), counted
-as failed. The validators a busy pass passes over are the ones this
-observer's own requests to still hold, which a slower pace asks and finds
-unreachable; left out, they made whether a reading was set aside depend on
-how busy this observer was.
-`UNATTESTED` mattered at scale under the earlier schedule, which read every
-assigned validator: a publisher stops collecting signatures at two thirds of
-stake, so about a third of every point's rows were `UNATTESTED`, and in the
-denominator they held the guard under 50% through a real outage.
 
 ---
 
@@ -464,7 +422,7 @@ or the `all` window would answer half the question.
   are assigned to a day by their own timestamp; late arrivals are included
   and *counted as late*
 - **`sentinel-recompute`**: re-derives every row's phase and classification,
-  each blob's reading, the obligation buckets with the guard, and (with
+  each blob's reading, the obligation buckets, and (with
   `-sampling`) the earlier admission draws of every revealed day — from an export alone. With `-api` it compares
   against the live answer pinned to the same moment. Exit 1 when anything
   differs
@@ -564,10 +522,11 @@ Stated here because they are properties of the machine, not of any validator.
   quorum, so a verified signature proves the shard existed *at upload*.
 - **Quorum selection bias.** Publishers stop collecting signatures at 2/3
   stake, so the measured population is selected for speed.
-- **One vantage.** A failed request means *this* path failed; half of every
-  reachability verdict is the observer's own network. That is why a
-  not-served reading counts only once the second location, asked the same
-  rows before `must_serve_until`, did not get them either.
+- **One vantage.** A reading is one client's download from one place, as a
+  reader's would be. A validator's rows that did not come back count only
+  when the whole blob could not be rebuilt, which one path's trouble with
+  one validator cannot cause; a reading in which no request left this
+  observer counts nothing.
 - **A power cut looks exactly like an early prune.** The Fibre server commits
   its shard markers with `pebbledb.NoSync`, so a validator that lost power can
   answer `NotFound` for a shard still on its disk. The shape that separates
@@ -592,10 +551,11 @@ Stated here because they are properties of the machine, not of any validator.
   in order, so one held day holds every later one. That is why the scanner
   closes a range in the pass that opens it, and why a range it cannot read
   is recorded `unresolvable` rather than left open.
-- **Unavailable needs a finished reading.** A blob is unavailable only after
-  every validator whose rows could have made it whole was asked, twice; a reading this
-  observer could not finish is its own gap, and nothing in it counts. While the observer is
-  blind it can withhold credit, never manufacture an accusation.
+- **Unavailable needs a reading that happened.** A blob is unavailable only
+  after the whole set was asked, as the client asks it; a reading this
+  observer missed, or one in which every request failed on its own side, is
+  its gap, and nothing in it counts. While the observer is blind it can
+  withhold credit, never manufacture an accusation.
 - **The rows a reading did not need say nothing.** A reading stops at enough
   rows, so a validator later in the order is often not asked at all, and an
   available blob says nothing about the validators that failed in it.
@@ -609,8 +569,8 @@ Stated here because they are properties of the machine, not of any validator.
 | a figure is stale | `computed_at` on the response; `snapshots/` on disk; the warm-up log |
 | a validator reads 0 obligations | `attested` NULL vs 0; `assignment_error` on the publication |
 | the service rate moved with no new readings | an amendment settled a deferred verdict (`probe_amendments`) |
-| every validator failed in one reading | `vantage_health.suspect` — that reading is already out of every count |
+| every validator failed in one reading | the blob's rows (`/v1/probes?blob=`): if no request left this observer (`PROBE_ERROR` everywhere) the blob reads not read; otherwise it is unavailable, as a client would have found it |
 | the scanner stopped | scan gaps in `state.json`; `scanner_lag` and `chain_liveness` in `/v1/health` |
-| the prober records nothing | the prober's status `reads` block (queued, in progress, missed and retried in the last hour; `/v1/meta` components), `BackfillMissed` horizon |
+| the prober records nothing | the prober's status `reads` block (queued, in progress, started late and missed in the last hour; `/v1/meta` components), `BackfillMissed` horizon |
 | the build says `-dirty` | an untracked file in the working tree at build time |
 | the API refuses to start | schema older or newer than the binary; run the collector once |
