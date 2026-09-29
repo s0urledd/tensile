@@ -30,8 +30,19 @@ const (
 	// would hide a limit set tight enough to keep real clients out.
 	OutcomeThrottled Outcome = "RPC_THROTTLED"
 	// OutcomeRPCDeadline: the download did not finish within the observer's
-	// own deadline (base + size-scaled). Never a verdict about the validator.
+	// own deadline (base + size-scaled), on the earlier schedule. Never a
+	// verdict about the validator.
 	OutcomeRPCDeadline Outcome = "RPC_DEADLINE"
+	// OutcomeRPCTimeout: the request, dial and DownloadShard together, did
+	// not finish within the RPCTimeout celestia-app's Fibre client gives it
+	// (15 s), after the connection was made. The client moves on without
+	// the rows, and so does the reading.
+	OutcomeRPCTimeout Outcome = "RPC_TIMEOUT"
+	// OutcomeMalformedShard: the server answered with something the Fibre
+	// client cannot use as a shard: empty, unparseable, rows outside the
+	// code, or a reply larger than the protocol's message bound. The client
+	// skips such a shard, and so does the reading.
+	OutcomeMalformedShard Outcome = "MALFORMED_SHARD"
 	// OutcomeNoHost: the validator has no fibre host registered in x/valaddr,
 	// so nobody can fetch its rows.
 	OutcomeNoHost Outcome = "NO_REGISTERED_HOST"
@@ -55,6 +66,7 @@ var AllOutcomes = []Outcome{
 	OutcomeServedOK, OutcomeNotFound, OutcomeWrongRows, OutcomeInvalidRows, OutcomePartial,
 	OutcomeDNSFail, OutcomeTCPRefused, OutcomeTCPTimeout, OutcomeTCPUnreachable, OutcomeTLSFail,
 	OutcomeIdentityFail, OutcomeRPCUnavailable, OutcomeServerError, OutcomeThrottled, OutcomeRPCDeadline,
+	OutcomeRPCTimeout, OutcomeMalformedShard,
 	OutcomeNoHost, OutcomeBadHost, OutcomeRPCError, OutcomeProbeError, OutcomeMissed, OutcomeReachable,
 }
 
@@ -210,51 +222,22 @@ var AllClassifications = []Classification{
 	ClassProbeError, ClassNotProbed, ClassUnattested, ClassRetentionUnverified,
 }
 
-// EndReadLabel is the schedule label of the one end-of-window reading
-// (ScheduleConfig.EndReadOffset).
+// EndReadLabel is the schedule label of the one reading of a blob, 10
+// minutes before its retention window ends (ScheduleConfig.EndReadOffset).
 const EndReadLabel = "end"
 
-// At the end-of-window reading an obligation is judged the way a reader using
-// celestia-app's own client meets the validator (specs/src/fibre_client.md,
-// Download Flow): it asks for the rows, waits RPCTimeout, and moves on with
-// or without them. Rows that verify against the commitment are the reading;
-// anything else leaves the reader without them. The earlier schedule kept
-// no-answer outcomes out of the rate, as one vantage's view of the network;
-// at the end reading they are what the protocol's reader gets, and the
-// correlated-failure guard still sets aside a point where most validators
-// fail at once, which is this observer's own trouble as likely as theirs.
-//
-// EndNoRowsClasses are the end-reading outcomes that return no rows to a
-// reader and so count as not served: nothing answered, a certificate the
-// client rejects (wrong key, or outside its validity window), a server error,
-// a rate limit, no Fibre host registered. FAULT is not listed: it is already
-// not served.
-var EndNoRowsClasses = []Classification{
-	ClassUnreachable, ClassIdentityMismatch, ClassIdentityExpired, ClassServerError, ClassThrottled, ClassNotRegistered,
-}
-
-// EndGenuineRowsClasses are the end-reading outcomes where rows that verify
-// against the commitment came back, though not the ones this promise
-// assigns (another promise over the same blob, or one that never settled,
-// answered first). A reader downloading the blob by BlobID gets genuine rows
-// and rebuilds from them, so they count as served.
-var EndGenuineRowsClasses = []Classification{ClassShadowedShard, ClassUnmatchedGenuine}
-
-// EndReadClass is the class an end reading counts as for its obligation:
-// FAULT for no rows, HEALTHY for genuine rows, otherwise its own.
-// rollup.ObligationClass is the SQL twin.
-func EndReadClass(c Classification) Classification {
-	for _, x := range EndNoRowsClasses {
-		if c == x {
-			return ClassFault
-		}
-	}
-	for _, x := range EndGenuineRowsClasses {
-		if c == x {
-			return ClassHealthy
-		}
-	}
-	return c
+// Reached reports whether a request of a reading got through to a server:
+// its connection was opened (tcpOK), or the host refused it, or rows came
+// back verified. A reading in which not a single request did so did not
+// happen: every request failed on this observer's side before it reached
+// any server (its resolver, no route out, its network down), and the blob
+// was not read by Tensile. It is a fact about the request, not about its
+// class: a validator with no public host, a connect that timed out and "no
+// route to host" reached no one, while a NOT_FOUND over a stale assignment
+// pin did. The prober's result (blobread.go) and the verdict's
+// (observer/verdict Reached, rollup.Reached) are all built from it.
+func Reached(tcpOK bool, o Outcome, verified bool) bool {
+	return verified || tcpOK || o == OutcomeTCPRefused
 }
 
 // DeadlineDerivedClasses is every classification whose membership of the
@@ -265,8 +248,7 @@ func EndReadClass(c Classification) Classification {
 // Everything else the phase switch produces only changes its name across
 // the boundary — UNREACHABLE becomes UNREACHABLE_POST_WINDOW, THROTTLED
 // becomes TOLERATED — and is held out of the rate on both sides, so
-// withholding it would move no published figure while costing the
-// correlated-failure guard real evidence about the observer's own path.
+// withholding it would move no published figure.
 //
 // rollup.DeadlineDerivedSQL is the same list for the SQL twin, held to this
 // one by TestTheSQLAndTheGoTwinHoldTheSameRows.
@@ -314,10 +296,17 @@ func (o Outcome) served() bool {
 func (o Outcome) reachFailure() bool {
 	switch o {
 	case OutcomeDNSFail, OutcomeTCPRefused, OutcomeTCPTimeout, OutcomeTCPUnreachable,
-		OutcomeTLSFail, OutcomeRPCUnavailable, OutcomeRPCError:
+		OutcomeTLSFail, OutcomeRPCUnavailable, OutcomeRPCError, OutcomeRPCTimeout:
 		return true
 	}
 	return false
+}
+
+// answeredWrong reports an outcome where the endpoint was reached and
+// answered with something other than the shard: an application error, or a
+// shard the client cannot use.
+func (o Outcome) answeredWrong() bool {
+	return o == OutcomeServerError || o == OutcomeMalformedShard
 }
 
 // Evidence is everything the taxonomy needs about one probe. It is a struct
@@ -452,7 +441,7 @@ func Classify(in Evidence) (Classification, string) {
 			return ClassExpectedUnassigned, "validator not assigned this shard; NOT_FOUND expected"
 		case o.served() || o == OutcomeWrongRows || o == OutcomeInvalidRows:
 			return ClassServingUnassigned, "validator returned data for a shard it was not assigned — misassignment or over-serving"
-		case o.reachFailure() || o == OutcomeServerError || o == OutcomeThrottled:
+		case o.reachFailure() || o.answeredWrong() || o == OutcomeThrottled:
 			return ClassExpectedUnassigned, "validator not assigned this shard; reachability not required"
 		default:
 			// An outcome the taxonomy does not know says nothing, not even
@@ -498,6 +487,8 @@ func Classify(in Evidence) (Classification, string) {
 			return ClassFault, "returned rows that verify against neither the commitment nor this promise's assignment"
 		case o == OutcomeServerError:
 			return ClassServerError, "endpoint reached and identity verified; the server answered with an application error instead of the shard, which from one probe is not distinguishable from a transient fault"
+		case o == OutcomeMalformedShard:
+			return ClassServerError, "endpoint reached and identity verified; the server answered with a shard the Fibre client cannot use (empty, unparseable, or larger than the protocol's message bound)"
 		case o == OutcomeThrottled:
 			return ClassThrottled, "endpoint reached and identity verified; the server refused the download with a rate limit, which says nothing about the shard"
 		case o.reachFailure():
@@ -521,7 +512,7 @@ func Classify(in Evidence) (Classification, string) {
 			return ClassUnmatchedGenuine, "returned genuine rows of this blob, but not the set this promise assigns, and no settled promise over this commitment assigns them; not an accusation the evidence supports under hash-order serving: held out of the rate, indices on the row"
 		case o == OutcomeWrongRows || o == OutcomePartial:
 			return ClassFault, "returned rows that verify against neither the commitment nor this promise's assignment"
-		case o == OutcomeServerError:
+		case o.answeredWrong():
 			return ClassTolerated, "server error within prune-lag tolerance after must_serve_until"
 		case o == OutcomeThrottled:
 			return ClassTolerated, "rate limited within prune-lag tolerance after must_serve_until"
@@ -550,7 +541,7 @@ func Classify(in Evidence) (Classification, string) {
 			return ClassServedPastWindow, "served rows of this blob outside this promise's assignment after the obligation ended; DownloadShard enforces no assignment, so this is not a rule the validator broke"
 		case o == OutcomePartial:
 			return ClassServedPastWindow, "still serving (part of the shard) after the obligation ended"
-		case o == OutcomeServerError:
+		case o.answeredWrong():
 			return ClassUnreachablePostWindow, "server error after the obligation ended"
 		case o == OutcomeThrottled:
 			return ClassUnreachablePostWindow, "rate limited after the obligation ended"

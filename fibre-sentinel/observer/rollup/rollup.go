@@ -1,9 +1,9 @@
 // Package rollup is the retention policy: raw probe rows are kept for a
 // bounded time, their raw JSON for a shorter one, and beyond that the
 // "all" window rests on per-day rollups computed while the rows were still
-// there, by the same SQL the API runs live. The obligation and suspect-point
-// SQL lives here so the live figures and the rolled ones are one
-// implementation; the API imports it.
+// there, by the same SQL the API runs live. The obligation SQL lives here
+// so the live figures and the rolled ones are one implementation; the API
+// imports it.
 //
 // Three meta keys carry the state: rollup_through (the last day rolled,
 // inclusive), raw_from (the first day whose raw rows are all still
@@ -17,7 +17,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
@@ -28,23 +27,27 @@ import (
 // ObligationBuckets reduces probe rows to one row per (validator, promise)
 // obligation. Arguments, in order: the as-of moment (pending cut), the
 // settlement window start and end (inclusive), the row upper bound (as_of),
-// the row lower bound, then any suspect-point exclusion and caller filter
-// appended to the WHERE.
+// the row lower bound, then any caller filter appended to the WHERE.
 //
-// The rows are obligation_rows: the stored probes plus the NOT_PROBED rows a
+// Each row counts as its blob's reading leaves it (CountedClass): served
+// when its rows came back verified, not served when they did not and the
+// blob was Unavailable.
+//
+// The rows are obligation_rows (with commitment_verified beside them,
+// store.ObligationRowsVerified): the stored probes plus the NOT_PROBED rows a
 // sampled-out publication's one decision stands for (store/sampledout.go),
 // so an assigned, attested validator of a publication drawn out of the
-// sample is an obligation unobserved_not_probed, as it was when the prober
-// wrote those rows out one by one.
+// sample is an obligation this observer did not read, as it was when the
+// prober wrote those rows out one by one.
 //
-// late_healthy is the count of HEALTHY readings in the tail of the promise's
-// own retention window (verdict.EndSegmentDivisor). Served needs one: an
-// early HEALTHY probe says the shard was there minutes after settlement, not
-// that it survived the hours the promise covers, and treating it as a kept
-// promise is what let this observer's own downtime raise a validator's serve
-// rate. The cut is drawn from pb.settlement_time and pr.must_serve_until, so
-// it is reproducible from the exported rows and does not move when the
-// prober's schedule changes.
+// late_healthy is the count of HEALTHY readings that speak for the end of
+// the promise: the one reading 10 minutes before must_serve_until
+// (probe.EndReadLabel), or, for a blob read on the earlier schedule, a
+// reading in the tail of its own retention window
+// (verdict.EndSegmentDivisor). An early HEALTHY probe says the shard was
+// there minutes after settlement, not that it survived the hours the
+// promise covers. The cut is drawn from pb.settlement_time and
+// pr.must_serve_until, so it is reproducible from the exported rows.
 //
 // The row lower bound is not a filter on the answer; it is what keeps the
 // cost proportional to the window. With only an upper bound on pr.started_at
@@ -62,12 +65,13 @@ import (
 // reads it; the API uses it to mark a broken obligation provisional while
 // even its oldest fault is younger than verdict.FaultSettling (see
 // observer/api/provisional.go). Sums ignore it, so the rollup is unchanged.
+
 var ObligationBuckets = `SELECT validator_address, promise_hash,
 			SUM(cls = 'FAULT')                AS faults,
 			SUM(cls = 'HEALTHY')              AS healthy,
 			SUM(cls = 'RETENTION_UNVERIFIED') AS held,
-			SUM(cls = 'HEALTHY' AND julianday(scheduled_at) >=
-			    julianday(must_serve_until) - (julianday(must_serve_until) - julianday(settlement_time)) / 4.0) AS late_healthy,
+			SUM(cls = 'HEALTHY' AND (schedule_label = '` + probe.EndReadLabel + `' OR julianday(scheduled_at) >=
+			    julianday(must_serve_until) - (julianday(must_serve_until) - julianday(settlement_time)) / 4.0)) AS late_healthy,
 			SUM(cls NOT IN ('NOT_PROBED','PROBE_ERROR'))                AS attempted,
 			SUM(cls NOT IN ('NOT_PROBED','PROBE_ERROR') AND tls_ok = 1) AS reached,
 			COALESCE(MAX(CASE WHEN rn = 1 THEN cls END), '')            AS last_cls,
@@ -75,39 +79,26 @@ var ObligationBuckets = `SELECT validator_address, promise_hash,
 			MIN(CASE WHEN cls = 'FAULT' THEN started_at END)            AS first_fault
 		FROM (
 			SELECT pr.validator_address, pr.promise_hash,
-			       ` + ObligationClass("pr") + ` AS cls,
+			       ` + CountedClass("pr") + ` AS cls,
 			       pr.tls_ok, pr.must_serve_until, pr.started_at,
-			       pr.scheduled_at, pb.settlement_time,
+			       pr.scheduled_at, pr.schedule_label, pb.settlement_time,
 			       ROW_NUMBER() OVER (PARTITION BY pr.validator_address, pr.promise_hash
 			                          ORDER BY (pr.classification IN ('NOT_PROBED','PROBE_ERROR')), pr.scheduled_at DESC, pr.started_at DESC) AS rn
-			FROM obligation_rows pr JOIN publications pb ON pb.promise_hash = pr.promise_hash
+			FROM ` + store.ObligationRowsVerified + ` pr JOIN publications pb ON pb.promise_hash = pr.promise_hash
 			WHERE pb.settlement_time >= ? AND pb.settlement_time <= ? AND pr.started_at <= ? AND pr.started_at >= ?
 			  AND pr.assigned = 1 AND pr.phase = 'in_window' AND pr.attested = 1`
 
-// cls is ObligationClass: the effective classification, with an
-// end-of-window reading counted as a reader of the chain's client meets it
-// (probe.EndReadClass).
+// cls is CountedClass: served, not served on an Unavailable blob, and the
+// retention hold over both (a row whose deadline this observer cannot vouch
+// for publishes neither). The Go twin is verdict.Row.CountedClass.
 //
 // The 4.0 in that SUM is verdict.EndSegmentDivisor, spelled out because a
 // query fragment is a constant; a test in this package holds the two to the
 // same number.
 //
-// cls is the effective classification: the row's own, except that a row of
-// a publication whose deadline this observer cannot vouch for publishes no
-// serve verdict. The class list in that CASE is probe.DeadlineDerivedClasses
-// and the carve-out is probe.DeadlineDerived's; the Go twin is
-// verdict.Row.EffectiveClass, and TestTheSQLAndTheGoTwinHoldTheSameRows runs
-// both over every cell of (classification, outcome, held). It is a class
-// override on an unchanged population rather than a WHERE exclusion, which
-// is what keeps the response reconciling against itself: coverage() sums
-// every class for its denominator and the attestation split partitions the
-// same rows by a column no override touches, so both identities hold with
-// no edit at all.
-//
 // The window ORDER BY deliberately keeps pr.classification: it asks whether
-// a row is a gap, and a held row is HEALTHY or FAULT, never a gap. Asking
+// a row is a gap, and a counted row is served or not, never a gap. Asking
 // the same question of cls would give the same answer more slowly.
-
 // RowLowerBound is the probe-row lower bound that goes with a settlement
 // window start: the start less an hour of clock-skew margin, or the zero
 // string when the window is unbounded. Written once so the API and the
@@ -121,21 +112,20 @@ func RowLowerBound(settlementStart string) string {
 }
 
 // ObligationSums turns bucketed obligations into the nine counts, in the
-// order Obligations' fields are scanned: total, broken, served,
-// end_unobserved, held_param_unverified, unobserved_reachable,
-// unobserved_unreachable, unobserved_not_probed, pending.
+// order Obligations' fields are scanned and obligation_daily holds them:
+// total, broken, served, end_unobserved, held_param_unverified,
+// unobserved_reachable, unobserved_unreachable, unobserved_not_probed,
+// pending.
 //
-// served and end_unobserved partition the obligations that have a HEALTHY
-// reading and no fault: served when the newest verdict is HEALTHY and one of
-// those readings falls in the tail of the window, end_unobserved otherwise —
-// the shard was there when this observer looked, and this observer did not
-// look at the end.
+// Four of them are published as one, not_counted (Obligations.NotCounted):
+// an obligation decided with no count either way. end_unobserved is a HEALTHY
+// reading that does not speak for the end of the window (the earlier
+// schedule); the three unobserved arms split the rest by what the rows saw:
+// an answer that did not count (TLS came up, or not), or no reading at all.
+// The split stays in the table because the table's columns are its schema.
 //
-// held_param_unverified sits between them and the unobserved arms, and each
-// unobserved arm excludes it: an obligation whose only readings were
-// withheld is not one this observer failed to observe, it is one it observed
-// and cannot speak for. Folding it into unobserved would file the
-// observer's own uncertainty about the deadline as a gap in coverage.
+// held_param_unverified excludes them all: an obligation whose only readings
+// were withheld is one this observer observed and cannot speak for.
 const ObligationSums = `COUNT(*),
 			COALESCE(SUM(NOT pending AND faults > 0), 0),
 			COALESCE(SUM(NOT pending AND faults = 0 AND last_cls = 'HEALTHY' AND late_healthy > 0), 0),
@@ -146,11 +136,16 @@ const ObligationSums = `COUNT(*),
 			COALESCE(SUM(NOT pending AND faults = 0 AND healthy = 0 AND held = 0 AND attempted = 0), 0),
 			COALESCE(SUM(pending), 0)`
 
-// Obligations are the nine counts, as the API and the rollup table hold
-// them.
+// Obligations are the nine counts, as the rollup table holds them.
 type Obligations struct {
 	Total, Broken, Served, EndUnobserved, HeldParamUnverified                int64
 	UnobservedReachable, UnobservedUnreachable, UnobservedNotProbed, Pending int64
+}
+
+// NotCounted is the four counts published as one: obligations decided with
+// no count either way.
+func (o Obligations) NotCounted() int64 {
+	return o.EndUnobserved + o.UnobservedReachable + o.UnobservedUnreachable + o.UnobservedNotProbed
 }
 
 // Add sums another set in.
@@ -166,50 +161,7 @@ func (o *Obligations) Add(x Obligations) {
 	o.Pending += x.Pending
 }
 
-// Point is one schedule point's tally, as SuspectPoints returns it.
-type Point struct {
-	At          string
-	Label       string
-	Unreachable int64
-	Faulted     int64
-	Validators  int64
-	Rows        int64
-}
-
-// Reason applies the correlated-failure guard to one point: "unreachable",
-// "fault", both, or "" when the point is not suspect.
-func (p Point) Reason() string {
-	if p.Validators == 0 {
-		return ""
-	}
-	reason := ""
-	if float64(p.Unreachable)/float64(p.Validators) >= verdict.UnreachableThreshold && p.Unreachable >= verdict.MinValidators {
-		reason = "unreachable"
-	}
-	if float64(p.Faulted)/float64(p.Validators) >= verdict.FaultThreshold && p.Faulted >= verdict.MinValidators {
-		if reason != "" {
-			reason += ","
-		}
-		reason += "fault"
-	}
-	return reason
-}
-
-// Querier is what SuspectPoints reads through: a *sql.DB or, inside a
-// transaction on a single-connection store, the *sql.Tx itself.
-type Querier interface {
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-}
-
-// GuardSilentSQL is the SQL spelling of verdict.GuardSilentClasses: the
-// classifications that leave the observer without a reachability verdict
-// for the endpoint, so the row could not have landed in either numerator
-// whatever happened at the point.
-// TestTheSQLAndTheGoTwinExcludeTheSameClassesFromTheGuard holds the two
-// lists to each other.
-const GuardSilentSQL = `('NOT_PROBED','PROBE_ERROR','NOT_REGISTERED','UNATTESTED','RETENTION_UNVERIFIED')`
-
-// EffectiveClass is the classification every published figure must be
+// EffectiveClass is the classification every published class tally is
 // built from: the row's own, except that a row of a publication whose
 // retention deadline this observer cannot vouch for publishes no serve
 // verdict. The Go twin is verdict.Row.EffectiveClass, and
@@ -234,84 +186,117 @@ func EffectiveClass(alias string) string {
 // DeadlineDerivedSQL is probe.DeadlineDerivedClasses as a SQL IN list.
 const DeadlineDerivedSQL = `('HEALTHY','FAULT')`
 
-// EndNoRowsSQL and EndGenuineRowsSQL are probe.EndNoRowsClasses and
-// probe.EndGenuineRowsClasses as SQL IN lists; a test holds them to the Go
-// lists.
-const (
-	EndNoRowsSQL      = `('UNREACHABLE','IDENTITY_MISMATCH','IDENTITY_EXPIRED','SERVER_ERROR','THROTTLED','NOT_REGISTERED')`
-	EndGenuineRowsSQL = `('SHADOWED_SHARD','UNMATCHED_GENUINE')`
-)
-
-// ObligationClass is the class a row counts as for its obligation: at the
-// end-of-window reading (schedule label probe.EndReadLabel) no rows is FAULT
-// and genuine rows is HEALTHY (probe.EndReadClass), and over that, the same
-// retention hold as EffectiveClass. It is used by the obligation buckets
-// only; the class tallies and the correlated-failure guard keep
-// EffectiveClass, so they still see what happened on the wire. The Go twin
-// is verdict.Row.ObligationClass.
-func ObligationClass(alias string) string {
-	p := ""
-	if alias != "" {
-		p = alias + "."
-	}
-	mapped := `(CASE WHEN ` + p + `schedule_label = '` + probe.EndReadLabel + `' AND ` + p + `classification IN ` + EndNoRowsSQL + ` THEN 'FAULT'` +
-		` WHEN ` + p + `schedule_label = '` + probe.EndReadLabel + `' AND ` + p + `classification IN ` + EndGenuineRowsSQL + ` THEN 'HEALTHY'` +
-		` ELSE ` + p + `classification END)`
-	return `(CASE WHEN ` + p + `retention_unverified = 1 AND ` + mapped + ` IN ` + DeadlineDerivedSQL +
-		` AND ` + p + `outcome <> 'INVALID_ROWS' THEN 'RETENTION_UNVERIFIED' ELSE ` + mapped + ` END)`
-}
-
-// SuspectPoints tallies every schedule point at which more than one
-// validator was probed, over the assigned in-window rows that `where`
-// selects, in schedule order. The caller applies Reason. Validators counts
-// the validators that gave a reachability verdict at the point; a row that
-// could not be in the numerator whatever happened must not dilute the
-// share (see GuardSilentSQL). Rows counts every row at the point, because the
-// exclusion removes them all. The Go twin is verdict.SuspectPoints.
+// CountedClass is what an endorsing validator's row counts as once its
+// blob's reading is known, in the window: HEALTHY (served) when its rows
+// came back verified; FAULT (not served) when they did not and the reading
+// left the blob Unavailable; NOT_PROBED and PROBE_ERROR, this observer's
+// gap, and 'NOT_COUNTED' for any other answer, when it was not. Over
+// served and not served, the retention hold of EffectiveClass. A row
+// outside the window, or of a validator that did not endorse, keeps its own
+// class. The Go twin is verdict.Row.CountedClass.
 //
-// The rows are probe_rows, aliased probes for the callers that bound it
-// by alias: a sampled-out publication's rows are NOT_PROBED, silent by
-// GuardSilentSQL, so they never make a point suspect or keep one from
-// being; they are among the rows the exclusion removes, and Rows counts
-// them as it did when they were stored.
-func SuspectPoints(ctx context.Context, db Querier, where string, args ...any) ([]Point, error) {
-	cls := EffectiveClass("")
-	rows, err := db.QueryContext(ctx, `SELECT scheduled_at, schedule_label,
-			COUNT(DISTINCT CASE WHEN `+cls+` = 'UNREACHABLE' THEN validator_address END),
-			COUNT(DISTINCT CASE WHEN `+cls+` = 'FAULT' THEN validator_address END),
-			COUNT(DISTINCT CASE WHEN `+cls+` NOT IN `+GuardSilentSQL+` THEN validator_address END), COUNT(*)
-		FROM probe_rows probes
-		WHERE `+where+` AND assigned = 1 AND phase = 'in_window'
-		GROUP BY scheduled_at HAVING COUNT(DISTINCT CASE WHEN `+cls+` NOT IN `+GuardSilentSQL+` THEN validator_address END) > 1
-		ORDER BY scheduled_at`, args...)
-	if err != nil {
-		return nil, err
+// The blob's reading is looked at only where it can change the count: a
+// row whose rows did not come back. That keeps a tally over many readings
+// to the few of them that did not come back.
+//
+// alias must name the row's table or view (the correlated subqueries read
+// probes under an alias of their own).
+func CountedClass(alias string) string {
+	if alias == "" {
+		panic("rollup.CountedClass needs the row's alias")
 	}
-	defer rows.Close()
-	var out []Point
-	for rows.Next() {
-		var p Point
-		if err := rows.Scan(&p.At, &p.Label, &p.Unreachable, &p.Faulted, &p.Validators, &p.Rows); err != nil {
-			return nil, err
-		}
-		out = append(out, p)
+	p := alias + "."
+	h, t := p+"promise_hash", p+"scheduled_at"
+	held := func(c string) string {
+		return `(CASE WHEN ` + p + `retention_unverified = 1 AND ` + p + `outcome <> 'INVALID_ROWS' THEN 'RETENTION_UNVERIFIED' ELSE '` + c + `' END)`
 	}
-	return out, rows.Err()
+	nc := `'` + string(verdict.NotCounted) + `'`
+	return `(CASE WHEN ` + p + `phase <> 'in_window' OR COALESCE(` + p + `assigned, 0) <> 1 OR COALESCE(` + p + `attested, 0) <> 1 THEN ` + p + `classification` +
+		` WHEN ` + p + `commitment_verified = 1 THEN ` + held("HEALTHY") +
+		` WHEN ` + p + `classification = 'NOT_PROBED' THEN 'NOT_PROBED'` +
+		` WHEN ` + unavailableSQL(h, t) + ` = 1 THEN ` + held("FAULT") +
+		` WHEN ` + p + `classification = 'PROBE_ERROR' THEN 'PROBE_ERROR'` +
+		` ELSE ` + nc + ` END)`
 }
 
-// Exclusion is " AND <col> NOT IN (?, ...)" for the suspect points among
-// pts, with their arguments; empty when none is suspect.
-func Exclusion(col string, pts []Point) (string, []any) {
-	var args []any
-	for _, p := range pts {
-		if p.Reason() != "" {
-			args = append(args, p.At)
-		}
-	}
-	if len(args) == 0 {
-		return "", nil
-	}
-	return " AND " + col + " NOT IN (?" + strings.Repeat(", ?", len(args)-1) + ")", args
+// NotServedSQL is true of a row that counts as not served (CountedClass
+// FAULT). A served row of an endorsing validator in the window is never not
+// served, so its reading is not looked at: a filter over many rows stays as
+// cheap as the rows that failed.
+func NotServedSQL(alias string) string {
+	p := alias + "."
+	return `(NOT (COALESCE(` + p + `commitment_verified, 0) = 1 AND ` + p + `phase = 'in_window' AND COALESCE(` + p + `assigned, 0) = 1 AND COALESCE(` +
+		p + `attested, 0) = 1) AND ` + CountedClass(alias) + ` = 'FAULT')`
+}
+
+// The pieces of one reading (promise h at scheduled time t), as
+// verdict.ReadingOf draws them from all of the reading's rows, whatever
+// phase each carries: rows needed, the two bounds on the distinct verified
+// rows, the exact count, whether a request reached a server, and whether
+// the prober missed one.
+func neededSQL(h string) string {
+	return `(SELECT json_extract(pk.raw_json, '$.assignment.protocol_params.original_rows') FROM publications pk WHERE pk.promise_hash = ` + h + `)`
+}
+
+func lowerSQL(h, t string) string {
+	return `((SELECT COALESCE(SUM(r), 0) FROM (SELECT MAX(ql.rows_returned) AS r FROM probes ql
+			WHERE ql.promise_hash = ` + h + ` AND ql.scheduled_at = ` + t + ` AND ql.outcome = 'SERVED_OK'
+			GROUP BY ql.validator_address))
+		- (SELECT MAX(pe.sigma_rows - pe.distinct_rows, 0) FROM publications pe WHERE pe.promise_hash = ` + h + `))`
+}
+
+func upperSQL(h, t string) string {
+	return `(SELECT COALESCE(SUM(qu.rows_returned), 0) FROM probes qu
+			WHERE qu.promise_hash = ` + h + ` AND qu.scheduled_at = ` + t + ` AND qu.commitment_verified = 1)`
+}
+
+func exactSQL(h, t string) string {
+	return `(SELECT COUNT(DISTINCT j.value) FROM probes qx, json_each(qx.row_indices) j
+			WHERE qx.promise_hash = ` + h + ` AND qx.scheduled_at = ` + t + ` AND qx.commitment_verified = 1)`
+}
+
+func ranSQL(h, t string) string {
+	return `EXISTS (SELECT 1 FROM probes q WHERE q.promise_hash = ` + h + ` AND q.scheduled_at = ` + t + ` AND ` + Reached("q") + `)`
+}
+
+// readingKey is one reading, promise h at scheduled time t, as a single
+// text value. SQLite probes a list of these far faster than a row value
+// (h, t) IN (SELECT ...): over 452,000 stored rows, half a second against
+// ten. A promise hash is hex, so the separator cannot occur in it.
+func readingKey(h, t string) string {
+	return `(` + h + ` || '|' || ` + t + `)`
+}
+
+// missedSQL is true when the prober missed a request of the reading of
+// promise h at t: a NOT_PROBED row of an assigned validator in the window.
+// The list is not correlated, so it is drawn once for a whole query, from
+// the covering index over assigned in-window rows.
+func missedSQL(h, t string) string {
+	return `(` + readingKey(h, t) + ` IN (SELECT ` + readingKey("qm.promise_hash", "qm.scheduled_at") + ` FROM probes qm
+			WHERE qm.assigned = 1 AND qm.phase = 'in_window' AND qm.classification = 'NOT_PROBED'))`
+}
+
+// Reached is verdict.Reached (probe.Reached) over a probes row under the
+// alias given: the request's connection was opened, its host refused it, or
+// rows came back verified. A reading with none did not happen.
+func Reached(alias string) string {
+	p := alias + "."
+	return `(` + p + `commitment_verified = 1 OR ` + p + `tcp_ok = 1 OR ` + p + `outcome = 'TCP_REFUSED')`
+}
+
+// unavailableSQL is 1 when the reading of promise h at t happened and left
+// the blob Unavailable (verdict.Reading.Unavailable), 0 otherwise. The
+// cheap bounds settle nearly every reading; the row lists are read only
+// when they cannot.
+func unavailableSQL(h, t string) string {
+	k := neededSQL(h)
+	return `(CASE WHEN COALESCE(` + k + `, 0) <= 0 THEN 0
+		WHEN ` + lowerSQL(h, t) + ` >= ` + k + ` THEN 0
+		WHEN ` + missedSQL(h, t) + ` THEN 0
+		WHEN NOT ` + ranSQL(h, t) + ` THEN 0
+		WHEN ` + upperSQL(h, t) + ` < ` + k + ` THEN 1
+		WHEN ` + exactSQL(h, t) + ` >= ` + k + ` THEN 0
+		ELSE 1 END)`
 }
 
 // Config is the retention policy.
@@ -590,16 +575,11 @@ func rollDay(ctx context.Context, db *sql.DB, d, now time.Time, vantage string) 
 	}
 	defer tx.Rollback()
 
-	// obligations of the day's promises, suspect points over their rows
-	pts, err := SuspectPoints(ctx, tx, `promise_hash IN (SELECT promise_hash FROM publications WHERE settlement_time >= ? AND settlement_time <= ?)`, lo, hi)
-	if err != nil {
-		return 0, err
-	}
-	excl, exclArgs := Exclusion("pr.scheduled_at", pts)
-	// lo is the day's first moment; rows of a promise settled that day cannot
-	// have started before it, less the skew margin.
-	args := append([]any{store.TS(now), lo, hi, store.TS(now), RowLowerBound(lo)}, exclArgs...)
-	rows, err := tx.QueryContext(ctx, `SELECT validator_address, `+ObligationSums+` FROM (`+ObligationBuckets+excl+`)
+	// obligations of the day's promises. lo is the day's first moment; rows
+	// of a promise settled that day cannot have started before it, less the
+	// skew margin.
+	args := []any{store.TS(now), lo, hi, store.TS(now), RowLowerBound(lo)}
+	rows, err := tx.QueryContext(ctx, `SELECT validator_address, `+ObligationSums+` FROM (`+ObligationBuckets+`)
 			GROUP BY validator_address, promise_hash) GROUP BY validator_address`, args...)
 	if err != nil {
 		return 0, err
@@ -636,20 +616,16 @@ func rollDay(ctx context.Context, db *sql.DB, d, now time.Time, vantage string) 
 		}
 	}
 
-	// rows started on the day, suspect points over them
-	pts, err = SuspectPoints(ctx, tx, `started_at >= ? AND started_at <= ?`, lo, hi)
-	if err != nil {
-		return 0, err
-	}
-	excl, exclArgs = Exclusion("scheduled_at", pts)
+	// rows started on the day
+	// probe_daily keeps four columns nothing reads any more: faults (a raw
+	// FAULT count, which counts failures the rule does not) and the
+	// per-reading attestation split (attested, unattested, unknown_att).
+	// They are the table's schema, so they are written as 0.
 	type pd struct {
-		probes, gaps, faults int64
-		classes              map[string]int64
-		beats, beatsUp       int64
-		identityUp           int64
-		attested             int64
-		unattested           int64
-		unknownAtt           int64
+		probes, gaps   int64
+		classes        map[string]int64
+		beats, beatsUp int64
+		identityUp     int64
 	}
 	byVal := map[string]*pd{}
 	get := func(a string) *pd {
@@ -677,25 +653,9 @@ func rollDay(ctx context.Context, db *sql.DB, d, now time.Time, vantage string) 
 		v.probes, v.gaps = n, g
 	}
 	rows.Close()
-	rows, err = tx.QueryContext(ctx, `SELECT validator_address, COUNT(*) FROM probes
-		WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND `+EffectiveClass("")+` = 'FAULT'`+excl+` GROUP BY validator_address`,
-		append([]any{lo, hi}, exclArgs...)...)
-	if err != nil {
-		return 0, err
-	}
-	for rows.Next() {
-		var a string
-		var n int64
-		if err := rows.Scan(&a, &n); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		get(a).faults = n
-	}
-	rows.Close()
 	rows, err = tx.QueryContext(ctx, `SELECT validator_address, `+EffectiveClass("")+`, COUNT(*) FROM probe_rows
-		WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`+excl+` GROUP BY validator_address, `+EffectiveClass(""),
-		append([]any{lo, hi}, exclArgs...)...)
+		WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window' GROUP BY validator_address, `+EffectiveClass(""),
+		lo, hi)
 	if err != nil {
 		return 0, err
 	}
@@ -707,29 +667,6 @@ func rollDay(ctx context.Context, db *sql.DB, d, now time.Time, vantage string) 
 			return 0, err
 		}
 		get(a).classes[c] = n
-	}
-	rows.Close()
-	// The attestation split over exactly the population the classes above
-	// were counted on, suspect exclusion included, so the identity the
-	// response publishes survives the fold-in.
-	rows, err = tx.QueryContext(ctx, `SELECT validator_address,
-			COALESCE(SUM(CASE WHEN attested = 1 THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN attested = 0 THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN attested IS NULL THEN 1 ELSE 0 END), 0)
-		FROM probe_rows WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`+excl+` GROUP BY validator_address`,
-		append([]any{lo, hi}, exclArgs...)...)
-	if err != nil {
-		return 0, err
-	}
-	for rows.Next() {
-		var a string
-		var at, un, unk int64
-		if err := rows.Scan(&a, &at, &un, &unk); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		v := get(a)
-		v.attested, v.unattested, v.unknownAtt = at, un, unk
 	}
 	rows.Close()
 	vq, vargs := "", []any{lo, hi}
@@ -763,8 +700,8 @@ func rollDay(ctx context.Context, db *sql.DB, d, now time.Time, vantage string) 
 			return 0, err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO probe_daily (day, validator_address, probes, gaps, faults, classes_json, beats, beats_up, identity_up, attested, unattested, unknown_att, computed_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, d.Format(dayLayout), a, v.probes, v.gaps, v.faults, string(cj), v.beats, v.beatsUp, v.identityUp,
-			v.attested, v.unattested, v.unknownAtt, store.TS(now)); err != nil {
+			VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, 0, ?)`, d.Format(dayLayout), a, v.probes, v.gaps, string(cj), v.beats, v.beatsUp, v.identityUp,
+			store.TS(now)); err != nil {
 			return 0, err
 		}
 	}
@@ -775,34 +712,25 @@ func rollDay(ctx context.Context, db *sql.DB, d, now time.Time, vantage string) 
 // validator and in total: the figures the "all" window adds to the raw
 // record once rows have been pruned.
 type Rolled struct {
-	Days                 int64
-	Obligations          Obligations
-	ObligationsByVal     map[string]Obligations
-	Probes, Gaps, Faults int64
-	Classes              map[string]int64
-	ProbesByVal          map[string]*RolledProbes
-	Beats, BeatsUp       int64
-	IdentityUp           int64
-	Attested             int64
-	Unattested           int64
-	UnknownAtt           int64
+	Days             int64
+	Obligations      Obligations
+	ObligationsByVal map[string]Obligations
+	Probes, Gaps     int64
+	Classes          map[string]int64
+	ProbesByVal      map[string]*RolledProbes
+	Beats, BeatsUp   int64
+	IdentityUp       int64
 }
 
 // RolledProbes is one validator's rolled row counts.
 type RolledProbes struct {
-	Probes, Gaps, Faults int64
-	Classes              map[string]int64
-	Beats, BeatsUp       int64
+	Probes, Gaps   int64
+	Classes        map[string]int64
+	Beats, BeatsUp int64
 	// IdentityUp is how many of BeatsUp presented a certificate endorsed by
 	// the validator's consensus key: the numerator of identity_rate_window,
 	// whose denominator is BeatsUp itself.
 	IdentityUp int64
-	// The attestation split over the same rows the classes were counted on,
-	// so that attested + unattested + unknown still equals the coverage
-	// denominator once a rolled day is folded into the "all" window.
-	Attested   int64
-	Unattested int64
-	UnknownAtt int64
 }
 
 // Without returns a copy with the named validators taken out of every total,
@@ -836,13 +764,9 @@ func (r *Rolled) Without(addrs []string) *Rolled {
 		out.ProbesByVal[a] = p
 		out.Probes += p.Probes
 		out.Gaps += p.Gaps
-		out.Faults += p.Faults
 		out.Beats += p.Beats
 		out.BeatsUp += p.BeatsUp
 		out.IdentityUp += p.IdentityUp
-		out.Attested += p.Attested
-		out.Unattested += p.Unattested
-		out.UnknownAtt += p.UnknownAtt
 		for c, n := range p.Classes {
 			out.Classes[c] += n
 		}
@@ -889,13 +813,9 @@ func Load(ctx context.Context, db *sql.DB, before time.Time, only string) (*Roll
 	// group while taking the JSON of one of them, so two days on which a
 	// validator produced the same class distribution — the ordinary shape
 	// of a steady validator, {"HEALTHY":8} day after day — would contribute
-	// both days' probes and one day's classes. The class tally is what the
-	// serve rate and its coverage are drawn from, so that loss moves a
-	// published figure about a named validator in the accusing direction.
-	// The maps are added in Go instead; the row count is days x validators,
-	// which is small.
-	rows, err = db.QueryContext(ctx, `SELECT validator_address, probes, gaps, faults, beats, beats_up, identity_up,
-			attested, unattested, unknown_att, classes_json
+	// both days' readings and one day's classes. The maps are added in Go
+	// instead; the row count is days x validators, which is small.
+	rows, err = db.QueryContext(ctx, `SELECT validator_address, probes, gaps, beats, beats_up, identity_up, classes_json
 		FROM probe_daily WHERE day < ?`+filter, args...)
 	if err != nil {
 		return nil, err
@@ -903,8 +823,7 @@ func Load(ctx context.Context, db *sql.DB, before time.Time, only string) (*Roll
 	for rows.Next() {
 		var a, cj string
 		var p RolledProbes
-		if err := rows.Scan(&a, &p.Probes, &p.Gaps, &p.Faults, &p.Beats, &p.BeatsUp, &p.IdentityUp,
-			&p.Attested, &p.Unattested, &p.UnknownAtt, &cj); err != nil {
+		if err := rows.Scan(&a, &p.Probes, &p.Gaps, &p.Beats, &p.BeatsUp, &p.IdentityUp, &cj); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -920,26 +839,18 @@ func Load(ctx context.Context, db *sql.DB, before time.Time, only string) (*Roll
 		}
 		v.Probes += p.Probes
 		v.Gaps += p.Gaps
-		v.Faults += p.Faults
 		v.Beats += p.Beats
 		v.BeatsUp += p.BeatsUp
 		v.IdentityUp += p.IdentityUp
-		v.Attested += p.Attested
-		v.Unattested += p.Unattested
-		v.UnknownAtt += p.UnknownAtt
 		for c, n := range classes {
 			v.Classes[c] += n
 			out.Classes[c] += n
 		}
 		out.Probes += p.Probes
 		out.Gaps += p.Gaps
-		out.Faults += p.Faults
 		out.Beats += p.Beats
 		out.BeatsUp += p.BeatsUp
 		out.IdentityUp += p.IdentityUp
-		out.Attested += p.Attested
-		out.Unattested += p.Unattested
-		out.UnknownAtt += p.UnknownAtt
 	}
 	rows.Close()
 	return out, rows.Err()

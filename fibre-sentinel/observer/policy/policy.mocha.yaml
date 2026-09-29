@@ -1,50 +1,11 @@
-# Probe load policy for mocha-5. The prober runs with -end-read: one reading
-# of every endorsed shard at the end of its retention window, so every
-# validator is asked once per blob it signed for, for the rows it was sent.
-# Nothing here assumes what a validator can serve: no sampling, no
-# per-validator byte budget. What limits the load is the schedule itself, the
-# prober's one connection per validator, the spacing below, and this
-# observer's own global caps.
-# Every per-validator number is PER VANTAGE; run at most three vantages.
-
-caps:
-  per_validator:
-    requests_per_minute: 0            # no request budget; the spacing bounds it at 30 a minute
-    min_request_spacing: 2s
-    bytes_per_hour_fraction: 0        # no per-validator byte budget
-    bytes_per_day_fraction: 0
-  global:
-    bytes_per_hour: 53687091200       # 50 GiB; binds first in the 128 MiB/min scenario (p ~ 0.4)
-    bytes_per_day: 644245094400       # 600 GiB
-
+# Sampling master secret for mocha-5. Nothing is sampled any more: every
+# blob is read the way celestia-app's Fibre client reads it. The secret
+# stays only so the day secrets of the draws made while publications were
+# sampled can still be revealed (sampling-secrets.jsonl) and audited; once
+# the last such day is revealed, it can be deleted.
 sampling:
-  # Off: every publication is read. The master secret below stays, so the
-  # draws made while sampling was on can still be revealed and audited.
-  enabled: false
-  # A public vantage MUST set this. The commitments published at /v1/sampling
-  # are SHA256 of a per-day secret derived from this master; with an empty
-  # value the master is random per process, so every restart changes the
-  # commitments and the sample can never be audited against them. Point it at
-  # a file of at least 32 random bytes, mode 0600, and keep it out of backups
-  # that anyone else can read: knowing it in advance would let a publisher
-  # predict which of its blobs get probed.
   # master_secret_file: left unset, so sentinel-probe puts it at
-  # <data-dir>/sampling-master.key. That is the only path the unit can write:
-  # fibre-probe@.service runs ProtectSystem=strict with
-  # ReadWritePaths=/var/lib/fibre-observer/%i, so the parent directory this
-  # used to name is read-only to the service and the prober died creating the
-  # file, on every restart, forever. Leaving it unset also stops two networks
-  # on one host from sharing a master secret. Set it only to move the file
-  # somewhere else the unit can write.
+  # <data-dir>/sampling-master.key, the only path the unit can write
+  # (fibre-probe@.service runs ProtectSystem=strict with
+  # ReadWritePaths=/var/lib/fibre-observer/%i).
   # master_secret_file: ""
-  projection_lookback: 1h
-  always_probe: []                  # promise hashes exempt from sampling, e.g. a blob under dispute
-
-budget_state:
-  # The budgets above are saved to <data-dir>/probe-budget.json
-  # and read back on start, so a restart does not start every validator on a
-  # fresh budget. When that file is missing, corrupt or of another version,
-  # what was already spent is unknown: nothing is admitted for this long
-  # after the start (NOT_PROBED, budget:state_unknown_cooldown) instead of
-  # assuming nothing was. A first start on a new data dir pays it once.
-  unknown_cooldown: 10m

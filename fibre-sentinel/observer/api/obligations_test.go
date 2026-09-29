@@ -14,20 +14,19 @@ import (
 )
 
 type obligationsJSON struct {
-	Total                 int64                    `json:"total"`
-	Served                int64                    `json:"served"`
-	Broken                int64                    `json:"broken"`
-	EndUnobserved         int64                    `json:"end_unobserved"`
-	Unobserved            int64                    `json:"unobserved"`
-	UnobservedReachable   int64                    `json:"unobserved_reachable"`
-	UnobservedUnreachable int64                    `json:"unobserved_unreachable"`
-	UnobservedNotProbed   int64                    `json:"unobserved_not_probed"`
-	Pending               int64                    `json:"pending"`
-	Rate                  struct{ Num, Den int64 } `json:"rate"`
+	Total               int64                    `json:"total"`
+	Served              int64                    `json:"served"`
+	Broken              int64                    `json:"broken"`
+	HeldParamUnverified int64                    `json:"held_param_unverified"`
+	NotCounted          int64                    `json:"not_counted"`
+	Pending             int64                    `json:"pending"`
+	Rate                struct{ Num, Den int64 } `json:"rate"`
 }
 
-// obligationsFixture: one blob, eight validators, one obligation each, every
-// profile the buckets are meant to separate.
+// obligationsFixture: one blob read on the earlier schedule, whose rows the
+// served validators rebuild at every point, with seven validators, one
+// obligation each, every profile the buckets are meant to separate; and a
+// second blob whose only validator stops serving at the last point.
 func obligationsFixture(t *testing.T) *httptest.Server {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
@@ -40,7 +39,7 @@ func obligationsFixture(t *testing.T) *httptest.Server {
 	// The window ended half an hour ago, so every verdict below is final.
 	created, msu := now.Add(-2*time.Hour), now.Add(-30*time.Minute)
 	const hash = "obl1"
-	addrs := []string{"served", "endun", "broken", "unreach", "reach", "backoff", "gaplast", "unatt"}
+	addrs := []string{"served", "endun", "unreach", "reach", "backoff", "gaplast", "unatt"}
 	var vals []scan.ValidatorAssignment
 	for i, a := range addrs {
 		vals = append(vals, scan.ValidatorAssignment{Address: a, VotingPower: 10, RowCount: 2, Rows: []int{2 * i, 2*i + 1}, Attested: a != "unatt"})
@@ -50,12 +49,14 @@ func obligationsFixture(t *testing.T) *httptest.Server {
 		SettlementHeight: 100, SettlementTime: created, MustServeUntil: msu, RecordedAt: now,
 		SettlementTxHash: "tx", Signer: "celestia1pub",
 		Promise:                 scan.PromiseFields{ChainID: "t", Height: 99, Commitment: "cc", CreationTimestamp: created, BlobSize: 4096},
-		ValidatorSignatureCount: 7,
+		ValidatorSignatureCount: 6,
 		Assignment: scan.AssignmentTable{
-			ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: 4, TotalRows: 16},
-			ValidatorSetHeight: 99, TotalVotingPower: 80, Sigma: 16, Distinct: 16,
-			ValidatorsWithRows: 8, AttestedWithRows: 7, SignatureEntries: 7, SignaturesVerified: 7,
-			AttestedVotingPower: 70, Validators: vals,
+			// the served validator's two rows rebuild the blob, so it is
+			// Available at every point and nobody's failure counts
+			ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: 2, TotalRows: 64},
+			ValidatorSetHeight: 99, TotalVotingPower: 70, Sigma: 14, Distinct: 14,
+			ValidatorsWithRows: 7, AttestedWithRows: 6, SignatureEntries: 6, SignaturesVerified: 6,
+			AttestedVotingPower: 60, Validators: vals,
 		},
 	}
 	raw, err := json.Marshal(pub)
@@ -70,15 +71,19 @@ func obligationsFixture(t *testing.T) *httptest.Server {
 	profile := map[string][]wire{
 		"served":  {ok, ok, ok, ok},
 		"endun":   {ok, err500, err500, err500}, // served at 12%, answered 500 after: the early-prune profile
-		"broken":  {ok, ok, ok, gone},
 		"unreach": {refused, refused, refused, refused},
 		"reach":   {err500, err500, err500, err500},
 		"backoff": {skipped, skipped, skipped, skipped},
 		// Three served probes and then nothing at the last point: the shape
 		// this observer's own downtime produces. It used to publish as
 		// served, so the serve rate rose while the observer was blind.
+		// backoff is the same gap at every point.
 		"gaplast": {ok, ok, ok, skipped},
 		"unatt":   {gone, gone, gone, gone},
+	}
+	held := map[string][]uint32{}
+	for i, a := range addrs {
+		held[a] = []uint32{uint32(2 * i), uint32(2*i + 1)}
 	}
 	points := []string{"w1", "w2", "w3", "w4"}
 	for addr, ws := range profile {
@@ -101,6 +106,7 @@ func obligationsFixture(t *testing.T) *httptest.Server {
 			if w.outcome == probe.OutcomeServedOK {
 				m.Download.OK, m.Download.RowsReturned, m.Download.RowsExpected = true, 2, 2
 				m.Download.CommitmentVerified, m.Download.AssignmentVerified = true, true
+				m.Download.RowIndices = held[addr]
 			}
 			raw, err := json.Marshal(m)
 			if err != nil {
@@ -116,22 +122,99 @@ func obligationsFixture(t *testing.T) *httptest.Server {
 	// passes; a verdict drawn before the last probe is not a verdict.
 	insertProbeSet(t, st, "obl2", now.Add(-10*time.Minute), now.Add(time.Hour), map[string][]wire{
 		"served": {ok},
-	}, false)
-	// A third blob at which every validator faulted at the same minute: the
-	// share of the set faulting reaches the threshold, so those points are
-	// the observer's problem (a stale pin, a broken coder) and no rate
-	// counts them. The obligations, faults and per-probe rate must read as
-	// if the blob had never been probed.
-	insertProbeSet(t, st, "sus1", now.Add(-3*time.Hour), now.Add(-90*time.Minute), map[string][]wire{
-		"served": {gone, gone, gone, gone}, "broken": {gone, gone, gone, gone},
-		"reach": {gone, gone, gone, gone}, "gaplast": {gone, gone, gone, gone},
-	}, true)
+	})
+	// A third blob, read on the same schedule, whose only validator stops
+	// serving at the last point: the blob could not be reconstructed there,
+	// so its failure counts.
+	insertProbeSet(t, st, "obl3", created, msu, map[string][]wire{
+		"broken": {ok, ok, ok, gone},
+	})
 	if _, err := st.StartRun("collector", "test", "t", now); err != nil {
 		t.Fatal(err)
 	}
 	ts := httptest.NewServer(api.New(st, "test"))
 	t.Cleanup(ts.Close)
 	return ts
+}
+
+// endVal is one endorsing validator of a reading insertReading writes: the
+// rows it holds and what the reading got from it. unasked leaves it
+// without a row, as a reading that had enough rows before its turn does.
+type endVal struct {
+	addr    string
+	rows    int
+	w       wire
+	unasked bool
+}
+
+// insertReading writes one publication read once at the given time under
+// label (probe.EndReadLabel for the one reading of a blob), needing needed
+// distinct rows to reconstruct. Rows are assigned in order, so a validator
+// that serves returns rows no other holds.
+func insertReading(t *testing.T, st *store.Store, hash string, created, msu time.Time, needed int, label string, at time.Time, vals []endVal) {
+	t.Helper()
+	now := time.Now().UTC()
+	var assigned []scan.ValidatorAssignment
+	held := map[string][]uint32{}
+	next := 0
+	for _, v := range vals {
+		var rows []int
+		for i := 0; i < v.rows; i++ {
+			rows = append(rows, next)
+			held[v.addr] = append(held[v.addr], uint32(next))
+			next++
+		}
+		assigned = append(assigned, scan.ValidatorAssignment{Address: v.addr, VotingPower: 10, RowCount: v.rows, Rows: rows, Attested: true})
+	}
+	pub := scan.Publication{
+		SchemaVersion: scan.AttestationSchemaVersion, PromiseHash: hash,
+		SettlementHeight: 300, SettlementTime: created, MustServeUntil: msu, RecordedAt: now,
+		SettlementTxHash: "tx" + hash, Signer: "celestia1pub",
+		Promise:                 scan.PromiseFields{ChainID: "t", Height: 299, Commitment: "cc" + hash, CreationTimestamp: created, BlobSize: 4096},
+		ValidatorSignatureCount: len(vals),
+		Assignment: scan.AssignmentTable{
+			ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: needed, TotalRows: 4 * needed},
+			ValidatorSetHeight: 299, TotalVotingPower: int64(10 * len(vals)), Sigma: next, Distinct: next,
+			ValidatorsWithRows: len(vals), AttestedWithRows: len(vals), SignatureEntries: len(vals), SignaturesVerified: len(vals),
+			AttestedVotingPower: int64(10 * len(vals)), Validators: assigned,
+		},
+	}
+	raw, err := json.Marshal(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertPublication(pub, raw); err != nil {
+		t.Fatal(err)
+	}
+	for i, v := range vals {
+		if v.unasked {
+			continue
+		}
+		start := at.Add(time.Duration(i) * time.Second)
+		class, reason := probe.Classify(probe.Evidence{Assigned: true, Attested: true, Phase: probe.PhaseInWindow, Outcome: v.w.outcome})
+		m := probe.Measurement{
+			SchemaVersion: probe.AttestationSchemaVersion, Vantage: "test",
+			PromiseHash: hash, Commitment: "cc" + hash, MustServeUntil: msu, ValidatorSetHeight: 299,
+			ValidatorAddress: v.addr, ValidatorHost: v.addr + ":443",
+			Assigned: true, Attested: true, AssignedRowCount: v.rows,
+			ScheduleLabel: label, ScheduledAt: at, StartedAt: start, FinishedAt: start,
+			Phase: probe.PhaseInWindow, Outcome: v.w.outcome,
+			Classification: class, ClassificationReason: reason, TotalDurationMS: 10,
+		}
+		m.TCP.OK, m.TLS.OK, m.Identity.OK = v.w.tls, v.w.tls, v.w.tls
+		if v.w.outcome == probe.OutcomeServedOK {
+			m.Download.OK, m.Download.RowsReturned, m.Download.RowsExpected = true, v.rows, v.rows
+			m.Download.CommitmentVerified, m.Download.AssignmentVerified = true, true
+			m.Download.RowIndices = held[v.addr]
+		}
+		raw, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.InsertProbe(m, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // inWindowFractions are the prober's in-window schedule fractions
@@ -167,15 +250,25 @@ var (
 )
 
 // insertProbeSet writes one publication and, per validator, its in-window
-// probes in schedule order. allSuspect marks the intent only; the API decides.
-func insertProbeSet(t *testing.T, st *store.Store, hash string, created, msu time.Time, profile map[string][]wire, allSuspect bool) {
+// probes in schedule order.
+//
+// The blob needs every row it assigns (original_rows is their sum), so a
+// validator that does not serve at a point leaves the blob unreadable there:
+// its failure counts, as the rule says only an unreadable blob's failures do.
+func insertProbeSet(t *testing.T, st *store.Store, hash string, created, msu time.Time, profile map[string][]wire) {
 	t.Helper()
 	now := time.Now().UTC()
 	var vals []scan.ValidatorAssignment
+	held := map[string][]uint32{}
 	i := 0
 	for addr := range profile {
 		vals = append(vals, scan.ValidatorAssignment{Address: addr, VotingPower: 10, RowCount: 2, Rows: []int{2 * i, 2*i + 1}, Attested: true})
+		held[addr] = []uint32{uint32(2 * i), uint32(2*i + 1)}
 		i++
+	}
+	needed, total := 2*len(vals), 16
+	if needed > total {
+		total = needed
 	}
 	pub := scan.Publication{
 		SchemaVersion: scan.AttestationSchemaVersion, PromiseHash: hash,
@@ -184,7 +277,7 @@ func insertProbeSet(t *testing.T, st *store.Store, hash string, created, msu tim
 		Promise:                 scan.PromiseFields{ChainID: "t", Height: 199, Commitment: "cc" + hash, CreationTimestamp: created, BlobSize: 4096},
 		ValidatorSignatureCount: len(vals),
 		Assignment: scan.AssignmentTable{
-			ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: 4, TotalRows: 16},
+			ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: needed, TotalRows: total},
 			ValidatorSetHeight: 199, TotalVotingPower: int64(10 * len(vals)), Sigma: 2 * len(vals), Distinct: 2 * len(vals),
 			ValidatorsWithRows: len(vals), AttestedWithRows: len(vals), SignatureEntries: len(vals), SignaturesVerified: len(vals),
 			AttestedVotingPower: int64(10 * len(vals)), Validators: vals,
@@ -215,6 +308,7 @@ func insertProbeSet(t *testing.T, st *store.Store, hash string, created, msu tim
 			if w.outcome == probe.OutcomeServedOK {
 				m.Download.OK, m.Download.RowsReturned, m.Download.RowsExpected = true, 2, 2
 				m.Download.CommitmentVerified, m.Download.AssignmentVerified = true, true
+				m.Download.RowIndices = held[addr]
 			}
 			raw, err := json.Marshal(m)
 			if err != nil {
@@ -239,54 +333,29 @@ func TestAnObligationIsServedOnlyWhenTheEndOfItsWindowWasObserved(t *testing.T) 
 	var net struct {
 		Obligations obligationsJSON          `json:"obligations"`
 		ByObl       struct{ Num, Den int64 } `json:"serve_rate_by_obligation"`
-		ServeRate   struct{ Num, Den int64 } `json:"serve_rate"`
-		Faults      int64                    `json:"faults"`
-		Vantage     struct {
-			Suspect     []struct{ Label, Reason string } `json:"suspect"`
-			SuspectRows int64                            `json:"suspect_rows"`
-		} `json:"vantage_health"`
+		Classes     map[string]int64         `json:"classes"`
 	}
 	if code := get(t, ts, "/v1/network?window=all", &net); code != 200 {
 		t.Fatalf("network: %d", code)
 	}
 	o := net.Obligations
-	// The unattested validator is nothing to keep or break, so seven from the
-	// first blob, plus the second blob's one pending obligation; the third
-	// blob's four are at suspect points and outside every count.
+	// The unattested validator is nothing to keep or break, so six from the
+	// first blob, one from the third, plus the second blob's one pending
+	// obligation.
 	if o.Total != 8 || o.Pending != 1 {
 		t.Errorf("total/pending = %d/%d, want 8/1: seven proven and decided, one still in its window", o.Total, o.Pending)
 	}
-	if len(net.Vantage.Suspect) != 4 || net.Vantage.SuspectRows != 16 {
-		t.Fatalf("suspect points = %+v (%d rows), want the third blob's four points and 16 rows", net.Vantage.Suspect, net.Vantage.SuspectRows)
+	if net.Classes["FAULT"] != 1 {
+		t.Errorf("FAULT readings = %d, want 1", net.Classes["FAULT"])
 	}
-	for _, sp := range net.Vantage.Suspect {
-		if sp.Reason != "fault" {
-			t.Errorf("suspect point %s reason = %q, want fault", sp.Label, sp.Reason)
-		}
-	}
-	// Four validators faulting at once at the third blob's points would have
-	// been 16 faults; none may count.
-	if net.Faults != 1 {
-		t.Errorf("faults = %d, want 1: the sixteen at suspect points are the observer's, not the validators'", net.Faults)
-	}
-	if o.Served != 1 || o.Broken != 1 || o.EndUnobserved != 2 {
-		t.Errorf("served/broken/end_unobserved = %d/%d/%d, want 1/1/2: only the validator answering at the last point is vouched for", o.Served, o.Broken, o.EndUnobserved)
-	}
-	if o.Unobserved != 3 || o.UnobservedReachable != 1 || o.UnobservedUnreachable != 1 || o.UnobservedNotProbed != 1 {
-		t.Errorf("unobserved = %d (reachable %d, unreachable %d, not probed %d), want 3 (1, 1, 1)",
-			o.Unobserved, o.UnobservedReachable, o.UnobservedUnreachable, o.UnobservedNotProbed)
+	if o.Served != 1 || o.Broken != 1 || o.NotCounted != 5 {
+		t.Errorf("served/broken/not_counted = %d/%d/%d, want 1/1/5: only the validator answering at the last point is vouched for", o.Served, o.Broken, o.NotCounted)
 	}
 	if o.Rate.Num != 1 || o.Rate.Den != 2 {
 		t.Errorf("obligation rate = %d/%d, want 1/2: only served and broken enter it", o.Rate.Num, o.Rate.Den)
 	}
 	if net.ByObl != o.Rate {
 		t.Errorf("serve_rate_by_obligation %+v must repeat obligations.rate %+v", net.ByObl, o.Rate)
-	}
-	// The probe-based rate is still published and still says something
-	// different: 12 HEALTHY (11 from the first blob, 1 from the pending
-	// second) over 13 rated probes; the suspect points' 16 faults are out.
-	if net.ServeRate.Num != 12 || net.ServeRate.Den != 13 {
-		t.Errorf("serve_rate = %d/%d, want 12/13", net.ServeRate.Num, net.ServeRate.Den)
 	}
 
 	var resp struct {
@@ -304,12 +373,12 @@ func TestAnObligationIsServedOnlyWhenTheEndOfItsWindowWasObserved(t *testing.T) 
 	}
 	want := map[string]obligationsJSON{
 		"served":  {Total: 2, Served: 1, Pending: 1},
-		"endun":   {Total: 1, EndUnobserved: 1},
+		"endun":   {Total: 1, NotCounted: 1},
 		"broken":  {Total: 1, Broken: 1},
-		"unreach": {Total: 1, Unobserved: 1, UnobservedUnreachable: 1},
-		"reach":   {Total: 1, Unobserved: 1, UnobservedReachable: 1},
-		"backoff": {Total: 1, Unobserved: 1, UnobservedNotProbed: 1},
-		"gaplast": {Total: 1, EndUnobserved: 1},
+		"unreach": {Total: 1, NotCounted: 1},
+		"reach":   {Total: 1, NotCounted: 1},
+		"backoff": {Total: 1, NotCounted: 1},
+		"gaplast": {Total: 1, NotCounted: 1},
 		"unatt":   {},
 	}
 	for addr, w := range want {

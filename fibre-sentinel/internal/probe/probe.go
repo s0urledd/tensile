@@ -29,8 +29,9 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// StepTimeouts bounds every layer of a probe. Nothing in a probe blocks longer
-// than the relevant field.
+// StepTimeouts bounds every layer of a request. Nothing in a request blocks
+// longer than the relevant field, and under Input.ClientRules nothing blocks
+// longer than Input.RequestTimeout altogether.
 type StepTimeouts struct {
 	DNS      time.Duration
 	TCP      time.Duration
@@ -46,6 +47,11 @@ type StepTimeouts struct {
 	// celestia-app's own client reads with (RPCTimeout, 15s per DownloadShard).
 	MinDownloadBytesPerSec int64
 }
+
+// ClientRPCTimeout is the RPCTimeout celestia-app's Fibre client gives one
+// request to one validator, dial and DownloadShard together
+// (fibre.DefaultClientConfig).
+const ClientRPCTimeout = 15 * time.Second
 
 // DefaultStepTimeouts are conservative for a WAN vantage.
 func DefaultStepTimeouts() StepTimeouts {
@@ -174,6 +180,43 @@ type Input struct {
 	// Observer is the build and chain state stamped on the row (see
 	// ObserverInfo). Zero value means "not stamped".
 	Observer ObserverInfo
+
+	// ClientRules reads the validator the way celestia-app's Fibre client
+	// does (fibre/client_download.go), which is how every blob is read:
+	//
+	//   - the whole request, lookup, dial and DownloadShard, gets
+	//     RequestTimeout (ClientRPCTimeout); the lookup, the connect and the
+	//     TLS handshake are bounded by it alone, as the client's are; a
+	//     request that runs out of it after the connection was made is the
+	//     validator's (RPC_TIMEOUT);
+	//   - the receive bound is the protocol's message bound, which is the
+	//     client's, and an answer over it, or one the client cannot parse,
+	//     is the validator's (MALFORMED_SHARD);
+	//   - an InvalidArgument or Unimplemented answer is the server's error;
+	//   - "no route to host" is the validator's host not answering, as the
+	//     client meets it; only a failure that never left this machine (no
+	//     route out, no local address, a local socket error) is this
+	//     observer's, and so is a DNS failure other than "no such host".
+	//
+	// Without it the request is judged by the earlier schedule's rules.
+	ClientRules    bool
+	RequestTimeout time.Duration
+	// ReadingPhase, when set, is the phase of the reading this request
+	// belongs to, taken when the reading started: every request of a
+	// reading carries it, as the client asks every validator at once, so a
+	// request this observer's own limits held back is judged as if it had
+	// not been. Empty takes the phase from the request's own start.
+	ReadingPhase Phase
+	// Verifier checks the rows against the commitment. A reading shares one
+	// across every validator it asks (the blob's Reconstructor), as the
+	// client does; nil builds one for this request alone.
+	Verifier ShardVerifier
+}
+
+// ShardVerifier checks a shard's rows against the blob commitment and keeps
+// the ones it had not seen: *rsema1d.Reconstructor. Add may reorder proofs.
+type ShardVerifier interface {
+	Add(proofs []*rsema1d.RowProof, rlc rlc.Vector) ([]*rsema1d.RowProof, error)
 }
 
 // ShadowCandidate is another promise over the same commitment and the rows
@@ -217,8 +260,25 @@ func shadowedBy(idx []uint32, cands []ShadowCandidate) string {
 // FinishedAt / TotalDurationMS / Classification after every early return.
 func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measurement) {
 	to = to.withDefaults()
+	// The caller's context is kept apart from the request's own deadline: a
+	// request the caller abandoned (shutdown) is this observer's gap, while
+	// one that ran out of the client's RPCTimeout is the validator's answer.
+	caller := ctx
+	if in.ClientRules && in.RequestTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, in.RequestTimeout)
+		defer cancel()
+		// The client bounds the lookup, the connect and the handshake by the
+		// request's time alone (the RPCTimeout around DownloadShard covers
+		// gRPC's lazy dial and its resolver), so a lookup or a connect that
+		// takes 5 to 15 s is still made here.
+		to.DNS, to.TCP, to.TLS = in.RequestTimeout, in.RequestTimeout, in.RequestTimeout
+	}
 	now := time.Now().UTC()
 	phase := PhaseAtWindow(now, in.MustServeUntil, in.PruneTolerance)
+	if in.ReadingPhase != "" {
+		phase = in.ReadingPhase
+	}
 	m = Measurement{
 		SchemaVersion:      MeasurementSchemaVersion,
 		Vantage:            in.Vantage,
@@ -240,6 +300,7 @@ func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measur
 		Phase:              phase,
 		ClockOffsetMS:      in.ClockOffsetMS,
 		LatenessMS:         now.Sub(in.SchedulePoint.At).Milliseconds(),
+		ClientRules:        in.ClientRules && in.RequestTimeout > 0,
 	}
 	if in.Observer != (ObserverInfo{}) {
 		o := in.Observer
@@ -252,12 +313,12 @@ func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measur
 		// Shutdown (SIGTERM, a -deadline expiry) cancels mid-flight probes,
 		// and without this an ordinary restart would publish DNS_FAIL or
 		// TCP_TIMEOUT as a retention failure for whatever was in flight.
-		if ctx.Err() != nil && m.Outcome != OutcomeServedOK {
+		if caller.Err() != nil && m.Outcome != OutcomeServedOK {
 			m.Outcome = OutcomeProbeError
 			if m.RawError == "" {
-				m.RawError = "probe abandoned: " + ctx.Err().Error()
+				m.RawError = "probe abandoned: " + caller.Err().Error()
 			} else {
-				m.RawError = "probe abandoned (" + ctx.Err().Error() + "): " + m.RawError
+				m.RawError = "probe abandoned (" + caller.Err().Error() + "): " + m.RawError
 			}
 		}
 		m.Classification, m.ClassificationReason = Classify(Evidence{
@@ -330,6 +391,14 @@ func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measur
 			m.DNS.Error = derr.Error()
 			m.Outcome = OutcomeDNSFail
 			m.RawError = derr.Error()
+			var dnsErr *net.DNSError
+			if in.ClientRules && !(errors.As(derr, &dnsErr) && dnsErr.IsNotFound) {
+				// The resolver did not answer, or answered with an error of
+				// its own: this observer's resolver, not the validator's
+				// name. Only "no such host" is the validator's.
+				m.Outcome = OutcomeProbeError
+				m.RawError = "resolver: " + derr.Error()
+			}
 			return m
 		}
 		// The same test after resolution: a name under the operator's control
@@ -372,6 +441,11 @@ func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measur
 		}
 		attempts = append(attempts, cand+": "+err.Error())
 		local := isNoRoute(err) || localDialFault(err)
+		if in.ClientRules && isHostUnreachable(err) {
+			// "No route to host" is the host not answering (an ICMP
+			// unreachable from the path to it), as the client meets it.
+			local = false
+		}
 		if !local {
 			allLocal = false
 		}
@@ -441,6 +515,7 @@ func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measur
 
 	// ---- L4: retrievability (the handshake runs inside the gRPC dial) ----
 	dl := downloadAndVerify(ctx, in, coder, rawConn, hs, to.downloadDeadline(in.ExpectedShardBytes))
+	m.novel = dl.novel
 	m.TLS, m.Identity = hs.results()
 	if out, raw, failed := hs.failure(); failed {
 		m.Outcome, m.RawError = out, raw
@@ -471,7 +546,7 @@ func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measur
 // prunes on a minute tick against its own clock, which the observer's need
 // not match to the second. A NOT_FOUND inside this band is TOLERATED, never
 // a FAULT. Thirty seconds is the observer's own clock-skew warning level;
-// the last in-window schedule point sits well outside it on any real window.
+// the reading sits minutes outside it.
 const NotFoundGuard = 30 * time.Second
 
 // notFoundPhase returns the phase a NOT_FOUND answered at now should be graded
@@ -508,6 +583,8 @@ type dlResult struct {
 	DownloadResult
 	outcome Outcome
 	rawErr  string
+	// novel is how many of the rows the verifier had not seen before.
+	novel int
 }
 
 // downloadRPCUnary names the read RPC this build calls. celestia-app #7857
@@ -538,6 +615,14 @@ const downloadRPCUnary = "DownloadShard"
 // already read as the observer's own gap, not the validator's: see
 // classifyDownloadError and TestRun_SizeBoundsAreToldApartFromAThrottle.
 func recvLimitFor(in Input) int {
+	if in.ClientRules {
+		// The client's own bound: whatever it would accept is judged, and
+		// whatever it would refuse is the validator's.
+		if in.MaxMessageSize > 0 {
+			return in.MaxMessageSize
+		}
+		return defaultMaxRecvMsgSize
+	}
 	if in.ExpectedShardBytes > 0 {
 		limit := int(in.ExpectedShardBytes+in.ExpectedShardBytes/10) + celfibre.MaxPaymentPromiseSize
 		if limit < minRecvMsgSize {
@@ -646,10 +731,20 @@ func downloadAndVerify(ctx context.Context, in Input, coder *Coder, conn net.Con
 		r.Error = err.Error()
 		r.RPCCode = rpcCodeOf(err)
 		r.outcome, r.rawErr = classifyDownloadError(err), err.Error()
+		if in.ClientRules {
+			r.outcome = clientRulesOutcome(err, r.outcome, dctx.Err() == nil)
+		}
 		return r
 	}
 
 	proofs, rlcv, perr := parseShard(resp.Shard, coder.originalRows, coder.totalRows)
+	if perr != nil && in.ClientRules {
+		// The client skips a shard it cannot parse (SkipShard): the
+		// validator answered with something no reader can use.
+		r.Error = "parse: " + perr.Error()
+		r.outcome, r.rawErr = OutcomeMalformedShard, "shard shape: "+perr.Error()
+		return r
+	}
 	if perr != nil {
 		// A response this observer cannot even parse is not evidence about
 		// the shard: the RLC length is checked against the observer's own
@@ -672,23 +767,30 @@ func downloadAndVerify(ctx context.Context, in Input, coder *Coder, conn net.Con
 	}
 	r.RowsSHA256 = hex.EncodeToString(digest.Sum(nil))
 
-	rec, rerr := coder.c.NewReconstructor(rsema1d.Commitment(in.Commitment))
-	if rerr != nil {
-		r.Error = "reconstructor: " + rerr.Error()
-		r.outcome, r.rawErr = OutcomeProbeError, rerr.Error()
-		return r
+	var rec ShardVerifier = in.Verifier
+	if rec == nil {
+		own, rerr := coder.c.NewReconstructor(rsema1d.Commitment(in.Commitment))
+		if rerr != nil {
+			r.Error = "reconstructor: " + rerr.Error()
+			r.outcome, r.rawErr = OutcomeProbeError, rerr.Error()
+			return r
+		}
+		rec = own
 	}
-	if _, aerr := rec.Add(proofs, rlcv); aerr != nil {
+	// Add compacts proofs in place to the rows it had not seen, so every
+	// piece of evidence about this validator's answer (the indices, their
+	// digest above, the assignment check below) is taken from RowIndices,
+	// copied before it runs.
+	novel, aerr := rec.Add(proofs, rlcv)
+	if aerr != nil {
 		r.Error = "commitment verify: " + aerr.Error()
 		r.outcome, r.rawErr = OutcomeInvalidRows, aerr.Error()
 		return r
 	}
 	r.CommitmentVerified = true
+	r.novel = len(novel)
 
-	idx := make([]uint32, len(proofs))
-	for i, p := range proofs {
-		idx[i] = uint32(p.Index)
-	}
+	idx := append([]uint32(nil), r.RowIndices...)
 	sm := assign.ShardMap{in.Target.Address: in.Target.AssignedRows}
 	if verr := sm.Verify(in.Target.Address, idx); verr != nil {
 		r.Error = "assignment verify: " + verr.Error()
@@ -696,7 +798,7 @@ func downloadAndVerify(ctx context.Context, in Input, coder *Coder, conn net.Con
 		if r.ShadowedBy == "" {
 			r.ShadowGap = in.ShadowGap
 		}
-		if len(proofs) < in.Target.RowCount {
+		if len(idx) < in.Target.RowCount {
 			r.outcome, r.rawErr = OutcomePartial, verr.Error()
 			r.RowsSubsetOfAssignment = subsetOf(idx, in.Target.AssignedRows)
 		} else {
@@ -891,6 +993,30 @@ func rpcCodeOf(err error) string {
 	return ""
 }
 
+// clientRulesOutcome re-reads a download error the way the Fibre client
+// meets it (Input.ClientRules): running out of the request's time after
+// connecting is the validator's slowness, a refusal as malformed or
+// unimplemented is the server's error, and a reply over the protocol's
+// message bound is one no client accepts. A CANCELLED status while the
+// request's own context is still alive (alive) was sent by the server: the
+// client meets it as a failed shard and skips it, so it is the server's
+// error too. Everything else keeps its earlier reading; the caller's own
+// cancel stays a gap (Run reads it from the caller's context).
+func clientRulesOutcome(err error, o Outcome, alive bool) Outcome {
+	ls := strings.ToLower(err.Error())
+	switch {
+	case o == OutcomeRPCDeadline:
+		return OutcomeRPCTimeout
+	case status.Code(err) == codes.InvalidArgument, status.Code(err) == codes.Unimplemented:
+		return OutcomeServerError
+	case status.Code(err) == codes.Canceled && alive:
+		return OutcomeServerError
+	case strings.Contains(ls, "received message larger than max"), strings.Contains(ls, "after decompression larger than max"):
+		return OutcomeMalformedShard
+	}
+	return o
+}
+
 func classifyDownloadError(err error) Outcome {
 	if err == nil {
 		return OutcomeServedOK
@@ -1035,6 +1161,13 @@ func isNoRoute(err error) bool {
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "network is unreachable") || strings.Contains(s, "no route to host") ||
 		strings.Contains(s, "address family not supported") || strings.Contains(s, "cannot assign requested address")
+}
+
+// isHostUnreachable reports "no route to host" (EHOSTUNREACH): under the
+// client's rules the validator's host not answering, not this observer's
+// network (isNoRoute still counts it as local for the heartbeat).
+func isHostUnreachable(err error) bool {
+	return errors.Is(err, syscall.EHOSTUNREACH) || strings.Contains(strings.ToLower(err.Error()), "no route to host")
 }
 
 // ShardBytes estimates the wire size of one validator's shard for a blob:

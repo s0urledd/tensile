@@ -3,7 +3,6 @@ package rollup_test
 import (
 	"context"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -55,8 +54,8 @@ func TestLoad_RepeatedDailyClassMapIsNotCollapsed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if got.Probes != 11 || got.Faults != 3 {
-		t.Fatalf("probes=%d faults=%d, want 11/3", got.Probes, got.Faults)
+	if got.Probes != 11 {
+		t.Fatalf("probes=%d, want 11", got.Probes)
 	}
 	if got.Classes["HEALTHY"] != 8 || got.Classes["FAULT"] != 3 {
 		t.Fatalf("classes=%v, want HEALTHY:8 FAULT:3", got.Classes)
@@ -109,29 +108,6 @@ func TestTheSQLAndTheGoTwinCutTheWindowAtTheSamePoint(t *testing.T) {
 	if !strings.Contains(rollup.ObligationBuckets, want) {
 		t.Fatalf("verdict.EndSegmentDivisor is %v, so the obligation SQL must divide by %q; it does not:\n%s",
 			verdict.EndSegmentDivisor, want, rollup.ObligationBuckets)
-	}
-}
-
-// The guard's denominator is the one number the SQL and the Go twin must
-// agree on exactly: a class counted as "probed" by one and not the other
-// would put the two implementations on different sides of the threshold at
-// the same schedule point, and the observer would publish a fault that its
-// own recompute says is suspect.
-func TestTheSQLAndTheGoTwinExcludeTheSameClassesFromTheGuard(t *testing.T) {
-	var want []string
-	for _, c := range verdict.GuardSilentClasses {
-		want = append(want, "'"+string(c)+"'")
-	}
-	sort.Strings(want)
-
-	got := strings.Split(strings.Trim(rollup.GuardSilentSQL, "()"), ",")
-	for i := range got {
-		got[i] = strings.TrimSpace(got[i])
-	}
-	sort.Strings(got)
-
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("guard denominator diverged:\n  Go:  %s\n  SQL: %s", strings.Join(want, ","), strings.Join(got, ","))
 	}
 }
 

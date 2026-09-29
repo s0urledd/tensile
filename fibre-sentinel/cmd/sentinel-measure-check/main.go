@@ -1,6 +1,7 @@
-// Command sentinel-measure-check asserts the Sentinel error-class taxonomy held
-// over a measurements.jsonl, including a fault-injection run where one fibre
-// server was killed mid-window. Test/CI helper.
+// Command sentinel-measure-check asserts that the readings in a
+// measurements.jsonl held to the reading rule, including a fault-injection
+// run where one fibre server was killed before the blobs were read.
+// Test/CI helper.
 package main
 
 import (
@@ -8,7 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"sort"
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
@@ -17,9 +18,10 @@ import (
 func main() {
 	var (
 		dataDir    = flag.String("data-dir", "./sentinel-data", "dir holding measurements.jsonl")
-		killedHost = flag.String("killed-host", "", "host:port of the fibre server that was killed mid-window")
-		killAtStr  = flag.String("kill-at", "", "RFC3339 time the kill happened (measurements from the killed validator started after this, in-window, must be FAULT)")
-		minProbes  = flag.Int("min-probes", 6, "minimum total measurements expected")
+		killedHost = flag.String("killed-host", "", "host:port of the fibre server that was killed before the readings")
+		killAtStr  = flag.String("kill-at", "", "RFC3339 time the kill happened (the killed validator's rows started after it must not be served)")
+		minProbes  = flag.Int("min-probes", 3, "minimum total rows expected")
+		k          = flag.Int("k", 4096, "distinct rows that reconstruct a blob (original_rows)")
 	)
 	flag.Parse()
 
@@ -28,31 +30,17 @@ func main() {
 		fmt.Fprintf(os.Stderr, "measure-check FATAL: %v\n", err)
 		os.Exit(2)
 	}
-	fmt.Printf("measure-check| loaded %d measurements\n", len(ms))
+	fmt.Printf("measure-check| loaded %d rows\n", len(ms))
 	if len(ms) < *minProbes {
-		fmt.Fprintf(os.Stderr, "measure-check FATAL: only %d measurements, want >= %d\n", len(ms), *minProbes)
+		fmt.Fprintf(os.Stderr, "measure-check FATAL: only %d rows, want >= %d\n", len(ms), *minProbes)
 		os.Exit(1)
 	}
-
 	var killAt time.Time
 	if *killAtStr != "" {
-		killAt, err = time.Parse(time.RFC3339, *killAtStr)
-		if err != nil {
+		if killAt, err = time.Parse(time.RFC3339, *killAtStr); err != nil {
 			fmt.Fprintf(os.Stderr, "measure-check FATAL: bad -kill-at: %v\n", err)
 			os.Exit(2)
 		}
-	}
-
-	// which validator address sits behind the killed host?
-	killedAddr := ""
-	for _, m := range ms {
-		if *killedHost != "" && m.ValidatorHost == *killedHost {
-			killedAddr = m.ValidatorAddress
-			break
-		}
-	}
-	if *killedHost != "" && killedAddr == "" {
-		fmt.Printf("measure-check| WARN: no measurement references killed host %s\n", *killedHost)
 	}
 
 	fails := 0
@@ -61,92 +49,94 @@ func main() {
 		fails++
 	}
 
-	// counters for a readable summary
 	byClass := map[probe.Classification]int{}
-	byOutcome := map[probe.Outcome]int{}
-
-	sawKilledFault := false
-	sawHealthyInWindow := false
-	sawExpectedGone := false
-
+	readings := map[string][]probe.Measurement{}
+	killedAddr := ""
 	for _, m := range ms {
 		byClass[m.Classification]++
-		byOutcome[m.Outcome]++
+		readings[m.PromiseHash] = append(readings[m.PromiseHash], m)
+		if *killedHost != "" && m.ValidatorHost == *killedHost {
+			killedAddr = m.ValidatorAddress
+		}
+	}
+	if *killedHost != "" && killedAddr == "" {
+		fmt.Printf("measure-check| WARN: no row references killed host %s (the readings did not need it)\n", *killedHost)
+	}
 
-		assignedInWindow := m.Assigned && m.Phase == probe.PhaseInWindow
-		isKilled := killedAddr != "" && m.ValidatorAddress == killedAddr
-
-		switch {
-		case isKilled && assignedInWindow && (killAt.IsZero() || m.StartedAt.After(killAt)):
-			// killed validator, under obligation, after the kill: must be FAULT
-			if m.Classification != probe.ClassFault {
-				fail("killed %s in_window after kill: class=%s outcome=%s (want FAULT)", short(m.ValidatorAddress), m.Classification, m.Outcome)
-			} else {
-				sawKilledFault = true
+	available, killedSeen := 0, false
+	hashes := make([]string, 0, len(readings))
+	for h := range readings {
+		hashes = append(hashes, h)
+	}
+	sort.Strings(hashes)
+	for _, h := range hashes {
+		rs := readings[h]
+		distinct := map[uint32]bool{}
+		result := ""
+		for _, m := range rs {
+			if m.ScheduleLabel != probe.EndReadLabel || m.Phase != probe.PhaseInWindow {
+				fail("%s %s: label %q phase %s, want the one in-window reading", short(h), short(m.ValidatorAddress), m.ScheduleLabel, m.Phase)
 			}
-
-		case !isKilled && assignedInWindow:
-			// a validator that was never killed, under obligation: must be HEALTHY
-			if m.Classification != probe.ClassHealthy {
-				fail("live assigned %s in_window: class=%s outcome=%s (want HEALTHY)", short(m.ValidatorAddress), m.Classification, m.Outcome)
-			} else {
-				sawHealthyInWindow = true
+			// A validator that did not endorse is asked like the rest, as
+			// the client asks the whole set; it serves as UNATTESTED.
+			endorsing := m.Attested || m.AttestationUnknown
+			if m.Read == nil {
+				fail("%s %s: no read record on the row", short(h), short(m.ValidatorAddress))
+				continue
 			}
-
-		case m.Assigned && m.Phase == probe.PhaseGrace:
-			// grace: NOT_FOUND / unreachable are tolerated, never FAULT.
-			reachOrNF := m.Outcome == probe.OutcomeNotFound ||
-				strings.Contains(string(m.Outcome), "UNAVAILABLE") ||
-				strings.HasPrefix(string(m.Outcome), "TCP_")
-			if m.Classification == probe.ClassFault && reachOrNF {
-				fail("assigned %s grace: %s classed FAULT (want TOLERATED)", short(m.ValidatorAddress), m.Outcome)
+			if result == "" {
+				result = m.Read.BlobResult
+			} else if result != m.Read.BlobResult {
+				fail("%s: rows disagree on the reading's result (%s, %s)", short(h), result, m.Read.BlobResult)
 			}
-
-		case m.Assigned && m.Phase == probe.PhasePost:
-			// post: must never be FAULT; NOT_FOUND -> EXPECTED_GONE
-			if m.Classification == probe.ClassFault {
-				fail("assigned %s post: class=FAULT outcome=%s (obligation is over)", short(m.ValidatorAddress), m.Outcome)
+			isKilled := killedAddr != "" && m.ValidatorAddress == killedAddr
+			switch {
+			case isKilled && (killAt.IsZero() || m.StartedAt.After(killAt)):
+				killedSeen = true
+				if m.Download.CommitmentVerified {
+					fail("%s killed %s served rows after the kill", short(h), short(m.ValidatorAddress))
+				}
+				if m.Classification == probe.ClassFault {
+					fail("%s killed %s: FAULT, want an unreachable endpoint (%s)", short(h), short(m.ValidatorAddress), m.Outcome)
+				}
+			case !isKilled && endorsing && m.Classification != probe.ClassHealthy:
+				fail("%s live %s: class=%s outcome=%s (want HEALTHY)", short(h), short(m.ValidatorAddress), m.Classification, m.Outcome)
+			case !isKilled && !endorsing && (m.Classification != probe.ClassUnattested || !m.Download.CommitmentVerified):
+				fail("%s live %s, not endorsing: class=%s outcome=%s (want its rows, UNATTESTED)", short(h), short(m.ValidatorAddress), m.Classification, m.Outcome)
 			}
-			if m.Outcome == probe.OutcomeNotFound {
-				if m.Classification != probe.ClassExpectedGone {
-					fail("assigned %s post NOT_FOUND: class=%s (want EXPECTED_GONE)", short(m.ValidatorAddress), m.Classification)
-				} else {
-					sawExpectedGone = true
+			if m.Download.CommitmentVerified {
+				for _, i := range m.Download.RowIndices {
+					distinct[i] = true
 				}
 			}
-
-		case !m.Assigned:
-			// unassigned NOT_FOUND is always expected
-			if m.Outcome == probe.OutcomeNotFound && m.Classification != probe.ClassExpectedUnassigned {
-				fail("unassigned %s NOT_FOUND: class=%s (want EXPECTED_UNASSIGNED)", short(m.ValidatorAddress), m.Classification)
-			}
 		}
+		switch result {
+		case probe.ReadAvailable:
+			available++
+			if len(distinct) < *k {
+				fail("%s: available with %d distinct rows, want >= %d", short(h), len(distinct), *k)
+			}
+		default:
+			fail("%s: reading came to %q, want available (the live validators hold enough rows)", short(h), result)
+		}
+		fmt.Printf("measure-check| %s: %s, %d distinct rows from %d validators asked\n", short(h), result, len(distinct), len(rs))
 	}
 
 	fmt.Println("measure-check| by classification:")
 	for c, n := range byClass {
 		fmt.Printf("measure-check|   %-24s %d\n", c, n)
 	}
-	fmt.Println("measure-check| by outcome:")
-	for o, n := range byOutcome {
-		fmt.Printf("measure-check|   %-24s %d\n", o, n)
+	if available == 0 {
+		fail("no available reading")
 	}
-
-	if killedAddr != "" && !sawKilledFault {
-		fail("no in_window FAULT recorded for the killed validator %s — fault injection not detected", short(killedAddr))
+	if killedAddr != "" && !killedSeen {
+		fmt.Println("measure-check| WARN: the killed validator was asked only before the kill")
 	}
-	if !sawHealthyInWindow {
-		fail("no HEALTHY in_window measurement for any live assigned validator")
-	}
-	if !sawExpectedGone {
-		fmt.Printf("measure-check| WARN: no post-window NOT_FOUND -> EXPECTED_GONE seen (window may not have fully elapsed)\n")
-	}
-
 	fmt.Printf("measure-check| %d checks failed\n", fails)
 	if fails > 0 {
 		os.Exit(1)
 	}
-	fmt.Println("measure-check| PASS: taxonomy held (fault injection detected, live validators healthy, post-window expected)")
+	fmt.Println("measure-check| PASS: every blob read once, available from the live validators; the killed one counted neither way")
 }
 
 func short(s string) string {

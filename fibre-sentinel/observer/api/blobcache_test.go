@@ -87,6 +87,7 @@ func insertProbe(t *testing.T, st *store.Store, hash, addr string, at time.Time,
 		m.Download.OK, m.Download.RowsReturned, m.Download.RowsExpected = true, 2, 2
 		m.Download.CommitmentVerified, m.Download.AssignmentVerified = true, true
 	}
+	m.TCP.Attempted, m.TCP.OK = true, opensConnection(outcome)
 	raw, err := json.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
@@ -94,6 +95,19 @@ func insertProbe(t *testing.T, st *store.Store, hash, addr string, at time.Time,
 	if _, err := st.InsertProbe(m, raw); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// opensConnection reports whether a request with this outcome opened its
+// connection: everything but the answers from before one (no host to
+// connect to, a lookup or a connect that failed, a failure on this
+// observer's side, a request never made).
+func opensConnection(o probe.Outcome) bool {
+	switch o {
+	case probe.OutcomeNoHost, probe.OutcomeBadHost, probe.OutcomeDNSFail, probe.OutcomeTCPTimeout, probe.OutcomeTCPUnreachable,
+		probe.OutcomeTCPRefused, probe.OutcomeProbeError, probe.OutcomeMissed:
+		return false
+	}
+	return true
 }
 
 type blobListRow struct {
@@ -134,8 +148,8 @@ func TestCachedBlobVerdictFollowsLateProbes(t *testing.T) {
 	if first.ProbeCount != 1 || first.Recon.ProbedValidators != 1 {
 		t.Fatalf("first read: probe_count %d, probed %d, want 1 and 1", first.ProbeCount, first.Recon.ProbedValidators)
 	}
-	if first.Recon.Status != "pending" {
-		t.Fatalf("first read status %q, want \"pending\": only one of two assigned validators has been heard from",
+	if first.Recon.Status != "no" {
+		t.Fatalf("first read status %q, want \"no\": the rows on record are short of the blob, and the reading happened",
 			first.Recon.Status)
 	}
 
@@ -160,8 +174,8 @@ func TestCachedBlobVerdictFollowsLateProbes(t *testing.T) {
 		t.Fatalf("after the late probe: probe_count %d, probed %d, want 2 and 2 — the cache did not notice a new row",
 			third.ProbeCount, third.Recon.ProbedValidators)
 	}
-	if third.Recon.Status == "pending" {
-		t.Error("status is still \"pending\" after both assigned validators were heard from: a stale verdict about a settled blob")
+	if third.Recon.Status != "yes" {
+		t.Errorf("status %q after both validators' rows came back: a stale verdict about a settled blob", third.Recon.Status)
 	}
 	if third.Classes["HEALTHY"] != 2 {
 		t.Errorf("classes = %v, want two HEALTHY", third.Classes)

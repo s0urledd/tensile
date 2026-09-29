@@ -5,7 +5,6 @@ import { type Validator, type Probe, API_BASE, useApi, ago, utcWord, int } from 
 import type { Hosting } from "@/lib/hosting";
 import { FRAME, COUNTRIES, project, countryPoint } from "@/lib/map/project";
 import { verdictDef } from "@/components/Verdict";
-import { SHOW_SERVICE } from "@/lib/service";
 import { countryName } from "@/components/Flag";
 import Info from "@/components/Info";
 import { type EndpointState, endpointState, readiness } from "@/components/Readiness";
@@ -592,8 +591,7 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
           <ul className="ov-pins" aria-label="Fibre providers by location">
             {placed.map(({ c, x, y, d, s }) => {
               const isOpen = open === c.id;
-              // the red mark of a not-served shard, only while the service figures are on (lib/service)
-              const fault = SHOW_SERVICE && c.hosts.some((h) => (h.v.obligations?.broken ?? 0) > 0);
+              const fault = c.hosts.some((h) => (h.v.obligations?.broken ?? 0) > 0);
               const place = placeLabel(c);
               const counts = ORDER.map((st) => [st, c.hosts.filter((h) => h.state === st).length] as const).filter(([, n]) => n > 0);
               const split = canSplit(c);
@@ -641,7 +639,7 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
                             <span className="ov-share">{fmtShare(h.share)}</span>
                             <span className="ov-meta">
                               {[multi ? h.cc : "", h.provider, c.locs > 1 && h.city ? h.city : multi && !h.city ? countryName(h.cc) : "", h.state !== "reachable" ? STATE_WORD[h.state] : ""].filter(Boolean).join(" · ")}
-                              {SHOW_SERVICE && (h.v.obligations?.broken ?? 0) > 0 && <span className="ov-broken"> · {h.v.obligations.broken} not served</span>}
+                              {(h.v.obligations?.broken ?? 0) > 0 && <span className="ov-broken"> · {h.v.obligations.broken} not served</span>}
                             </span>
                           </li>
                         ))}

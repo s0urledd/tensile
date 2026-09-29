@@ -87,29 +87,20 @@ sudo cp deploy/publishers.yaml.example /etc/fibre-observer/publishers-mocha.yaml
 Edit `mocha.env`: set `NETWORK`, `RPC`, `VANTAGE`, `DATA_DIR`
 (`/var/lib/fibre-observer/mocha`), `POLICY`
 (`/etc/fibre-observer/policy-mocha.yaml`), `API_LISTEN` (a port of its
-own), and, when you have them, `ALERT_WEBHOOK` and `BACKUP_REMOTE`. Point
-`sampling.master_secret_file` in the policy at
-`<DATA_DIR>/sampling-master.key`; the prober creates it with mode 0600 on
-first run. Keep it there. The file must live under the data directory,
-because the units mount `/etc/fibre-observer` read-only and the service
-user cannot write there.
+own), and, when you have them, `ALERT_WEBHOOK` and `BACKUP_REMOTE`.
 
-That file is what makes the sample auditable. The commitments published at
-`/v1/sampling` are SHA-256 of a per-day secret derived from it, so if the
-master is regenerated on every restart the commitments change with it and
-nobody can ever check a day's draw against them. The prober now refuses to
-start with a sampling policy that sets no `master_secret_file`, rather than
-running on a process-local secret and producing commitments that quietly
-cannot be verified; `-allow-ephemeral-sampling` overrides that, and is only
-for a test. The prober publishes each
-day's secret seven days after the day ends (`-reveal-after`), to
-`<DATA_DIR>/sampling-secrets.jsonl`; the collector serves it beside the
-day's commitment. The reveal runs with the sampling policy, so a prober
-started without `-policy` (probe everything) has nothing to reveal and
-writes no file. Only the day secrets are ever revealed, never the master. It is also the reason the
-sample is unpredictable: a publisher who learned the master in advance could
-work out which of its blobs would be probed, so do not put it anywhere the
-publishers can read, and do not include it in a backup that leaves the host.
+The prober reads every blob; nothing is sampled or budgeted. The policy file
+is read only for the earlier sampling's master secret
+(`<DATA_DIR>/sampling-master.key` unless the policy names another file),
+so the prober can keep publishing each day's secret seven days after the day
+ends (`-reveal-after`, to `<DATA_DIR>/sampling-secrets.jsonl`, served at
+`/v1/sampling`) and the draws made before 27 September 2026 stay
+auditable. A new vantage, which never sampled, can run without `-policy`.
+Only the day secrets are ever revealed, never the master: keep it off
+anything the publishers can read and out of any backup that leaves the host.
+Once the last day that had a draw is revealed, the key can be deleted and
+`-policy` dropped; the old `probe-budget.json` can go as soon as this
+prober runs (see "Stored data the reading no longer needs").
 
 `host_at_settlement` on every assignment comes from the chain's
 `set_fibre_provider_info` events, read in the same `block_results` pass
@@ -123,11 +114,41 @@ the tip, which the scan needs anyway (a block the node cannot serve is a
 recorded gap, and a registration inside a gap makes the hosts of later
 settlements unknown until the gap is re-scanned).
 
-Leave `-probe-unassigned` off on a public vantage. The read-path rate
-limiting Celestia is designing (forum topic 2295) treats requests for
-shards a validator was never assigned as illegitimate; probing only real,
-in-window, correctly assigned commitments is what keeps the observer's
-traffic on the right side of it.
+The prober asks a validator only for a blob it was assigned rows of, in
+window, as the client asks, and stops once a blob's rows are enough. The
+read-path rate limiting Celestia is designing (forum
+topic 2295) treats requests for shards a validator was never assigned as
+illegitimate; reading only real, in-window, assigned commitments keeps the
+observer's traffic on the right side of it.
+
+**What the prober sustains.** On 28 September mocha settled about 20 blobs
+a minute (1,200 an hour from 14:00 to 20:00 UTC, 22 in the busiest minute),
+nearly all of 16 MiB. A reading asks 12 to 20 validators (12 when every
+validator holds its rows, 20 when the third that did not endorse holds
+nothing) and moves about 19 MiB, the rows needed plus the requests already
+on their way: at 20 blobs a minute that is 240 to 400 requests and about
+380 MiB a minute, about 50 Mbit/s. The validator with the most stake is
+asked for nearly every blob; there is no limit per validator, as the client
+has none. A scheduler run on the observer (82 shared fake validators with
+mocha's row shape scaled to 1/16, 1.0 to 1.8 s per shard, production
+timeouts, loopback) read 60 of 60 blobs at 20 a minute (reading p50 1.9 s,
+max 3.0 s, no start lag) and 180 of 180 at 60 a minute (p50 2.5 s, max
+4.3 s, no start lag) under the earlier one-request-per-validator pacing,
+which only slowed it; at 120 a minute every blob was still read but the
+start lag grew to 30 s in two minutes. So the prober keeps up at three times
+today's rate with nothing queued. The limits it keeps, 16 blobs and 64
+requests at once and 512 MiB of shards in flight (`-blob-concurrency`,
+`-concurrency`, `-in-flight-mib`), only delay a request: its 15 s start once
+it is let go, it is never dropped, and it carries the phase its reading
+started in, so a request held back past `must_serve_until` counts as the
+client, which asks at once, would have made it.
+
+A validator that times out holds a request for 30 s (the request and the
+client's re-dial). The other readings go on beside it, as other clients'
+would, so an unavailable blob is still read at 20 a minute beside a
+validator that hangs (`TestAnUnavailableBlobIsReadWhileAValidatorTimesOut`).
+Each blob being read also holds its verifier and the first shard it
+verified, up to about 11 MiB, beside the `-in-flight-mib` budget.
 
 ## 4. systemd
 
@@ -135,6 +156,7 @@ traffic on the right side of it.
 sudo useradd --system --home /var/lib/fibre-observer --create-home fibre-observer
 sudo install -d -o fibre-observer -m 0750 /var/lib/fibre-observer/mocha
 sudo install -m 0755 fibre-sentinel/bin/* /usr/local/bin/
+sudo install -m 0755 deploy/vantage-pull.sh /usr/local/bin/fibre-vantage-pull  # when the script changed
 sudo install -m 0755 deploy/healthwatch.sh /usr/local/bin/fibre-healthwatch
 sudo install -m 0755 deploy/backup.sh /usr/local/bin/fibre-backup
 sudo install -m 0755 deploy/backup-manifest.py /usr/local/bin/fibre-backup-manifest
@@ -202,9 +224,15 @@ serve numbers from a schema it does not understand.
 
 ```bash
 sudo install -m 0755 fibre-sentinel/bin/* /usr/local/bin/
+sudo install -m 0755 deploy/vantage-pull.sh /usr/local/bin/fibre-vantage-pull   # the timer runs it next minute
 sudo systemctl restart fibre-collector@mocha       # applies migrations
 sudo systemctl restart fibre-scan@mocha fibre-probe@mocha fibre-heartbeat@mocha fibre-api@mocha
 ```
+
+The pull script is installed with the binaries because it changes with
+them: one installed from before this change also fetches each vantage's
+`measurements.jsonl` and pushes requests to it (`VANTAGE_PUSH`), neither of
+which anything uses any more.
 
 The API also refuses a database **newer** than itself, so an API left on an
 old build after the collector moved on says so rather than serving columns
@@ -260,7 +288,7 @@ Nothing is shared between them but the binaries and the static export; a
 data directory belongs to one chain and the scanner refuses to resume it
 against another. Disk: a mocha instance grows by a few GB a month, a
 mainnet instance by what its publication rate makes it (see "Backups"). Two
-instances double the probe bandwidth budget.
+instances double the reading traffic.
 
 ## 6. docker compose (alternative)
 
@@ -276,10 +304,11 @@ project (it binds 80 and 443); for two networks on one host use systemd.
 ## 7. Backups, retention, rebuild
 
 Budget for disk: one measurement is about 1.5 KB in `measurements.jsonl`
-and about twice that again in the database. At a stress scenario
-(60 publications an hour, 100 validators, 6 points) that is about 1.3 GB a
-day of JSONL plus the database; at a realistic mocha rate it is a few GB a
-month. The JSONL files are the record; the three biggest are kept bounded
+(about 3 KB when it carries the verified row indices) and about twice that
+again in the database, one per validator a reading asks. At mocha's rate on
+28 September (about 20 blobs a minute, 12 to 20 validators asked each) that
+is about 1.2 to 1.8 GB a day of JSONL plus the database, until `raw_json`
+is dropped after 30 days. The JSONL files are the record; the three biggest are kept bounded
 by moving their older lines into compressed segments under `archive/`
 (below), never by deleting a line. `/v1/health` fails the `disk` check
 under 5% free so the alert arrives before a write does. When a disk fills,
@@ -391,6 +420,28 @@ delete any `observer.db-wal` / `-shm` left beside it, start both.
 Test a restore and a rebuild before you need one: stop the collector, move
 the database aside, restore or delete it, start the collector, and check
 `/v1/meta` counts match.
+
+### Stored data the reading no longer needs
+
+Nothing below is deleted by this change, and nothing is rewritten: the
+earlier schedule's rows (`w1` to `w4`, `grace`, `post`, 8,000 each) and
+the `NOT_PROBED` end rows of readings the old prober could not make are the
+record, and stay. What only served the earlier model, with its size on the
+mocha host on 29 September, and how to remove it once the owner approves:
+
+| data | size | still read by | how to remove |
+|---|---|---|---|
+| `probe-budget.json` | 1.3 MB | the prober before this change; the new prober never reads or writes it | after the new prober is running: `rm <DATA_DIR>/probe-budget.json` |
+| `sampling-master.key` | 32 B | the prober's reveal of the earlier draws' day secrets (`-policy`) | after the last draw day (2026-09-26) is revealed, on 2026-10-04 with `-reveal-after 7d`: `rm <DATA_DIR>/sampling-master.key` and drop `-policy` from the unit |
+| `sampling-secrets.jsonl` | 5.8 KB | `/v1/sampling`, the daily export, `sentinel-recompute -sampling` | only with the sampling audit itself: then `rm`, and remove `/v1/sampling` in the same change |
+| `sampling_decisions.jsonl` | 8.3 KB | the collector (`sampling_decisions` table), the daily export | the same: with the sampling audit |
+| table `sampling_decisions` (53 rows) and `sampling_decision_points` (318 rows, with its key index) | 0.2 MB | `/v1/sampling`, the obligation rows of sampled-out publications (`obligation_rows`) | with the sampling audit, in a migration that bumps the schema: `DROP TABLE sampling_decision_points; DROP TABLE sampling_decisions;` and the views over them |
+| index `probes_sampling_started` | 68 MB | `/v1/sampling` only | with the sampling audit, in the same migration: `DROP INDEX probes_sampling_started;` then `VACUUM` (hours on a 5 GB store; run it with the collector stopped) |
+| columns `probe_daily.faults`, `attested`, `unattested`, `unknown_att` | none yet (no day rolled) | nothing: written as 0 | a migration that bumps the schema, whenever the table is next changed |
+| columns `obligation_daily.end_unobserved`, `unobserved_reachable`, `unobserved_unreachable`, `unobserved_not_probed` | none yet | summed into `not_counted` | the same; one `not_counted` column would do |
+| `snapshots/` | 1.0 MB, 12 files | the API, which rewrites every file on start and on each refresh | nothing to do: none is left from an earlier model |
+| table `probe_confirmations`, columns `probes.cleared_by` and `probes.confirmed_by`, index `probes_cleared` | empty (0 rows; every value NULL) | nothing: the second location's confirmation of failed readings is gone | a migration that bumps the schema, whenever `probes` is next changed |
+| `vantages/de-1/measurements.jsonl` | 0 B | the pull script installed before this change, which still fetches it every minute | install the new one first (`sudo install -m 0755 deploy/vantage-pull.sh /usr/local/bin/fibre-vantage-pull`, as in "Upgrading a running observer"), then `rm` it |
 
 ### Archive: bounded live files
 
@@ -687,58 +738,13 @@ cp deploy/systemd/fibre-vantage-pull@.{service,timer} /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now fibre-vantage-pull@mocha.timer
 ```
 
-### Second vantage: fault confirmation
+The second vantage runs the heartbeat and nothing else. A blob's reading is
+this observer's own, as one client's download is, and nothing asks the
+second vantage to read it again. Earlier builds pushed confirmation requests
+to `vantage/<name>/inbox/`; nothing writes or reads that inbox now, and
+`VANTAGE_PUSH` in the env file is ignored.
 
-Every retention `FAULT` is asked once more from the second vantage before it
-counts (docs/verdicts.md, "Faults re-checked from a second location"). Only
-failures are re-checked, never routine probes, so the load is one request per
-fault, capped at 60 an hour on the vantage.
-
-The exchange rides the same timer and sftp account as the pull:
-
-- the prober appends one request per `FAULT` to
-  `<data-dir>/vantage-requests.jsonl` (built in, nothing to configure);
-- `fibre-vantage-pull` pushes the new lines to
-  `vantage/<name>/inbox/requests.jsonl` (sftp `reput`, mode 0640) and pulls
-  `vantage/<name>/measurements.jsonl` back beside the reachability record;
-  `VANTAGE_PUSH=0` in the env file turns the push off;
-- `sentinel-probe -confirm-requests` on the vantage host fetches exactly the
-  failed rows once, with the same checks as the prober, reading the validator
-  set from its own Mocha RPC, and appends its answers to `measurements.jsonl`
-  in its data dir;
-- the collector ingests `<data-dir>/vantages/*/measurements.jsonl` and clears
-  or confirms each fault; a cleared fault is logged in `amendments.jsonl`.
-
-On the vantage host, the inbox is a directory the sftp account writes through
-the group and the confirm service only reads (the unit mounts it read-only):
-
-```
-install -d -o tensile-vantage -g tensile-vantage -m 2770 /srv/tensile-vantage/de-1/inbox
-install -m 0755 sentinel-probe /usr/local/bin/tensile-probe
-cp deploy/systemd/tensile-vantage-confirm@.service /etc/systemd/system/
-systemctl daemon-reload && systemctl enable --now tensile-vantage-confirm@de-1
-# unit: User=tensile-vantage, Group=tensile-vantage, UMask=0027, ProtectSystem=strict,
-#   ReadWritePaths=/srv/tensile-vantage/de-1, ReadOnlyPaths=/srv/tensile-vantage/de-1/inbox
-```
-
-The service writes `measurements.jsonl`, `status/confirm.json` and its lines
-in `runs.jsonl` under `/srv/tensile-vantage/de-1` (0640, group
-`tensile-vantage`, which the sftp account can read). It is never in group
-`tensile-backup`. Change the RPC with a drop-in (`Environment=RPC=...`).
-
-On the observer, install the new `deploy/vantage-pull.sh` over
-`/usr/local/bin/fibre-vantage-pull`; the timer and the env file stay as they
-are. To check the channel end to end:
-
-```
-ls -l /var/lib/fibre-observer/mocha/vantage-requests.jsonl       # appears with the first FAULT
-cat /var/lib/fibre-observer/mocha/vantages/de-1/requests.pushed   # bytes the vantage has
-journalctl -u tensile-vantage-confirm@de-1 | grep CONFIRM          # on the vantage host
-sqlite3 /var/lib/fibre-observer/mocha/observer.db \
-  "SELECT vantage, classification, judged FROM probe_confirmations ORDER BY started_at DESC LIMIT 5"
-```
-
-`deploy/test/vantage-sync.sh` checks the push and pull against a fake sftp.
+`deploy/test/vantage-sync.sh` checks the pull against a fake sftp.
 
 ## 8. Checks after deploy
 

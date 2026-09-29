@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -59,7 +60,7 @@ func TestSampledOutDecisionIsExpandedAndItsDrawChecked(t *testing.T) {
 			PromiseHash: pub.PromiseHash, MustServeUntil: pub.MustServeUntil, DecidedAt: settle.Add(5 * time.Second),
 			Sampling: probe.SamplingDecision{P: p, Binding: "validator_bytes_per_day", DayCommitment: "x"},
 			Reason:   "budget:p=0.100:validator_bytes_per_day:day_commitment=x", Validators: 3}
-		for _, pt := range probe.ScheduleFor(pub, probe.ScheduleConfig{}) {
+		for _, pt := range earlierSchedule(pub) {
 			d.Points = append(d.Points, probe.SampledOutPoint{Label: pt.Label, At: pt.At, Phase: probe.PhaseAt(pt.At, pub, probe.ScheduleConfig{})})
 		}
 		return d
@@ -90,16 +91,17 @@ func TestSampledOutDecisionIsExpandedAndItsDrawChecked(t *testing.T) {
 		})
 	}
 
-	// The obligations the rows make: the two attested validators unobserved,
-	// not probed; the unattested one is no obligation.
+	// The obligations the rows make: the two attested validators not read,
+	// so not counted; the unattested one is no obligation.
 	rows, _, _ := expandSampledOut(filepath.Join(dir, probe.SampledOutFile), []scan.Publication{pub}, 10)
 	vrows := make([]verdict.Row, 0, len(rows))
 	for _, m := range rows {
 		vrows = append(vrows, verdict.FromMeasurement(m))
 	}
 	win := verdict.Window{End: settle.Add(24 * time.Hour), All: true}
-	net, _ := verdict.ComputeObligations(vrows, map[string]time.Time{pub.PromiseHash: settle}, win, verdict.SuspectPoints(vrows, win))
-	if net.Total != 2 || net.UnobservedNotProbed != 2 {
+	blobs := verdict.Blobs{pub.PromiseHash: verdict.FactsOf(pub)}
+	net, _ := verdict.ComputeObligations(vrows, map[string]time.Time{pub.PromiseHash: settle}, win, blobs)
+	if net.Total != 2 || net.NotCounted != 2 {
 		t.Fatalf("obligations: %+v", net)
 	}
 
@@ -111,4 +113,17 @@ func TestSampledOutDecisionIsExpandedAndItsDrawChecked(t *testing.T) {
 	if _, _, bad := expandSampledOut(path, []scan.Publication{other}, 10); bad != 1 {
 		t.Fatal("a decision for a promise not on record passed")
 	}
+}
+
+// earlierSchedule is the schedule the sampled-out decisions on record were
+// made under: four in-window points, a grace point and a post point.
+func earlierSchedule(pub scan.Publication) []probe.SchedulePoint {
+	span := pub.MustServeUntil.Sub(pub.SettlementTime)
+	var pts []probe.SchedulePoint
+	for i, f := range []float64{0.12, 0.45, 0.72, 0.92} {
+		pts = append(pts, probe.SchedulePoint{At: pub.SettlementTime.Add(time.Duration(float64(span) * f)), Phase: probe.PhaseInWindow, Label: fmt.Sprintf("w%d", i+1)})
+	}
+	return append(pts,
+		probe.SchedulePoint{At: pub.MustServeUntil.Add(30 * time.Second), Phase: probe.PhaseGrace, Label: "grace"},
+		probe.SchedulePoint{At: pub.MustServeUntil.Add(210 * time.Second), Phase: probe.PhasePost, Label: "post"})
 }

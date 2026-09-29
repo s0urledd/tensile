@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 )
@@ -22,8 +23,14 @@ import (
 // A trailing partial line (the scanner mid-write, or a torn tail after a
 // crash) is left unread until it is complete. A malformed complete line is
 // a hard error, as before: a corrupt record must not be silently dropped.
+//
+// The prober's cycle loop refreshes and forgets while its readings, on
+// goroutines of their own, look up shadowing promises: mu guards every
+// field below it.
 type pubFeed struct {
-	path   string
+	path string
+
+	mu     sync.RWMutex
 	offset int64
 	line   int64
 
@@ -42,6 +49,8 @@ func newPubFeed(path string) *pubFeed {
 // shadowersFor lists the other live promises over the same commitment and
 // the rows each assigns to addr. Empty when this promise is the only one.
 func (f *pubFeed) shadowersFor(hash, commitment, addr string) []ShadowCandidate {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	var out []ShadowCandidate
 	for _, h := range f.byCommit[commitment] {
 		if h == hash {
@@ -64,6 +73,8 @@ func (f *pubFeed) shadowersFor(hash, commitment, addr string) []ShadowCandidate 
 // refresh reads new complete records. It returns how many were added. If the
 // file shrank (rewritten), everything is reloaded from the start.
 func (f *pubFeed) refresh() (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	fh, err := os.Open(f.path)
 	if err != nil {
 		return 0, fmt.Errorf("open %s: %w", f.path, err)
@@ -117,6 +128,8 @@ func (f *pubFeed) refresh() (int, error) {
 
 // forget drops one publication from memory.
 func (f *pubFeed) forget(hash string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if _, ok := f.pubs[hash]; !ok {
 		return
 	}
@@ -142,9 +155,18 @@ func (f *pubFeed) forget(hash string) {
 
 // all returns the live publications in file order.
 func (f *pubFeed) all() []scan.Publication {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	out := make([]scan.Publication, 0, len(f.order))
 	for _, h := range f.order {
 		out = append(out, f.pubs[h])
 	}
 	return out
+}
+
+// size is how many publications are live.
+func (f *pubFeed) size() int {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return len(f.pubs)
 }

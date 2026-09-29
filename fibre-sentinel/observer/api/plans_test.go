@@ -43,7 +43,7 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 	scans := map[string][]string{}
 	for _, tb := range []struct{ table, ok, vantage, idx string }{
 		{"reachability", `outcome <> 'PROBE_ERROR'`, "ut-1", "reachability_latest_answer"},
-		{"probes", `outcome NOT IN ('MISSED','PROBE_ERROR')`, "", "probes_latest_answer"},
+		{"probes", probeAnswerSQL, "", "probes_latest_answer"},
 	} {
 		for _, v := range []struct{ only, asOf string }{{"", ""}, {"ab", ""}, {"", hi}, {"ab", hi}} {
 			q, args := latestAnswerSQL(tb.table, tb.ok, "x", tb.vantage, v.only, v.asOf)
@@ -75,8 +75,6 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 			[]any{lo, hi}, []string{"COVERING INDEX probes_"}},
 		c{"faults per validator", `SELECT validator_address, COUNT(*) FROM probes WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND ` + cls + ` = 'FAULT' GROUP BY validator_address`,
 			[]any{lo, hi}, []string{"COVERING INDEX probes_"}},
-		c{"faults cleared per validator", `SELECT validator_address, COUNT(*) FROM probes INDEXED BY probes_cleared WHERE cleared_by IS NOT NULL AND started_at >= ? AND started_at <= ? AND assigned = 1 GROUP BY validator_address`,
-			[]any{lo, hi}, []string{"probes_cleared"}},
 		c{"one validator's tally", `SELECT ` + cls + `, COUNT(*) FROM probes WHERE validator_address = ? AND assigned = 1 AND phase = 'in_window' AND started_at >= ? AND started_at <= ? GROUP BY 1`,
 			[]any{"ab", lo, hi}, []string{"COVERING INDEX probes_validator_window"}},
 		// The same tallies over probe_rows, which is what the figures read: the
@@ -130,6 +128,17 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 	)
 	scans["load memo candidates"] = []string{"p"}
 	scans["load memo lookup"] = []string{"j"} // the list of hashes passed in
+	// The window's publications still waiting for a reading
+	// (reconstructableCount). Publications are walked whole, as nothing
+	// indexes settlement_time; the readings of each are sought by its hash.
+	cases = append(cases,
+		c{"not yet read", `SELECT COUNT(*) FROM publications WHERE settlement_time >= ? AND settlement_time <= ? AND NOT ` + readableSQL(""), []any{lo, hi},
+			[]string{"probes_promise (promise_hash=?)"}},
+		c{"not yet read, pinned", `SELECT COUNT(*) FROM publications WHERE settlement_time >= ? AND settlement_time <= ? AND NOT ` + readableSQL(" AND r.started_at <= ?"),
+			[]any{lo, hi, hi}, []string{"probes_promise (promise_hash=?)"}},
+	)
+	scans["not yet read"] = []string{"publications"}
+	scans["not yet read, pinned"] = []string{"publications"}
 	for _, tc := range cases {
 		plan, err := st.QueryPlan(ctx, tc.q, tc.args...)
 		if err != nil {

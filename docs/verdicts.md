@@ -1,11 +1,13 @@
 # Verdict taxonomy
 
 Every row the observer stores and every number the dashboard shows is built
-from two fields that `fibre-sentinel` already records per probe: the
+from two fields that `fibre-sentinel` records per request: the
 mechanism-level **outcome** (what happened on the wire) and the
 **classification** (what that means given the phase of the retention window
-and whether the validator was assigned the shard). The dashboard adds no new
-verdict classes. It only groups and counts the existing ones.
+and whether the validator was assigned the shard), and from one fact about
+the whole blob: whether the rows its reading brought back reconstruct it. The
+dashboard adds no new verdict classes. It only groups and counts the
+existing ones.
 
 Source of truth:
 
@@ -16,6 +18,10 @@ Source of truth:
   tested in `fibre-assign/assign_test.go` (translated from celestia-app's
   `fibre/validator/set_test.go`)
 - phases: `fibre-sentinel/internal/probe/schedule.go` (`PhaseAtWindow`)
+- the reading: `fibre-sentinel/internal/probe/blobread.go`; what it comes to
+  and what each row then counts as: `fibre-sentinel/observer/verdict/blobread.go`
+  (`BlobReading`) and `verdict.CountedClass`, with their SQL twins in
+  `fibre-sentinel/observer/rollup`
 
 ## Phases
 
@@ -24,6 +30,9 @@ Source of truth:
 | `in_window` | settlement to `must_serve_until` | the validator is under its retention obligation |
 | `grace` | `must_serve_until` to `must_serve_until + prune tolerance` (default 2m30s) | an honest server prunes late by anything from a second to just under two minutes (a one-minute prune loop over a minute-granularity key); nothing here counts against a validator |
 | `post` | after the grace span | the obligation is over; the blob is expected to be gone |
+
+A blob is read in window, 10 minutes before `must_serve_until`; rows in the
+grace and post phases exist only in the earlier schedule's record.
 
 `must_serve_until = creation_timestamp + max(payment_promise_timeout, shard_retention)`,
 using the on-chain params. The server itself reads the params when the shard
@@ -61,12 +70,6 @@ publish `RETENTION_UNVERIFIED` instead of the `HEALTHY` or `FAULT` they were
 stamped with, and neither the fault nor the credit reaches a rate. A
 publication is covered when its upload interval, from the block before the
 promise height to the settlement tx, overlaps the range.
-
-The correlated-failure guard is *not* the protection here and never was: it
-needs three faulting validators and half the point, so two affected
-validators, or a share under the threshold, walks straight through it. The
-guard is for a correlated outage; this is for the observer being wrong about
-the deadline, which is a different fact and needs a different mechanism.
 
 **A row is held while its deadline disagrees with its publication's**, not
 while its range is open. Those are different sets, and the difference is the
@@ -197,29 +200,30 @@ uncorrected. The reason is that any correction would have to model the
 missing population, and a model is not an observation.
 
 What is published instead is the size of the bias's input:
-`attestation.coverage` (the proven share of assigned probes),
-`serve_rate_held_out.UNATTESTED` (the rows this removes) and
-`attestation.blob_coverage` (the same per blob). A reader who wants the
-pessimistic bound can read the unproven count beside the rate; this observer
-will not turn it into a number of its own.
+`attestation.blob_coverage`, the proven share of assigned (validator, blob)
+pairs. A reader who wants the pessimistic bound can read the unproven count
+beside the rate; this observer will not turn it into a number of its own.
 
-That is why an assigned but unattested probe becomes `UNATTESTED` whatever
-the wire outcome was, and sits outside the serve rate in both directions: a
-failure the validator was never proven to owe cannot count against it, and a
-success it was never proven to owe cannot count for it. The outcome field
-still records exactly what happened.
+That is why only the validators whose endorsement the settled promise
+carries are counted. The reading asks the whole set, as the client does,
+and a row from an assigned but unattested validator is `UNATTESTED`
+whatever the wire outcome was, outside every count in both directions
+(its verified rows still count toward the blob): a failure the validator was
+never proven to owe cannot count against it, and a success it was never
+proven to owe cannot count for it. The outcome field still records exactly
+what happened.
 
 Source: `fibre-sentinel/internal/scan/attest.go`, tested in
 `attest_test.go`; the classification in `internal/probe/classify.go`, tested
 by `TestClassify_UnattestedIsNeverAFault`.
 
-## Outcomes (one per probe, mechanism level)
+## Outcomes (one per request, mechanism level)
 
 | outcome | meaning |
 |---|---|
 | `SERVED_OK` | shard returned, every row verifies against the commitment and the returned indices equal the assigned set |
-| `SERVER_ERROR` | the endpoint was reached, completed TLS, proved its identity and answered the RPC with an application error (gRPC `Internal`, `Unknown`, `DataLoss`, `Aborted`). Deliberately not a reachability failure: calling it "unreachable" would be false about a server the observer just talked to. Deliberately not a fault either: the server did not say it lacks the shard |
-| `RPC_THROTTLED` | the endpoint was reached, proved its identity and refused the request with `ResourceExhausted` that is neither the observer's own receive bound (`received message larger than max`, a `PROBE_ERROR`; the bound is sized from the blob and recorded as `download.recv_limit`) nor the server's own send bound (`trying to send message larger than max`, a `SERVER_ERROR`: the validator's gRPC refuses to deliver a shard it holds): a server-side limit. Celestia has said a per-peer rate limiter is coming to the Fibre server. Never a fault, and not the observer's error either; the probe policy counts it as a failure for backoff |
+| `SERVER_ERROR` | the endpoint was reached, completed TLS, proved its identity and answered the RPC with an application error (gRPC `Internal`, `Unknown`, `DataLoss`, `Aborted`, or a `Canceled` the server sends while the request is still live on this side: the client takes it as the server's error and skips the shard; only a cancel of this observer's own is `PROBE_ERROR`). Deliberately not a reachability failure: calling it "unreachable" would be false about a server the observer just talked to. Deliberately not a fault either: the server did not say it lacks the shard |
+| `RPC_THROTTLED` | the endpoint was reached, proved its identity and refused the request with `ResourceExhausted` that is neither the observer's own receive bound (`received message larger than max`, a `PROBE_ERROR`; the bound is sized from the blob and recorded as `download.recv_limit`) nor the server's own send bound (`trying to send message larger than max`, a `SERVER_ERROR`: the validator's gRPC refuses to deliver a shard it holds): a server-side limit. Celestia has said a per-peer rate limiter is coming to the Fibre server. The client takes it as the server's answer and skips the shard, and so does the reading (`THROTTLED`) |
 | `PARTIAL` | fewer rows than assigned, the ones returned are valid |
 | `WRONG_ROWS` | rows returned but not the assigned set (`ShardMap.Verify` failed) |
 | `INVALID_ROWS` | rows returned but they fail commitment verification |
@@ -231,13 +235,15 @@ by `TestClassify_UnattestedIsNeverAFault`.
 | `TLS_HANDSHAKE_FAIL` | TCP fine, TLS 1.3 handshake failed |
 | `IDENTITY_FAIL` | handshake fine, certificate extension is not endorsed by this validator's consensus key |
 | `RPC_UNAVAILABLE` | gRPC Unavailable after a good handshake |
-| `RPC_DEADLINE` | the download did not finish within the observer's own deadline (base plus shard size at 1 MiB/s); the observer gave up, the validator was not judged |
+| `RPC_DEADLINE` | earlier rows: the download did not finish within the observer's own deadline (base plus shard size at 1 MiB/s); the observer gave up, the validator was not judged |
+| `RPC_TIMEOUT` | the request ran out of the Fibre client's 15 s after the connection was made: the validator's slowness, as the client meets it (`UNREACHABLE`) |
+| `MALFORMED_SHARD` | an answer no client accepts: over the protocol's message bound, or one the client cannot parse (`SERVER_ERROR` in window) |
 | `RPC_ERROR` | any other gRPC error |
 | `NO_REGISTERED_HOST` | the validator has no fibre host in `x/valaddr`, so nobody can fetch its rows; treated as unreachable |
 | `PROBE_ERROR` (no coder) | the observer could not build the verifier for this blob's `(original_rows, total_rows)`, so no download was attempted |
 | `REACHABLE` | TCP, TLS and identity passed and the download was deliberately skipped (the reachability heartbeat); no retention verdict |
 | `PROBE_ERROR` | the observer's own probe failed (bug or config), not the target |
-| `MISSED` | the scheduled point elapsed before the prober ran it |
+| `MISSED` | the reading could not start before its deadline (earlier rows: the scheduled point elapsed before the prober ran it) |
 
 ## Classifications (the verdict)
 
@@ -246,204 +252,93 @@ One sentence each, and what a reader should conclude.
 | classification | when | conclude |
 |---|---|---|
 | `HEALTHY` | assigned validator returned `SERVED_OK` in window or in grace | the validator kept its promise at this point in time |
-| `FAULT` | an identity-verified endpoint, for a shard the chain proves it stored, **said it has no such shard** (`NOT_FOUND` in window) or **returned bytes that do not verify against the commitment** (`INVALID_ROWS`, any phase). A third arm, rows outside this promise's assignment that verify against nothing (`WRONG_ROWS`/`PARTIAL` without `commitment_verified`, in window or grace), exists in the code as a guard but cannot be produced by the prober, which files rows that fail the commitment as `INVALID_ROWS` | the validator did not serve a shard the chain records it as obliged to hold, at a moment inside that obligation. That is what the row says, and it is the most it says: `x/fibre` calls this parameter a *minimum local retention* — upstream's own words are "the minimum local duration validators keep uploaded shards" (`x/fibre/types/params.go`) and "the on-chain local retention floor for uploaded shards" (`celestia/fibre/v1/query.proto`) — and the chain neither checks it nor penalises missing it. "Broke its promise" is a heavier sentence than the protocol supports; this row is the observation, not a verdict about intent. It is still the only class that counts against a validator here. Two conditions, each reproducible by anyone who repeats the probe. A response the observer cannot parse at all (an empty shard, an RLC vector whose length does not match the observer's own protocol params) is the observer's gap (`PROBE_ERROR`, `shard shape:` on the row), never `INVALID_ROWS`: the commitment check is the only thing that turns bytes into a fault. One margin: a `NOT_FOUND` whose answer arrives within 30 s of `must_serve_until` is graded as grace (`TOLERATED`) and the row says `phase_note: not_found_at_deadline`, because the server prunes on a minute tick against its own clock and the RPC reaches it tens of seconds after the probe's phase was fixed. The fault count beside a validator's name on the overview and on its own page is `obligations.broken`: one per shard signed for and not handed over, the same population the serve rate is drawn from. The probe-level count — every `FAULT` row of an assigned shard, in any phase, which is several rows per shard and also covers faults past the deadline, where there is no obligation to break — is `faults` in the API, and on the site it is on the tooltip and the detail line rather than in the number. The serve rate's population is in-window only |
-| `UNREACHABLE` | assigned and attested, in window, and the observer could not complete a conversation at all: `DNS_FAIL`, `TCP_REFUSED`, `TCP_TIMEOUT`, `TCP_UNREACHABLE`, `TLS_HANDSHAKE_FAIL`, `RPC_UNAVAILABLE`, `RPC_ERROR` | we could not get to it. From one vantage that is not distinguishable from a route, firewall or peering problem on the observer's own path, so it is published in full beside the serve rate and kept out of it |
+| `FAULT` | an identity-verified endpoint, for a shard the chain proves it stored, **said it has no such shard** (`NOT_FOUND` in window) or **returned bytes that do not verify against the commitment** (`INVALID_ROWS`, any phase). A third arm, rows outside this promise's assignment that verify against nothing (`WRONG_ROWS`/`PARTIAL` without `commitment_verified`, in window or grace), exists in the code as a guard but cannot be produced by the prober, which files rows that fail the commitment as `INVALID_ROWS` | the validator did not serve a shard the chain records it as obliged to hold, at a moment inside that obligation. That is what the row says, and it is the most it says: `x/fibre` calls this parameter a *minimum local retention* — upstream's own words are "the minimum local duration validators keep uploaded shards" (`x/fibre/types/params.go`) and "the on-chain local retention floor for uploaded shards" (`celestia/fibre/v1/query.proto`) — and the chain neither checks it nor penalises missing it. "Broke its promise" is a heavier sentence than the protocol supports; this row is the observation, not a verdict about intent. It counts against the validator only when the blob could not be reconstructed (see "When a failure counts"): on a blob that was available the reader was never left without the rows, and the row counts neither way. Two conditions, each reproducible by anyone who repeats the probe. At the reading, an answer no client can use (an empty shard, an RLC vector of the wrong length, a reply over the protocol's message bound) is `MALFORMED_SHARD`, filed `SERVER_ERROR`: the client skips such a shard, so it is not served on a blob that could not be reconstructed. On rows of the earlier schedule the same parse failure was the observer's gap (`PROBE_ERROR`, `shard shape:` on the row). Neither is `INVALID_ROWS`: the commitment check is the only thing that turns bytes into that fault. Every request of a reading carries the phase the reading started in, so a request this observer's own limits held back is judged as if it had been made at once. One margin: a `NOT_FOUND` whose answer arrives within 30 s of `must_serve_until` is graded as grace (`TOLERATED`, counted neither way) and the row says `phase_note: not_found_at_deadline`, because the server prunes on a minute tick against its own clock; only a request held back to the deadline itself can meet it. The count beside a validator's name is `obligations.broken`: one per shard signed for and not handed over from a blob that could not be reconstructed |
+| `UNREACHABLE` | assigned and attested, in window, and the observer could not complete a conversation at all: `DNS_FAIL`, `TCP_REFUSED`, `TCP_TIMEOUT`, `TCP_UNREACHABLE`, `TLS_HANDSHAKE_FAIL`, `RPC_UNAVAILABLE`, `RPC_TIMEOUT`, `RPC_ERROR` | no answer within the client's 15 s (connect and TLS included), asked twice (the client's re-dial). On a blob that could not be reconstructed it is not served, as a reader using the client meets it; on one that was available it counts neither way. At the reading, "no route to host" is that validator's host not answering (`TCP_UNREACHABLE`); only a failure that never left this machine (no route out, no local address, a local socket error) is filed as the observer's own, `PROBE_ERROR` |
 | `NOT_REGISTERED` | assigned validator with no Fibre host in `x/valaddr` at the time of the probe (`NO_REGISTERED_HOST`) | a registry state, not a refusal. Jailing and unbonding remove a provider from `AllBondedFibreProviders` while the chain keeps the entry: it is garbage-collected only once the validator is gone from staking state, or jailed and unbonded for longer than the unbonding time plus seven days |
-| `SHADOWED_SHARD` | assigned validator returned rows that **verify against the blob commitment**, are not this promise's assignment (`WRONG_ROWS` or `PARTIAL` with `commitment_verified`), and are **exactly the row set another settled promise over the same commitment assigns to this validator** (`shadowed_by` names it) | that promise answered in this one's place. `DownloadShard` is addressed by the commitment alone; the Fibre store keeps every promise's shard side by side (`Put` "stored independently without deduplication") and `Get(commitment)` returns the first readable one in promise-hash order, so the validator has no way to tell the two apart. Never a fault. Without a matching promise the same wire result is `UNMATCHED_GENUINE`, and that verdict is drawn late (see "Deferred verdicts"): the order is by hash, not by time, so a promise settled after the probe can be the one that answered |
-| `UNMATCHED_GENUINE` | assigned validator returned rows that verify against the blob commitment but match no settled promise's assignment for it, judged once every promise that could own them is on record | a shard uploaded for a promise that never settled is on disk until its prune and never on chain, and answers whenever its hash sorts first; the validator is serving genuine data of the blob. Held out of the rate, counted beside it, indices on the row. Never a fault |
-| `IDENTITY_EXPIRED` | certificate endorsed by the right consensus key, but its signed validity window has lapsed or has not started | a renewal running late. Endpoint hygiene, not impersonation and not a retention failure |
-| `IDENTITY_MISMATCH` | certificate not endorsed by this validator's consensus key, any validator, any phase (judged before attestation: a certificate is a property of the endpoint) | no client will download from this endpoint, so it is as unusable as one that does not answer. Shown as the endpoint's status and in the endorsement rate, held out of the serve rate: a wrong certificate proves nothing about any shard |
-| `SERVER_ERROR` | assigned and attested, in window, and the endpoint answered with an application error instead of the shard (`SERVER_ERROR` outcome) | the server was reached and did not say it lacks the shard. From one probe this is not distinguishable from a transient fault (an overloaded process, a disk hiccup), so it is shown beside the rate and never inside it; a server that errors at every point is visible as such on its own page. In grace it is `TOLERATED`, after the window `UNREACHABLE_POST_WINDOW` |
-| `THROTTLED` | assigned and attested, in window, and the endpoint refused the download with a rate limit (`RPC_THROTTLED` outcome) | the server was reached and declined to serve this request. That says nothing about the shard, so it is shown beside the rate and never inside it; the prober backs off from a validator that says so, and a limit set tight enough to turn away real clients is visible as such on the validator's own page. In grace it is `TOLERATED`, after the window `UNREACHABLE_POST_WINDOW` |
+| `SHADOWED_SHARD` | assigned validator returned rows that **verify against the blob commitment**, are not this promise's assignment (`WRONG_ROWS` or `PARTIAL` with `commitment_verified`), and are **exactly the row set another settled promise over the same commitment assigns to this validator** (`shadowed_by` names it) | that promise answered in this one's place. `DownloadShard` is addressed by the commitment alone; the Fibre store keeps every promise's shard side by side (`Put` "stored independently without deduplication") and `Get(commitment)` returns the first readable one in promise-hash order, so the validator has no way to tell the two apart. Its rows came back verified, so at the reading it is served. Without a matching promise the same wire result is `UNMATCHED_GENUINE`, and that verdict is drawn late (see "Deferred verdicts"): the order is by hash, not by time, so a promise settled after the probe can be the one that answered |
+| `UNMATCHED_GENUINE` | assigned validator returned rows that verify against the blob commitment but match no settled promise's assignment for it, judged once every promise that could own them is on record | a shard uploaded for a promise that never settled is on disk until its prune and never on chain, and answers whenever its hash sorts first; the validator is serving genuine data of the blob. Its rows came back verified, so at the reading it is served, indices on the row |
+| `IDENTITY_EXPIRED` | certificate endorsed by the right consensus key, but its signed validity window has lapsed or has not started | a renewal running late. Endpoint hygiene, not impersonation and not a retention failure. The client rejects the certificate all the same, so it is not served on a blob that could not be reconstructed, otherwise counted neither way |
+| `IDENTITY_MISMATCH` | certificate not endorsed by this validator's consensus key, any validator, any phase (judged before attestation: a certificate is a property of the endpoint) | no client will download from this endpoint, so it is as unusable as one that does not answer. Shown as the endpoint's status; not served on a blob that could not be reconstructed, otherwise counted neither way |
+| `SERVER_ERROR` | assigned and attested, in window, and the endpoint answered with an application error instead of the shard (`SERVER_ERROR` outcome) | the server was reached and did not hand over the shard. Not served on a blob that could not be reconstructed, otherwise counted neither way; a server that errors at every reading is visible as such on its own page. On earlier rows, in grace it is `TOLERATED`, after the window `UNREACHABLE_POST_WINDOW` |
+| `THROTTLED` | assigned and attested, in window, and the endpoint refused the download with a rate limit (`RPC_THROTTLED` outcome) | the server was reached and declined to serve. The client takes a rate limit as the server's answer and moves on without the rows, and so does the reading, so it is the validator not serving: not served on a blob that could not be reconstructed, otherwise counted neither way |
 | `TOLERATED` | assigned validator, grace phase: `NOT_FOUND` or unreachable | honest pruning lag; do not read anything into it |
 | `EXPECTED_GONE` | assigned validator, post phase: `NOT_FOUND` | correct behaviour after the window |
 | `SERVED_PAST_WINDOW` | assigned validator, post phase: still serving (`SERVED_OK`, `PARTIAL`, or `WRONG_ROWS`) | not a fault; the validator keeps data longer than it must. `WRONG_ROWS` is here rather than under FAULT because `DownloadShard` performs no assignment check at all — assignment is enforced only at upload — so rows outside an assignment, after the obligation ended, are not a rule the validator broke |
 | `UNREACHABLE_POST_WINDOW` | assigned validator, post phase: unreachable | not a retention fault; the obligation was over. It still feeds the reachability view |
-| `EXPECTED_UNASSIGNED` | validator not assigned this shard answered `NOT_FOUND` or was unreachable | normal; only probed when `-probe-unassigned` is on |
+| `EXPECTED_UNASSIGNED` | validator not assigned this shard answered `NOT_FOUND` or was unreachable | normal; earlier records only, when `-probe-unassigned` was on |
 | `SERVING_UNASSIGNED` | validator not assigned this shard returned data for it (`SERVED_OK`, `PARTIAL`, `WRONG_ROWS` or `INVALID_ROWS`) | unexpected; either the observer's assignment is wrong or the validator over-serves. Shown for review, never as a fault |
-| `UNATTESTED` | assigned validator, any phase, where no verified signature from that validator appears on the settled promise and the probe reached the question of the shard at all (an observer-side outcome, a stale assignment pin, a missing registry entry or an unusable certificate is named first, as `PROBE_ERROR`, `NOT_REGISTERED` or `IDENTITY_MISMATCH`, none of which enters a rate) | nothing on chain proves this validator ever stored the shard, so no verdict is owed either way. Outside every rate, in both directions |
-| `PROBE_ERROR` | the observer could not carry out the probe, or gave up on it (`PROBE_ERROR`, `RPC_DEADLINE`) | an observer problem, shown as a gap |
-| `NOT_PROBED` | the slot elapsed unprobed (observer down or late), or the download was skipped by policy (`MISSED`, `REACHABLE`) | a gap in observation, never a zero |
-| `RETENTION_UNVERIFIED` | the publication's upload interval overlaps a range of heights over which an `x/fibre` params change landed with no event and this observer has not read the params at every height (see "Phases"). Applied over the stored row rather than returned by `Classify`: the measurement record says what happened on the wire and is append-only, while whether this observer trusts its own deadline is a judgement that has to be revisable | this observer cannot say when the obligation ended, so it publishes no serve verdict — **neither the fault nor the credit**. Withholding only the accusations would raise every rate it touched, which is the same argument this document makes for `UNATTESTED` and for grace probes. Replaces exactly `HEALTHY` and `FAULT`; `INVALID_ROWS` is carved out, because bytes that fail the commitment are a fault in every phase and no deadline rescues them. Never a statement about the validator |
+| `UNATTESTED` | assigned validator, any phase, where no verified signature from that validator appears on the settled promise and the probe reached the question of the shard at all (an observer-side outcome, a stale assignment pin, a missing registry entry or an unusable certificate is named first, as `PROBE_ERROR`, `NOT_REGISTERED` or `IDENTITY_MISMATCH`, none of which enters a rate) | nothing on chain proves this validator ever stored the shard, so no verdict is owed either way. Outside every rate, in both directions. The reading asks such a validator like the rest, as the client does, and its verified rows count toward the blob |
+| `PROBE_ERROR` | the request failed on this observer's side (a local resolver, no route out, no coder, an answer this build could not handle) or the observer gave up on it (`RPC_DEADLINE`, earlier rows) | an observer problem, shown as a gap. When no request of a reading reached a server, the reading did not happen and the blob was not read by Tensile; when one did, the reading happened and this validator's rows did not come back |
+| `NOT_PROBED` | the reading could not start in time (observer down or behind; `MISSED`), or on earlier records a publication the load policy sampled out, or a heartbeat (`REACHABLE`) | a gap in observation, never a zero |
+| `RETENTION_UNVERIFIED` | the publication's upload interval overlaps a range of heights over which an `x/fibre` params change landed with no event and this observer has not read the params at every height (see "Phases"). Applied over the stored row rather than returned by `Classify`: the measurement record says what happened on the wire and is append-only, while whether this observer trusts its own deadline is a judgement that has to be revisable | this observer cannot say when the obligation ended, so it publishes no serve verdict — **neither the fault nor the credit**. Withholding only the accusations would raise every rate it touched, which is the same argument this document makes for `UNATTESTED`. Replaces exactly `HEALTHY` and `FAULT`; `INVALID_ROWS` is carved out, because bytes that fail the commitment are a fault in every phase and no deadline rescues them. Never a statement about the validator |
 
 ## How the dashboard derives its numbers
 
-- **The rate's population** is probes of an assigned shard while the validator
-  was *under obligation*: `assigned = 1 AND phase = 'in_window'`. The grace
-  phase is deliberately outside it. A grace probe can only ever add `HEALTHY`,
-  because `NOT_FOUND` and unreachability there are `TOLERATED` by design, so
-  counting grace gave a validator that prunes promptly a **lower** rate than
-  one that over-retains with identical in-window behaviour — the opposite of
-  what the number claims to measure, on exactly the axis the "worst first"
-  table sorts by.
-- **Serve rate per probe** over that population = `HEALTHY / (HEALTHY + FAULT)`
-  (`serve_rate`). Every other class is published beside it under its own
-  name, never folded in, and the API carries both the counts
-  (`serve_rate_held_out`) and the reason each class is out
-  (`serve_rate_excluded_classes`) so the dashboard cannot describe the
-  exclusions differently from the API. It is published, not headlined: see
-  the next two entries.
-- **Verdict coverage** (`serve_rate_coverage`) = `(HEALTHY + FAULT)` over every
-  probe in that population. A high rate over low coverage is a statement about
-  a handful of probes, and without this figure a reader cannot tell the two
-  apart. The `probe_count` and `probe_gaps` fields are over *all* probes, a
-  different population; they are not this.
-- **Obligations** (`obligations`, whose `rate` is repeated as
-  `serve_rate_by_obligation`) count one observation per (validator, blob)
-  the settled promise proves (`attested = 1`), and this is the
-  headline on every page. The schedule visits the same validator and blob
-  four times in window, and the minimum-rows floor assigns every bonded
-  validator every blob, so the probes inside one obligation are
-  near-perfectly correlated — one lapsed certificate produces four `FAULT`
-  rows for one event. Any confidence interval is drawn around the obligation
-  count, never around the probe count, and the dashboard states it as an
-  **upper bound on the fault rate**, because that is the direction an
-  accusation is made in.
-- **Which obligations.** `attested = 1` only: an obligation the settled
-  promise proves. `attested = 0` is nothing to keep or break; `attested`
-  NULL (a record from before signatures were verified) is not evidence
-  either way and is outside the count, reported as
-  `attestation.unknown_probes`. An obligation belongs to a window by its
-  publication's `settlement_time`, not by each probe's `started_at`, so it
-  is judged whole or not at all. The window's end is the moment the verdict
-  is drawn; an obligation whose `must_serve_until` is later is `pending` and
-  in no rate.
-- **The last in-window reading is held to an absolute margin.** The four
-  in-window points are fractions of the publication's own window (0.12, 0.45,
-  0.72, 0.92), and the last one is additionally moved forward to sit no more
-  than 2m30s before `must_serve_until`. A fraction alone does not survive a
-  change of scale: 0.92 of a ten-minute devnet window is 48 seconds out, and
-  0.92 of mocha's four-hour `shard_retention` is nineteen minutes out. Since
-  NOT_FOUND at the grace point is TOLERATED by construction, nothing after
-  that last reading can produce a verdict, so a validator that pruned inside
-  those nineteen minutes served every probe it was given and bucketed as
-  `served` — the one failure this observer exists to catch, passed silently.
-  The margin never moves a point **earlier** than its fraction already puts
-  it, so a short window keeps its tighter reading.
-  The margin is on the *scheduled* time, and the prober may run a slot late —
-  up to a twentieth of the publication's own window, twelve minutes on mocha's
-  four hours — with the phase taken from the actual start. So an in-window
-  slot is additionally never run past its own deadline: its allowance is
-  whatever is left before `must_serve_until`, and a slot that cannot run in
-  time is recorded `NOT_PROBED`. An obligation nobody observed is unobserved,
-  which is published as such; it is not graded in a phase where a missing
-  shard is tolerated by construction, and it is not `served`. It cannot usefully be smaller than
-  the chain's own prune granularity: the Fibre server's prune loop runs once a
-  minute against a minute-resolution key, so a reading closer than that would
-  be accusing an operator of the clock.
-- **An obligation is served only if this observer saw the shard near the end
-  of the window the promise covers.** The newest in-window probe decides the
-  verdict, the same rule the per-blob reconstructability verdict uses, and a
-  `NOT_PROBED` or `PROBE_ERROR` row is never the newest while a real probe
-  exists — but a newest probe taken at 12% of the window is not evidence
-  about the other 88%, so it is not enough on its own. The buckets:
-  - `served` — newest probe `HEALTHY`, no `FAULT` anywhere, **and** one of
-    the `HEALTHY` readings taken in the last quarter of the retention
-    window. The quarter is measured from the promise's own `settlement_time`
-    and `must_serve_until`, both in every export, so anyone can redraw the
-    line from the rows; the probe schedule puts its last in-window point at
-    92% of the window, so a validator that answers it clears the cut with
-    room to spare;
-  - `broken` — any probe `FAULT`;
-  - `end_unobserved` — a `HEALTHY` probe, but none that speaks for the end
-    of the window: either the newest probe produced no verdict, or every
-    reading was taken too early to say the shard survived;
-  - `unobserved` — no `HEALTHY` and no `FAULT` at all, split by what the
-    probes did see: `unobserved_reachable` (at least one download attempt
-    with `tls_ok = 1`: the endpoint completed a handshake and answered with
-    `SERVER_ERROR`, `THROTTLED`, an `RPC_*` failure or an unusable
-    certificate), `unobserved_unreachable` (attempts, none of which
-    completed TLS), `unobserved_not_probed` (no attempt: a load
-    cap, a slot that elapsed).
+- **The reading.** Each blob is read once, 10 minutes before
+  `must_serve_until`, exactly as celestia-app's Fibre client downloads it
+  (`internal/probe/blobread.go`): the whole validator set in the client's
+  own order (`validator.Set.Select`, called rather than copied), the next
+  one asked while the rows still wanted outnumber the rows already on
+  their way; each request, lookup, connect, TLS and `DownloadShard`
+  together, gets the client's 15 s and is made once more at once after it
+  failed before a server answered (a failed lookup or dial, whatever the
+  cause) or after an unreachable or timed-out peer; every row is verified
+  against the commitment by one Reconstructor the whole reading shares;
+  and the reading stops at `original_rows` (4096 for blob v0) distinct
+  verified rows. This observer's limits on requests and bytes in flight
+  only delay a request, never drop it, and every request carries the
+  phase the reading started in, so a delay changes nothing; there is no
+  limit per validator, as the client has none. The rows of a reading are
+  written together, one per validator asked, each with where it sat in the
+  reading and what the reading came to (`read`).
+- **The result** (`verdict.BlobReading`) is the client's, three ways only:
+  **available** when the distinct verified rows reach `original_rows`;
+  **unavailable** with the client's error, `no shards retrieved` when no
+  verified row came back, `not enough shards to reconstruct blob` when
+  some did, fewer than that. A reading is judged from all of its rows,
+  whatever phase each carries. The only other state is a reading that did
+  not happen: the prober was down, restarting or late (`NOT_PROBED`, a
+  reading missed in part and short of the rows included), or not a single
+  request reached a server, because this observer's own network was down:
+  no connection to any validator was opened and none was refused
+  (`probe.Reached` holds for none; a validator with no host, a connect that
+  timed out or found no route reached no one). Blobs settled before 27
+  September 2026 that the load policy of the time did not draw have no
+  reading either. Then the blob is `not_read`, or `pending` while its
+  window is open, and no one is not served on it; rows that came back
+  verified still count as served.
+- **What a validator's row counts as** (`verdict.CountedClass`, one per
+  endorsed (validator, blob)):
+  - `served` — its rows came back verified at the reading;
+  - `broken` (not served) — the blob was unavailable and its rows did not
+    come back, whatever the client met: not found, a timeout, a rate limit,
+    a server error, a certificate the client rejects, no registered host;
+  - `not_counted` — anything else once the window has closed: a validator
+    the reading did not need to ask, one that failed while the blob was
+    available all the same, or a blob not read by Tensile;
+  - `pending` — the window has not closed.
 
-  Only `served` and `broken` enter the rate. The first rule, "kept when no
-  probe of it faulted", let a validator that served at the first point and
-  answered 500 at the next three count as fully kept — the profile of a
-  server that pruned early, which is the finding this observer exists to
-  make. That obligation is `end_unobserved`, and a validator that never
-  hands anything over is `unobserved_reachable`: not a
-  fault, but not a clean record either, and counted on its own line beside
-  the rate. The split uses each probe row's own `tls_ok`, not the heartbeat,
-  because the probe made its own handshake at the moment that matters.
-
-  The end-of-window requirement closes the same hole from the other side,
-  and it is this observer's own failure mode rather than a validator's. When
-  this site is down inside a retention window, the obligation keeps whatever
-  verdict it had before the outage and the remaining slots are recorded as
-  gaps — or, once the outage outruns the prober's backfill horizon, are never
-  written at all. Under the earlier rule an obligation seen `HEALTHY` once
-  and then never again published as **kept**, so the serve rate *rose* while
-  nobody was watching, and an operator was credited for hours this observer
-  did not see. Those obligations are now `end_unobserved`: they leave the
-  rate rather than pad it.
-
-  `served` and `broken` are deliberately not symmetric. A `FAULT` is
-  conclusive from a single reading — the shard was gone at that minute. A
-  serve is a claim about a whole window, so it needs a reading near the end
-  of one. The consequence is worth stating rather than burying: while this
-  observer is blind, the obligations it can still judge are enriched for
-  faults, because a fault takes less evidence than a serve does. What it
-  cannot do is invent one. Nothing in this rule can move an obligation into
-  `broken`; the worst this observer's own downtime can do to an operator is
-  decline to vouch for them, and the count of times that happened is printed
-  beside the rate.
+  Only `served` and `broken` enter the rate, `served / (served +
+  broken)`. The rule reads stored rows as they are; nothing is rewritten.
+  A blob of the earlier schedule was read at several points in the window,
+  and each point is a reading of its own: a validator's row counts by the
+  reading at its own point, while the blob's status shown is the reading at
+  the newest point in the window every endorsing validator was reached at
+  (or failing that, any validator).
+- **The network's Available figure** (`reconstructable` on `/v1/network`)
+  is `recoverable = yes / (yes + no)` over the newest publications with a
+  reading on record, at most `sample_limit` of them
+  (`publications_examined` says how many). Beside it: `pending`,
+  `not_yet_read` (the window is open and the reading is still to come),
+  `not_read` (the window closed without a reading that decides it) and
+  `unknown` (no assignment). The batch decides each blob from two bounds on
+  the distinct rows (the verified row counts less the assignment's overlaps,
+  and their sum) and reads the row lists only where the bounds straddle the
+  threshold.
 - Below **20** rated observations the percentage is printed without a gauge
   and the validator is not ranked by it in either direction (it sorts with
   the rows that have no rate at all). This holds for every ranked figure on
-  the validator table — serve rate, reachability and throughput — not only
-  for the serve rate: a validator that registered its endpoint an hour ago
-  has a handful of handshakes, and the reachability column sorts worst
-  first. A single unlucky probe used to
-  render as "0.0%" beside a named validator and sort it above one with a
-  hundred real faults.
-- **Suspect points** (`vantage_health.suspect`). At any in-window schedule
-  point where at least `min_validators` (3) and at least `threshold` (50%)
-  of the distinct validators probed were `UNREACHABLE`, or at least
-  `fault_threshold` (50%) and three were `FAULT`, every probe row at that
-  `scheduled_at` is left out of the per-probe rate, the coverage and
-  held-out counts, the obligation buckets, the per-point breakdown, the
-  attestation counts and the fault count, network-wide and per validator
-  alike. The attestation counts are in that list so a reader can reconcile
-  the response against itself: `serve_rate_coverage.den` equals
-  `attested_probes + unattested_probes + unknown_probes`, and
-  `serve_rate_held_out.UNATTESTED` equals `attestation.unattested_probes`. That validators fail
-  independently while one observer's network does not is the working
-  assumption behind this guard, not a measurement; on a day when many
-  endpoints really are down at once it errs toward publishing nothing.
-  Both reasons are shown with their share and a link to the rows
-  (`/v1/probes?at=<scheduled_at>`), and neither is given a cause. An
-  `unreachable` point cannot be told, from one location, from a network
-  problem on the observer's own side. A `fault` point has the observer
-  errors this site can check for ruled out — a stale assignment pin is
-  caught separately (every probe under a stale pin is `PROBE_ERROR` before
-  it can be a `FAULT`), and a params-uncertainty range on record withholds
-  its rows before they can be faults — and the ones it cannot check for
-  are not ruled out, which is why the point is not called an incident. "Probed" is a
-  row that carries a reachability verdict for the endpoint, which is the
-  only kind of row that could land in either numerator. A row that could
-  not have been `UNREACHABLE` or `FAULT` whatever happened at that point is
-  not in the share's denominator either, or it would drag the share down by
-  its mere presence: a validator the load cap turned away or a slot that
-  elapsed (`NOT_PROBED`, `PROBE_ERROR`), one with no reachable Fibre host so
-  that no connection was attempted (`NOT_REGISTERED`), and one whose
-  assignment carries no signature on the settled promise (`UNATTESTED`),
-  which the taxonomy decides before it looks at reachability at all. That
-  last one is not a rare case: a publisher stops collecting at two thirds of
-  stake, so a third of the assigned rows at a typical point are
-  `UNATTESTED`, and leaving them in the denominator held the guard below its
-  threshold through outages it exists to catch. Everything kept in the
-  denominator means a connection was attempted and the endpoint answered or
-  refused — an identity failure, a throttle or a server error is positive
-  evidence that the network was up. So a burst among the validators that
-  actually answered is caught however many did not. The points, the shares and the number of rows
-  removed (gaps included) are published so the exclusion is visible, and
-  the rows keep their classification in the store: a verifier sees what
-  was excluded and why. The points are judged over every vantage together
-  and, for a day's row figures in the rollup, over the rows started that
-  day: with more than one vantage an outage on one marks the point for
-  all, and a point whose rows straddle midnight can be suspect on one day
-  and not the other. Both only ever remove rows from a rate, never add a
-  verdict.
+  the validator table — serve rate, reachability and throughput.
 - **Stale assignment pin.** The prober polls `abci_info` and stamps the
   chain's `app_version` on every row. When it is above the celestia-app
   major the assignment constants are pinned to
@@ -461,7 +356,10 @@ One sentence each, and what a reader should conclude.
   answered, and `Unimplemented` on either is an observer error, never a
   verdict),
   `download.shadowed_by` (the promise whose assignment the returned rows
-  match), `host_at_settlement` (the host registered when the promise
+  match), `read` (the validator's place in the reading's order, its rows
+  the reading had not had, the distinct rows held after it, and what the
+  reading came to with the client's error), `retry` (the first attempt
+  before the client's re-dial), `host_at_settlement` (the host registered when the promise
   settled, where the upload went, derived from the chain's own
   `set_fibre_provider_info` events as the scanner reads them in the same
   `block_results` pass as everything else, seeded once from the bonded
@@ -479,7 +377,7 @@ One sentence each, and what a reader should conclude.
   seed, seed_lazy, seed_current, reseed, none (the chain's explicit answer
   that nothing is registered, never inferred from absence), or unknown
   because a scan gap or a missing seed leaves the question open; `host_history.jsonl` is the record and the export carries
-  it) with
+  it), on rows of the earlier schedule
   `settlement_host_probe` (what that host answered when the current one
   did not serve and differs from it), `observer.build` (the observer's VCS revision), and
   `observer.assign_pin` / `observer.app_version`. The store keeps them as
@@ -526,33 +424,6 @@ One sentence each, and what a reader should conclude.
   identity verdict recorded); no TLS (`TLS_HANDSHAKE_FAIL`); or unreachable.
   Observer-side `PROBE_ERROR` heartbeats are left out of every reachability
   figure, as their probe-side twins are.
-- **Reconstructable** for a blob is judged at the latest **complete**
-  in-window probe point: the newest point at which every assigned validator
-  has a real result (a verdict, not a gap). Grace and post points are never
-  used, because "not found" is tolerated or expected there. The distinct row
-  indices held by validators whose probe at that point was `SERVED_OK` are
-  compared with `OriginalRows` (4096 for blob v0). Reconstructable means at
-  least that many with every assigned validator serving; degraded means fewer
-  than the full assignment answered but still at least `OriginalRows`; not
-  reconstructable means fewer than `OriginalRows` distinct rows were observed
-  served. "Every assigned validator" means every **attested** assigned
-  validator: a validator with no proof of storage cannot demote a blob by
-  staying quiet. A row that was served counts toward reconstruction whether
-  or not the server's storage was proven, because the rows came back either
-  way; attestation decides blame, never availability. While no in-window point is complete (a sweep still running, or
-  validators skipped by the policy) the status is `pending` and the blob is
-  left out of the network rate: an absent row is a gap, never a zero. The
-  threshold is the row count from `fibre-assign`'s pinned protocol params,
-  not a hard-coded fraction of validators. Rows from several vantages count a
-  validator once.
-- **Reconstructable** is published as four numbers, not one: `yes` (every
-  validator proven to owe the blob served), `degraded` (the rows were all
-  there but someone stayed quiet), `no`, and separately `pending`/`unknown`.
-  "Degraded" is never folded into the numerator, because "the blob can be
-  rebuilt" and "everyone kept their promise" are different statements. The
-  response also carries `publications_in_window`, `publications_examined` and
-  `sample_limit`, so a rate over the newest 2000 of 50000 cannot be read as a
-  rate over the window.
 - `PROBE_ERROR`, `NOT_PROBED` and `MISSED` are excluded from every rate and
   rendered as gaps. `UNATTESTED` is also excluded, but it is not a gap: the
   probe ran and its outcome is recorded. It is excluded because no obligation
@@ -560,20 +431,21 @@ One sentence each, and what a reader should conclude.
 - Records written before the observer verified signatures carry no
   attestation at all. Their `attested` column is NULL, not 0, and they are
   counted under the older taxonomy and reported separately as
-  `attestation.unknown_probes`. "Not recorded" is never rendered as "did not
+  `attestation.unknown_blobs`. "Not recorded" is never rendered as "did not
   attest".
 - Every measurement carries `clock_offset_ms`, the observer's clock minus the
   chain's latest block time when the probe ran. Phases are decided against the
-  local clock and the grace span is only a few minutes wide, so a vantage
+  local clock and the phase boundaries are minutes wide, so a vantage
   whose offset is large can be discounted after the fact. The prober logs a
   warning past 30 seconds.
 
 ## What a fault is, and what it is not
 
-The only thing this site says against a validator is that it was **reached**
-and failed to hand over a shard the chain **proves** it stored. Everything
-that falls short of both halves of that sentence has its own class and its own
-column:
+The only thing this site says against a validator is that the chain
+**proves** it stored rows of a blob, the blob could **not be reconstructed**
+from what came back, and its rows did not come back. A row's class says what
+happened on the wire; whether it counts is decided from the whole reading
+(below). These are the classes that are never a fault on their own:
 
 | the observer saw | class | why it is not a fault |
 |---|---|---|
@@ -587,24 +459,35 @@ column:
 | a lapsed but correctly signed certificate | `IDENTITY_EXPIRED` | a late renewal, not someone else answering |
 | a certificate signed by the wrong consensus key | `IDENTITY_MISMATCH` | an unusable endpoint, which is a statement about the endpoint (its status says so), not about a shard |
 | an application error instead of the shard | `SERVER_ERROR` | the server did not say it lacks the shard; from one probe a hiccup and a loss look the same |
-| a rate limit instead of the shard | `THROTTLED` | the server declined this request; it said nothing about the shard |
+| a rate limit instead of the shard | `THROTTLED` | the server declined this request; like every answer without rows it counts only on a blob that could not be reconstructed |
 | an outcome the taxonomy does not recognise | `PROBE_ERROR` | "we have not taught the observer about this" is not evidence |
-| a local socket error, a cancelled probe, a verification that timed out | `PROBE_ERROR` | the packets never left this machine |
-| a fault the second location re-fetched within 20 minutes, rows verified | `PROBE_ERROR`, with `cleared_by` | the shard was there; what failed was this observer's reading of it (see "Faults re-checked from a second location") |
+| a local socket error, a probe this observer cancelled, a verification that timed out | `PROBE_ERROR` | the packets never left this machine |
+| a `CANCELLED` status the server sends while the request is still live | `SERVER_ERROR` | the client takes it as the server's error and skips the shard; like every answer without rows it counts only on a blob that could not be reconstructed |
 
-This is why the serve rate moved after the audit. It did not get more
-forgiving; it stopped making claims the evidence did not support.
+### When a failure counts
 
-### At the end reading
+A validator whose rows did not come back counts as **not served** only when
+it endorsed the promise and the blob was unavailable: the reading asked the
+whole set, as the client does, and the rows that came back could not
+reconstruct it. Then a reader using celestia-app's client is left without
+the blob, and any answer that left it without the validator's rows counts:
+`FAULT` (not found, bad rows), `UNREACHABLE`, `IDENTITY_MISMATCH`,
+`IDENTITY_EXPIRED`, `SERVER_ERROR`, `THROTTLED`, `NOT_REGISTERED`, and a
+request of this observer's that failed while another reached a server.
+On an available blob the same answers count neither way: the
+blob was there for any reader, and a validator the reading did not need to
+ask is no gap either. Rows that came back verified are served, whatever
+their class (`SHADOWED_SHARD`, `UNMATCHED_GENUINE`). A validator that did
+not endorse is never counted. On a reading that did not happen nothing
+counts.
+The row keeps its class; `verdict.CountedClass` and `rollup.CountedClass`
+say what it counts as.
 
-From 2026-09-27 16:20 UTC an endorsed shard is read once, 10 minutes before
-`must_serve_until`, and its obligation counts as a reader using
-celestia-app's client meets it: no rows back is not served (`UNREACHABLE`,
-`IDENTITY_MISMATCH`, `IDENTITY_EXPIRED`, `SERVER_ERROR`, `THROTTLED` and
-`NOT_REGISTERED` count as `FAULT`), and genuine rows of the blob are served
-(`SHADOWED_SHARD`, `UNMATCHED_GENUINE`). The row keeps its class
-(`probe.EndReadClass`, `rollup.ObligationClass`); the table above holds for
-the earlier schedule's points.
+Readings stored by earlier builds are read by the same rule, with nothing
+rewritten: a reading with a `NOT_PROBED` row whose rows are short was
+missed in part, so it did not happen, and no one is not served on it (the
+rows that did come back still count as served); one in which not a single
+request reached a server did not happen either.
 
 ## Known limits of a probe
 
@@ -639,7 +522,7 @@ what the measurement cannot separate.
   gRPC re-resolve as the reference client does, would let the download land on
   a different peer from the one whose certificate was checked, and the record
   could no longer say which endpoint it describes. The result is `UNREACHABLE`
-  either way, which is outside the serve rate.
+  either way, which counts only on a blob that could not be reconstructed.
 - **One connection per probe.** The TLS handshake, the identity check and
   the download share one TCP session: the identity check runs inside the
   handshake's `VerifyConnection` callback on the connection the download
@@ -686,12 +569,9 @@ what the measurement cannot separate.
   the current host and the verdict is that host's. The scanner records
   the host registered at the settlement height on every assignment
   (`host_at_settlement`, read from the chain at that height; null when
-  the node had pruned it, which is not "no host"), the prober carries it
-  on the row, and when the current host differs and did not serve, the
-  prober asks the old host as evidence in the same slot
-  (`settlement_host_probe`): a `FAULT` whose old host still serves the
-  exact rows is data left behind on a move, not data lost, and the row
-  says so. With no host in the live registry and none this observer ever
+  the node had pruned it, which is not "no host"), and the prober carries
+  it on the row; rows of the earlier schedule also carry what the old host
+  answered when the current one did not serve (`settlement_host_probe`). With no host in the live registry and none this observer ever
   saw (a fresh vantage), the settlement host is the last fallback
   (`host_source = settlement`).
 - **Why unmatched genuine rows are not a fault.** A shard uploaded for a
@@ -707,8 +587,8 @@ what the measurement cannot separate.
   (`NOT_FOUND` in window) or bytes that do not verify (`INVALID_ROWS`,
   rows failing the commitment). A validator that wanted to hide behind
   this would have to hold another shard of the same blob to serve, which
-  is genuine data of the blob; the reconstructable verdict already counts
-  the rows it returned.
+  is genuine data of the blob; the reading already counts the rows it
+  returned toward the blob.
 - **A protocol finding.** `DownloadShard` is addressed by commitment
   alone, and the store answers with the first shard in promise-hash
   order, so with several promises over one blob no client, the reference
@@ -716,21 +596,19 @@ what the measurement cannot separate.
   per-promise retention obligation is therefore not checkable inside the
   protocol, not only from this vantage. An optional `promise_hash` on
   `DownloadShardRequest` would make it so.
-- **A lost probe row is a gap, an amendment for a missing row waits.** A
-  prober outage leaves no row for the slots it slept through; on restart
-  it writes a `NOT_PROBED` row for every elapsed slot of every publication
-  still on record, however old (`-backfill-missed` caps that only when an
-  operator sets it), so the obligation is counted as `unobserved_not_probed`
-  rather than missing from the total. A late verdict in `amendments.jsonl`
+- **A lost reading is a gap, an amendment for a missing row waits.** A
+  prober outage leaves no row for the readings it slept through; on restart
+  it writes a `NOT_PROBED` row per endorsing validator for every reading it
+  did not make, however old (`-backfill-missed` caps that only when an
+  operator sets it), so the blob reads `not_read` rather than vanishing
+  from the record. A late verdict in `amendments.jsonl`
   whose probe row has not been ingested yet is retried on the next passes
   before being stepped over, so a measurements file that is merely behind
   keeps its verdict.
-- **One vantage.** Every reachability observation comes from a single network
-  path. `/v1/network` publishes the worst schedule point in the window by how
-  many validators were unreachable at once, because validators fail
-  independently and one network does not. A second location re-checks
-  endpoint failures and retention faults, never routine probes, and adds no
-  reading to any rate (see "Faults re-checked from a second location").
+- **One vantage.** Every reading comes from a single network path, as one
+  client's download does. A second location runs the heartbeat, which
+  says whether an endpoint this observer calls down answers from
+  elsewhere; it adds no reading to any rate.
 
 - **Retention and the rollup.** Raw probe and heartbeat rows are kept for
   90 days and their `raw_json` (the bulk of a row) for 30; every typed
@@ -738,8 +616,8 @@ what the measurement cannot separate.
   day ends, while its rows are all still present, the collector computes
   the day's rollup with the same SQL the API runs live: the obligation
   buckets per validator for the promises settled that day, and the row
-  counts (in-window classes, faults, gaps, heartbeats) for the rows
-  started that day, suspect points left out as they are live. A day is
+  counts (in-window classes, gaps, heartbeats) for the rows started that
+  day. A day is
   pruned only after it is rolled, whole days at a time, oldest first, so
   the record is never thinner than the rollup behind it. From the first
   prune on, the "all" window is the rollup for every day before `raw_from`
@@ -753,8 +631,7 @@ what the measurement cannot separate.
   rolled day may still have rows that started on a retained day; those
   rows stay until their own day is pruned and count in the row figures,
   while the obligation they belong to is the rollup's alone. Figures the
-  rollup does not hold, latency percentiles, the by-point breakdown,
-  attestation and throughput, cover the raw record only, and the label
+  rollup does not hold, latency percentiles, attestation and throughput, cover the raw record only, and the label
   says so. A pinned `as_of` before `raw_from` takes whole rolled days up
   to its own. Fourteen days is a floor, not the rule: a day rolls only
   once every promise settled on it has left its window and no probe row
@@ -808,60 +685,35 @@ pieces needed to re-run that function are published:
   trust, so `?exclude=<address>` on `/v1/network` recomputes the summary
   without named validators. It takes either address form, repeated or
   comma-separated, up to eight, and every per-validator population moves
-  with it: the class counts, the faults, the obligations, attestation
-  coverage, latency, both reachability figures, the probe and gap counts,
-  the per-point rate, the previous window the deltas compare against, and
+  with it: the class counts, the obligations, attestation, latency, both
+  reachability figures, the probe and gap counts, the previous window the
+  deltas compare against, and
   the rolled-up days behind the "all" window. The answer echoes what it
   excluded (`excluded`, `exclude_note`), bypasses the snapshot cache and is
   rationed like a pinned window, so one reader's filter can never become
   everyone's headline.
 
-  Two figures stay whole, and the note says so. The correlated-failure
-  guard is a statement about this observer's own minute rather than about
-  any validator, so dropping one from the share would change which points
-  this observer distrusts itself at. Reconstructability asks whether a blob
-  could still be rebuilt from the rows that came back, and removing a
-  validator's rows lowers that for real — "the network without you" is not
-  the network's actual recoverability, and printing it as such would
-  understate the thing the figure exists to measure.
-- **The sampling draw.** Not every publication is probed. A vantage has a
-  finite budget — bytes per hour and per day, globally and per validator —
-  and when the projected load exceeds it the observer probes a random
-  subset rather than probing everything badly or probing the cheap
-  publications preferentially. Which subset is decided by a draw a reader
-  can check afterwards, because a sample nobody can verify is indistinguishable
-  from a sample chosen to flatter.
-
-  Each publication is admitted if `H(promise_hash || secret_of_its_day) <
-  p · 2^64`, where `p` is the admission probability at the moment it was
-  first seen. The decision is sticky for the life of the publication's
-  schedule: a publication is probed at every point or at none, never at some,
-  because a partial schedule would pull the serve rate toward whichever points
-  happened to run. A sampled-out publication is recorded once, with its
-  probability (`sampling_decisions.jsonl`), and counts as a NOT_PROBED row
-  for every assigned validator at every point, as before.
-
-  Every probe row carries the three things needed to check it — `sampling.p`
-  (that publication's own probability, not the process's current one),
-  `sampling.binding` (which cap set it) and `sampling.day_commitment`
-  (SHA-256 of the day's secret). Seven days after a UTC day ends the prober
-  publishes that day's secret (`sampling-secrets.jsonl`, served beside its
-  commitment at `/v1/sampling`), and from then on the inequality above can be
-  recomputed by anyone, for every promise settled that day, against the rows
-  in the export. `sentinel-recompute -sampling` does exactly that and exits 1
-  on a mismatch. The seven days clear any retention window this observer
-  schedules, so the draw stays unpredictable while it matters, and the master
-  secret the day secrets derive from is never published and never leaves the
-  vantage.
-
-  What this cannot prove: that the publication *list* was complete. The draw
-  is verifiable over the publications in the record; a publication the scanner
-  never saw is in neither. That is what the scan gaps are for, and they are
-  published beside it.
+  One figure stays whole, and the note says so. Reconstructability asks
+  whether a blob could still be rebuilt from the rows that came back, and
+  removing a validator's rows lowers that for real — "the network without
+  you" is not the network's actual recoverability, and printing it as such
+  would understate the thing the figure exists to measure.
+- **The earlier sampling draw.** Until 27 September 2026 not every
+  publication was probed: when the projected load exceeded a budget, a
+  publication was admitted if `H(promise_hash || secret_of_its_day) <
+  p · 2^64`, and a sampled-out one was recorded once
+  (`sampling_decisions.jsonl`), standing for a `NOT_PROBED` row per
+  assigned validator per point. Nothing is sampled now. The draws already
+  made stay checkable: every row of that time carries `sampling.p`,
+  `sampling.binding` and `sampling.day_commitment`, the prober still
+  publishes each day's secret seven days after the day ends
+  (`sampling-secrets.jsonl`, served beside its commitment at
+  `/v1/sampling`), and `sentinel-recompute -sampling` recomputes the draws
+  and exits 1 on a mismatch.
 - **The tool.** `sentinel-recompute -data-dir <record or untarred export>`
   re-derives every row's phase and classification from the row's own
-  fields and the run's recorded tolerance (`Measurement.Recompute`), the
-  correlated-failure guard and the obligation buckets for a window
+  fields and the run's recorded tolerance (`Measurement.Recompute`), each
+  blob's result and the obligation buckets for a window
   (`observer/verdict`, a second implementation of the rules the API
   evaluates in SQL, kept apart from it; the API's tests run both over the
   same rows), and with `-api <base>` compares them to
@@ -890,7 +742,8 @@ pieces needed to re-run that function are published:
   the gaps a late shadow verdict the record deliberately defers is redrawn
   as a decided one, and the tool reports a difference where the observer was
   honestly blind. Feed it the union of the exports covering the window you
-  are checking, or the live record directory.
+  are checking (each member appended to its path), or the live record
+  directory.
 
 What a difference means. A row whose recomputed class differs from its
 stored one was classified by a different build: the class is stamped at
@@ -903,74 +756,6 @@ microseconds between the RPC's return and the row's finish time. An
 obligation figure that differs from the API's with the same rows and the
 same `as_of` is a bug in one of the two implementations, and is why there
 are two.
-
-## Faults re-checked from a second location
-
-A `FAULT` is the one class held against a validator, and it rests on one
-reading from one place. So every `FAULT` is asked once more from the second
-vantage before it counts, and only a `FAULT`: routine probes are never
-repeated, so the second vantage adds one request per fault and nothing else.
-
-- The prober appends a confirmation request for every row it classifies
-  `FAULT` to `<data-dir>/vantage-requests.jsonl`: the promise, the blob's
-  commitment and code parameters, the validator and the host that failed,
-  the rows it owes, the schedule point, and a deadline (the fault's start
-  plus `ConfirmWindow`, **20 minutes**, or the end of the grace phase if that
-  is sooner). The pull timer copies new lines to the second vantage.
-- The second vantage (`sentinel-probe -confirm-requests`) fetches exactly
-  those rows from that validator once, with the same probe: DNS, TCP, TLS,
-  the consensus-key identity check, `DownloadShard`, and row verification
-  against the commitment and the assignment. It keeps none of the
-  observer's state: the consensus key comes from the validator set at the
-  promise height on its own RPC, and the assignment is recomputed from it
-  with `fibre-assign`; a request the chain does not bear out is refused
-  (`PROBE_ERROR`, no connection made), and an RPC that does not answer is
-  asked again until the deadline. It writes the answer to its own
-  `measurements.jsonl` under its own vantage name and the fault's schedule
-  point, and the observer copies that file back into
-  `<data-dir>/vantages/<name>/measurements.jsonl`.
-- The collector ingests those rows into `probe_confirmations`, never into
-  `probes`, and applies the rule (`verdict.ConfirmFault`), with the window
-  measured between the two probes' own `started_at`:
-
-| the second vantage, started within 20 minutes of the fault | the fault | on the row |
-|---|---|---|
-| got the exact rows back, verified (`HEALTHY`) | **withdrawn**: filed `PROBE_ERROR`, an observer-side failure, outside the rate and never counted as served | `cleared_by`, `classification_at_probe: FAULT`, an amendment in `amendments.jsonl` with `cleared_by` and `confirm_key` |
-| reached a verdict that is not `HEALTHY` (not found, unreachable, an error, rows that do not verify) | stands | `confirmed_by` |
-| could not run the probe (`PROBE_ERROR`, `NOT_PROBED`), started later, or sent nothing | stands, as it did before there was a second vantage | nothing |
-
-**Why a cleared fault is not served.** Every rate is this observer's own
-readings. A second vantage's row adds no obligation, no reading and no
-credit anywhere; it can only take back an accusation this observer made.
-Crediting the second location's fetch as served would let the observer's
-own blind spots be filled in from elsewhere, which is a different rate.
-So a cleared fault leaves `broken` and lands where the obligation's other
-readings put it (usually `end_unobserved`, when the cleared probe was the
-last point).
-
-**Why only `HEALTHY` clears.** It is the one answer that proves the rows were
-there: the exact assigned set, verified against the commitment, from the
-endpoint that proved the validator's consensus key. A shard that answers with
-genuine rows of another promise, or an endpoint the second location cannot
-reach either, says nothing in the validator's favour.
-
-**The window.** Twenty minutes, so an answer that takes a few minutes to come
-back (the vantage's poll, the pull timer each way, the collector's pass)
-still lands inside the 30-minute settling period: a fault that is cleared is
-withdrawn while it is still labelled provisional, and a settled fault stays
-settled. The second vantage caps itself at 60 confirming probes an hour
-(`-confirm-max-per-hour`); a request that waits past its deadline lapses and
-its fault stands.
-
-The rule is one implementation (`observer/verdict/confirm.go`), used by the
-collector over the store and by `sentinel-recompute` over the record: with
-`vantages/<name>/measurements.jsonl` beside the record it redraws every
-clearing and compares it with `amendments.jsonl`; without them it applies the
-recorded clearings and counts them as unchecked.
-
-The API carries `cleared_by` / `confirmed_by` on probe rows and
-`faults_cleared` on each validator row (over the raw rows; a rolled day keeps
-its counts, not who cleared what).
 
 ## Provisional faults
 
@@ -987,33 +772,29 @@ FAULT without a human, and nothing else:
 
 | path | how long after the fault | what it does |
 |---|---|---|
-| correlated-failure guard | the rest of the schedule point's rows can land up to `MaxLatenessFraction` (5%) of the window after it: 12 min on mocha's 4 h `shard_retention` | a point where half the set, and at least three, faulted or were unreachable leaves every count |
 | silent params change | the scanner re-reads `x/fibre` params every 60 blocks (~6 min) | the range withholds its publications' rows (`RETENTION_UNVERIFIED`) in the transaction that records it |
 | ingest | collector tail every 10 s, scanner catch-up in minutes | the row, or the evidence against it, reaches the store |
-| second-vantage re-check | the confirming probe must start within 20 min; its answer is back a few minutes later | verified rows from the second location withdraw the fault (see "Faults re-checked from a second location") |
 
-Twice the longest of the first three (12 min), rounded up to the half hour;
-the re-check's window was then chosen to fit inside it. Deferred shadow
-verdicts (`amendments.jsonl`) never touch a `FAULT` — they re-judge
-`PROBE_ERROR` rows — and a dispute has no time bound, so neither sets the
-period; an amendment is on the record whenever it lands. The one amendment
-that does touch a `FAULT` is a second-vantage clearing, which is bounded by
-its window.
+Thirty minutes was twice the longest of these under the earlier schedule
+(12 min), rounded up; reading each blob once, its rows written together
+when it ends, only shortened them. A dispute has no time bound, so it does
+not set the period; an amendment is on the record whenever it lands.
 
 **Why provisional faults are in the headline.** Three options:
 
 - *Hold provisional faults out of the rate.* Rejected. It withholds the
   accusation and not the credit, which this document refuses for
-  `RETENTION_UNVERIFIED`, `UNATTESTED` and grace for the same reason: it
+  `RETENTION_UNVERIFIED` and `UNATTESTED` for the same reason: it
   raises every rate it touches. A validator failing now would read cleaner
   for half an hour than one that failed yesterday.
 - *Hold every obligation decided in the last 30 minutes, served and broken
   alike.* Symmetric, but it is only a longer `pending`: every figure is half
   an hour older, and the thing a reader should know — this fault is fresh
   and can still move — is not shown at all.
-- *Count it and flag it.* Chosen. A FAULT is conclusive from one reading
-  (the shard was not there at that minute; see "`served` and `broken` are
-  deliberately not symmetric"), and the automatic withdrawal paths above
+- *Count it and flag it.* Chosen. A not-served count rests on the whole
+  reading: the blob could not be rebuilt from what came back, and the
+  shard did not come back at that minute (see "When a failure counts").
+  The automatic withdrawal paths above
   already act on the store and move the snapshot revision, so a withdrawn
   fault leaves the headline by itself. The flag tells a reader which part
   of the figure can still move and until when.
@@ -1033,6 +814,12 @@ every obligation together. It is read from the same validators snapshot
 (`as_of`) window omits it rather than computing every validator's row per
 page view.
 
+Beside them, `in_retention_window` is the validator's endorsed shards whose
+retention window has not ended at the answer's moment, from the chain's
+record alone: a blob is read 10 minutes before its window ends, so these are
+mostly not read yet, and none counts either way. (`obligations.pending` is
+narrower: the obligations already read whose window is still open.)
+
 ## Disputing a verdict
 
 A FAULT is a statement about a named operator, and an observer that makes
@@ -1040,19 +827,19 @@ those without a correction path is asking to be trusted rather than checked.
 There is one, and it does not depend on this project's goodwill.
 
 **Check it yourself first.** Every FAULT row carries what produced it: the
-promise hash, the schedule point, the phase, the wire outcome, the row
+promise hash, the reading's time, the phase, the wire outcome, the row
 indices returned, a digest of the returned bytes, the gRPC status code, the
 observer build and the chain's app version at the time. `/v1/probes?blob=` and
 the day's export tarball both give the row in full, and `sentinel-recompute`
 re-derives the verdict from it. The three most common reasons a verdict is
 wrong are all visible in the row: the deadline was computed from params the
 server did not have (`must_serve_until_ambiguous`), the observer's path was
-the problem rather than the endpoint (the point is in
-`vantage_health.suspect`), or the shard was served from a different promise
-(`shadowed_by`).
+the problem rather than the endpoint (the blob's other rows show whether
+the reading reached anyone), or the shard was served from a different
+promise (`shadowed_by`).
 
 **Then say so, in public, on the record.** Open an issue on this repository
-with the promise hash and the schedule point. The record is append-only, so a
+with the promise hash and the reading's time. The record is append-only, so a
 verdict is never rewritten in place: a correction is an *amendment*, which
 carries its own timestamp, the classification at probe time and the reason —
 the same mechanism the deferred shadow verdicts use, visible on the row as

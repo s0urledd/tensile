@@ -2,10 +2,10 @@ package api
 
 // Atom feeds: GET /v1/validators/{addr}/feed.atom for one validator's
 // endpoint history, and GET /v1/feed.atom for the network's registrations
-// and incidents. Nothing is stored for them; every entry is derived from
-// rows the store already holds (observer/feed has the rules), and every
-// entry ID is built from what happened and when, so a feed reader polling
-// the URL never sees the same change twice.
+// and first not-served readings. Nothing is stored for them; every entry is
+// derived from rows the store already holds (observer/feed has the rules),
+// and every entry ID is built from what happened and when, so a feed reader
+// polling the URL never sees the same change twice.
 //
 // What goes in, per validator:
 //
@@ -19,15 +19,15 @@ package api
 //   - becoming unreachable after feedConfirmBeats consecutive failed
 //     heartbeats, and recovering; the certificate stopping being endorsed
 //     by the validator's key (expired, or not its key) and being put right;
-//   - the first FAULT probe on record, skipping any at a schedule point the
-//     observer distrusts itself at (the correlated-failure guard).
+//   - the first reading on record that counts as not served (its rows did
+//     not come back, and the blob was Unavailable).
 //
 // And for the network: every registration and host change, bonded-list
-// joins and departures after the observer's first poll, each validator's
-// first FAULT, and the schedule points this observer set aside as its own
-// correlated failures. Per-validator reachability transitions are not in
-// the network feed: across a hundred validators they are the per-validator
-// feeds' job, and walking every heartbeat of a month per request is not.
+// joins and departures after the observer's first poll, and each
+// validator's first not-served reading. Per-validator reachability
+// transitions are not in the network feed: across a hundred validators they
+// are the per-validator feeds' job, and walking every heartbeat of a month
+// per request is not.
 
 import (
 	"context"
@@ -554,43 +554,29 @@ func (s *Server) monikers(ctx context.Context) (map[string]string, error) {
 	return out, rows.Err()
 }
 
-// firstFaults finds each validator's first FAULT probe on record (addr's
-// alone when addr is set), skipping any taken at a schedule point the
-// correlated-failure guard sets aside (the same rule every rate applies).
-// The returned entries have no ID; Link holds the promise hash for the
-// caller to turn into a URL.
+// firstFaults finds each validator's first not-served reading on record
+// (addr's alone when addr is set): a reading whose rows did not come back on
+// a blob that was Unavailable (rollup.CountedClass, the same rule every
+// figure applies). The returned entries have no ID; Link holds the promise
+// hash for the caller to turn into a URL.
 //
-// The entry ID has no time in it, so it must name the same probe for good:
+// The entry ID has no time in it, so it must name the same reading for good:
 //
-//   - a FAULT still settling (verdict.FaultSettling) is left out: the rest
-//     of its point's cohort or a params range can still withdraw it;
-//   - every candidate is walked, not the first few: a validator whose early
-//     faults all fell at suspect points still has a first genuine one;
+//   - a reading still settling (verdict.FaultSettling) is left out: a params
+//     range can still withdraw it;
 //   - a tie on started_at goes to the lower promise hash, not to row order;
-//   - a validator with a fault in probe_daily on an earlier day had its
-//     first fault already, pruned from the raw rows since, and gets none.
-//
-// Suspect points are tallied once, over the points that hold a FAULT, not
-// once per candidate.
+//   - a validator with a not-served obligation rolled up on an earlier day
+//     had its first one already, pruned from the raw rows since, and gets
+//     none.
 func (s *Server) firstFaults(ctx context.Context, addr string, now time.Time) (map[string]feed.Entry, error) {
 	db := s.st.DB()
-	faultWhere := `assigned = 1 AND ` + rollup.EffectiveClass("") + ` = 'FAULT'`
+	faultWhere := `assigned = 1 AND ` + rollup.NotServedSQL("probes")
 	var args []any
 	if addr != "" {
 		faultWhere += ` AND validator_address = ?`
 		args = append(args, addr)
 	}
-	pts, err := rollup.SuspectPoints(ctx, db, `scheduled_at IN (SELECT scheduled_at FROM probes WHERE `+faultWhere+`)`, args...)
-	if err != nil {
-		return nil, err
-	}
-	suspect := map[string]bool{}
-	for _, p := range pts {
-		if p.Reason() != "" {
-			suspect[p.At] = true
-		}
-	}
-	q := `SELECT validator_address, MIN(day) FROM probe_daily WHERE faults > 0`
+	q := `SELECT validator_address, MIN(day) FROM obligation_daily WHERE broken > 0`
 	if addr != "" {
 		q += ` AND validator_address = ?`
 	}
@@ -626,7 +612,7 @@ func (s *Server) firstFaults(ctx context.Context, addr string, now time.Time) (m
 		if err := rows.Scan(&a, &hash, &sched, &at, &label); err != nil {
 			return nil, err
 		}
-		if seen[a] || suspect[sched] {
+		if seen[a] {
 			continue
 		}
 		seen[a] = true
@@ -635,9 +621,9 @@ func (s *Server) firstFaults(ctx context.Context, addr string, now time.Time) (m
 			continue
 		}
 		out[a] = feed.Entry{Kind: "first-fault", At: t, Link: hash,
-			Title: "first FAULT probe on record",
-			Summary: fmt.Sprintf("At the %s point (%s) the validator was reached and did not hand over rows of blob %s that it signed for. "+
-				"One probe; an obligation is decided at the end of its retention window.", label, sched, hash)}
+			Title: "first not-served reading on record",
+			Summary: fmt.Sprintf("At the reading of blob %s (%s, %s) the validator did not hand over the rows it endorsed, "+
+				"and the blob could not be reconstructed from the rows the other validators returned.", hash, label, sched)}
 	}
 	return out, rows.Err()
 }
@@ -664,10 +650,8 @@ func (s *Server) networkFeed(ctx context.Context, authority string, now time.Tim
 	}
 	es = append(es, bl...)
 
-	// Each validator's first FAULT, when it falls in the feed's span. The
-	// span is applied to the first genuine fault, not to the first raw
-	// one: a validator whose earliest FAULT fell at a suspect point before
-	// the span still has its first fault inside it.
+	// Each validator's first not-served reading, when it falls in the
+	// feed's span.
 	cut := store.TS(now.Add(-feed.MaxAge))
 	ffs, err := s.firstFaults(ctx, "", now)
 	if err != nil {
@@ -686,32 +670,10 @@ func (s *Server) networkFeed(ctx context.Context, authority string, now time.Tim
 		es = append(es, fe)
 	}
 
-	// The observer's own incidents: schedule points where so many
-	// validators failed at once that the observer set the point aside as
-	// its own problem. Published because a reader of the other entries
-	// deserves to know when the instrument itself was in doubt.
-	pts, err := rollup.SuspectPoints(ctx, s.st.DB(), `started_at >= ? AND started_at <= ?`, cut, store.TS(now))
-	if err != nil {
-		return nil, err
-	}
-	for _, p := range pts {
-		reason := p.Reason()
-		if reason == "" {
-			continue
-		}
-		at := parseTS(p.At)
-		es = append(es, feed.Entry{Kind: "vantage-incident", At: at, Link: "/",
-			ID:    feed.TagID(authority, feedTagDate, "tensile", fm.chainID, "incident", idTime(at)),
-			Title: fmt.Sprintf("Observer incident: %d of %d validators failed at once", maxI(p.Unreachable, p.Faulted), p.Validators),
-			Summary: fmt.Sprintf("At the %s point scheduled %s, %d of %d probed validators were unreachable and %d failed to serve. "+
-				"From one location that cannot be told from this observer's own network, so no probe at this point counts in any figure.",
-				p.Label, p.At, p.Unreachable, p.Validators, p.Faulted)})
-	}
-
 	f := &feed.Feed{
 		ID:       feed.TagID(authority, feedTagDate, "tensile", fm.chainID, "network"),
 		Title:    "Tensile · " + fm.chainID + " · Fibre network events",
-		Subtitle: "Fibre host registrations, bonded provider list changes, first FAULTs and observer incidents on " + fm.chainID + ", from vantage " + s.vantage + ". Newest 50 of the last 30 days.",
+		Subtitle: "Fibre host registrations, bonded provider list changes and first not-served readings on " + fm.chainID + ", from vantage " + s.vantage + ". Newest 50 of the last 30 days.",
 		SelfHref: "feed.atom",
 		AltHref:  "/",
 		Author:   "Tensile observer (" + s.vantage + ")",
@@ -719,11 +681,4 @@ func (s *Server) networkFeed(ctx context.Context, authority string, now time.Tim
 	}
 	f.Updated = feedUpdated(f.Entries, now)
 	return f, nil
-}
-
-func maxI(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }

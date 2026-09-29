@@ -29,13 +29,13 @@ func TestAsOfPinsTheWindow(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	now := time.Now().UTC().Truncate(time.Second)
 	created, msu := now.Add(-2*time.Hour), now.Add(-30*time.Minute)
-	// four validators so the correlated guard does not fire; each served
-	// at w1 and w2, then broke at w3 and w4
+	// four validators, each served at w1 and w2; at w3 and w4 three of them
+	// did not, and the blob, which needs every row, was Unavailable there
 	profile := map[string][]wire{
 		"v1": {ok, ok, err500, err500}, "v2": {ok, ok, err500, err500},
 		"v3": {ok, ok, gone, gone}, "v4": {ok, ok, ok, ok},
 	}
-	insertProbeSet(t, st, "asof1", created, msu, profile, false)
+	insertProbeSet(t, st, "asof1", created, msu, profile)
 	ts := httptestServer(t, st)
 
 	type resp struct {
@@ -72,7 +72,7 @@ func TestAsOfPinsTheWindow(t *testing.T) {
 	if pinnedNow.ProbeCount != live.ProbeCount || pinnedNow.Obligations != live.Obligations {
 		t.Errorf("pinned at now differs from live:\n%+v\n%+v", pinnedNow, live)
 	}
-	if live.ProbeCount != 16 || live.Obligations.Served != 1 || live.Obligations.Broken != 1 || live.Obligations.EndUnobserved != 2 {
+	if live.ProbeCount != 16 || live.Obligations.Served != 1 || live.Obligations.Broken != 3 || live.Obligations.NotCounted != 0 {
 		t.Errorf("live = %+v", live)
 	}
 	// validators too
@@ -208,7 +208,7 @@ func TestSamplingServesRevealedSecrets(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	now := time.Now().UTC().Truncate(time.Second)
 	created, msu := now.Add(-2*time.Hour), now.Add(-30*time.Minute)
-	insertProbeSet(t, st, "smp1", created, msu, map[string][]wire{"v1": {ok}, "v2": {ok}, "v3": {ok}}, false)
+	insertProbeSet(t, st, "smp1", created, msu, map[string][]wire{"v1": {ok}, "v2": {ok}, "v3": {ok}})
 	// stamp the rows with a sampling decision under two day commitments
 	for i, c := range []string{"commitA", "commitB"} {
 		m := probe.Measurement{

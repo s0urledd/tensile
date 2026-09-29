@@ -22,10 +22,7 @@ import (
 // the rows were stored.
 //
 // Figures that read only real results (faults, latency, reconstructability)
-// stay on probes: a sampled-out row is never one of them. The
-// correlated-failure guard reads probe_rows for the rows its exclusion
-// removes, but its verdict counts leave NOT_PROBED out (rollup.GuardSilentSQL),
-// so a sampled-out row can never make a point suspect or keep one from being.
+// stay on probes: a sampled-out row is never one of them.
 
 // SampledOutReasonSQL is the test for a row written for a publication the
 // sampler drew out whole, spelled so the partial index probes_sampled_out
@@ -69,8 +66,7 @@ const probeRowsCols = `assigned, phase, started_at, classification, schedule_lab
 
 // probeRowsView is every probe row, stored or stood for by a decision, as
 // the figures read it: the class tallies, the probe, gap and attestation
-// counts, the heatmap, the correlated-failure guard's row count, the daily
-// rollup.
+// counts, the heatmap, the daily rollup.
 const probeRowsView = `CREATE VIEW IF NOT EXISTS probe_rows AS
 	SELECT ` + probeRowsCols + ` FROM probes
 	UNION ALL
@@ -84,6 +80,15 @@ const obligationRowsView = `CREATE VIEW IF NOT EXISTS obligation_rows AS
 	SELECT ` + probeRowsCols + `, tls_ok, must_serve_until FROM probes
 	UNION ALL
 	SELECT ` + probeRowsCols + `, tls_ok, must_serve_until FROM sampled_out_rows`
+
+// ObligationRowsVerified is obligation_rows with commitment_verified beside
+// it (0 for a sampled-out row, whose rows never came back), which the
+// obligation buckets count served from (rollup.CountedClass). It is written
+// inline rather than as a view so the schema does not move; the column sits
+// in the table row the view already reads tls_ok and must_serve_until from.
+const ObligationRowsVerified = `(SELECT ` + probeRowsCols + `, tls_ok, must_serve_until, commitment_verified FROM probes
+	UNION ALL
+	SELECT ` + probeRowsCols + `, tls_ok, must_serve_until, 0 FROM sampled_out_rows)`
 
 // collapseSampledOut turns the NOT_PROBED rows of a publication sampled out
 // whole, written before decisions had a record of their own, into the one
@@ -312,51 +317,6 @@ func (s *Store) CollapseSampledOut(ctx context.Context) (decisions, rows int64, 
 		return 0, 0, err
 	}
 	return after - before, rows, tx.Commit()
-}
-
-// SampledOutDecision is one decision as the API publishes it.
-type SampledOutDecision struct {
-	Vantage       string  `json:"vantage"`
-	PromiseHash   string  `json:"promise_hash"`
-	DecidedAt     string  `json:"decided_at"`
-	P             float64 `json:"p"`
-	Binding       string  `json:"binding"`
-	DayCommitment string  `json:"day_commitment"`
-	Reason        string  `json:"reason"`
-	Validators    int64   `json:"validators"`
-	Points        int64   `json:"points"`
-	// Rows is how many NOT_PROBED rows the decision stands for: one per
-	// assigned validator per point, as sampled_out_rows derives them.
-	Rows int64 `json:"rows"`
-}
-
-// SampledOutDecisions returns the decisions matching where (over
-// sampling_decisions aliased d), newest first, at most limit.
-func (s *Store) SampledOutDecisions(ctx context.Context, where string, limit int, args ...any) ([]SampledOutDecision, error) {
-	q := `SELECT d.vantage, d.promise_hash, d.decided_at, d.sampling_p, COALESCE(d.sampling_binding, ''), COALESCE(d.sampling_commitment, ''),
-			d.reason,
-			(SELECT COUNT(*) FROM assignments a WHERE a.promise_hash = d.promise_hash AND a.row_count > 0),
-			(SELECT COUNT(*) FROM sampling_decision_points pt WHERE pt.vantage = d.vantage AND pt.promise_hash = d.promise_hash)
-		FROM sampling_decisions d`
-	if where != "" {
-		q += " WHERE " + where
-	}
-	q += fmt.Sprintf(" ORDER BY d.decided_at DESC LIMIT %d", limit)
-	rows, err := s.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []SampledOutDecision{}
-	for rows.Next() {
-		var d SampledOutDecision
-		if err := rows.Scan(&d.Vantage, &d.PromiseHash, &d.DecidedAt, &d.P, &d.Binding, &d.DayCommitment, &d.Reason, &d.Validators, &d.Points); err != nil {
-			return nil, err
-		}
-		d.Rows = d.Validators * d.Points
-		out = append(out, d)
-	}
-	return out, rows.Err()
 }
 
 // SampledOutPoint is one point of a sampled-out decision as the corrector

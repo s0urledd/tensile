@@ -20,15 +20,14 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/correct"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/ingest"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
-	"github.com/plsgiveup/fibre/fibre-sentinel/observer/verdict"
 )
 
 // shortWindow is the retention the params really carried from height 150.
 // The fixture's window is 90 minutes and its in-window points sit at
-// probe.DefaultInWindowFractions, so the last two land at 64.8 and 82.8
-// minutes. 55 minutes puts both of them past the deadline and past the
-// five-minute prune tolerance, which is what turns their NOT_FOUND from a
-// fault into an expected prune.
+// the earlier schedule's fractions (0.12, 0.45, 0.72, 0.92), so the last
+// two land at 64.8 and 82.8 minutes. 55 minutes puts both of them past
+// the deadline and past the five-minute prune tolerance, which is what
+// turns their NOT_FOUND from a fault into an expected prune.
 const shortWindow = 55 * time.Minute
 
 // seedParams puts one params value into the store's history, as ingesting
@@ -71,48 +70,27 @@ func verifiedRange(created, msu time.Time) scan.ParamUncertainty {
 
 // heldJSON is the part of /v1/network these tests read.
 type heldJSON struct {
-	Faults      int64            `json:"faults"`
 	Classes     map[string]int64 `json:"classes"`
 	Obligations struct {
-		Total                 int64 `json:"total"`
-		Served                int64 `json:"served"`
-		Broken                int64 `json:"broken"`
-		EndUnobserved         int64 `json:"end_unobserved"`
-		HeldParamUnverified   int64 `json:"held_param_unverified"`
-		Unobserved            int64 `json:"unobserved"`
-		UnobservedReachable   int64 `json:"unobserved_reachable"`
-		UnobservedUnreachable int64 `json:"unobserved_unreachable"`
-		UnobservedNotProbed   int64 `json:"unobserved_not_probed"`
-		Pending               int64 `json:"pending"`
+		Total               int64 `json:"total"`
+		Served              int64 `json:"served"`
+		Broken              int64 `json:"broken"`
+		HeldParamUnverified int64 `json:"held_param_unverified"`
+		NotCounted          int64 `json:"not_counted"`
+		Pending             int64 `json:"pending"`
 	} `json:"obligations"`
-	ServeRate struct {
-		Value *float64 `json:"value"`
-		Num   int64    `json:"num"`
-		Den   int64    `json:"den"`
-	} `json:"serve_rate"`
-	Coverage struct {
-		Num int64 `json:"num"`
-		Den int64 `json:"den"`
-	} `json:"serve_rate_coverage"`
-	HeldOut     map[string]int64 `json:"serve_rate_held_out"`
-	Attestation struct {
-		AttestedProbes   int64 `json:"attested_probes"`
-		UnattestedProbes int64 `json:"unattested_probes"`
-		UnknownProbes    int64 `json:"unknown_probes"`
-	} `json:"attestation"`
+	ProbeCount           int64 `json:"probe_count"`
 	RetentionUncertainty *struct {
 		OpenRanges       int64  `json:"open_ranges"`
 		PublicationsHeld int64  `json:"publications_held"`
 		ProbesHeld       int64  `json:"probes_held"`
 		Note             string `json:"note"`
 	} `json:"retention_uncertainty"`
-	VantageHealth struct {
-		Suspect []struct {
-			At     string `json:"at"`
-			Reason string `json:"reason"`
-		} `json:"suspect"`
-	} `json:"vantage_health"`
 }
+
+// faults is the FAULT readings of the window, in the class they carry: a
+// held row reads RETENTION_UNVERIFIED instead.
+func (h heldJSON) faults() int64 { return h.Classes["FAULT"] }
 
 // heldFixture builds one publication whose promise sits at height 150,
 // inside the range 121-180 the tests open, with `outcomes` per validator
@@ -134,9 +112,14 @@ func heldFixture(t *testing.T, outcomes map[string][]probe.Outcome) (*store.Stor
 	}
 	sortStrings(addrs)
 	var vals []scan.ValidatorAssignment
+	held := map[string][]uint32{}
 	for i, a := range addrs {
 		vals = append(vals, scan.ValidatorAssignment{Address: a, VotingPower: 10, RowCount: 2, Rows: []int{2 * i, 2*i + 1}, Attested: true})
+		held[a] = []uint32{uint32(2 * i), uint32(2*i + 1)}
 	}
+	// every assigned row is needed (insertProbeSet), so a NOT_FOUND leaves
+	// the blob unreadable at its point and counts
+	needed := 2 * len(vals)
 	pub := scan.Publication{
 		SchemaVersion: scan.AttestationSchemaVersion, PromiseHash: "held1",
 		SettlementHeight: 150, SettlementTime: created, MustServeUntil: msu, RecordedAt: now,
@@ -144,7 +127,7 @@ func heldFixture(t *testing.T, outcomes map[string][]probe.Outcome) (*store.Stor
 		Promise:                 scan.PromiseFields{ChainID: "t", Height: 150, Commitment: "ccheld", CreationTimestamp: created, BlobSize: 4096},
 		ValidatorSignatureCount: len(vals),
 		Assignment: scan.AssignmentTable{
-			ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: 4, TotalRows: 16},
+			ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: needed, TotalRows: 4 * needed},
 			ValidatorSetHeight: 149, TotalVotingPower: int64(10 * len(vals)), Sigma: 2 * len(vals), Distinct: 2 * len(vals),
 			ValidatorsWithRows: len(vals), AttestedWithRows: len(vals), SignatureEntries: len(vals), SignaturesVerified: len(vals),
 			AttestedVotingPower: int64(10 * len(vals)), Validators: vals,
@@ -175,6 +158,7 @@ func heldFixture(t *testing.T, outcomes map[string][]probe.Outcome) (*store.Stor
 			if o == probe.OutcomeServedOK {
 				m.Download.OK, m.Download.RowsReturned, m.Download.RowsExpected = true, 2, 2
 				m.Download.CommitmentVerified, m.Download.AssignmentVerified = true, true
+				m.Download.RowIndices = held[addr]
 			}
 			raw, err := json.Marshal(m)
 			if err != nil {
@@ -232,14 +216,10 @@ func networkHeld(t *testing.T, st *store.Store) heldJSON {
 
 // The open P1, closed. Two validators prune on the retention the server
 // really used and answer NOT_FOUND inside the window this observer still
-// thinks is running. Two is under the correlated-failure guard's floor of
-// three, so the guard does not fire and never would: the guard is a
-// mitigation for a correlated outage, not for the observer being wrong
-// about the deadline.
+// thinks is running.
 //
-// The first half asserts the defect as a fact, so that anyone who "fixes"
-// this by weakening the guard instead breaks a test that says why that is
-// not the fix.
+// The first half asserts the defect as a fact: without the range on
+// record, the failures are published.
 func TestTwoValidatorsPruningOnAShortenedRetentionAreNotPublishedAsFaults(t *testing.T) {
 	ok := []probe.Outcome{probe.OutcomeServedOK, probe.OutcomeServedOK, probe.OutcomeServedOK, probe.OutcomeServedOK}
 	gone := []probe.Outcome{probe.OutcomeServedOK, probe.OutcomeServedOK, probe.OutcomeNotFound, probe.OutcomeNotFound}
@@ -250,18 +230,13 @@ func TestTwoValidatorsPruningOnAShortenedRetentionAreNotPublishedAsFaults(t *tes
 
 	st, _, _ := heldFixture(t, outcomes)
 
-	// Without the range on record: the fault is published, and the guard
-	// says nothing about it.
+	// Without the range on record: the fault is published.
 	before := networkHeld(t, st)
-	if before.Faults != 4 {
-		t.Fatalf("without the range, faults = %d, want 4 (two validators x two points)", before.Faults)
+	if before.faults() != 4 {
+		t.Fatalf("without the range, faults = %d, want 4 (two validators x two points)", before.faults())
 	}
 	if before.Obligations.Broken != 2 {
 		t.Fatalf("without the range, broken = %d, want 2", before.Obligations.Broken)
-	}
-	if len(before.VantageHealth.Suspect) != 0 {
-		t.Fatalf("two faulting validators is under MinValidators=%d; the guard must not fire: %+v",
-			verdict.MinValidators, before.VantageHealth.Suspect)
 	}
 	if before.RetentionUncertainty != nil {
 		t.Fatal("nothing is held yet")
@@ -270,8 +245,8 @@ func TestTwoValidatorsPruningOnAShortenedRetentionAreNotPublishedAsFaults(t *tes
 	// With it: neither the fault nor the credit is published.
 	openRange(t, st)
 	after := networkHeld(t, st)
-	if after.Faults != 0 {
-		t.Fatalf("faults = %d, want 0: this observer cannot say when the obligation ended", after.Faults)
+	if after.faults() != 0 {
+		t.Fatalf("faults = %d, want 0: this observer cannot say when the obligation ended", after.faults())
 	}
 	if after.Obligations.Broken != 0 {
 		t.Fatalf("broken = %d, want 0", after.Obligations.Broken)
@@ -282,31 +257,27 @@ func TestTwoValidatorsPruningOnAShortenedRetentionAreNotPublishedAsFaults(t *tes
 	if after.Obligations.Served != 0 {
 		t.Fatalf("served = %d, want 0: withholding only the accusations would raise the rate", after.Obligations.Served)
 	}
-	if after.Obligations.Unobserved != 0 {
-		t.Fatalf("unobserved = %d, want 0: the observer looked, it just cannot speak for what it saw", after.Obligations.Unobserved)
+	if after.Obligations.NotCounted != 0 {
+		t.Fatalf("not_counted = %d, want 0: the observer looked, it just cannot speak for what it saw", after.Obligations.NotCounted)
 	}
-	if n := after.HeldOut["RETENTION_UNVERIFIED"]; n != 32 {
-		t.Fatalf("serve_rate_held_out[RETENTION_UNVERIFIED] = %d, want 32 (8 validators x 4 points)", n)
-	}
-	if after.ServeRate.Den != 0 || after.ServeRate.Value != nil {
-		t.Fatalf("serve_rate = %+v, want no rate at all", after.ServeRate)
+	if n := after.Classes["RETENTION_UNVERIFIED"]; n != 32 {
+		t.Fatalf("classes[RETENTION_UNVERIFIED] = %d, want 32 (8 validators x 4 points)", n)
 	}
 	if after.RetentionUncertainty == nil || after.RetentionUncertainty.PublicationsHeld != 1 || after.RetentionUncertainty.OpenRanges != 1 {
 		t.Fatalf("retention_uncertainty = %+v, want one range holding one publication", after.RetentionUncertainty)
 	}
 	// The removal is visible, not silent: the rows never left the
 	// population, they changed name.
-	if after.Coverage.Den != before.Coverage.Den {
-		t.Fatalf("coverage.den moved from %d to %d; the hold is an override, not an exclusion", before.Coverage.Den, after.Coverage.Den)
+	if sum(after.Classes) != sum(before.Classes) {
+		t.Fatalf("the class tally moved from %d to %d rows; the hold is an override, not an exclusion", sum(before.Classes), sum(after.Classes))
 	}
 	assertReconciles(t, after)
 }
 
-// A share under the guard's threshold is the other half of the same hole:
-// four of ten validators faulting is 40%, under FaultThreshold, so the
-// guard does not fire. The hold does not care about the share at all —
-// it is keyed on the publication, not on the schedule point.
-func TestAShareUnderTheGuardThresholdIsStillHeld(t *testing.T) {
+// The hold does not care how many validators failed: it is keyed on the
+// publication, not on the reading, and it withholds the clean validators
+// as well as the four that failed.
+func TestAShareOfTheSetFailingIsHeldWithTheRest(t *testing.T) {
 	ok := []probe.Outcome{probe.OutcomeServedOK, probe.OutcomeServedOK, probe.OutcomeServedOK, probe.OutcomeServedOK}
 	gone := []probe.Outcome{probe.OutcomeServedOK, probe.OutcomeServedOK, probe.OutcomeNotFound, probe.OutcomeNotFound}
 	outcomes := map[string][]probe.Outcome{}
@@ -316,32 +287,24 @@ func TestAShareUnderTheGuardThresholdIsStillHeld(t *testing.T) {
 	for _, a := range []string{"g1", "g2", "g3", "g4", "g5", "g6"} {
 		outcomes[a] = ok
 	}
-	if share := 4.0 / 10.0; share >= verdict.FaultThreshold {
-		t.Fatalf("this test no longer sits under the guard's threshold: %v >= %v", share, verdict.FaultThreshold)
-	}
-
 	st, _, _ := heldFixture(t, outcomes)
 	before := networkHeld(t, st)
-	if before.Faults != 8 || before.Obligations.Broken != 4 {
-		t.Fatalf("without the range: faults=%d broken=%d, want 8/4", before.Faults, before.Obligations.Broken)
-	}
-	if len(before.VantageHealth.Suspect) != 0 {
-		t.Fatalf("40%% faulting is under the threshold; the guard must not fire: %+v", before.VantageHealth.Suspect)
+	if before.faults() != 8 || before.Obligations.Broken != 4 {
+		t.Fatalf("without the range: faults=%d broken=%d, want 8/4", before.faults(), before.Obligations.Broken)
 	}
 
 	openRange(t, st)
 	after := networkHeld(t, st)
-	if after.Faults != 0 || after.Obligations.Broken != 0 {
-		t.Fatalf("faults=%d broken=%d, want 0/0", after.Faults, after.Obligations.Broken)
+	if after.faults() != 0 || after.Obligations.Broken != 0 {
+		t.Fatalf("faults=%d broken=%d, want 0/0", after.faults(), after.Obligations.Broken)
 	}
 	// The symmetry that matters: the six clean validators are withheld too.
 	// If only the four accusations were withheld, the published rate would
 	// read 6/6 = 100% off the back of a deadline this observer cannot
 	// vouch for — the exact inflation the codebase refuses for UNATTESTED
 	// and for grace probes.
-	if after.Obligations.Served != 0 || after.ServeRate.Den != 0 {
-		t.Fatalf("served=%d serve_rate.den=%d: withholding only the failures inflates the rate",
-			after.Obligations.Served, after.ServeRate.Den)
+	if after.Obligations.Served != 0 {
+		t.Fatalf("served=%d: withholding only the failures inflates the rate", after.Obligations.Served)
 	}
 	if after.Obligations.HeldParamUnverified != 10 {
 		t.Fatalf("held_param_unverified = %d, want 10", after.Obligations.HeldParamUnverified)
@@ -349,33 +312,23 @@ func TestAShareUnderTheGuardThresholdIsStillHeld(t *testing.T) {
 	assertReconciles(t, after)
 }
 
+func sum(m map[string]int64) int64 {
+	var n int64
+	for _, v := range m {
+		n += v
+	}
+	return n
+}
+
 // A held row is still a row, so the response must still reconcile against
-// itself exactly as docs/verdicts.md promises. This is what the class
-// override buys over a WHERE exclusion, and it is asserted rather than
-// argued.
+// itself exactly as docs/verdicts.md promises: the obligation buckets
+// partition the obligations. This is what the class override buys over a
+// WHERE exclusion, and it is asserted rather than argued.
 func assertReconciles(t *testing.T, r heldJSON) {
 	t.Helper()
-	if sum := r.Attestation.AttestedProbes + r.Attestation.UnattestedProbes + r.Attestation.UnknownProbes; sum != r.Coverage.Den {
-		t.Errorf("serve_rate_coverage.den = %d but attested+unattested+unknown = %d", r.Coverage.Den, sum)
-	}
-	if r.HeldOut["UNATTESTED"] != r.Attestation.UnattestedProbes {
-		t.Errorf("serve_rate_held_out[UNATTESTED] = %d but attestation.unattested_probes = %d",
-			r.HeldOut["UNATTESTED"], r.Attestation.UnattestedProbes)
-	}
-	var out int64
-	for _, n := range r.HeldOut {
-		out += n
-	}
-	if r.ServeRate.Den+out != r.Coverage.Den {
-		t.Errorf("serve_rate.den (%d) + held out (%d) = %d, want coverage.den %d", r.ServeRate.Den, out, r.ServeRate.Den+out, r.Coverage.Den)
-	}
 	o := r.Obligations
-	if sum := o.Broken + o.Served + o.EndUnobserved + o.HeldParamUnverified +
-		o.UnobservedReachable + o.UnobservedUnreachable + o.UnobservedNotProbed + o.Pending; sum != o.Total {
+	if sum := o.Broken + o.Served + o.HeldParamUnverified + o.NotCounted + o.Pending; sum != o.Total {
 		t.Errorf("the obligation buckets sum to %d, not total %d", sum, o.Total)
-	}
-	if o.Unobserved != o.UnobservedReachable+o.UnobservedUnreachable+o.UnobservedNotProbed {
-		t.Errorf("unobserved (%d) absorbed something it should not have", o.Unobserved)
 	}
 }
 
@@ -437,8 +390,8 @@ func TestAVerifiedRangeIsCorrectedBeforeItsHoldLifts(t *testing.T) {
 	st, created, msu := heldFixture(t, map[string][]probe.Outcome{"v1": gone, "v2": gone, "v3": ok})
 
 	before := networkHeld(t, st)
-	if before.Faults != 4 || before.Obligations.Broken != 2 {
-		t.Fatalf("without the range: faults=%d broken=%d, want 4/2", before.Faults, before.Obligations.Broken)
+	if before.faults() != 4 || before.Obligations.Broken != 2 {
+		t.Fatalf("without the range: faults=%d broken=%d, want 4/2", before.faults(), before.Obligations.Broken)
 	}
 
 	// The params history the scanner persisted, as the collector ingested
@@ -461,8 +414,8 @@ func TestAVerifiedRangeIsCorrectedBeforeItsHoldLifts(t *testing.T) {
 	}
 	// The deadline moved, so the two NOT_FOUND points fall past it and are
 	// expected rather than faults. That is the whole defect, closed.
-	if after.Faults != 0 {
-		t.Fatalf("faults = %d after the deadline was corrected, want 0", after.Faults)
+	if after.faults() != 0 {
+		t.Fatalf("faults = %d after the deadline was corrected, want 0", after.faults())
 	}
 	if after.Obligations.Broken != 0 {
 		t.Fatalf("broken = %d after the deadline was corrected, want 0", after.Obligations.Broken)
@@ -509,8 +462,8 @@ func TestAnOpenRangeThatLaterVerifiesIsCorrectedToo(t *testing.T) {
 
 	openRange(t, st)
 	held := networkHeld(t, st)
-	if held.Obligations.HeldParamUnverified != 2 || held.Faults != 0 {
-		t.Fatalf("while unresolvable: held=%d faults=%d, want 2/0", held.Obligations.HeldParamUnverified, held.Faults)
+	if held.Obligations.HeldParamUnverified != 2 || held.faults() != 0 {
+		t.Fatalf("while unresolvable: held=%d faults=%d, want 2/0", held.Obligations.HeldParamUnverified, held.faults())
 	}
 
 	seedParams(t, st, 100, created, msu.Sub(created))
@@ -522,8 +475,8 @@ func TestAnOpenRangeThatLaterVerifiesIsCorrectedToo(t *testing.T) {
 	if after.RetentionUncertainty != nil || after.Obligations.HeldParamUnverified != 0 {
 		t.Fatalf("still held after the range verified and corrected: %+v", after.RetentionUncertainty)
 	}
-	if after.Faults != 0 || after.Obligations.Broken != 0 {
-		t.Fatalf("faults=%d broken=%d after the correction, want 0/0", after.Faults, after.Obligations.Broken)
+	if after.faults() != 0 || after.Obligations.Broken != 0 {
+		t.Fatalf("faults=%d broken=%d after the correction, want 0/0", after.faults(), after.Obligations.Broken)
 	}
 }
 
@@ -548,8 +501,8 @@ func TestARowThatCannotBeReDerivedKeepsTheRangeHeld(t *testing.T) {
 	if after.RetentionUncertainty == nil {
 		t.Fatal("the range closed although a row could not be re-derived")
 	}
-	if after.Faults != 0 {
-		t.Fatalf("faults = %d; a row this observer cannot re-derive must not publish one", after.Faults)
+	if after.faults() != 0 {
+		t.Fatalf("faults = %d; a row this observer cannot re-derive must not publish one", after.faults())
 	}
 }
 
@@ -616,8 +569,8 @@ func TestAMeasurementArrivingAfterTheRangeClosedIsStillCorrected(t *testing.T) {
 	// stamped in the same statement that writes the row, so there is no
 	// moment at which they exist and read FAULT.
 	between := networkHeld(t, st)
-	if between.Faults != 0 {
-		t.Fatalf("faults = %d between the insert and the sweep; a stale row must be born held", between.Faults)
+	if between.faults() != 0 {
+		t.Fatalf("faults = %d between the insert and the sweep; a stale row must be born held", between.faults())
 	}
 
 	// The collector's next pass re-grades them against the deadline the
@@ -641,8 +594,8 @@ func TestAMeasurementArrivingAfterTheRangeClosedIsStillCorrected(t *testing.T) {
 	}
 
 	after := networkHeld(t, st)
-	if after.Faults != 0 {
-		t.Fatalf("faults = %d after the sweep: a measurement arriving against a withdrawn deadline was published as one", after.Faults)
+	if after.faults() != 0 {
+		t.Fatalf("faults = %d after the sweep: a measurement arriving against a withdrawn deadline was published as one", after.faults())
 	}
 	if after.Obligations.Broken != 0 {
 		t.Fatalf("broken = %d after the sweep", after.Obligations.Broken)
@@ -730,8 +683,8 @@ func TestAMeasurementArrivingIntoAnOpenRangeIsHeldOnInsert(t *testing.T) {
 	insertLate(t, st, created, msu, "v2", 0.95, probe.OutcomeNotFound)
 
 	got := networkHeld(t, st)
-	if got.Faults != 0 {
-		t.Fatalf("faults = %d without a sync; a row of a withheld publication must be born withheld", got.Faults)
+	if got.faults() != 0 {
+		t.Fatalf("faults = %d without a sync; a row of a withheld publication must be born withheld", got.faults())
 	}
 	if got.Obligations.Broken != 0 {
 		t.Fatalf("broken = %d", got.Obligations.Broken)
@@ -814,15 +767,15 @@ func TestAPublicationSettlingIntoARangeAlreadyOnRecordIsHeldOnInsert(t *testing.
 	if rowHeld != 1 {
 		t.Fatal("the row went in unheld although a range that still withholds covers its publication")
 	}
-	if got := networkHeld(t, st); got.Faults != 0 {
-		t.Fatalf("faults = %d without a sync", got.Faults)
+	if got := networkHeld(t, st); got.faults() != 0 {
+		t.Fatalf("faults = %d without a sync", got.faults())
 	}
 }
 
 // The disclosure follows the rows, not the ranges. A row withheld after
 // every range has closed is still a row this observer is not speaking for,
-// and RETENTION_UNVERIFIED sitting in serve_rate_held_out with no block
-// beside it saying why is a held-out bucket with no explanation.
+// and RETENTION_UNVERIFIED sitting in the class tally with no block beside
+// it saying why is a withheld row with no explanation.
 func TestTheDisclosureSurvivesTheRangeThatCausedIt(t *testing.T) {
 	ok := []probe.Outcome{probe.OutcomeServedOK, probe.OutcomeServedOK, probe.OutcomeServedOK, probe.OutcomeServedOK}
 	st, created, staleMSU := heldFixture(t, map[string][]probe.Outcome{"v1": ok})
@@ -837,7 +790,7 @@ func TestTheDisclosureSurvivesTheRangeThatCausedIt(t *testing.T) {
 	insertLate(t, st, created, staleMSU, "v1", 0.95, probe.OutcomeNotFound)
 
 	got := networkHeld(t, st)
-	if got.HeldOut["RETENTION_UNVERIFIED"] == 0 {
+	if got.Classes["RETENTION_UNVERIFIED"] == 0 {
 		t.Fatal("this test needs a withheld row to mean anything")
 	}
 	if got.RetentionUncertainty == nil {
@@ -875,8 +828,8 @@ func TestRecordingARangeWithholdsTheRowsAlreadyStored(t *testing.T) {
 
 	// The faults are published, and now they are also cached.
 	before := read()
-	if before.Faults != 4 || before.Obligations.Broken != 2 {
-		t.Fatalf("faults=%d broken=%d before the range, want 4/2", before.Faults, before.Obligations.Broken)
+	if before.faults() != 4 || before.Obligations.Broken != 2 {
+		t.Fatalf("faults=%d broken=%d before the range, want 4/2", before.faults(), before.Obligations.Broken)
 	}
 
 	// The range lands. Nothing else runs: no hold sync, no corrector.
@@ -905,8 +858,8 @@ func TestRecordingARangeWithholdsTheRowsAlreadyStored(t *testing.T) {
 	}
 
 	after := read()
-	if after.Faults != 0 {
-		t.Fatalf("faults = %d from the cached answer after the range was recorded; the hold did not invalidate it", after.Faults)
+	if after.faults() != 0 {
+		t.Fatalf("faults = %d from the cached answer after the range was recorded; the hold did not invalidate it", after.faults())
 	}
 	if after.Obligations.Broken != 0 {
 		t.Fatalf("broken = %d", after.Obligations.Broken)
@@ -1014,7 +967,7 @@ func TestTwoRangesInOnePassEachInvalidateTheCachedAnswer(t *testing.T) {
 		get(t, ts, "/v1/network?window=24h", &out)
 		return out
 	}
-	if got := read().Faults; got != 4 {
+	if got := read().faults(); got != 4 {
 		t.Fatalf("faults = %d before any range, want 4", got)
 	}
 
@@ -1033,8 +986,8 @@ func TestTwoRangesInOnePassEachInvalidateTheCachedAnswer(t *testing.T) {
 	// The cache is filled here, between the two records. pubB's faults are
 	// real at this moment and correctly published.
 	mid := read()
-	if mid.Faults != 2 {
-		t.Fatalf("faults = %d after range A, want pubB's 2", mid.Faults)
+	if mid.faults() != 2 {
+		t.Fatalf("faults = %d after range A, want pubB's 2", mid.faults())
 	}
 
 	// Range B lands in the same pass, under the same clock, covering pubB.
@@ -1047,8 +1000,8 @@ func TestTwoRangesInOnePassEachInvalidateTheCachedAnswer(t *testing.T) {
 	}
 
 	after := read()
-	if after.Faults != 0 {
-		t.Fatalf("faults = %d from the cached answer after range B; the two ranges wrote the same revision", after.Faults)
+	if after.faults() != 0 {
+		t.Fatalf("faults = %d from the cached answer after range B; the two ranges wrote the same revision", after.faults())
 	}
 	if after.Obligations.Broken != 0 {
 		t.Fatalf("broken = %d", after.Obligations.Broken)
@@ -1079,43 +1032,27 @@ func TestPerValidatorFiguresHonourTheHoldAndAddUpToTheNetwork(t *testing.T) {
 	get(t, ts, "/v1/network?window=24h", &network)
 	var vals struct {
 		Validators []struct {
-			Address   string           `json:"address"`
-			Faults    int64            `json:"faults"`
-			Classes   map[string]int64 `json:"classes"`
-			ServeRate struct {
-				Den int64 `json:"den"`
-			} `json:"serve_rate"`
-			ByPoint []struct {
-				Key  string `json:"key"`
-				Rate struct {
-					Num int64 `json:"num"`
-					Den int64 `json:"den"`
-				} `json:"serve_rate"`
-			} `json:"serve_rate_by_point"`
+			Address     string           `json:"address"`
+			Classes     map[string]int64 `json:"classes"`
+			Obligations obligationsJSON  `json:"obligations"`
 		} `json:"validators"`
 	}
 	if code := get(t, ts, "/v1/validators?window=24h", &vals); code != 200 || len(vals.Validators) != 8 {
 		t.Fatalf("validators: %d, %d rows", code, len(vals.Validators))
 	}
-	var faults, held, faultClass int64
+	var held, faultClass int64
 	for _, v := range vals.Validators {
-		faults += v.Faults
 		held += v.Classes["RETENTION_UNVERIFIED"]
 		faultClass += v.Classes["FAULT"]
-		if v.ServeRate.Den != 0 {
-			t.Errorf("%s: a rate over held rows (den %d)", v.Address, v.ServeRate.Den)
-		}
-		for _, p := range v.ByPoint {
-			if p.Rate.Den != 0 {
-				t.Errorf("%s at %s: a per-point rate over held rows (%d/%d)", v.Address, p.Key, p.Rate.Num, p.Rate.Den)
-			}
+		if v.Obligations.Rate.Den != 0 {
+			t.Errorf("%s: a rate over held rows (den %d)", v.Address, v.Obligations.Rate.Den)
 		}
 	}
-	if network.Faults != 0 || faults != network.Faults || faultClass != 0 {
-		t.Fatalf("faults: network %d, per-validator sum %d, FAULT class %d; want all 0 under the hold", network.Faults, faults, faultClass)
+	if network.faults() != 0 || faultClass != 0 {
+		t.Fatalf("FAULT readings: network %d, per-validator sum %d; want 0 under the hold", network.faults(), faultClass)
 	}
-	if held != network.HeldOut["RETENTION_UNVERIFIED"] || held != 32 {
-		t.Fatalf("held rows: per-validator sum %d, network %d, want 32", held, network.HeldOut["RETENTION_UNVERIFIED"])
+	if held != network.Classes["RETENTION_UNVERIFIED"] || held != 32 {
+		t.Fatalf("held rows: per-validator sum %d, network %d, want 32", held, network.Classes["RETENTION_UNVERIFIED"])
 	}
 
 	var probes struct {
@@ -1159,12 +1096,12 @@ func TestTheValidatorPageIsCachedUntilAHoldLandsAndRefusesUnknownAddresses(t *te
 
 	type detail struct {
 		Validator struct {
-			Faults int64 `json:"faults"`
+			Obligations obligationsJSON `json:"obligations"`
 		} `json:"validator"`
 		Recent []any `json:"recent_probes"`
 	}
 	var d detail
-	if code := get(t, ts, "/v1/validators/"+a+"?window=24h", &d); code != 200 || d.Validator.Faults != 2 || len(d.Recent) != 4 {
+	if code := get(t, ts, "/v1/validators/"+a+"?window=24h", &d); code != 200 || d.Validator.Obligations.Broken != 1 || len(d.Recent) != 4 {
 		t.Fatalf("before: %d %+v", code, d)
 	}
 	// Within the TTL the answer is the cached one: the rows behind it are
@@ -1179,7 +1116,7 @@ func TestTheValidatorPageIsCachedUntilAHoldLandsAndRefusesUnknownAddresses(t *te
 	// A hold clears it at once.
 	openRange(t, st)
 	d = detail{}
-	if code := get(t, ts, "/v1/validators/"+a+"?window=24h", &d); code != 200 || d.Validator.Faults != 0 || len(d.Recent) != 0 {
+	if code := get(t, ts, "/v1/validators/"+a+"?window=24h", &d); code != 200 || d.Validator.Obligations.Broken != 0 || len(d.Recent) != 0 {
 		t.Fatalf("after the hold: %d %+v", code, d)
 	}
 

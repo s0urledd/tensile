@@ -31,7 +31,6 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/keybase"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/rollup"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
-	"github.com/plsgiveup/fibre/fibre-sentinel/observer/verdict"
 )
 
 func main() {
@@ -51,7 +50,7 @@ func main() {
 		measPath  = flag.String("measurements", "", "path to measurements.jsonl (default <data-dir>/measurements.jsonl)")
 		reachPath = flag.String("reachability", "", "path to reachability.jsonl (default <data-dir>/reachability.jsonl)")
 		soPath    = flag.String("sampling-decisions", "", "path to sampling_decisions.jsonl, the prober's record of publications its load policy sampled out, one line each (default <data-dir>/sampling_decisions.jsonl)")
-		vantDir   = flag.String("vantages-dir", "", "dir other vantages' files are copied to, <name>/reachability.jsonl and <name>/measurements.jsonl each (default <data-dir>/vantages)")
+		vantDir   = flag.String("vantages-dir", "", "dir other vantages' heartbeats are copied to, <name>/reachability.jsonl each (default <data-dir>/vantages)")
 		payPath   = flag.String("payments", "", "path to payments.jsonl (default <data-dir>/payments.jsonl)")
 		regPath   = flag.String("registry", "", "path to registry.jsonl, this collector's own endpoint-history log (default <data-dir>/registry.jsonl)")
 		runsPath  = flag.String("runs", "", "path to runs.jsonl, every component's record of its starts, stops and configuration (default <data-dir>/runs.jsonl)")
@@ -269,58 +268,6 @@ func main() {
 			live.Set("late_verdicts", applied)
 		}
 	}
-	// Other vantages' answers to this observer's faults (verdict.ConfirmFault).
-	// A cleared fault is withdrawn by an amendment, logged before it is
-	// applied exactly as judgeLate's are, so a rebuild replays it and the
-	// export carries it; a confirmed one is marked on its row.
-	judgeConfirmations := func(now time.Time) {
-		ds, err := st.JudgeConfirmations(ctx, now)
-		if err != nil {
-			log.Printf("confirmations: %v", err)
-			live.Error(fmt.Sprintf("confirmations: %v", err))
-			return
-		}
-		cleared, confirmed := 0, 0
-		for _, d := range ds {
-			if a := d.Amendment; a != nil {
-				b, err := json.Marshal(a)
-				if err != nil {
-					log.Printf("amendments: marshal %s: %v", a.DedupeKey, err)
-					continue
-				}
-				if _, err := amendFile.Write(append(b, '\n')); err != nil {
-					log.Printf("amendments: write: %v", err)
-					live.Error(fmt.Sprintf("amendments write: %v", err))
-					continue
-				}
-				if err := amendFile.Sync(); err != nil {
-					log.Printf("amendments: sync: %v", err)
-					live.Error(fmt.Sprintf("amendments sync: %v", err))
-					continue
-				}
-				ok, err := st.ApplyAmendment(*a)
-				if err != nil {
-					log.Printf("confirmations: apply %s: %v", a.DedupeKey, err)
-					continue
-				}
-				if ok {
-					cleared++
-					log.Printf("fault cleared by %s: %s %s %s", d.Vantage, a.PromiseHash[:min(12, len(a.PromiseHash))], a.ValidatorAddress, a.ScheduledAt.UTC().Format(time.RFC3339))
-				}
-			}
-			if err := st.SettleConfirmation(d); err != nil {
-				log.Printf("confirmations: settle %s: %v", d.ConfirmKey, err)
-				continue
-			}
-			if d.Result == verdict.ConfirmConfirmed {
-				confirmed++
-			}
-		}
-		if cleared+confirmed > 0 {
-			log.Printf("confirmations: %d fault(s) cleared, %d confirmed from another vantage", cleared, confirmed)
-			live.Set("faults_cleared", cleared)
-		}
-	}
 	corrFile, err := os.OpenFile(*corrPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		log.Fatalf("open %s: %v", *corrPath, err)
@@ -461,26 +408,6 @@ func main() {
 				}
 			}
 		}
-		// Their answers to this observer's confirmation requests, one
-		// measurements.jsonl per vantage that confirms faults. Into
-		// probe_confirmations, judged after the amendments are replayed.
-		if files, err := ingest.VantageMeasurementFiles(*vantDir); err != nil {
-			fail("vantages", err)
-		} else {
-			for _, f := range files {
-				name := filepath.Base(filepath.Dir(f))
-				if r, err := ingest.VantageMeasurements(st, f, *vantage, now); err != nil {
-					fail("confirmations from "+name, err)
-				} else {
-					if r.Inserted > 0 {
-						log.Printf("confirmations from %s: +%d (read %d, line %d)", name, r.Inserted, r.Read, r.Line)
-					}
-					if r.Skipped > 0 {
-						log.Printf("confirmations from %s: WARNING skipped %d undecodable line(s); last: %s", name, r.Skipped, r.LastSkipped)
-					}
-				}
-			}
-		}
 		if r, err := ingest.Registry(st, *regPath, now); err != nil {
 			fail("registry", err)
 		} else if r.Inserted > 0 {
@@ -526,7 +453,6 @@ func main() {
 			log.Printf("wal checkpoint: %d of %d frame(s) written back and the log truncated", done, inLog)
 		}
 		judgeLate(now)
-		judgeConfirmations(now)
 		// Corrections first, then the hold sync. A verified range only
 		// stops holding once every deadline it covers has actually been
 		// re-derived, so the flag can never be cleared on a row the

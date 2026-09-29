@@ -22,8 +22,12 @@ fibre-sentinel/bin/observer-api -db /tmp/fx/observer.db -listen 127.0.0.1:8099 \
 
 It creates the schema by running `observer-collector -once`, so it can never
 drift from the shipped migrations, then fills it with sixty validators, 260
-publications and about 85,000 probes. The draw is seeded, so the same fixture
-comes out every run and two screenshots are comparable.
+publications and one reading of each, as the prober makes it: every validator
+with rows, endorsing or not, largest stake first, until 4096 distinct rows
+came back. In one blob in forty the largest endorsing validators lost the
+shard and the validators that did not endorse never stored it, so the
+unavailable and not-served words are present too. The draw is seeded, so the same fixture comes out every run and
+two screenshots are comparable.
 
 Every row is placed relative to **the moment the script runs**, because the
 API reads its 24h / 7d / 30d windows off the real clock: a fixture pinned to a
@@ -41,13 +45,14 @@ Every page carries an "Observer degraded" line for the first reason.
 
 The population is deliberately mostly healthy, because a fixture that is half
 broken teaches you to design for a network that does not exist. Eleven of the
-sixty are impaired, each in a different way, so every class the taxonomy can
-produce is present and findable: a repeated fault, two occasional ones, two
-outages that begin at a known hour, a validator with no registered host, one
-whose certificate has lapsed (identity reason `cert_expired`, the verifier's
-own code, so the API calls it expired and not a mismatch), one that never signed, one that prunes before
-the deadline, one that is reachable and answers every download with a server
-error, and one that rate-limits most downloads. Two more are jailed: their
+sixty are impaired, each in a different way: a repeated fault, two occasional
+ones, two outages that begin at a known hour, a validator with no registered
+host, one whose certificate has lapsed (identity reason `cert_expired`, the
+verifier's own code, so the API calls it expired and not a mismatch), one that
+never signed, one that prunes before the deadline, one that is reachable and
+answers every download with a server error, and one that rate-limits most
+downloads. On an available blob their failures count neither way, which is
+the case the pages must word right. Two more are jailed: their
 endpoint rows are closed with the reason the collector records and their
 heartbeats stop at that moment, which is how the table's "jailed" word and
 the validator page's "left the bonded list" line get exercised.
@@ -66,7 +71,7 @@ quorum membership is a race rather than a list. A fixture where everyone signs
 hides the single class most likely to be misread on the dashboard; this one
 produces it at the rate the real network will.
 
-Probe durations are generated rather than constant: they scale with the
+Request durations are generated rather than constant: they scale with the
 validator's assigned rows, sit on a per-validator floor, and have a long right
 tail, so the median and the 95th percentile are different numbers and the
 throughput column has something to show. One validator (`slow`) serves
@@ -76,22 +81,16 @@ throughput is the best — which is the case the column exists to get right.
 
 Three modelling rules it follows, all taken from the code rather than invented:
 
-- **Attestation is decided at upload time, serving at probe time.** A validator
-  already dark when the publisher uploaded never received the shard, so it never
-  signed: that is `UNATTESTED`. One that signed and then went dark inside the
-  retention window is `UNREACHABLE`. Conflating them makes every blob
-  permanently "degraded" and the fully-served figure a constant zero.
+- **Attestation is decided at upload time, serving at reading time.** A
+  validator already dark when the publisher uploaded never received the shard,
+  so it never signed and is not read. One that signed and then went dark inside
+  the retention window is read, and is `UNREACHABLE`.
 - **A validator with no registered host is absent from the signature set**, for
-  the same reason, but still classifies as `NOT_REGISTERED`, because
-  `classify.go` judges `OutcomeNoHost` before the attestation check.
-- **The wire is recorded as it happened, and attestation decides the class on
-  top of it.** `classify.go` judges identity, then no-host, then attestation,
-  then the outcome, and the fixture's `classify()` is a branch-for-branch port
-  of that order. An unattested validator with a lapsed certificate is
-  `IDENTITY_EXPIRED`, not `UNATTESTED`; an unattested validator that was
-  refusing connections still has `tcp_ok = 0` on its row. Writing a clean
-  handshake for every unattested probe, which is what this did before, made the
-  heartbeat and the probe history disagree about the same endpoint at the same
+  the same reason, so it is not read either.
+- **The wire is recorded as it happened.** The fixture's `classify()` is a
+  branch-for-branch port of `classify.go` over the outcomes it emits, and a
+  validator that was refusing connections has `tcp_ok = 0` on its row, so the
+  heartbeat and the reading history agree about the same endpoint at the same
   minute.
 
 Rows are inserted in start-time order, heartbeats and probes alike. Several of

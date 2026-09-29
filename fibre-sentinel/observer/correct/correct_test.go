@@ -69,7 +69,7 @@ func fixtureAt(t *testing.T, n int, clock time.Time) (*store.Store, time.Time) {
 	}
 	labels := []string{"w1", "w2", "w3", "w4"}
 	for i := 0; i < n; i++ {
-		for j, f := range probe.DefaultInWindowFractions {
+		for j, f := range []float64{0.12, 0.45, 0.72, 0.92} { // the earlier schedule's points
 			at := created.Add(time.Duration(float64(window) * f))
 			out := probe.OutcomeServedOK
 			if j >= 2 {

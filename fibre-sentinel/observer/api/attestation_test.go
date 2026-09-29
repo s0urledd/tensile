@@ -85,6 +85,7 @@ func attestedFixture(t *testing.T) *httptest.Server {
 		if outcome == probe.OutcomeServedOK {
 			m.Download.OK, m.Download.RowsReturned, m.Download.RowsExpected = true, 2, 2
 			m.Download.CommitmentVerified, m.Download.AssignmentVerified = true, true
+			m.Download.RowIndices = map[string][]uint32{"v1": {0, 1}, "v2": {2, 3}}[addr]
 		}
 		return m
 	}
@@ -109,27 +110,27 @@ func attestedFixture(t *testing.T) *httptest.Server {
 	return ts
 }
 
-// An unproven obligation must not reach either side of the serve rate. v3 did
-// not serve, but nothing on chain says v3 ever stored the shard, so the
-// network serve rate is 2/2 and v3's is empty — not 2/3, and not a fault.
-func TestUnattestedProbeStaysOutOfTheServeRate(t *testing.T) {
+// An unproven obligation is no obligation. v3 did not serve, but nothing on
+// chain says v3 ever stored the shard, so it owes nothing: its reading is
+// UNATTESTED, and it has no obligation to count either way.
+func TestAnUnattestedReadingIsNoObligation(t *testing.T) {
 	ts := attestedFixture(t)
 
 	var net struct {
-		ServeRate   struct{ Num, Den int64 } `json:"serve_rate"`
-		Classes     map[string]int64         `json:"classes"`
+		Classes     map[string]int64 `json:"classes"`
+		Obligations obligationsJSON  `json:"obligations"`
 		Attestation struct {
-			Attested   int64                    `json:"attested_probes"`
-			Unattested int64                    `json:"unattested_probes"`
-			Unknown    int64                    `json:"unknown_probes"`
-			Coverage   struct{ Num, Den int64 } `json:"coverage"`
+			Attested   int64                    `json:"attested_blobs"`
+			Unattested int64                    `json:"unattested_blobs"`
+			Unknown    int64                    `json:"unknown_blobs"`
+			Coverage   struct{ Num, Den int64 } `json:"blob_coverage"`
 		} `json:"attestation"`
 	}
 	if code := get(t, ts, "/v1/network?window=all", &net); code != 200 {
 		t.Fatalf("network: %d", code)
 	}
-	if net.ServeRate.Num != 2 || net.ServeRate.Den != 2 {
-		t.Fatalf("serve rate = %d/%d, want 2/2 (classes %v)", net.ServeRate.Num, net.ServeRate.Den, net.Classes)
+	if net.Obligations.Total != 2 || net.Obligations.Pending != 2 {
+		t.Fatalf("obligations = %+v, want v1's and v2's, pending", net.Obligations)
 	}
 	if net.Classes["UNATTESTED"] != 1 || net.Classes["FAULT"] != 0 {
 		t.Fatalf("classes = %v, want one UNATTESTED and no FAULT", net.Classes)
@@ -143,10 +144,10 @@ func TestUnattestedProbeStaysOutOfTheServeRate(t *testing.T) {
 
 	var vals struct {
 		Validators []struct {
-			Address      string                   `json:"address"`
-			ServeRate    struct{ Num, Den int64 } `json:"serve_rate"`
-			AttestedLast *bool                    `json:"attested_last"`
-			Classes      map[string]int64         `json:"classes"`
+			Address      string           `json:"address"`
+			Obligations  obligationsJSON  `json:"obligations"`
+			AttestedLast *bool            `json:"attested_last"`
+			Classes      map[string]int64 `json:"classes"`
 		} `json:"validators"`
 	}
 	if code := get(t, ts, "/v1/validators?window=all", &vals); code != 200 {
@@ -157,17 +158,16 @@ func TestUnattestedProbeStaysOutOfTheServeRate(t *testing.T) {
 		switch v.Address {
 		case "v1", "v2":
 			seen++
-			if v.ServeRate.Num != 1 || v.ServeRate.Den != 1 {
-				t.Fatalf("%s serve rate = %d/%d, want 1/1", v.Address, v.ServeRate.Num, v.ServeRate.Den)
+			if v.Obligations.Total != 1 || v.Obligations.Pending != 1 {
+				t.Fatalf("%s obligations = %+v, want one, pending", v.Address, v.Obligations)
 			}
 			if v.AttestedLast == nil || !*v.AttestedLast {
 				t.Fatalf("%s attested_last = %v, want true", v.Address, v.AttestedLast)
 			}
 		case "v3":
 			seen++
-			if v.ServeRate.Den != 0 {
-				t.Fatalf("v3 serve rate = %d/%d, want an empty rate: nothing proves it stored the shard",
-					v.ServeRate.Num, v.ServeRate.Den)
+			if v.Obligations.Total != 0 {
+				t.Fatalf("v3 obligations = %+v, want none: nothing proves it stored the shard", v.Obligations)
 			}
 			if v.Classes["UNATTESTED"] != 1 {
 				t.Fatalf("v3 classes = %v, want one UNATTESTED", v.Classes)
@@ -182,24 +182,19 @@ func TestUnattestedProbeStaysOutOfTheServeRate(t *testing.T) {
 	}
 }
 
-// A validator with no proof of storage must not demote a blob whose rows all
-// came back. v1 and v2 together served all 4 original rows; v3 served
-// nothing, but was never proven obliged, so the verdict is "yes", not
-// "degraded".
+// v1 and v2 together returned all 4 rows the blob needs: it is Available,
+// whatever v3, which never endorsed it, answered.
 func TestReconstructabilityIgnoresUnattestedNonServers(t *testing.T) {
 	ts := attestedFixture(t)
 
 	var blob struct {
 		Blob struct {
 			Reconstructable struct {
-				Status             string `json:"status"`
-				ServedRows         int    `json:"served_distinct_rows"`
-				NeededRows         int    `json:"needed_rows"`
-				ServedBy           int    `json:"served_by_validators"`
-				AssignedTotal      int    `json:"assigned_validators"`
-				AttestedValidators int    `json:"attested_validators"`
-				AttestationKnown   bool   `json:"attestation_known"`
-				ServedByAttested   int    `json:"served_by_attested"`
+				Status     string `json:"status"`
+				ServedRows int    `json:"served_distinct_rows"`
+				NeededRows int    `json:"needed_rows"`
+				ServedBy   int    `json:"served_by_validators"`
+				Asked      int    `json:"probed_validators"`
 			} `json:"reconstructable"`
 		} `json:"blob"`
 		Assignments []struct {
@@ -211,17 +206,14 @@ func TestReconstructabilityIgnoresUnattestedNonServers(t *testing.T) {
 		t.Fatalf("blob: %d", code)
 	}
 	rc := blob.Blob.Reconstructable
-	if !rc.AttestationKnown || rc.AttestedValidators != 2 || rc.ServedByAttested != 2 {
-		t.Fatalf("attestation on the verdict = %+v, want known with 2 attested and 2 of them serving", rc)
-	}
 	if rc.ServedRows != 4 || rc.NeededRows != 4 {
 		t.Fatalf("rows = %d/%d, want 4/4", rc.ServedRows, rc.NeededRows)
 	}
-	if rc.ServedBy != 2 || rc.AssignedTotal != 3 {
-		t.Fatalf("served_by=%d assigned=%d, want 2 of 3", rc.ServedBy, rc.AssignedTotal)
+	if rc.ServedBy != 2 || rc.Asked != 3 {
+		t.Fatalf("served_by=%d asked=%d, want 2 of 3", rc.ServedBy, rc.Asked)
 	}
 	if rc.Status != "yes" {
-		t.Fatalf("status = %q, want \"yes\": every proven-obliged validator served and the rows are all there", rc.Status)
+		t.Fatalf("status = %q, want \"yes\": the rows are all there", rc.Status)
 	}
 	for _, a := range blob.Assignments {
 		if a.Attested == nil {

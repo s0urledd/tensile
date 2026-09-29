@@ -23,86 +23,6 @@ func pub(settle, msu time.Time) scan.Publication {
 	}
 }
 
-func TestScheduleFor_ShapeAndOrder(t *testing.T) {
-	settle := time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)
-	msu := settle.Add(10 * time.Minute)
-	cfg := ScheduleConfig{
-		InWindowFractions: []float64{0.15, 0.45, 0.72, 0.92},
-		GraceOffset:       30 * time.Second,
-		PruneTolerance:    150 * time.Second,
-		PostMargin:        60 * time.Second,
-		MinSpacing:        10 * time.Second,
-	}
-	pts := ScheduleFor(pub(settle, msu), cfg)
-
-	if len(pts) < 5 {
-		t.Fatalf("want >=5 points, got %d", len(pts))
-	}
-	// ordering
-	for i := 1; i < len(pts); i++ {
-		if pts[i].At.Before(pts[i-1].At) {
-			t.Fatalf("points not sorted at %d", i)
-		}
-	}
-	var nIn, nGrace, nPost int
-	for _, pt := range pts {
-		switch pt.Phase {
-		case PhaseInWindow:
-			nIn++
-			if !pt.At.Before(msu) {
-				t.Errorf("in-window point %s not before must_serve_until %s", pt.At, msu)
-			}
-		case PhaseGrace:
-			nGrace++
-			if pt.At.Before(msu) || pt.At.After(msu.Add(cfg.PruneTolerance)) {
-				t.Errorf("grace point %s outside (msu, msu+tol]", pt.At)
-			}
-		case PhasePost:
-			nPost++
-			if !pt.At.After(msu.Add(cfg.PruneTolerance)) {
-				t.Errorf("post point %s not after msu+tol", pt.At)
-			}
-		}
-	}
-	if nIn < 3 || nGrace != 1 || nPost != 1 {
-		t.Fatalf("phase counts: in=%d grace=%d post=%d", nIn, nGrace, nPost)
-	}
-	// last in-window point must be the closest to the deadline
-	if last := pts[nIn-1]; last.Phase != PhaseInWindow {
-		t.Errorf("point %d expected in-window, got %s", nIn-1, last.Phase)
-	}
-}
-
-func TestScheduleFor_FollowsMustServeUntil(t *testing.T) {
-	settle := time.Unix(1_800_000_000, 0).UTC()
-	short := ScheduleFor(pub(settle, settle.Add(10*time.Minute)), DefaultScheduleConfig())
-	long := ScheduleFor(pub(settle, settle.Add(4*time.Hour)), DefaultScheduleConfig())
-
-	// the schedule is a function of the window, so a 4h window pushes every
-	// point later than the 10m window's counterpart.
-	if len(short) != len(long) {
-		t.Fatalf("point counts differ: %d vs %d", len(short), len(long))
-	}
-	for i := range short {
-		if !long[i].At.After(short[i].At) {
-			t.Errorf("point %d (%s): long window %s not later than short %s", i, short[i].Label, long[i].At, short[i].At)
-		}
-	}
-}
-
-func TestScheduleFor_MinSpacing(t *testing.T) {
-	settle := time.Now().UTC()
-	// a 20s window with 4 in-window fractions would burst; MinSpacing thins it.
-	cfg := DefaultScheduleConfig()
-	cfg.MinSpacing = 30 * time.Second
-	pts := ScheduleFor(pub(settle, settle.Add(20*time.Second)), cfg)
-	for i := 1; i < len(pts); i++ {
-		if d := pts[i].At.Sub(pts[i-1].At); d < cfg.MinSpacing {
-			t.Fatalf("points %d and %d only %s apart (< MinSpacing %s)", i-1, i, d, cfg.MinSpacing)
-		}
-	}
-}
-
 func TestPhaseAt(t *testing.T) {
 	settle := time.Now().UTC()
 	msu := settle.Add(10 * time.Minute)
@@ -728,31 +648,6 @@ func TestRun_StampsClockOffset(t *testing.T) {
 	m := Run(context.Background(), in, nil, StepTimeouts{})
 	if m.ClockOffsetMS != -4200 {
 		t.Fatalf("ClockOffsetMS = %d, want -4200", m.ClockOffsetMS)
-	}
-}
-
-func TestScheduleFor_DegenerateWindowUsesRecordParams(t *testing.T) {
-	msu := time.Now().UTC()
-	p := pub(msu.Add(time.Minute), msu) // settled after must_serve_until
-	p.ParamsAtPublication.ShardRetentionSeconds = 4 * 3600
-	p.ParamsAtPublication.PaymentPromiseTimeoutSeconds = 3600
-	pts := ScheduleFor(p, DefaultScheduleConfig())
-	if len(pts) == 0 {
-		t.Fatal("no points")
-	}
-	first := pts[0].At
-	if span := msu.Sub(first); span < 3*time.Hour || span > 4*time.Hour {
-		t.Fatalf("fallback window spans %s, want close to the 4h retention", span)
-	}
-	// a record with no params at all still gets a usable window
-	p.ParamsAtPublication.ShardRetentionSeconds = 0
-	p.ParamsAtPublication.PaymentPromiseTimeoutSeconds = 0
-	pts = ScheduleFor(p, DefaultScheduleConfig())
-	if len(pts) == 0 {
-		t.Fatal("no points without params")
-	}
-	if span := msu.Sub(pts[0].At); span > 10*time.Minute {
-		t.Fatalf("no-params fallback spans %s, want <= 10m", span)
 	}
 }
 

@@ -15,9 +15,15 @@
 // "synthetic", and the state file carries the generator's parameters. It is a
 // load and arithmetic fixture, never evidence about any validator.
 //
-// Ground truth is printed at the end: how many obligations were made to break,
-// how many were left unobserved, and so on, so that the API's answers can be
-// checked against what was injected rather than against themselves.
+// Each blob is read as the prober reads it: once, near the end of its window,
+// asking every validator with rows, endorsing or not, largest stake first
+// until the rows are enough. A share of the blobs (-lost) is served by
+// nobody, so they are Unavailable and their endorsing validators are not
+// served; a validator that did not endorse is never counted.
+//
+// Ground truth is printed at the end: how many obligations were served, not
+// served and not counted, so that the API's answers can be checked against
+// what was injected rather than against themselves.
 package main
 
 import (
@@ -45,7 +51,7 @@ type behaviour string
 
 const (
 	behHealthy     behaviour = "healthy"      // serves every time
-	behPrunesEarly behaviour = "prunes_early" // NOT_FOUND from the third in-window point: the finding this observer exists to make
+	behPrunesEarly behaviour = "prunes_early" // NOT_FOUND at the reading: the shard was deleted before its deadline
 	behUnreachable behaviour = "unreachable"  // never completes a handshake
 	behBadCert     behaviour = "bad_cert"     // handshake completes, the certificate is not endorsed by its consensus key
 	behThrottles   behaviour = "throttles"    // ResourceExhausted from a server-side limit
@@ -79,6 +85,7 @@ func main() {
 		endAgo    = flag.Duration("end-ago", 2*time.Hour, "how long before now the last publication settles")
 		seed      = flag.Uint64("seed", 20260918, "deterministic seed")
 		heartbeat = flag.Duration("heartbeat", 5*time.Minute, "reachability heartbeat interval")
+		lostShare = flag.Float64("lost", 0.01, "share of blobs no validator serves (Unavailable)")
 	)
 	flag.Parse()
 
@@ -132,8 +139,10 @@ func main() {
 	cfg := probe.DefaultScheduleConfig()
 	var (
 		nPubs, nRows, nObl int
+		nUnavailable       int
 		gt                 = map[string]int{} // ground truth: classification -> rows
-		oblBroken          = map[string]int{} // validator -> obligations made to break
+		oblBroken          = map[string]int{} // validator -> obligations not served on an Unavailable blob
+		oblServed          = map[string]int{}
 		oblTotal           = map[string]int{}
 	)
 
@@ -204,40 +213,71 @@ func main() {
 		writeJSON(pubFile, pub)
 		nPubs++
 
-		points := probe.ScheduleFor(pub, cfg)
-		for _, v := range vals {
+		pt := probe.ReadPoint(pub, cfg)
+		// a reading the observer never made: a gap, not a verdict
+		if rng.Float64() < 0.004 {
+			for _, v := range vals {
+				rows, _ := shards.Rows(mustAddr(v.addrHex))
+				if len(rows) == 0 || !attested[v.addrHex] {
+					continue
+				}
+				nObl++
+				oblTotal[v.moniker]++
+				m := baseMeasurement(*vantage, pub, v, rows, true, pt, cfg)
+				m.Outcome, m.Classification = probe.OutcomeMissed, probe.ClassNotProbed
+				m.ClassificationReason = "not read in time"
+				m.Download, m.DNS, m.TCP, m.TLS, m.Identity = probe.DownloadResult{}, probe.StepResult{}, probe.StepResult{}, probe.TLSResult{}, probe.IdentityResult{}
+				writeJSON(measFile, m)
+				nRows++
+				gt[string(m.Classification)]++
+			}
+			continue
+		}
+		lost := rng.Float64() < *lostShare
+		have := map[int]bool{}
+		var ms []probe.Measurement
+		var asked []synthVal
+		var endorses []bool
+		for _, v := range vals { // largest stake first, endorsing or not
 			rows, _ := shards.Rows(mustAddr(v.addrHex))
 			if len(rows) == 0 {
 				continue
 			}
-			att := attested[v.addrHex]
-			if att {
+			if attested[v.addrHex] {
 				nObl++
 				oblTotal[v.moniker]++
 			}
-			broke := false
-			for pi, pt := range points {
-				// a slot the observer never got to: a gap, not a verdict
-				if rng.Float64() < 0.004 {
-					m := baseMeasurement(*vantage, pub, v, rows, att, pt, cfg)
-					m.Outcome, m.Classification = probe.OutcomeMissed, probe.ClassNotProbed
-					m.ClassificationReason = "elapsed while the cycle ran"
-					writeJSON(measFile, m)
-					nRows++
-					gt[string(m.Classification)]++
-					continue
-				}
-				m := shape(*vantage, pub, v, rows, att, pt, pi, cfg, rng)
-				writeJSON(measFile, m)
-				nRows++
-				gt[string(m.Classification)]++
-				if m.Classification == probe.ClassFault && att {
-					broke = true
+			if len(have) >= ap.OriginalRows {
+				continue // not asked: the rows were enough
+			}
+			m := shape(*vantage, pub, v, rows, pt, cfg, lost, attested[v.addrHex], rng)
+			if m.Download.CommitmentVerified {
+				for _, r := range rows {
+					have[r] = true
 				}
 			}
-			if broke {
-				oblBroken[v.moniker]++
+			m.Read = &probe.ReadInfo{Order: len(ms), BlobHaveAfter: len(have)}
+			ms = append(ms, m)
+			asked = append(asked, v)
+			endorses = append(endorses, attested[v.addrHex])
+		}
+		result, clientErr := probe.ReadAvailable, ""
+		if len(have) < ap.OriginalRows {
+			result, clientErr = probe.ReadUnavailable, probe.ClientError(len(have))
+			nUnavailable++
+		}
+		for j, m := range ms {
+			m.Read.BlobResult, m.Read.BlobError = result, clientErr
+			served := m.Download.CommitmentVerified
+			switch {
+			case served && endorses[j]:
+				oblServed[asked[j].moniker]++
+			case !served && result == probe.ReadUnavailable && endorses[j]:
+				oblBroken[asked[j].moniker]++
 			}
+			writeJSON(measFile, m)
+			nRows++
+			gt[string(m.Classification)]++
 		}
 	}
 
@@ -298,7 +338,8 @@ func main() {
 	fmt.Printf("  publications      %d over %.1f days (%.0f/h)\n", nPubs, *days, *perHour)
 	fmt.Printf("  probe rows        %d\n", nRows)
 	fmt.Printf("  heartbeats        %d\n", beats)
-	fmt.Printf("  proven obligations %d\n", nObl)
+	fmt.Printf("  obligations       %d (endorsing validators with rows)\n", nObl)
+	fmt.Printf("  unavailable blobs %d\n", nUnavailable)
 	fmt.Println("\nground truth by classification:")
 	keys := make([]string, 0, len(gt))
 	for k := range gt {
@@ -308,14 +349,14 @@ func main() {
 	for _, k := range keys {
 		fmt.Printf("  %-24s %8d\n", k, gt[k])
 	}
-	fmt.Println("\nobligations made to break, by validator (what the API must report as broken):")
+	fmt.Println("\nobligations not served, by validator (what the API must report as not served):")
 	bk := make([]string, 0, len(oblBroken))
 	for k := range oblBroken {
 		bk = append(bk, k)
 	}
 	sort.Slice(bk, func(i, j int) bool { return oblBroken[bk[i]] > oblBroken[bk[j]] })
 	for _, k := range bk {
-		fmt.Printf("  %-24s %6d broken of %d proven\n", k, oblBroken[k], oblTotal[k])
+		fmt.Printf("  %-24s %6d not served, %d served, of %d\n", k, oblBroken[k], oblServed[k], oblTotal[k])
 	}
 	fmt.Println("\nbehaviour assignment:")
 	for _, v := range vals {
@@ -328,15 +369,15 @@ func main() {
 // shape produces the measurement one (validator, point) pair yields under the
 // validator's behaviour, with the classification drawn by the real Classify so
 // the record is exactly what the prober would have written.
-func shape(vantage string, pub scan.Publication, v synthVal, rows []int, att bool, pt probe.SchedulePoint, pi int, cfg probe.ScheduleConfig, rng *rand.Rand) probe.Measurement {
-	m := baseMeasurement(vantage, pub, v, rows, att, pt, cfg)
-	phase := m.Phase
-	ev := probe.Evidence{Assigned: true, Attested: att, Phase: phase}
+func shape(vantage string, pub scan.Publication, v synthVal, rows []int, pt probe.SchedulePoint, cfg probe.ScheduleConfig, lost, endorses bool, rng *rand.Rand) probe.Measurement {
+	m := baseMeasurement(vantage, pub, v, rows, endorses, pt, cfg)
+	ev := probe.Evidence{Assigned: true, Attested: endorses, Phase: m.Phase}
 
 	served := func() {
 		m.Download = probe.DownloadResult{
 			Attempted: true, OK: true, DurationMS: int64(40 + rng.IntN(400)),
 			RowsReturned: len(rows), RowsExpected: len(rows), CommitmentVerified: true, AssignmentVerified: true,
+			RowIndices:    indices(rows),
 			BytesReturned: int64(len(rows)) * int64(pub.Promise.BlobSize/4096+1), RPC: "DownloadShard",
 		}
 		m.Outcome = probe.OutcomeServedOK
@@ -346,52 +387,39 @@ func shape(vantage string, pub scan.Publication, v synthVal, rows []int, att boo
 		m.Outcome = probe.OutcomeNotFound
 	}
 
-	switch v.beh {
-	case behNoHost:
+	switch {
+	case v.beh == behNoHost:
 		m.ValidatorHost = ""
 		m.Outcome = probe.OutcomeNoHost
 		m.DNS = probe.StepResult{}
-	case behUnreachable:
+	case v.beh == behUnreachable:
 		m.DNS = probe.StepResult{Attempted: true, OK: true, DurationMS: 3}
 		m.TCP = probe.StepResult{Attempted: true, OK: false, DurationMS: 5000, Error: "dial tcp: i/o timeout"}
 		m.TLS = probe.TLSResult{}
 		m.Outcome = probe.OutcomeTCPTimeout
-	case behBadCert:
+	case v.beh == behBadCert:
 		m.Identity = probe.IdentityResult{Attempted: true, OK: false, Reason: "certificate is not endorsed by this validator's consensus key"}
 		m.Outcome = probe.OutcomeIdentityFail
-	case behThrottles:
+	case lost:
+		notFound()
+	case v.beh == behThrottles:
 		if rng.Float64() < 0.6 {
 			m.Download = probe.DownloadResult{Attempted: true, OK: false, DurationMS: 8, RPC: "DownloadShard", RPCCode: "ResourceExhausted"}
 			m.Outcome = probe.OutcomeThrottled
 		} else {
 			served()
 		}
-	case behFlaky:
+	case v.beh == behFlaky:
 		if rng.Float64() < 0.25 {
 			m.Download = probe.DownloadResult{Attempted: true, OK: false, DurationMS: 30, RPC: "DownloadShard", RPCCode: "Internal"}
 			m.Outcome = probe.OutcomeServerError
 		} else {
 			served()
 		}
-	case behPrunesEarly:
-		// serves the first two in-window points, then behaves as if the shard
-		// were already gone: the profile a validator that prunes before its
-		// deadline actually has
-		if phase == probe.PhaseInWindow && pi >= 2 {
-			notFound()
-		} else if phase == probe.PhaseInWindow {
-			served()
-		} else {
-			notFound()
-		}
+	case v.beh == behPrunesEarly:
+		notFound()
 	default: // healthy
-		if phase == probe.PhasePost {
-			notFound()
-		} else if phase == probe.PhaseGrace && rng.Float64() < 0.5 {
-			notFound() // pruned within the tolerance: TOLERATED
-		} else {
-			served()
-		}
+		served()
 	}
 
 	ev.Outcome = m.Outcome
@@ -421,6 +449,14 @@ func baseMeasurement(vantage string, pub scan.Publication, v synthVal, rows []in
 	m.Identity = probe.IdentityResult{Attempted: true, OK: true}
 	m.FinishedAt = started.Add(80 * time.Millisecond)
 	return m
+}
+
+func indices(rows []int) []uint32 {
+	out := make([]uint32, len(rows))
+	for i, r := range rows {
+		out[i] = uint32(r)
+	}
+	return out
 }
 
 // loadValidators builds the synthetic set: real voting powers, deterministic

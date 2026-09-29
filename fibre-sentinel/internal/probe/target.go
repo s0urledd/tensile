@@ -233,9 +233,9 @@ func (r *Resolver) validatorSet(ctx context.Context, height int64) ([]scan.ValSe
 	return v, nil
 }
 
-// TargetsFor resolves every assigned validator (and, if includeUnassigned, the
-// rest of the set) for a publication into probe Targets.
-func (r *Resolver) TargetsFor(ctx context.Context, p scan.Publication, includeUnassigned bool) ([]Target, error) {
+// TargetsFor resolves every assigned validator of a publication into probe
+// Targets.
+func (r *Resolver) TargetsFor(ctx context.Context, p scan.Publication) ([]Target, error) {
 	members, err := r.validatorSet(ctx, p.Assignment.ValidatorSetHeight)
 	if err != nil {
 		return nil, fmt.Errorf("validator set at height %d: %w", p.Assignment.ValidatorSetHeight, err)
@@ -310,7 +310,7 @@ func (r *Resolver) TargetsFor(ctx context.Context, p scan.Publication, includeUn
 	for _, v := range vals {
 		rows := sm[v.Address]
 		assigned := len(rows) > 0
-		if !assigned && !includeUnassigned {
+		if !assigned {
 			continue
 		}
 		addrHex := v.Address.String()

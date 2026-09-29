@@ -15,10 +15,12 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
-// ?served=no lists the rows the obligations count as not served: a FAULT at
-// any point, and at the end reading every reading that returned no rows. An
-// unreachable row at an earlier schedule's point is not one of them, and
-// neither are genuine or served rows.
+// ?served=no lists the readings the obligations count as not served: no
+// rows came back, on a blob that could not be reconstructed from the rows
+// that did, whatever the reader met (a timeout, no such shard, a server
+// error), at the one reading of a blob and at an earlier schedule's point
+// alike. A failure on a blob that was Available counts neither way and is
+// not listed, and neither are served rows.
 func TestProbesServedNoFollowsTheObligationRule(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
@@ -28,73 +30,23 @@ func TestProbesServedNoFollowsTheObligationRule(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Second)
 	created, msu := now.Add(-5*time.Hour), now.Add(-time.Hour)
-	end := msu.Add(-10 * time.Minute)
-	type reading struct {
-		label string
-		w     wire
-	}
-	readings := map[string]reading{
-		"endok":      {probe.EndReadLabel, ok},
-		"endsilent":  {probe.EndReadLabel, refused},
-		"endgone":    {probe.EndReadLabel, gone},
-		"enderror":   {probe.EndReadLabel, err500},
-		"w4silent":   {"w4", refused},
-		"w4gone":     {"w4", gone},
-		"w4servedok": {"w4", ok},
-	}
-	var addrs []string
-	for a := range readings {
-		addrs = append(addrs, a)
-	}
-	sort.Strings(addrs)
-	var vals []scan.ValidatorAssignment
-	for i, a := range addrs {
-		vals = append(vals, scan.ValidatorAssignment{Address: a, VotingPower: 10, RowCount: 2, Rows: []int{2 * i, 2*i + 1}, Attested: true})
-	}
-	pub := scan.Publication{
-		SchemaVersion: scan.AttestationSchemaVersion, PromiseHash: "sn1",
-		SettlementHeight: 100, SettlementTime: created, MustServeUntil: msu, RecordedAt: now,
-		SettlementTxHash: "tx", Signer: "celestia1pub",
-		Promise:                 scan.PromiseFields{ChainID: "t", Height: 99, Commitment: "cc", CreationTimestamp: created, BlobSize: 4096},
-		ValidatorSignatureCount: len(vals),
-		Assignment: scan.AssignmentTable{
-			ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: 4, TotalRows: 16},
-			ValidatorSetHeight: 99, TotalVotingPower: int64(10 * len(vals)), Sigma: 2 * len(vals), Distinct: 2 * len(vals),
-			ValidatorsWithRows: len(vals), AttestedWithRows: len(vals), SignatureEntries: len(vals), SignaturesVerified: len(vals),
-			AttestedVotingPower: int64(10 * len(vals)), Validators: vals,
-		},
-	}
-	raw, err := json.Marshal(pub)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.UpsertPublication(pub, raw); err != nil {
-		t.Fatal(err)
-	}
-	for addr, r := range readings {
-		class, reason := probe.Classify(probe.Evidence{Assigned: true, Attested: true, Phase: probe.PhaseInWindow, Outcome: r.w.outcome})
-		m := probe.Measurement{
-			SchemaVersion: probe.AttestationSchemaVersion, Vantage: "test",
-			PromiseHash: "sn1", Commitment: "cc", MustServeUntil: msu, ValidatorSetHeight: 99,
-			ValidatorAddress: addr, ValidatorHost: addr + ":443",
-			Assigned: true, Attested: true, AssignedRowCount: 2,
-			ScheduleLabel: r.label, ScheduledAt: end, StartedAt: end, FinishedAt: end,
-			Phase: probe.PhaseInWindow, Outcome: r.w.outcome,
-			Classification: class, ClassificationReason: reason, TotalDurationMS: 10,
-		}
-		m.TCP.OK, m.TLS.OK, m.Identity.OK = r.w.tls, r.w.tls, r.w.tls
-		if r.w.outcome == probe.OutcomeServedOK {
-			m.Download.OK, m.Download.RowsReturned, m.Download.RowsExpected = true, 2, 2
-			m.Download.CommitmentVerified, m.Download.AssignmentVerified = true, true
-		}
-		raw, err := json.Marshal(m)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := st.InsertProbe(m, raw); err != nil {
-			t.Fatal(err)
-		}
-	}
+	// Unavailable: the three validators that did not serve hold most of the
+	// rows.
+	insertReading(t, st, "sn1", created, msu, 12, probe.EndReadLabel, msu.Add(-10*time.Minute), []endVal{
+		{addr: "endsilent", rows: 4, w: refused}, {addr: "endgone", rows: 4, w: gone}, {addr: "enderror", rows: 4, w: err500},
+		{addr: "endok1", rows: 1, w: ok}, {addr: "endok2", rows: 1, w: ok}, {addr: "endok3", rows: 1, w: ok}, {addr: "endok4", rows: 1, w: ok},
+	})
+	// The earlier schedule's last point of another unreadable blob: both
+	// validators whose rows did not come back are not served.
+	insertReading(t, st, "sn0", created.Add(-time.Minute), msu.Add(-time.Minute), 12, "w4", msu.Add(-30*time.Minute), []endVal{
+		{addr: "w4silent", rows: 4, w: refused}, {addr: "w4gone", rows: 4, w: gone},
+		{addr: "w4ok1", rows: 1, w: ok}, {addr: "w4ok2", rows: 1, w: ok}, {addr: "w4ok3", rows: 1, w: ok},
+	})
+	// Available: the same answers count for nothing.
+	insertReading(t, st, "sn2", created.Add(time.Minute), msu.Add(time.Minute), 4, probe.EndReadLabel, msu.Add(-9*time.Minute), []endVal{
+		{addr: "availok", rows: 4, w: ok}, {addr: "availsilent", rows: 4, w: refused}, {addr: "availgone", rows: 4, w: gone},
+		{addr: "availok2", rows: 4, w: ok}, {addr: "never", rows: 4, unasked: true},
+	})
 	ts := httptest.NewServer(api.New(st, "test"))
 	t.Cleanup(ts.Close)
 
@@ -111,7 +63,7 @@ func TestProbesServedNoFollowsTheObligationRule(t *testing.T) {
 		got = append(got, p.ValidatorAddress)
 	}
 	sort.Strings(got)
-	if want := "enderror,endgone,endsilent,w4gone"; strings.Join(got, ",") != want {
+	if want := "enderror,endgone,endsilent,w4gone,w4silent"; strings.Join(got, ",") != want {
 		t.Errorf("served=no lists %v, want %s", got, want)
 	}
 
@@ -125,24 +77,106 @@ func TestProbesServedNoFollowsTheObligationRule(t *testing.T) {
 	if code := get(t, ts, "/v1/blobs/sn1", &blob); code != 200 {
 		t.Fatalf("blob: %d", code)
 	}
-	want := map[string]string{
-		"endok": "served", "endsilent": "not_served", "endgone": "not_served", "enderror": "not_served",
-		"w4silent": "no_verdict", "w4gone": "not_served", "w4servedok": "served",
+	for _, a := range blob.Assignments {
+		want := "served"
+		if !strings.HasPrefix(a.ValidatorAddress, "endok") {
+			want = "not_served"
+		}
+		if a.Service != want {
+			t.Errorf("%s: service %q, want %q", a.ValidatorAddress, a.Service, want)
+		}
 	}
-	if len(blob.Assignments) != len(want) {
-		t.Fatalf("%d assignments, want %d", len(blob.Assignments), len(want))
+
+	// The Available blob: the validators whose rows came back are served;
+	// the one that timed out and the one that said "no such shard" have no
+	// result either way, and neither has the one the reading never asked.
+	blob.Assignments = nil
+	if code := get(t, ts, "/v1/blobs/sn2", &blob); code != 200 {
+		t.Fatalf("blob sn2: %d", code)
 	}
 	for _, a := range blob.Assignments {
-		if a.Service != want[a.ValidatorAddress] {
-			t.Errorf("%s: service %q, want %q", a.ValidatorAddress, a.Service, want[a.ValidatorAddress])
+		want := map[string]string{"availok": "served", "availok2": "served", "availsilent": "", "availgone": "", "never": ""}[a.ValidatorAddress]
+		if a.Service != want {
+			t.Errorf("sn2 %s: service %q, want %q", a.ValidatorAddress, a.Service, want)
+		}
+	}
+	var readings struct {
+		Probes []struct {
+			ValidatorAddress string `json:"validator_address"`
+			Service          string `json:"service"`
+		} `json:"probes"`
+	}
+	if code := get(t, ts, "/v1/probes?blob=sn2&limit=100", &readings); code != 200 || len(readings.Probes) != 4 {
+		t.Fatalf("sn2 readings: %d, %d rows, want the four asked", code, len(readings.Probes))
+	}
+	for _, p := range readings.Probes {
+		want := map[string]string{"availok": "served", "availok2": "served"}[p.ValidatorAddress]
+		if p.Service != want {
+			t.Errorf("sn2 reading of %s: service %q, want %q", p.ValidatorAddress, p.Service, want)
+		}
+	}
+	var vals struct {
+		Validators []struct {
+			Address     string          `json:"address"`
+			Obligations obligationsJSON `json:"obligations"`
+		} `json:"validators"`
+	}
+	if code := get(t, ts, "/v1/validators?window=all", &vals); code != 200 {
+		t.Fatalf("validators: %d", code)
+	}
+	for _, v := range vals.Validators {
+		g := v.Obligations
+		g.Rate = struct{ Num, Den int64 }{}
+		switch v.Address {
+		case "availsilent", "availgone":
+			if g != (obligationsJSON{Total: 1, NotCounted: 1}) {
+				t.Errorf("%s: %+v, want one obligation counted neither way", v.Address, g)
+			}
+		case "endsilent", "endgone", "enderror":
+			if g != (obligationsJSON{Total: 1, Broken: 1}) {
+				t.Errorf("%s: %+v, want one not served", v.Address, g)
+			}
+		case "never":
+			if g.Total != 0 {
+				t.Errorf("never: %+v, want no obligation: the reading did not ask it", g)
+			}
 		}
 	}
 }
 
-// On the earlier schedule the word follows the same buckets: a fault is not
-// served, a reading near the end served, readings that stop short of the end
-// no verdict, an unendorsed validator nothing, and a window still running is
-// in its retention window.
+// Every validator failing at the same reading is what the client meets:
+// no shards retrieved, and every one of them is not served.
+func TestProbesServedNoListsEveryValidatorOfABlobNobodyServed(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	now := time.Now().UTC().Truncate(time.Second)
+	created, msu := now.Add(-5*time.Hour), now.Add(-time.Hour)
+	insertReading(t, st, "sus", created, msu, 8, probe.EndReadLabel, msu.Add(-10*time.Minute), []endVal{
+		{addr: "a", rows: 2, w: refused}, {addr: "b", rows: 2, w: refused}, {addr: "c", rows: 2, w: gone}, {addr: "d", rows: 2, w: err500},
+	})
+	ts := httptest.NewServer(api.New(st, "test"))
+	t.Cleanup(ts.Close)
+	var probes struct {
+		Probes []struct {
+			ValidatorAddress string `json:"validator_address"`
+		} `json:"probes"`
+	}
+	if code := get(t, ts, "/v1/probes?served=no&limit=100", &probes); code != 200 {
+		t.Fatalf("served=no: %d", code)
+	}
+	if len(probes.Probes) != 4 {
+		t.Errorf("served=no lists %d readings, want the four validators of the blob nobody served", len(probes.Probes))
+	}
+}
+
+// On the earlier schedule the word follows the same buckets: a failure on
+// an unreadable blob is not served, a reading near the end served, readings
+// that stop short of the end and failures on an Available blob no word at
+// all, an unendorsed validator nothing, and a window still running is in its
+// retention window.
 func TestBlobServiceWords(t *testing.T) {
 	ts := obligationsFixture(t)
 	type assignments struct {
@@ -155,12 +189,19 @@ func TestBlobServiceWords(t *testing.T) {
 	if code := get(t, ts, "/v1/blobs/obl1", &b); code != 200 {
 		t.Fatalf("obl1: %d", code)
 	}
-	want := map[string]string{"served": "served", "broken": "not_served", "gaplast": "no_verdict", "endun": "no_verdict",
-		"unreach": "no_verdict", "reach": "no_verdict", "unatt": ""}
+	want := map[string]string{"served": "served", "gaplast": "", "endun": "", "backoff": "",
+		"unreach": "", "reach": "", "unatt": ""}
 	for _, a := range b.Assignments {
 		if w, ok := want[a.ValidatorAddress]; ok && a.Service != w {
 			t.Errorf("obl1 %s: service %q, want %q", a.ValidatorAddress, a.Service, w)
 		}
+	}
+	var u assignments
+	if code := get(t, ts, "/v1/blobs/obl3", &u); code != 200 {
+		t.Fatalf("obl3: %d", code)
+	}
+	if len(u.Assignments) != 1 || u.Assignments[0].Service != "not_served" {
+		t.Errorf("obl3: %+v, want broken not served", u.Assignments)
 	}
 	var p assignments
 	if code := get(t, ts, "/v1/blobs/obl2", &p); code != 200 {

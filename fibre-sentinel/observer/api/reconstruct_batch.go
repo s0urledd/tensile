@@ -7,44 +7,36 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/rollup"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
+	"github.com/plsgiveup/fibre/fibre-sentinel/observer/verdict"
 )
 
-// Batched reconstructability.
+// Batched blob status.
 //
-// reconstructable answers for one publication in five queries, which is right
-// for the blob detail page and wrong for everything else: the network summary
-// asked it for up to reconstructSample publications and the blob list for up to
-// 500, so a single /v1/network was ten thousand queries and two thousand JSON
-// parses. Measured on a store with 260 publications and 84,000 probes it took
-// 2.9s, uncached, and the dashboard polls it every thirty seconds per viewer.
-//
-// This computes the same verdict for a whole selection in four queries plus a
-// rare per-blob fallback. It is deliberately a second implementation rather
-// than a replacement: reconstructable stays as the reference, and
+// reconstructable answers for one publication from its rows, which is right
+// for the blob detail page and wrong for the network summary, which asks it
+// of up to reconstructSample publications per refresh. This computes the
+// same status for a whole selection in five queries plus a rare per-blob
+// fallback. It is deliberately a second implementation rather than a
+// replacement: reconstructable stays as the reference, and
 // TestReconstructBatchMatchesReference asserts the two agree on every
 // publication of a fixture that exercises every status.
 //
-// The saving that matters is not the query count but the row lists. The union
-// of served row indices is what the verdict turns on, and unioning it means
-// parsing a JSON array per validator per blob. It is almost always avoidable:
-// the publication already records sigma_rows (the sum of every validator's row
-// count) and distinct_rows (how many indices that covers), so
+// The saving that matters is not the query count but the row lists. The
+// distinct verified rows are what the status turns on, and counting them
+// means parsing a JSON array per validator per blob. It is almost always
+// avoidable, because two sums bound the count (verdict.Reading):
 //
-//	excess := sigma - distinct
+//	served shards (SERVED_OK, one per validator) - excess  <=  distinct  <=  every verified row
 //
-// is the total number of duplicate index occurrences across the whole
-// assignment, and for any subset S of validators
-//
-//	sum(row_count for S) - excess  <=  |union(S)|  <=  sum(row_count for S)
-//
-// because the duplicates within S cannot exceed the duplicates overall. The
-// verdict only needs to know which side of needed_rows the union falls, so
-// whenever both bounds land on the same side — which is every blob that is not
-// within `excess` rows of the threshold, so nearly all of them — the arithmetic
-// settles it and no row list is read. Only the narrow ambiguous band falls back
-// to the exact union, one blob at a time.
+// where excess, sigma_rows - distinct_rows, is how many assigned row indices
+// the assignment hands to more than one validator. Available needs the
+// distinct rows at or above needed_rows, Unavailable needs them below it at
+// a reading that happened; whenever the bounds land on one side, and on
+// nearly every blob they do, no row list is read. Only the narrow ambiguous
+// band falls back to the exact count, one blob at a time.
 
 // blobSel is the selection every batch query joins against: the same ordering
 // and limit blobRows applies, expressed once as a CTE so the database does the
@@ -64,39 +56,13 @@ func blobSelAt(where string, limit, offset int) string {
 	return q + `) `
 }
 
-// blobFacts is what the publications row contributes to the verdict.
-type blobFacts struct {
-	assigned int
-	needed   int64
-	total    int64
-	// excess is sigma_rows - distinct_rows: how many row indices the
-	// assignment hands to more than one validator, counted with multiplicity.
-	excess int
-	known  bool // needed/total were recorded
-}
-
-// pointAgg is one schedule point of one publication, already aggregated.
-type pointAgg struct {
-	at, label, msu string
-	probed         int // distinct validators with a real result
-	probedAtt      int // of those, how many the promise proves were obliged
-	servedBy       int // distinct validators that served correctly
-	servedAtt      int // of those, how many the promise proves were obliged
-	sumRows        int // sum of their assigned row counts
-	nullRows       int // how many of them have no recorded row list
-}
-
 // asOfPin bounds a reconstructability pass in time. The zero value is live.
 //
 // Everything else on a pinned /v1/network answer is bounded by
-// started_at <= as_of, and AsOfNote tells the reader so. The reconstructability
-// block was not: its publication selection was pinned but its two probe
-// queries had no time bound at all, so a blob that was still in flight at the
-// pinned moment — which, with a four-hour retention window, is every blob for
-// four hours after it settles — was judged with evidence that did not exist
-// yet. The honest answer at that moment is "pending"; the answer given was
-// today's, and it could say a blob was not fully served. A verdict about a
-// moment must be drawn from what was known at that moment.
+// started_at <= as_of, and AsOfNote tells the reader so. A verdict about a
+// moment must be drawn from what was known at that moment: a blob whose
+// reading had not happened yet at the pin is pending there, whatever it
+// became.
 type asOfPin struct {
 	// at is store.TimeLayout of the pinned end, or "" when live.
 	at string
@@ -121,14 +87,6 @@ func (p asOfPin) bound(alias string, args []any) (string, []any) {
 	return " AND " + alias + ".started_at <= ?", append(append([]any{}, args...), p.at)
 }
 
-// pinArgs is the pin's argument list for a clause built with bound(_, nil).
-func pinArgs(p asOfPin) []any {
-	if p.at == "" {
-		return nil
-	}
-	return []any{p.at}
-}
-
 // over reports whether the retention deadline had passed as of this pin.
 func (p asOfPin) over(msu string) bool {
 	at := p.now
@@ -144,22 +102,39 @@ func (p asOfPin) over(msu string) bool {
 	return false
 }
 
-// reconstructBatch returns the verdict for every publication in the selection,
-// keyed by promise hash. A publication with no in-window probe at all is absent
-// from the map, matching reconstructable's "unknown" for the same case.
-//
-// Only the status is computed. The network summary is the one caller, it reads
-// nothing else, and leaving ServedRows at zero is what lets the bounds replace
-// the row lists. A list or detail page, which does publish served_distinct_rows,
-// uses the reference.
+// readingAgg is one reading (a scheduled time) of one publication, already
+// aggregated over all of its rows, whatever phase each carries.
+type readingAgg struct {
+	at       string
+	end      bool
+	asked    int  // distinct validators asked: a row other than NOT_PROBED or PROBE_ERROR
+	reached  int  // whose request reached a server (verdict.Reached): the reading happened
+	inWin    int  // of those, with a row in the window: what picks a point of the earlier schedule
+	endorsed int  // endorsing validators reached in the window
+	served   int  // whose rows verified
+	upper    int  // every verified row
+	missed   bool // the prober missed a request (a NOT_PROBED row of an assigned validator in the window)
+}
+
+// reconstructBatch returns the status of every publication in the selection,
+// keyed by promise hash. Only the status and the counts beside it are
+// computed; served_distinct_rows is left at zero, which is what lets the
+// bounds replace the row lists. A list or detail page, which does publish
+// it, uses the reference.
 func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, pin asOfPin, args ...any) (map[string]*reconstruct, error) {
 	db := s.st.DB()
 	sel := blobSel(where, limit)
 
 	// 1. the publications themselves.
+	type blobFacts struct {
+		needed, total   int64
+		excess          int
+		msu, assignment string
+		known           bool
+	}
 	facts := map[string]blobFacts{}
 	rows, err := db.QueryContext(ctx, sel+`
-		SELECT p.promise_hash, p.validators_with_rows, p.sigma_rows, p.distinct_rows,
+		SELECT p.promise_hash, p.sigma_rows, p.distinct_rows, p.must_serve_until, p.assignment_error,
 		       json_extract(p.raw_json,'$.assignment.protocol_params.original_rows'),
 		       json_extract(p.raw_json,'$.assignment.protocol_params.total_rows')
 		FROM publications p JOIN sel ON sel.promise_hash = p.promise_hash`, args...)
@@ -168,18 +143,16 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 	}
 	for rows.Next() {
 		var hash string
-		var assigned, sigma, distinct int
+		var f blobFacts
+		var sigma, distinct int
 		var needed, total sql.NullInt64
-		if err := rows.Scan(&hash, &assigned, &sigma, &distinct, &needed, &total); err != nil {
+		if err := rows.Scan(&hash, &sigma, &distinct, &f.msu, &f.assignment, &needed, &total); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		excess := sigma - distinct
-		if excess < 0 {
-			excess = 0
-		}
-		facts[hash] = blobFacts{assigned: assigned, needed: needed.Int64, total: total.Int64,
-			excess: excess, known: needed.Valid && needed.Int64 > 0}
+		f.excess = max(sigma-distinct, 0)
+		f.needed, f.total, f.known = needed.Int64, total.Int64, needed.Valid && needed.Int64 > 0
+		facts[hash] = f
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -189,13 +162,10 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 		return map[string]*reconstruct{}, nil
 	}
 
-	// 2. how many assigned validators the promise proves stored the blob.
-	// COUNT(attested) skips NULLs, so a zero count means the publication
-	// predates signature verification and attestation says nothing.
-	type att struct{ known, attested int }
-	atts := map[string]att{}
+	// 2. how many validators endorse each publication, for readingOf.
+	endorsers := map[string]int{}
 	rows, err = db.QueryContext(ctx, sel+`
-		SELECT a.promise_hash, COUNT(a.attested), COALESCE(SUM(a.attested), 0)
+		SELECT a.promise_hash, COALESCE(SUM(a.attested = 1 OR a.attested IS NULL), 0)
 		FROM assignments a JOIN sel ON sel.promise_hash = a.promise_hash
 		WHERE a.row_count > 0 GROUP BY a.promise_hash`, args...)
 	if err != nil {
@@ -203,91 +173,101 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 	}
 	for rows.Next() {
 		var hash string
-		var known, attested int
-		if err := rows.Scan(&hash, &known, &attested); err != nil {
+		var v int
+		if err := rows.Scan(&hash, &v); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		atts[hash] = att{known: known, attested: attested}
+		endorsers[hash] = v
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	// 3. every in-window point with a real result, newest first per blob,
-	// less the points the correlated-failure guard calls suspect: the same
-	// tally rollup.SuspectPoints makes, over this blob's rows, which is what
-	// reconstructable excludes. The rows the WHERE drops are guard-silent
-	// classes and count toward none of the three.
+	// 3. every reading: who was asked, who was reached, the verified rows,
+	// and whether the prober missed a request of it.
 	pb, pargs := pin.bound("p", args)
-	cls := rollup.EffectiveClass("p")
-	points := map[string][]pointAgg{}
+	reached := rollup.Reached("p")
+	points := map[string][]readingAgg{}
 	rows, err = db.QueryContext(ctx, sel+`
-		SELECT p.promise_hash, p.scheduled_at, p.schedule_label, p.must_serve_until,
-		       COUNT(DISTINCT p.validator_address),
-		       COUNT(DISTINCT CASE WHEN p.attested = 1 THEN p.validator_address END),
-		       COUNT(DISTINCT CASE WHEN `+cls+` = 'UNREACHABLE' THEN p.validator_address END),
-		       COUNT(DISTINCT CASE WHEN `+cls+` = 'FAULT' THEN p.validator_address END),
-		       COUNT(DISTINCT CASE WHEN `+cls+` NOT IN `+rollup.GuardSilentSQL+` THEN p.validator_address END)
-		FROM probes p JOIN sel ON sel.promise_hash = p.promise_hash
-		WHERE p.phase = 'in_window' AND p.assigned = 1
-		  AND p.classification NOT IN ('NOT_PROBED','PROBE_ERROR')`+pb+`
-		GROUP BY p.promise_hash, p.scheduled_at
-		ORDER BY p.promise_hash, p.scheduled_at DESC`, pargs...)
+		SELECT p.promise_hash, p.scheduled_at, MAX(p.schedule_label = '`+probe.EndReadLabel+`'),
+		       COUNT(DISTINCT CASE WHEN p.classification NOT IN ('NOT_PROBED','PROBE_ERROR') THEN p.validator_address END),
+		       COUNT(DISTINCT CASE WHEN `+reached+` THEN p.validator_address END),
+		       COUNT(DISTINCT CASE WHEN `+reached+` AND p.phase = 'in_window' THEN p.validator_address END),
+		       COUNT(DISTINCT CASE WHEN p.commitment_verified = 1 THEN p.validator_address END),
+		       COALESCE(SUM(CASE WHEN p.commitment_verified = 1 THEN p.rows_returned END), 0),
+		       MAX(p.classification = 'NOT_PROBED' AND p.assigned = 1 AND p.phase = 'in_window')
+		FROM probes p JOIN sel ON sel.promise_hash = p.promise_hash`+pb+`
+		GROUP BY p.promise_hash, p.scheduled_at`, pargs...)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var hash string
-		var pa pointAgg
-		var guard rollup.Point
-		if err := rows.Scan(&hash, &pa.at, &pa.label, &pa.msu, &pa.probed, &pa.probedAtt, &guard.Unreachable, &guard.Faulted, &guard.Validators); err != nil {
+		var ra readingAgg
+		if err := rows.Scan(&hash, &ra.at, &ra.end, &ra.asked, &ra.reached, &ra.inWin, &ra.served, &ra.upper, &ra.missed); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		if guard.Reason() != "" {
-			continue
-		}
-		points[hash] = append(points[hash], pa)
+		points[hash] = append(points[hash], ra)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	// 4. what was actually served at each point. The inner DISTINCT is what
-	// makes the sums right: a validator probed twice at the same scheduled_at
-	// must contribute its rows once, which is the same reason the reference
-	// selects DISTINCT validator_address.
-	type servedKey struct{ hash, at string }
-	served := map[servedKey]pointAgg{}
+	// 4. the served shards at each reading, one per validator: the lower
+	// bound's sum.
+	type pointKey struct{ hash, at string }
+	lower := map[pointKey]int{}
 	rows, err = db.QueryContext(ctx, sel+`
-		SELECT promise_hash, scheduled_at, COUNT(*), COALESCE(SUM(row_count),0),
-		       COALESCE(SUM(att),0), COALESCE(SUM(no_rows),0)
-		FROM (
-		  SELECT DISTINCT p.promise_hash AS promise_hash, p.scheduled_at AS scheduled_at,
-		         p.validator_address AS validator_address,
-		         a.row_count AS row_count,
-		         CASE WHEN a.attested = 1 THEN 1 ELSE 0 END AS att,
-		         CASE WHEN a.rows_json IS NULL THEN 1 ELSE 0 END AS no_rows
-		  FROM probes p
-		  JOIN assignments a ON a.promise_hash = p.promise_hash AND a.validator_address = p.validator_address
-		  JOIN sel ON sel.promise_hash = p.promise_hash
-		  WHERE p.phase = 'in_window' AND p.assigned = 1 AND p.outcome = 'SERVED_OK'`+pb+`
-		)
+		SELECT promise_hash, scheduled_at, SUM(r) FROM (
+		  SELECT p.promise_hash AS promise_hash, p.scheduled_at AS scheduled_at, MAX(p.rows_returned) AS r
+		  FROM probes p JOIN sel ON sel.promise_hash = p.promise_hash
+		  WHERE p.outcome = 'SERVED_OK'`+pb+`
+		  GROUP BY p.promise_hash, p.scheduled_at, p.validator_address)
 		GROUP BY promise_hash, scheduled_at`, pargs...)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
-		var k servedKey
-		var pa pointAgg
-		if err := rows.Scan(&k.hash, &k.at, &pa.servedBy, &pa.sumRows, &pa.servedAtt, &pa.nullRows); err != nil {
+		var k pointKey
+		var n int
+		if err := rows.Scan(&k.hash, &k.at, &n); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		served[k] = pa
+		lower[k] = n
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// 5. how many endorsing validators were reached in the window at each
+	// reading, for readingOf.
+	answeredBy := map[pointKey]int{}
+	rows, err = db.QueryContext(ctx, sel+`
+		SELECT promise_hash, scheduled_at, SUM(e) FROM (
+		  SELECT DISTINCT p.promise_hash AS promise_hash, p.scheduled_at AS scheduled_at, p.validator_address AS v,
+		         (a.attested = 1 OR a.attested IS NULL) AS e
+		  FROM probes p
+		  JOIN assignments a ON a.promise_hash = p.promise_hash AND a.validator_address = p.validator_address
+		  JOIN sel ON sel.promise_hash = p.promise_hash
+		  WHERE `+reached+` AND p.phase = 'in_window' AND a.row_count > 0`+pb+`)
+		GROUP BY promise_hash, scheduled_at`, pargs...)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var k pointKey
+		var v int
+		if err := rows.Scan(&k.hash, &k.at, &v); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		answeredBy[k] = v
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -296,85 +276,82 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 
 	out := make(map[string]*reconstruct, len(facts))
 	for hash, f := range facts {
-		pts := points[hash]
-		if len(pts) == 0 {
-			// No in-window point with a real result: nothing to say yet.
-			out[hash] = &reconstruct{Status: "unknown"}
-			continue
-		}
-		// The newest point is the default; the newest COMPLETE point wins.
-		// Scanning newest first is what makes "complete" mean "the most recent
-		// moment at which every assigned validator had been heard from".
-		a := atts[hash]
-		chosen, complete := pts[0], false
-		for _, pa := range pts {
-			if pointComplete(pa.probed, pa.probedAtt, f.assigned, a.known > 0, a.attested) {
-				chosen, complete = pa, true
-				break
-			}
-		}
-		sv := served[servedKey{hash, chosen.at}]
-
-		windowOver := pin.over(chosen.msu)
-
-		rc := &reconstruct{
-			Point: chosen.label, PointAt: chosen.at, WindowOver: windowOver,
-			NeededRows: int(f.needed), TotalRows: int(f.total),
-			ServedBy: sv.servedBy, AssignedTotal: f.assigned,
-			ProbedValidators: chosen.probed, AttestedValidators: a.attested,
-			AttestationKnown: a.known > 0, ServedByAttested: sv.servedAtt,
-		}
-
-		// "yes" means nobody the promise proves owed this blob failed to serve
-		// it. Without proof of storage a quiet validator is not a fault, so it
-		// must not demote a blob whose rows all came back.
-		whole := sv.servedBy == f.assigned
-		if rc.AttestationKnown {
-			whole = sv.servedAtt == a.attested
-		}
-
-		// A served validator with no usable row list, or a publication with no
-		// recorded protocol params: the reference calls this unknown rather
-		// than guessing, and so does this.
-		if sv.nullRows > 0 || !f.known {
+		rc := &reconstruct{NeededRows: int(f.needed), TotalRows: int(f.total), WindowOver: pin.over(f.msu)}
+		out[hash] = rc
+		if f.assignment != "" || !f.known {
 			rc.Status = "unknown"
-			out[hash] = rc
 			continue
 		}
-		if !complete {
-			rc.Status = "pending"
-			out[hash] = rc
+		pts := points[hash]
+		for i := range pts {
+			pts[i].endorsed = answeredBy[pointKey{hash, pts[i].at}]
+		}
+		pa, ok := readingOf(pts, endorsers[hash])
+		idle := verdict.BlobNotRead
+		if !rc.WindowOver {
+			idle = verdict.BlobPending
+		}
+		if !ok {
+			rc.Status = idle
 			continue
 		}
-
-		enough := false
-		lo, hi := sv.sumRows-f.excess, sv.sumRows
+		rc.PointAt, rc.ProbedValidators, rc.ServedBy = pa.at, pa.asked, pa.served
+		needed := int(f.needed)
+		floor := lower[pointKey{hash, pa.at}] - f.excess // at most the distinct verified rows
 		switch {
-		case hi < int(f.needed):
-			enough = false
-		case lo >= int(f.needed):
-			enough = true
+		case floor >= needed:
+			rc.Status = verdict.BlobAvailable
+		case pa.upper < needed && pa.reached > 0 && !pa.missed:
+			// short even counting every verified row, at a reading that
+			// happened
+			rc.Status, rc.Error = verdict.BlobUnavailable, probe.ClientError(pa.upper)
+		case pa.upper < needed:
+			// short, and the reading did not happen: no request reached a
+			// server, or the prober missed some
+			rc.Status = idle
 		default:
-			// Within `excess` rows of the threshold: the bounds straddle it, so
-			// only the exact union can answer. Rare enough to pay for one blob
-			// at a time.
+			// Within the overlaps of the threshold (duplicated verified rows
+			// put the distinct count anywhere between the bounds): only the
+			// exact count can answer. Rare enough to pay for one blob at a
+			// time.
 			ref, err := s.reconstructable(ctx, hash, pin)
 			if err != nil {
 				return nil, fmt.Errorf("reconstructable %s: %w", hash, err)
 			}
 			out[hash] = ref
-			continue
 		}
-
-		switch {
-		case enough && whole:
-			rc.Status = "yes"
-		case enough:
-			rc.Status = "degraded"
-		default:
-			rc.Status = "no"
-		}
-		out[hash] = rc
 	}
 	return out, nil
+}
+
+// readingOf picks the reading a blob is judged at from its aggregated
+// readings, as verdict.ReadingPoint does from rows: the end-of-window
+// reading; or the newest point at which every one of the endorsers was
+// reached in the window; or the newest point at which any validator was.
+func readingOf(pts []readingAgg, endorsers int) (readingAgg, bool) {
+	for _, pa := range pts {
+		if pa.end {
+			return pa, true
+		}
+	}
+	var complete, newest readingAgg
+	whole, some := false, false
+	for _, pa := range pts {
+		if pa.inWin == 0 {
+			continue
+		}
+		if !some || pa.at > newest.at {
+			newest, some = pa, true
+		}
+		if endorsers > 0 && pa.endorsed >= endorsers && (!whole || pa.at > complete.at) {
+			complete, whole = pa, true
+		}
+	}
+	switch {
+	case whole:
+		return complete, true
+	case some:
+		return newest, true
+	}
+	return readingAgg{}, false
 }

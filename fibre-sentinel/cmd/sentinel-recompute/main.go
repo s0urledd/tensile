@@ -5,18 +5,17 @@
 //
 //   - every probe row's phase and classification, from the row's own
 //     fields and the prune tolerance the prober ran with (runs.jsonl);
-//   - the obligation buckets per validator and network-wide for a window,
-//     with the correlated-failure guard, in a second implementation
-//     (observer/verdict) of the rules the API evaluates in SQL, compared
-//     against the API's own answer when -api or -api-json is given;
+//   - each blob's reading (Available, or Unavailable with the Fibre
+//     client's error, or not read) and the obligation buckets per validator
+//     and network-wide for a window, in a second implementation
+//     (observer/verdict) of the rules the API evaluates in SQL, the
+//     obligations compared against the API's own answer when -api or
+//     -api-json is given;
 //   - the height ranges this observer could not say which x/fibre params
 //     were in force over (param_uncertainty.jsonl), the verdicts they
 //     withhold, and the deadline corrections a verified range produced
 //     (corrections.jsonl) — each redrawn rather than trusted, so a
 //     fabricated correction is a divergence;
-//   - the faults a second vantage cleared or confirmed, from its rows under
-//     vantages/<name>/measurements.jsonl when present, against the
-//     clearing amendments in amendments.jsonl (verdict.ConfirmFault);
 //   - with -sampling, the admission draws of every day whose secret is
 //     revealed (sampling-secrets.jsonl): which publications this observer
 //     should have probed against which ones it did, and which it recorded
@@ -308,53 +307,6 @@ func main() {
 	fmt.Printf("params| %d x/fibre params range(s) on record, %d closed by a correction pass, %d still withholding verdicts; %d row(s) corrected, %d differ from corrections.jsonl\n",
 		len(ranges), len(correctedRanges), holding, corrected, corrDiffs)
 
-	// ---- faults confirmed or cleared from a second vantage ----
-	//
-	// Redrawn from the other vantages' rows when the record carries them
-	// (vantages/<name>/measurements.jsonl), and compared with the
-	// amendments that withdrew a fault. Without those rows a clearing
-	// amendment cannot be redrawn; it is applied as recorded, so the
-	// obligations below match the API, and counted as unchecked.
-	confirms := loadConfirmations(filepath.Join(*dataDir, "vantages"))
-	var clearedN, confirmedN, clearDiffs, clearUnchecked int
-	for i := range ms {
-		m := ms[i]
-		if m.Classification != probe.ClassFault {
-			continue
-		}
-		a, amended := amendments[m.DedupeKey()]
-		recorded := amended && a.ClearedBy != ""
-		cs, have := confirms[m.PromiseHash+"|"+m.ValidatorAddress+"|"+m.ScheduledAt.UTC().Format(time.RFC3339Nano)]
-		if !have {
-			if recorded {
-				clearUnchecked++
-				ms[i].Classification = verdict.ClearedClass
-			}
-			continue
-		}
-		clearedBy, confirmedBy := verdict.ConfirmFaultBy(m.StartedAt, cs)
-		if confirmedBy != "" && clearedBy == "" {
-			confirmedN++
-		}
-		if clearedBy != "" {
-			clearedN++
-			ms[i].Classification = verdict.ClearedClass
-		}
-		if (clearedBy != "") != recorded {
-			clearDiffs++
-			if printed < *maxDiff {
-				printed++
-				fmt.Printf("confirm| %s %s %s: amendments.jsonl says cleared_by=%q, recomputed cleared_by=%q\n", short(m.PromiseHash), m.ValidatorAddress,
-					m.ScheduledAt.UTC().Format(time.RFC3339), a.ClearedBy, clearedBy)
-			}
-		}
-	}
-	if clearDiffs > 0 {
-		differs = true
-	}
-	fmt.Printf("confirm| %d fault(s) cleared and %d confirmed from another vantage, %d differ from amendments.jsonl, %d clearing(s) applied as recorded without the vantage's rows\n",
-		clearedN, confirmedN, clearDiffs, clearUnchecked)
-
 	// ---- obligations ----
 	rows := make([]verdict.Row, 0, len(ms))
 	for _, m := range ms {
@@ -388,13 +340,36 @@ func main() {
 	for _, p := range pubs {
 		settled[p.PromiseHash] = p.SettlementTime
 	}
-	sus := verdict.SuspectPoints(rows, win)
-	net, byVal := verdict.ComputeObligations(rows, settled, win, sus)
-	fmt.Printf("obligations| network: %s; %d suspect points left out\n", fmtObl(net), len(sus))
-	for _, p := range sus {
-		fmt.Printf("suspect| %s %s: %d of %d validators unreachable, %d faulted (%s), %d rows\n",
-			p.At.Format(time.RFC3339), p.Label, p.Unreachable, p.Validators, p.Faulted, p.Reason, p.Rows)
+	blobs := verdict.BlobsOf(pubs)
+
+	// ---- blobs: each one's reading, as the client's download ends ----
+	byBlob := map[string][]verdict.Row{}
+	for _, r := range rows {
+		byBlob[r.PromiseHash] = append(byBlob[r.PromiseHash], r)
 	}
+	tally := map[string]int{}
+	for _, p := range pubs {
+		if !win.All && p.SettlementTime.Before(win.Start) || p.SettlementTime.After(win.End) {
+			continue
+		}
+		if p.Assignment.Error != "" || p.Assignment.ProtocolParams.OriginalRows <= 0 {
+			tally["unknown"]++
+			continue
+		}
+		res := verdict.BlobOf(byBlob[p.PromiseHash], blobs[p.PromiseHash], p.MustServeUntil, asOf)
+		k := res.Status
+		if res.Error != "" {
+			k += " (" + res.Error + ")"
+		}
+		tally[k]++
+	}
+	fmt.Printf("blobs| available %d; unavailable (%s) %d; unavailable (%s) %d; not read %d; in retention window %d; unknown %d\n",
+		tally[verdict.BlobAvailable], probe.ClientErrNoShards, tally[verdict.BlobUnavailable+" ("+probe.ClientErrNoShards+")"],
+		probe.ClientErrNotEnoughShards, tally[verdict.BlobUnavailable+" ("+probe.ClientErrNotEnoughShards+")"],
+		tally[verdict.BlobNotRead], tally[verdict.BlobPending], tally["unknown"])
+
+	net, byVal := verdict.ComputeObligations(rows, settled, win, blobs)
+	fmt.Printf("obligations| network: %s\n", fmtObl(net))
 	addrs := make([]string, 0, len(byVal))
 	for a := range byVal {
 		addrs = append(addrs, a)
@@ -498,8 +473,8 @@ func phaseNote(m probe.Measurement) string {
 }
 
 func fmtObl(o verdict.Obligations) string {
-	s := fmt.Sprintf("total %d served %d broken %d end_unobserved %d unobserved %d (reachable %d, unreachable %d, not_probed %d) pending %d",
-		o.Total, o.Served, o.Broken, o.EndUnobserved, o.Unobserved, o.UnobservedReachable, o.UnobservedUnreachable, o.UnobservedNotProbed, o.Pending)
+	s := fmt.Sprintf("total %d served %d broken %d held_param_unverified %d not_counted %d pending %d",
+		o.Total, o.Served, o.Broken, o.HeldParamUnverified, o.NotCounted, o.Pending)
 	if r, ok := o.Rate(); ok {
 		s += fmt.Sprintf(" rate %.4f", r)
 	}
@@ -778,37 +753,6 @@ func loadFrontier(dir string, pubs []scan.Publication) time.Time {
 		}
 	}
 	return out.UTC()
-}
-
-// loadConfirmations reads every other vantage's measurements.jsonl under
-// dir, keyed by the slot each row answers (promise|validator|scheduled_at);
-// a missing dir is none.
-func loadConfirmations(dir string) map[string][]verdict.Confirmation {
-	out := map[string][]verdict.Confirmation{}
-	files, _ := filepath.Glob(filepath.Join(dir, "*", "measurements.jsonl"))
-	for _, path := range files {
-		f, err := os.Open(path)
-		if err != nil {
-			continue
-		}
-		// Line by line and forgiving, as the collector's tail is: a copy
-		// that ends in half a line (a pull in progress) loses that line only.
-		r := bufio.NewReaderSize(f, 1<<20)
-		for {
-			line, err := r.ReadBytes('\n')
-			if err != nil {
-				break
-			}
-			var m probe.Measurement
-			if json.Unmarshal(line, &m) != nil || m.Vantage == "" || m.PromiseHash == "" {
-				continue
-			}
-			k := m.PromiseHash + "|" + m.ValidatorAddress + "|" + m.ScheduledAt.UTC().Format(time.RFC3339Nano)
-			out[k] = append(out[k], verdict.Confirmation{Vantage: m.Vantage, StartedAt: m.StartedAt, Classification: m.Classification})
-		}
-		f.Close()
-	}
-	return out
 }
 
 // loadAmendments reads amendments.jsonl by probe key; a missing file is

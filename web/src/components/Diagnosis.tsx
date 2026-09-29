@@ -1,7 +1,6 @@
 "use client";
 import type { ReactNode } from "react";
 import { type Validator, type EndpointCheck, type Meta, int, ago, whenUTC, dateUTC } from "@/lib/api";
-import { SHOW_SERVICE } from "@/lib/service";
 
 /**
  * The first thing on a validator's page: what state its Fibre endpoint is in,
@@ -143,7 +142,7 @@ function state(v: Validator, c: EndpointCheck | undefined, decided: number): Sta
   const o = v.obligations;
   return {
     tone: "ok", title: "Reachable, certificate verified",
-    body: <>{host} completed TLS with a certificate endorsed by this validator’s consensus key {(v.last_reachable_at || v.last_seen_at) ? ago(v.last_reachable_at || v.last_seen_at) : "at the newest check"}.{SHOW_SERVICE && o && decided > 0 && o.broken === 0 && <> {int(o.served)} of {int(decided)} endorsed shard{decided === 1 ? "" : "s"} read in this period {o.served === 1 ? "was" : "were"} served.</>}</>,
+    body: <>{host} completed TLS with a certificate endorsed by this validator’s consensus key {(v.last_reachable_at || v.last_seen_at) ? ago(v.last_reachable_at || v.last_seen_at) : "at the newest check"}.{o && decided > 0 && o.broken === 0 && <> {int(o.served)} of {int(decided)} endorsed shard{decided === 1 ? "" : "s"} read in this period {o.served === 1 ? "was" : "were"} served.</>}</>,
   };
 }
 
@@ -155,8 +154,7 @@ export default function Diagnosis({ v, check, decided }: {
   decided: number;
 }) {
   const s = state(v, check, decided);
-  // with the service figures off (lib/service) there is no not-served count below to explain
-  const broken = SHOW_SERVICE ? v.obligations?.broken ?? 0 : 0;
+  const broken = v.obligations?.broken ?? 0;
   // A healthy endpoint with nothing broken needs no box: the state pills above already say so.
   // With shards not served, the box stays and says the endpoint answers, so the count below
   // is not read as an outage.

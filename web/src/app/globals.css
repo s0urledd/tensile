@@ -227,9 +227,7 @@ button { font: inherit; color: inherit; }
 
 /* ----------------------------------------------------------- title block --- */
 .title { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding: 20px 0 0; }
-.title.title-end { justify-content: flex-end; }
 .lede { margin: 4px 0 0; font-size: var(--t-body); color: var(--text-2); }
-.eyebrow { margin: 0 0 4px; font-size: var(--t-small); font-weight: 500; color: var(--text-2); letter-spacing: .02em; }
 /* the one pre-activation line under a page title (components/PreLive) */
 .prelive { margin: 14px 0 16px; padding: 10px 14px; background: var(--wash); border-radius: 6px; font-size: var(--t-cell); color: var(--text-2); }
 .prelive .mono { color: var(--text); }
@@ -382,11 +380,6 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
   .tablewrap .vt thead th.has-i { padding-left: 27px; padding-right: 27px; }
   .tablewrap .vt thead th.has-i:last-child { padding-right: 39px; }
 }
-.pair { display: inline-grid; grid-template-columns: 5ch minmax(7ch, auto); column-gap: 6px; align-items: baseline; }
-.pair > .rate { text-align: right; }
-.pair > .den { text-align: left; font-size: inherit; margin: 0; }
-/* the endorsement share describes, it does not rate: regular weight, quieter */
-.pair.endorsed > .rate { font-weight: 400; color: var(--text-2); }
 .rate.share { display: inline; }
 .rate.share.endorsed { font-weight: 400; color: var(--text-2); }
 .vt tbody tr { position: relative; }
@@ -400,7 +393,6 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
 .col-pin { position: sticky; left: 0; z-index: 1; background: var(--paper); }
 tbody tr:hover .col-pin { background: color-mix(in srgb, var(--paper) 96%, var(--text)); }
 tr.warn .col-pin { background: color-mix(in srgb, var(--paper) 93%, var(--hold)); }
-tr.suspect td { color: var(--text-3); }
 .tnote { font-size: var(--t-small); color: var(--text-2); margin: 8px 0 0; }
 .empty td { color: var(--text-2); padding: 16px 12px; white-space: normal; }
 
@@ -455,8 +447,6 @@ tr.suspect td { color: var(--text-3); }
 .mk.gone { width: 10px; height: 2px; background: var(--text-3); vertical-align: 3px; }
 .mk.other { background: var(--hold); border-radius: 50%; }
 .mk.none { background: var(--pending); border-radius: 50%; }
-.mklegend { display: flex; flex-wrap: wrap; gap: 6px 22px; font-size: var(--t-small); color: var(--text-2); margin: 12px 0 0; }
-.mklegend > span { white-space: nowrap; }
 
 /* ============================================================================
    Legacy grammar, restyled to the same system. The blobs, publishers and
@@ -524,7 +514,6 @@ dl.kv dd { margin: 0; word-break: break-all; }
 .mark--hold { color: var(--hold); }
 .mark--held { color: var(--text-2); }
 .mark--gap { color: var(--text-3); }
-.nil { color: var(--text-3); }
 
 /* the definition mark and its panel */
 .info { appearance: none; border: 1px solid var(--line); background: transparent; color: var(--text-3); font: 500 10px/1 var(--sans); width: 15px; height: 15px; border-radius: 50%; padding: 0; margin-left: 6px; cursor: pointer; vertical-align: 1px; text-transform: none; letter-spacing: 0; }
@@ -662,17 +651,6 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
 /* Horizontal bars so the bucket labels stay readable at phone width. The
    bucket below the quorum is neutral, not red: it is the observer's view of
    the signatures, not a validator's failure. The quorum is a dashed rule. */
-.sighist { margin: 10px 0 0; max-width: 640px; }
-.sighist ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
-.sighist li { display: grid; grid-template-columns: 7.5em 1fr 3.5em; align-items: center; gap: 10px; font-size: var(--t-cell); }
-.sighist li.quorum { border-top: 1px dashed var(--text-3); padding-top: 4px; margin-top: 2px; position: relative; }
-.sighist li.quorum::before { content: "⅔ quorum"; position: absolute; right: 0; top: -9px; font-size: var(--t-tiny); color: var(--text-3); background: var(--paper); padding-left: 6px; }
-.sighist .l { color: var(--text-2); white-space: nowrap; }
-.sighist .n { text-align: right; }
-.sighist .bar { height: 12px; background: var(--wash); border-radius: 2px; overflow: hidden; }
-.sighist .bar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
-.sighist li.below .bar i { background: var(--neutral); }
-.sighist .sub { margin-top: 10px; }
 /* --------------------------------------------------------------- hosting --- */
 /* The validators-table cell (flag · provider) and the overview's
    concentration band. Colours come from the categorical tokens above; the
@@ -1084,7 +1062,6 @@ body { background: var(--canvas); }
 .top { background: transparent; border-bottom-color: var(--border); }
 .net, .theme { background: var(--paper); border-color: var(--border); box-shadow: var(--shadow-sm); }
 .periods th { background: transparent; }
-.sighist li.quorum::before { background: var(--canvas); }
 
 /* the page head: a title with weight, one line under it, the period on the right */
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px 24px; flex-wrap: wrap; padding: 36px 0 0; }

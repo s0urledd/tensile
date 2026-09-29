@@ -58,7 +58,7 @@ func soPub(hash string, height int64, settle, msu time.Time) scan.Publication {
 func soRows(pub scan.Publication, wires []wire, at func(label string, w wire) wire) []probe.Measurement {
 	var out []probe.Measurement
 	for i, v := range pub.Assignment.Validators {
-		for _, pt := range probe.ScheduleFor(pub, probe.ScheduleConfig{}) {
+		for _, pt := range earlierSchedule(pub) {
 			w := wires[i]
 			ph := probe.PhaseAt(pt.At, pub, probe.ScheduleConfig{})
 			if ph != probe.PhaseInWindow {
@@ -101,7 +101,7 @@ func soDecision(pub scan.Publication, p float64) probe.SampledOut {
 		Sampling:  probe.SamplingDecision{P: p, Binding: "validator_bytes_per_day", DayCommitment: "c0ffee"},
 		Reason:    fmt.Sprintf("budget:p=%.3f:validator_bytes_per_day:day_commitment=c0ffee", p), Validators: 6,
 	}
-	for _, pt := range probe.ScheduleFor(pub, probe.ScheduleConfig{}) {
+	for _, pt := range earlierSchedule(pub) {
 		d.Points = append(d.Points, probe.SampledOutPoint{Label: pt.Label, At: pt.At, Phase: probe.PhaseAt(pt.At, pub, probe.ScheduleConfig{})})
 	}
 	return d
@@ -129,8 +129,7 @@ func sampledOutFixture(now time.Time) soFixture {
 
 	// Hours ago: a probed publication and a sampled-out one settled in the
 	// same block, so their schedule points coincide, and at w2 every
-	// validator of the probed one was unreachable: a suspect point, whose
-	// exclusion reaches the sampled-out rows at the same instant.
+	// validator of the probed one was unreachable.
 	recent := soPub("probedrecent", 200, now.Add(-6*time.Hour), now.Add(-2*time.Hour))
 	f.pubs = append(f.pubs, recent)
 	f.real = append(f.real, soRows(recent, []wire{ok, ok, ok, err500, ok, gone}, func(label string, w wire) wire {
@@ -197,14 +196,13 @@ func soStore(t *testing.T, f soFixture, asRows bool) *store.Store {
 }
 
 // volatile are the response fields that say when or how fast an answer was
-// computed; the lists of rows and of decisions, where a sampled-out
-// publication is listed once as a decision instead of once per row
-// (TestSampledOutBlobAndProbesListTheDecision checks those); and the
-// store's own row counts in /v1/meta, which are how many rows it holds and
-// are meant to shrink.
+// computed; the lists of rows, where a sampled-out publication's rows are
+// not listed (TestSampledOutBlobsCountTheRowsTheyStandFor checks those); the
+// newest reading row (/v1/meta last_probe_at), which a decision is not; and
+// the store's own row counts in /v1/meta, which are how many rows it holds
+// and are meant to shrink.
 var volatile = map[string]bool{"computed_at": true, "compute_ms": true, "server_time": true,
-	"sampled_out": true, "sampled_out_truncated": true, "recent_probes": true, "recent_probes_truncated": true,
-	"recent_sampled_out": true, "recent_sampled_out_truncated": true, "counts": true}
+	"recent_probes": true, "recent_probes_truncated": true, "last_probe_at": true, "counts": true}
 
 func strip(v any) any {
 	switch x := v.(type) {
@@ -355,22 +353,19 @@ func TestSampledOutFiguresUnchanged(t *testing.T) {
 		t.Fatalf("decision store holds %d probe rows, want only the %d real ones", stored, len(f.real))
 	}
 
-	// The fixture is doing what it is for: sampled-out obligations are
-	// unobserved (or pending), and a suspect point is in the window.
+	// The fixture is doing what it is for: sampled-out obligations are not
+	// read, so not counted (or pending).
 	var net struct {
 		Obligations struct {
-			NotProbed int64 `json:"unobserved_not_probed"`
-			Pending   int64 `json:"pending"`
+			NotCounted int64 `json:"not_counted"`
+			Pending    int64 `json:"pending"`
 		} `json:"obligations"`
-		VantageHealth struct {
-			Suspect []any `json:"suspect"`
-		} `json:"vantage_health"`
 		Classes map[string]int64 `json:"classes"`
 	}
 	tr := httptest.NewServer(api.New(rows, "test"))
 	get(t, tr, "/v1/network?window=7d", &net)
 	tr.Close()
-	if net.Obligations.NotProbed < 10 || net.Obligations.Pending < 5 || len(net.VantageHealth.Suspect) == 0 || net.Classes["NOT_PROBED"] == 0 {
+	if net.Obligations.NotCounted < 10 || net.Obligations.Pending < 5 || net.Classes["NOT_PROBED"] == 0 {
 		t.Fatalf("fixture does not exercise the figures: %+v", net)
 	}
 
@@ -432,10 +427,10 @@ func TestSampledOutFiguresUnchanged(t *testing.T) {
 	compareStores(t, "migrated after rollup", rows, mig)
 }
 
-// Where the site listed a sampled-out blob's 480 marks it now gets the
-// decision once, with the probability it was drawn at; the counts beside it
-// are unchanged.
-func TestSampledOutBlobAndProbesListTheDecision(t *testing.T) {
+// A blob the earlier load policy drew out of its sample was not read: its
+// counts still stand for the NOT_PROBED rows its one decision replaces, and
+// no reading row is listed for it anywhere.
+func TestSampledOutBlobsCountTheRowsTheyStandFor(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	f := sampledOutFixture(now)
 	ts := httptest.NewServer(api.New(soStore(t, f, false), "test"))
@@ -443,64 +438,40 @@ func TestSampledOutBlobAndProbesListTheDecision(t *testing.T) {
 
 	var blob struct {
 		Blob struct {
-			ProbeCount int64            `json:"probe_count"`
-			Classes    map[string]int64 `json:"classes"`
-			SampledOut *struct {
-				P          float64 `json:"p"`
-				Binding    string  `json:"binding"`
-				Commitment string  `json:"day_commitment"`
-				Reason     string  `json:"reason"`
-				Validators int64   `json:"validators"`
-				Points     int64   `json:"points"`
-				Rows       int64   `json:"rows"`
-			} `json:"sampled_out"`
+			ProbeCount      int64            `json:"probe_count"`
+			Classes         map[string]int64 `json:"classes"`
+			Reconstructable struct {
+				Status string `json:"status"`
+			} `json:"reconstructable"`
 		} `json:"blob"`
 		Probes []any `json:"probes"`
 	}
 	get(t, ts, "/v1/blobs/outold", &blob)
-	so := blob.Blob.SampledOut
-	if so == nil || so.P != 0.286 || so.Binding != "validator_bytes_per_day" || so.Commitment != "c0ffee" ||
-		so.Validators != 6 || so.Points != 6 || so.Rows != 36 || !strings.HasPrefix(so.Reason, probe.SampledOutReasonPrefix) {
-		t.Fatalf("sampled_out: %+v", so)
-	}
 	if blob.Blob.ProbeCount != 36 || blob.Blob.Classes["NOT_PROBED"] != 36 || len(blob.Probes) != 0 {
 		t.Fatalf("blob counts %d %v, %d probe rows listed", blob.Blob.ProbeCount, blob.Blob.Classes, len(blob.Probes))
 	}
-	blob.Blob.SampledOut = nil
-	get(t, ts, "/v1/blobs/probedold", &blob)
-	if blob.Blob.SampledOut != nil {
-		t.Fatal("a probed blob reads as sampled out")
+	if blob.Blob.Reconstructable.Status != "not_read" {
+		t.Fatalf("a sampled-out blob whose window closed reads %q, want not_read", blob.Blob.Reconstructable.Status)
 	}
 
 	var probes struct {
-		Probes     []any `json:"probes"`
-		SampledOut []struct {
-			PromiseHash string  `json:"promise_hash"`
-			P           float64 `json:"p"`
-		} `json:"sampled_out"`
+		Probes []any `json:"probes"`
 	}
 	get(t, ts, "/v1/probes?blob=outrecent", &probes)
-	if len(probes.Probes) != 0 || len(probes.SampledOut) != 1 || probes.SampledOut[0].P != 0.311 {
-		t.Fatalf("/v1/probes?blob=outrecent: %+v", probes)
+	if len(probes.Probes) != 0 {
+		t.Fatalf("/v1/probes?blob=outrecent lists %d rows", len(probes.Probes))
 	}
-	get(t, ts, "/v1/probes?validator="+soAddr(1)+"&limit=1000", &probes)
-	if len(probes.SampledOut) != 3 {
-		t.Fatalf("a validator assigned in three sampled-out blobs lists %d decisions", len(probes.SampledOut))
-	}
-	probes.SampledOut = nil
-	get(t, ts, "/v1/probes?class=HEALTHY&limit=1000", &probes)
-	if len(probes.SampledOut) != 0 {
-		t.Fatal("decisions listed under a class they are not")
-	}
+}
 
-	var val struct {
-		Recent []struct {
-			PromiseHash string `json:"promise_hash"`
-			Rows        int64  `json:"rows"`
-		} `json:"recent_sampled_out"`
+// earlierSchedule is the schedule the sampled-out decisions on record were
+// made under: four in-window points, a grace point and a post point.
+func earlierSchedule(pub scan.Publication) []probe.SchedulePoint {
+	span := pub.MustServeUntil.Sub(pub.SettlementTime)
+	var pts []probe.SchedulePoint
+	for i, f := range []float64{0.12, 0.45, 0.72, 0.92} {
+		pts = append(pts, probe.SchedulePoint{At: pub.SettlementTime.Add(time.Duration(float64(span) * f)), Phase: probe.PhaseInWindow, Label: fmt.Sprintf("w%d", i+1)})
 	}
-	get(t, ts, "/v1/validators/"+soAddr(0)+"?window=7d", &val)
-	if len(val.Recent) != 3 || val.Recent[0].PromiseHash != "outpending" || val.Recent[0].Rows != 36 {
-		t.Fatalf("validator page's sampled-out list: %+v", val.Recent)
-	}
+	return append(pts,
+		probe.SchedulePoint{At: pub.MustServeUntil.Add(30 * time.Second), Phase: probe.PhaseGrace, Label: "grace"},
+		probe.SchedulePoint{At: pub.MustServeUntil.Add(210 * time.Second), Phase: probe.PhasePost, Label: "post"})
 }

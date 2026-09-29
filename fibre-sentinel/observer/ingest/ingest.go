@@ -307,8 +307,7 @@ func Reachability(st *store.Store, path string, now time.Time) (Result, error) {
 }
 
 // VantagesDir is where the files of other vantages are copied to under the
-// data dir: <data-dir>/vantages/<name>/reachability.jsonl, and
-// measurements.jsonl beside it once the vantage confirms faults.
+// data dir: <data-dir>/vantages/<name>/reachability.jsonl, their heartbeats.
 const VantagesDir = "vantages"
 
 // VantageFiles lists the reachability files copied in from other vantages
@@ -345,41 +344,6 @@ func VantageReachability(st *store.Store, path, own string, now time.Time) (Resu
 			return false, fmt.Errorf("%w: reachability from another vantage's file carries vantage %q", ErrBadRecord, m.Vantage)
 		}
 		return st.InsertReachability(m, raw)
-	}, now)
-}
-
-// VantageMeasurementFiles lists the measurement files copied in from other
-// vantages under dir: <name>/measurements.jsonl, written by a second
-// vantage's sentinel-probe -confirm-requests. Like VantageFiles, asked again
-// every pass, and a missing dir is no files.
-func VantageMeasurementFiles(dir string) ([]string, error) {
-	return filepath.Glob(filepath.Join(filepath.Clean(dir), "*", "measurements.jsonl"))
-}
-
-// VantageMeasurements ingests a measurements.jsonl copied in from another
-// vantage: its answers to this observer's confirmation requests. Tailed on
-// its own path-keyed cursor, like every file, so a copy that grew is read
-// from where the last pass stopped, a copy that ends in half a line leaves
-// it for the next pass, and a copy replaced by a shorter one is read again
-// from the start (every row is idempotent on its key).
-//
-// The rows go to probe_confirmations, never to probes: they answer own's
-// faults and are counted in no published figure. A row carrying own's
-// vantage, or none, is stepped over as a bad record, for the reason
-// VantageReachability gives; so is one without a slot to answer.
-func VantageMeasurements(st *store.Store, path, own string, now time.Time) (Result, error) {
-	return tail(st, path, func(raw []byte) (bool, error) {
-		var m probe.Measurement
-		if err := json.Unmarshal(raw, &m); err != nil {
-			return false, fmt.Errorf("%w: decode measurement: %v", ErrBadRecord, err)
-		}
-		if m.PromiseHash == "" || m.ValidatorAddress == "" || m.ScheduledAt.IsZero() {
-			return false, fmt.Errorf("%w: measurement without promise_hash, validator_address or scheduled_at", ErrBadRecord)
-		}
-		if m.Vantage == "" || m.Vantage == own {
-			return false, fmt.Errorf("%w: measurement from another vantage's file carries vantage %q", ErrBadRecord, m.Vantage)
-		}
-		return st.InsertConfirmation(m, raw, own)
 	}, now)
 }
 

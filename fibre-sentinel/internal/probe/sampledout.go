@@ -4,18 +4,17 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 )
 
-// SampledOutFile is where the prober records a publication the load policy
-// sampled out, one line per publication, beside measurements.jsonl.
+// SampledOutFile is where the prober recorded a publication the load policy
+// sampled out, one line per publication, beside measurements.jsonl. Nothing
+// is sampled any more; the file is the record of the draws made while
+// publications were, read by the collector and sentinel-recompute.
 //
 // A sampled-out publication used to be written as a NOT_PROBED measurement
 // for every assigned validator at every schedule point: eighty validators and
@@ -29,8 +28,8 @@ import (
 //
 // It is a file of its own rather than a second kind of line in
 // measurements.jsonl because every reader of that file (the prober's own
-// restart index, the collector, sentinel-recompute, the confirm service, the
-// backup and restore checks) takes each line to be one Measurement keyed by
+// restart index, the collector, sentinel-recompute, the backup and restore
+// checks) takes each line to be one Measurement keyed by
 // (vantage, promise, validator, scheduled_at). A different shape inside it
 // would have to be taught to all of them, and one that was not taught would
 // read a decision as a malformed probe.
@@ -135,88 +134,6 @@ func (d SampledOut) Expand(pub scan.Publication) []Measurement {
 	}
 	return out
 }
-
-// SampledOutStore is the append-only sampling_decisions.jsonl plus the set of
-// decisions already on it, so a restarted prober knows a publication was
-// drawn out and does not put it to the policy a second time: the draw would
-// be made against today's load, and could admit what the record already says
-// was sampled out. Safe for concurrent use.
-type SampledOutStore struct {
-	path string
-	f    *record.Appender
-
-	mu   sync.Mutex
-	seen map[string]bool // Key()
-}
-
-// OpenSampledOutStore opens or creates <dir>/sampling_decisions.jsonl,
-// repairing a torn final line as OpenMeasurementStore does.
-func OpenSampledOutStore(dir string) (*SampledOutStore, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
-	}
-	path := filepath.Join(dir, SampledOutFile)
-	if cut, err := TruncateTornTail(path); err != nil {
-		return nil, fmt.Errorf("repair %s: %w", path, err)
-	} else if cut > 0 {
-		fmt.Fprintf(os.Stderr, "sampling decisions: truncated %d bytes of a torn final line in %s\n", cut, path)
-	}
-	s := &SampledOutStore{path: path, seen: map[string]bool{}}
-	ds, err := LoadSampledOut(path)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
-	}
-	for _, d := range ds {
-		s.seen[d.Key()] = true
-	}
-	f, err := record.OpenAppender(path)
-	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", path, err)
-	}
-	s.f = f
-	return s, nil
-}
-
-// Has reports whether a decision for this publication is on record.
-func (s *SampledOutStore) Has(vantage, promiseHash string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.seen[vantage+"|"+promiseHash]
-}
-
-// Append writes one decision, skipping one already on record, and fsyncs.
-func (s *SampledOutStore) Append(d SampledOut) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.seen[d.Key()] {
-		return nil
-	}
-	b, err := json.Marshal(d)
-	if err != nil {
-		return fmt.Errorf("marshal sampling decision: %w", err)
-	}
-	if _, err := s.f.Write(append(b, '\n')); err != nil {
-		return fmt.Errorf("write sampling decision: %w", err)
-	}
-	if err := s.f.Sync(); err != nil {
-		return fmt.Errorf("fsync sampling decisions: %w", err)
-	}
-	s.seen[d.Key()] = true
-	return nil
-}
-
-// Close closes the file.
-func (s *SampledOutStore) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.f == nil {
-		return nil
-	}
-	return s.f.Close()
-}
-
-// Path returns the file path.
-func (s *SampledOutStore) Path() string { return s.path }
 
 // LoadSampledOut reads a sampling_decisions.jsonl, its archived segments
 // first when it has any. A later line for a key already read is dropped:
