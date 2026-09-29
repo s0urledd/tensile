@@ -32,10 +32,13 @@ func fakeNotFound(context.Context, int, *fibretypes.BlobShard) (*fibretypes.Down
 	return nil, status.Error(codes.NotFound, "no blob shard found")
 }
 
-// fakeHangs never answers: the request runs out of its time.
+// fakeHangs never answers: the request runs out of its time. When the
+// deadline the client sent passes, the server gives up too, with the status
+// a gRPC server sends then; a CANCELLED here could reach the client before
+// its own deadline and read as the server's error.
 func fakeHangs(ctx context.Context, _ int, _ *fibretypes.BlobShard) (*fibretypes.DownloadShardResponse, error) {
 	<-ctx.Done()
-	return nil, status.Error(codes.Canceled, "gone")
+	return nil, status.Error(codes.DeadlineExceeded, "gone")
 }
 
 // fakeCorrupt answers with rows that do not verify against the commitment.

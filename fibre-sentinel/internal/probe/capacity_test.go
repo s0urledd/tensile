@@ -79,7 +79,7 @@ func TestAnUnavailableBlobIsReadWhileAValidatorTimesOut(t *testing.T) {
 	tally := map[string]int{}
 	for _, m := range ms {
 		if m.Read == nil || m.Classification == ClassNotProbed || m.Classification == ClassProbeError {
-			t.Fatalf("%s at %s: %s (%s)", m.ValidatorAddress[:4], m.PromiseHash[:4], m.Classification, m.ClassificationReason)
+			t.Fatalf("%s at %s: %s / %s (%s): %s", m.ValidatorAddress[:4], m.PromiseHash[:4], m.Outcome, m.Classification, m.ClassificationReason, m.RawError)
 		}
 		if m.ValidatorAddress == hung {
 			if m.Outcome != OutcomeRPCTimeout || m.Classification != ClassUnreachable || m.Retry == nil {
