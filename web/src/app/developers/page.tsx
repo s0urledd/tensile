@@ -231,7 +231,7 @@ const USES: Use[] = [
           ["protocol.max_blob_size_bytes", <>The largest blob, from the pinned celestia-app build.</>],
           ["price_formula", <>The fee formula and its constants: the same charge whether the promise settles or times out.</>],
         ],
-        note: <><code>history</code> lists every set of parameters on record, oldest first, with the height it took effect from.</>,
+        note: <><code>history</code> lists every set of parameters on record, oldest first, with the height it is on record from (<code>effective_from_height</code>). An entry whose <code>source</code> is <code>seed</code> is what was in force where the record begins, not when it took effect.</>,
         example: ex.params,
       },
     ],
