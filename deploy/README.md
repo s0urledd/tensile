@@ -267,16 +267,18 @@ of every snapshot once under the current revision, writes the files to
 With `-warm-only` that directory defaults to `<data-dir>/snapshots.next`, and
 the live `<data-dir>/snapshots` is refused: the running API rewrites its
 files there under the same temporary names, and an old API restarted
-meanwhile would load the new build's market files. It must run as the service user and with the unit's own flags: the snapshots
-depend on `-vantage` (the heartbeats counted are that vantage's) and the
-market one on `-publishers`, and a file written for another vantage is not
-loaded. `systemd-run` gives it both, from the unit's env file, expanding
-`${…}` the way the unit's `ExecStart` does. After the collector has migrated
-the database (the new binary refuses an older schema), and while the old API
+meanwhile would load the new build's market files. It must run as the
+service user and with the unit's own flags: the snapshots depend on
+`-vantage` (the heartbeats counted are that vantage's) and the market one on
+`-publishers`, and a file written for another vantage is not loaded.
+`systemd-run` gives it both, from the unit's env file, expanding `${…}` the
+way the unit's `ExecStart` does. After the collector has migrated the
+database (the new binary refuses an older schema), and while the old API
 keeps serving:
 
 ```bash
 sudo install -m 0755 fibre-sentinel/bin/* /usr/local/bin/
+sudo install -m 0755 deploy/vantage-pull.sh /usr/local/bin/fibre-vantage-pull   # the timer runs it next minute
 sudo systemctl restart fibre-collector@mocha       # applies migrations
 # a few minutes, reading the database only, beside the running API
 sudo systemd-run --wait --pipe --collect -p User=fibre-observer -p Nice=10 \
@@ -299,6 +301,14 @@ changes the revision: the files are then dropped and recomputed rather than
 served, which is the cold start again and never a stale figure.
 `journalctl -u fibre-api@mocha` shows `snapshot(s) loaded from disk` on
 start.
+
+This keeps the old API serving from the migrated database for the few
+minutes of the warm-up, where the plain upgrade above leaves it seconds, so
+use it only when the build's schema change, if any, is additive: new tables,
+columns or indexes the old API does not read. When a migration changes or
+drops something the old API reads, stop `fibre-api@mocha` before restarting
+the collector; the warm-up still spares the new build a cold start, but the
+API is down for those minutes.
 
 ## 5. Caddy
 
