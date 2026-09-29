@@ -2,10 +2,10 @@ package api
 
 // Atom feeds: GET /v1/validators/{addr}/feed.atom for one validator's
 // endpoint history, and GET /v1/feed.atom for the network's registrations
-// and incidents. Nothing is stored for them; every entry is derived from
-// rows the store already holds (observer/feed has the rules), and every
-// entry ID is built from what happened and when, so a feed reader polling
-// the URL never sees the same change twice.
+// and first not-served readings. Nothing is stored for them; every entry is
+// derived from rows the store already holds (observer/feed has the rules),
+// and every entry ID is built from what happened and when, so a feed reader
+// polling the URL never sees the same change twice.
 //
 // What goes in, per validator:
 //
@@ -20,17 +20,14 @@ package api
 //     heartbeats, and recovering; the certificate stopping being endorsed
 //     by the validator's key (expired, or not its key) and being put right;
 //   - the first reading on record that counts as not served (its rows did
-//     not come back, the blob could not be reconstructed, and the second
-//     location confirmed it), skipping any
-//     reading the observer distrusts itself at (the correlated-failure
-//     guard).
+//     not come back, and the blob was Unavailable).
 //
 // And for the network: every registration and host change, bonded-list
-// joins and departures after the observer's first poll, each validator's
-// first not-served reading, and the readings this observer set aside as its
-// own correlated failures. Per-validator reachability transitions are not in
-// the network feed: across a hundred validators they are the per-validator
-// feeds' job, and walking every heartbeat of a month per request is not.
+// joins and departures after the observer's first poll, and each
+// validator's first not-served reading. Per-validator reachability
+// transitions are not in the network feed: across a hundred validators they
+// are the per-validator feeds' job, and walking every heartbeat of a month
+// per request is not.
 
 import (
 	"context"
@@ -559,25 +556,18 @@ func (s *Server) monikers(ctx context.Context) (map[string]string, error) {
 
 // firstFaults finds each validator's first not-served reading on record
 // (addr's alone when addr is set): a reading whose rows did not come back on
-// a blob that could not be reconstructed, confirmed from the second
-// location (rollup.CountedClass), skipping any the correlated-failure guard
-// sets aside (the same rule every figure applies). The returned entries
-// have no ID; Link holds the promise hash for the caller to turn into a
-// URL.
+// a blob that was Unavailable (rollup.CountedClass, the same rule every
+// figure applies). The returned entries have no ID; Link holds the promise
+// hash for the caller to turn into a URL.
 //
 // The entry ID has no time in it, so it must name the same reading for good:
 //
 //   - a reading still settling (verdict.FaultSettling) is left out: a params
 //     range can still withdraw it;
-//   - every candidate is walked, not the first few: a validator whose early
-//     failures all fell at suspect readings still has a first genuine one;
 //   - a tie on started_at goes to the lower promise hash, not to row order;
 //   - a validator with a not-served obligation rolled up on an earlier day
 //     had its first one already, pruned from the raw rows since, and gets
 //     none.
-//
-// Suspect readings are tallied once, over the readings that hold a
-// candidate, not once per candidate.
 func (s *Server) firstFaults(ctx context.Context, addr string, now time.Time) (map[string]feed.Entry, error) {
 	db := s.st.DB()
 	faultWhere := `assigned = 1 AND ` + rollup.CountedClass("probes") + ` = 'FAULT'`
@@ -585,16 +575,6 @@ func (s *Server) firstFaults(ctx context.Context, addr string, now time.Time) (m
 	if addr != "" {
 		faultWhere += ` AND validator_address = ?`
 		args = append(args, addr)
-	}
-	pts, err := rollup.SuspectPoints(ctx, db, `scheduled_at IN (SELECT scheduled_at FROM probes WHERE `+faultWhere+`)`, args...)
-	if err != nil {
-		return nil, err
-	}
-	suspect := map[string]bool{}
-	for _, p := range pts {
-		if p.Reason() != "" {
-			suspect[p.PromiseHash+"|"+p.At] = true
-		}
 	}
 	q := `SELECT validator_address, MIN(day) FROM obligation_daily WHERE broken > 0`
 	if addr != "" {
@@ -632,7 +612,7 @@ func (s *Server) firstFaults(ctx context.Context, addr string, now time.Time) (m
 		if err := rows.Scan(&a, &hash, &sched, &at, &label); err != nil {
 			return nil, err
 		}
-		if seen[a] || suspect[hash+"|"+sched] {
+		if seen[a] {
 			continue
 		}
 		seen[a] = true
@@ -643,7 +623,7 @@ func (s *Server) firstFaults(ctx context.Context, addr string, now time.Time) (m
 		out[a] = feed.Entry{Kind: "first-fault", At: t, Link: hash,
 			Title: "first not-served reading on record",
 			Summary: fmt.Sprintf("At the reading of blob %s (%s, %s) the validator did not hand over the rows it endorsed, "+
-				"the blob could not be reconstructed from the rows the other validators returned, and a second location did not get them either.", hash, label, sched)}
+				"and the blob could not be reconstructed from the rows the other validators returned.", hash, label, sched)}
 	}
 	return out, rows.Err()
 }
@@ -671,9 +651,7 @@ func (s *Server) networkFeed(ctx context.Context, authority string, now time.Tim
 	es = append(es, bl...)
 
 	// Each validator's first not-served reading, when it falls in the
-	// feed's span. The span is applied to the first genuine one, not to the
-	// first raw one: a validator whose earliest failure fell at a suspect
-	// reading before the span still has its first one inside it.
+	// feed's span.
 	cut := store.TS(now.Add(-feed.MaxAge))
 	ffs, err := s.firstFaults(ctx, "", now)
 	if err != nil {
@@ -692,32 +670,10 @@ func (s *Server) networkFeed(ctx context.Context, authority string, now time.Tim
 		es = append(es, fe)
 	}
 
-	// The observer's own incidents: readings where so many validators
-	// failed at once that the observer set the reading aside as its own
-	// problem. Published because a reader of the other entries deserves to
-	// know when the instrument itself was in doubt.
-	pts, err := rollup.SuspectPoints(ctx, s.st.DB(), `started_at >= ? AND started_at <= ?`, cut, store.TS(now))
-	if err != nil {
-		return nil, err
-	}
-	for _, p := range pts {
-		reason := p.Reason()
-		if reason == "" {
-			continue
-		}
-		at := parseTS(p.At)
-		es = append(es, feed.Entry{Kind: "vantage-incident", At: at, Link: "/blob/?hash=" + p.PromiseHash,
-			ID:    feed.TagID(authority, feedTagDate, "tensile", fm.chainID, "incident", idTime(at), p.PromiseHash),
-			Title: fmt.Sprintf("Observer incident: %d of %d validators failed at once", maxI(p.Unreachable, p.Faulted), p.Validators),
-			Summary: fmt.Sprintf("At the reading of blob %s scheduled %s (%s), %d of %d endorsing validators asked were unreachable and %d returned no rows, and the blob could not be reconstructed. "+
-				"From one location that cannot be told from this observer's own network, so nothing at this reading counts either way.",
-				p.PromiseHash, p.At, p.Label, p.Unreachable, p.Validators, p.Faulted)})
-	}
-
 	f := &feed.Feed{
 		ID:       feed.TagID(authority, feedTagDate, "tensile", fm.chainID, "network"),
 		Title:    "Tensile · " + fm.chainID + " · Fibre network events",
-		Subtitle: "Fibre host registrations, bonded provider list changes, first not-served readings and observer incidents on " + fm.chainID + ", from vantage " + s.vantage + ". Newest 50 of the last 30 days.",
+		Subtitle: "Fibre host registrations, bonded provider list changes and first not-served readings on " + fm.chainID + ", from vantage " + s.vantage + ". Newest 50 of the last 30 days.",
 		SelfHref: "feed.atom",
 		AltHref:  "/",
 		Author:   "Tensile observer (" + s.vantage + ")",
@@ -725,11 +681,4 @@ func (s *Server) networkFeed(ctx context.Context, authority string, now time.Tim
 	}
 	f.Updated = feedUpdated(f.Entries, now)
 	return f, nil
-}
-
-func maxI(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }

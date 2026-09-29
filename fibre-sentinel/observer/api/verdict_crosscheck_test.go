@@ -19,23 +19,20 @@ import (
 func rowsFromStore(t *testing.T, st *store.Store) ([]verdict.Row, map[string]time.Time, verdict.Blobs) {
 	t.Helper()
 	var rows []verdict.Row
-	prs, err := st.DB().Query(`SELECT raw_json, confirmed_by IS NOT NULL FROM probes`)
+	prs, err := st.DB().Query(`SELECT raw_json FROM probes`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for prs.Next() {
 		var raw string
-		var confirmed bool
-		if err := prs.Scan(&raw, &confirmed); err != nil {
+		if err := prs.Scan(&raw); err != nil {
 			t.Fatal(err)
 		}
 		var m probe.Measurement
 		if err := json.Unmarshal([]byte(raw), &m); err != nil {
 			t.Fatal(err)
 		}
-		row := verdict.FromMeasurement(m)
-		row.Confirmed = confirmed
-		rows = append(rows, row)
+		rows = append(rows, verdict.FromMeasurement(m))
 	}
 	prs.Close()
 	settled := map[string]time.Time{}
@@ -62,13 +59,7 @@ func rowsFromStore(t *testing.T, st *store.Store) ([]verdict.Row, map[string]tim
 
 type apiObligations struct {
 	Network struct {
-		Obligations   obligationsJSON `json:"obligations"`
-		VantageHealth struct {
-			Suspect []struct {
-				At     string `json:"at"`
-				Reason string `json:"reason"`
-			} `json:"suspect"`
-		} `json:"vantage_health"`
+		Obligations obligationsJSON `json:"obligations"`
 	}
 	Validators []struct {
 		Address     string          `json:"address"`
@@ -102,10 +93,9 @@ func same(a obligationsJSON, b verdict.Obligations) bool {
 		a.HeldParamUnverified == b.HeldParamUnverified && a.NotCounted == b.NotCounted && a.Pending == b.Pending
 }
 
-// The obligation buckets and the suspect points the API computes in SQL
-// must equal what the verdict package derives from the same rows in Go,
-// on every window, pinned or live: a third party with the export
-// reproduces the site's figures.
+// The obligation buckets the API computes in SQL must equal what the
+// verdict package derives from the same rows in Go, on every window, pinned
+// or live: a third party with the export reproduces the site's figures.
 func TestVerdictPackageMatchesTheSQL(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
@@ -113,20 +103,21 @@ func TestVerdictPackageMatchesTheSQL(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	now := time.Now().UTC().Truncate(time.Second)
-	// the obligations fixture's profiles, plus a suspect point, plus a
-	// publication still pending, plus the sample record
+	// the obligations fixture's profiles, plus a reading where most
+	// validators failed at once, plus a publication still pending, plus the
+	// sample record
 	created, msu := now.Add(-2*time.Hour), now.Add(-30*time.Minute)
 	insertProbeSet(t, st, "x1", created, msu, map[string][]wire{
 		"served": {ok, ok, ok, ok}, "endun": {ok, err500, err500, err500}, "broken": {ok, gone, ok, ok},
 		"unreach": {refused, refused, refused, refused}, "reach": {err500, err500, err500, err500},
 		"backoff": {skipped, skipped, skipped, skipped}, "gaplast": {ok, ok, ok, skipped},
-	}, false)
+	})
 	insertProbeSet(t, st, "x2", created.Add(10*time.Minute), msu, map[string][]wire{
 		"a": {refused, ok}, "b": {refused, ok}, "c": {refused, ok}, "d": {ok, ok},
-	}, false)
+	})
 	insertProbeSet(t, st, "x3", now.Add(-20*time.Minute), now.Add(time.Hour), map[string][]wire{
 		"a": {ok}, "b": {gone}, "c": {ok},
-	}, false)
+	})
 	for _, f := range []string{"publications.jsonl", "measurements.jsonl"} {
 		var err error
 		if f == "publications.jsonl" {
@@ -154,16 +145,7 @@ func TestVerdictPackageMatchesTheSQL(t *testing.T) {
 			verdict.Window{All: true, End: now.Add(-25 * time.Minute)}},
 	} {
 		api := fetchObligations(t, ts, c.query)
-		sus := verdict.SuspectPoints(rows, c.win, blobs)
-		net, byVal := verdict.ComputeObligations(rows, settled, c.win, sus, blobs)
-		if len(sus) != len(api.Network.VantageHealth.Suspect) {
-			t.Errorf("%s: suspect points: go %d, sql %d", c.name, len(sus), len(api.Network.VantageHealth.Suspect))
-		}
-		for i := range sus {
-			if i < len(api.Network.VantageHealth.Suspect) && api.Network.VantageHealth.Suspect[i].At != store.TS(sus[i].At) {
-				t.Errorf("%s: suspect point %d: go %s, sql %s", c.name, i, store.TS(sus[i].At), api.Network.VantageHealth.Suspect[i].At)
-			}
-		}
+		net, byVal := verdict.ComputeObligations(rows, settled, c.win, blobs)
 		if !same(api.Network.Obligations, net) {
 			t.Errorf("%s: network obligations differ:\nsql %+v\ngo  %+v", c.name, api.Network.Obligations, net)
 		}

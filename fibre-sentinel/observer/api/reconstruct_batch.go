@@ -33,12 +33,10 @@ import (
 //
 // where excess, sigma_rows - distinct_rows, is how many assigned row indices
 // the assignment hands to more than one validator. Available needs the
-// distinct rows at or above needed_rows, and Unavailable needs them, plus
-// the rows of the validators without an answer of their own (every
-// validator the assignment gives rows, endorsing or not), below it; whenever
-// the bounds land on one side, and on nearly every blob they do, no row list
-// is read. Only the narrow ambiguous band falls back to the exact count, one
-// blob at a time.
+// distinct rows at or above needed_rows, Unavailable needs them below it at
+// a reading that happened; whenever the bounds land on one side, and on
+// nearly every blob they do, no row list is read. Only the narrow ambiguous
+// band falls back to the exact count, one blob at a time.
 
 // blobSel is the selection every batch query joins against: the same ordering
 // and limit blobRows applies, expressed once as a CTE so the database does the
@@ -109,12 +107,12 @@ func (p asOfPin) over(msu string) bool {
 type readingAgg struct {
 	at       string
 	end      bool
-	asked    int // distinct validators asked: a row other than NOT_PROBED or PROBE_ERROR
-	answered int // of those, with an answer of their own (verdict.Answered)
-	endorsed int // of those, endorsing validators that answered
-	served   int // whose rows verified
-	upper    int // every verified row
-	guard    rollup.Point
+	asked    int  // distinct validators asked: a row other than NOT_PROBED or PROBE_ERROR
+	answered int  // with an answer of their own (verdict.Answered): the reading happened
+	endorsed int  // of those, endorsing validators that answered
+	served   int  // whose rows verified
+	upper    int  // every verified row
+	missed   bool // the prober missed a request (a NOT_PROBED row of an assigned validator)
 }
 
 // reconstructBatch returns the status of every publication in the selection,
@@ -163,11 +161,10 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 		return map[string]*reconstruct{}, nil
 	}
 
-	// 2. the rows every validator the assignment gives rows holds (the set
-	// the client asks), and how many of them endorse, per publication.
-	held, endorsers := map[string]int{}, map[string]int{}
+	// 2. how many validators endorse each publication, for readingOf.
+	endorsers := map[string]int{}
 	rows, err = db.QueryContext(ctx, sel+`
-		SELECT a.promise_hash, COALESCE(SUM(a.row_count), 0), COALESCE(SUM(a.attested = 1 OR a.attested IS NULL), 0)
+		SELECT a.promise_hash, COALESCE(SUM(a.attested = 1 OR a.attested IS NULL), 0)
 		FROM assignments a JOIN sel ON sel.promise_hash = a.promise_hash
 		WHERE a.row_count > 0 GROUP BY a.promise_hash`, args...)
 	if err != nil {
@@ -175,12 +172,12 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 	}
 	for rows.Next() {
 		var hash string
-		var n, v int
-		if err := rows.Scan(&hash, &n, &v); err != nil {
+		var v int
+		if err := rows.Scan(&hash, &v); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		held[hash], endorsers[hash] = n, v
+		endorsers[hash] = v
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -188,12 +185,8 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 	}
 
 	// 3. every reading: who was asked, who answered, the verified rows, and
-	// the correlated-failure guard's tally, as rollup.SuspectPoints makes
-	// it over this blob's rows.
+	// whether the prober missed a request of it.
 	pb, pargs := pin.bound("p", args)
-	cls := rollup.EffectiveClass("p")
-	passed := rollup.PassedOverSQL("p")
-	failed := `((` + rollup.ObligationClass("p") + ` = 'FAULT' AND p.classification <> 'NOT_REGISTERED') OR ` + passed + `)`
 	answered := rollup.Answered("p")
 	points := map[string][]readingAgg{}
 	rows, err = db.QueryContext(ctx, sel+`
@@ -202,9 +195,7 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 		       COUNT(DISTINCT CASE WHEN `+answered+` THEN p.validator_address END),
 		       COUNT(DISTINCT CASE WHEN p.commitment_verified = 1 THEN p.validator_address END),
 		       COALESCE(SUM(CASE WHEN p.commitment_verified = 1 THEN p.rows_returned END), 0),
-		       COUNT(DISTINCT CASE WHEN p.assigned = 1 AND `+cls+` = 'UNREACHABLE' THEN p.validator_address END),
-		       COUNT(DISTINCT CASE WHEN p.assigned = 1 AND `+failed+` THEN p.validator_address END),
-		       COUNT(DISTINCT CASE WHEN p.assigned = 1 AND (`+cls+` NOT IN `+rollup.GuardSilentSQL+` OR `+passed+`) THEN p.validator_address END)
+		       MAX(p.classification = 'NOT_PROBED' AND p.assigned = 1)
 		FROM probes p JOIN sel ON sel.promise_hash = p.promise_hash
 		WHERE p.phase = 'in_window'`+pb+`
 		GROUP BY p.promise_hash, p.scheduled_at`, pargs...)
@@ -214,8 +205,7 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 	for rows.Next() {
 		var hash string
 		var ra readingAgg
-		if err := rows.Scan(&hash, &ra.at, &ra.end, &ra.asked, &ra.answered, &ra.served, &ra.upper,
-			&ra.guard.Unreachable, &ra.guard.Faulted, &ra.guard.Validators); err != nil {
+		if err := rows.Scan(&hash, &ra.at, &ra.end, &ra.asked, &ra.answered, &ra.served, &ra.upper, &ra.missed); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -254,13 +244,12 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 		return nil, err
 	}
 
-	// 5. the validators that answered at each reading and the rows they
-	// hold: what the rest, who might still have served, hold is the
-	// difference to step 2. And how many of them endorse, for readingOf.
-	answeredRows, answeredBy := map[pointKey]int{}, map[pointKey]int{}
+	// 5. how many endorsing validators answered at each reading, for
+	// readingOf.
+	answeredBy := map[pointKey]int{}
 	rows, err = db.QueryContext(ctx, sel+`
-		SELECT promise_hash, scheduled_at, SUM(rc), SUM(e) FROM (
-		  SELECT DISTINCT p.promise_hash AS promise_hash, p.scheduled_at AS scheduled_at, p.validator_address AS v, a.row_count AS rc,
+		SELECT promise_hash, scheduled_at, SUM(e) FROM (
+		  SELECT DISTINCT p.promise_hash AS promise_hash, p.scheduled_at AS scheduled_at, p.validator_address AS v,
 		         (a.attested = 1 OR a.attested IS NULL) AS e
 		  FROM probes p
 		  JOIN assignments a ON a.promise_hash = p.promise_hash AND a.validator_address = p.validator_address
@@ -272,12 +261,12 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 	}
 	for rows.Next() {
 		var k pointKey
-		var n, v int
-		if err := rows.Scan(&k.hash, &k.at, &n, &v); err != nil {
+		var v int
+		if err := rows.Scan(&k.hash, &k.at, &v); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		answeredRows[k], answeredBy[k] = n, v
+		answeredBy[k] = v
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -306,21 +295,18 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 			continue
 		}
 		rc.PointAt, rc.ProbedValidators, rc.ServedBy = pa.at, pa.asked, pa.served
-		k := pointKey{hash, pa.at}
 		needed := int(f.needed)
-		potential := held[hash] - answeredRows[k]
-		floor := lower[k] - f.excess // at most the distinct verified rows
+		floor := lower[pointKey{hash, pa.at}] - f.excess // at most the distinct verified rows
 		switch {
 		case floor >= needed:
 			rc.Status = verdict.BlobAvailable
-		case pa.upper < needed && pa.guard.Reason() != "":
-			// not Available, and set aside by the guard
-			rc.Status = idle
-		case pa.upper+potential < needed:
-			rc.Status = verdict.BlobUnavailable
-		case pa.upper < needed && floor+potential >= needed:
-			// not Available, and the rows that might still have come back
-			// could have made it so, even counted at the floor
+		case pa.upper < needed && pa.answered > 0 && !pa.missed:
+			// short even counting every verified row, at a reading that
+			// happened
+			rc.Status, rc.Error = verdict.BlobUnavailable, probe.ClientError(pa.upper)
+		case pa.upper < needed:
+			// short, and the reading did not happen: every request failed
+			// here, or the prober missed some
 			rc.Status = idle
 		default:
 			// Within the overlaps of the threshold (duplicated verified rows

@@ -58,16 +58,6 @@ const (
 	OutcomeProbeError Outcome = "PROBE_ERROR" // the probe itself failed (bug / config), not the target
 	OutcomeMissed     Outcome = "MISSED"      // scheduled point elapsed before the prober could run it
 	OutcomeReachable  Outcome = "REACHABLE"   // DNS/TCP/TLS/identity all fine; download deliberately skipped (heartbeat or policy backoff)
-	// OutcomePassedOver: on a reading that ended Unavailable, a validator the
-	// pass that decided it was due to ask and did not ask: busy with another
-	// of this observer's readings until the pass ended, or the reading's time
-	// ran out first (blobread.go). Its earlier answer, if it gave one, is on
-	// the row as the first attempt. No request was made in that pass, so it
-	// is this observer's gap (PROBE_ERROR) and never counts; the
-	// correlated-failure guard counts it as a validator that failed
-	// (GuardPassedOver), because the validators a pass passes over are the
-	// ones this observer's own requests to are still waiting on.
-	OutcomePassedOver Outcome = "PASSED_OVER"
 )
 
 // AllOutcomes is every outcome the prober can record. The taxonomy test walks
@@ -78,7 +68,6 @@ var AllOutcomes = []Outcome{
 	OutcomeIdentityFail, OutcomeRPCUnavailable, OutcomeServerError, OutcomeThrottled, OutcomeRPCDeadline,
 	OutcomeRPCTimeout, OutcomeMalformedShard,
 	OutcomeNoHost, OutcomeBadHost, OutcomeRPCError, OutcomeProbeError, OutcomeMissed, OutcomeReachable,
-	OutcomePassedOver,
 }
 
 // Classification is the Sentinel's verdict on one measurement, given the probe
@@ -237,34 +226,15 @@ var AllClassifications = []Classification{
 // minutes before its retention window ends (ScheduleConfig.EndReadOffset).
 const EndReadLabel = "end"
 
-// At the reading a validator is met the way a reader using celestia-app's
-// own client meets it (fibre/client_download.go): it asks for the rows,
-// waits RPCTimeout, and moves on with or without them. Rows that verify
-// against the commitment are the reading; anything else leaves the reader
-// without them. Whether that counts against the validator is the blob's
-// question, not the row's: only when the blob could not be reconstructed
-// (observer/verdict, BlobReading).
-//
-// EndNoRowsClasses are the reading's outcomes that return no rows to a
-// reader: nothing answered, a certificate the client rejects (wrong key, or
-// outside its validity window), a server error, a rate limit, no Fibre host
-// registered. FAULT is not listed: it is already no rows. A rate limit is
-// the validator not serving: the client takes ResourceExhausted as the
-// server's answer, skips the shard and moves on (client_cache.go Request,
-// downloadBlob SkipShard), and a reading asks each validator once per pass.
-var EndNoRowsClasses = []Classification{
-	ClassUnreachable, ClassIdentityMismatch, ClassIdentityExpired, ClassServerError, ClassThrottled, ClassNotRegistered,
-}
-
-// OwnAnswer reports whether a row is the validator's own answer at a
-// reading: in the window, and either rows that verified against the
-// commitment, or anything but this observer's own gap (NOT_PROBED,
-// PROBE_ERROR). A validator without one could still have served its rows,
-// so a reading counts them among the rows that might have made the blob
-// readable; a validator whose verified rows are already in hand has given
-// them, and is never counted a second time. The prober's own Unavailable
-// test and the verdict's (observer/verdict, rollup's AnsweredSQL) are all
-// built from this one predicate.
+// OwnAnswer reports whether a row is a validator's own answer at a reading:
+// in the window, and either rows that verified against the commitment, or
+// anything but this observer's own gap (NOT_PROBED: the request was never
+// made; PROBE_ERROR: it failed on this observer's side before it reached
+// the validator, a local resolver or no route out, or this build could not
+// handle the answer). A reading without one did not happen: not a single
+// request reached a validator, and the blob was not read by Tensile. The
+// prober's result (blobread.go) and the verdict's (observer/verdict,
+// rollup's Answered) are both built from it.
 func OwnAnswer(phase Phase, c Classification, verified bool) bool {
 	if phase != PhaseInWindow {
 		return false
@@ -272,172 +242,15 @@ func OwnAnswer(phase Phase, c Classification, verified bool) bool {
 	return verified || (c != ClassNotProbed && c != ClassProbeError)
 }
 
-// Confirmable reports whether a class leaves the reader without rows in a
-// way a second location can ask about again (confirm.go): a FAULT on any
-// schedule, and at the end reading every class that left the reader
-// without rows (EndReadClass FAULT), less NOT_REGISTERED, which names no
-// host another location could ask. A second location's answer in one of
-// these classes is also the only kind that confirms a not-served reading
-// (verdict.ConfirmNotServed).
-func Confirmable(label string, c Classification) bool {
-	if c == ClassFault {
-		return true
-	}
-	return label == EndReadLabel && c != ClassNotRegistered && EndReadClass(c) == ClassFault
-}
-
-// ConfirmationDue reports whether a row of an endorsing validator, on an
-// end reading that left its blob Unavailable, is sent to a second location:
-// every row that can count not served there. That is a class without rows
-// (Confirmable), and an answer whose rows verified but were fewer than the
-// validator holds, which counts not served once its deferred verdict is
-// drawn (verdict.Row.CountedClass). Nothing counts not served until the
-// second location has confirmed it.
-func ConfirmationDue(m Measurement) bool {
-	if m.ScheduleLabel != EndReadLabel || !m.Assigned || m.Phase != PhaseInWindow {
-		return false
-	}
-	if Confirmable(m.ScheduleLabel, m.Classification) {
-		return true
-	}
-	return m.Download.CommitmentVerified && m.Download.RowsReturned < m.AssignedRowCount
-}
-
-// The correlated-failure guard (the owner's decision until a control read
-// exists; observer/verdict applies it over stored rows, SuspectPoints). At
-// or above GuardShare of the validators asked at one reading being
-// unreachable, or GuardShare of them leaving the reader without rows, the
-// likeliest explanation is this observer's own side, and the reading
-// counts neither way. GuardMinValidators is the floor under which a share
-// is not a signal.
-const (
-	GuardShare         = 0.5
-	GuardMinValidators = 3
-)
-
-// GuardSilentClasses are the classes that leave the observer without a
-// reachability verdict for the endpoint, so a row in one of them is in
-// neither the numerator nor the denominator of the guard's shares (see
-// verdict.GuardSilentClasses for why each is here).
-var GuardSilentClasses = []Classification{
-	ClassNotProbed, ClassProbeError, ClassNotRegistered, ClassUnattested, ClassRetentionUnverified,
-}
-
-// GuardSilent reports whether a class is one of GuardSilentClasses.
-func GuardSilent(c Classification) bool {
-	for _, s := range GuardSilentClasses {
-		if c == s {
-			return true
-		}
-	}
-	return false
-}
-
-// GuardPassedOver reports whether a row is a validator the reading passed
-// over (OutcomePassedOver) that the correlated-failure guard counts, in its
-// denominator and as failed: one whose endorsement is on the promise. The
-// guard would have seen its answer had the pass asked it, and the
-// validators a pass passes over are the ones this observer's own earlier
-// requests to still hold (a hanging validator keeps its one slot for two
-// RPC timeouts), which at a slower pace come back UNREACHABLE. Leaving them
-// out, as a PROBE_ERROR otherwise is, made whether a reading was set aside
-// depend on how busy this observer was. A validator without an endorsement
-// is UNATTESTED whatever it answers, which the guard leaves out, so it is
-// left out here too. rollup.PassedOverSQL is the SQL twin.
-func GuardPassedOver(o Outcome, c Classification, attested bool) bool {
-	return o == OutcomePassedOver && c == ClassProbeError && attested
-}
-
-// GuardSetsAside reports whether the correlated-failure guard sets one
-// reading aside, from its rows as the prober writes them: the verdict's
-// guard (verdict.SuspectPoints) over one reading, drawn from this
-// observer's own reading alone. The caller asks it of a reading that did
-// not reconstruct its blob; a reading that did is never set aside.
-func GuardSetsAside(rows []Measurement) bool {
-	vals, unreach, failed := map[string]bool{}, map[string]bool{}, map[string]bool{}
-	for _, m := range rows {
-		if !m.Assigned || m.Phase != PhaseInWindow {
-			continue
-		}
-		if GuardPassedOver(m.Outcome, m.Classification, m.Attested && m.HasAttestation()) {
-			vals[m.ValidatorAddress], failed[m.ValidatorAddress] = true, true
-			continue
-		}
-		if GuardSilent(m.Classification) {
-			continue
-		}
-		vals[m.ValidatorAddress] = true
-		if m.Classification == ClassUnreachable {
-			unreach[m.ValidatorAddress] = true
-		}
-		oc := m.Classification
-		if m.ScheduleLabel == EndReadLabel {
-			oc = EndReadClass(oc)
-		}
-		if oc == ClassFault {
-			failed[m.ValidatorAddress] = true
-		}
-	}
-	n := len(vals)
-	if n <= 1 {
-		return false
-	}
-	share := func(k int) bool { return float64(k)/float64(n) >= GuardShare && k >= GuardMinValidators }
-	return share(len(unreach)) || share(len(failed))
-}
-
 // VerdictDeferred reports whether a row's verdict is still to be drawn by
 // the collector (verdict.LateShadow): rows that verified against the
 // commitment and are not this promise's assignment, written PROBE_ERROR
 // with a shadow gap until the scanner has read far enough to say which
-// promise, if any, they belong to.
+// promise, if any, they belong to. The rows verified, so for the reading
+// they came back whatever that verdict comes to.
 func VerdictDeferred(m Measurement) bool {
 	return m.Classification == ClassProbeError && m.Download.ShadowGap != "" && m.Download.CommitmentVerified &&
 		(m.Outcome == OutcomeWrongRows || m.Outcome == OutcomePartial)
-}
-
-// GuardSetsAsideForGood reports whether the guard sets a reading aside
-// whatever the verdicts still to be drawn on its rows come to. A deferred
-// row is guard-silent as written and an answer with rows once drawn
-// (SHADOWED_SHARD or UNMATCHED_GENUINE), which joins the denominator and
-// only ever lowers the shares, so the verdict's guard can lift after the
-// prober's: the reading is taken here with every deferred row drawn that
-// way. The prober sends no confirmation request for a reading set aside for
-// good; one set aside only until its verdicts are drawn gets its requests,
-// so a guard lifted later finds its rows asked.
-func GuardSetsAsideForGood(rows []Measurement) bool {
-	drawn := make([]Measurement, len(rows))
-	copy(drawn, rows)
-	for i := range drawn {
-		if VerdictDeferred(drawn[i]) {
-			drawn[i].Classification = ClassUnmatchedGenuine
-		}
-	}
-	return GuardSetsAside(drawn)
-}
-
-// EndGenuineRowsClasses are the end-reading outcomes where rows that verify
-// against the commitment came back, though not the ones this promise
-// assigns (another promise over the same blob, or one that never settled,
-// answered first). A reader downloading the blob by BlobID gets genuine rows
-// and rebuilds from them, so they count as served.
-var EndGenuineRowsClasses = []Classification{ClassShadowedShard, ClassUnmatchedGenuine}
-
-// EndReadClass is the class an end reading counts as for its obligation:
-// FAULT for no rows, HEALTHY for genuine rows, otherwise its own.
-// rollup.ObligationClass is the SQL twin.
-func EndReadClass(c Classification) Classification {
-	for _, x := range EndNoRowsClasses {
-		if c == x {
-			return ClassFault
-		}
-	}
-	for _, x := range EndGenuineRowsClasses {
-		if c == x {
-			return ClassHealthy
-		}
-	}
-	return c
 }
 
 // DeadlineDerivedClasses is every classification whose membership of the
@@ -448,8 +261,7 @@ func EndReadClass(c Classification) Classification {
 // Everything else the phase switch produces only changes its name across
 // the boundary — UNREACHABLE becomes UNREACHABLE_POST_WINDOW, THROTTLED
 // becomes TOLERATED — and is held out of the rate on both sides, so
-// withholding it would move no published figure while costing the
-// correlated-failure guard real evidence about the observer's own path.
+// withholding it would move no published figure.
 //
 // rollup.DeadlineDerivedSQL is the same list for the SQL twin, held to this
 // one by TestTheSQLAndTheGoTwinHoldTheSameRows.
@@ -575,9 +387,6 @@ func Classify(in Evidence) (Classification, string) {
 	// Observer-side first: none of these say anything about the validator.
 	if o == OutcomeProbeError {
 		return ClassProbeError, "probe could not be carried out"
-	}
-	if o == OutcomePassedOver {
-		return ClassProbeError, "not asked in the pass that decided the reading (this observer's own gap)"
 	}
 	if o == OutcomeMissed {
 		return ClassNotProbed, "scheduled point elapsed before the prober ran it"

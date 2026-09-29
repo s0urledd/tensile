@@ -17,10 +17,10 @@ import (
 
 // ?served=no lists the readings the obligations count as not served: no
 // rows came back, on a blob that could not be reconstructed from the rows
-// that did. At the one reading of a blob every answer that leaves the
-// reader without rows is one; at an earlier schedule's point only a FAULT
-// is. A failure on a blob that was Available counts neither way and is not
-// listed, and neither are served rows.
+// that did, whatever the reader met (a timeout, no such shard, a server
+// error), at the one reading of a blob and at an earlier schedule's point
+// alike. A failure on a blob that was Available counts neither way and is
+// not listed, and neither are served rows.
 func TestProbesServedNoFollowsTheObligationRule(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
@@ -31,14 +31,13 @@ func TestProbesServedNoFollowsTheObligationRule(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	created, msu := now.Add(-5*time.Hour), now.Add(-time.Hour)
 	// Unavailable: the three validators that did not serve hold most of the
-	// rows, and fewer than half the validators asked failed, so the
-	// correlated-failure guard does not set the reading aside.
+	// rows.
 	insertReading(t, st, "sn1", created, msu, 12, probe.EndReadLabel, msu.Add(-10*time.Minute), []endVal{
 		{addr: "endsilent", rows: 4, w: refused}, {addr: "endgone", rows: 4, w: gone}, {addr: "enderror", rows: 4, w: err500},
 		{addr: "endok1", rows: 1, w: ok}, {addr: "endok2", rows: 1, w: ok}, {addr: "endok3", rows: 1, w: ok}, {addr: "endok4", rows: 1, w: ok},
 	})
-	// The earlier schedule's last point of another unreadable blob: only
-	// the FAULT is not served.
+	// The earlier schedule's last point of another unreadable blob: both
+	// validators whose rows did not come back are not served.
 	insertReading(t, st, "sn0", created.Add(-time.Minute), msu.Add(-time.Minute), 12, "w4", msu.Add(-30*time.Minute), []endVal{
 		{addr: "w4silent", rows: 4, w: refused}, {addr: "w4gone", rows: 4, w: gone},
 		{addr: "w4ok1", rows: 1, w: ok}, {addr: "w4ok2", rows: 1, w: ok}, {addr: "w4ok3", rows: 1, w: ok},
@@ -64,7 +63,7 @@ func TestProbesServedNoFollowsTheObligationRule(t *testing.T) {
 		got = append(got, p.ValidatorAddress)
 	}
 	sort.Strings(got)
-	if want := "enderror,endgone,endsilent,w4gone"; strings.Join(got, ",") != want {
+	if want := "enderror,endgone,endsilent,w4gone,w4silent"; strings.Join(got, ",") != want {
 		t.Errorf("served=no lists %v, want %s", got, want)
 	}
 
@@ -145,9 +144,9 @@ func TestProbesServedNoFollowsTheObligationRule(t *testing.T) {
 	}
 }
 
-// Every validator failing at the same reading is set aside by the
-// correlated-failure guard: nothing is listed as not served.
-func TestProbesServedNoLeavesOutASuspectReading(t *testing.T) {
+// Every validator failing at the same reading is what the client meets:
+// no shards retrieved, and every one of them is not served.
+func TestProbesServedNoListsEveryValidatorOfABlobNobodyServed(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -168,14 +167,14 @@ func TestProbesServedNoLeavesOutASuspectReading(t *testing.T) {
 	if code := get(t, ts, "/v1/probes?served=no&limit=100", &probes); code != 200 {
 		t.Fatalf("served=no: %d", code)
 	}
-	if len(probes.Probes) != 0 {
-		t.Errorf("served=no lists %d readings of a reading the guard set aside", len(probes.Probes))
+	if len(probes.Probes) != 4 {
+		t.Errorf("served=no lists %d readings, want the four validators of the blob nobody served", len(probes.Probes))
 	}
 }
 
-// On the earlier schedule the word follows the same buckets: a fault on an
-// unreadable blob is not served, a reading near the end served, readings
-// that stop short of the end and answers that count neither way no word at
+// On the earlier schedule the word follows the same buckets: a failure on
+// an unreadable blob is not served, a reading near the end served, readings
+// that stop short of the end and failures on an Available blob no word at
 // all, an unendorsed validator nothing, and a window still running is in its
 // retention window.
 func TestBlobServiceWords(t *testing.T) {
@@ -190,12 +189,19 @@ func TestBlobServiceWords(t *testing.T) {
 	if code := get(t, ts, "/v1/blobs/obl1", &b); code != 200 {
 		t.Fatalf("obl1: %d", code)
 	}
-	want := map[string]string{"served": "served", "broken": "not_served", "gaplast": "", "endun": "",
+	want := map[string]string{"served": "served", "gaplast": "", "endun": "", "backoff": "",
 		"unreach": "", "reach": "", "unatt": ""}
 	for _, a := range b.Assignments {
 		if w, ok := want[a.ValidatorAddress]; ok && a.Service != w {
 			t.Errorf("obl1 %s: service %q, want %q", a.ValidatorAddress, a.Service, w)
 		}
+	}
+	var u assignments
+	if code := get(t, ts, "/v1/blobs/obl3", &u); code != 200 {
+		t.Fatalf("obl3: %d", code)
+	}
+	if len(u.Assignments) != 1 || u.Assignments[0].Service != "not_served" {
+		t.Errorf("obl3: %+v, want broken not served", u.Assignments)
 	}
 	var p assignments
 	if code := get(t, ts, "/v1/blobs/obl2", &p); code != 200 {

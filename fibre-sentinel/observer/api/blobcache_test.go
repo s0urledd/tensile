@@ -94,7 +94,6 @@ func insertProbe(t *testing.T, st *store.Store, hash, addr string, at time.Time,
 	if _, err := st.InsertProbe(m, raw); err != nil {
 		t.Fatal(err)
 	}
-	confirmFailures(t, st, `promise_hash = ? AND validator_address = ?`, hash, addr)
 }
 
 type blobListRow struct {
@@ -135,8 +134,8 @@ func TestCachedBlobVerdictFollowsLateProbes(t *testing.T) {
 	if first.ProbeCount != 1 || first.Recon.ProbedValidators != 1 {
 		t.Fatalf("first read: probe_count %d, probed %d, want 1 and 1", first.ProbeCount, first.Recon.ProbedValidators)
 	}
-	if first.Recon.Status != "not_read" {
-		t.Fatalf("first read status %q, want \"not_read\": one of two validators was heard from, and the other could have made up the rows",
+	if first.Recon.Status != "no" {
+		t.Fatalf("first read status %q, want \"no\": the rows on record are short of the blob, and the reading happened",
 			first.Recon.Status)
 	}
 

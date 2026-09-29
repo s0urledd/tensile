@@ -7,35 +7,31 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 )
 
-// A blob is read the way celestia-app's Fibre client downloads one: the
-// validators the assignment gives rows are asked for their shards, in the
-// client's order, until enough distinct rows, each verified against the
-// commitment, are in hand to reconstruct it (Needed: original_rows, 4096 for
-// blob version 0). What that reading came to decides what counts:
+// A blob is read the way celestia-app's Fibre client downloads one, and its
+// result is the client's (Reading):
 //
-//   - Available: at least Needed distinct verified rows came back, from any
-//     validator, whatever else happened. Verified rows cannot come from this
-//     observer's own trouble, so nothing sets this aside.
-//   - Unavailable: fewer came back, and even every row of the validators
-//     without an answer of their own (not asked, or this observer's own
-//     failure: probe.OwnAnswer) could not have made up the difference. That
-//     is the client's own outcome over the whole set, endorsing or not:
-//     "not enough shards to reconstruct blob", or "no shards retrieved"
-//     (fibre.ErrNotEnoughShards, fibre.ErrNotFound).
-//   - otherwise the reading says nothing yet (pending, while the window is
-//     open) or nothing at all (not read by Tensile).
+//   - Available: at least Needed distinct rows came back verified (Needed is
+//     original_rows, 4096 for blob version 0), from any validator.
+//   - Unavailable, with the client's error: "no shards retrieved" when no
+//     verified row came back, "not enough shards to reconstruct blob" when
+//     some did, fewer than Needed.
 //
-// A failure to hand over rows counts against a validator only when it
-// endorsed the promise (it owes the blob), the blob was Unavailable, and the
-// second location confirmed it (Row.Confirmed, confirm.go): when
-// the blob could be rebuilt, a reader was not left without the data, and a
-// failure then is as likely this observer's own path as the validator. A
-// validator whose rows came back is served either way. The SQL twin is
-// rollup.CountedClass.
+// Nothing else for a reading that happened. A reading did not happen when
+// not a single request reached a validator (every request failed on this
+// observer's side: Answered holds for none) or when the prober missed its
+// requests (a NOT_PROBED row: it was down, restarting, or late) and the
+// rows are short; then the blob was not read by Tensile, or is still in its
+// retention window, and nothing in it counts.
+//
+// What counts for a validator follows from it (Row.CountedClass): served
+// when its rows came back verified; not served when it endorsed the
+// promise, its rows did not come back, and the blob was Unavailable. On an
+// Available blob a validator that failed or was not asked counts neither
+// way. The SQL twin is rollup.CountedClass.
 
 // NotCounted is the class a row counts as when it left the reader without
-// rows on a blob that was Available all the same: counted neither for nor
-// against the validator.
+// rows on a blob that was not Unavailable: counted neither for nor against
+// the validator.
 const NotCounted probe.Classification = "NOT_COUNTED"
 
 // The blob statuses, as /v1/blobs publishes them.
@@ -60,18 +56,6 @@ type BlobFacts struct {
 	// signature on the promise, or a record from before signatures were
 	// verified) to the rows it holds.
 	Endorsed map[string]int
-	// Assigned maps every validator the assignment gives rows, endorsing or
-	// not, to the rows it holds: the set the client asks. nil falls back to
-	// Endorsed.
-	Assigned map[string]int
-}
-
-// holders is the set a reading asks: Assigned, or Endorsed without it.
-func (f BlobFacts) holders() map[string]int {
-	if f.Assigned != nil {
-		return f.Assigned
-	}
-	return f.Endorsed
 }
 
 // Blobs is BlobFacts by promise hash.
@@ -80,7 +64,7 @@ type Blobs map[string]BlobFacts
 // FactsOf reads the facts from a publication record.
 func FactsOf(p scan.Publication) BlobFacts {
 	f := BlobFacts{Needed: p.Assignment.ProtocolParams.OriginalRows, Excess: p.Assignment.Sigma - p.Assignment.Distinct,
-		Endorsed: map[string]int{}, Assigned: map[string]int{}}
+		Endorsed: map[string]int{}}
 	if f.Excess < 0 {
 		f.Excess = 0
 	}
@@ -88,7 +72,6 @@ func FactsOf(p scan.Publication) BlobFacts {
 		if v.RowCount <= 0 {
 			continue
 		}
-		f.Assigned[v.Address] = v.RowCount
 		if v.Attested || !p.HasAttestation() {
 			f.Endorsed[v.Address] = v.RowCount
 		}
@@ -105,31 +88,30 @@ func BlobsOf(pubs []scan.Publication) Blobs {
 	return out
 }
 
-// Answered reports whether a row is the validator's own answer at a
-// reading (probe.OwnAnswer): in the window, and rows that verified, or
-// anything but this observer's own gap (NOT_PROBED, PROBE_ERROR). A rate
-// limit is an answer: the validator did not serve. A validator without such
-// a row could still have served its rows, so it is counted among those that
-// might have made the blob readable; one whose verified rows are in hand is
-// never counted a second time.
+// Answered reports whether a row is a validator's own answer at a reading
+// (probe.OwnAnswer): in the window, and rows that verified, or anything but
+// this observer's own gap (NOT_PROBED, PROBE_ERROR). A reading with none
+// did not happen.
 func Answered(r Row) bool {
 	return probe.OwnAnswer(r.Phase, r.Classification, r.CommitmentVerified)
 }
 
-// Reading is what the rows of one reading of a blob come to, before the
-// correlated-failure guard and the clock.
+// Reading is what the rows of one reading of a blob come to.
 type Reading struct {
 	// Have is the distinct row indices that came back verified.
 	Have int
 	// Lower and Upper bound Have from the counts alone: the served shards
 	// less the assignment's overlaps, and every verified row counted.
 	Lower, Upper int
-	// Potential is the rows the validators without an answer of their own
-	// hold: every validator the assignment gives rows, endorsing or not.
-	Potential int
-	// IndicesMissing: a verified row carries no index list, so Have is a
-	// floor rather than a count.
+	// IndicesMissing: a verified row carries no index list (a record from
+	// before they were kept), so Have is a floor rather than a count; the
+	// served shards' bound (Lower) still decides Available.
 	IndicesMissing bool
+	// Ran: a request reached a validator (Answered).
+	Ran bool
+	// Missed: the prober missed a request of this reading (a NOT_PROBED row
+	// of an assigned validator in the window).
+	Missed bool
 	// Asked is the validators the reading asked (a row other than this
 	// observer's own gap, NOT_PROBED or PROBE_ERROR); Served, those whose
 	// rows verified.
@@ -138,20 +120,22 @@ type Reading struct {
 }
 
 // ReadingOf reduces the rows of one reading (one promise, one scheduled
-// time; every vantage) with the publication's facts.
+// time) with the publication's facts.
 func ReadingOf(point []Row, f BlobFacts) Reading {
 	rd := Reading{Needed: f.Needed}
 	seen := map[uint32]struct{}{}
 	asked := map[string]bool{}
 	served := map[string]bool{}
-	answered := map[string]bool{}
 	servedOK := map[string]int{}
 	for _, r := range point {
+		if r.Classification == probe.ClassNotProbed && r.Assigned && r.Phase == probe.PhaseInWindow {
+			rd.Missed = true
+		}
 		if r.Classification != probe.ClassNotProbed && r.Classification != probe.ClassProbeError {
 			asked[r.Validator] = true
 		}
 		if Answered(r) {
-			answered[r.Validator] = true
+			rd.Ran = true
 		}
 		if r.Phase != probe.PhaseInWindow {
 			continue
@@ -176,69 +160,77 @@ func ReadingOf(point []Row, f BlobFacts) Reading {
 		rd.Lower += n
 	}
 	rd.Lower -= f.Excess
-	for v, n := range f.holders() {
-		if !answered[v] {
-			rd.Potential += n
-		}
-	}
 	rd.Asked, rd.Served = len(asked), len(served)
 	return rd
 }
 
 // Available reports whether the rows that came back reconstruct the blob.
 func (rd Reading) Available() bool {
-	if rd.Needed <= 0 {
-		return false
-	}
-	if rd.Lower >= rd.Needed {
-		return true
-	}
-	return !rd.IndicesMissing && rd.Have >= rd.Needed
+	return rd.Needed > 0 && (rd.Lower >= rd.Needed || rd.Have >= rd.Needed)
 }
 
-// Unavailable reports whether the blob could not be reconstructed from this
-// reading, and could not have been even had every validator without an
-// answer of its own served. The order of the tests is the SQL
-// twin's (rollup.CountedClass), so the two agree on every row.
+// Unavailable reports whether the reading happened and the rows that came
+// back could not reconstruct the blob. The SQL twin is rollup's
+// unavailableSQL.
 func (rd Reading) Unavailable() bool {
-	switch {
-	case rd.Needed <= 0:
-		return false
-	case rd.Lower >= rd.Needed:
-		return false
-	case rd.Upper+rd.Potential < rd.Needed:
-		return true
-	case rd.IndicesMissing:
-		return false
+	return rd.Needed > 0 && !rd.Available() && rd.Ran && !rd.Missed
+}
+
+// Error is the client's error for an Unavailable reading, "" otherwise.
+func (rd Reading) Error() string {
+	if !rd.Unavailable() {
+		return ""
 	}
-	return rd.Have+rd.Potential < rd.Needed
+	return probe.ClientError(rd.Upper)
 }
 
 // BlobResult is one blob's status as the reading leaves it.
 type BlobResult struct {
 	Status string
+	// Error is the client's error on an Unavailable blob.
+	Error string
 	Reading
 }
 
-// BlobReading judges one reading of a blob. suspect is whether the
-// correlated-failure guard sets the reading aside; windowOpen whether the
-// retention window was still open at the moment asked about. Available
-// stands whatever the guard says: verified rows are not this observer's
-// trouble.
-func BlobReading(point []Row, f BlobFacts, suspect, windowOpen bool) BlobResult {
+// BlobReading judges one reading of a blob. windowOpen is whether the
+// retention window was still open at the moment asked about: a blob not
+// read yet is in its retention window, one whose window closed without a
+// reading was not read by Tensile.
+func BlobReading(point []Row, f BlobFacts, windowOpen bool) BlobResult {
 	rd := ReadingOf(point, f)
 	res := BlobResult{Reading: rd}
 	switch {
 	case rd.Available():
 		res.Status = BlobAvailable
-	case !suspect && len(point) > 0 && rd.Unavailable():
-		res.Status = BlobUnavailable
+	case rd.Unavailable():
+		res.Status, res.Error = BlobUnavailable, rd.Error()
 	case windowOpen:
 		res.Status = BlobPending
 	default:
 		res.Status = BlobNotRead
 	}
 	return res
+}
+
+// BlobOf judges one blob from all its rows: at the reading ReadingPoint
+// picks, over that reading's rows in the window, with the retention window
+// open when asOf is not after must_serve_until. It is what the API's
+// reference (reconstructable) draws from the store.
+func BlobOf(rows []Row, f BlobFacts, mustServeUntil, asOf time.Time) BlobResult {
+	var in, point []Row
+	for _, r := range rows {
+		if r.Phase == probe.PhaseInWindow {
+			in = append(in, r)
+		}
+	}
+	if at, ok := ReadingPoint(in, f); ok {
+		for _, r := range in {
+			if r.ScheduledAt.UTC().Equal(at) {
+				point = append(point, r)
+			}
+		}
+	}
+	return BlobReading(point, f, !asOf.After(mustServeUntil))
 }
 
 // ReadingPoint picks the reading a blob is judged at from its rows: the

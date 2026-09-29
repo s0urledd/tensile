@@ -29,13 +29,13 @@ func TestProvisionalFaultsAreCountedAndFlagged(t *testing.T) {
 	oldCreated, oldMSU := now.Add(-6*time.Hour), now.Add(-4*time.Hour)
 	insertProbeSet(t, st, "oldp", oldCreated, oldMSU, map[string][]wire{
 		a: {gone, ok, ok, ok}, b: {ok, ok, ok, ok}, c: {ok, ok, ok, ok},
-	}, false)
+	})
 	// Just now: the window ended a minute ago and a's last reading, at 92%
 	// of it (eight minutes ago), was a fault. Provisional.
 	freshCreated, freshMSU := now.Add(-100*time.Minute), now.Add(-time.Minute)
 	insertProbeSet(t, st, "newp", freshCreated, freshMSU, map[string][]wire{
 		a: {ok, ok, ok, gone}, b: {ok, ok, ok, ok}, c: {ok, ok, ok, ok},
-	}, false)
+	})
 	freshFault := inWindowPoint(freshCreated, freshMSU, 3)
 	if now.Sub(freshFault) >= verdict.FaultSettling {
 		t.Fatalf("fixture: the fresh fault is %s old, not younger than the settling period", now.Sub(freshFault))

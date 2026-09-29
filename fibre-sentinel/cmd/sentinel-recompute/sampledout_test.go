@@ -100,7 +100,7 @@ func TestSampledOutDecisionIsExpandedAndItsDrawChecked(t *testing.T) {
 	}
 	win := verdict.Window{End: settle.Add(24 * time.Hour), All: true}
 	blobs := verdict.Blobs{pub.PromiseHash: verdict.FactsOf(pub)}
-	net, _ := verdict.ComputeObligations(vrows, map[string]time.Time{pub.PromiseHash: settle}, win, verdict.SuspectPoints(vrows, win, blobs), blobs)
+	net, _ := verdict.ComputeObligations(vrows, map[string]time.Time{pub.PromiseHash: settle}, win, blobs)
 	if net.Total != 2 || net.NotCounted != 2 {
 		t.Fatalf("obligations: %+v", net)
 	}

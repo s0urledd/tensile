@@ -27,11 +27,8 @@ type allSnapshot struct {
 		Unattested int64 `json:"unattested_probes"`
 		Unknown    int64 `json:"unknown_probes"`
 	} `json:"attestation"`
-	ReachWindow   struct{ Num, Den int64 } `json:"reachability_window"`
-	VantageHealth struct {
-		Suspect []struct{ At string } `json:"suspect"`
-	} `json:"vantage_health"`
-	RolledUp *struct {
+	ReachWindow struct{ Num, Den int64 } `json:"reachability_window"`
+	RolledUp    *struct {
 		RawFrom string `json:"raw_from"`
 		Days    int64  `json:"days"`
 		Note    string `json:"note"`
@@ -58,17 +55,17 @@ func TestRollupAndPruneKeepTheAllWindow(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	now := time.Now().UTC().Truncate(time.Second)
-	// an old day, 40 days back: two publications, one with a suspect point
+	// an old day, 40 days back: two publications
 	old := now.Add(-40 * 24 * time.Hour).Truncate(24 * time.Hour).Add(10 * time.Hour)
 	hexAddr := strings.Repeat("ab", 20) // the detail endpoint takes a real address
 	insertProbeSet(t, st, "old1", old, old.Add(30*time.Minute), map[string][]wire{
 		"served": {ok, ok, ok, ok}, "endun": {ok, err500, err500, err500}, "broken": {ok, gone, ok, ok},
 		"unreach": {refused, refused, refused, refused}, "backoff": {skipped, skipped, skipped, skipped},
 		hexAddr: {ok, ok, gone, ok},
-	}, false)
+	})
 	insertProbeSet(t, st, "old2", old.Add(2*time.Hour), old.Add(3*time.Hour), map[string][]wire{
 		"served": {refused, ok}, "endun": {refused, ok}, "broken": {refused, ok}, "unreach": {ok, ok},
-	}, false)
+	})
 	// a publication settled eight minutes before the end of the last day the
 	// prune will take, probed into the first retained day: its obligations
 	// belong to the rolled day (settlement day) while three of its rows
@@ -79,12 +76,12 @@ func TestRollupAndPruneKeepTheAllWindow(t *testing.T) {
 	seam := now.Add(-31 * 24 * time.Hour).Truncate(24 * time.Hour).Add(23*time.Hour + 52*time.Minute)
 	insertProbeSet(t, st, "seam", seam, seam.Add(30*time.Minute), map[string][]wire{
 		"served": {ok, ok, ok, ok}, "broken": {ok, gone, ok, ok}, hexAddr: {ok, ok, ok, ok},
-	}, false)
+	})
 	// a recent publication, inside every retention
 	recent := now.Add(-2 * time.Hour)
 	insertProbeSet(t, st, "new1", recent, now.Add(-30*time.Minute), map[string][]wire{
 		"served": {ok, ok, ok, ok}, "broken": {ok, gone, ok, ok}, hexAddr: {ok, ok, ok, ok},
-	}, false)
+	})
 	ts := httptestServer(t, st)
 
 	var before allSnapshot
@@ -92,7 +89,7 @@ func TestRollupAndPruneKeepTheAllWindow(t *testing.T) {
 	if before.RolledUp != nil {
 		t.Fatalf("nothing pruned yet, but labelled: %+v", before.RolledUp)
 	}
-	if before.Obligations.Total != 16 || len(before.VantageHealth.Suspect) != 1 {
+	if before.Obligations.Total != 16 || before.Obligations.Broken == 0 || before.Obligations.Served == 0 {
 		t.Fatalf("fixture: %+v", before)
 	}
 	var beforeVals struct {
@@ -230,7 +227,7 @@ func TestRollupAndPruneKeepTheAllWindow(t *testing.T) {
 	for _, w := range detail.Windows {
 		if w.Window.Name == "all" {
 			found = true
-			if w.RolledUp == nil || w.Obligations != byAddr[hexAddr].Obligations || w.Obligations.Broken != 1 || w.Obligations.Served != 2 {
+			if w.RolledUp == nil || w.Obligations != byAddr[hexAddr].Obligations || w.Obligations.Total != 3 || w.Obligations.Served != 2 {
 				t.Errorf("detail all span: %+v vs %+v", w, byAddr[hexAddr].Obligations)
 			}
 		}

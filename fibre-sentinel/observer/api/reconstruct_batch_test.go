@@ -34,6 +34,8 @@ type valRows struct {
 	served   bool
 	nullRows bool // served, but the row list was not recorded
 	failLast bool // served at every point but the last, where it answers NOT_FOUND
+	missed   bool // the prober missed its request at every point (NOT_PROBED)
+	local    bool // its request failed on this observer's side at every point (PROBE_ERROR)
 }
 
 type blobCase struct {
@@ -45,6 +47,7 @@ type blobCase struct {
 	complete bool // whether every assigned validator has a result at the last point
 	over     bool // the retention window has closed
 	want     string
+	err      string // the client's error on an Unavailable blob
 }
 
 func writeBlob(t *testing.T, st *store.Store, idx int, c blobCase) string {
@@ -116,6 +119,12 @@ func writeBlob(t *testing.T, st *store.Store, idx int, c blobCase) string {
 				continue
 			}
 			outcome, class := "NOT_FOUND", "FAULT"
+			switch {
+			case v.missed:
+				outcome, class = "MISSED", "NOT_PROBED"
+			case v.local:
+				outcome, class = "PROBE_ERROR", "PROBE_ERROR"
+			}
 			serves := v.served && !(last && v.failLast)
 			returned, verified := 0, 0
 			var idx any
@@ -190,28 +199,63 @@ func TestReconstructBatchMatchesReference(t *testing.T) {
 		},
 	}, {
 		name:   "no: fewer rows came back than the blob needs, and nobody was left to ask",
-		needed: 35, total: 160, points: 2, complete: true, want: "no",
+		needed: 35, total: 160, points: 2, complete: true, want: "no", err: "not enough shards to reconstruct blob",
 		vals: []valRows{
 			{addr: "c1", rows: full[:20], attested: 1, served: true},
 			{addr: "c2", rows: full[20:], attested: 1, served: false},
 		},
 	}, {
-		name:   "pending: short, and the validator without a row could still make it up",
-		needed: 30, total: 160, points: 1, complete: false, want: "pending",
+		name:   "no: not a single row came back",
+		needed: 20, total: 160, points: 1, complete: true, over: true, want: "no", err: "no shards retrieved",
+		vals: []valRows{
+			{addr: "z1", rows: full[:20], attested: 1, served: false},
+			{addr: "z2", rows: full[20:], attested: 1, served: false},
+		},
+	}, {
+		name:   "no: short, a validator the reading never got to has no row",
+		needed: 30, total: 160, points: 1, complete: false, want: "no", err: "not enough shards to reconstruct blob",
 		vals: []valRows{
 			{addr: "d1", rows: full[:20], attested: 1, served: true},
 			{addr: "d2", rows: full[20:], attested: 1, served: true},
 		},
 	}, {
-		name:   "not_read: the same, once the window closed",
-		needed: 30, total: 160, points: 1, complete: false, over: true, want: "not_read",
+		name:   "pending: short, and the prober missed a validator's request",
+		needed: 30, total: 160, points: 1, complete: true, want: "pending",
 		vals: []valRows{
-			{addr: "n1", rows: full[:20], attested: 1, served: true},
-			{addr: "n2", rows: full[20:], attested: 1, served: true},
+			{addr: "q1", rows: full[:20], attested: 1, served: true},
+			{addr: "q2", rows: full[20:], attested: 1, missed: true},
 		},
 	}, {
-		name:   "pending: served rows without an index list, and the bounds cannot decide",
-		needed: 25, total: 160, points: 2, complete: true, want: "pending",
+		name:   "not_read: the same, once the window closed",
+		needed: 30, total: 160, points: 1, complete: true, over: true, want: "not_read",
+		vals: []valRows{
+			{addr: "n1", rows: full[:20], attested: 1, served: true},
+			{addr: "n2", rows: full[20:], attested: 1, missed: true},
+		},
+	}, {
+		name:   "not_read: every request failed on this observer's side",
+		needed: 20, total: 160, points: 1, complete: true, over: true, want: "not_read",
+		vals: []valRows{
+			{addr: "r1", rows: full[:20], attested: 1, local: true},
+			{addr: "r2", rows: full[20:], attested: 1, local: true},
+		},
+	}, {
+		name:   "no: one validator reached is a reading that happened",
+		needed: 20, total: 160, points: 1, complete: true, over: true, want: "no", err: "no shards retrieved",
+		vals: []valRows{
+			{addr: "s1", rows: full[:20], attested: 1, local: true},
+			{addr: "s2", rows: full[20:], attested: 1, served: false},
+		},
+	}, {
+		name:   "yes: rows the prober missed do not stand between a blob and Available",
+		needed: 20, total: 160, points: 1, complete: true, over: true, want: "yes",
+		vals: []valRows{
+			{addr: "t1", rows: full[:20], attested: 1, served: true},
+			{addr: "t2", rows: full[20:], attested: 1, missed: true},
+		},
+	}, {
+		name:   "no: served rows without an index list count by the served-shard bound",
+		needed: 25, total: 160, points: 2, complete: true, want: "no", err: "not enough shards to reconstruct blob",
 		vals: []valRows{
 			{addr: "e1", rows: full[:20], attested: 1, served: true, nullRows: true},
 			{addr: "e2", rows: full[:20], attested: 1, served: true, nullRows: true},
@@ -239,14 +283,12 @@ func TestReconstructBatchMatchesReference(t *testing.T) {
 		},
 	}}
 
-	// Three of four validators failing at the reading is one the
-	// correlated-failure guard sets aside, and the blob could not be
-	// reconstructed there: nothing is judged. The earlier point is not
-	// judged instead; the blob waits (pending) and, once its window has
-	// closed, was not read by Tensile.
+	// Three of four validators failing at the reading is what the client
+	// would meet: the blob is Unavailable at the newest point every endorser
+	// answered at, whatever an earlier point came to.
 	cases = append(cases, blobCase{
-		name:   "suspect: the reading is set aside, the earlier point does not judge",
-		needed: 20, total: 160, points: 2, complete: true, want: "pending",
+		name:   "no: most validators failing at once, the newest point judges",
+		needed: 20, total: 160, points: 2, complete: true, want: "no", err: "not enough shards to reconstruct blob",
 		vals: []valRows{
 			{addr: "j1", rows: full[:10], attested: 1, served: true},
 			{addr: "j2", rows: full[10:20], attested: 1, served: true, failLast: true},
@@ -254,8 +296,8 @@ func TestReconstructBatchMatchesReference(t *testing.T) {
 			{addr: "j4", rows: full[30:40], attested: 1, served: true, failLast: true},
 		},
 	}, blobCase{
-		name:   "suspect: the only reading is set aside, window over",
-		needed: 20, total: 160, points: 1, complete: true, over: true, want: "not_read",
+		name:   "no: most validators failing at once, window over",
+		needed: 20, total: 160, points: 1, complete: true, over: true, want: "no", err: "not enough shards to reconstruct blob",
 		vals: []valRows{
 			{addr: "k1", rows: full[:10], attested: 1, served: true},
 			{addr: "k2", rows: full[10:20], attested: 1, served: true, failLast: true},
@@ -304,7 +346,7 @@ func TestReconstructBatchMatchesReference(t *testing.T) {
 	overlap := func(prefix string, over bool) blobCase {
 		return blobCase{
 			name:   "no: overlapping verified rows and the rows still out are short (" + prefix + ")",
-			needed: 32, total: 160, points: 1, complete: false, over: over, want: "no",
+			needed: 32, total: 160, points: 1, complete: false, over: over, want: "no", err: "not enough shards to reconstruct blob",
 			vals: []valRows{
 				{addr: prefix + "1", rows: full[:20], attested: 1, served: true},
 				{addr: prefix + "2", rows: full[15:25], attested: 1, served: true},
@@ -314,12 +356,11 @@ func TestReconstructBatchMatchesReference(t *testing.T) {
 	}
 	cases = append(cases, overlap("x", false), overlap("y", true))
 
-	// The client asks the whole set: the endorsers alone are short, but a
-	// validator that did not endorse, not asked, holds rows that could have
-	// made the blob. Not Unavailable.
+	// A validator that did not endorse, and has no row, is no reason to
+	// wait: the reading happened, and the rows are short.
 	cases = append(cases, blobCase{
-		name:   "pending: a validator that did not endorse could still have made up the rows",
-		needed: 30, total: 160, points: 1, complete: false, want: "pending",
+		name:   "no: the endorsers are short and the reading has no row of the other",
+		needed: 30, total: 160, points: 1, complete: false, want: "no", err: "not enough shards to reconstruct blob",
 		vals: []valRows{
 			{addr: "o1", rows: full[:20], attested: 1, served: true},
 			{addr: "o2", rows: full[20:30], attested: 1, served: false},
@@ -343,9 +384,9 @@ func TestReconstructBatchMatchesReference(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: reference: %v", c.name, err)
 		}
-		if ref.Status != c.want {
-			t.Errorf("%s: reference says %q, the case expects %q — the case is wrong or the reference changed",
-				c.name, ref.Status, c.want)
+		if ref.Status != c.want || ref.Error != c.err {
+			t.Errorf("%s: reference says %q %q, the case expects %q %q — the case is wrong or the reference changed",
+				c.name, ref.Status, ref.Error, c.want, c.err)
 		}
 		b := got[h]
 		if b == nil {
@@ -474,10 +515,10 @@ func TestReconstructBatchHonoursTheAsOfPin(t *testing.T) {
 	}
 }
 
-// The blob page names the readings nothing counts at, tallied as the status
-// tallies them, and a publication with nothing assigned is empty lists, not
-// nulls a page has to guard against.
-func TestBlobDetailListsItsSuspectPointsAndNoNullLists(t *testing.T) {
+// The blob page says what the reading came to in the client's words, and
+// which validators it counts not served there; a publication with nothing
+// assigned is empty lists, not nulls a page has to guard against.
+func TestBlobDetailNamesTheClientsErrorAndNoNullLists(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -491,7 +532,7 @@ func TestBlobDetailListsItsSuspectPointsAndNoNullLists(t *testing.T) {
 	for i := 0; i < 40; i++ {
 		full = append(full, i)
 	}
-	suspect := writeBlob(t, st, 0, blobCase{needed: 20, total: 160, points: 2, complete: true, vals: []valRows{
+	short := writeBlob(t, st, 0, blobCase{needed: 20, total: 160, points: 2, complete: true, vals: []valRows{
 		{addr: "j1", rows: full[:10], attested: 1, served: true},
 		{addr: "j2", rows: full[10:20], attested: 1, served: true, failLast: true},
 		{addr: "j3", rows: full[20:30], attested: 1, served: true, failLast: true},
@@ -516,21 +557,19 @@ func TestBlobDetailListsItsSuspectPointsAndNoNullLists(t *testing.T) {
 		return out
 	}
 
-	var pts []struct {
-		Label  string `json:"label"`
-		Reason string `json:"reason"`
-	}
-	got := fetch(suspect)
-	if err := json.Unmarshal(got["suspect_points"], &pts); err != nil || len(pts) != 1 || pts[0].Label != "w2" || pts[0].Reason != "fault" {
-		t.Fatalf("suspect_points: %s", got["suspect_points"])
+	got := fetch(short)
+	if _, ok := got["suspect_points"]; ok {
+		t.Error("the blob still carries suspect_points")
 	}
 	var blob struct {
 		Reconstructable struct {
 			Status  string `json:"status"`
+			Error   string `json:"error"`
 			PointAt string `json:"point_at"`
 		} `json:"reconstructable"`
 	}
 	var probes []struct {
+		Addr    string `json:"validator_address"`
 		Label   string `json:"schedule_label"`
 		At      string `json:"scheduled_at"`
 		Service string `json:"service"`
@@ -540,19 +579,25 @@ func TestBlobDetailListsItsSuspectPointsAndNoNullLists(t *testing.T) {
 	}
 	var w2 string
 	for _, p := range probes {
-		if p.Label == "w2" {
-			w2 = p.At
-			if p.Service != "" {
-				t.Errorf("a reading at the suspect point counts as %q", p.Service)
-			}
+		if p.Label != "w2" {
+			continue
+		}
+		w2 = p.At
+		want := "not_served"
+		if p.Addr == "j1" {
+			want = "" // served early in the window: not the end of it
+		}
+		if p.Service != want {
+			t.Errorf("%s at w2 counts as %q, want %q", p.Addr, p.Service, want)
 		}
 	}
-	if err := json.Unmarshal(got["blob"], &blob); err != nil || blob.Reconstructable.Status != "pending" || blob.Reconstructable.PointAt != w2 {
-		t.Fatalf("status beside the suspect reading: %+v (%v), want pending at %s", blob.Reconstructable, err, w2)
+	if err := json.Unmarshal(got["blob"], &blob); err != nil || blob.Reconstructable.Status != "no" ||
+		blob.Reconstructable.Error != "not enough shards to reconstruct blob" || blob.Reconstructable.PointAt != w2 {
+		t.Fatalf("status: %+v (%v), want no, not enough shards, at %s", blob.Reconstructable, err, w2)
 	}
 
 	got = fetch(empty)
-	for _, k := range []string{"assignments", "probes", "suspect_points"} {
+	for _, k := range []string{"assignments", "probes"} {
 		if string(got[k]) != "[]" {
 			t.Errorf("%s: %s, want []", k, got[k])
 		}

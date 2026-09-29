@@ -17,10 +17,9 @@ import (
 )
 
 // The network feed's first FAULT of a validator is its first counted one (a
-// blob that could not be reconstructed, not a reading the guard set aside):
-// not hidden because an earlier FAULT at a suspect point fell before the
-// feed's span, not lost behind twenty suspect ones, not a fault still
-// settling, and the same probe on a tie however the rows were written.
+// blob that could not be reconstructed), whatever else failed beside it:
+// not one still settling, none when the first fell before the feed's span,
+// and the same probe on a tie however the rows were written.
 func TestNetworkFeedFirstFault(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
@@ -45,7 +44,7 @@ func TestNetworkFeedFirstFault(t *testing.T) {
 		unreadable(hash, at)
 		insertProbe(t, st, hash, v, at, probe.OutcomeNotFound)
 	}
-	// others fault with v at at, making the point suspect
+	// others fault with v at at: a blob every validator failed
 	incident := func(at time.Time, hash string, v string) {
 		fault(hash, v, at)
 		for i := 10; i < 13; i++ {
@@ -53,19 +52,19 @@ func TestNetworkFeedFirstFault(t *testing.T) {
 		}
 	}
 
-	// v1: a suspect FAULT 40 days ago, before the span; its first genuine
-	// one five days ago.
+	// v1: its first FAULT 40 days ago, before the span, and another five
+	// days ago: its first is not in the span, so it has no entry.
 	v1 := addr(1)
 	incident(now.Add(-40*24*time.Hour), "old", v1)
-	v1First := now.Add(-5 * 24 * time.Hour)
-	fault("g1", v1, v1First)
-	// v2: 25 FAULTs at suspect points, then its first genuine one.
+	fault("g1", v1, now.Add(-5*24*time.Hour))
+	// v2: 25 FAULTs on blobs every validator failed, then one more: the
+	// first of them all is its first.
 	v2 := addr(2)
+	v2First := now.Add(-10 * 24 * time.Hour)
 	for i := 0; i < 25; i++ {
-		incident(now.Add(-10*24*time.Hour+time.Duration(i)*time.Hour), fmt.Sprintf("s%02d", i), v2)
+		incident(v2First.Add(time.Duration(i)*time.Hour), fmt.Sprintf("s%02d", i), v2)
 	}
-	v2First := now.Add(-2 * 24 * time.Hour)
-	fault("g2", v2, v2First)
+	fault("g2", v2, now.Add(-2*24*time.Hour))
 	// v3: only a FAULT still settling.
 	v3 := addr(3)
 	fault("g3", v3, now.Add(-5*time.Minute))
@@ -93,7 +92,6 @@ func TestNetworkFeedFirstFault(t *testing.T) {
 		}
 	}
 	want := map[string]string{
-		v1: v1First.Format(time.RFC3339),
 		v2: v2First.Format(time.RFC3339),
 		v4: v4First.Format(time.RFC3339),
 	}
@@ -105,8 +103,8 @@ func TestNetworkFeedFirstFault(t *testing.T) {
 	if _, ok := got[v3]; ok {
 		t.Errorf("a fault still settling was published as the first: %v", got)
 	}
-	if _, ok := got[addr(10)]; ok {
-		t.Errorf("a validator whose every fault is at a suspect point has a first fault: %v", got)
+	if _, ok := got[v1]; ok {
+		t.Errorf("a validator whose first fault fell before the span has an entry: %v", got)
 	}
 
 	// The tie goes to the lower hash, in the validator's own feed too (a

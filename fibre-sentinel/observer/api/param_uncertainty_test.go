@@ -20,7 +20,6 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/correct"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/ingest"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
-	"github.com/plsgiveup/fibre/fibre-sentinel/observer/verdict"
 )
 
 // shortWindow is the retention the params really carried from height 150.
@@ -87,12 +86,6 @@ type heldJSON struct {
 		ProbesHeld       int64  `json:"probes_held"`
 		Note             string `json:"note"`
 	} `json:"retention_uncertainty"`
-	VantageHealth struct {
-		Suspect []struct {
-			At     string `json:"at"`
-			Reason string `json:"reason"`
-		} `json:"suspect"`
-	} `json:"vantage_health"`
 }
 
 // faults is the FAULT readings of the window, in the class they carry: a
@@ -176,7 +169,6 @@ func heldFixture(t *testing.T, outcomes map[string][]probe.Outcome) (*store.Stor
 			}
 		}
 	}
-	confirmFailures(t, st, `1 = 1`)
 	return st, created, msu
 }
 
@@ -224,14 +216,10 @@ func networkHeld(t *testing.T, st *store.Store) heldJSON {
 
 // The open P1, closed. Two validators prune on the retention the server
 // really used and answer NOT_FOUND inside the window this observer still
-// thinks is running. Two is under the correlated-failure guard's floor of
-// three, so the guard does not fire and never would: the guard is a
-// mitigation for a correlated outage, not for the observer being wrong
-// about the deadline.
+// thinks is running.
 //
-// The first half asserts the defect as a fact, so that anyone who "fixes"
-// this by weakening the guard instead breaks a test that says why that is
-// not the fix.
+// The first half asserts the defect as a fact: without the range on
+// record, the failures are published.
 func TestTwoValidatorsPruningOnAShortenedRetentionAreNotPublishedAsFaults(t *testing.T) {
 	ok := []probe.Outcome{probe.OutcomeServedOK, probe.OutcomeServedOK, probe.OutcomeServedOK, probe.OutcomeServedOK}
 	gone := []probe.Outcome{probe.OutcomeServedOK, probe.OutcomeServedOK, probe.OutcomeNotFound, probe.OutcomeNotFound}
@@ -242,18 +230,13 @@ func TestTwoValidatorsPruningOnAShortenedRetentionAreNotPublishedAsFaults(t *tes
 
 	st, _, _ := heldFixture(t, outcomes)
 
-	// Without the range on record: the fault is published, and the guard
-	// says nothing about it.
+	// Without the range on record: the fault is published.
 	before := networkHeld(t, st)
 	if before.faults() != 4 {
 		t.Fatalf("without the range, faults = %d, want 4 (two validators x two points)", before.faults())
 	}
 	if before.Obligations.Broken != 2 {
 		t.Fatalf("without the range, broken = %d, want 2", before.Obligations.Broken)
-	}
-	if len(before.VantageHealth.Suspect) != 0 {
-		t.Fatalf("two faulting validators is under MinValidators=%d; the guard must not fire: %+v",
-			verdict.MinValidators, before.VantageHealth.Suspect)
 	}
 	if before.RetentionUncertainty != nil {
 		t.Fatal("nothing is held yet")
@@ -291,11 +274,10 @@ func TestTwoValidatorsPruningOnAShortenedRetentionAreNotPublishedAsFaults(t *tes
 	assertReconciles(t, after)
 }
 
-// A share under the guard's threshold is the other half of the same hole:
-// four of ten validators faulting is 40%, under FaultThreshold, so the
-// guard does not fire. The hold does not care about the share at all —
-// it is keyed on the publication, not on the schedule point.
-func TestAShareUnderTheGuardThresholdIsStillHeld(t *testing.T) {
+// The hold does not care how many validators failed: it is keyed on the
+// publication, not on the reading, and it withholds the clean validators
+// as well as the four that failed.
+func TestAShareOfTheSetFailingIsHeldWithTheRest(t *testing.T) {
 	ok := []probe.Outcome{probe.OutcomeServedOK, probe.OutcomeServedOK, probe.OutcomeServedOK, probe.OutcomeServedOK}
 	gone := []probe.Outcome{probe.OutcomeServedOK, probe.OutcomeServedOK, probe.OutcomeNotFound, probe.OutcomeNotFound}
 	outcomes := map[string][]probe.Outcome{}
@@ -305,17 +287,10 @@ func TestAShareUnderTheGuardThresholdIsStillHeld(t *testing.T) {
 	for _, a := range []string{"g1", "g2", "g3", "g4", "g5", "g6"} {
 		outcomes[a] = ok
 	}
-	if share := 4.0 / 10.0; share >= verdict.FaultThreshold {
-		t.Fatalf("this test no longer sits under the guard's threshold: %v >= %v", share, verdict.FaultThreshold)
-	}
-
 	st, _, _ := heldFixture(t, outcomes)
 	before := networkHeld(t, st)
 	if before.faults() != 8 || before.Obligations.Broken != 4 {
 		t.Fatalf("without the range: faults=%d broken=%d, want 8/4", before.faults(), before.Obligations.Broken)
-	}
-	if len(before.VantageHealth.Suspect) != 0 {
-		t.Fatalf("40%% faulting is under the threshold; the guard must not fire: %+v", before.VantageHealth.Suspect)
 	}
 
 	openRange(t, st)
@@ -558,7 +533,6 @@ func insertLate(t *testing.T, st *store.Store, created, staleMSU time.Time, addr
 	if _, err := st.InsertProbe(m, raw); err != nil {
 		t.Fatal(err)
 	}
-	confirmFailures(t, st, `promise_hash = 'held1' AND validator_address = ?`, addr)
 }
 
 // The case the range-keyed framing could not reach. The prober schedules
@@ -785,7 +759,6 @@ func TestAPublicationSettlingIntoARangeAlreadyOnRecordIsHeldOnInsert(t *testing.
 	if _, err := st.InsertProbe(m, raw); err != nil {
 		t.Fatal(err)
 	}
-	confirmFailures(t, st, `promise_hash = 'held2'`)
 
 	var rowHeld int
 	if err := st.DB().QueryRow(`SELECT retention_unverified FROM probes WHERE promise_hash = 'held2'`).Scan(&rowHeld); err != nil {
@@ -949,7 +922,6 @@ func addPublication(t *testing.T, st *store.Store, hash string, height int64, cr
 			t.Fatal(err)
 		}
 	}
-	confirmFailures(t, st, `promise_hash = ?`, hash)
 }
 
 func rangeOver(id string, from, to int64) scan.ParamUncertainty {

@@ -22,10 +22,7 @@ import (
 // the rows were stored.
 //
 // Figures that read only real results (faults, latency, reconstructability)
-// stay on probes: a sampled-out row is never one of them. The
-// correlated-failure guard reads probe_rows for the rows its exclusion
-// removes, but its verdict counts leave NOT_PROBED out (rollup.GuardSilentSQL),
-// so a sampled-out row can never make a point suspect or keep one from being.
+// stay on probes: a sampled-out row is never one of them.
 
 // SampledOutReasonSQL is the test for a row written for a publication the
 // sampler drew out whole, spelled so the partial index probes_sampled_out
@@ -69,8 +66,7 @@ const probeRowsCols = `assigned, phase, started_at, classification, schedule_lab
 
 // probeRowsView is every probe row, stored or stood for by a decision, as
 // the figures read it: the class tallies, the probe, gap and attestation
-// counts, the heatmap, the correlated-failure guard's row count, the daily
-// rollup.
+// counts, the heatmap, the daily rollup.
 const probeRowsView = `CREATE VIEW IF NOT EXISTS probe_rows AS
 	SELECT ` + probeRowsCols + ` FROM probes
 	UNION ALL
@@ -84,6 +80,15 @@ const obligationRowsView = `CREATE VIEW IF NOT EXISTS obligation_rows AS
 	SELECT ` + probeRowsCols + `, tls_ok, must_serve_until FROM probes
 	UNION ALL
 	SELECT ` + probeRowsCols + `, tls_ok, must_serve_until FROM sampled_out_rows`
+
+// ObligationRowsVerified is obligation_rows with commitment_verified beside
+// it (0 for a sampled-out row, whose rows never came back), which the
+// obligation buckets count served from (rollup.CountedClass). It is written
+// inline rather than as a view so the schema does not move; the column sits
+// in the table row the view already reads tls_ok and must_serve_until from.
+const ObligationRowsVerified = `(SELECT ` + probeRowsCols + `, tls_ok, must_serve_until, commitment_verified FROM probes
+	UNION ALL
+	SELECT ` + probeRowsCols + `, tls_ok, must_serve_until, 0 FROM sampled_out_rows)`
 
 // collapseSampledOut turns the NOT_PROBED rows of a publication sampled out
 // whole, written before decisions had a record of their own, into the one

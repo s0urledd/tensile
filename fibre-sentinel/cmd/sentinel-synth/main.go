@@ -256,27 +256,24 @@ func main() {
 					have[r] = true
 				}
 			}
-			m.Read = &probe.ReadInfo{Pass: 1, Order: len(ms), BlobHaveAfter: len(have)}
+			m.Read = &probe.ReadInfo{Order: len(ms), BlobHaveAfter: len(have)}
 			ms = append(ms, m)
 			asked = append(asked, v)
 			endorses = append(endorses, attested[v.addrHex])
 		}
-		result := probe.ReadAvailable
+		result, clientErr := probe.ReadAvailable, ""
 		if len(have) < ap.OriginalRows {
-			result = probe.ReadUnavailable
+			result, clientErr = probe.ReadUnavailable, probe.ClientError(len(have))
 			nUnavailable++
 		}
 		for j, m := range ms {
-			m.Read.BlobResult = result
+			m.Read.BlobResult, m.Read.BlobError = result, clientErr
 			served := m.Download.CommitmentVerified
 			switch {
 			case served && endorses[j]:
 				oblServed[asked[j].moniker]++
-			case !served && result == probe.ReadUnavailable:
-				m.Read.Pass = 2 // asked again a minute later, as the prober does
-				if endorses[j] {
-					oblBroken[asked[j].moniker]++
-				}
+			case !served && result == probe.ReadUnavailable && endorses[j]:
+				oblBroken[asked[j].moniker]++
 			}
 			writeJSON(measFile, m)
 			nRows++

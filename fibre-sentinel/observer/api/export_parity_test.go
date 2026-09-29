@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -34,16 +35,19 @@ func writeJSONL(t *testing.T, path string, vs ...any) {
 	}
 }
 
-// The daily export carries what a not-served count rests on. A blob read
-// Unavailable at the end reading: one validator served its rows, one
-// answered NOT_FOUND and the second location did not get the rows either
-// (the reading counts), one timed out and the second location fetched its
-// rows (it does not). The collector ingests the record and the second
-// location's answers, and the API counts the one confirmed reading. The
-// export built from the same record, untarred and redrawn the way
-// sentinel-recompute redraws it, gives the API's obligations for every
-// validator; without the second location's member it would count nothing.
-func TestTheExportRedrawsTheConfirmedNotServedCount(t *testing.T) {
+// The stored readings give the same through the API as through the daily
+// export redrawn the way sentinel-recompute redraws it: four blobs read at
+// the end of their windows, one for each end the reading can come to.
+//
+//   - Available: two validators' rows rebuild it; the third timed out, and
+//     counts neither way.
+//   - Unavailable, not enough shards: one validator served, one answered
+//     NOT_FOUND, one timed out; both are not served.
+//   - Unavailable, no shards retrieved: every validator answered without
+//     rows; every one is not served.
+//   - Not read: every request failed on this observer's side; nothing
+//     counts.
+func TestTheExportRedrawsTheAPIsCounts(t *testing.T) {
 	data := t.TempDir()
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
@@ -53,55 +57,56 @@ func TestTheExportRedrawsTheConfirmedNotServedCount(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	settled, msu := now.Add(-3*time.Hour), now.Add(-30*time.Minute)
 	at := msu.Add(-10 * time.Minute)
-	const hash = "ex0000000000000000000000000000000000000000000000000000000000beef"
-	vals := []scan.ValidatorAssignment{
-		{Address: "okval", VotingPower: 10, RowCount: 2, Rows: []int{0, 1}, Attested: true},
-		{Address: "goneval", VotingPower: 10, RowCount: 2, Rows: []int{2, 3}, Attested: true},
-		{Address: "downval", VotingPower: 10, RowCount: 2, Rows: []int{4, 5}, Attested: true},
+	type val struct {
+		addr string
+		out  probe.Outcome
 	}
-	pub := scan.Publication{
-		SchemaVersion: scan.AttestationSchemaVersion, PromiseHash: hash,
-		SettlementHeight: 200, SettlementTime: settled, MustServeUntil: msu, RecordedAt: settled,
-		SettlementTxHash: "txex", Signer: "celestia1pub",
-		Promise:                 scan.PromiseFields{ChainID: "t", Height: 199, Commitment: "ccex", CreationTimestamp: settled, BlobSize: 4096},
-		ValidatorSignatureCount: len(vals),
-		Assignment: scan.AssignmentTable{
-			ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: 4, TotalRows: 16},
-			ValidatorSetHeight: 199, TotalVotingPower: 30, Sigma: 6, Distinct: 6,
-			ValidatorsWithRows: 3, AttestedWithRows: 3, SignatureEntries: 3, SignaturesVerified: 3,
-			AttestedVotingPower: 30, Validators: vals,
-		},
-	}
-	row := func(addr string, out probe.Outcome) probe.Measurement {
-		cls, reason := probe.Classify(probe.Evidence{Assigned: true, Attested: true, Phase: probe.PhaseInWindow, Outcome: out})
-		m := probe.Measurement{SchemaVersion: probe.MeasurementSchemaVersion, Vantage: "test", PromiseHash: hash, Commitment: "ccex",
-			MustServeUntil: msu, ValidatorSetHeight: 199, ValidatorAddress: addr, ValidatorHost: addr + ":7980",
-			Assigned: true, Attested: true, AssignedRowCount: 2, ScheduleLabel: probe.EndReadLabel, ScheduledAt: at,
-			StartedAt: at, FinishedAt: at.Add(time.Second), Phase: probe.PhaseInWindow, Outcome: out,
-			Classification: cls, ClassificationReason: reason, TotalDurationMS: 10, ClientRules: true}
-		m.Read = &probe.ReadInfo{Pass: 2, BlobResult: probe.ReadUnavailable}
-		if out == probe.OutcomeServedOK {
-			m.Download.OK, m.Download.RowsReturned, m.Download.RowsExpected = true, 2, 2
-			m.Download.CommitmentVerified, m.Download.AssignmentVerified = true, true
-			m.Download.RowIndices = []uint32{0, 1}
+	var pubs []any
+	var ms []any
+	blob := func(n int, result, clientErr string, vals ...val) string {
+		hash := fmt.Sprintf("ex%062d", n)
+		var as []scan.ValidatorAssignment
+		for i, v := range vals {
+			as = append(as, scan.ValidatorAssignment{Address: v.addr, VotingPower: 10, RowCount: 2, Rows: []int{2 * i, 2*i + 1}, Attested: true})
 		}
-		return m
+		pubs = append(pubs, scan.Publication{
+			SchemaVersion: scan.AttestationSchemaVersion, PromiseHash: hash,
+			SettlementHeight: int64(200 + n), SettlementTime: settled, MustServeUntil: msu, RecordedAt: settled,
+			SettlementTxHash: "tx" + hash[58:], Signer: "celestia1pub",
+			Promise:                 scan.PromiseFields{ChainID: "t", Height: int64(199 + n), Commitment: "cc" + hash[60:], CreationTimestamp: settled, BlobSize: 4096},
+			ValidatorSignatureCount: len(vals),
+			Assignment: scan.AssignmentTable{
+				ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: 4, TotalRows: 16},
+				ValidatorSetHeight: int64(199 + n), TotalVotingPower: int64(10 * len(vals)), Sigma: 2 * len(vals), Distinct: 2 * len(vals),
+				ValidatorsWithRows: len(vals), AttestedWithRows: len(vals), SignatureEntries: len(vals), SignaturesVerified: len(vals),
+				AttestedVotingPower: int64(10 * len(vals)), Validators: as,
+			},
+		})
+		for i, v := range vals {
+			cls, reason := probe.Classify(probe.Evidence{Assigned: true, Attested: true, Phase: probe.PhaseInWindow, Outcome: v.out})
+			m := probe.Measurement{SchemaVersion: probe.MeasurementSchemaVersion, Vantage: "test", PromiseHash: hash, Commitment: "cc" + hash[60:],
+				MustServeUntil: msu, ValidatorSetHeight: int64(199 + n), ValidatorAddress: v.addr, ValidatorHost: v.addr + ":7980",
+				Assigned: true, Attested: true, AssignedRowCount: 2, ScheduleLabel: probe.EndReadLabel, ScheduledAt: at,
+				StartedAt: at.Add(time.Duration(i) * time.Second), FinishedAt: at.Add(time.Duration(i+1) * time.Second), Phase: probe.PhaseInWindow,
+				Outcome: v.out, Classification: cls, ClassificationReason: reason, TotalDurationMS: 10, ClientRules: true}
+			m.Read = &probe.ReadInfo{Order: i, BlobResult: result, BlobError: clientErr}
+			if v.out == probe.OutcomeServedOK {
+				m.Download.OK, m.Download.RowsReturned, m.Download.RowsExpected = true, 2, 2
+				m.Download.CommitmentVerified, m.Download.AssignmentVerified = true, true
+				m.Download.RowIndices = []uint32{uint32(2 * i), uint32(2*i + 1)}
+			}
+			ms = append(ms, m)
+		}
+		return hash
 	}
-	answer := func(m probe.Measurement, out probe.Outcome, rows []uint32) probe.Measurement {
-		a := m
-		a.Vantage, a.StartedAt, a.FinishedAt, a.Read = "de-1", at.Add(3*time.Minute), at.Add(3*time.Minute+time.Second), nil
-		a.Outcome = out
-		a.Classification, a.ClassificationReason = probe.Classify(probe.Evidence{Assigned: true, Attested: true, Phase: probe.PhaseInWindow, Outcome: out})
-		a.Download.OK, a.Download.RowsReturned, a.Download.RowsExpected = out == probe.OutcomeServedOK, len(rows), 2
-		a.Download.CommitmentVerified, a.Download.AssignmentVerified = out == probe.OutcomeServedOK, out == probe.OutcomeServedOK
-		a.Download.RowIndices = rows
-		return a
-	}
-	ok, gone, down := row("okval", probe.OutcomeServedOK), row("goneval", probe.OutcomeNotFound), row("downval", probe.OutcomeRPCTimeout)
-	writeJSONL(t, filepath.Join(data, "publications.jsonl"), pub)
-	writeJSONL(t, filepath.Join(data, "measurements.jsonl"), ok, gone, down)
-	vfile := filepath.Join(data, ingest.VantagesDir, "de-1", "measurements.jsonl")
-	writeJSONL(t, vfile, answer(gone, probe.OutcomeNotFound, nil), answer(down, probe.OutcomeServedOK, []uint32{4, 5}))
+	available := blob(1, probe.ReadAvailable, "", val{"a1", probe.OutcomeServedOK}, val{"a2", probe.OutcomeServedOK}, val{"a3", probe.OutcomeRPCTimeout})
+	notEnough := blob(2, probe.ReadUnavailable, probe.ClientErrNotEnoughShards,
+		val{"okval", probe.OutcomeServedOK}, val{"goneval", probe.OutcomeNotFound}, val{"downval", probe.OutcomeRPCTimeout})
+	noShards := blob(3, probe.ReadUnavailable, probe.ClientErrNoShards,
+		val{"n1", probe.OutcomeNotFound}, val{"n2", probe.OutcomeThrottled}, val{"n3", probe.OutcomeTLSFail})
+	notRead := blob(4, probe.ReadNotRead, "", val{"l1", probe.OutcomeProbeError}, val{"l2", probe.OutcomeProbeError})
+	writeJSONL(t, filepath.Join(data, "publications.jsonl"), pubs...)
+	writeJSONL(t, filepath.Join(data, "measurements.jsonl"), ms...)
 
 	// The collector's passes.
 	if _, err := ingest.Publications(st, filepath.Join(data, "publications.jsonl"), now); err != nil {
@@ -110,17 +115,44 @@ func TestTheExportRedrawsTheConfirmedNotServedCount(t *testing.T) {
 	if _, err := ingest.Measurements(st, filepath.Join(data, "measurements.jsonl"), now); err != nil {
 		t.Fatal(err)
 	}
-	if r, err := ingest.VantageMeasurements(st, vfile, "test", now); err != nil || r.Inserted != 2 {
-		t.Fatalf("second location's answers: %+v %v", r, err)
-	}
-	judge(t, st, now)
-	api := fetchObligations(t, httptestServer(t, st), "window=all")
+	ts := httptestServer(t, st)
+	api := fetchObligations(t, ts, "window=all")
 	byAddr := map[string]obligationsJSON{}
 	for _, v := range api.Validators {
 		byAddr[v.Address] = v.Obligations
 	}
-	if byAddr["goneval"].Broken != 1 || byAddr["downval"].Broken != 0 || byAddr["okval"].Served != 1 {
-		t.Fatalf("the API: %+v; want goneval not served (confirmed), downval not counted (fetched there), okval served", byAddr)
+	for addr, want := range map[string][2]int64{ // served, not served
+		"a1": {1, 0}, "a2": {1, 0}, "a3": {0, 0},
+		"okval": {1, 0}, "goneval": {0, 1}, "downval": {0, 1},
+		"n1": {0, 1}, "n2": {0, 1}, "n3": {0, 1},
+		"l1": {0, 0}, "l2": {0, 0},
+	} {
+		if got := byAddr[addr]; got.Served != want[0] || got.Broken != want[1] {
+			t.Errorf("the API, %s: %+v; want served %d, not served %d", addr, got, want[0], want[1])
+		}
+	}
+	apiBlob := map[string][2]string{}
+	for _, h := range []string{available, notEnough, noShards, notRead} {
+		var b struct {
+			Blob struct {
+				Reconstructable struct {
+					Status string `json:"status"`
+					Error  string `json:"error"`
+				} `json:"reconstructable"`
+			} `json:"blob"`
+		}
+		get(t, ts, "/v1/blobs/"+h, &b)
+		apiBlob[h] = [2]string{b.Blob.Reconstructable.Status, b.Blob.Reconstructable.Error}
+	}
+	for h, want := range map[string][2]string{
+		available: {verdict.BlobAvailable, ""},
+		notEnough: {verdict.BlobUnavailable, probe.ClientErrNotEnoughShards},
+		noShards:  {verdict.BlobUnavailable, probe.ClientErrNoShards},
+		notRead:   {verdict.BlobNotRead, ""},
+	} {
+		if apiBlob[h] != want {
+			t.Errorf("the API, blob %s: %v, want %v", h[60:], apiBlob[h], want)
+		}
 	}
 
 	// The day's export, built from the same record and untarred: every
@@ -161,46 +193,36 @@ func TestTheExportRedrawsTheConfirmedNotServedCount(t *testing.T) {
 	}
 
 	// sentinel-recompute's redraw over the untarred export.
-	redraw := func(confirms map[string][]verdict.Confirmation) map[string]verdict.Obligations {
-		pubs, err := scan.LoadPublications(filepath.Join(untar, "publications.jsonl"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		ms, err := probe.LoadMeasurements(filepath.Join(untar, "measurements.jsonl"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var rows []verdict.Row
-		for _, m := range ms {
-			r := verdict.FromMeasurement(m)
-			due := probe.Confirmable(m.ScheduleLabel, m.Classification) ||
-				(m.Download.CommitmentVerified && m.Download.RowsReturned < m.AssignedRowCount)
-			if cs, have := confirms[verdict.ConfirmationKey(m.PromiseHash, m.ValidatorAddress, m.ScheduledAt)]; have && due {
-				_, by := verdict.ConfirmNotServedBy(verdict.NotServedOf(m), cs)
-				r.Confirmed = by != ""
-			}
-			rows = append(rows, r)
-		}
-		settledAt := map[string]time.Time{}
-		for _, p := range pubs {
-			settledAt[p.PromiseHash] = p.SettlementTime
-		}
-		blobs := verdict.BlobsOf(pubs)
-		win := verdict.Window{All: true, End: now}
-		_, byVal := verdict.ComputeObligations(rows, settledAt, win, verdict.SuspectPoints(rows, win, blobs), blobs)
-		return byVal
+	epubs, err := scan.LoadPublications(filepath.Join(untar, "publications.jsonl"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	confirms := verdict.LoadConfirmations(filepath.Join(untar, export.VantagesMemberDir))
-	if len(confirms) != 2 {
-		t.Fatalf("the untarred export holds %d answered slots, want 2", len(confirms))
+	ems, err := probe.LoadMeasurements(filepath.Join(untar, "measurements.jsonl"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	got := redraw(confirms)
+	var rows []verdict.Row
+	byBlob := map[string][]verdict.Row{}
+	for _, m := range ems {
+		r := verdict.FromMeasurement(m)
+		rows = append(rows, r)
+		byBlob[r.PromiseHash] = append(byBlob[r.PromiseHash], r)
+	}
+	settledAt := map[string]time.Time{}
+	for _, p := range epubs {
+		settledAt[p.PromiseHash] = p.SettlementTime
+	}
+	blobs := verdict.BlobsOf(epubs)
+	_, byVal := verdict.ComputeObligations(rows, settledAt, verdict.Window{All: true, End: now}, blobs)
 	for addr, want := range byAddr {
-		if !same(want, got[addr]) {
-			t.Errorf("%s: the API %+v, the export %+v", addr, want, got[addr])
+		if !same(want, byVal[addr]) {
+			t.Errorf("%s: the API %+v, the export %+v", addr, want, byVal[addr])
 		}
 	}
-	if without := redraw(nil); without["goneval"].Broken != 0 {
-		t.Errorf("without the second location's answers the export still counts goneval: %+v", without["goneval"])
+	for _, p := range epubs {
+		res := verdict.BlobOf(byBlob[p.PromiseHash], blobs[p.PromiseHash], p.MustServeUntil, now)
+		if got := [2]string{res.Status, res.Error}; got != apiBlob[p.PromiseHash] {
+			t.Errorf("blob %s: the export %v, the API %v", p.PromiseHash[60:], got, apiBlob[p.PromiseHash])
+		}
 	}
 }

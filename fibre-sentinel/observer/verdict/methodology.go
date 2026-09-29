@@ -7,4 +7,4 @@ package verdict
 // and it travels with the figures (/v1/meta, every export's manifest) so a
 // number can always be matched to the rules that made it. The history is
 // the git log of the methodology page and of docs/verdicts.md.
-const MethodologyVersion = "2026-09-29.1"
+const MethodologyVersion = "2026-09-29.2"

@@ -1,26 +1,15 @@
 // Command sentinel-probe reads the blobs the scanner found. It reads
 // <data-dir>/publications.jsonl (written by sentinel-scan) and reads each
 // blob once, -end-read-offset before its must_serve_until, the way
-// celestia-app's Fibre client downloads it: the validators the assignment
-// gives rows, in the client's order, 15 s per request, rows verified
-// against the commitment, until the rows reconstruct the blob; when they do
-// not, once more a minute later. Every reading ends with one Measurement per
-// validator asked, and on an Unavailable reading one per validator the
-// deciding pass passed over (PASSED_OVER), appended together to
-// <data-dir>/measurements.jsonl.
+// celestia-app's Fibre client downloads it: the whole validator set in the
+// client's order, 15 s per request with the client's one re-dial, rows
+// verified against the commitment, until the rows reconstruct the blob or
+// every validator has been asked. Every reading ends with one Measurement
+// per validator asked, appended together to <data-dir>/measurements.jsonl.
 //
 // The queue of readings is never persisted: it is re-derived from the
 // publications and the existing measurements every cycle, so a restart
 // resumes exactly.
-//
-// Every not-served row of a blob that could not be read (an endorsing
-// validator whose rows did not come back, probe.ConfirmationDue) is also
-// queued in <data-dir>/vantage-requests.jsonl for a second vantage to
-// confirm, unless the correlated-failure guard sets the reading aside for
-// good (probe.GuardSetsAsideForGood); it counts only once confirmed. With
-// -confirm-requests the
-// command is that second vantage instead: it answers those requests
-// (internal/probe/confirm.go).
 package main
 
 import (
@@ -62,18 +51,16 @@ func main() {
 		deadline = flag.Duration("deadline", 0, "whole-run wall-clock cap (0 = none)")
 		readNow  = flag.Bool("read-now", false, "dry run: read every blob whose window is still open at once, whatever its scheduled time, then exit; use a scratch -data-dir, never the live one")
 
-		endRead    = flag.Bool("end-read", true, "accepted for the unit files that pass it; every blob is read this way")
-		endOffset  = flag.Duration("end-read-offset", def.EndReadOffset, "how long before must_serve_until a blob is read")
-		endSince   = flag.String("end-read-since", "", "RFC 3339 time; publications settled before it were read on the schedule of their time and are not read again (empty = every publication)")
-		readDL     = flag.Duration("read-deadline", def.ReadDeadline, "a reading that cannot start this long before must_serve_until is not made (NOT_PROBED)")
-		retryAfter = flag.Duration("retry-after", def.RetryAfter, "when the rows are short after every validator was asked, the second pass starts this much later")
-		pruneTol   = flag.Duration("prune-tolerance", def.PruneTolerance, "NOT_FOUND is normal until must_serve_until + this (devnet prune lag ~1m45s)")
+		endRead   = flag.Bool("end-read", true, "accepted for the unit files that pass it; every blob is read this way")
+		endOffset = flag.Duration("end-read-offset", def.EndReadOffset, "how long before must_serve_until a blob is read")
+		endSince  = flag.String("end-read-since", "", "RFC 3339 time; publications settled before it were read on the schedule of their time and are not read again (empty = every publication)")
+		readDL    = flag.Duration("read-deadline", def.ReadDeadline, "a reading that cannot start this long before must_serve_until is not made (NOT_PROBED)")
+		pruneTol  = flag.Duration("prune-tolerance", def.PruneTolerance, "NOT_FOUND is normal until must_serve_until + this (devnet prune lag ~1m45s)")
 
 		maxSleep    = flag.Duration("max-sleep", 30*time.Second, "longest sleep between cycles")
 		rpcTO       = flag.Duration("rpc-timeout", 15*time.Second, "per-RPC-call timeout")
-		concurrency = flag.Int("concurrency", 64, "requests in flight at once, across every reading")
+		concurrency = flag.Int("concurrency", 64, "requests in flight at once, across every reading; a request past it waits, it is never dropped")
 		blobs       = flag.Int("blob-concurrency", 16, "blobs being read at once")
-		perVal      = flag.Int("per-validator", 1, "requests one validator has from this observer at a time")
 		inFlightMiB = flag.Int64("in-flight-mib", 512, "shard bytes in flight at once, MiB; a count of requests does not bound memory when one shard can be hundreds of MiB")
 		localHosts  = flag.Bool("allow-unroutable-hosts", false,
 			"dial registered hosts on loopback or a private range (a local devnet; never a public vantage)")
@@ -84,14 +71,6 @@ func main() {
 
 		policyPath  = flag.String("policy", "", "policy YAML (observer/policy): only its sampling master secret is read, to reveal the day secrets of earlier draws; \"default\" puts the secret at <data-dir>/sampling-master.key; empty = no reveals")
 		revealAfter = flag.Duration("reveal-after", policy.DefaultRevealAfter, "publish each day's sampling secret this long after the day ends, to <data-dir>/sampling-secrets.jsonl (0 = never)")
-
-		// Confirm mode, on a second vantage: no publications and no
-		// schedule. It answers the primary's confirmation requests (one
-		// request per not-served row) and writes <data-dir>/measurements.jsonl.
-		confirmReqs  = flag.String("confirm-requests", "", "confirm mode: answer the confirmation requests in this file (the primary's vantage-requests.jsonl, copied in) instead of reading blobs")
-		confirmMax   = flag.Int("confirm-max-per-hour", 60, "confirm mode: confirming requests to any one validator in an hour at most; requests past it wait, and lapse at their deadline")
-		confirmWork  = flag.Int("confirm-workers", 8, "confirm mode: validators asked at once; one validator is asked one request at a time")
-		confirmEvery = flag.Duration("confirm-poll", 20*time.Second, "confirm mode: how often the requests file is read again")
 	)
 	flag.Parse()
 
@@ -104,37 +83,13 @@ func main() {
 	// alone, as the client's are (probe.Input.ClientRules).
 	timeouts := probe.StepTimeouts{DNS: *dnsTO, Download: *dlTO, MinDownloadBytesPerSec: -1}
 
-	if *confirmReqs != "" {
-		chain, err := scan.NewChain(*rpc, *rpcTO, log)
-		if err != nil {
-			log.Fatalf("rpc client: %v", err)
-		}
-		c, err := probe.NewConfirmer(probe.ConfirmConfig{
-			RequestsPath: *confirmReqs, DataDir: *dataDir, Vantage: *vantage,
-			Timeouts:  timeouts,
-			PollEvery: *confirmEvery, MaxPerHour: *confirmMax, Workers: *confirmWork, AllowUnroutableHosts: *localHosts,
-			Once: *once, RunConfig: flagConfig(),
-		}, chain, log)
-		if err != nil {
-			log.Fatalf("init: %v", err)
-		}
-		defer c.Close()
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
-		log.Printf("confirm mode: vantage=%s requests=%s data=%s rpc=%s", *vantage, *confirmReqs, *dataDir, *rpc)
-		if err := c.Run(ctx); err != nil {
-			log.Fatalf("run: %v", err)
-		}
-		return
-	}
-
 	if !*endRead {
 		log.Printf("-end-read=false is ignored: every blob is read once, at the end of its window")
 	}
-	if *endOffset <= 0 || *readDL <= 0 || *retryAfter <= 0 {
-		log.Fatalf("-end-read-offset, -read-deadline and -retry-after must be positive")
+	if *endOffset <= 0 || *readDL <= 0 {
+		log.Fatalf("-end-read-offset and -read-deadline must be positive")
 	}
-	sched := probe.ScheduleConfig{PruneTolerance: *pruneTol, EndReadOffset: *endOffset, ReadDeadline: *readDL, RetryAfter: *retryAfter}
+	sched := probe.ScheduleConfig{PruneTolerance: *pruneTol, EndReadOffset: *endOffset, ReadDeadline: *readDL}
 	if *endSince != "" {
 		t, err := time.Parse(time.RFC3339, *endSince)
 		if err != nil {
@@ -181,7 +136,6 @@ func main() {
 		RPCTimeout:           *rpcTO,
 		Concurrency:          *concurrency,
 		BlobConcurrency:      *blobs,
-		PerValidator:         *perVal,
 		InFlightBytes:        *inFlightMiB << 20,
 		AllowUnroutableHosts: *localHosts,
 		BackfillMissed:       *backfill,

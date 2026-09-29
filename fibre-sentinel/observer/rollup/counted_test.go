@@ -24,16 +24,13 @@ type readings struct {
 	ms      []probe.Measurement
 	settled time.Time
 	n       int
-	// confirmed is every row a second location confirmed (confirmed_by),
-	// by promise|validator.
-	confirmed map[string]bool
 	// sameAs, when set, is the settlement time the next blob takes, so two
 	// blobs can share a must_serve_until (and so a scheduled time).
 	sameAs time.Time
 }
 
 func newReadings(t *testing.T) *readings {
-	return &readings{t: t, st: openStore(t), settled: time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC), confirmed: map[string]bool{}}
+	return &readings{t: t, st: openStore(t), settled: time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)}
 }
 
 // validator is one validator of a blob: the rows it holds, and what the
@@ -45,12 +42,9 @@ type validator struct {
 	out        probe.Outcome
 	got        []uint32 // rows that came back verified
 	unasked    bool     // the reading never got to it
-	gap        bool     // this observer could not read it (PROBE_ERROR)
+	gap        bool     // the request failed on this observer's side (PROBE_ERROR)
+	missed     bool     // the prober missed the request (NOT_PROBED)
 	unendorsed bool     // rows assigned, no endorsement on the promise
-	passedOver bool     // the deciding pass did not ask it (PASSED_OVER)
-	// unconfirmed: a failure the second location did not confirm; every
-	// other failure it did
-	unconfirmed bool
 }
 
 func served(name string, holds []int) validator {
@@ -112,13 +106,13 @@ func (r *readings) blob(needed, total int, vals ...validator) string {
 			MustServeUntil: msu, ValidatorAddress: v.name, ValidatorHost: v.name + ":7980", Assigned: true, Attested: !v.unendorsed,
 			AssignedRowCount: len(v.holds), ScheduleLabel: probe.EndReadLabel, ScheduledAt: at, StartedAt: start, FinishedAt: start.Add(time.Second),
 			Phase: probe.PhaseInWindow, Outcome: v.out, Classification: v.cls}
-		if v.gap {
+		switch {
+		case v.gap:
 			m.Outcome, m.Classification = probe.OutcomeProbeError, probe.ClassProbeError
+		case v.missed:
+			m.Outcome, m.Classification = probe.OutcomeMissed, probe.ClassNotProbed
 		}
-		if v.passedOver {
-			m.Outcome, m.Classification = probe.OutcomePassedOver, probe.ClassProbeError
-		}
-		m.TLS.OK = m.Outcome != probe.OutcomeTLSFail && !v.gap && !v.passedOver
+		m.TLS.OK = m.Outcome != probe.OutcomeTLSFail && !v.gap && !v.missed
 		m.Download.RowsExpected = len(v.holds)
 		if len(v.got) > 0 {
 			m.Download.RowIndices, m.Download.RowsReturned, m.Download.CommitmentVerified = v.got, len(v.got), true
@@ -128,12 +122,6 @@ func (r *readings) blob(needed, total int, vals ...validator) string {
 			r.t.Fatal(err)
 		}
 		r.ms = append(r.ms, m)
-		if !v.unconfirmed && !v.gap && !v.passedOver && len(v.got) < len(v.holds) {
-			if _, err := r.st.DB().Exec(`UPDATE probes SET confirmed_by = 'de-1' WHERE promise_hash = ? AND validator_address = ?`, hash, v.name); err != nil {
-				r.t.Fatal(err)
-			}
-			r.confirmed[hash+"|"+v.name] = true
-		}
 	}
 	return hash
 }
@@ -141,9 +129,7 @@ func (r *readings) blob(needed, total int, vals ...validator) string {
 func (r *readings) twin() ([]verdict.Row, map[string]time.Time, verdict.Blobs) {
 	rows := make([]verdict.Row, 0, len(r.ms))
 	for _, m := range r.ms {
-		row := verdict.FromMeasurement(m)
-		row.Confirmed = r.confirmed[m.PromiseHash+"|"+m.ValidatorAddress]
-		rows = append(rows, row)
+		rows = append(rows, verdict.FromMeasurement(m))
 	}
 	settled := map[string]time.Time{}
 	for _, p := range r.pubs {
@@ -156,88 +142,59 @@ func (r *readings) twin() ([]verdict.Row, map[string]time.Time, verdict.Blobs) {
 func fixture(t *testing.T) (*readings, map[string]string) {
 	r := newReadings(t)
 	hashes := map[string]string{}
-	// Available: two validators' rows rebuild it, the third timed out.
+	// Available: two validators' rows rebuild it, the third timed out, one
+	// request failed here, and the reading never got to the last.
 	hashes["available"] = r.blob(8, 32, served("a", rowsFrom(0, 4)), served("b", rowsFrom(4, 4)),
 		failed("slow", rowsFrom(8, 4), probe.ClassUnreachable, probe.OutcomeTLSFail),
-		validator{name: "never", holds: rowsFrom(12, 4), unasked: true})
-	// Unavailable: the big validator did not serve, five small ones did,
-	// one this observer could not read, one handed over a token of its rows.
+		validator{name: "here", holds: rowsFrom(12, 2), gap: true},
+		validator{name: "never", holds: rowsFrom(14, 4), unasked: true})
+	// Unavailable, not enough shards: the big validator did not serve, five
+	// small ones did, one request failed here while the others reached
+	// their validators, one handed over a token of its rows.
 	short := served("short", rowsFrom(20, 4))
 	short.cls, short.out, short.got = probe.ClassUnmatchedGenuine, probe.OutcomePartial, []uint32{20}
-	hashes["unavailable"] = r.blob(8, 32, failed("big", rowsFrom(0, 8), probe.ClassFault, probe.OutcomeNotFound),
+	hashes["notenough"] = r.blob(8, 32, failed("big", rowsFrom(0, 8), probe.ClassFault, probe.OutcomeNotFound),
 		served("s1", rowsFrom(8, 1)), served("s2", rowsFrom(9, 1)), served("s3", rowsFrom(10, 1)), served("s4", rowsFrom(11, 1)),
 		served("s5", rowsFrom(12, 1)), validator{name: "gap", holds: rowsFrom(13, 1), gap: true}, short)
-	// Incomplete: the rows of a validator never asked could have filled it.
-	hashes["incomplete"] = r.blob(8, 32, served("a", rowsFrom(0, 4)), failed("b", rowsFrom(4, 4), probe.ClassFault, probe.OutcomeNotFound),
-		validator{name: "c", holds: rowsFrom(8, 4), unasked: true})
-	// Every validator failed at once.
-	hashes["allfail"] = r.blob(8, 32, failed("a", rowsFrom(0, 2), probe.ClassUnreachable, probe.OutcomeTLSFail),
+	// Unavailable, no shards retrieved: every validator failed, each its
+	// own way.
+	hashes["noshards"] = r.blob(8, 32, failed("a", rowsFrom(0, 2), probe.ClassUnreachable, probe.OutcomeTLSFail),
 		failed("b", rowsFrom(2, 2), probe.ClassServerError, probe.OutcomeServerError),
-		failed("c", rowsFrom(4, 2), probe.ClassUnreachable, probe.OutcomeTCPTimeout),
+		failed("c", rowsFrom(4, 2), probe.ClassThrottled, probe.OutcomeThrottled),
 		failed("d", rowsFrom(6, 2), probe.ClassFault, probe.OutcomeNotFound))
-	// A rate limit is the validator not serving, and does not shield the
-	// validator beside it.
-	hashes["throttled"] = r.blob(8, 32, failed("nf", rowsFrom(0, 4), probe.ClassFault, probe.OutcomeNotFound),
-		failed("thr", rowsFrom(4, 4), probe.ClassThrottled, probe.OutcomeThrottled),
-		served("s1", rowsFrom(8, 1)), served("s2", rowsFrom(9, 1)), served("s3", rowsFrom(10, 1)))
 	// Rows already verified, from a row whose verdict waits for the late
-	// shadow judgement (PROBE_ERROR): counted once, in the rows.
+	// shadow judgement (PROBE_ERROR): they came back.
 	deferred := served("deferred", rowsFrom(20, 6))
 	deferred.cls, deferred.out, deferred.got = probe.ClassProbeError, probe.OutcomePartial, []uint32{20}
 	hashes["deferred"] = r.blob(8, 32, failed("bigd", rowsFrom(0, 8), probe.ClassFault, probe.OutcomeNotFound),
 		served("s1", rowsFrom(8, 1)), served("s2", rowsFrom(9, 1)), deferred)
-	// The endorsers alone are short, and a validator that did not endorse
-	// was not asked: its rows could have made the blob.
-	other := validator{name: "other", holds: rowsFrom(6, 8), unasked: true, unendorsed: true}
+	// A validator that did not endorse is asked like the rest and never
+	// counted, whatever it answers.
+	other := failed("other", rowsFrom(6, 8), probe.ClassUnattested, probe.OutcomeNotFound)
+	other.unendorsed = true
 	hashes["wholeset"] = r.blob(8, 32, failed("e1", rowsFrom(0, 4), probe.ClassFault, probe.OutcomeNotFound),
 		served("e2", rowsFrom(4, 2)), other)
-	// Asked, it had nothing either: Unavailable over the whole set.
-	other = failed("other", rowsFrom(6, 8), probe.ClassUnattested, probe.OutcomeNotFound)
-	other.unendorsed = true
-	hashes["wholeset-asked"] = r.blob(8, 32, failed("e1", rowsFrom(0, 4), probe.ClassFault, probe.OutcomeNotFound),
-		served("e2", rowsFrom(4, 2)), other)
-	// Available though most of those asked failed: the guard leaves it be.
-	hashes["mostfail"] = r.blob(8, 32, served("a", rowsFrom(0, 8)),
-		failed("x", rowsFrom(8, 2), probe.ClassUnreachable, probe.OutcomeTLSFail),
-		failed("y", rowsFrom(10, 2), probe.ClassUnreachable, probe.OutcomeTLSFail),
-		failed("z", rowsFrom(12, 2), probe.ClassUnreachable, probe.OutcomeTLSFail))
-	// Unavailable, and the second location did not confirm the failure: it
-	// counts neither way.
-	uc := failed("uc", rowsFrom(0, 8), probe.ClassUnreachable, probe.OutcomeRPCTimeout)
-	uc.unconfirmed = true
-	hashes["unconfirmed"] = r.blob(8, 32, uc, served("s1", rowsFrom(8, 1)), served("s2", rowsFrom(9, 1)))
-	// An endorser the deciding pass passed over, busy with this observer's
-	// other readings, beside four not found and five served one row each:
-	// it counts as failed to the guard, half of the ten, and the reading is
-	// set aside as it would have been had the pass asked it.
-	passed := []validator{{name: "po", holds: rowsFrom(0, 2), passedOver: true}}
-	for i := 1; i <= 4; i++ {
-		passed = append(passed, failed(fmt.Sprintf("pn%d", i), rowsFrom(2*i, 2), probe.ClassFault, probe.OutcomeNotFound))
-	}
-	for i := 0; i < 5; i++ {
-		passed = append(passed, served(fmt.Sprintf("ps%d", i), rowsFrom(10+i, 1)))
-	}
-	hashes["passedover"] = r.blob(8, 32, passed...)
+	// Not read: every request failed on this observer's side.
+	hashes["local"] = r.blob(8, 32, validator{name: "l1", holds: rowsFrom(0, 4), gap: true},
+		validator{name: "l2", holds: rowsFrom(4, 4), gap: true})
+	// Not read: the prober missed part of the reading, as the older build
+	// stored readings a validator at a time, and the rows are short. Nothing
+	// in it counts, the rows that came back included.
+	hashes["partmissed"] = r.blob(8, 32, served("m1", rowsFrom(0, 4)),
+		validator{name: "m2", holds: rowsFrom(4, 4), missed: true}, validator{name: "m3", holds: rowsFrom(8, 4), missed: true})
 	// Two blobs at one scheduled time (the publisher chose one
-	// creation_timestamp for both): every validator of the first failed, two
-	// of the second's eight did. The guard is per reading, so the first is
-	// set aside and the second's failures count.
+	// creation_timestamp for both): each is its own reading.
 	r.sameAs = r.settled.Add(1000 * time.Minute)
-	hashes["pair-sacrifice"] = r.blob(8, 32, failed("p1", rowsFrom(0, 2), probe.ClassFault, probe.OutcomeNotFound),
-		failed("p2", rowsFrom(2, 2), probe.ClassFault, probe.OutcomeNotFound), failed("p3", rowsFrom(4, 2), probe.ClassFault, probe.OutcomeNotFound),
-		failed("p4", rowsFrom(6, 2), probe.ClassFault, probe.OutcomeNotFound))
-	var target []validator
-	target = append(target, failed("t1", rowsFrom(0, 4), probe.ClassFault, probe.OutcomeNotFound), failed("t2", rowsFrom(4, 4), probe.ClassFault, probe.OutcomeNotFound))
-	for i := 0; i < 6; i++ {
-		target = append(target, served(fmt.Sprintf("u%d", i), rowsFrom(8+i, 1)))
-	}
-	hashes["pair-target"] = r.blob(8, 32, target...)
+	hashes["pair-available"] = r.blob(8, 32, served("q1", rowsFrom(0, 8)))
+	hashes["pair-unavailable"] = r.blob(8, 32, failed("t1", rowsFrom(0, 4), probe.ClassFault, probe.OutcomeNotFound),
+		served("u0", rowsFrom(4, 1)))
 	r.sameAs = time.Time{}
 	return r, hashes
 }
 
 // Every row counts the same in SQL (rollup.CountedClass, which is how the
-// stored readings are re-read, with no file rewritten) and in the Go twin.
+// stored readings are re-read, with no file rewritten) and in the Go twin,
+// and as the rule says.
 func TestTheSQLAndTheGoTwinCountTheSameRows(t *testing.T) {
 	r, hashes := fixture(t)
 	ctx := context.Background()
@@ -262,22 +219,21 @@ func TestTheSQLAndTheGoTwinCountTheSameRows(t *testing.T) {
 	}
 	for _, row := range rows {
 		rd := verdict.ReadingOf(byPoint[row.PromiseHash], blobs[row.PromiseHash])
-		want := row.CountedClass(rd.Unavailable())
+		want := row.CountedClass(rd)
 		if got := sqlCls[row.PromiseHash+"|"+row.Validator]; got != string(want) {
 			t.Errorf("%s %s: SQL %q, Go %q", row.PromiseHash[60:], row.Validator, got, want)
 		}
 	}
 	for blob, want := range map[string]map[string]string{
-		"available":      {"a": "HEALTHY", "slow": "NOT_COUNTED"},
-		"unavailable":    {"big": "FAULT", "s1": "HEALTHY", "gap": "PROBE_ERROR", "short": "FAULT"},
-		"incomplete":     {"b": "NOT_COUNTED"},
-		"mostfail":       {"x": "NOT_COUNTED"},
-		"throttled":      {"nf": "FAULT", "thr": "FAULT", "s1": "HEALTHY"},
-		"deferred":       {"bigd": "FAULT", "deferred": "PROBE_ERROR"},
-		"wholeset":       {"e1": "NOT_COUNTED", "e2": "HEALTHY"},
-		"wholeset-asked": {"e1": "FAULT", "e2": "HEALTHY", "other": "UNATTESTED"},
-		"unconfirmed":    {"uc": "NOT_COUNTED", "s1": "HEALTHY"},
-		"pair-target":    {"t1": "FAULT", "t2": "FAULT", "u0": "HEALTHY"},
+		"available":        {"a": "HEALTHY", "slow": "NOT_COUNTED", "here": "PROBE_ERROR"},
+		"notenough":        {"big": "FAULT", "s1": "HEALTHY", "gap": "FAULT", "short": "HEALTHY"},
+		"noshards":         {"a": "FAULT", "b": "FAULT", "c": "FAULT", "d": "FAULT"},
+		"deferred":         {"bigd": "FAULT", "deferred": "HEALTHY"},
+		"wholeset":         {"e1": "FAULT", "e2": "HEALTHY", "other": "UNATTESTED"},
+		"local":            {"l1": "PROBE_ERROR", "l2": "PROBE_ERROR"},
+		"partmissed":       {"m1": "NOT_COUNTED", "m2": "NOT_PROBED", "m3": "NOT_PROBED"},
+		"pair-available":   {"q1": "HEALTHY"},
+		"pair-unavailable": {"t1": "FAULT", "u0": "HEALTHY"},
 	} {
 		for v, c := range want {
 			if got := sqlCls[hashes[blob]+"|"+v]; got != c {
@@ -285,47 +241,33 @@ func TestTheSQLAndTheGoTwinCountTheSameRows(t *testing.T) {
 			}
 		}
 	}
+	for blob, want := range map[string][2]string{
+		"available":        {verdict.BlobAvailable, ""},
+		"notenough":        {verdict.BlobUnavailable, probe.ClientErrNotEnoughShards},
+		"noshards":         {verdict.BlobUnavailable, probe.ClientErrNoShards},
+		"deferred":         {verdict.BlobUnavailable, probe.ClientErrNotEnoughShards},
+		"local":            {verdict.BlobNotRead, ""},
+		"partmissed":       {verdict.BlobNotRead, ""},
+		"pair-available":   {verdict.BlobAvailable, ""},
+		"pair-unavailable": {verdict.BlobUnavailable, probe.ClientErrNotEnoughShards},
+	} {
+		h := hashes[blob]
+		if got := verdict.BlobReading(byPoint[h], blobs[h], false); got.Status != want[0] || got.Error != want[1] {
+			t.Errorf("%s: %s %q, want %s %q", blob, got.Status, got.Error, want[0], want[1])
+		}
+	}
 }
 
-// The guard, and the obligations the day's rollup draws, agree between the
-// two implementations: the every-validator-failed reading is set aside, the
-// Available one the guard would otherwise catch is not.
-func TestTheSQLAndTheGoTwinAgreeOnTheGuardAndTheObligations(t *testing.T) {
-	r, hashes := fixture(t)
+// The obligations the day's rollup draws agree with the Go twin's, and say
+// what the rule says: not served only on an Unavailable blob, nothing
+// counted against anyone on an Available one or where the reading did not
+// happen.
+func TestTheSQLAndTheGoTwinAgreeOnTheObligations(t *testing.T) {
+	r, _ := fixture(t)
 	ctx := context.Background()
 	rows, settled, blobs := r.twin()
 	now := r.settled.Add(20 * 24 * time.Hour)
 
-	pts, err := rollup.SuspectPoints(ctx, r.st.DB(), `started_at >= ?`, "0000")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sqlSuspect []string
-	for _, p := range pts {
-		if p.Reason() != "" {
-			sqlSuspect = append(sqlSuspect, p.PromiseHash+"@"+p.At)
-		}
-	}
-	w := verdict.Window{All: true, End: now}
-	goPts := verdict.SuspectPoints(rows, w, blobs)
-	var goSuspect []string
-	for _, p := range goPts {
-		goSuspect = append(goSuspect, p.PromiseHash+"@"+store.TS(p.At))
-	}
-	if fmt.Sprint(sqlSuspect) != fmt.Sprint(goSuspect) {
-		t.Fatalf("suspect readings: SQL %v, Go %v", sqlSuspect, goSuspect)
-	}
-	want := map[string]bool{}
-	for _, m := range r.ms {
-		if m.PromiseHash == hashes["allfail"] || m.PromiseHash == hashes["pair-sacrifice"] || m.PromiseHash == hashes["passedover"] {
-			want[m.PromiseHash+"@"+store.TS(m.ScheduledAt)] = true
-		}
-	}
-	if len(sqlSuspect) != 3 || !want[sqlSuspect[0]] || !want[sqlSuspect[1]] || !want[sqlSuspect[2]] {
-		t.Fatalf("suspect %v, want only the readings where every validator failed, and the one where half did with one passed over (%v)", sqlSuspect, want)
-	}
-
-	// The daily rollup, read back, against the Go twin.
 	if _, err := rollup.Run(ctx, r.st, now, rollup.Config{RollupAfter: 14 * 24 * time.Hour}); err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +275,8 @@ func TestTheSQLAndTheGoTwinAgreeOnTheGuardAndTheObligations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, byVal := verdict.ComputeObligations(rows, settled, w, goPts, blobs)
+	w := verdict.Window{All: true, End: now}
+	_, byVal := verdict.ComputeObligations(rows, settled, w, blobs)
 	names := map[string]bool{}
 	for a := range byVal {
 		names[a] = true
@@ -354,34 +297,36 @@ func TestTheSQLAndTheGoTwinAgreeOnTheGuardAndTheObligations(t *testing.T) {
 			t.Errorf("%s: rolled %+v, Go %+v", a, got, byVal[a])
 		}
 	}
-	if b := byVal["big"]; b.Broken != 1 {
-		t.Errorf("big: %+v, want one not served", b)
-	}
-	if b := byVal["slow"]; b.NotCounted != 1 || b.Broken != 0 {
-		t.Errorf("slow: %+v, want not counted", b)
-	}
-	if b := byVal["uc"]; b.NotCounted != 1 || b.Broken != 0 {
-		t.Errorf("uc: %+v, want not counted: the second location did not confirm it", b)
-	}
-	// The reading beside a set-aside one at the same scheduled time is its
-	// own: its failures count.
-	for _, v := range []string{"t1", "t2"} {
+	for _, v := range []string{"big", "gap", "bigd", "e1", "t1", "b", "c", "d"} {
 		if b := byVal[v]; b.Broken != 1 {
-			t.Errorf("%s: %+v, want one not served beside a set-aside reading at the same time", v, b)
+			t.Errorf("%s: %+v, want one not served", v, b)
 		}
 	}
-	if b := byVal["p1"]; b.Broken != 0 || b.Total != 0 {
-		t.Errorf("p1: %+v, want no obligation: its reading is set aside", b)
+	for _, v := range []string{"slow", "here", "l1", "l2", "m1", "m2", "m3"} {
+		if b := byVal[v]; b.Broken != 0 || b.Served != 0 {
+			t.Errorf("%s: %+v, want counted neither way", v, b)
+		}
+	}
+	for _, v := range []string{"short", "deferred", "u0", "q1"} {
+		if b := byVal[v]; b.Served != 1 {
+			t.Errorf("%s: %+v, want served", v, b)
+		}
+	}
+	if _, ok := byVal["never"]; ok {
+		t.Error("a validator the reading never asked has an obligation")
+	}
+	if _, ok := byVal["other"]; ok {
+		t.Error("a validator that did not endorse has an obligation")
 	}
 }
 
 // The readings already stored, re-read under the rule with no record
 // rewritten: on 28 September four TLS handshakes timed out from this
-// observer's one location during the prober's overload, each on a blob
-// whose other validators' rows came back verified (6,140, 7,843, 7,516 and
-// 8,082 distinct rows of the 4,096 needed). They were counted as not served;
-// now they count neither way, and the blob is Available.
-func TestAStoredTimeoutOnAnAvailableBlobNoLongerCounts(t *testing.T) {
+// observer during the prober's overload, each on a blob whose other
+// validators' rows came back verified (6,140, 7,843, 7,516 and 8,082
+// distinct rows of the 4,096 needed). The blob is Available, and the
+// timeout counts neither way.
+func TestAStoredTimeoutOnAnAvailableBlobDoesNotCount(t *testing.T) {
 	r := newReadings(t)
 	ctx := context.Background()
 	// 6,140 distinct rows from twelve validators, the way the record has it.
@@ -406,89 +351,13 @@ func TestAStoredTimeoutOnAnAvailableBlobNoLongerCounts(t *testing.T) {
 	if cls != string(verdict.NotCounted) {
 		t.Fatalf("the stored TLS timeout counts as %q, want NOT_COUNTED", cls)
 	}
-	res := verdict.BlobReading(rows, blobs[hash], false, false)
+	res := verdict.BlobReading(rows, blobs[hash], false)
 	if res.Status != verdict.BlobAvailable || res.Have != 6140 {
 		t.Fatalf("blob %+v, want Available with 6,140 rows", res)
 	}
 	w := verdict.Window{All: true, End: r.settled.Add(24 * time.Hour)}
-	_, by := verdict.ComputeObligations(rows, settled, w, verdict.SuspectPoints(rows, w, blobs), blobs)
+	_, by := verdict.ComputeObligations(rows, settled, w, blobs)
 	if got := by["timedout"]; got.Broken != 0 || got.NotCounted != 1 {
 		t.Fatalf("timedout: %+v, want not counted", got)
-	}
-}
-
-// A short answer (rows that verified, fewer than the validator holds) on an
-// Unavailable blob waits for its deferred verdict at the reading, and is
-// sent to the second location all the same: once the second location got
-// no rows from it and the verdict is drawn, it counts not served; without
-// the confirmation it never does.
-func TestAShortAnswerCountsOnceConfirmedAndItsVerdictDrawn(t *testing.T) {
-	r := newReadings(t)
-	ctx := context.Background()
-	short := served("short", rowsFrom(20, 4))
-	short.cls, short.out, short.got = probe.ClassProbeError, probe.OutcomePartial, []uint32{20}
-	short.unconfirmed = true
-	other := short
-	other.name = "other"
-	other.holds, other.got = rowsFrom(24, 4), []uint32{24}
-	hash := r.blob(8, 32, failed("big", rowsFrom(0, 8), probe.ClassFault, probe.OutcomeNotFound), served("s1", rowsFrom(8, 1)), short, other)
-	count := func(v string) string {
-		var cls string
-		if err := r.st.DB().QueryRowContext(ctx, `SELECT `+rollup.CountedClass("probes")+` FROM probes WHERE promise_hash = ? AND validator_address = ?`, hash, v).Scan(&cls); err != nil {
-			t.Fatal(err)
-		}
-		return cls
-	}
-	// the second location confirms the one, not the other
-	if _, err := r.st.DB().Exec(`UPDATE probes SET confirmed_by = 'de-1' WHERE promise_hash = ? AND validator_address = 'short'`, hash); err != nil {
-		t.Fatal(err)
-	}
-	if got := count("short"); got != string(probe.ClassProbeError) {
-		t.Fatalf("before its verdict: %s, want PROBE_ERROR", got)
-	}
-	for _, m := range r.ms {
-		if m.PromiseHash != hash || (m.ValidatorAddress != "short" && m.ValidatorAddress != "other") {
-			continue
-		}
-		if _, err := r.st.ApplyAmendment(store.Amendment{DedupeKey: m.DedupeKey(), PromiseHash: hash, ValidatorAddress: m.ValidatorAddress,
-			ScheduledAt: m.ScheduledAt, From: string(probe.ClassProbeError), To: string(probe.ClassUnmatchedGenuine), Reason: "late",
-			JudgedAt: m.StartedAt.Add(time.Hour), ScannerFrontier: m.StartedAt.Add(time.Hour)}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := count("short"); got != string(probe.ClassFault) {
-		t.Errorf("confirmed, verdict drawn: %s, want FAULT", got)
-	}
-	if got := count("other"); got != string(verdict.NotCounted) {
-		t.Errorf("unconfirmed, verdict drawn: %s, want %s", got, verdict.NotCounted)
-	}
-}
-
-// A second location that fetched the rows of a failed validator names
-// itself (cleared_by) and rewrites nothing: the correlated-failure guard,
-// drawn from this observer's own reading, sets the reading aside exactly as
-// before.
-func TestASecondLocationsAnswerNeverSwitchesTheGuardOff(t *testing.T) {
-	r := newReadings(t)
-	ctx := context.Background()
-	hash := r.blob(64, 128, failed("a", rowsFrom(0, 4), probe.ClassUnreachable, probe.OutcomeRPCTimeout),
-		failed("b", rowsFrom(4, 20), probe.ClassUnreachable, probe.OutcomeRPCTimeout),
-		failed("c", rowsFrom(24, 20), probe.ClassUnreachable, probe.OutcomeRPCTimeout),
-		served("d", rowsFrom(44, 10)), served("e", rowsFrom(54, 10)), served("f", rowsFrom(64, 10)))
-	suspect := func() bool {
-		pts, err := rollup.SuspectPoints(ctx, r.st.DB(), `promise_hash = ?`, hash)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return len(pts) == 1 && pts[0].Reason() != ""
-	}
-	if !suspect() {
-		t.Fatal("three of six unreachable is not set aside")
-	}
-	if _, err := r.st.DB().Exec(`UPDATE probes SET cleared_by = 'de-1', confirmed_by = NULL WHERE promise_hash = ? AND validator_address = 'a'`, hash); err != nil {
-		t.Fatal(err)
-	}
-	if !suspect() {
-		t.Fatal("the second location's answer lifted the guard")
 	}
 }

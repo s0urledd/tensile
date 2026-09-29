@@ -1,11 +1,12 @@
 // Package verdict derives the published figures from rows alone, with no
-// database: the correlated-failure guard (suspect points) and the
-// obligation buckets, over probe rows and publications as they sit in the
-// JSONL record or a daily export. It is the second implementation of the
-// rules the API evaluates in SQL, kept deliberately apart from it, so a
-// third party holding the raw rows can reproduce every figure the site
-// prints and the two can be checked against each other
-// (sentinel-recompute; the API's tests run both over the same rows).
+// database: each blob's reading (Available, or Unavailable with the Fibre
+// client's error) and the obligation buckets it leaves, over probe rows and
+// publications as they sit in the JSONL record or a daily export. It is the
+// second implementation of the rules the API evaluates in SQL, kept
+// deliberately apart from it, so a third party holding the raw rows can
+// reproduce every figure the site prints and the two can be checked against
+// each other (sentinel-recompute; the API's tests run both over the same
+// rows).
 package verdict
 
 import (
@@ -14,41 +15,6 @@ import (
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
-)
-
-// The correlated-failure guard, the owner's decision until a control read
-// exists. At or above UnreachableThreshold of the endorsing validators asked
-// at one reading (one promise at one scheduled time) being unreachable, or
-// FaultThreshold of them failing to hand over rows (failedClass), the
-// likeliest explanation is the observer's own side (its network, a stale
-// pin, a broken coder) rather than that many independent operators at the
-// same minute; such a reading is suspect and every figure leaves its rows
-// out, counted neither way, unless its blob was Available all the same
-// (verified rows are not the observer's trouble). MinValidators is the
-// floor under which a share is not a signal. The shares are drawn from this
-// observer's own rows alone, so a second location's answer never moves
-// them; a validator the reading passed over counts as failed
-// (probe.GuardPassedOver). The prober applies the same guard at the end of
-// a reading (probe.GuardSetsAside), and sends no confirmation request for a
-// reading it sets aside for good (probe.GuardSetsAsideForGood: whatever
-// its deferred verdicts come to).
-//
-// The shares count validators, not the rows they hold. On a stake-weighted
-// assignment the largest holders failing can leave a blob Unavailable with
-// fewer than half of the validators failing; the guard does not fire then,
-// and those failures count. And a blob that takes half of them failing to
-// be Unavailable is set aside: its failures count neither way, until a
-// control read tells the observer's side apart.
-//
-// This is where a control read would lift the guard: a blob of this
-// observer's own, read from the same validators at the same time, that
-// comes back whole would show the observer's side was fine. The seam is
-// Point.Available in the SQL twin and Reading.Available here (the
-// rd.at(...).Available() test in SuspectPoints).
-const (
-	UnreachableThreshold = probe.GuardShare
-	FaultThreshold       = probe.GuardShare
-	MinValidators        = probe.GuardMinValidators
 )
 
 // EndSegmentDivisor cuts the tail off a retention window: the final
@@ -100,11 +66,6 @@ type Row struct {
 	RowsReturned       int
 	CommitmentVerified bool
 	AssignedRowCount   int
-	// Confirmed is set when a second location confirmed this row as not
-	// served (ConfirmNotServed): the only way a failure counts against the
-	// validator. Derived from the other vantage's rows (the store's
-	// confirmed_by), never from the row itself.
-	Confirmed bool
 }
 
 // EffectiveClass is the classification every rule below is built from: the
@@ -122,56 +83,47 @@ func (r Row) EffectiveClass() probe.Classification {
 	return r.Classification
 }
 
-// ObligationClass is the class a row counts as before its blob's reading is
-// taken into account: an end-of-window reading as a reader of the chain's
-// own client meets it (probe.EndReadClass: rows that verify are served, no
-// rows are not), then the same retention hold as EffectiveClass. The SQL
-// twin is rollup.ObligationClass.
-func (r Row) ObligationClass() probe.Classification {
-	c := r.Classification
-	if r.ScheduleLabel == probe.EndReadLabel {
-		c = probe.EndReadClass(c)
+// CountedClass is what an endorsing validator's row counts as once its
+// blob's reading (rd, the row's own) is known (BlobReading), in the window:
+//
+//   - HEALTHY (served): its rows came back verified against the commitment;
+//   - FAULT (not served): they did not, and the reading left the blob
+//     Unavailable;
+//   - NOT_PROBED, PROBE_ERROR: this observer's gap, when the blob was not
+//     Unavailable; never counted;
+//   - NotCounted: any other answer without rows on a blob that was not
+//     Unavailable, and anything on a reading that did not happen (the
+//     prober missed part of it and the rows are short: rows that came back
+//     count neither way there).
+//
+// Over served and not served, the retention hold of EffectiveClass: a row
+// whose deadline this observer cannot vouch for publishes neither. A
+// NOT_PROBED row is never not served: its reading was missed, so it is
+// Available or it did not happen. A row outside the window, or of a
+// validator that did not endorse (no obligation), keeps its own class. The
+// SQL twin is rollup.CountedClass.
+func (r Row) CountedClass(rd Reading) probe.Classification {
+	var c probe.Classification
+	switch {
+	case r.Phase != probe.PhaseInWindow || !r.Assigned || !r.Attested:
+		return r.Classification
+	case r.CommitmentVerified && rd.Missed && !rd.Available():
+		return NotCounted
+	case r.CommitmentVerified:
+		c = probe.ClassHealthy
+	case r.Classification == probe.ClassNotProbed:
+		return probe.ClassNotProbed
+	case rd.Unavailable():
+		c = probe.ClassFault
+	case r.Classification == probe.ClassProbeError:
+		return probe.ClassProbeError
+	default:
+		return NotCounted
 	}
 	if r.RetentionUnverified && probe.DeadlineDerived(c, r.Outcome) {
 		return probe.ClassRetentionUnverified
 	}
 	return c
-}
-
-// CountedClass is the class a row counts as once its blob's reading is
-// known (BlobReading): a failure to hand over rows (FAULT) counts only when
-// the blob was Unavailable at that reading and a second location confirmed
-// it (Confirmed), and is NotCounted otherwise; on an Unavailable blob a
-// validator whose verified rows are fewer than it holds did not serve them,
-// which counts the same way, once confirmed. Every other class passes
-// through. unavailable is Reading.Unavailable for the row's own reading.
-// The SQL twin is rollup.CountedClass.
-func (r Row) CountedClass(unavailable bool) probe.Classification {
-	c := r.ObligationClass()
-	switch {
-	case c == probe.ClassFault && (!unavailable || !r.Confirmed):
-		return NotCounted
-	case c == probe.ClassHealthy && unavailable && r.shortGenuine() && r.Confirmed:
-		return probe.ClassFault
-	case c == probe.ClassHealthy && unavailable && r.shortGenuine():
-		return NotCounted
-	}
-	return c
-}
-
-// shortGenuine is an end reading that returned genuine rows (the rows
-// verify, though not as this promise's assignment) fewer than the validator
-// holds.
-func (r Row) shortGenuine() bool {
-	if r.ScheduleLabel != probe.EndReadLabel || r.RowsReturned >= r.AssignedRowCount {
-		return false
-	}
-	for _, c := range probe.EndGenuineRowsClasses {
-		if r.Classification == c {
-			return true
-		}
-	}
-	return false
 }
 
 // PromiseHeights is the pair a hold is derived from: the interval a
@@ -233,120 +185,6 @@ func (w Window) holds(t time.Time) bool {
 	return w.All || !t.Before(w.Start)
 }
 
-// SuspectPoint is one reading the figures leave out: a promise at a
-// scheduled time.
-type SuspectPoint struct {
-	PromiseHash string
-	At          time.Time
-	Label       string
-	Validators  int
-	Unreachable int
-	Faulted     int
-	Rows        int
-	Reason      string
-}
-
-// failedClass reports whether a row left the reader without rows, for the
-// guard's second share: at an end-of-window reading every class that does
-// (the obligation class FAULT: no such shard, bad rows, no answer, a
-// certificate the client rejects, a server error, a rate limit), less
-// NOT_REGISTERED, which never reaches the denominator (GuardSilentClasses);
-// at an earlier schedule's point, FAULT alone.
-func failedClass(r Row) bool {
-	return r.Classification != probe.ClassNotRegistered && r.ObligationClass() == probe.ClassFault
-}
-
-// SuspectPoints applies the correlated-failure guard: over assigned
-// in-window rows started in the window, grouped by reading (one promise at
-// one scheduled time: two blobs sharing a must_serve_until are two
-// readings), with more than one validator asked at the reading. "Asked" is
-// a row that carries a reachability verdict for the endpoint, which is the
-// only kind of row that could land in either numerator — see
-// noReachVerdict. A row that could not be in the numerator whatever
-// happened at the reading must not sit in the denominator either, or it
-// drags the share down by its mere presence. Rows counts every row at the
-// reading, excluded ones included, because the exclusion removes them all.
-// A validator the reading passed over (probe.GuardPassedOver: an endorser
-// the deciding pass was due to ask and did not, busy with this observer's
-// other readings) is asked and failed here, as it would have been had the
-// pass asked it, so the guard does not depend on how busy this observer
-// was.
-//
-// A reading whose blob was Available is never suspect: the rows that came
-// back verified, and the failures beside them count for nothing anyway.
-// blobs supplies what that needs (BlobFacts); a blob it does not name is
-// not taken as Available.
-func SuspectPoints(rows []Row, w Window, blobs Blobs) []SuspectPoint {
-	type acc struct {
-		label                  string
-		vals, unreach, faulted map[string]bool
-		n                      int
-	}
-	groups := map[pointKey]*acc{}
-	for _, r := range rows {
-		if !r.Assigned || r.Phase != probe.PhaseInWindow || !w.holds(r.StartedAt) {
-			continue
-		}
-		k := pointKey{r.PromiseHash, r.ScheduledAt.UTC()}
-		g, ok := groups[k]
-		if !ok {
-			g = &acc{label: r.ScheduleLabel, vals: map[string]bool{}, unreach: map[string]bool{}, faulted: map[string]bool{}}
-			groups[k] = g
-		}
-		g.n++
-		cls := r.EffectiveClass()
-		passed := probe.GuardPassedOver(r.Outcome, cls, r.Attested)
-		if noReachVerdict(cls) && !passed {
-			continue
-		}
-		g.vals[r.Validator] = true
-		if cls == probe.ClassUnreachable {
-			g.unreach[r.Validator] = true
-		}
-		if failedClass(r) || passed {
-			g.faulted[r.Validator] = true
-		}
-	}
-	var rd *readings
-	var out []SuspectPoint
-	for k, g := range groups {
-		all := len(g.vals)
-		if all <= 1 {
-			continue
-		}
-		bad, faulted := len(g.unreach), len(g.faulted)
-		reason := ""
-		if float64(bad)/float64(all) >= UnreachableThreshold && bad >= MinValidators {
-			reason = "unreachable"
-		}
-		if float64(faulted)/float64(all) >= FaultThreshold && faulted >= MinValidators {
-			if reason != "" {
-				reason += ","
-			}
-			reason += "fault"
-		}
-		if reason == "" {
-			continue
-		}
-		if rd == nil {
-			rd = newReadings(rows, blobs)
-		}
-		if rd.at(k.promise, k.at).Available() {
-			// verified rows are not this observer's trouble (the SQL
-			// twin is rollup's pointAvailableSQL)
-			continue
-		}
-		out = append(out, SuspectPoint{PromiseHash: k.promise, At: k.at, Label: g.label, Validators: all, Unreachable: bad, Faulted: faulted, Rows: g.n, Reason: reason})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if !out[i].At.Equal(out[j].At) {
-			return out[i].At.Before(out[j].At)
-		}
-		return out[i].PromiseHash < out[j].PromiseHash
-	})
-	return out
-}
-
 // Obligations are the buckets one validator's (or the network's) proven
 // obligations in a window fall into. See docs/verdicts.md, "Obligations".
 // NotCounted is every obligation decided with no count either way: read,
@@ -382,49 +220,14 @@ func isGap(c probe.Classification) bool {
 	return c == probe.ClassNotProbed || c == probe.ClassProbeError
 }
 
-// GuardSilentClasses is every classification that leaves the observer
-// without a reachability verdict for the endpoint at that point, so that
-// the rollup's SQL twin can spell the same list into its query and a test
-// can hold the two to it.
-//
-// The guard asks whether many validators failed at once. A row can answer
-// that only if it could itself have come back UNREACHABLE or FAULT:
-//
-//   - NOT_PROBED, PROBE_ERROR: the observer never asked, or could not carry
-//     the probe out.
-//   - NOT_REGISTERED: no reachable Fibre host was registered, so no
-//     connection was attempted.
-//   - UNATTESTED: Classify returns it before it looks at reachability at
-//     all, so the row reads UNATTESTED whether the endpoint answered or
-//     refused. On mocha a publisher stops collecting at two thirds of
-//     stake, which leaves roughly a third of assigned rows unattested at
-//     every point — enough, left in the denominator, to hold the guard
-//     below its threshold through a real outage.
-//   - RETENTION_UNVERIFIED: the override replaces exactly HEALTHY and
-//     FAULT, so a held row can never be the FAULT in the numerator, and it
-//     was never going to be the UNREACHABLE either.
-//
-// Everything else kept in the denominator means a connection was attempted
-// and the endpoint answered or refused: an identity failure, a throttle or
-// a server error is positive evidence that the network was up, so it
-// belongs there.
-var GuardSilentClasses = probe.GuardSilentClasses
-
-func noReachVerdict(c probe.Classification) bool { return probe.GuardSilent(c) }
-
 // ComputeObligations buckets every proven obligation: an assigned,
 // attested (validator, promise) pair whose promise settled in the window,
-// judged over its in-window rows started by the window's end, at schedule
-// points that are not suspect, each row counted as its blob's reading
-// leaves it (CountedClass). settled maps promise hash to settlement time; a
-// row whose promise is not in it is left out, as the SQL join leaves it
-// out. blobs carries what the reading needs (BlobFacts). The network total
-// is the sum over validators.
-func ComputeObligations(rows []Row, settled map[string]time.Time, w Window, suspect []SuspectPoint, blobs Blobs) (Obligations, map[string]Obligations) {
-	sus := map[pointKey]bool{}
-	for _, p := range suspect {
-		sus[pointKey{p.PromiseHash, p.At.UTC()}] = true
-	}
+// judged over its in-window rows started by the window's end, each row
+// counted as its blob's reading leaves it (CountedClass). settled maps
+// promise hash to settlement time; a row whose promise is not in it is left
+// out, as the SQL join leaves it out. blobs carries what the reading needs
+// (BlobFacts). The network total is the sum over validators.
+func ComputeObligations(rows []Row, settled map[string]time.Time, w Window, blobs Blobs) (Obligations, map[string]Obligations) {
 	rd := newReadings(rows, blobs)
 	type key struct{ validator, promise string }
 	type obl struct {
@@ -440,7 +243,7 @@ func ComputeObligations(rows []Row, settled map[string]time.Time, w Window, susp
 		if !ok || !w.holds(st) || r.StartedAt.After(w.End) {
 			continue
 		}
-		if !r.Assigned || !r.Attested || r.Phase != probe.PhaseInWindow || sus[pointKey{r.PromiseHash, r.ScheduledAt.UTC()}] {
+		if !r.Assigned || !r.Attested || r.Phase != probe.PhaseInWindow {
 			continue
 		}
 		k := key{r.Validator, r.PromiseHash}
@@ -449,11 +252,7 @@ func ComputeObligations(rows []Row, settled map[string]time.Time, w Window, susp
 			o = &obl{}
 			obls[k] = o
 		}
-		cls := r.ObligationClass()
-		if cls == probe.ClassFault || (cls == probe.ClassHealthy && r.shortGenuine()) {
-			// only a row that could fail is worth the reading
-			cls = r.CountedClass(rd.at(r.PromiseHash, r.ScheduledAt).Unavailable())
-		}
+		cls := r.CountedClass(rd.at(r.PromiseHash, r.ScheduledAt))
 		switch cls {
 		case probe.ClassFault:
 			o.faults++

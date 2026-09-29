@@ -23,8 +23,10 @@ type obligationsJSON struct {
 	Rate                struct{ Num, Den int64 } `json:"rate"`
 }
 
-// obligationsFixture: one blob, eight validators, one obligation each, every
-// profile the buckets are meant to separate.
+// obligationsFixture: one blob read on the earlier schedule, whose rows the
+// served validators rebuild at every point, with seven validators, one
+// obligation each, every profile the buckets are meant to separate; and a
+// second blob whose only validator stops serving at the last point.
 func obligationsFixture(t *testing.T) *httptest.Server {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
@@ -37,7 +39,7 @@ func obligationsFixture(t *testing.T) *httptest.Server {
 	// The window ended half an hour ago, so every verdict below is final.
 	created, msu := now.Add(-2*time.Hour), now.Add(-30*time.Minute)
 	const hash = "obl1"
-	addrs := []string{"served", "endun", "broken", "unreach", "reach", "backoff", "gaplast", "unatt"}
+	addrs := []string{"served", "endun", "unreach", "reach", "backoff", "gaplast", "unatt"}
 	var vals []scan.ValidatorAssignment
 	for i, a := range addrs {
 		vals = append(vals, scan.ValidatorAssignment{Address: a, VotingPower: 10, RowCount: 2, Rows: []int{2 * i, 2*i + 1}, Attested: a != "unatt"})
@@ -47,14 +49,14 @@ func obligationsFixture(t *testing.T) *httptest.Server {
 		SettlementHeight: 100, SettlementTime: created, MustServeUntil: msu, RecordedAt: now,
 		SettlementTxHash: "tx", Signer: "celestia1pub",
 		Promise:                 scan.PromiseFields{ChainID: "t", Height: 99, Commitment: "cc", CreationTimestamp: created, BlobSize: 4096},
-		ValidatorSignatureCount: 7,
+		ValidatorSignatureCount: 6,
 		Assignment: scan.AssignmentTable{
-			// every assigned row is needed, so a validator that does not
-			// serve at a point leaves the blob unreadable there
-			ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: 16, TotalRows: 64},
-			ValidatorSetHeight: 99, TotalVotingPower: 80, Sigma: 16, Distinct: 16,
-			ValidatorsWithRows: 8, AttestedWithRows: 7, SignatureEntries: 7, SignaturesVerified: 7,
-			AttestedVotingPower: 70, Validators: vals,
+			// the served validator's two rows rebuild the blob, so it is
+			// Available at every point and nobody's failure counts
+			ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: 2, TotalRows: 64},
+			ValidatorSetHeight: 99, TotalVotingPower: 70, Sigma: 14, Distinct: 14,
+			ValidatorsWithRows: 7, AttestedWithRows: 6, SignatureEntries: 6, SignaturesVerified: 6,
+			AttestedVotingPower: 60, Validators: vals,
 		},
 	}
 	raw, err := json.Marshal(pub)
@@ -69,13 +71,13 @@ func obligationsFixture(t *testing.T) *httptest.Server {
 	profile := map[string][]wire{
 		"served":  {ok, ok, ok, ok},
 		"endun":   {ok, err500, err500, err500}, // served at 12%, answered 500 after: the early-prune profile
-		"broken":  {ok, ok, ok, gone},
 		"unreach": {refused, refused, refused, refused},
 		"reach":   {err500, err500, err500, err500},
 		"backoff": {skipped, skipped, skipped, skipped},
 		// Three served probes and then nothing at the last point: the shape
 		// this observer's own downtime produces. It used to publish as
 		// served, so the serve rate rose while the observer was blind.
+		// backoff is the same gap at every point.
 		"gaplast": {ok, ok, ok, skipped},
 		"unatt":   {gone, gone, gone, gone},
 	}
@@ -115,22 +117,18 @@ func obligationsFixture(t *testing.T) *httptest.Server {
 			}
 		}
 	}
-	confirmFailures(t, st, `promise_hash = ?`, hash)
 	// A second blob whose retention window has not ended: one served probe
 	// so far. Its obligation is pending, not served, until must_serve_until
 	// passes; a verdict drawn before the last probe is not a verdict.
 	insertProbeSet(t, st, "obl2", now.Add(-10*time.Minute), now.Add(time.Hour), map[string][]wire{
 		"served": {ok},
-	}, false)
-	// A third blob at which every validator faulted at the same minute: the
-	// share of the set faulting reaches the threshold, so those points are
-	// the observer's problem (a stale pin, a broken coder) and no rate
-	// counts them. The obligations, faults and per-probe rate must read as
-	// if the blob had never been probed.
-	insertProbeSet(t, st, "sus1", now.Add(-3*time.Hour), now.Add(-90*time.Minute), map[string][]wire{
-		"served": {gone, gone, gone, gone}, "broken": {gone, gone, gone, gone},
-		"reach": {gone, gone, gone, gone}, "gaplast": {gone, gone, gone, gone},
-	}, true)
+	})
+	// A third blob, read on the same schedule, whose only validator stops
+	// serving at the last point: the blob could not be reconstructed there,
+	// so its failure counts.
+	insertProbeSet(t, st, "obl3", created, msu, map[string][]wire{
+		"broken": {ok, ok, ok, gone},
+	})
 	if _, err := st.StartRun("collector", "test", "t", now); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +215,6 @@ func insertReading(t *testing.T, st *store.Store, hash string, created, msu time
 			t.Fatal(err)
 		}
 	}
-	confirmFailures(t, st, `promise_hash = ?`, hash)
 }
 
 // inWindowFractions are the prober's in-window schedule fractions
@@ -253,35 +250,12 @@ var (
 )
 
 // insertProbeSet writes one publication and, per validator, its in-window
-// probes in schedule order. allSuspect marks the intent only; the API decides.
+// probes in schedule order.
 //
 // The blob needs every row it assigns (original_rows is their sum), so a
 // validator that does not serve at a point leaves the blob unreadable there:
 // its failure counts, as the rule says only an unreadable blob's failures do.
-//
-// Every failure it writes is confirmed from a second location (confirmed_by),
-// so it counts as the rule has it; insertProbeSetUnconfirmed leaves them
-// unconfirmed.
-func insertProbeSet(t *testing.T, st *store.Store, hash string, created, msu time.Time, profile map[string][]wire, allSuspect bool) {
-	t.Helper()
-	insertProbeSetUnconfirmed(t, st, hash, created, msu, profile)
-	confirmFailures(t, st, `promise_hash = ?`, hash)
-}
-
-// confirmFailures marks every failed reading the rows under where hold as
-// confirmed from a second location, as the collector would once de-1
-// answered: the failures of a fixture count as the rule has them.
-func confirmFailures(t *testing.T, st *store.Store, where string, args ...any) {
-	t.Helper()
-	if _, err := st.DB().Exec(`UPDATE probes SET confirmed_by = 'de-1'
-		WHERE commitment_verified = 0 AND classification NOT IN ('NOT_PROBED', 'PROBE_ERROR') AND `+where, args...); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// insertProbeSetUnconfirmed is insertProbeSet with no second location's
-// answer.
-func insertProbeSetUnconfirmed(t *testing.T, st *store.Store, hash string, created, msu time.Time, profile map[string][]wire) {
+func insertProbeSet(t *testing.T, st *store.Store, hash string, created, msu time.Time, profile map[string][]wire) {
 	t.Helper()
 	now := time.Now().UTC()
 	var vals []scan.ValidatorAssignment
@@ -360,33 +334,19 @@ func TestAnObligationIsServedOnlyWhenTheEndOfItsWindowWasObserved(t *testing.T) 
 		Obligations obligationsJSON          `json:"obligations"`
 		ByObl       struct{ Num, Den int64 } `json:"serve_rate_by_obligation"`
 		Classes     map[string]int64         `json:"classes"`
-		Vantage     struct {
-			Suspect     []struct{ Label, Reason string } `json:"suspect"`
-			SuspectRows int64                            `json:"suspect_rows"`
-		} `json:"vantage_health"`
 	}
 	if code := get(t, ts, "/v1/network?window=all", &net); code != 200 {
 		t.Fatalf("network: %d", code)
 	}
 	o := net.Obligations
-	// The unattested validator is nothing to keep or break, so seven from the
-	// first blob, plus the second blob's one pending obligation; the third
-	// blob's four are at suspect points and outside every count.
+	// The unattested validator is nothing to keep or break, so six from the
+	// first blob, one from the third, plus the second blob's one pending
+	// obligation.
 	if o.Total != 8 || o.Pending != 1 {
 		t.Errorf("total/pending = %d/%d, want 8/1: seven proven and decided, one still in its window", o.Total, o.Pending)
 	}
-	if len(net.Vantage.Suspect) != 4 || net.Vantage.SuspectRows != 16 {
-		t.Fatalf("suspect points = %+v (%d rows), want the third blob's four points and 16 rows", net.Vantage.Suspect, net.Vantage.SuspectRows)
-	}
-	for _, sp := range net.Vantage.Suspect {
-		if sp.Reason != "fault" {
-			t.Errorf("suspect point %s reason = %q, want fault", sp.Label, sp.Reason)
-		}
-	}
-	// Four validators faulting at once at the third blob's points would have
-	// been 16 FAULT readings; none is in any figure.
 	if net.Classes["FAULT"] != 1 {
-		t.Errorf("FAULT readings = %d, want 1: the sixteen at suspect points are the observer's, not the validators'", net.Classes["FAULT"])
+		t.Errorf("FAULT readings = %d, want 1", net.Classes["FAULT"])
 	}
 	if o.Served != 1 || o.Broken != 1 || o.NotCounted != 5 {
 		t.Errorf("served/broken/not_counted = %d/%d/%d, want 1/1/5: only the validator answering at the last point is vouched for", o.Served, o.Broken, o.NotCounted)

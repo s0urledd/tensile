@@ -58,18 +58,13 @@ type Config struct {
 
 	// Concurrency is how many requests are in flight at once across every
 	// reading (default 64), and BlobConcurrency how many blobs are being
-	// read at once (default 16). PerValidator is how many requests one
-	// validator has from this observer at a time (default 1): one of the
-	// server's bounded connection slots, as a client holds one. They pace
-	// the reading, and they can cost one: a reading that cannot start before
-	// its latest start, or cannot ask in time every validator whose rows
-	// could have made its blob whole, is not read by Tensile (this
-	// observer's gap, counted neither way). The most urgent reading due
-	// starts first (popDue), and a pass stops waiting for busy validators
-	// whose rows could not change its outcome (blobReading.run).
+	// read at once (default 16). They bound this observer's load and only
+	// delay: a request waits for room and its time starts once it is let
+	// go, never dropped. A reading that cannot start before its latest
+	// start is not made, and its blob was not read by Tensile. The most
+	// urgent reading due starts first (popDue).
 	Concurrency     int
 	BlobConcurrency int
-	PerValidator    int
 
 	// AllowUnroutableHosts dials a registered host that resolves to loopback
 	// or a private range. A local devnet needs it; a public vantage must not
@@ -119,9 +114,6 @@ func (c Config) withDefaults() Config {
 	if c.BlobConcurrency <= 0 {
 		c.BlobConcurrency = 16
 	}
-	if c.PerValidator <= 0 {
-		c.PerValidator = 1
-	}
 	if c.InFlightBytes <= 0 {
 		c.InFlightBytes = defaultInFlightBytes
 	}
@@ -169,10 +161,6 @@ type Prober struct {
 	feed       *pubFeed
 	registry   *hostRegistry
 	chainID    string
-	// requests is where a counted not-served row is queued for a second
-	// vantage to confirm (confirm.go); nil in tests that build a Prober by
-	// hand.
-	requests *requestLog
 
 	clockMu     sync.Mutex
 	clockOffset time.Duration // observer clock - latest block time
@@ -192,12 +180,9 @@ type Prober struct {
 	// failed settlement tx).
 	skippedPubs map[string]bool
 
-	// the reading's pace: requests in flight, bytes in flight, and each
-	// validator's requests from this observer
+	// the reading's load: requests in flight and bytes in flight
 	reqs     chan struct{}
 	bytes    *byteSem
-	valMu    sync.Mutex
-	valBusy  map[string]int
 	sched    *readQueue
 	counters readCounters
 }
@@ -222,7 +207,6 @@ func New(cfg Config, log *scan.Logger) (*Prober, error) {
 		store:       st,
 		feed:        newPubFeed(cfg.PublicationsPath),
 		registry:    newHostRegistry(cfg.RegistryPath),
-		requests:    &requestLog{path: ConfirmRequestsPath(cfg.DataDir)},
 		coders:      map[[2]int]*Coder{},
 		skippedPubs: map[string]bool{},
 	}
@@ -236,7 +220,6 @@ func New(cfg Config, log *scan.Logger) (*Prober, error) {
 func (p *Prober) initPace() {
 	p.reqs = make(chan struct{}, p.cfg.Concurrency)
 	p.bytes = newByteSem(p.cfg.InFlightBytes)
-	p.valBusy = map[string]int{}
 	p.sched = newReadQueue()
 }
 
@@ -266,9 +249,6 @@ func (p *Prober) Run(parent context.Context) error {
 		defer cancel()
 	}
 	defer p.store.Close()
-	if p.requests != nil {
-		defer p.requests.close()
-	}
 
 	st := status.New(p.cfg.DataDir, "prober", p.cfg.Vantage, status.BuildRevision())
 	st.RecordRuns(p.cfg.RunConfig)
@@ -304,8 +284,8 @@ func (p *Prober) Run(parent context.Context) error {
 	p.chainID = id
 	p.measureClock(ctx)
 	p.pollAppVersion(ctx)
-	p.log.Printf("prober up: vantage=%s chain_id=%s tip=%d rpc=%s pubs=%s data=%s concurrency=%d blobs=%d per-validator=%d",
-		p.cfg.Vantage, id, tip, p.cfg.RPCURL, p.cfg.PublicationsPath, p.store.Path(), p.cfg.Concurrency, p.cfg.BlobConcurrency, p.cfg.PerValidator)
+	p.log.Printf("prober up: vantage=%s chain_id=%s tip=%d rpc=%s pubs=%s data=%s concurrency=%d blobs=%d",
+		p.cfg.Vantage, id, tip, p.cfg.RPCURL, p.cfg.PublicationsPath, p.store.Path(), p.cfg.Concurrency, p.cfg.BlobConcurrency)
 
 	// The dispatcher starts every reading when it is due, while this loop
 	// keeps the queue and the chain state fresh.
@@ -622,16 +602,13 @@ func (p *Prober) sleep(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// readJob is one blob's reading waiting to start: the first pass at its
-// scheduled time, or the second pass RetryAfter later.
+// readJob is one blob's reading waiting to start.
 type readJob struct {
 	pub    scan.Publication
 	point  SchedulePoint
 	start  time.Time // when it is due
 	latest time.Time // the last moment it may start
-	// second is the reading a second pass continues; nil for a first.
-	second *blobReading
-	index  int // heap position
+	index  int       // heap position
 }
 
 // probeable reports whether a publication belongs to this prober at all, and
@@ -687,8 +664,8 @@ func (p *Prober) planReads(pubs []scan.Publication, now time.Time) (due, missed 
 		}
 		j := &readJob{pub: pub, point: pt, start: pt.At, latest: latestStart(pub, pt, cfg)}
 		switch {
-		case p.cfg.ReadNow && now.Before(pub.MustServeUntil.Add(-cfg.RequestCutoff)):
-			j.start, j.latest = now, pub.MustServeUntil.Add(-cfg.RequestCutoff)
+		case p.cfg.ReadNow && now.Before(pub.MustServeUntil.Add(-cfg.ReadDeadline)):
+			j.start, j.latest = now, pub.MustServeUntil.Add(-cfg.ReadDeadline)
 			due = append(due, j)
 		case p.cfg.ReadNow:
 			finished = append(finished, pub.PromiseHash)
@@ -771,15 +748,9 @@ func (p *Prober) dispatch(ctx context.Context) {
 	}
 }
 
-// lateReading records a reading that could not start in time. Either way
-// the popped reading is given back once: by finish, or here.
+// lateReading records a reading that could not start in time: its blob was
+// not read by Tensile.
 func (p *Prober) lateReading(ctx context.Context, j *readJob) {
-	if j.second != nil {
-		// The first pass is on hand; without the second the reading is
-		// incomplete.
-		p.finish(j.second, ReadIncomplete, "the second pass could not start before its deadline (this observer's own gap)")
-		return
-	}
 	defer p.sched.done(j.pub.PromiseHash)
 	p.counters.missed.add(time.Now())
 	p.recordNotRead(ctx, j, "not read in time: the reading could not start before its deadline (this observer's own gap)")
@@ -788,118 +759,50 @@ func (p *Prober) lateReading(ctx context.Context, j *readJob) {
 	}
 }
 
-// readBlob makes one pass of a blob's reading, and decides what follows:
-// done, or a second pass a minute later, or incomplete. release gives the
-// blob's slot back; it is called as soon as the rows are enough, while
-// requests already on their way finish in the background.
+// readBlob makes one blob's reading and writes it. release gives the blob's
+// slot back; it is called as soon as the rows are enough, while requests
+// already on their way finish in the background.
 func (p *Prober) readBlob(ctx context.Context, j *readJob, release func()) {
-	cfg := p.schedCfg()
-	if lag := time.Since(j.start); j.second == nil && lag > time.Minute {
+	if lag := time.Since(j.start); lag > time.Minute {
 		p.counters.late.add(time.Now())
 	}
-	b := j.second
-	pass := 2
-	candidates := []readTarget(nil)
-	if b == nil {
-		pass = 1
-		var err error
-		b, err = p.newBlobReading(ctx, j.pub, j.point)
-		if err != nil {
-			p.log.Printf("reading %s: %v (retry next cycle)", short(j.pub.PromiseHash), err)
-			p.fail(fmt.Sprintf("reading: %v", err))
-			p.sched.done(j.pub.PromiseHash)
-			return
-		}
-		candidates = b.targets
-	} else {
-		candidates = b.unserved()
-		p.counters.retried.add(time.Now())
+	b, err := p.newBlobReading(ctx, j.pub, j.point)
+	if err != nil {
+		p.log.Printf("reading %s: %v (retry next cycle)", short(j.pub.PromiseHash), err)
+		p.fail(fmt.Sprintf("reading: %v", err))
+		p.sched.done(j.pub.PromiseHash)
+		return
 	}
-	b.run(ctx, pass, candidates, release)
+	b.run(ctx, release)
 	if ctx.Err() != nil {
 		// Stopped: nothing is written, and the reading is made again after
 		// a restart if its window allows.
 		p.sched.done(j.pub.PromiseHash)
 		return
 	}
-	// A validator the pass did not ask (busy with another reading until the
-	// pass ended, or its time up) matters only if its rows could have made
-	// the blob whole: shortEvenWithGaps counts them as if they had served.
-	decided := b.askedIn(pass, candidates) || b.shortEvenWithGaps(pass, candidates)
-	switch {
-	case b.enough():
-		p.finish(b, ReadAvailable, "")
-	case !decided && pass == 1:
-		p.finish(b, ReadIncomplete, "the reading could not ask, before its deadline, every validator whose rows could have made the blob whole (this observer's own gap)")
-	case !decided:
-		p.finish(b, ReadIncomplete, "the second pass could not ask again, before its deadline, every validator whose rows could have made the blob whole (this observer's own gap)")
-	case pass == 1:
-		retryAt := time.Now().Add(cfg.RetryAfter)
-		if last := j.pub.MustServeUntil.Add(-cfg.RetryDeadline); !retryAt.After(last) {
-			p.sched.push(&readJob{pub: j.pub, point: j.point, start: retryAt, latest: last, second: b})
-			p.sched.done(j.pub.PromiseHash)
-			return
-		}
-		p.finish(b, ReadIncomplete, "the second pass could not be made before the reading's deadline (this observer's own gap)")
-	case b.shortEvenWithGaps(pass, candidates):
-		b.settle(pass, candidates)
-		p.finish(b, ReadUnavailable, "")
-	default:
-		p.finish(b, ReadIncomplete, "a validator could not be read for a reason on this observer's side, and its rows would have been enough")
-	}
+	p.finish(b)
 }
 
-// finish writes a reading's rows, all together, and queues the not-served
-// ones for a second vantage, without which they never count. The caller has
-// taken the reading off the queue (popDue); finish gives it back.
-func (p *Prober) finish(b *blobReading, result, why string) {
+// finish writes a reading's rows, all together. The caller has taken the
+// reading off the queue (popDue); finish gives it back.
+func (p *Prober) finish(b *blobReading) {
 	defer p.sched.done(b.pub.PromiseHash)
-	ms := b.rows(result, why)
+	result, clientErr := b.result()
+	ms := b.rows(result, clientErr)
 	if len(ms) > 0 {
 		if err := p.store.AppendReading(ms); err != nil {
 			p.log.Fatalf("append reading: %v", err)
 		}
 	}
 	p.counters.done.Add(1)
-	// A reading the correlated-failure guard sets aside counts neither way,
-	// whatever a second location says, so its rows are not sent there: the
-	// second location's time goes to the rows that can count. The guard is
-	// the verdict's over these rows, validators passed over included
-	// (GuardPassedOver). A reading it sets aside only until a deferred
-	// verdict on one of its rows is drawn (which can lift it) is sent all the
-	// same (GuardSetsAsideForGood), so its rows are asked if the guard lifts.
-	setAside := result == ReadUnavailable && GuardSetsAside(ms)
-	confirm := result == ReadUnavailable && !GuardSetsAsideForGood(ms)
-	note := ""
-	switch {
-	case setAside && confirm:
-		note = "; set aside by the correlated-failure guard until its deferred verdicts are drawn"
-	case setAside:
-		note = "; set aside by the correlated-failure guard"
+	what := result
+	if clientErr != "" {
+		what += " (" + clientErr + ")"
 	}
-	asked, passed := 0, 0
-	for _, m := range ms {
-		if m.Outcome == OutcomePassedOver {
-			passed++
-		} else {
-			asked++
-		}
-	}
-	p.log.Printf("READ %s: %s, %d distinct rows held (%d needed), %d validators asked of %d (%d endorsing), %d passed over%s",
-		short(b.pub.PromiseHash), result, b.have(), b.pub.Assignment.ProtocolParams.OriginalRows, asked, len(b.targets), b.endorsing(), passed, note)
+	p.log.Printf("READ %s: %s, %d distinct rows held (%d needed), %d validators asked of %d",
+		short(b.pub.PromiseHash), what, b.have(), b.pub.Assignment.ProtocolParams.OriginalRows, len(ms), len(b.targets))
 	for _, m := range ms {
 		p.logMeasurement(m)
-		if confirm {
-			// After the row is on disk, so a request never names a row that
-			// is not. Only an endorsing validator's row can count not
-			// served. A request lost here (a crash before it is written)
-			// leaves its row unconfirmed, and it never counts.
-			for _, t := range b.targets {
-				if t.AddressHex == m.ValidatorAddress && t.endorsing {
-					p.requestConfirmation(b.pub, t.Target, m)
-				}
-			}
-		}
 	}
 }
 
@@ -942,37 +845,15 @@ func (p *Prober) admit(shardBytes int64) func() {
 	}
 }
 
-// reserveValidator takes one of a validator's request slots from this
-// observer, if one is free.
-func (p *Prober) reserveValidator(addr string) bool {
-	p.valMu.Lock()
-	defer p.valMu.Unlock()
-	if p.valBusy[addr] >= p.cfg.PerValidator {
-		return false
-	}
-	p.valBusy[addr]++
-	return true
-}
-
-func (p *Prober) releaseValidator(addr string) {
-	p.valMu.Lock()
-	defer p.valMu.Unlock()
-	if p.valBusy[addr]--; p.valBusy[addr] <= 0 {
-		delete(p.valBusy, addr)
-	}
-}
-
 // defaultInFlightBytes is the shard-byte ceiling: half a gibibyte of shards
 // being transferred at once, which with the receive buffer and the
 // unmarshalled copy is about a gibibyte resident at the peak.
 //
 // It does not count what a reading holds besides its transfers: each blob
-// being read, and each waiting for its second pass, keeps its verifier
-// (about 4.3 MiB at K = 4096, N = 12288) and the rows of the first shard it
-// verified (up to about 7 MiB at mocha's largest shard) until it finishes.
-// Readings are bounded by BlobConcurrency and second passes by the blobs
-// that come back short, so at 16 running and 20 waiting that is about
-// 400 MiB more.
+// being read keeps its verifier (about 4.3 MiB at K = 4096, N = 12288) and
+// the rows of the first shard it verified (up to about 7 MiB at mocha's
+// largest shard) until it finishes. Readings are bounded by
+// BlobConcurrency, so at 16 running that is under 200 MiB more.
 const defaultInFlightBytes = 512 << 20
 
 // byteSem admits work by weight as well as by count. A single item heavier
@@ -1063,13 +944,6 @@ func (p *Prober) recordNotRead(ctx context.Context, j *readJob, reason string) {
 // validator with nothing to answer for on this promise is not a gap.
 func (p *Prober) wants(t Target) bool {
 	return t.Assigned && (t.AttestationUnknown || t.Attested)
-}
-
-// notAsked is the row of a validator a reading could not ask in time.
-func (p *Prober) notAsked(pub scan.Publication, pt SchedulePoint, t Target, reason string) Measurement {
-	m := p.notProbedRow(pub, pt, t, reason)
-	m.Outcome, m.Classification = OutcomeProbeError, ClassProbeError
-	return m
 }
 
 func (p *Prober) notProbedRow(pub scan.Publication, pt SchedulePoint, t Target, reason string) Measurement {
@@ -1177,8 +1051,7 @@ func (q *readQueue) push(j *readJob) {
 }
 
 // popDue returns, of the readings due, the one whose last start comes
-// first (a second pass, whose deadline is the harder, before a first pass
-// that can still wait), or how long until the earliest is due.
+// first, or how long until the earliest is due.
 func (q *readQueue) popDue(now time.Time) (*readJob, time.Duration) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -1201,18 +1074,12 @@ func (q *readQueue) popDue(now time.Time) (*readJob, time.Duration) {
 	return heap.Remove(&q.h, best).(*readJob), 0
 }
 
-// done ends a popped reading's pass, and forgets the blob unless its second
-// pass is queued (then it is planned again only if that never runs).
+// done ends a popped reading and forgets the blob.
 func (q *readQueue) done(hash string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.taken > 0 {
 		q.taken--
-	}
-	for _, j := range q.h {
-		if j.pub.PromiseHash == hash {
-			return // a second pass is queued
-		}
 	}
 	delete(q.active, hash)
 }
@@ -1243,8 +1110,8 @@ func (q *readQueue) idle() bool {
 	return len(q.h) == 0 && q.taken == 0
 }
 
-// quiet reports that nothing is under way, due now, or a second pass: the
-// end of a run that reads only what is due.
+// quiet reports that nothing is under way or due now: the end of a run
+// that reads only what is due.
 func (q *readQueue) quiet(now time.Time) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -1252,7 +1119,7 @@ func (q *readQueue) quiet(now time.Time) bool {
 		return false
 	}
 	for _, j := range q.h {
-		if j.second != nil || !j.start.After(now) {
+		if !j.start.After(now) {
 			return false
 		}
 	}
@@ -1284,10 +1151,9 @@ func (h *readHeap) Pop() any {
 
 // readCounters are what the status file says about the reading.
 type readCounters struct {
-	done    atomic.Int64
-	late    recentEvents // readings that started more than a minute after their time
-	missed  recentEvents // readings not made in time
-	retried recentEvents // second passes
+	done   atomic.Int64
+	late   recentEvents // readings that started more than a minute after their time
+	missed recentEvents // readings not made in time
 }
 
 // recentEvents counts events of the last hour.
@@ -1324,10 +1190,9 @@ func (r *recentEvents) lastHour(now time.Time) int {
 func (p *Prober) readStatus() map[string]any {
 	now := time.Now()
 	return map[string]any{
-		"queued":            p.sched.len(),
-		"in_progress":       p.sched.running(),
-		"started_late":      p.counters.late.lastHour(now),
-		"missed_last_hour":  p.counters.missed.lastHour(now),
-		"retried_last_hour": p.counters.retried.lastHour(now),
+		"queued":           p.sched.len(),
+		"in_progress":      p.sched.running(),
+		"started_late":     p.counters.late.lastHour(now),
+		"missed_last_hour": p.counters.missed.lastHour(now),
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -166,11 +165,8 @@ func readProber(t *testing.T, fs ...*readFixture) *Prober {
 	p := testProber(t)
 	p.chainID = "test-chain"
 	p.feed = newPubFeed(p.cfg.DataDir + "/publications.jsonl")
-	p.requests = &requestLog{path: ConfirmRequestsPath(p.cfg.DataDir)}
-	t.Cleanup(p.requests.close)
 	p.cfg.AllowUnroutableHosts = true
 	p.cfg.Timeouts = StepTimeouts{DNS: time.Second, TCP: time.Second, TLS: 2 * time.Second, Download: 2 * time.Second, MinDownloadBytesPerSec: -1}
-	p.cfg.Schedule.RetryAfter = 100 * time.Millisecond
 	p.cfg.Order = func(_ context.Context, _ scan.Publication, ts []Target) ([]readTarget, error) {
 		return orderTargets(ts, nil, nil), nil
 	}
@@ -185,8 +181,7 @@ func readProber(t *testing.T, fs ...*readFixture) *Prober {
 }
 
 // readNow queues each blob's reading to start at once, runs the dispatcher
-// until every reading, second passes included, is written, and returns the
-// rows.
+// until every reading is written, and returns the rows.
 func readNow(t *testing.T, p *Prober, pubs ...scan.Publication) []Measurement {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -199,7 +194,7 @@ func readNow(t *testing.T, p *Prober, pubs ...scan.Publication) []Measurement {
 	cfg := p.schedCfg()
 	now := time.Now()
 	for _, pb := range pubs {
-		p.sched.push(&readJob{pub: pb, point: ReadPoint(pb, cfg), start: now, latest: pb.MustServeUntil.Add(-cfg.RequestCutoff)})
+		p.sched.push(&readJob{pub: pb, point: ReadPoint(pb, cfg), start: now, latest: pb.MustServeUntil.Add(-cfg.ReadDeadline)})
 	}
 	deadline := time.Now().Add(90 * time.Second)
 	for !p.sched.idle() {
@@ -227,6 +222,21 @@ func byValidator(ms []Measurement) map[string]Measurement {
 	return out
 }
 
+// resultOf is the one result every row of a reading carries.
+func resultOf(t *testing.T, ms []Measurement) (string, string) {
+	t.Helper()
+	if len(ms) == 0 {
+		t.Fatal("no rows")
+	}
+	r, e := ms[0].Read.BlobResult, ms[0].Read.BlobError
+	for _, m := range ms {
+		if m.Read == nil || m.Read.BlobResult != r || m.Read.BlobError != e {
+			t.Fatalf("rows disagree on the reading's result: %+v", m.Read)
+		}
+	}
+	return r, e
+}
+
 // The reading asks the validators in order while the rows it still wants
 // outnumber the rows already on their way, and stops at K = 4096 distinct
 // verified rows: of sixteen validators holding 1024 rows each, only the
@@ -245,7 +255,7 @@ func TestAReadingStopsAtK(t *testing.T) {
 	}
 	novel, most := 0, 0
 	for _, m := range ms {
-		if !m.Download.CommitmentVerified || m.Read == nil || m.Read.BlobResult != ReadAvailable || m.Read.Pass != 1 || m.Read.Order > 3 {
+		if !m.Download.CommitmentVerified || m.Read == nil || m.Read.BlobResult != ReadAvailable || m.Read.BlobError != "" || m.Read.Order > 3 {
 			t.Fatalf("row %+v read %+v", m.Download, m.Read)
 		}
 		novel += m.Read.NovelRows
@@ -261,10 +271,52 @@ func TestAReadingStopsAtK(t *testing.T) {
 	}
 }
 
+// The reading ends as the client's Download does, three ways only:
+// Available; Unavailable with "no shards retrieved" when no verified row
+// came back; Unavailable with "not enough shards to reconstruct blob" when
+// some did, fewer than K. On an Unavailable blob every validator is asked
+// once, and nothing more.
+func TestTheThreeOutcomes(t *testing.T) {
+	half := func(_ context.Context, _ int, honest *fibretypes.BlobShard) (*fibretypes.DownloadShardResponse, error) {
+		return &fibretypes.DownloadShardResponse{Shard: &fibretypes.BlobShard{Rlcs: honest.Rlcs, Rows: honest.Rows[:1]}}, nil
+	}
+	for _, c := range []struct {
+		name          string
+		serve         [4]serveFn
+		result, error string
+	}{
+		{"available", [4]serveFn{fakeServes, fakeNotFound, fakeServes, fakeServes}, ReadAvailable, ""},
+		{"no shards", [4]serveFn{fakeNotFound, fakeThrottled, fakeCorrupt, fakeNotFound}, ReadUnavailable, ClientErrNoShards},
+		{"not enough", [4]serveFn{fakeServes, fakeNotFound, half, fakeNotFound}, ReadUnavailable, ClientErrNotEnoughShards},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var vals []fakeVal
+			for i, s := range c.serve {
+				vals = append(vals, fakeVal{rows: rowsOf(i, 2), serve: s})
+			}
+			f := newReadFixture(t, 4, 8, vals)
+			p := readProber(t, f)
+			ms := readNow(t, p, f.pub)
+			if r, e := resultOf(t, ms); r != c.result || e != c.error {
+				t.Fatalf("reading: %s %q, want %s %q", r, e, c.result, c.error)
+			}
+			if c.result == ReadUnavailable {
+				if len(ms) != 4 {
+					t.Fatalf("%d rows, want every validator asked", len(ms))
+				}
+				for i, n := range f.calls {
+					if n.Load() != 1 {
+						t.Fatalf("validator %d asked %d times, want once", i, n.Load())
+					}
+				}
+			}
+		})
+	}
+}
+
 // A validator that times out is asked again at once (the client's re-dial),
 // then its rows are wanted from the next one; one whose rows do not verify
-// is passed over the same way. The blob is available, and nothing is sent
-// for confirmation.
+// is skipped the same way. The blob is available.
 func TestAFailureHandsItsRowsToTheNextValidator(t *testing.T) {
 	f := newReadFixture(t, 4, 16, []fakeVal{
 		{rows: rowsOf(0, 2), serve: fakeServes},
@@ -277,7 +329,7 @@ func TestAFailureHandsItsRowsToTheNextValidator(t *testing.T) {
 	p.cfg.Timeouts.Download = 300 * time.Millisecond
 	ms := byValidator(readNow(t, p, f.pub))
 	hung, bad := ms[f.targets[1].AddressHex], ms[f.targets[2].AddressHex]
-	if hung.Outcome != OutcomeRPCTimeout || hung.Classification != ClassUnreachable || !hung.Read.Redialed ||
+	if hung.Outcome != OutcomeRPCTimeout || hung.Classification != ClassUnreachable ||
 		hung.Retry == nil || hung.Retry.Attempts != 2 || f.calls[1].Load() != 2 {
 		t.Fatalf("timed-out validator: %s / %s, read %+v, retry %+v, calls %d", hung.Outcome, hung.Classification, hung.Read, hung.Retry, f.calls[1].Load())
 	}
@@ -295,9 +347,6 @@ func TestAFailureHandsItsRowsToTheNextValidator(t *testing.T) {
 	}
 	if served != 2 {
 		t.Fatalf("%d validators served, want 2", served)
-	}
-	if got := readRequests(t, ConfirmRequestsPath(p.cfg.DataDir)); len(got) != 0 {
-		t.Fatalf("%d confirmation requests for an available blob", len(got))
 	}
 }
 
@@ -324,96 +373,35 @@ func TestSharedRowsCountOnce(t *testing.T) {
 	}
 }
 
-// When every validator has been asked and the rows are short, the
-// reading is made again a minute later (here 100 ms) before the blob is
-// Unavailable. The second pass asks the validators again, and the rows
-// record both answers; each not-served row is sent for confirmation.
-func TestASecondPassComesBeforeUnavailable(t *testing.T) {
-	var vals []fakeVal
-	for i := 0; i < 4; i++ {
-		vals = append(vals, fakeVal{rows: rowsOf(i, 2), serve: fakeNotFound})
+// A reading in which every request failed on this observer's side before
+// it reached a validator (here: no consensus key to check a certificate
+// against, so no connection is opened) did not happen: not read.
+func TestEveryRequestFailingHereIsNotRead(t *testing.T) {
+	f := newReadFixture(t, 4, 8, []fakeVal{{rows: rowsOf(0, 2), serve: fakeServes}, {rows: rowsOf(1, 2), serve: fakeServes}})
+	for i := range f.targets {
+		f.targets[i].PubKey = nil
 	}
-	f := newReadFixture(t, 4, 8, vals)
 	p := readProber(t, f)
 	ms := readNow(t, p, f.pub)
-	if len(ms) != 4 {
-		t.Fatalf("%d rows, want 4", len(ms))
-	}
-	for i, m := range ms {
-		if m.Read.BlobResult != ReadUnavailable || m.Read.Pass != 2 || m.Classification != ClassFault ||
-			m.Retry == nil || m.Retry.Attempts != 2 || m.Retry.FirstOutcome != OutcomeNotFound {
-			t.Fatalf("row %d: %s, read %+v, retry %+v", i, m.Classification, m.Read, m.Retry)
-		}
-		if gap := m.StartedAt.Sub(m.Retry.FirstStartedAt); gap < 100*time.Millisecond {
-			t.Fatalf("second pass %s after the first, want at least the retry delay", gap)
-		}
-	}
-	for i, c := range f.calls {
-		if c.Load() != 2 {
-			t.Fatalf("validator %d asked %d times, want once per pass", i, c.Load())
-		}
-	}
-	// Every validator failed at once: the correlated-failure guard sets the
-	// reading aside, so none of it can count, and nothing is sent for
-	// confirmation.
-	if !GuardSetsAside(ms) {
-		t.Fatal("the guard does not set aside a reading every validator failed")
-	}
-	if got := readRequests(t, ConfirmRequestsPath(p.cfg.DataDir)); len(got) != 0 {
-		t.Fatalf("%d confirmation requests for a reading the guard sets aside, want none", len(got))
-	}
-}
-
-// A second pass that finds the rows makes the blob available; the
-// validators it did not need to ask keep their first answer, on an
-// available blob.
-func TestASecondPassCanFindTheRows(t *testing.T) {
-	var vals []fakeVal
-	for i := 0; i < 4; i++ {
-		vals = append(vals, fakeVal{rows: rowsOf(i, 2), serve: firstThen(1, fakeNotFound, fakeServes)})
-	}
-	f := newReadFixture(t, 4, 8, vals)
-	p := readProber(t, f)
-	ms := byValidator(readNow(t, p, f.pub))
-	for i, tg := range f.targets {
-		m := ms[tg.AddressHex]
-		if m.Read.BlobResult != ReadAvailable {
-			t.Fatalf("validator %d: %s", i, m.Read.BlobResult)
-		}
-		if i < 2 && (!m.Download.CommitmentVerified || m.Read.Pass != 2) {
-			t.Fatalf("validator %d: served=%v pass %d", i, m.Download.CommitmentVerified, m.Read.Pass)
-		}
-		if i >= 2 && (m.Outcome != OutcomeNotFound || m.Read.Pass != 1) {
-			t.Fatalf("validator %d: %s pass %d, want its first answer", i, m.Outcome, m.Read.Pass)
-		}
-	}
-}
-
-// With no time left for the second pass, the reading is incomplete: no
-// answer in it is the validator's, and nothing is sent for confirmation.
-func TestNoTimeForASecondPassIsTheObserversGap(t *testing.T) {
-	var vals []fakeVal
-	for i := 0; i < 4; i++ {
-		vals = append(vals, fakeVal{rows: rowsOf(i, 2), serve: fakeNotFound})
-	}
-	f := newReadFixture(t, 4, 8, vals)
-	f.pub.MustServeUntil = time.Now().Add(100 * time.Second)
-	p := readProber(t, f)
-	p.cfg.Schedule.RetryAfter = 20 * time.Second // past must_serve_until - 90s
-	ms := readNow(t, p, f.pub)
-	if len(ms) != 4 {
-		t.Fatalf("%d rows", len(ms))
+	if r, e := resultOf(t, ms); r != ReadNotRead || e != "" {
+		t.Fatalf("reading: %s %q, want not read", r, e)
 	}
 	for _, m := range ms {
-		if m.Read.BlobResult != ReadIncomplete || m.Outcome != OutcomeProbeError || m.Classification != ClassProbeError ||
-			!strings.Contains(m.ClassificationReason, "second pass") {
-			t.Fatalf("row: %s / %s (%s), read %+v", m.Outcome, m.Classification, m.ClassificationReason, m.Read)
+		if m.Classification != ClassProbeError || OwnAnswer(m.Phase, m.Classification, m.Download.CommitmentVerified) {
+			t.Fatalf("row: %s / %s", m.Outcome, m.Classification)
 		}
 	}
-	if _, err := os.Stat(ConfirmRequestsPath(p.cfg.DataDir)); err == nil {
-		if got := readRequests(t, ConfirmRequestsPath(p.cfg.DataDir)); len(got) != 0 {
-			t.Fatalf("%d confirmation requests for an incomplete reading", len(got))
-		}
+	if f.calls[0].Load()+f.calls[1].Load() != 0 {
+		t.Fatal("a validator was reached")
+	}
+
+	// One validator reached is enough for the reading to have happened: the
+	// blob is Unavailable, as the client would say.
+	g := newReadFixture(t, 4, 8, []fakeVal{{rows: rowsOf(0, 2), serve: fakeServes}, {rows: rowsOf(1, 2), serve: fakeNotFound}})
+	g.targets[0].PubKey = nil
+	p = readProber(t, g)
+	if r, e := resultOf(t, readNow(t, p, g.pub)); r != ReadUnavailable || e != ClientErrNoShards {
+		t.Fatalf("reading with one validator reached: %s %q", r, e)
 	}
 }
 
@@ -438,10 +426,10 @@ func TestRedialsLikeTheClient(t *testing.T) {
 	p.cfg.Timeouts.Download = 300 * time.Millisecond
 	ms := byValidator(readNow(t, p, f.pub))
 	m := ms[f.targets[0].AddressHex]
-	if !m.Download.CommitmentVerified || !m.Read.Redialed || m.Retry == nil || m.Retry.FirstOutcome != OutcomeRPCTimeout || f.calls[0].Load() != 2 {
+	if !m.Download.CommitmentVerified || m.Retry == nil || m.Retry.FirstOutcome != OutcomeRPCTimeout || f.calls[0].Load() != 2 {
 		t.Fatalf("re-dialled validator: %s, read %+v, retry %+v", m.Outcome, m.Read, m.Retry)
 	}
-	if f.calls[1].Load() != 1 || ms[f.targets[1].AddressHex].Read.Redialed {
+	if f.calls[1].Load() != 1 || ms[f.targets[1].AddressHex].Retry != nil {
 		t.Fatalf("a NOT_FOUND was asked again at once (%d calls)", f.calls[1].Load())
 	}
 }
@@ -492,11 +480,11 @@ func TestAReadingThatCannotStartInTimeIsNotRead(t *testing.T) {
 	}
 }
 
-// One validator has one request from this observer at a time, however many
-// blobs it holds: two promises over one blob are read one after the other at
-// the validator they share.
-func TestOneRequestPerValidatorAtATime(t *testing.T) {
-	f := newReadFixture(t, 4, 8, []fakeVal{{rows: []int{0, 1, 2, 3}, serve: fakeSlow(200 * time.Millisecond)}})
+// The client has no limit per validator, and neither has the reading: two
+// promises over one blob, read at once, ask the validator they share at
+// once.
+func TestNoLimitPerValidator(t *testing.T) {
+	f := newReadFixture(t, 4, 8, []fakeVal{{rows: []int{0, 1, 2, 3}, serve: fakeSlow(400 * time.Millisecond)}})
 	other := *f
 	other.pub.PromiseHash = strings.Repeat("ee", 32)
 	p := readProber(t, f, &other)
@@ -504,8 +492,38 @@ func TestOneRequestPerValidatorAtATime(t *testing.T) {
 	if len(ms) != 2 || !ms[0].Download.CommitmentVerified || !ms[1].Download.CommitmentVerified {
 		t.Fatalf("rows: %+v", ms)
 	}
-	if n := f.maxBusy[0].Load(); n != 1 {
-		t.Fatalf("the validator had %d requests at once, want 1", n)
+	if n := f.maxBusy[0].Load(); n != 2 {
+		t.Fatalf("the validator had %d requests at once, want both readings' at once", n)
+	}
+}
+
+// This observer's limit on requests in flight only delays a request: with
+// room for one at a time, four slow validators are asked one after another,
+// each gets the client's whole time from the moment it is let go, and none
+// is dropped or changed. The reading takes longer than one request's time,
+// and the blob is Available.
+func TestTheRequestLimitOnlyDelays(t *testing.T) {
+	var vals []fakeVal
+	for i := 0; i < 4; i++ {
+		vals = append(vals, fakeVal{rows: []int{i}, serve: fakeSlow(250 * time.Millisecond)})
+	}
+	f := newReadFixture(t, 4, 8, vals)
+	p := readProber(t, f)
+	p.cfg.Concurrency = 1
+	p.initPace()
+	p.cfg.Timeouts.Download = 400 * time.Millisecond
+	start := time.Now()
+	ms := readNow(t, p, f.pub)
+	if r, _ := resultOf(t, ms); r != ReadAvailable || len(ms) != 4 {
+		t.Fatalf("reading: %s over %d rows", r, len(ms))
+	}
+	for _, m := range ms {
+		if !m.Download.CommitmentVerified || m.Retry != nil {
+			t.Fatalf("row: %s, retry %+v", m.Outcome, m.Retry)
+		}
+	}
+	if took := time.Since(start); took < 900*time.Millisecond {
+		t.Fatalf("the reading took %s: the requests were not one at a time", took)
 	}
 }
 

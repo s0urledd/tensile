@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
@@ -30,27 +31,27 @@ func excludeFixture(t *testing.T) *httptest.Server {
 	t.Cleanup(func() { st.Close() })
 	now := time.Now().UTC().Truncate(time.Second)
 	created, msu := now.Add(-2*time.Hour), now.Add(-30*time.Minute)
-	// At no point does half the set fault or go unreachable, so the
-	// correlated-failure guard stays out of this and every figure below is
-	// the buckets' own arithmetic.
-	insertProbeSet(t, st, "ex1", created, msu, map[string][]wire{
-		selfAddrs["kept"]:      {ok, ok, ok, ok},
-		selfAddrs["broke"]:     {ok, ok, ok, gone},
-		selfAddrs["earlyonly"]: {ok, err500, err500, err500},
-		selfAddrs["silent"]:    {refused, refused, refused, refused},
-	}, false)
+	at := msu.Add(-10 * time.Minute)
+	// One blob Available on kept's rows, beside two validators that failed
+	// and count neither way; one Unavailable, whose only validator did not
+	// serve.
+	insertReading(t, st, "ex1", created, msu, 4, probe.EndReadLabel, at, []endVal{
+		{addr: selfAddrs["kept"], rows: 4, w: ok},
+		{addr: selfAddrs["earlyonly"], rows: 2, w: err500},
+		{addr: selfAddrs["silent"], rows: 2, w: refused},
+	})
+	insertReading(t, st, "ex2", created, msu, 2, probe.EndReadLabel, at, []endVal{
+		{addr: selfAddrs["broke"], rows: 2, w: gone},
+	})
 	return httptestServer(t, st)
 }
 
 type netFigures struct {
-	Obligations   obligationsJSON  `json:"obligations"`
-	Classes       map[string]int64 `json:"classes"`
-	ProbeCount    int64            `json:"probe_count"`
-	Excluded      []string         `json:"excluded"`
-	ExcludeNote   string           `json:"exclude_note"`
-	VantageHealth struct {
-		Suspect []struct{ Label string } `json:"suspect"`
-	} `json:"vantage_health"`
+	Obligations obligationsJSON  `json:"obligations"`
+	Classes     map[string]int64 `json:"classes"`
+	ProbeCount  int64            `json:"probe_count"`
+	Excluded    []string         `json:"excluded"`
+	ExcludeNote string           `json:"exclude_note"`
 }
 
 // This observer's own operator runs a validator on the network
@@ -91,8 +92,8 @@ func TestExcludeRecomputesTheHeadlineWithoutAValidator(t *testing.T) {
 	if less.Classes["FAULT"] != 0 {
 		t.Errorf("excluded FAULT readings = %d, want 0: the only one was that validator's", less.Classes["FAULT"])
 	}
-	if less.ProbeCount != all.ProbeCount-4 {
-		t.Errorf("excluded probe_count = %d, want %d: four probe rows left with it", less.ProbeCount, all.ProbeCount-4)
+	if less.ProbeCount != all.ProbeCount-1 {
+		t.Errorf("excluded probe_count = %d, want %d: its one reading left with it", less.ProbeCount, all.ProbeCount-1)
 	}
 	if len(less.Excluded) != 1 || less.Excluded[0] != selfAddrs["broke"] {
 		t.Errorf("excluded = %v, want the address that was asked for", less.Excluded)

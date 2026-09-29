@@ -31,7 +31,6 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/keybase"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/rollup"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
-	"github.com/plsgiveup/fibre/fibre-sentinel/observer/verdict"
 )
 
 func main() {
@@ -51,7 +50,7 @@ func main() {
 		measPath  = flag.String("measurements", "", "path to measurements.jsonl (default <data-dir>/measurements.jsonl)")
 		reachPath = flag.String("reachability", "", "path to reachability.jsonl (default <data-dir>/reachability.jsonl)")
 		soPath    = flag.String("sampling-decisions", "", "path to sampling_decisions.jsonl, the prober's record of publications its load policy sampled out, one line each (default <data-dir>/sampling_decisions.jsonl)")
-		vantDir   = flag.String("vantages-dir", "", "dir other vantages' files are copied to, <name>/reachability.jsonl and <name>/measurements.jsonl each (default <data-dir>/vantages)")
+		vantDir   = flag.String("vantages-dir", "", "dir other vantages' heartbeats are copied to, <name>/reachability.jsonl each (default <data-dir>/vantages)")
 		payPath   = flag.String("payments", "", "path to payments.jsonl (default <data-dir>/payments.jsonl)")
 		regPath   = flag.String("registry", "", "path to registry.jsonl, this collector's own endpoint-history log (default <data-dir>/registry.jsonl)")
 		runsPath  = flag.String("runs", "", "path to runs.jsonl, every component's record of its starts, stops and configuration (default <data-dir>/runs.jsonl)")
@@ -183,7 +182,7 @@ func main() {
 	}
 	var exporter *export.Builder
 	if *expHour >= 0 {
-		exporter = &export.Builder{DataDir: *dataDir, VantagesDir: *vantDir, Dir: *expDir, Vantage: *vantage, Build: status.BuildRevision(), Hour: *expHour, Logf: log.Printf}
+		exporter = &export.Builder{DataDir: *dataDir, Dir: *expDir, Vantage: *vantage, Build: status.BuildRevision(), Hour: *expHour, Logf: log.Printf}
 		// A configured key that cannot be loaded stops the collector rather
 		// than falling back to unsigned: an operator who asked for signed
 		// exports would otherwise publish unsigned ones without noticing.
@@ -267,54 +266,6 @@ func main() {
 		}
 		if applied > 0 {
 			live.Set("late_verdicts", applied)
-		}
-	}
-	// Other vantages' answers to this observer's not-served readings
-	// (verdict.ConfirmNotServed): a confirmed one is marked on its row, and
-	// only then does it count; one whose rows the other vantage got is
-	// marked with who fetched them. Nothing is withdrawn or rewritten, so
-	// the answers leave no amendment.
-	//
-	// The first pass draws every answer on record again under this build's
-	// rule (store.RejudgeConfirmations), and keeps trying until it has: a
-	// row an older build confirmed counts only if this rule confirms it
-	// too, as sentinel-recompute draws it.
-	rejudged := false
-	judgeConfirmations := func(now time.Time) {
-		if !rejudged {
-			n, err := st.RejudgeConfirmations(ctx)
-			if err != nil {
-				log.Printf("confirmations: drawing the stored answers again: %v", err)
-				live.Error(fmt.Sprintf("confirmations re-judge: %v", err))
-				return
-			}
-			rejudged = true
-			if n > 0 {
-				log.Printf("confirmations: %d row(s) set to what this build's rule draws from their answers", n)
-			}
-		}
-		ds, err := st.JudgeConfirmations(ctx, now)
-		if err != nil {
-			log.Printf("confirmations: %v", err)
-			live.Error(fmt.Sprintf("confirmations: %v", err))
-			return
-		}
-		served, confirmed := 0, 0
-		for _, d := range ds {
-			if err := st.SettleConfirmation(d); err != nil {
-				log.Printf("confirmations: settle %s: %v", d.ConfirmKey, err)
-				continue
-			}
-			switch d.Result {
-			case verdict.ConfirmConfirmed:
-				confirmed++
-			case verdict.ConfirmServed:
-				served++
-			}
-		}
-		if served+confirmed > 0 {
-			log.Printf("confirmations: %d not-served reading(s) confirmed from another vantage, %d fetched there", confirmed, served)
-			live.Set("faults_cleared", served)
 		}
 	}
 	corrFile, err := os.OpenFile(*corrPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -457,26 +408,6 @@ func main() {
 				}
 			}
 		}
-		// Their answers to this observer's confirmation requests, one
-		// measurements.jsonl per vantage that confirms faults. Into
-		// probe_confirmations, judged after the amendments are replayed.
-		if files, err := ingest.VantageMeasurementFiles(*vantDir); err != nil {
-			fail("vantages", err)
-		} else {
-			for _, f := range files {
-				name := filepath.Base(filepath.Dir(f))
-				if r, err := ingest.VantageMeasurements(st, f, *vantage, now); err != nil {
-					fail("confirmations from "+name, err)
-				} else {
-					if r.Inserted > 0 {
-						log.Printf("confirmations from %s: +%d (read %d, line %d)", name, r.Inserted, r.Read, r.Line)
-					}
-					if r.Skipped > 0 {
-						log.Printf("confirmations from %s: WARNING skipped %d undecodable line(s); last: %s", name, r.Skipped, r.LastSkipped)
-					}
-				}
-			}
-		}
 		if r, err := ingest.Registry(st, *regPath, now); err != nil {
 			fail("registry", err)
 		} else if r.Inserted > 0 {
@@ -522,7 +453,6 @@ func main() {
 			log.Printf("wal checkpoint: %d of %d frame(s) written back and the log truncated", done, inLog)
 		}
 		judgeLate(now)
-		judgeConfirmations(now)
 		// Corrections first, then the hold sync. A verified range only
 		// stops holding once every deadline it covers has actually been
 		// re-derived, so the flag can never be cleared on a row the

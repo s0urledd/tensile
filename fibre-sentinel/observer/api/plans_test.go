@@ -75,8 +75,6 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 			[]any{lo, hi}, []string{"COVERING INDEX probes_"}},
 		c{"faults per validator", `SELECT validator_address, COUNT(*) FROM probes WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND ` + cls + ` = 'FAULT' GROUP BY validator_address`,
 			[]any{lo, hi}, []string{"COVERING INDEX probes_"}},
-		c{"faults cleared per validator", `SELECT validator_address, COUNT(*) FROM probes INDEXED BY probes_cleared WHERE cleared_by IS NOT NULL AND started_at >= ? AND started_at <= ? AND assigned = 1 GROUP BY validator_address`,
-			[]any{lo, hi}, []string{"probes_cleared"}},
 		c{"one validator's tally", `SELECT ` + cls + `, COUNT(*) FROM probes WHERE validator_address = ? AND assigned = 1 AND phase = 'in_window' AND started_at >= ? AND started_at <= ? GROUP BY 1`,
 			[]any{"ab", lo, hi}, []string{"COVERING INDEX probes_validator_window"}},
 		// The same tallies over probe_rows, which is what the figures read: the

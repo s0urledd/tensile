@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -28,8 +27,7 @@ func fakeThrottled(context.Context, int, *fibretypes.BlobShard) (*fibretypes.Dow
 // The client asks every validator the assignment gives rows, endorsing or
 // not, in its order: a validator that did not endorse is asked like the
 // rest, its verified rows count toward the blob, and its row says it owes
-// nothing (UNATTESTED). Only an endorsing validator's row is sent for
-// confirmation on an Unavailable blob.
+// nothing (UNATTESTED).
 func TestTheReadingAsksTheWholeSet(t *testing.T) {
 	f := newReadFixture(t, 4, 16, []fakeVal{
 		{rows: rowsOf(0, 2), serve: fakeServes},
@@ -60,106 +58,48 @@ func TestTheReadingAsksTheWholeSet(t *testing.T) {
 		t.Fatalf("%d rows, want every validator asked", len(rows))
 	}
 	for _, m := range rows {
-		if m.Read.BlobResult != ReadUnavailable || m.Read.Pass != 2 {
-			t.Fatalf("%s: read %+v, want Unavailable after the second pass", m.ValidatorAddress, m.Read)
-		}
-	}
-	reqs := readRequests(t, ConfirmRequestsPath(p.cfg.DataDir))
-	if len(reqs) != 2 {
-		t.Fatalf("%d confirmation requests, want one per endorsing validator", len(reqs))
-	}
-	for _, r := range reqs {
-		if r.ValidatorAddress == none.targets[1].AddressHex {
-			t.Fatal("a validator that did not endorse was sent for confirmation")
+		if m.Read.BlobResult != ReadUnavailable || m.Read.BlobError != ClientErrNoShards {
+			t.Fatalf("%s: read %+v, want Unavailable, no shards retrieved", m.ValidatorAddress, m.Read)
 		}
 	}
 }
 
-// A rate limit at the reading is the validator not serving, as the client
-// meets it: no rows, not counted among the rows that might still come back,
-// so the blob it leaves short is Unavailable, and the row is sent for
-// confirmation like any other not-served row.
-func TestAThrottleAtTheReadingIsNotServed(t *testing.T) {
+// A rate limit, a CANCELLED status the server sends, a timeout: each is
+// that validator's rows not coming back, as the client meets it (a failed
+// shard, skipped). None of them is this observer's gap, and a blob they
+// leave short is Unavailable.
+func TestAnAnswerWithoutRowsIsTheValidators(t *testing.T) {
 	f := newReadFixture(t, 4, 16, []fakeVal{
-		{rows: rowsOf(0, 2), serve: fakeNotFound},
-		{rows: rowsOf(1, 2), serve: fakeThrottled},
-		{rows: []int{4}, serve: fakeServes},
+		{rows: rowsOf(0, 2), serve: fakeThrottled},
+		{rows: rowsOf(1, 2), serve: fakeCancelled},
+		{rows: rowsOf(2, 2), serve: fakeHangs},
+		{rows: []int{6}, serve: fakeServes},
 	})
 	p := readProber(t, f)
-	ms := byValidator(readNow(t, p, f.pub))
-	thr := ms[f.targets[1].AddressHex]
-	if thr.Outcome != OutcomeThrottled || thr.Classification != ClassThrottled || thr.Read.BlobResult != ReadUnavailable || f.calls[1].Load() != 2 {
-		t.Fatalf("throttled validator: %s / %s read %+v, asked %d times", thr.Outcome, thr.Classification, thr.Read, f.calls[1].Load())
-	}
-	if got := readRequests(t, ConfirmRequestsPath(p.cfg.DataDir)); len(got) != 2 {
-		t.Fatalf("%d confirmation requests, want the not-found and the throttled validator", len(got))
-	}
-}
-
-// A second pass cut short by the deadline, before it asked again every
-// validator that had not served, is incomplete: the first pass's answers of
-// the ones it did not get to again are this observer's gap, never
-// Unavailable on their word. Here the two big holders hang in the first
-// pass; in the second only the first of them is asked before the cutoff,
-// and the second, which would have served, is never asked again.
-func TestACutShortSecondPassIsIncomplete(t *testing.T) {
-	vals := []fakeVal{
-		{rows: rowsOf(0, 10), serve: fakeHangs},
-		{rows: rowsOf(1, 10), serve: firstThen(2, fakeHangs, fakeServes)},
-	}
-	for i := 0; i < 6; i++ {
-		vals = append(vals, fakeVal{rows: []int{20 + 2*i, 21 + 2*i}, serve: fakeServes})
-	}
-	f := newReadFixture(t, 16, 32, vals)
-	f.pub.MustServeUntil = time.Now().Add(10 * time.Second)
-	p := readProber(t, f)
 	p.cfg.Timeouts.Download = 300 * time.Millisecond
-	p.cfg.Schedule.RetryDeadline = 7 * time.Second         // the second pass starts by now+3s
-	p.cfg.Schedule.RequestCutoff = 8900 * time.Millisecond // no request starts after now+1.1s
 	ms := byValidator(readNow(t, p, f.pub))
-	if len(ms) != 8 {
-		t.Fatalf("%d rows, want 8", len(ms))
+	thr, cc, hung := ms[f.targets[0].AddressHex], ms[f.targets[1].AddressHex], ms[f.targets[2].AddressHex]
+	if thr.Outcome != OutcomeThrottled || thr.Classification != ClassThrottled || f.calls[0].Load() != 1 {
+		t.Fatalf("throttled validator: %s / %s, asked %d times", thr.Outcome, thr.Classification, f.calls[0].Load())
 	}
-	for i, tg := range f.targets {
-		m := ms[tg.AddressHex]
-		if m.Read.BlobResult != ReadIncomplete {
-			t.Fatalf("validator %d: %s / %s read %+v, want incomplete", i, m.Outcome, m.Classification, m.Read)
-		}
-		if i < 2 && (m.Classification != ClassProbeError || !strings.Contains(m.ClassificationReason, "second pass")) {
-			t.Fatalf("validator %d: %s (%s), want this observer's gap", i, m.Classification, m.ClassificationReason)
-		}
+	if cc.Outcome != OutcomeServerError || cc.Classification != ClassServerError {
+		t.Fatalf("the CANCELLED validator: %s / %s (%s), want the server's error", cc.Outcome, cc.Classification, cc.RawError)
 	}
-	if n := f.calls[1].Load(); n != 2 {
-		t.Fatalf("the second big holder was asked %d times, want only in the first pass (twice, with the re-dial)", n)
+	if hung.Outcome != OutcomeRPCTimeout || hung.Retry == nil {
+		t.Fatalf("the hanging validator: %s, retry %+v", hung.Outcome, hung.Retry)
 	}
-	if _, err := os.Stat(ConfirmRequestsPath(p.cfg.DataDir)); err == nil {
-		if got := readRequests(t, ConfirmRequestsPath(p.cfg.DataDir)); len(got) != 0 {
-			t.Fatalf("%d confirmation requests for an incomplete reading", len(got))
+	for _, m := range ms {
+		if m.Read.BlobResult != ReadUnavailable || m.Read.BlobError != ClientErrNotEnoughShards ||
+			!OwnAnswer(m.Phase, m.Classification, m.Download.CommitmentVerified) {
+			t.Fatalf("%s: %s / %s read %+v, want an answer of its own on an Unavailable reading", m.ValidatorAddress, m.Outcome, m.Classification, m.Read)
 		}
 	}
 }
 
-// The client's one re-dial belongs to the request it follows: RequestCutoff
-// leaves room for it, so a request started before the cutoff is re-dialled
-// even when its first attempt ends after it.
-func TestTheRedialRunsPastTheCutoff(t *testing.T) {
-	f := newReadFixture(t, 4, 8, []fakeVal{{rows: []int{0, 1, 2, 3}, serve: firstThen(1, fakeHangs, fakeServes)}})
-	f.pub.MustServeUntil = time.Now().Add(10 * time.Second)
-	p := readProber(t, f)
-	p.cfg.Timeouts.Download = 600 * time.Millisecond
-	p.cfg.Schedule.RetryDeadline = 9 * time.Second
-	p.cfg.Schedule.RequestCutoff = 9700 * time.Millisecond // the cutoff falls inside the first attempt
-	ms := readNow(t, p, f.pub)
-	if len(ms) != 1 || !ms[0].Download.CommitmentVerified || !ms[0].Read.Redialed || ms[0].Read.BlobResult != ReadAvailable {
-		t.Fatalf("rows %d: %s read %+v", len(ms), ms[0].Outcome, ms[0].Read)
-	}
-}
-
-// The prober records Unavailable on the verdict's own test (OwnAnswer): a
-// validator whose verified rows are in hand, though its verdict waits for
-// the late shadow judgement (PROBE_ERROR), has answered, so it holds no
-// blob open.
-func TestVerifiedRowsHoldNoBlobOpen(t *testing.T) {
+// Verified rows are rows that came back, whatever class the row is filed
+// under while its verdict waits (the late shadow judgement, PROBE_ERROR):
+// they count toward the blob and make the reading one that happened.
+func TestVerifiedRowsAreAnAnswer(t *testing.T) {
 	partial := func(_ context.Context, _ int, honest *fibretypes.BlobShard) (*fibretypes.DownloadShardResponse, error) {
 		return &fibretypes.DownloadShardResponse{Shard: &fibretypes.BlobShard{Rlcs: honest.Rlcs, Rows: honest.Rows[:1]}}, nil
 	}
@@ -171,7 +111,7 @@ func TestVerifiedRowsHoldNoBlobOpen(t *testing.T) {
 	p := readProber(t, f)
 	ms := byValidator(readNow(t, p, f.pub))
 	m := ms[f.targets[0].AddressHex]
-	if !m.Download.CommitmentVerified || m.Read.BlobResult != ReadUnavailable {
+	if !m.Download.CommitmentVerified || m.Read.BlobResult != ReadUnavailable || m.Read.BlobError != ClientErrNotEnoughShards {
 		t.Fatalf("partial validator: %s / %s verified=%v read %+v, want Unavailable", m.Outcome, m.Classification, m.Download.CommitmentVerified, m.Read)
 	}
 	if !OwnAnswer(m.Phase, m.Classification, m.Download.CommitmentVerified) {

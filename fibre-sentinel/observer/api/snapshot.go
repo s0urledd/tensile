@@ -13,8 +13,8 @@ import (
 //
 // Both figures the overview waits for are aggregates over the whole window. The
 // network summary is the verdict tally, the obligation-counted rate, the
-// attestation coverage, the per-point breakdown, the correlated-failure guard
-// and the reconstructability of the newest reconstructSample publications; the
+// attestation coverage, the per-point breakdown and the reconstructability
+// of the newest reconstructSample publications; the
 // validator list is much the same tally again, per validator. On a store with
 // 2,200 publications and 714,000 probes those took 27.6s and 4.9s, and the page
 // asked for both every thirty seconds, per viewer, with cache: 'no-store'. A

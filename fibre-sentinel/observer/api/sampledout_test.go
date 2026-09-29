@@ -129,8 +129,7 @@ func sampledOutFixture(now time.Time) soFixture {
 
 	// Hours ago: a probed publication and a sampled-out one settled in the
 	// same block, so their schedule points coincide, and at w2 every
-	// validator of the probed one was unreachable: a suspect point, whose
-	// exclusion reaches the sampled-out rows at the same instant.
+	// validator of the probed one was unreachable.
 	recent := soPub("probedrecent", 200, now.Add(-6*time.Hour), now.Add(-2*time.Hour))
 	f.pubs = append(f.pubs, recent)
 	f.real = append(f.real, soRows(recent, []wire{ok, ok, ok, err500, ok, gone}, func(label string, w wire) wire {
@@ -355,22 +354,18 @@ func TestSampledOutFiguresUnchanged(t *testing.T) {
 	}
 
 	// The fixture is doing what it is for: sampled-out obligations are not
-	// read, so not counted (or pending), and a suspect point is in the
-	// window.
+	// read, so not counted (or pending).
 	var net struct {
 		Obligations struct {
 			NotCounted int64 `json:"not_counted"`
 			Pending    int64 `json:"pending"`
 		} `json:"obligations"`
-		VantageHealth struct {
-			Suspect []any `json:"suspect"`
-		} `json:"vantage_health"`
 		Classes map[string]int64 `json:"classes"`
 	}
 	tr := httptest.NewServer(api.New(rows, "test"))
 	get(t, tr, "/v1/network?window=7d", &net)
 	tr.Close()
-	if net.Obligations.NotCounted < 10 || net.Obligations.Pending < 5 || len(net.VantageHealth.Suspect) == 0 || net.Classes["NOT_PROBED"] == 0 {
+	if net.Obligations.NotCounted < 10 || net.Obligations.Pending < 5 || net.Classes["NOT_PROBED"] == 0 {
 		t.Fatalf("fixture does not exercise the figures: %+v", net)
 	}
 

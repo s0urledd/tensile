@@ -66,13 +66,8 @@ func TestReconstructableCoversPublicationsThatCanHaveAVerdict(t *testing.T) {
 		}
 		return hash
 	}
-	// read writes one validator's end-of-window reading: its 20 rows came
-	// back verified, or it answered "no such shard".
-	read := func(hash, val string, at, msu time.Time, served bool) {
-		outcome, class, returned, verified := "NOT_FOUND", "FAULT", 0, 0
-		if served {
-			outcome, class, returned, verified = "SERVED_OK", "HEALTHY", 20, 1
-		}
+	// readAs writes one validator's end-of-window reading row.
+	readAs := func(hash, val string, at, msu time.Time, outcome, class string, returned, verified int) {
 		if _, err := tx.Exec(`INSERT INTO probes (
 				dedupe_key, vantage, promise_hash, commitment, blob_version, must_serve_until,
 				validator_set_height, validator_address, validator_host, assigned,
@@ -90,6 +85,15 @@ func TestReconstructableCoversPublicationsThatCanHaveAVerdict(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// read writes one validator's end-of-window reading: its 20 rows came
+	// back verified, or it answered "no such shard".
+	read := func(hash, val string, at, msu time.Time, served bool) {
+		outcome, class, returned, verified := "NOT_FOUND", "FAULT", 0, 0
+		if served {
+			outcome, class, returned, verified = "SERVED_OK", "HEALTHY", 20, 1
+		}
+		readAs(hash, val, at, msu, outcome, class, returned, verified)
+	}
 
 	// Three blobs read before their retention ended, and found whole.
 	readAt, readMsu := now.Add(-90*time.Minute), now.Add(-time.Hour)
@@ -102,10 +106,12 @@ func TestReconstructableCoversPublicationsThatCanHaveAVerdict(t *testing.T) {
 	for i := 4; i <= 5; i++ {
 		pub(i, now.Add(-5*time.Hour), readMsu)
 	}
-	// One whose reading has an answer but no verdict yet: a1 said "no such
-	// shard" and a2's rows could still make it whole. Pending.
+	// One whose reading has an answer but no verdict: a1 said "no such
+	// shard" and the prober missed a2's request, whose rows could have made
+	// it whole. The window is open: pending.
 	half := pub(6, now.Add(-30*time.Minute), now.Add(3*time.Hour))
 	read(half, "a1", now.Add(-10*time.Minute), now.Add(3*time.Hour), false)
+	readAs(half, "a2", now.Add(-10*time.Minute), now.Add(3*time.Hour), "MISSED", "NOT_PROBED", 0, 0)
 	// And more still waiting for their reading than the sample bound holds,
 	// all newer than every one above.
 	waiting := reconstructSample + 100

@@ -694,7 +694,7 @@ var migrations = []migration{
 		},
 	},
 	// confirm.go (confirmMigration): other vantages' answers to this
-	// observer's faults, and what each fault became.
+	// observer's faults; read by nothing any more.
 	confirmMigration,
 	// sampledout.go (sampledOutMigration): a publication the sampler drew
 	// out is one decision, not a NOT_PROBED row per validator per point.
@@ -2030,15 +2030,6 @@ type Amendment struct {
 	// taken to be on disk), so sentinel-recompute redraws it with the same
 	// bound rather than a constant. Zero on lines from before the field.
 	PruneToleranceS int64 `json:"prune_tolerance_s,omitempty"`
-	// ClearedBy is set on an amendment the earlier second-vantage rule
-	// wrote to withdraw a FAULT whose rows another vantage fetched;
-	// ConfirmKey is that vantage's row and ConfirmStartedAt when it
-	// started. The rule no longer withdraws anything
-	// (verdict.ConfirmNotServed), so no new line carries them; a stored
-	// one is replayed as it was written.
-	ClearedBy        string     `json:"cleared_by,omitempty"`
-	ConfirmKey       string     `json:"confirm_key,omitempty"`
-	ConfirmStartedAt *time.Time `json:"confirm_started_at,omitempty"`
 }
 
 // ErrNoSuchRow is returned by ApplyAmendment when no probe row carries the
@@ -2190,9 +2181,8 @@ func (s *Store) ApplyAmendment(a Amendment) (bool, error) {
 	}
 	defer tx.Rollback()
 	res, err := tx.Exec(`UPDATE probes SET classification_at_probe = COALESCE(classification_at_probe, classification),
-			classification = ?, classification_reason = ?, shadowed_by = COALESCE(?, shadowed_by), amended_at = ?,
-			cleared_by = COALESCE(?, cleared_by)
-		WHERE dedupe_key = ? AND amended_at IS NULL`, a.To, a.Reason, nullIfEmpty(a.ShadowedBy), ts(a.JudgedAt), nullIfEmpty(a.ClearedBy), a.DedupeKey)
+			classification = ?, classification_reason = ?, shadowed_by = COALESCE(?, shadowed_by), amended_at = ?
+		WHERE dedupe_key = ? AND amended_at IS NULL`, a.To, a.Reason, nullIfEmpty(a.ShadowedBy), ts(a.JudgedAt), a.DedupeKey)
 	if err != nil {
 		return false, err
 	}

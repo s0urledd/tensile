@@ -596,9 +596,8 @@ func TestAvatarRoute(t *testing.T) {
 
 // A list that stops at its limit without saying so reads as the whole
 // answer. On /v1/probes that matters more than elsewhere: docs/verdicts.md
-// points a reader at ?at=<scheduled_at> as the evidence behind a
-// correlated-failure exclusion, and a suspect point can hold more rows than
-// the maximum limit allows. Ordering is started_at DESC and since is a lower
+// points a reader at ?at=<scheduled_at> as the evidence behind a blob's
+// reading, which can hold more rows than the maximum limit allows. Ordering is started_at DESC and since is a lower
 // bound, so before is what makes the list walkable at all.
 func TestProbesReportTheirBoundAndCanBeWalked(t *testing.T) {
 	ts, _ := serverAndStore(t)

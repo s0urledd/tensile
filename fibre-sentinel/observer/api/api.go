@@ -3,13 +3,14 @@
 // Every aggregate carries the readings it was computed from, the time window
 // it covers, and the vantage. Figures follow docs/verdicts.md: a blob is read
 // once, the way celestia-app's Fibre client downloads it, and is Available
-// when enough distinct rows came back verified to reconstruct it. A
-// validator is served when its rows came back verified, and not served only
-// when they did not on a blob that could not be reconstructed and the
-// second location did not get them either; the Service
-// rate is served over served plus not served, per (validator, blob).
-// Readings this observer could not make (NOT_PROBED, PROBE_ERROR) are
-// reported as gaps, never folded into a figure.
+// when enough distinct rows came back verified to reconstruct it, and
+// Unavailable, with the client's error, when they did not. A validator is
+// served when its rows came back verified, and not served only when it
+// endorsed the blob, its rows did not come back, and the blob was
+// Unavailable; the Service rate is served over served plus not served, per
+// (validator, blob). A reading this observer did not make (NOT_PROBED), or
+// one in which every request failed on its own side, is not read by
+// Tensile: reported as a gap, never folded into a figure.
 package api
 
 import (
@@ -1127,13 +1128,6 @@ type networkResponse struct {
 	// reading not made in time (MISSED) is a different gap from one this
 	// observer started and could not complete (PROBE_ERROR).
 	GapsByOutcome map[string]int64 `json:"probe_gaps_by_outcome"`
-	// VantageHealth is the worst single reading in the window: how many
-	// distinct validators were unreachable there out of how many were
-	// asked. Validators fail independently; this observer's own network does
-	// not. A reading where most validators failed at once is far more
-	// likely to be a route, resolver or peering problem here than many
-	// operators going down together, and such a reading counts neither way.
-	VantageHealth vantageHealth `json:"vantage_health"`
 	// LatencyP50 and LatencyP95 are the network's own service times: the
 	// median and 95th percentile of a whole request, dial to verified rows,
 	// over every reading that came back HEALTHY in this window. See the
@@ -1234,9 +1228,8 @@ type attestationStats struct {
 //	               observer has not read every height of, so neither the
 //	               failure nor the credit is published
 //	not_counted    decided, with no count either way: its answer failed on a
-//	               blob that was Available all the same, or this observer did
-//	               not read it (its own gap, or a reading set aside by the
-//	               correlated-failure guard)
+//	               blob that was Available all the same, or the blob was not
+//	               read by Tensile
 //	pending        read, and the retention window has not ended at as_of
 //	               (an obligation not read yet has no row here; the
 //	               validator page counts those as in_retention_window)
@@ -1272,7 +1265,7 @@ type obligationStats struct {
 // newest while a real one exists.
 //
 // Arguments, in order: as_of (pending cut), window start (settlement_time),
-// then whatever the caller appends (suspect points, a validator filter).
+// then whatever the caller appends (a validator filter).
 // The obligation SQL lives in observer/rollup, which computes the daily
 // rollups with the same statements; see rollup.ObligationBuckets.
 var (
@@ -1300,7 +1293,7 @@ func scanObligations(r *rollup.Obligations) []any {
 
 // obligationArgs is the argument list obligationBuckets expects: as_of (the
 // pending cut), the window's settlement bounds, the row upper and lower
-// bounds, the suspect points, then the caller's own.
+// bounds, then the caller's own.
 //
 // Past the first prune the "all" window's raw part starts at raw_from:
 // the rollup holds every obligation of a promise settled before it (the
@@ -1308,7 +1301,7 @@ func scanObligations(r *rollup.Obligations) []any {
 // a promise settled late on a rolled day can still have rows that started
 // on a retained day. Without the bound those rows would count the
 // obligation a second time, beside the rollup's.
-func (s *Server) obligationArgs(win Window, ss suspectSet, extra ...any) []any {
+func (s *Server) obligationArgs(win Window, extra ...any) []any {
 	start := win.startArg()
 	if win.Span == 0 {
 		if from, ok := rollup.RawFrom(s.st); ok {
@@ -1316,16 +1309,15 @@ func (s *Server) obligationArgs(win Window, ss suspectSet, extra ...any) []any {
 		}
 	}
 	args := []any{store.TS(win.End), start, win.endArg(), win.endArg(), rollup.RowLowerBound(start)}
-	args = append(args, ss.args...)
 	return append(args, extra...)
 }
 
 // obligationsWhere reduces the window's proven obligations to buckets. extra
 // is appended to the WHERE clause (a validator filter), its arguments last.
-func (s *Server) obligationsWhere(ctx context.Context, win Window, ss suspectSet, extra string, extraArgs ...any) (obligationStats, error) {
+func (s *Server) obligationsWhere(ctx context.Context, win Window, extra string, extraArgs ...any) (obligationStats, error) {
 	var r rollup.Obligations
-	err := s.st.DB().QueryRowContext(ctx, `SELECT `+obligationSums+` FROM (`+obligationBuckets+ss.clause("pr")+extra+`)
-			GROUP BY validator_address, promise_hash)`, s.obligationArgs(win, ss, extraArgs...)...).
+	err := s.st.DB().QueryRowContext(ctx, `SELECT `+obligationSums+` FROM (`+obligationBuckets+extra+`)
+			GROUP BY validator_address, promise_hash)`, s.obligationArgs(win, extraArgs...)...).
 		Scan(scanObligations(&r)...)
 	if err != nil {
 		return obligationStats{}, err
@@ -1334,9 +1326,9 @@ func (s *Server) obligationsWhere(ctx context.Context, win Window, ss suspectSet
 }
 
 // obligationsByValidator is obligationsWhere grouped by validator.
-func (s *Server) obligationsByValidator(ctx context.Context, win Window, ss suspectSet, extra string, extraArgs ...any) (map[string]obligationStats, error) {
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT validator_address, `+obligationSums+` FROM (`+obligationBuckets+ss.clause("pr")+extra+`)
-			GROUP BY validator_address, promise_hash) GROUP BY validator_address`, s.obligationArgs(win, ss, extraArgs...)...)
+func (s *Server) obligationsByValidator(ctx context.Context, win Window, extra string, extraArgs ...any) (map[string]obligationStats, error) {
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT validator_address, `+obligationSums+` FROM (`+obligationBuckets+extra+`)
+			GROUP BY validator_address, promise_hash) GROUP BY validator_address`, s.obligationArgs(win, extraArgs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -1351,70 +1343,6 @@ func (s *Server) obligationsByValidator(ctx context.Context, win Window, ss susp
 		out[addr] = obligationsOf(r)
 	}
 	return out, rows.Err()
-}
-
-// vantageHealth reports the correlated failures the window contains, and
-// which readings every figure leaves out because of them.
-type vantageHealth struct {
-	// WorstPoint is the fraction unreachable at the worst reading.
-	WorstPoint Rate `json:"worst_point"`
-	// At and Label identify that reading, so it can be looked up in
-	// /v1/probes.
-	At    string `json:"at,omitempty"`
-	Label string `json:"label,omitempty"`
-	// Correlated is true when that fraction is at or above the threshold
-	// below, which is the observer saying it does not trust its own reading
-	// there.
-	Correlated bool `json:"correlated"`
-	// Threshold and FaultThreshold are published so the judgement is not a
-	// hidden constant.
-	Threshold      float64 `json:"threshold"`
-	FaultThreshold float64 `json:"fault_threshold"`
-	// MinValidators is the floor on how many validators must share the
-	// failure before a share means anything: one of two is half.
-	MinValidators int64 `json:"min_validators"`
-	// Suspect lists every reading in the window (a blob at its scheduled
-	// time) at which the share of the endorsing validators asked that were
-	// unreachable, or that returned no rows, reached its threshold, and
-	// whose blob could not be reconstructed all the same.
-	// Every row there counts neither way, served or not served: validators
-	// fail independently and one observer's network, or one observer's
-	// stale assignment, does not. SuspectRows is how many rows that removed.
-	// A control read of a blob of this observer's own, from the same
-	// validators at the same time, would lift a reading off this list; it is
-	// not made yet.
-	Suspect     []suspectPoint `json:"suspect"`
-	SuspectRows int64          `json:"suspect_rows"`
-}
-
-// suspectPoint is one reading the observer does not trust itself at: a
-// blob (promise_hash) at its scheduled time.
-type suspectPoint struct {
-	PromiseHash string `json:"promise_hash"`
-	At          string `json:"at"`
-	Label       string `json:"label"`
-	Validators  int64  `json:"validators"`
-	Unreachable Rate   `json:"unreachable"`
-	Fault       Rate   `json:"fault"`
-	// Reason is "unreachable", "fault" or "unreachable,fault".
-	Reason string `json:"reason"`
-}
-
-// suspectSet is the SQL side of vantageHealth.Suspect: the clause that drops
-// those readings from a population query, and its arguments, (promise hash,
-// scheduled time) pairs.
-type suspectSet struct {
-	points []suspectPoint
-	args   []any
-}
-
-func (ss *suspectSet) add(promise, at string) { ss.args = append(ss.args, promise, at) }
-
-// clause is rollup.ExclusionOf over the rows under alias ("" for a bare
-// table), or "" when nothing is suspect.
-func (ss suspectSet) clause(alias string) string {
-	c, _ := rollup.ExclusionOf(alias, ss.args)
-	return c
 }
 
 // excludeSet is the validator exclusion a reader asks for with `?exclude=`.
@@ -1432,21 +1360,14 @@ func (ss suspectSet) clause(alias string) string {
 // the reading and gap counts, and the previous window the deltas compare
 // against.
 //
-// Two figures it deliberately leaves whole, because excluding a validator
-// from either would answer a different question than the one asked:
-//
-//   - the correlated-failure guard (vantage_health.suspect), which is a
-//     statement about this observer's own minute rather than about any
-//     validator: dropping one from the share would change which points this
-//     observer distrusts itself at;
-//   - reconstructability, which asks whether a blob could still be rebuilt
-//     from the rows that came back. Removing a validator's rows lowers that
-//     for real, so "the network without you" is not the network's actual
-//     recoverability, and printing it as such would understate the thing the
-//     figure exists to measure.
-//
-// Both are said in the response (exclude_note) rather than left to be
-// discovered.
+// One figure it deliberately leaves whole, because excluding a validator
+// from it would answer a different question than the one asked:
+// reconstructability, which asks whether a blob could still be rebuilt from
+// the rows that came back. Removing a validator's rows lowers that for real,
+// so "the network without you" is not the network's actual recoverability,
+// and printing it as such would understate the thing the figure exists to
+// measure. That is said in the response (exclude_note) rather than left to
+// be discovered.
 type excludeSet struct{ addrs []any }
 
 func (e excludeSet) on() bool { return len(e.addrs) > 0 }
@@ -1481,7 +1402,7 @@ func (e excludeSet) args(base ...any) []any {
 
 // ExcludeNote is what the response says about a filtered answer, so a figure
 // cannot be quoted as this observer's headline without the qualifier.
-const ExcludeNote = "Figures exclude the validators named in `excluded`. The correlated-failure guard and reconstructability are computed over the whole set, because excluding a validator from either would answer a different question."
+const ExcludeNote = "Figures exclude the validators named in `excluded`. Reconstructability is computed over the whole set, because excluding a validator from it would answer a different question."
 
 // parseExclude reads `?exclude=`, which may be repeated or comma-separated,
 // and takes either form of address the rest of the API takes.
@@ -1517,61 +1438,6 @@ func parseExclude(r *http.Request) (excludeSet, []string, error) {
 // people who run this site", not to let a caller carve an arbitrary subset
 // out of the network and quote the result as this observer's figure.
 const maxExclude = 8
-
-// correlatedUnreachableThreshold: at or above this share of the validators
-// asked at one reading being unreachable, the likeliest explanation is this
-// observer's own network rather than that many independent operators.
-// correlatedFaultThreshold is the same judgement for every answer that
-// leaves a reader without rows: half the set failing at the same minute is
-// not a finding about the set, it is a finding about the observer (a stale
-// assignment pin, a broken coder).
-//
-// correlatedMinValidators is the floor under which a share is not a signal:
-// one validator of two failing is half the set and an ordinary Tuesday.
-const (
-	correlatedUnreachableThreshold = verdict.UnreachableThreshold
-	correlatedFaultThreshold       = verdict.FaultThreshold
-	correlatedMinValidators        = verdict.MinValidators
-)
-
-// suspectPoints finds every reading in the window at which the share of
-// distinct validators unreachable, or returning no rows, reached its
-// threshold, among readings where more than one validator was asked, and
-// whose blob could not be reconstructed all the same. A reading is judged
-// over the whole set at that minute, so it is suspect on every page and for
-// every validator.
-func (s *Server) suspectPoints(ctx context.Context, win Window) (vantageHealth, suspectSet, error) {
-	out := vantageHealth{Threshold: correlatedUnreachableThreshold, FaultThreshold: correlatedFaultThreshold,
-		MinValidators: correlatedMinValidators, Suspect: []suspectPoint{}}
-	var ss suspectSet
-	pts, err := rollup.SuspectPoints(ctx, s.st.DB(), `started_at >= ? AND started_at <= ?`, win.startArg(), win.endArg())
-	if err != nil {
-		return out, ss, err
-	}
-	var best float64
-	for _, p := range pts {
-		if p.Validators == 0 {
-			continue
-		}
-		fu := float64(p.Unreachable) / float64(p.Validators)
-		if fu > best || out.At == "" {
-			best = fu
-			out.WorstPoint = rate(p.Unreachable, p.Validators)
-			out.At, out.Label = p.At, p.Label
-		}
-		reason := p.Reason()
-		if reason == "" {
-			continue
-		}
-		out.Suspect = append(out.Suspect, suspectPoint{PromiseHash: p.PromiseHash, At: p.At, Label: p.Label, Validators: p.Validators,
-			Unreachable: rate(p.Unreachable, p.Validators), Fault: rate(p.Faulted, p.Validators), Reason: reason})
-		out.SuspectRows += p.Rows
-		ss.add(p.PromiseHash, p.At)
-	}
-	out.Correlated = out.WorstPoint.Den > 0 && best >= correlatedUnreachableThreshold && out.WorstPoint.Num >= correlatedMinValidators
-	ss.points = out.Suspect
-	return out, ss, nil
-}
 
 // attestationWhere counts proven, unproven and unknown obligations over the
 // reading rows matching where.
@@ -1660,8 +1526,7 @@ func (s *Server) logf() logf {
 // from the snapshot cache rather than from the request, so its context outlives
 // the reader who triggered it.
 // previousWindow holds the few figures a delta compares against: the same
-// span ending where the window starts, computed with the same statements,
-// its own suspect points left out.
+// span ending where the window starts, computed with the same statements.
 type previousWindow struct {
 	Window       Window          `json:"window"`
 	Obligations  obligationStats `json:"obligations"`
@@ -1674,12 +1539,9 @@ func (s *Server) previousWindow(ctx context.Context, win Window, ex excludeSet) 
 		return nil, nil
 	}
 	prev := Window{Name: win.Name, Span: win.Span, Start: win.Start.Add(-win.Span), End: win.Start}
-	_, ss, err := s.suspectPoints(ctx, prev)
-	if err != nil {
-		return nil, err
-	}
 	p := &previousWindow{Window: prev}
-	if p.Obligations, err = s.obligationsWhere(ctx, prev, ss, ex.clause("pr.validator_address"), ex.addrs...); err != nil {
+	var err error
+	if p.Obligations, err = s.obligationsWhere(ctx, prev, ex.clause("pr.validator_address"), ex.addrs...); err != nil {
 		return nil, err
 	}
 	db := s.st.DB()
@@ -1717,15 +1579,8 @@ func (s *Server) computeNetwork(ctx context.Context, win Window, ex excludeSet, 
 	_ = db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT validator_address) FROM probe_rows WHERE started_at >= ? AND started_at <= ?`+exv,
 		ex.args(win.startArg(), win.endArg())...).Scan(&resp.ValidatorsProbed)
 
-	// The points this observer does not trust itself at come first: every
-	// population below leaves them out.
-	vh, ss, err := s.suspectPoints(ctx, win)
-	if err != nil {
-		return nil, err
-	}
-	resp.VantageHealth = vh
-	pop := `started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'` + ss.clause("") + exv
-	popArgs := ex.args(append([]any{win.startArg(), win.endArg()}, ss.args...)...)
+	pop := `started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'` + exv
+	popArgs := ex.args(win.startArg(), win.endArg())
 
 	classes, _, err := s.classCountsWhere(ctx, pop, popArgs...)
 	if err != nil {
@@ -1733,19 +1588,17 @@ func (s *Server) computeNetwork(ctx context.Context, win Window, ex excludeSet, 
 	}
 	resp.Classes = classes
 	resp.RetentionUncertainty = s.retentionUncertaintyNow(ctx)
-	if resp.Obligations, err = s.obligationsWhere(ctx, win, ss, ex.clause("pr.validator_address"), ex.addrs...); err != nil {
+	if resp.Obligations, err = s.obligationsWhere(ctx, win, ex.clause("pr.validator_address"), ex.addrs...); err != nil {
 		return nil, err
 	}
 	resp.ByObligation = resp.Obligations.Rate
-	prov, err := s.provisionalByValidator(ctx, win, ss, time.Now(), ex.clause("pr.validator_address"), ex.addrs...)
+	prov, err := s.provisionalByValidator(ctx, win, time.Now(), ex.clause("pr.validator_address"), ex.addrs...)
 	if err != nil {
 		return nil, err
 	}
 	resp.ProvisionalFaults = provisionalTotal(prov)
-	// The same population the class tally above was drawn from, suspect
-	// points and all.
-	if resp.Attestation, err = s.attestationWhere(ctx,
-		`started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`+ss.clause("")+exv, popArgs...); err != nil {
+	// The same population the class tally above was drawn from.
+	if resp.Attestation, err = s.attestationWhere(ctx, pop, popArgs...); err != nil {
 		return nil, err
 	}
 	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM probe_rows WHERE started_at >= ? AND started_at <= ?`+exv, ex.args(win.startArg(), win.endArg())...).Scan(&resp.ProbeCount)
@@ -2080,12 +1933,10 @@ func (s *Server) confirmFromOtherVantages(ctx context.Context, out map[string]re
 	return nil
 }
 
-// probeAnswerSQL is a probe row that carries an answer of the endpoint's.
-// Its first term is spelled exactly as probes_latest_answer's WHERE, so
-// SQLite can use that index; the second leaves out a validator a reading
-// passed over (probe.OutcomePassedOver), which was not asked at all and may
-// carry no connection, a term on the table the walk checks as it goes.
-var probeAnswerSQL = `outcome NOT IN ('MISSED','PROBE_ERROR') AND +outcome <> '` + string(probe.OutcomePassedOver) + `'`
+// probeAnswerSQL is a probe row that carries an answer of the endpoint's,
+// spelled exactly as probes_latest_answer's WHERE, so SQLite can use that
+// index.
+const probeAnswerSQL = `outcome NOT IN ('MISSED','PROBE_ERROR')`
 
 // latestAnswerSQL is the query reachabilityNow runs against one table: the
 // newest row per validator (or for only) among those whose outcome passes
@@ -2235,14 +2086,9 @@ type validatorRow struct {
 	ProbeCount   int64            `json:"probe_count"`
 	// Classes tallies this validator's readings by the class each was
 	// recorded with on the wire; see networkResponse.Classes.
-	Classes classCounts `json:"classes"`
-	// FaultsCleared is how many failed readings of the window a second
-	// vantage fetched the same rows of, verified, before must_serve_until
-	// (cleared_by): not counted, like every not-served reading the second
-	// vantage did not confirm. Absent when none.
-	FaultsCleared    int64  `json:"faults_cleared,omitempty"`
-	AssignedRowsLast int    `json:"assigned_rows_last"`
-	ExpectedLoadBand string `json:"expected_load_band"` // floor | low | mid | high, by assigned rows
+	Classes          classCounts `json:"classes"`
+	AssignedRowsLast int         `json:"assigned_rows_last"`
+	ExpectedLoadBand string      `json:"expected_load_band"` // floor | low | mid | high, by assigned rows
 	// Latency is how long this observer waited for a shard it did get: the
 	// median and 95th percentile of the whole request, dial to verified
 	// rows, over the readings that came back HEALTHY in this window.
@@ -2371,14 +2217,6 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 		}
 		return append(base, only)
 	}
-	// The points the observer does not trust itself at, left out of every
-	// per-validator population below exactly as they are network-wide.
-	_, ss, err := s.suspectPoints(ctx, win)
-	if err != nil {
-		return nil, err
-	}
-	sus := ss.clause("")
-	winArgs := append([]any{win.startArg(), win.endArg()}, ss.args...)
 	byAddr := map[string]*validatorRow{}
 	get := func(addr string) *validatorRow {
 		v, ok := byAddr[addr]
@@ -2518,32 +2356,10 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	// row publishes no verdict for one validator either, and the
 	// per-validator figures must add up to the network's.
 	cls := rollup.EffectiveClass("")
-	// Failed readings whose rows a second vantage fetched
-	// (verdict.ConfirmNotServed). Over the raw rows only: a rolled day
-	// keeps its counts, not who fetched what.
-	crows, err = db.QueryContext(ctx, `SELECT validator_address, COUNT(*) FROM probes INDEXED BY probes_cleared
-		WHERE cleared_by IS NOT NULL AND started_at >= ? AND started_at <= ? AND assigned = 1`+sus+vfilter("validator_address")+`
-		GROUP BY validator_address`, vargs(winArgs...)...)
-	if err != nil {
-		return nil, err
-	}
-	for crows.Next() {
-		var addr string
-		var n int64
-		if err := crows.Scan(&addr, &n); err != nil {
-			crows.Close()
-			return nil, err
-		}
-		get(addr).FaultsCleared = n
-	}
-	crows.Close()
-	if err := crows.Err(); err != nil {
-		return nil, err
-	}
 	// classes per validator in window
 	rows, err = db.QueryContext(ctx, `SELECT validator_address, `+cls+`, COUNT(*) FROM probe_rows
-		WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`+sus+vfilter("validator_address")+`
-		GROUP BY validator_address, `+cls, vargs(winArgs...)...)
+		WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`+vfilter("validator_address")+`
+		GROUP BY validator_address, `+cls, vargs(win.startArg(), win.endArg())...)
 	if err != nil {
 		return nil, err
 	}
@@ -2821,11 +2637,11 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	}
 
 	// one observation per (validator, blob): see obligationStats.
-	byObligation, err := s.obligationsByValidator(ctx, win, ss, vfilter("pr.validator_address"), vargs()...)
+	byObligation, err := s.obligationsByValidator(ctx, win, vfilter("pr.validator_address"), vargs()...)
 	if err != nil {
 		return nil, err
 	}
-	provisional, err := s.provisionalByValidator(ctx, win, ss, time.Now(), vfilter("pr.validator_address"), vargs()...)
+	provisional, err := s.provisionalByValidator(ctx, win, time.Now(), vfilter("pr.validator_address"), vargs()...)
 	if err != nil {
 		return nil, err
 	}
@@ -3106,31 +2922,21 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 		Provisional *provisionalFaults `json:"provisional_faults,omitempty"`
 	}
 	var spans []span
-	// The suspect readings over all time, so the recent-readings list can
-	// mark rows that nothing counts.
-	suspectAll := []suspectPoint{}
 	for _, name := range []string{"24h", "7d", "30d", "all"} {
 		sw := Window{Name: name, Span: windows[name], End: spanEnd, AsOf: win.AsOf}
 		if sw.Span > 0 {
 			sw.Start = spanEnd.Add(-sw.Span)
 		}
-		_, ss, err := s.suspectPoints(ctx, sw)
+		classes, total, err := s.classCountsWhere(ctx, `validator_address = ? AND started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`,
+			addr, sw.startArg(), sw.endArg())
 		if err != nil {
 			return 0, nil, err
 		}
-		if sw.Name == "all" {
-			suspectAll = ss.points
-		}
-		classes, total, err := s.classCountsWhere(ctx, `validator_address = ? AND started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`+ss.clause(""),
-			append([]any{addr, sw.startArg(), sw.endArg()}, ss.args...)...)
+		obl, err := s.obligationsWhere(ctx, sw, ` AND pr.validator_address = ?`, addr)
 		if err != nil {
 			return 0, nil, err
 		}
-		obl, err := s.obligationsWhere(ctx, sw, ss, ` AND pr.validator_address = ?`, addr)
-		if err != nil {
-			return 0, nil, err
-		}
-		prov, err := s.provisionalByValidator(ctx, sw, ss, time.Now(), ` AND pr.validator_address = ?`, addr)
+		prov, err := s.provisionalByValidator(ctx, sw, time.Now(), ` AND pr.validator_address = ?`, addr)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -3183,7 +2989,6 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 		"windows":                 spans,
 		"recent_probes":           probes,
 		"recent_probes_truncated": moreProbes,
-		"suspect_points":          suspectAll,
 		"vantage":                 s.vantage,
 		// in_retention_window is the endorsed shards whose retention window
 		// has not ended at the answer's moment, from the chain's record: a
@@ -3257,15 +3062,17 @@ type blobRow struct {
 // (verdict.BlobReading): whether enough distinct rows came back, verified
 // against the commitment, to reconstruct the blob.
 type reconstruct struct {
-	// Status is yes (Available), no (Unavailable: every validator the
-	// assignment gives rows was asked, in the Fibre client's order, twice,
-	// and fewer rows came back than reconstruct the blob; in the client's
-	// words "not enough shards to reconstruct blob", or "no shards
-	// retrieved"), pending (the retention window is open and
-	// the reading is not in), not_read (the window closed without a reading
-	// that decides it: Tensile's own gap, or a reading the correlated-failure
-	// guard set aside) or unknown (no assignment to judge it by).
+	// Status is yes (Available: the rows that came back reconstruct the
+	// blob), no (Unavailable: the reading asked the whole set, in the Fibre
+	// client's order, and fewer rows came back; Error says which of the
+	// client's errors), pending (the retention window is open and the
+	// reading is not in), not_read (the window closed without a reading:
+	// Tensile missed it, or every request failed on its own side) or unknown
+	// (no assignment to judge it by).
 	Status string `json:"status"`
+	// Error is the Fibre client's error on an Unavailable blob: "no shards
+	// retrieved" or "not enough shards to reconstruct blob".
+	Error string `json:"error,omitempty"`
 	// PointAt is when the reading was scheduled: 10 minutes before
 	// must_serve_until, or for a blob read on the earlier schedule the newest
 	// point a validator answered at.
@@ -3414,7 +3221,7 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 		rc.Status = "unknown"
 		return rc, nil
 	}
-	facts := verdict.BlobFacts{Needed: int(needed.Int64), Excess: max(sigma-distinct, 0), Endorsed: map[string]int{}, Assigned: map[string]int{}}
+	facts := verdict.BlobFacts{Needed: int(needed.Int64), Excess: max(sigma-distinct, 0), Endorsed: map[string]int{}}
 	arows, err := db.QueryContext(ctx, `SELECT validator_address, row_count, attested = 1 OR attested IS NULL FROM assignments
 		WHERE promise_hash = ? AND row_count > 0`, hash)
 	if err != nil {
@@ -3428,7 +3235,6 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 			arows.Close()
 			return nil, err
 		}
-		facts.Assigned[addr] = n
 		if endorsing {
 			facts.Endorsed[addr] = n
 		}
@@ -3442,7 +3248,7 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 	// are parsed only at the reading the blob is judged at.
 	pb, pargs := pin.bound("probes", []any{hash})
 	prows, err := db.QueryContext(ctx, `SELECT validator_address, schedule_label, scheduled_at, classification, outcome,
-			commitment_verified, rows_returned, COALESCE(row_indices, '')
+			commitment_verified, rows_returned, COALESCE(row_indices, ''), assigned
 		FROM probes WHERE promise_hash = ? AND phase = 'in_window'`+pb, pargs...)
 	if err != nil {
 		return nil, err
@@ -3456,14 +3262,14 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 	for prows.Next() {
 		var rr readRow
 		var cls, out string
-		var verified int
-		if err := prows.Scan(&rr.row.Validator, &rr.row.ScheduleLabel, &rr.at, &cls, &out, &verified, &rr.row.RowsReturned, &rr.idx); err != nil {
+		var verified, assigned int
+		if err := prows.Scan(&rr.row.Validator, &rr.row.ScheduleLabel, &rr.at, &cls, &out, &verified, &rr.row.RowsReturned, &rr.idx, &assigned); err != nil {
 			prows.Close()
 			return nil, err
 		}
 		rr.row.ScheduledAt, _ = time.Parse(store.TimeLayout, rr.at)
 		rr.row.Phase, rr.row.Classification, rr.row.Outcome = probe.PhaseInWindow, probe.Classification(cls), probe.Outcome(out)
-		rr.row.CommitmentVerified = verified == 1
+		rr.row.CommitmentVerified, rr.row.Assigned = verified == 1, assigned == 1
 		all = append(all, rr)
 	}
 	prows.Close()
@@ -3475,7 +3281,6 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 		rows[i] = all[i].row
 	}
 	var point []verdict.Row
-	suspect := false
 	if at, ok := verdict.ReadingPoint(rows, facts); ok {
 		for _, rr := range all {
 			if !rr.row.ScheduledAt.Equal(at) {
@@ -3489,25 +3294,14 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 			}
 			point = append(point, rr.row)
 		}
-		// The correlated-failure guard, tallied over this blob's rows.
-		spts, err := rollup.SuspectPoints(ctx, db, `promise_hash = ?`+pb, pargs...)
-		if err != nil {
-			return nil, err
-		}
-		for _, p := range spts {
-			if p.PromiseHash == hash && p.At == rc.PointAt && p.Reason() != "" {
-				suspect = true
-			}
-		}
 	}
-	res := verdict.BlobReading(point, facts, suspect, !rc.WindowOver)
-	rc.Status = res.Status
+	res := verdict.BlobReading(point, facts, !rc.WindowOver)
+	rc.Status, rc.Error = res.Status, res.Error
 	rc.ServedRows, rc.ServedBy, rc.ProbedValidators = res.Have, res.Served, res.Asked
 	if res.IndicesMissing {
 		// A record from before the index lists were kept: a served shard
 		// (SERVED_OK) is exactly the rows its assignment lists, so the count
-		// is published from those. The status is drawn as the obligation
-		// counts draw it, without them.
+		// is published from those.
 		n, err := s.servedRowsFromAssignments(ctx, hash, point)
 		if err != nil {
 			return nil, err
@@ -3577,11 +3371,13 @@ type reconstructSummary struct {
 	Recoverable Rate  `json:"recoverable"`
 	Yes         int64 `json:"yes"`
 	No          int64 `json:"no"`
+	// NoByError splits No by the Fibre client's error: "no shards
+	// retrieved", "not enough shards to reconstruct blob".
+	NoByError map[string]int64 `json:"no_by_error"`
 	// Pending, NotRead and Unknown are publications with no verdict: the
-	// window still open and the reading not decided; the window closed
-	// without a reading that decides it (no reading at all, Tensile's own
-	// gap, or one the correlated-failure guard set aside); no assignment to
-	// judge it by.
+	// window still open and the reading not in; the window closed without a
+	// reading (Tensile missed it, or every request failed on its own side);
+	// no assignment to judge it by.
 	Pending int64 `json:"pending"`
 	NotRead int64 `json:"not_read"`
 	Unknown int64 `json:"unknown"`
@@ -3616,7 +3412,7 @@ func readableSQL(bound string) string {
 }
 
 func (s *Server) reconstructableCount(ctx context.Context, win Window) (reconstructSummary, error) {
-	out := reconstructSummary{SampleLimit: reconstructSample}
+	out := reconstructSummary{SampleLimit: reconstructSample, NoByError: map[string]int64{}}
 	pin := pinFor(win)
 	bound, pargs := pin.bound("r", nil)
 	readable := readableSQL(bound)
@@ -3647,6 +3443,7 @@ func (s *Server) reconstructableCount(ctx context.Context, win Window) (reconstr
 			out.Yes++
 		case verdict.BlobUnavailable:
 			out.No++
+			out.NoByError[rc.Error]++
 		case verdict.BlobPending:
 			out.Pending++
 		case verdict.BlobNotRead:
@@ -3758,12 +3555,12 @@ type assignmentRow struct {
 	HostAtSettlement *string `json:"host_at_settlement"`
 	// Service is this validator's obligation on this blob, by the rule the
 	// obligation counts use (rollup.ObligationBuckets): served (its rows
-	// came back verified), not_served (they did not, and the blob could not
-	// be reconstructed), in_retention_window (the window is still open) or
+	// came back verified), not_served (they did not, and the blob was
+	// Unavailable), in_retention_window (the window is still open) or
 	// deadline_unverified (the deadline is held). Absent when there is no
 	// result either way: not endorsed, not asked because the reading had
 	// enough rows before its turn, a failure on a blob that was Available
-	// all the same, or a reading Tensile could not make.
+	// all the same, or a blob not read by Tensile.
 	Service string `json:"service,omitempty"`
 	// Provisional marks a not_served still younger than the settling period.
 	Provisional bool `json:"provisional,omitempty"`
@@ -3824,24 +3621,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	probes, moreProbes := trim(probes, 1000)
-	// The points of this blob the correlated-failure guard calls suspect,
-	// tallied as reconstructable tallies them: published with the blob, and
-	// left out of each validator's service word as every count leaves them out.
-	suspect := []suspectPoint{}
-	var ss suspectSet
-	spts, err := rollup.SuspectPoints(ctx, s.st.DB(), `promise_hash = ?`, hash)
-	if err != nil {
-		s.writeInternal(w, r.URL.Path, err)
-		return
-	}
-	for _, p := range spts {
-		if reason := p.Reason(); reason != "" {
-			suspect = append(suspect, suspectPoint{PromiseHash: p.PromiseHash, At: p.At, Label: p.Label, Validators: p.Validators,
-				Unreachable: rate(p.Unreachable, p.Validators), Fault: rate(p.Faulted, p.Validators), Reason: reason})
-			ss.add(p.PromiseHash, p.At)
-		}
-	}
-	if err := s.blobService(ctx, hash, ss, assigns); err != nil {
+	if err := s.blobService(ctx, hash, assigns); err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
@@ -3851,21 +3631,20 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.st.DB().QueryRowContext(ctx, `SELECT shard_retention_s, payment_promise_timeout_s FROM publications WHERE promise_hash = ?`, hash).Scan(&params.ShardRetentionS, &params.PaymentPromiseTimeoutS)
 	writeJSON(w, 200, map[string]any{"blob": blobs[0], "params": params, "assignments": assigns,
-		"probes": probes, "probes_truncated": moreProbes, "suspect_points": suspect, "vantage": s.vantage})
+		"probes": probes, "probes_truncated": moreProbes, "vantage": s.vantage})
 }
 
 // blobService fills each assignment's Service from the obligation buckets
-// of this one publication, with the same suspect points left out as the
-// page shows, so a validator's word here is the one its counts carry.
-func (s *Server) blobService(ctx context.Context, hash string, ss suspectSet, assigns []assignmentRow) error {
+// of this one publication, so a validator's word here is the one its
+// counts carry.
+func (s *Server) blobService(ctx context.Context, hash string, assigns []assignmentRow) error {
 	var settled, msu string
 	if err := s.st.DB().QueryRowContext(ctx, `SELECT settlement_time, must_serve_until FROM publications WHERE promise_hash = ?`, hash).Scan(&settled, &msu); err != nil {
 		return err
 	}
 	now := time.Now().UTC()
 	args := []any{provisionalCutoff(now), store.TS(now), settled, settled, store.TS(now), rollup.RowLowerBound(settled)}
-	args = append(args, ss.args...)
-	rows, err := s.st.DB().QueryContext(ctx, blobServiceSQL+obligationBuckets+ss.clause("pr")+` AND pr.promise_hash = ?)
+	rows, err := s.st.DB().QueryContext(ctx, blobServiceSQL+obligationBuckets+` AND pr.promise_hash = ?)
 			GROUP BY validator_address, promise_hash)`, append(args, hash)...)
 	if err != nil {
 		return err
@@ -4030,10 +3809,10 @@ type probeRow struct {
 	TLSOK            bool   `json:"tls_ok"`
 	IdentityOK       bool   `json:"identity_ok"`
 	RawError         string `json:"raw_error,omitempty"`
-	// RetryFirstOutcome is set when this validator was asked more than once
-	// in the reading (a re-dial, or the second pass a minute later): the
-	// outcome of the first attempt, so a reader can see "the first try timed
-	// out" rather than only the final answer.
+	// RetryFirstOutcome is set when this validator was asked twice in the
+	// reading (the client's re-dial after a failed dial, an unreachable or a
+	// timed-out peer): the outcome of the first attempt, so a reader can see
+	// "the first try timed out" rather than only the final answer.
 	RetryFirstOutcome string `json:"retry_first_outcome,omitempty"`
 	ClockOffsetMS     int64  `json:"clock_offset_ms,omitempty"`
 	// The evidence behind the verdict, when the row carries it (rows from
@@ -4079,29 +3858,15 @@ type probeRow struct {
 	// Service is what this reading counts as for the validator, by the rule
 	// the obligations use (rollup.CountedClass): served (its rows came back
 	// verified, at a reading that speaks for the end of the window),
-	// not_served (they did not, the blob could not be reconstructed, and the
-	// second location did not get them either: confirmed_by), or empty: it
+	// not_served (they did not, and the blob was Unavailable), or empty: it
 	// counts neither way (a failure on a blob that was Available all the
-	// same, one the second location did not confirm, a reading the
-	// correlated-failure guard set aside, an earlier schedule's early
-	// reading, this observer's own gap).
+	// same, a blob not read by Tensile, an earlier schedule's early reading,
+	// a validator that did not endorse).
 	Service string `json:"service,omitempty"`
-	// Unconfirmed marks a reading that would count not served had the
-	// second location confirmed it: it counts neither way (awaiting the
-	// second location until must_serve_until, then for good).
-	Unconfirmed bool `json:"unconfirmed,omitempty"`
 	// Provisional marks a not_served reading younger than
 	// verdict.FaultSettling: it counts, and an x/fibre params change not
 	// reconciled yet can still withdraw it (provisional.go).
 	Provisional bool `json:"provisional,omitempty"`
-	// ConfirmedBy names the vantage that read the same rows before
-	// must_serve_until under the same client rules and did not get them
-	// either: the reading counts (verdict.ConfirmNotServed). ClearedBy names
-	// the vantage that got them, verified: the reading does not count. Rows
-	// withdrawn by the earlier rule read PROBE_ERROR with cleared_by set and
-	// classification_at_probe the class they had.
-	ClearedBy   string `json:"cleared_by,omitempty"`
-	ConfirmedBy string `json:"confirmed_by,omitempty"`
 }
 
 func (s *Server) probeRows(ctx context.Context, where string, limit int, args ...any) ([]probeRow, error) {
@@ -4120,8 +3885,7 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, args ..
 		COALESCE(shadow_gap, ''), COALESCE(classification_at_probe, ''), COALESCE(amended_at, ''),
 		COALESCE(host_at_settlement, ''), COALESCE(settlement_host_outcome, ''), settlement_host_served,
 		retention_unverified, COALESCE(phase_at_probe, ''), COALESCE(corrected_at, ''),
-		COALESCE(cleared_by, ''), COALESCE(confirmed_by, ''), ` + rollup.CountedClass("probes") + `, ` + unconfirmedSQL + `,
-		` + lateSQL + `
+		` + rollup.CountedClass("probes") + `, ` + lateSQL + `
 		FROM probes`
 	if where != "" {
 		q += " WHERE " + where
@@ -4144,13 +3908,13 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, args ..
 		var idxJSON string
 		var served sql.NullInt64
 		var counted string
-		var late, unconfirmed bool
+		var late bool
 		if err := rows.Scan(&p.Vantage, &p.PromiseHash, &p.ValidatorAddress, &p.ValidatorHost, &assigned, &att, &p.AssignedRowCount, &p.ScheduleLabel,
 			&p.ScheduledAt, &p.StartedAt, &p.Phase, &p.Outcome, &p.Classification, &p.Reason, &p.RowsReturned, &p.RowsExpected,
 			&p.TotalDurationMS, &tls, &id, &p.RawError, &p.RetryFirstOutcome, &p.ClockOffsetMS,
 			&idxJSON, &p.RowsSHA256, &p.RPCCode, &p.ShadowedBy, &p.ObserverBuild, &p.AppVersion,
 			&p.ShadowGap, &p.ClassificationAtProbe, &p.AmendedAt, &p.HostAtSettlement, &p.SettlementHostOutcome, &served,
-			&held, &p.PhaseAtProbe, &p.CorrectedAt, &p.ClearedBy, &p.ConfirmedBy, &counted, &unconfirmed, &late); err != nil {
+			&held, &p.PhaseAtProbe, &p.CorrectedAt, &counted, &late); err != nil {
 			return nil, err
 		}
 		p.RetentionUnverified = held == 1
@@ -4161,8 +3925,6 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, args ..
 			p.Service = "not_served"
 		case counted == "HEALTHY" && late:
 			p.Service = "served"
-		case unconfirmed:
-			p.Unconfirmed = true
 		}
 		p.HostChanged = p.HostAtSettlement != "" && p.ValidatorHost != "" && p.ValidatorHost != p.HostAtSettlement
 		if served.Valid {
@@ -4183,39 +3945,23 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, args ..
 		return nil, err
 	}
 	rows.Close()
-	if err := s.blankSuspect(ctx, out); err != nil {
-		return nil, err
-	}
 	for i := range out {
 		out[i].Reason = serviceReason(out[i])
 	}
 	return out, nil
 }
 
-// unconfirmedSQL is 1 for a reading of the probes table that would count
-// not served had a second location confirmed it: CountedClass with every
-// confirmation taken as given, FAULT, while the row itself has none.
-var unconfirmedSQL = `(confirmed_by IS NULL AND ` + rollup.CountedClassAsIfConfirmed("probes") + ` = 'FAULT')`
-
 // serviceReason words a reading's reason by the rule it counts by, where
 // the reason recorded at the probe (a statement about the wire, written
-// for any schedule) would say otherwise: a counted not-served reading, one
-// not counted for want of the second location's confirmation, and genuine
-// rows that count as served. What came back on the wire follows.
+// for any schedule) would say otherwise: a not-served reading, and rows
+// that came back verified and count as served whatever their class. What
+// came back on the wire follows.
 func serviceReason(p probeRow) string {
 	switch {
 	case p.Service == "not_served":
-		return "not served: the rows did not come back, the blob could not be reconstructed from the whole set, and " + p.ConfirmedBy +
-			" did not get them either before must_serve_until; on the wire: " + p.Reason
-	case p.Unconfirmed && p.Classification == string(probe.ClassNotRegistered):
-		return "not counted: the blob could not be reconstructed, but no host is registered for a second location to confirm it from; on the wire: " + p.Reason
-	case p.Unconfirmed && p.ClearedBy != "":
-		return "not counted: " + p.ClearedBy + " fetched these rows before must_serve_until and they verified; on the wire: " + p.Reason
-	case p.Unconfirmed:
-		return "not counted: the rows did not come back and the blob could not be reconstructed, but a not-served reading counts only once " +
-			"the second location reads the same rows before must_serve_until and does not get them either, and it has not; on the wire: " + p.Reason
-	case p.Service == "served" && (p.Classification == string(probe.ClassShadowedShard) || p.Classification == string(probe.ClassUnmatchedGenuine)):
-		return "served: rows of this blob came back and verified against the commitment, though not as this promise's own set; on the wire: " + p.Reason
+		return "not served: the rows did not come back, and the blob was Unavailable; on the wire: " + p.Reason
+	case p.Service == "served" && p.Classification != string(probe.ClassHealthy):
+		return "served: rows of this blob came back and verified against the commitment; on the wire: " + p.Reason
 	}
 	return p.Reason
 }
@@ -4226,39 +3972,6 @@ func serviceReason(p probeRow) string {
 // (rollup.ObligationBuckets' late_healthy).
 const lateSQL = `(schedule_label = '` + probe.EndReadLabel + `' OR julianday(scheduled_at) >= julianday(must_serve_until) -
 		(julianday(must_serve_until) - julianday(COALESCE((SELECT settlement_time FROM publications pl WHERE pl.promise_hash = probes.promise_hash), must_serve_until))) / 4.0)`
-
-// blankSuspect clears the service word of every reading the
-// correlated-failure guard sets aside, as every count leaves it out. The
-// guard is tallied once, over the readings the rows hold.
-func (s *Server) blankSuspect(ctx context.Context, rows []probeRow) error {
-	var ats []any
-	seen := map[string]bool{}
-	for _, p := range rows {
-		if (p.Service != "" || p.Unconfirmed) && !seen[p.ScheduledAt] {
-			seen[p.ScheduledAt] = true
-			ats = append(ats, p.ScheduledAt)
-		}
-	}
-	if len(ats) == 0 {
-		return nil
-	}
-	pts, err := rollup.SuspectPoints(ctx, s.st.DB(), `scheduled_at IN (?`+strings.Repeat(", ?", len(ats)-1)+`)`, ats...)
-	if err != nil {
-		return err
-	}
-	suspect := map[string]bool{}
-	for _, p := range pts {
-		if p.Reason() != "" {
-			suspect[p.PromiseHash+"|"+p.At] = true
-		}
-	}
-	for i := range rows {
-		if suspect[rows[i].PromiseHash+"|"+rows[i].ScheduledAt] {
-			rows[i].Service, rows[i].Provisional, rows[i].Unconfirmed = "", false, false
-		}
-	}
-	return nil
-}
 
 func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -4294,16 +4007,13 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 		conds, args = append(conds, rollup.EffectiveClass("")+` = ?`), append(args, strings.ToUpper(c))
 	}
 	// served=no: the readings the obligations count as not served
-	// (rollup.CountedClass): no rows came back, on a blob that could not be
-	// reconstructed, and the second location confirmed it. Readings the
-	// correlated-failure guard sets aside are left out below, as every count
-	// leaves them out.
-	notServed := q.Get("served") == "no"
-	if notServed {
+	// (rollup.CountedClass): no rows came back, on a blob that was
+	// Unavailable.
+	if q.Get("served") == "no" {
 		conds = append(conds, rollup.CountedClass("probes")+` = 'FAULT'`)
 	}
-	// at: one reading, exactly as vantage_health.suspect lists it, so the
-	// rows behind an incident are one link away.
+	// at: one reading, by its scheduled time, so the rows behind a blob's
+	// reading are one link away.
 	if at := q.Get("at"); at != "" {
 		// Parsed, not passed through. A timestamp in any other spelling
 		// matched nothing after scanning the table for it, which reads to a
@@ -4312,7 +4022,7 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 		t, err := time.Parse(store.TimeLayout, at)
 		if err != nil {
 			if t, err = time.Parse(time.RFC3339, at); err != nil {
-				writeErr(w, 400, "at must be a reading's scheduled time as vantage_health.suspect prints it (RFC 3339)")
+				writeErr(w, 400, "at must be a reading's scheduled time (RFC 3339)")
 				return
 			}
 		}
@@ -4321,9 +4031,8 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 	// before: the upper bound that makes the list walkable. The order is
 	// started_at DESC and since is a lower bound, so without this there was
 	// no parameter that could reach the rows past the limit — on the one
-	// route docs/verdicts.md points a reader at as the evidence behind an
-	// exclusion, where a suspect point can hold more rows than the maximum
-	// limit allows.
+	// route docs/verdicts.md points a reader at as the evidence behind a
+	// reading, which can hold more rows than the maximum limit allows.
 	if before := q.Get("before"); before != "" {
 		t, err := time.Parse(time.RFC3339, before)
 		if err != nil {
@@ -4331,18 +4040,6 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		conds, args = append(conds, `started_at < ?`), append(args, store.TS(t))
-	}
-	if notServed {
-		// The guard, tallied over the points that hold one of these rows.
-		pts, err := rollup.SuspectPoints(r.Context(), s.st.DB(), `scheduled_at IN (SELECT scheduled_at FROM probes WHERE `+strings.Join(conds, " AND ")+`)`, args...)
-		if err != nil {
-			s.writeInternal(w, r.URL.Path, err)
-			return
-		}
-		if x, xargs := rollup.Exclusion("", pts); x != "" {
-			conds[len(conds)-1] += x
-			args = append(args, xargs...)
-		}
 	}
 	rows, err := s.probeRows(r.Context(), strings.Join(conds, " AND "), limit, args...)
 	if err != nil {

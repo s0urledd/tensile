@@ -1,7 +1,6 @@
 // Package export builds the daily export: one tarball per UTC day holding
-// every record the observer wrote for that day, and the second vantages'
-// answers it copied in (VantageMember), straight from the JSONL files, with
-// a manifest of line counts and digests. The export is what a
+// every record the observer wrote for that day, straight from the JSONL
+// files, with a manifest of line counts and digests. The export is what a
 // verifier downloads: sentinel-recompute re-derives every verdict and every
 // published figure from it, and the digests let two verifiers agree they
 // hold the same bytes.
@@ -44,8 +43,7 @@ type FileSpec struct {
 	TimeField string `json:"time_field"`
 }
 
-// Files is every record file the observer writes, in export order. Other
-// vantages' answers follow them (VantageMember).
+// Files is every record file the observer writes, in export order.
 var Files = []FileSpec{
 	{"publications.jsonl", "settlement_time"},
 	{"payments.jsonl", "time"},
@@ -67,31 +65,6 @@ var Files = []FileSpec{
 	// and cannot see why.
 	{"param_uncertainty.jsonl", "detected_at"},
 	{"corrections.jsonl", "judged_at"},
-}
-
-// Other vantages' answers are exported beside Files, one member per
-// vantage, after them in name order: vantages/<name>/measurements.jsonl,
-// dated by started_at, the path an untarred export holds them at and
-// sentinel-recompute reads them from (verdict.LoadConfirmations). A
-// not-served reading counts only once a second vantage confirmed it, so an
-// export without them redraws no confirmation, and every not-served count
-// the site shows would be a difference. The names are the directories
-// under the vantages directory (Builder.VantagesDir), and once a vantage
-// has been exported its member stays in every later manifest, empty when
-// its file is gone.
-const (
-	VantagesMemberDir  = "vantages"
-	vantageMemberFile  = "measurements.jsonl"
-	vantageMemberField = "started_at"
-)
-
-// vantageName is what a vantage directory may be called: the names the
-// pull accepts (deploy/vantage-pull.sh).
-var vantageName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
-
-// VantageMember is the export member one vantage's answers are carried as.
-func VantageMember(name string) string {
-	return VantagesMemberDir + "/" + name + "/" + vantageMemberFile
 }
 
 // StateFile is the scanner's state, carried in every export as a snapshot
@@ -166,12 +139,9 @@ type state struct {
 // Builder builds exports for one observer.
 type Builder struct {
 	DataDir string
-	// VantagesDir holds other vantages' copied files, <name>/measurements.jsonl
-	// each; empty is <DataDir>/vantages.
-	VantagesDir string
-	Dir         string // where exports and their index live
-	Vantage     string
-	Build       string
+	Dir     string // where exports and their index live
+	Vantage string
+	Build   string
 	// Hour is the UTC hour after which a day's export may be built (the
 	// grace for late rows). 3 means 03:00 the next day.
 	Hour int
@@ -199,41 +169,6 @@ func (b *Builder) name(day string) string {
 		v = "local"
 	}
 	return "tensile-" + v + "-" + day + ".tar.gz"
-}
-
-func (b *Builder) vantagesDir() string {
-	if b.VantagesDir != "" {
-		return b.VantagesDir
-	}
-	return filepath.Join(b.DataDir, VantagesMemberDir)
-}
-
-// vantages is every other vantage whose answers go in an export, in name
-// order: each directory under the vantages directory with a measurements
-// file, and each one an earlier export carried (st), so a member never
-// drops out of the manifest. This observer's own name is never one of
-// them.
-func (b *Builder) vantages(st *state) []string {
-	seen := map[string]bool{}
-	files, _ := filepath.Glob(filepath.Join(b.vantagesDir(), "*", vantageMemberFile))
-	for _, f := range files {
-		seen[filepath.Base(filepath.Dir(f))] = true
-	}
-	for k := range st.Offsets {
-		if rest, ok := strings.CutPrefix(k, VantagesMemberDir+"/"); ok {
-			if name, ok := strings.CutSuffix(rest, "/"+vantageMemberFile); ok {
-				seen[name] = true
-			}
-		}
-	}
-	var out []string
-	for name := range seen {
-		if vantageName.MatchString(name) && name != b.Vantage {
-			out = append(out, name)
-		}
-	}
-	sort.Strings(out)
-	return out
 }
 
 // Run builds every export that is due at now and not built yet: from the
@@ -317,22 +252,9 @@ func (b *Builder) build(day string, st *state, now time.Time) error {
 	var tarBuf bytes.Buffer
 	gz := gzip.NewWriter(&tarBuf)
 	tw := tar.NewWriter(gz)
-	type source struct {
-		spec FileSpec
-		path string
-	}
-	var sources []source
 	for _, f := range Files {
-		sources = append(sources, source{f, filepath.Join(b.DataDir, f.Name)})
-	}
-	for _, name := range b.vantages(st) {
-		sources = append(sources, source{FileSpec{VantageMember(name), vantageMemberField},
-			filepath.Join(b.vantagesDir(), name, vantageMemberFile)})
-	}
-	for _, s := range sources {
-		f := s.spec
 		from := st.Offsets[f.Name]
-		m, data, to, err := collect(s.path, f, day, from)
+		m, data, to, err := collect(filepath.Join(b.DataDir, f.Name), f, day, from)
 		if err != nil {
 			return err
 		}

@@ -114,9 +114,10 @@ type Measurement struct {
 	// reader can judge how much to trust a vantage. Additive, omitempty.
 	ClockOffsetMS int64 `json:"clock_offset_ms,omitempty"`
 
-	// Retry is set when this measurement is the second attempt after a
-	// transport timeout (see Config.RetryTransportTimeout). Absent on
-	// single-attempt measurements; additive, so the schema version is unchanged.
+	// Retry is set when this measurement is the second attempt: the
+	// client's re-dial at the reading, or the transport-timeout retry of the
+	// earlier schedule. Absent on single-attempt measurements; additive, so
+	// the schema version is unchanged.
 	Retry *RetryInfo `json:"retry,omitempty"`
 
 	// Observer identifies the code that produced and classified this row.
@@ -125,16 +126,14 @@ type Measurement struct {
 	Observer *ObserverInfo `json:"observer,omitempty"`
 
 	// Read says where this request sat in its blob's reading (blobread.go):
-	// the pass, the validator's place in the client's order, and what the
+	// the validator's place in the client's order, and what the
 	// reading came to. For audit only; no figure is computed from it.
 	// Additive, omitempty.
 	Read *ReadInfo `json:"read,omitempty"`
 
 	// ClientRules says the request was made and judged under the Fibre
 	// client's rules (Input.ClientRules: the client's RPCTimeout, its
-	// receive bound, its re-dial). A second location's answer counts toward
-	// a not-served reading only when it says so (verdict.ConfirmNotServed):
-	// a build without it read by other rules. Additive, omitempty.
+	// receive bound, its re-dial). Additive, omitempty.
 	ClientRules bool `json:"client_rules,omitempty"`
 
 	// novel is how many of the returned rows the blob's reading had not
@@ -144,35 +143,20 @@ type Measurement struct {
 
 // ReadInfo places one validator's answer in its blob's reading.
 type ReadInfo struct {
-	// Pass is 1, or 2 for the second pass a minute later.
-	Pass int `json:"pass"`
 	// Order is the validator's place in the order the reading asked in
 	// (celestia-app's validator.Set.Select), from 0.
 	Order int `json:"order"`
-	// Redialed is set when the request was made again at once, as the
-	// client does after a failed dial or an unreachable or timed-out peer.
-	Redialed bool `json:"redialed,omitempty"`
 	// NovelRows is how many of this validator's rows the reading had not
 	// already had; BlobHaveAfter how many distinct verified rows the reading
 	// held once this answer was in.
 	NovelRows     int `json:"novel_rows"`
 	BlobHaveAfter int `json:"blob_have_after"`
-	// BlobResult is what the whole reading came to: available, or
-	// unavailable (every endorsed validator asked, twice, and too few rows),
-	// or incomplete (the reading could not finish in time).
+	// BlobResult is what the whole reading came to: available, unavailable,
+	// or not_read (every request failed on this observer's side).
 	BlobResult string `json:"blob_result"`
-	// Attempts are the earlier answers of this validator in the reading
-	// (the first before a re-dial, the first pass before the second).
-	Attempts []Attempt `json:"attempts,omitempty"`
-}
-
-// Attempt is one earlier answer.
-type Attempt struct {
-	Pass       int       `json:"pass"`
-	StartedAt  time.Time `json:"started_at"`
-	Outcome    Outcome   `json:"outcome"`
-	RawError   string    `json:"raw_error,omitempty"`
-	DurationMS int64     `json:"duration_ms"`
+	// BlobError is the Fibre client's error on an unavailable reading: "no
+	// shards retrieved" or "not enough shards to reconstruct blob".
+	BlobError string `json:"blob_error,omitempty"`
 }
 
 // ObserverInfo is the build that wrote a measurement and the chain it
@@ -208,11 +192,11 @@ type ObserverInfo struct {
 	PinStale bool `json:"pin_stale,omitempty"`
 }
 
-// RetryInfo records the first attempt of a validator that was asked more
-// than once in a reading (a re-dial, the second pass): FirstOutcome is the
-// very first answer, which the store keeps as retry_first_outcome. The
-// enclosing Measurement is the last attempt; ReadInfo.Attempts has them
-// all. Rows of the earlier schedule carry the transport-timeout retry here.
+// RetryInfo records the first attempt of a validator that was asked twice
+// (the client's re-dial at the reading, or the earlier schedule's
+// transport-timeout retry): FirstOutcome is the first answer, which the
+// store keeps as retry_first_outcome. The enclosing Measurement is the
+// second attempt.
 type RetryInfo struct {
 	Attempts        int       `json:"attempts"` // always 2
 	DelayMS         int64     `json:"delay_ms"`

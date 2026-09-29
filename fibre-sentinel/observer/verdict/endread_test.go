@@ -21,23 +21,24 @@ func newReading() *reading {
 	return &reading{settled: settled, msu: msu, at: msu.Add(-10 * time.Minute)}
 }
 
-// add records validator v's answer: its class, and when rows came back
-// verified, their indices. holds is the rows it is endorsed for. Every
-// failure is confirmed from a second location, as the rule needs before it
-// counts; TestANotServedRowCountsOnlyOnceConfirmed covers the rest.
+// add records validator v's answer, as the client-shaped reading writes
+// it: its class, and when rows came back verified, their indices. holds is
+// the rows it is endorsed for.
 func (rd *reading) add(v string, cls probe.Classification, holds int, rows ...uint32) {
 	out := probe.OutcomeServedOK
 	switch cls {
 	case probe.ClassFault:
 		out = probe.OutcomeNotFound
 	case probe.ClassUnreachable:
-		out = probe.OutcomeTLSFail
+		out = probe.OutcomeRPCTimeout
 	case probe.ClassServerError:
 		out = probe.OutcomeServerError
 	case probe.ClassIdentityMismatch:
 		out = probe.OutcomeIdentityFail
 	case probe.ClassThrottled:
 		out = probe.OutcomeThrottled
+	case probe.ClassNotRegistered:
+		out = probe.OutcomeNoHost
 	case probe.ClassProbeError:
 		out = probe.OutcomeProbeError
 	case probe.ClassNotProbed:
@@ -48,7 +49,19 @@ func (rd *reading) add(v string, cls probe.Classification, holds int, rows ...ui
 	rd.rows = append(rd.rows, Row{PromiseHash: "p", Validator: v, ScheduleLabel: probe.EndReadLabel, ScheduledAt: rd.at, StartedAt: rd.at,
 		MustServeUntil: rd.msu, Assigned: true, Attested: true, Phase: probe.PhaseInWindow, Classification: cls, Outcome: out,
 		TLSOK:      cls != probe.ClassUnreachable && cls != probe.ClassNotProbed && cls != probe.ClassProbeError,
-		RowIndices: rows, RowsReturned: len(rows), CommitmentVerified: len(rows) > 0, AssignedRowCount: holds, Confirmed: true})
+		RowIndices: rows, RowsReturned: len(rows), CommitmentVerified: len(rows) > 0, AssignedRowCount: holds})
+}
+
+// other records a validator that did not endorse the promise: asked like
+// the rest, owing nothing.
+func (rd *reading) other(v string, holds int, rows ...uint32) {
+	out := probe.OutcomeNotFound
+	if len(rows) > 0 {
+		out = probe.OutcomeServedOK
+	}
+	rd.rows = append(rd.rows, Row{PromiseHash: "p", Validator: v, ScheduleLabel: probe.EndReadLabel, ScheduledAt: rd.at, StartedAt: rd.at,
+		MustServeUntil: rd.msu, Assigned: true, Phase: probe.PhaseInWindow, Classification: probe.ClassUnattested, Outcome: out,
+		TLSOK: true, RowIndices: rows, RowsReturned: len(rows), CommitmentVerified: len(rows) > 0, AssignedRowCount: holds})
 }
 
 func span(from, n int) []uint32 {
@@ -61,9 +74,7 @@ func span(from, n int) []uint32 {
 
 func (rd *reading) obligations(facts BlobFacts) (Obligations, map[string]Obligations) {
 	w := Window{All: true, End: rd.msu.Add(time.Hour)}
-	blobs := Blobs{"p": facts}
-	sus := SuspectPoints(rd.rows, w, blobs)
-	return ComputeObligations(rd.rows, map[string]time.Time{"p": rd.settled}, w, sus, blobs)
+	return ComputeObligations(rd.rows, map[string]time.Time{"p": rd.settled}, w, Blobs{"p": facts})
 }
 
 var (
@@ -72,18 +83,53 @@ var (
 	notCounted = Obligations{Total: 1, NotCounted: 1}
 )
 
-// The rule the owner set: a validator that timed out on a blob the other
-// validators' rows rebuilt all the same did nothing a reader noticed, and
-// this observer's own path is as likely the cause. It counts neither way; a
-// validator the reading never got to has no obligation here at all.
-func TestAnAvailableBlobDoesNotCountAValidatorThatTimedOut(t *testing.T) {
+// The three outcomes, in the client's words: Available; Unavailable with
+// "no shards retrieved" when no verified row came back; Unavailable with
+// "not enough shards to reconstruct blob" when some did, fewer than
+// needed.
+func TestTheThreeOutcomes(t *testing.T) {
+	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"a": 4, "b": 4, "c": 4}}
+	avail := newReading()
+	avail.add("a", probe.ClassHealthy, 4, span(0, 4)...)
+	avail.add("b", probe.ClassFault, 4)
+	avail.add("c", probe.ClassHealthy, 4, span(4, 4)...)
+	none := newReading()
+	none.add("a", probe.ClassFault, 4)
+	none.add("b", probe.ClassThrottled, 4)
+	none.add("c", probe.ClassUnreachable, 4)
+	some := newReading()
+	some.add("a", probe.ClassHealthy, 4, span(0, 4)...)
+	some.add("b", probe.ClassFault, 4)
+	some.add("c", probe.ClassServerError, 4)
+	for _, c := range []struct {
+		name          string
+		rows          []Row
+		status, error string
+	}{
+		{"available", avail.rows, BlobAvailable, ""},
+		{"no shards retrieved", none.rows, BlobUnavailable, probe.ClientErrNoShards},
+		{"not enough shards", some.rows, BlobUnavailable, probe.ClientErrNotEnoughShards},
+	} {
+		if got := BlobReading(c.rows, facts, false); got.Status != c.status || got.Error != c.error {
+			t.Errorf("%s: %s %q, want %s %q", c.name, got.Status, got.Error, c.status, c.error)
+		}
+	}
+}
+
+// On an Available blob nothing is counted against anyone: a validator
+// that failed, for whatever reason, counts neither way, and one the reading
+// never got to has no obligation at all. A validator whose rows came back
+// is served.
+func TestAnAvailableBlobCountsNothingAgainstAnyone(t *testing.T) {
 	rd := newReading()
 	rd.add("a", probe.ClassHealthy, 4, span(0, 4)...)
 	rd.add("b", probe.ClassHealthy, 4, span(4, 4)...)
 	rd.add("slow", probe.ClassUnreachable, 4)
-	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"a": 4, "b": 4, "slow": 4, "never": 4}}
+	rd.add("gone", probe.ClassFault, 4)
+	rd.add("local", probe.ClassProbeError, 4)
+	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"a": 4, "b": 4, "slow": 4, "gone": 4, "local": 4, "never": 4}}
 	net, by := rd.obligations(facts)
-	for v, want := range map[string]Obligations{"a": served, "b": served, "slow": notCounted} {
+	for v, want := range map[string]Obligations{"a": served, "b": served, "slow": notCounted, "gone": notCounted, "local": notCounted} {
 		if got := by[v]; got != want {
 			t.Errorf("%s: %+v, want %+v", v, got, want)
 		}
@@ -94,219 +140,143 @@ func TestAnAvailableBlobDoesNotCountAValidatorThatTimedOut(t *testing.T) {
 	if net.Broken != 0 {
 		t.Errorf("broken = %d on an Available blob", net.Broken)
 	}
-	if res := BlobReading(rd.rows, facts, false, false); res.Status != BlobAvailable || res.Have != 8 || res.Asked != 3 || res.Served != 2 {
-		t.Errorf("reading = %+v, want Available with 8 rows, 3 asked, 2 served", res)
+	if res := BlobReading(rd.rows, facts, false); res.Status != BlobAvailable || res.Have != 8 || res.Asked != 4 || res.Served != 2 {
+		t.Errorf("reading = %+v, want Available with 8 rows, 4 asked, 2 served", res)
 	}
 }
 
-// An Unavailable blob: the validators whose rows did not come back are not
-// served, whatever the reason the reader got; the ones whose rows came back
-// are served. A validator this observer could not read (its own gap) counts
-// neither way, and its rows are counted as if they might have come back.
-func TestAnUnavailableBlobCountsTheValidatorsWhoseRowsDidNotComeBack(t *testing.T) {
+// On an Unavailable blob every endorsing validator whose rows did not come
+// back is not served, whatever the client met: not found, a timeout, a
+// rate limit, a server error or a CANCELLED it sent, a certificate the
+// client rejects, no registered host, or a request that failed on this
+// observer's side while others reached their validators. Every validator
+// whose rows came back verified is served, a short shard included. A
+// validator that did not endorse owes nothing and is never counted.
+func TestNotServedOnlyOnAnUnavailableBlob(t *testing.T) {
 	rd := newReading()
-	rd.add("big", probe.ClassFault, 8)
-	for i, v := range []string{"s1", "s2", "s3", "s4", "s5"} {
-		rd.add(v, probe.ClassHealthy, 1, uint32(8+i))
+	rd.add("gone", probe.ClassFault, 4)
+	rd.add("slow", probe.ClassUnreachable, 4)
+	rd.add("limited", probe.ClassThrottled, 4)
+	rd.add("errs", probe.ClassServerError, 4)
+	rd.add("wrongkey", probe.ClassIdentityMismatch, 4)
+	rd.add("nohost", probe.ClassNotRegistered, 4)
+	rd.add("local", probe.ClassProbeError, 4)
+	rd.add("s1", probe.ClassHealthy, 2, 8, 9)
+	rd.add("short", probe.ClassUnmatchedGenuine, 4, 10)
+	rd.other("other", 4)
+	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"gone": 4, "slow": 4, "limited": 4, "errs": 4, "wrongkey": 4, "nohost": 4,
+		"local": 4, "s1": 2, "short": 4}}
+	res := BlobReading(rd.rows, facts, false)
+	if res.Status != BlobUnavailable || res.Error != probe.ClientErrNotEnoughShards || res.Have != 3 {
+		t.Fatalf("reading = %+v, want Unavailable, not enough shards, 3 rows", res)
 	}
-	rd.add("gap", probe.ClassProbeError, 2)
-	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"big": 8, "s1": 1, "s2": 1, "s3": 1, "s4": 1, "s5": 1, "gap": 2}}
-	_, by := rd.obligations(facts)
-	want := map[string]Obligations{"big": notServed, "s1": served, "s5": served, "gap": notCounted}
-	for v, w := range want {
-		if got := by[v]; got != w {
-			t.Errorf("%s: %+v, want %+v", v, got, w)
+	net, by := rd.obligations(facts)
+	for _, v := range []string{"gone", "slow", "limited", "errs", "wrongkey", "nohost", "local"} {
+		if by[v] != notServed {
+			t.Errorf("%s: %+v, want not served", v, by[v])
 		}
 	}
-	res := BlobReading(rd.rows, facts, false, false)
-	if res.Status != BlobUnavailable || res.Have != 5 || res.Potential != 2 {
-		t.Errorf("reading = %+v, want Unavailable, 5 rows, 2 that might have come back", res)
-	}
-
-	// Had the validator this observer failed to read held three rows, they
-	// could have made the blob readable: nobody is counted, and the blob
-	// was not read by Tensile.
-	facts.Endorsed["gap"] = 3
-	_, by = rd.obligations(facts)
-	if got := by["big"]; got != notCounted {
-		t.Errorf("big with a gap that could have filled the blob: %+v, want not counted", got)
-	}
-	if res := BlobReading(rd.rows, facts, false, false); res.Status != BlobNotRead {
-		t.Errorf("status %s, want not_read", res.Status)
-	}
-}
-
-// A rate limit at the reading is the validator not serving, as the Fibre
-// client meets it (ResourceExhausted is the server's answer: the client
-// skips the shard). Its rows are not counted as ones that might have come
-// back, so a throttle cannot shield the others; on an Unavailable blob it
-// is not served, and on an Available one it counts neither way.
-func TestARateLimitIsTheValidatorNotServing(t *testing.T) {
-	rd := newReading()
-	rd.add("big", probe.ClassFault, 4)
-	rd.add("limited", probe.ClassThrottled, 4)
-	rd.add("s1", probe.ClassHealthy, 2, 8, 9)
-	rd.add("s2", probe.ClassHealthy, 2, 10, 11)
-	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"big": 4, "limited": 4, "s1": 2, "s2": 2}}
-	_, by := rd.obligations(facts)
-	if by["big"] != notServed || by["limited"] != notServed || by["s1"] != served {
-		t.Errorf("big %+v limited %+v s1 %+v: the blob was Unavailable, and neither the throttle nor the not-found served", by["big"], by["limited"], by["s1"])
-	}
-	if res := BlobReading(rd.rows, facts, false, false); res.Status != BlobUnavailable || res.Potential != 0 {
-		t.Errorf("reading %+v, want Unavailable with nothing that might still have come back", res)
-	}
-
-	whole := newReading()
-	whole.add("a", probe.ClassHealthy, 8, span(0, 8)...)
-	whole.add("limited", probe.ClassThrottled, 4)
-	if _, by := whole.obligations(BlobFacts{Needed: 8, Endorsed: map[string]int{"a": 8, "limited": 4}}); by["limited"] != notCounted {
-		t.Errorf("a throttle on an Available blob: %+v, want not counted", by["limited"])
-	}
-}
-
-// The client asks the whole set, endorsing or not: a blob is Unavailable
-// only when every validator the assignment gives rows could not hand over
-// enough of them. A validator that did not endorse owes nothing, so it is
-// never counted, whatever it answered; its rows count toward the blob.
-func TestTheWholeSetDecidesUnavailable(t *testing.T) {
-	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"e1": 4, "e2": 2},
-		Assigned: map[string]int{"e1": 4, "e2": 2, "other": 8}}
-	// The endorsers alone are short, but a validator that did not endorse
-	// was never asked, and its rows could have made the blob: nothing counts.
-	rd := newReading()
-	rd.add("e1", probe.ClassFault, 4)
-	rd.add("e2", probe.ClassHealthy, 2, 4, 5)
-	if res := BlobReading(rd.rows, facts, false, false); res.Status != BlobNotRead || res.Potential != 8 {
-		t.Errorf("reading %+v, want not_read: the rest of the set was not asked", res)
-	}
-	if _, by := rd.obligations(facts); by["e1"] != notCounted {
-		t.Errorf("e1 %+v, want not counted", by["e1"])
-	}
-
-	// Asked, it had nothing either: the whole set could not rebuild the blob.
-	rd.rows = append(rd.rows, Row{PromiseHash: "p", Validator: "other", ScheduleLabel: probe.EndReadLabel, ScheduledAt: rd.at, StartedAt: rd.at,
-		MustServeUntil: rd.msu, Assigned: true, Attested: false, Phase: probe.PhaseInWindow, Classification: probe.ClassUnattested,
-		Outcome: probe.OutcomeNotFound, TLSOK: true, AssignedRowCount: 8})
-	if res := BlobReading(rd.rows, facts, false, false); res.Status != BlobUnavailable || res.Asked != 3 {
-		t.Errorf("reading %+v, want Unavailable with three asked", res)
-	}
-	_, by := rd.obligations(facts)
-	if by["e1"] != notServed || by["e2"] != served {
-		t.Errorf("e1 %+v e2 %+v", by["e1"], by["e2"])
+	for _, v := range []string{"s1", "short"} {
+		if by[v] != served {
+			t.Errorf("%s: %+v, want served", v, by[v])
+		}
 	}
 	if _, ok := by["other"]; ok {
 		t.Errorf("a validator that did not endorse has an obligation: %+v", by["other"])
 	}
-
-	// And its verified rows count toward the blob like anyone's.
-	lent := newReading()
-	lent.add("e1", probe.ClassFault, 4)
-	lent.add("e2", probe.ClassHealthy, 2, 4, 5)
-	lent.rows = append(lent.rows, Row{PromiseHash: "p", Validator: "other", ScheduleLabel: probe.EndReadLabel, ScheduledAt: lent.at, StartedAt: lent.at,
-		MustServeUntil: lent.msu, Assigned: true, Phase: probe.PhaseInWindow, Classification: probe.ClassUnattested, Outcome: probe.OutcomeServedOK,
-		TLSOK: true, RowIndices: span(8, 8), RowsReturned: 8, CommitmentVerified: true, AssignedRowCount: 8})
-	if res := BlobReading(lent.rows, facts, false, false); res.Status != BlobAvailable {
-		t.Errorf("reading %+v, want Available on the rows of a validator that did not endorse", res)
+	if net.Broken != 7 || net.Served != 2 {
+		t.Errorf("network %+v, want 7 not served and 2 served", net)
 	}
 }
 
-// A validator whose verified rows are already in hand has given them: a
-// row this observer could not judge yet (the late shadow verdict's
-// PROBE_ERROR over genuine rows) adds its rows to the blob and nothing to
-// what might still have come back, so the blob is not held open by it.
-func TestVerifiedRowsAreNeverCountedTwice(t *testing.T) {
+// A validator that did not endorse is asked like the rest, and its verified
+// rows count toward the blob like anyone's.
+func TestTheWholeSetCountsTowardTheBlob(t *testing.T) {
+	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"e1": 4, "e2": 2}}
+	rd := newReading()
+	rd.add("e1", probe.ClassFault, 4)
+	rd.add("e2", probe.ClassHealthy, 2, 4, 5)
+	rd.other("other", 8, span(8, 8)...)
+	if res := BlobReading(rd.rows, facts, false); res.Status != BlobAvailable {
+		t.Errorf("reading %+v, want Available on the rows of a validator that did not endorse", res)
+	}
+	if _, by := rd.obligations(facts); by["e1"] != notCounted || by["e2"] != served {
+		t.Errorf("e1 %+v e2 %+v", by["e1"], by["e2"])
+	}
+}
+
+// A reading that did not happen counts nothing and says so: every request
+// failed on this observer's side before it reached a validator (its own
+// network was down), or the prober missed the reading, or part of it
+// (NOT_PROBED) and the rows are short. Nothing in it counts, not even rows
+// that came back. Blobs whose window is still open are in their retention
+// window instead.
+func TestAReadingThatDidNotHappenCountsNothing(t *testing.T) {
+	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"a": 4, "b": 4, "c": 4}}
+	local := newReading()
+	for _, v := range []string{"a", "b", "c"} {
+		local.add(v, probe.ClassProbeError, 4)
+	}
+	missed := newReading()
+	for _, v := range []string{"a", "b", "c"} {
+		missed.add(v, probe.ClassNotProbed, 4)
+	}
+	part := newReading()
+	part.add("a", probe.ClassHealthy, 4, span(0, 4)...)
+	part.add("b", probe.ClassNotProbed, 4)
+	part.add("c", probe.ClassNotProbed, 4)
+	for _, c := range []struct {
+		name string
+		rd   *reading
+	}{
+		{"every request failed here", local},
+		{"missed", missed},
+		{"partly missed", part},
+	} {
+		if res := BlobReading(c.rd.rows, facts, false); res.Status != BlobNotRead || res.Error != "" {
+			t.Errorf("%s: %s %q, want not read", c.name, res.Status, res.Error)
+		}
+		if res := BlobReading(c.rd.rows, facts, true); res.Status != BlobPending {
+			t.Errorf("%s, window open: %s, want pending", c.name, res.Status)
+		}
+		net, by := c.rd.obligations(facts)
+		if net.Served+net.Broken != 0 {
+			t.Errorf("%s: %+v, want nothing counted", c.name, net)
+		}
+		for v, o := range by {
+			if o != notCounted {
+				t.Errorf("%s: %s %+v, want not counted", c.name, v, o)
+			}
+		}
+	}
+	// Rows the prober missed never stand between a blob and Available.
+	whole := newReading()
+	whole.add("a", probe.ClassHealthy, 4, span(0, 4)...)
+	whole.add("b", probe.ClassHealthy, 4, span(4, 4)...)
+	whole.add("c", probe.ClassNotProbed, 4)
+	if res := BlobReading(whole.rows, facts, false); res.Status != BlobAvailable {
+		t.Errorf("available with a missed request: %s", res.Status)
+	}
+}
+
+// Verified rows came back, whatever class the row is filed under while its
+// verdict waits (the late shadow judgement's PROBE_ERROR over genuine
+// rows): they count toward the blob, they are an answer, and the validator
+// is served.
+func TestVerifiedRowsCameBack(t *testing.T) {
 	rd := newReading()
 	rd.add("big", probe.ClassFault, 8)
-	rd.add("s1", probe.ClassHealthy, 1, 9)
-	rd.add("s2", probe.ClassHealthy, 1, 10)
 	rd.rows = append(rd.rows, Row{PromiseHash: "p", Validator: "deferred", ScheduleLabel: probe.EndReadLabel, ScheduledAt: rd.at, StartedAt: rd.at,
 		MustServeUntil: rd.msu, Assigned: true, Attested: true, Phase: probe.PhaseInWindow, Classification: probe.ClassProbeError,
 		Outcome: probe.OutcomePartial, TLSOK: true, RowIndices: []uint32{20}, RowsReturned: 1, CommitmentVerified: true, AssignedRowCount: 6})
-	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"big": 8, "s1": 1, "s2": 1, "deferred": 6}}
-	res := BlobReading(rd.rows, facts, false, false)
-	if res.Status != BlobUnavailable || res.Have != 3 || res.Potential != 0 {
-		t.Errorf("reading %+v, want Unavailable with 3 rows and nothing more to come", res)
+	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"big": 8, "deferred": 6}}
+	res := BlobReading(rd.rows, facts, false)
+	if res.Status != BlobUnavailable || res.Have != 1 || res.Error != probe.ClientErrNotEnoughShards {
+		t.Errorf("reading %+v, want Unavailable with 1 row", res)
 	}
 	_, by := rd.obligations(facts)
-	if by["big"] != notServed || by["deferred"] != notCounted {
+	if by["big"] != notServed || by["deferred"] != served {
 		t.Errorf("big %+v deferred %+v", by["big"], by["deferred"])
-	}
-}
-
-// On an Unavailable blob, served means the rows the validator holds came
-// back, not a token of them: genuine rows fewer than it holds are not
-// served. On an Available blob the same answer is served.
-func TestAShortShardIsNotServedOnAnUnavailableBlob(t *testing.T) {
-	rd := newReading()
-	rd.add("big", probe.ClassFault, 8)
-	rd.add("short", probe.ClassUnmatchedGenuine, 4, 8)
-	rd.add("s1", probe.ClassHealthy, 1, 9)
-	rd.add("s2", probe.ClassHealthy, 1, 10)
-	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"big": 8, "short": 4, "s1": 1, "s2": 1}}
-	_, by := rd.obligations(facts)
-	if by["short"] != notServed || by["big"] != notServed || by["s1"] != served {
-		t.Errorf("short %+v big %+v s1 %+v", by["short"], by["big"], by["s1"])
-	}
-
-	whole := newReading()
-	whole.add("short", probe.ClassUnmatchedGenuine, 4, 8)
-	whole.add("a", probe.ClassHealthy, 8, span(0, 8)...)
-	_, by = whole.obligations(BlobFacts{Needed: 8, Endorsed: map[string]int{"short": 4, "a": 8}})
-	if by["short"] != served {
-		t.Errorf("short on an Available blob: %+v, want served", by["short"])
-	}
-}
-
-// Every validator failing at once is this observer's trouble as likely as
-// theirs: the reading is set aside and nothing counts, either way.
-func TestEveryValidatorFailingAtOnceCountsNeitherWay(t *testing.T) {
-	rd := newReading()
-	for _, v := range []string{"a", "b", "c", "d"} {
-		rd.add(v, probe.ClassUnreachable, 2)
-	}
-	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"a": 2, "b": 2, "c": 2, "d": 2}}
-	w := Window{All: true, End: rd.msu.Add(time.Hour)}
-	sus := SuspectPoints(rd.rows, w, Blobs{"p": facts})
-	if len(sus) != 1 {
-		t.Fatalf("suspect points %+v, want the one reading", sus)
-	}
-	net, _ := rd.obligations(facts)
-	if net.Total != 0 || net.Broken != 0 {
-		t.Errorf("obligations %+v, want none: the reading is set aside", net)
-	}
-	if res := BlobReading(rd.rows, facts, true, false); res.Status != BlobNotRead {
-		t.Errorf("status %s, want not_read", res.Status)
-	}
-	// The same failures, but every validator failed with a different answer
-	// that leaves the reader without rows: the guard counts them together.
-	mixed := newReading()
-	mixed.add("a", probe.ClassUnreachable, 2)
-	mixed.add("b", probe.ClassServerError, 2)
-	mixed.add("c", probe.ClassIdentityMismatch, 2)
-	mixed.add("d", probe.ClassFault, 2)
-	if sus := SuspectPoints(mixed.rows, w, Blobs{"p": facts}); len(sus) != 1 || sus[0].Faulted != 4 {
-		t.Errorf("mixed failures: %+v, want one point with 4 failed", sus)
-	}
-}
-
-// A reading the blob came through whole is not the observer's trouble,
-// however many of the validators it asked failed beside it: the guard does
-// not set it aside, so the ones that served are credited.
-func TestTheGuardLeavesAnAvailableBlobAlone(t *testing.T) {
-	rd := newReading()
-	rd.add("a", probe.ClassHealthy, 4, span(0, 4)...)
-	rd.add("b", probe.ClassHealthy, 4, span(4, 4)...)
-	for _, v := range []string{"x", "y", "z"} {
-		rd.add(v, probe.ClassUnreachable, 4)
-	}
-	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"a": 4, "b": 4, "x": 4, "y": 4, "z": 4}}
-	w := Window{All: true, End: rd.msu.Add(time.Hour)}
-	if sus := SuspectPoints(rd.rows, w, Blobs{"p": facts}); len(sus) != 0 {
-		t.Fatalf("an Available reading was set aside: %+v", sus)
-	}
-	_, by := rd.obligations(facts)
-	if by["a"] != served || by["x"] != notCounted {
-		t.Errorf("a %+v x %+v", by["a"], by["x"])
 	}
 }
 
@@ -320,32 +290,25 @@ func TestBlobReadingStatuses(t *testing.T) {
 	unavail.add("a", probe.ClassHealthy, 4, span(0, 4)...)
 	unavail.add("b", probe.ClassFault, 4)
 	unavail.add("c", probe.ClassUnreachable, 4)
-	incomplete := newReading()
-	incomplete.add("a", probe.ClassHealthy, 4, span(0, 4)...)
-	incomplete.add("b", probe.ClassFault, 4)
 	for _, c := range []struct {
-		name          string
-		rows          []Row
-		suspect, open bool
-		want          string
+		name string
+		rows []Row
+		open bool
+		want string
 	}{
-		{"available", avail.rows, false, false, BlobAvailable},
-		{"available, suspect all the same", avail.rows, true, false, BlobAvailable},
-		{"available, window open", avail.rows, false, true, BlobAvailable},
-		{"unavailable", unavail.rows, false, false, BlobUnavailable},
-		{"unavailable, window still open", unavail.rows, false, true, BlobUnavailable},
-		{"unavailable at a suspect reading", unavail.rows, true, false, BlobNotRead},
-		{"incomplete, window over", incomplete.rows, false, false, BlobNotRead},
-		{"incomplete, window open", incomplete.rows, false, true, BlobPending},
-		{"no reading, window open", nil, false, true, BlobPending},
-		{"no reading, window over", nil, false, false, BlobNotRead},
+		{"available", avail.rows, false, BlobAvailable},
+		{"available, window open", avail.rows, true, BlobAvailable},
+		{"unavailable", unavail.rows, false, BlobUnavailable},
+		{"unavailable, window still open", unavail.rows, true, BlobUnavailable},
+		{"no reading, window open", nil, true, BlobPending},
+		{"no reading, window over", nil, false, BlobNotRead},
 	} {
-		if got := BlobReading(c.rows, facts, c.suspect, c.open); got.Status != c.want {
+		if got := BlobReading(c.rows, facts, c.open); got.Status != c.want {
 			t.Errorf("%s: %s, want %s", c.name, got.Status, c.want)
 		}
 	}
 	// Needed unknown: nothing can be said.
-	if got := BlobReading(avail.rows, BlobFacts{}, false, false); got.Status != BlobNotRead {
+	if got := BlobReading(avail.rows, BlobFacts{}, false); got.Status != BlobNotRead {
 		t.Errorf("unknown needed rows: %s", got.Status)
 	}
 }
@@ -392,25 +355,39 @@ func TestTheBoundsAgreeWithTheExactCount(t *testing.T) {
 		if got.Lower > got.Have || got.Have > got.Upper {
 			t.Fatalf("bounds %d <= %d <= %d do not hold", got.Lower, got.Have, got.Upper)
 		}
-		if want := got.Have+got.Potential < needed; got.Unavailable() != want {
-			t.Fatalf("unavailable %v, the exact count says %v: %+v", got.Unavailable(), want, got)
-		}
 		if want := got.Have >= needed; got.Available() != want {
 			t.Fatalf("available %v, the exact count says %v: %+v", got.Available(), want, got)
+		}
+		if want := got.Have < needed && got.Ran; got.Unavailable() != want {
+			t.Fatalf("unavailable %v, the exact count says %v: %+v", got.Unavailable(), want, got)
 		}
 	}
 }
 
-// A held deadline withholds a reading's verdict in both directions, as it
-// does every other reading's: the no-rows FAULT and the genuine-rows
-// HEALTHY alike, whatever the blob's reading came to.
+// A held deadline withholds a counted reading in both directions: the rows
+// that came back and the not-served ones alike. What counts neither way
+// stays so.
 func TestEndReadingHeldDeadline(t *testing.T) {
-	for _, c := range []probe.Classification{probe.ClassUnreachable, probe.ClassShadowedShard, probe.ClassFault, probe.ClassHealthy} {
-		r := Row{ScheduleLabel: probe.EndReadLabel, Classification: c, Outcome: probe.OutcomeTCPTimeout, RetentionUnverified: true}
-		for _, unavailable := range []bool{false, true} {
-			if got := r.CountedClass(unavailable); got != probe.ClassRetentionUnverified {
-				t.Errorf("held %s (unavailable %v): %s, want RETENTION_UNVERIFIED", c, unavailable, got)
-			}
+	for _, c := range []struct {
+		cls         probe.Classification
+		verified    bool
+		unavailable bool
+		want        probe.Classification
+	}{
+		{probe.ClassHealthy, true, false, probe.ClassRetentionUnverified},
+		{probe.ClassShadowedShard, true, true, probe.ClassRetentionUnverified},
+		{probe.ClassFault, false, true, probe.ClassRetentionUnverified},
+		{probe.ClassUnreachable, false, true, probe.ClassRetentionUnverified},
+		{probe.ClassUnreachable, false, false, NotCounted},
+	} {
+		r := Row{ScheduleLabel: probe.EndReadLabel, Phase: probe.PhaseInWindow, Assigned: true, Attested: true, Classification: c.cls,
+			Outcome: probe.OutcomeTCPTimeout, CommitmentVerified: c.verified, RetentionUnverified: true}
+		rd := Reading{Needed: 8, Ran: true, Have: 8}
+		if c.unavailable {
+			rd.Have = 2
+		}
+		if got := r.CountedClass(rd); got != c.want {
+			t.Errorf("held %s (unavailable %v): %s, want %s", c.cls, c.unavailable, got, c.want)
 		}
 	}
 }

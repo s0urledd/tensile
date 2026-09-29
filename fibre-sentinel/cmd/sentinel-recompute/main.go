@@ -5,18 +5,17 @@
 //
 //   - every probe row's phase and classification, from the row's own
 //     fields and the prune tolerance the prober ran with (runs.jsonl);
-//   - the obligation buckets per validator and network-wide for a window,
-//     with the correlated-failure guard, in a second implementation
-//     (observer/verdict) of the rules the API evaluates in SQL, compared
-//     against the API's own answer when -api or -api-json is given;
+//   - each blob's reading (Available, or Unavailable with the Fibre
+//     client's error, or not read) and the obligation buckets per validator
+//     and network-wide for a window, in a second implementation
+//     (observer/verdict) of the rules the API evaluates in SQL, the
+//     obligations compared against the API's own answer when -api or
+//     -api-json is given;
 //   - the height ranges this observer could not say which x/fibre params
 //     were in force over (param_uncertainty.jsonl), the verdicts they
 //     withhold, and the deadline corrections a verified range produced
 //     (corrections.jsonl) — each redrawn rather than trusted, so a
 //     fabricated correction is a divergence;
-//   - the not-served rows a second vantage confirmed, from its rows under
-//     vantages/<name>/measurements.jsonl, which the live record and every
-//     daily export carry (verdict.ConfirmNotServed): only those can count;
 //   - with -sampling, the admission draws of every day whose secret is
 //     revealed (sampling-secrets.jsonl): which publications this observer
 //     should have probed against which ones it did, and which it recorded
@@ -49,7 +48,6 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
-	"github.com/plsgiveup/fibre/fibre-sentinel/observer/export"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/policy"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/verdict"
@@ -110,12 +108,6 @@ func main() {
 			}
 		}
 		ms = kept
-	}
-	// The class each row was read with, before any late verdict or correction
-	// below: whether it was a failure a second location could confirm.
-	asRead := make([]probe.Classification, len(ms))
-	for i := range ms {
-		asRead[i] = ms[i].Classification
 	}
 	runs := loadRuns(filepath.Join(*dataDir, status.RunsFile))
 	fmt.Printf("recompute| %d publications, %d rows, %d prober runs on record, window=%s as_of=%s\n",
@@ -315,51 +307,10 @@ func main() {
 	fmt.Printf("params| %d x/fibre params range(s) on record, %d closed by a correction pass, %d still withholding verdicts; %d row(s) corrected, %d differ from corrections.jsonl\n",
 		len(ranges), len(correctedRanges), holding, corrected, corrDiffs)
 
-	// ---- not-served rows confirmed from a second vantage ----
-	//
-	// Redrawn from the other vantages' rows (vantages/<name>/measurements.jsonl,
-	// in the live record and in every daily export): a not-served row counts
-	// only once one of them confirmed it (verdict.ConfirmNotServed), so
-	// without those rows nothing counts not served. A withdrawal the earlier
-	// rule wrote (an amendments.jsonl line with cleared_by) is applied as
-	// recorded, as the store holds it; the rule writes none any more.
-	confirms := verdict.LoadConfirmations(filepath.Join(*dataDir, export.VantagesMemberDir))
-	nConfirms := 0
-	for _, cs := range confirms {
-		nConfirms += len(cs)
-	}
-	confirmed := make([]bool, len(ms))
-	var servedN, confirmedN, withdrawn int
-	for i := range ms {
-		m := ms[i]
-		if a, ok := amendments[m.DedupeKey()]; ok && a.ClearedBy != "" {
-			withdrawn++
-			ms[i].Classification = verdict.ClearedClass
-			continue
-		}
-		cs, have := confirms[verdict.ConfirmationKey(m.PromiseHash, m.ValidatorAddress, m.ScheduledAt)]
-		due := probe.Confirmable(m.ScheduleLabel, m.Classification) || probe.Confirmable(m.ScheduleLabel, asRead[i]) || (m.Download.CommitmentVerified && m.Download.RowsReturned < m.AssignedRowCount)
-		if !have || !due {
-			continue
-		}
-		servedBy, confirmedBy := verdict.ConfirmNotServedBy(verdict.NotServedOf(m), cs)
-		if servedBy != "" {
-			servedN++
-		}
-		if confirmedBy != "" {
-			confirmedN++
-			confirmed[i] = true
-		}
-	}
-	fmt.Printf("confirm| %d answer(s) from other vantages on record; %d not-served row(s) confirmed there (only these can count), %d fetched there; %d withdrawal(s) of the earlier rule applied as recorded\n",
-		nConfirms, confirmedN, servedN, withdrawn)
-
 	// ---- obligations ----
 	rows := make([]verdict.Row, 0, len(ms))
-	for i, m := range ms {
-		r := verdict.FromMeasurement(m)
-		r.Confirmed = confirmed[i]
-		rows = append(rows, r)
+	for _, m := range ms {
+		rows = append(rows, verdict.FromMeasurement(m))
 	}
 	heights := map[string]verdict.PromiseHeights{}
 	for _, p := range pubs {
@@ -390,13 +341,35 @@ func main() {
 		settled[p.PromiseHash] = p.SettlementTime
 	}
 	blobs := verdict.BlobsOf(pubs)
-	sus := verdict.SuspectPoints(rows, win, blobs)
-	net, byVal := verdict.ComputeObligations(rows, settled, win, sus, blobs)
-	fmt.Printf("obligations| network: %s; %d suspect points left out\n", fmtObl(net), len(sus))
-	for _, p := range sus {
-		fmt.Printf("suspect| %s %s %s: %d of %d validators unreachable, %d faulted (%s), %d rows\n",
-			short(p.PromiseHash), p.At.Format(time.RFC3339), p.Label, p.Unreachable, p.Validators, p.Faulted, p.Reason, p.Rows)
+
+	// ---- blobs: each one's reading, as the client's download ends ----
+	byBlob := map[string][]verdict.Row{}
+	for _, r := range rows {
+		byBlob[r.PromiseHash] = append(byBlob[r.PromiseHash], r)
 	}
+	tally := map[string]int{}
+	for _, p := range pubs {
+		if !win.All && p.SettlementTime.Before(win.Start) || p.SettlementTime.After(win.End) {
+			continue
+		}
+		if p.Assignment.Error != "" || p.Assignment.ProtocolParams.OriginalRows <= 0 {
+			tally["unknown"]++
+			continue
+		}
+		res := verdict.BlobOf(byBlob[p.PromiseHash], blobs[p.PromiseHash], p.MustServeUntil, asOf)
+		k := res.Status
+		if res.Error != "" {
+			k += " (" + res.Error + ")"
+		}
+		tally[k]++
+	}
+	fmt.Printf("blobs| available %d; unavailable (%s) %d; unavailable (%s) %d; not read %d; in retention window %d; unknown %d\n",
+		tally[verdict.BlobAvailable], probe.ClientErrNoShards, tally[verdict.BlobUnavailable+" ("+probe.ClientErrNoShards+")"],
+		probe.ClientErrNotEnoughShards, tally[verdict.BlobUnavailable+" ("+probe.ClientErrNotEnoughShards+")"],
+		tally[verdict.BlobNotRead], tally[verdict.BlobPending], tally["unknown"])
+
+	net, byVal := verdict.ComputeObligations(rows, settled, win, blobs)
+	fmt.Printf("obligations| network: %s\n", fmtObl(net))
 	addrs := make([]string, 0, len(byVal))
 	for a := range byVal {
 		addrs = append(addrs, a)
