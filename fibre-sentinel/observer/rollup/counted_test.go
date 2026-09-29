@@ -24,10 +24,16 @@ type readings struct {
 	ms      []probe.Measurement
 	settled time.Time
 	n       int
+	// confirmed is every row a second location confirmed (confirmed_by),
+	// by promise|validator.
+	confirmed map[string]bool
+	// sameAs, when set, is the settlement time the next blob takes, so two
+	// blobs can share a must_serve_until (and so a scheduled time).
+	sameAs time.Time
 }
 
 func newReadings(t *testing.T) *readings {
-	return &readings{t: t, st: openStore(t), settled: time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)}
+	return &readings{t: t, st: openStore(t), settled: time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC), confirmed: map[string]bool{}}
 }
 
 // validator is one validator of a blob: the rows it holds, and what the
@@ -41,6 +47,9 @@ type validator struct {
 	unasked    bool     // the reading never got to it
 	gap        bool     // this observer could not read it (PROBE_ERROR)
 	unendorsed bool     // rows assigned, no endorsement on the promise
+	// unconfirmed: a failure the second location did not confirm; every
+	// other failure it did
+	unconfirmed bool
 }
 
 func served(name string, holds []int) validator {
@@ -71,6 +80,9 @@ func (r *readings) blob(needed, total int, vals ...validator) string {
 	r.n++
 	hash := fmt.Sprintf("%064x", r.n)
 	settled := r.settled.Add(time.Duration(r.n) * time.Minute)
+	if !r.sameAs.IsZero() {
+		settled = r.sameAs
+	}
 	msu := settled.Add(4 * time.Hour)
 	at := msu.Add(-10 * time.Minute)
 	p := scan.Publication{SchemaVersion: scan.AttestationSchemaVersion, PromiseHash: hash, SettlementHeight: int64(100 + r.n), SettlementTime: settled,
@@ -112,6 +124,12 @@ func (r *readings) blob(needed, total int, vals ...validator) string {
 			r.t.Fatal(err)
 		}
 		r.ms = append(r.ms, m)
+		if !v.unconfirmed && !v.gap && len(v.got) < len(v.holds) {
+			if _, err := r.st.DB().Exec(`UPDATE probes SET confirmed_by = 'de-1' WHERE promise_hash = ? AND validator_address = ?`, hash, v.name); err != nil {
+				r.t.Fatal(err)
+			}
+			r.confirmed[hash+"|"+v.name] = true
+		}
 	}
 	return hash
 }
@@ -119,7 +137,9 @@ func (r *readings) blob(needed, total int, vals ...validator) string {
 func (r *readings) twin() ([]verdict.Row, map[string]time.Time, verdict.Blobs) {
 	rows := make([]verdict.Row, 0, len(r.ms))
 	for _, m := range r.ms {
-		rows = append(rows, verdict.FromMeasurement(m))
+		row := verdict.FromMeasurement(m)
+		row.Confirmed = r.confirmed[m.PromiseHash+"|"+m.ValidatorAddress]
+		rows = append(rows, row)
 	}
 	settled := map[string]time.Time{}
 	for _, p := range r.pubs {
@@ -177,6 +197,26 @@ func fixture(t *testing.T) (*readings, map[string]string) {
 		failed("x", rowsFrom(8, 2), probe.ClassUnreachable, probe.OutcomeTLSFail),
 		failed("y", rowsFrom(10, 2), probe.ClassUnreachable, probe.OutcomeTLSFail),
 		failed("z", rowsFrom(12, 2), probe.ClassUnreachable, probe.OutcomeTLSFail))
+	// Unavailable, and the second location did not confirm the failure: it
+	// counts neither way.
+	uc := failed("uc", rowsFrom(0, 8), probe.ClassUnreachable, probe.OutcomeRPCTimeout)
+	uc.unconfirmed = true
+	hashes["unconfirmed"] = r.blob(8, 32, uc, served("s1", rowsFrom(8, 1)), served("s2", rowsFrom(9, 1)))
+	// Two blobs at one scheduled time (the publisher chose one
+	// creation_timestamp for both): every validator of the first failed, two
+	// of the second's eight did. The guard is per reading, so the first is
+	// set aside and the second's failures count.
+	r.sameAs = r.settled.Add(1000 * time.Minute)
+	hashes["pair-sacrifice"] = r.blob(8, 32, failed("p1", rowsFrom(0, 2), probe.ClassFault, probe.OutcomeNotFound),
+		failed("p2", rowsFrom(2, 2), probe.ClassFault, probe.OutcomeNotFound), failed("p3", rowsFrom(4, 2), probe.ClassFault, probe.OutcomeNotFound),
+		failed("p4", rowsFrom(6, 2), probe.ClassFault, probe.OutcomeNotFound))
+	var target []validator
+	target = append(target, failed("t1", rowsFrom(0, 4), probe.ClassFault, probe.OutcomeNotFound), failed("t2", rowsFrom(4, 4), probe.ClassFault, probe.OutcomeNotFound))
+	for i := 0; i < 6; i++ {
+		target = append(target, served(fmt.Sprintf("u%d", i), rowsFrom(8+i, 1)))
+	}
+	hashes["pair-target"] = r.blob(8, 32, target...)
+	r.sameAs = time.Time{}
 	return r, hashes
 }
 
@@ -220,6 +260,8 @@ func TestTheSQLAndTheGoTwinCountTheSameRows(t *testing.T) {
 		"deferred":       {"bigd": "FAULT", "deferred": "PROBE_ERROR"},
 		"wholeset":       {"e1": "NOT_COUNTED", "e2": "HEALTHY"},
 		"wholeset-asked": {"e1": "FAULT", "e2": "HEALTHY", "other": "UNATTESTED"},
+		"unconfirmed":    {"uc": "NOT_COUNTED", "s1": "HEALTHY"},
+		"pair-target":    {"t1": "FAULT", "t2": "FAULT", "u0": "HEALTHY"},
 	} {
 		for v, c := range want {
 			if got := sqlCls[hashes[blob]+"|"+v]; got != c {
@@ -245,26 +287,26 @@ func TestTheSQLAndTheGoTwinAgreeOnTheGuardAndTheObligations(t *testing.T) {
 	var sqlSuspect []string
 	for _, p := range pts {
 		if p.Reason() != "" {
-			sqlSuspect = append(sqlSuspect, p.At)
+			sqlSuspect = append(sqlSuspect, p.PromiseHash+"@"+p.At)
 		}
 	}
 	w := verdict.Window{All: true, End: now}
 	goPts := verdict.SuspectPoints(rows, w, blobs)
 	var goSuspect []string
 	for _, p := range goPts {
-		goSuspect = append(goSuspect, store.TS(p.At))
+		goSuspect = append(goSuspect, p.PromiseHash+"@"+store.TS(p.At))
 	}
 	if fmt.Sprint(sqlSuspect) != fmt.Sprint(goSuspect) {
-		t.Fatalf("suspect points: SQL %v, Go %v", sqlSuspect, goSuspect)
+		t.Fatalf("suspect readings: SQL %v, Go %v", sqlSuspect, goSuspect)
 	}
-	var allfailAt string
+	want := map[string]bool{}
 	for _, m := range r.ms {
-		if m.PromiseHash == hashes["allfail"] {
-			allfailAt = store.TS(m.ScheduledAt)
+		if m.PromiseHash == hashes["allfail"] || m.PromiseHash == hashes["pair-sacrifice"] {
+			want[m.PromiseHash+"@"+store.TS(m.ScheduledAt)] = true
 		}
 	}
-	if len(sqlSuspect) != 1 || sqlSuspect[0] != allfailAt {
-		t.Fatalf("suspect %v, want only the reading where every validator failed (%s)", sqlSuspect, allfailAt)
+	if len(sqlSuspect) != 2 || !want[sqlSuspect[0]] || !want[sqlSuspect[1]] {
+		t.Fatalf("suspect %v, want only the readings where every validator failed (%v)", sqlSuspect, want)
 	}
 
 	// The daily rollup, read back, against the Go twin.
@@ -301,6 +343,19 @@ func TestTheSQLAndTheGoTwinAgreeOnTheGuardAndTheObligations(t *testing.T) {
 	}
 	if b := byVal["slow"]; b.NotCounted != 1 || b.Broken != 0 {
 		t.Errorf("slow: %+v, want not counted", b)
+	}
+	if b := byVal["uc"]; b.NotCounted != 1 || b.Broken != 0 {
+		t.Errorf("uc: %+v, want not counted: the second location did not confirm it", b)
+	}
+	// The reading beside a set-aside one at the same scheduled time is its
+	// own: its failures count.
+	for _, v := range []string{"t1", "t2"} {
+		if b := byVal[v]; b.Broken != 1 {
+			t.Errorf("%s: %+v, want one not served beside a set-aside reading at the same time", v, b)
+		}
+	}
+	if b := byVal["p1"]; b.Broken != 0 || b.Total != 0 {
+		t.Errorf("p1: %+v, want no obligation: its reading is set aside", b)
 	}
 }
 
@@ -343,5 +398,81 @@ func TestAStoredTimeoutOnAnAvailableBlobNoLongerCounts(t *testing.T) {
 	_, by := verdict.ComputeObligations(rows, settled, w, verdict.SuspectPoints(rows, w, blobs), blobs)
 	if got := by["timedout"]; got.Broken != 0 || got.NotCounted != 1 {
 		t.Fatalf("timedout: %+v, want not counted", got)
+	}
+}
+
+// A short answer (rows that verified, fewer than the validator holds) on an
+// Unavailable blob waits for its deferred verdict at the reading, and is
+// sent to the second location all the same: once the second location got
+// no rows from it and the verdict is drawn, it counts not served; without
+// the confirmation it never does.
+func TestAShortAnswerCountsOnceConfirmedAndItsVerdictDrawn(t *testing.T) {
+	r := newReadings(t)
+	ctx := context.Background()
+	short := served("short", rowsFrom(20, 4))
+	short.cls, short.out, short.got = probe.ClassProbeError, probe.OutcomePartial, []uint32{20}
+	short.unconfirmed = true
+	other := short
+	other.name = "other"
+	other.holds, other.got = rowsFrom(24, 4), []uint32{24}
+	hash := r.blob(8, 32, failed("big", rowsFrom(0, 8), probe.ClassFault, probe.OutcomeNotFound), served("s1", rowsFrom(8, 1)), short, other)
+	count := func(v string) string {
+		var cls string
+		if err := r.st.DB().QueryRowContext(ctx, `SELECT `+rollup.CountedClass("probes")+` FROM probes WHERE promise_hash = ? AND validator_address = ?`, hash, v).Scan(&cls); err != nil {
+			t.Fatal(err)
+		}
+		return cls
+	}
+	// the second location confirms the one, not the other
+	if _, err := r.st.DB().Exec(`UPDATE probes SET confirmed_by = 'de-1' WHERE promise_hash = ? AND validator_address = 'short'`, hash); err != nil {
+		t.Fatal(err)
+	}
+	if got := count("short"); got != string(probe.ClassProbeError) {
+		t.Fatalf("before its verdict: %s, want PROBE_ERROR", got)
+	}
+	for _, m := range r.ms {
+		if m.PromiseHash != hash || (m.ValidatorAddress != "short" && m.ValidatorAddress != "other") {
+			continue
+		}
+		if _, err := r.st.ApplyAmendment(store.Amendment{DedupeKey: m.DedupeKey(), PromiseHash: hash, ValidatorAddress: m.ValidatorAddress,
+			ScheduledAt: m.ScheduledAt, From: string(probe.ClassProbeError), To: string(probe.ClassUnmatchedGenuine), Reason: "late",
+			JudgedAt: m.StartedAt.Add(time.Hour), ScannerFrontier: m.StartedAt.Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := count("short"); got != string(probe.ClassFault) {
+		t.Errorf("confirmed, verdict drawn: %s, want FAULT", got)
+	}
+	if got := count("other"); got != string(verdict.NotCounted) {
+		t.Errorf("unconfirmed, verdict drawn: %s, want %s", got, verdict.NotCounted)
+	}
+}
+
+// A second location that fetched the rows of a failed validator names
+// itself (cleared_by) and rewrites nothing: the correlated-failure guard,
+// drawn from this observer's own reading, sets the reading aside exactly as
+// before.
+func TestASecondLocationsAnswerNeverSwitchesTheGuardOff(t *testing.T) {
+	r := newReadings(t)
+	ctx := context.Background()
+	hash := r.blob(64, 128, failed("a", rowsFrom(0, 4), probe.ClassUnreachable, probe.OutcomeRPCTimeout),
+		failed("b", rowsFrom(4, 20), probe.ClassUnreachable, probe.OutcomeRPCTimeout),
+		failed("c", rowsFrom(24, 20), probe.ClassUnreachable, probe.OutcomeRPCTimeout),
+		served("d", rowsFrom(44, 10)), served("e", rowsFrom(54, 10)), served("f", rowsFrom(64, 10)))
+	suspect := func() bool {
+		pts, err := rollup.SuspectPoints(ctx, r.st.DB(), `promise_hash = ?`, hash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(pts) == 1 && pts[0].Reason() != ""
+	}
+	if !suspect() {
+		t.Fatal("three of six unreachable is not set aside")
+	}
+	if _, err := r.st.DB().Exec(`UPDATE probes SET cleared_by = 'de-1', confirmed_by = NULL WHERE promise_hash = ? AND validator_address = 'a'`, hash); err != nil {
+		t.Fatal(err)
+	}
+	if !suspect() {
+		t.Fatal("the second location's answer lifted the guard")
 	}
 }

@@ -176,6 +176,7 @@ func heldFixture(t *testing.T, outcomes map[string][]probe.Outcome) (*store.Stor
 			}
 		}
 	}
+	confirmFailures(t, st, `1 = 1`)
 	return st, created, msu
 }
 
@@ -557,6 +558,7 @@ func insertLate(t *testing.T, st *store.Store, created, staleMSU time.Time, addr
 	if _, err := st.InsertProbe(m, raw); err != nil {
 		t.Fatal(err)
 	}
+	confirmFailures(t, st, `promise_hash = 'held1' AND validator_address = ?`, addr)
 }
 
 // The case the range-keyed framing could not reach. The prober schedules
@@ -783,6 +785,7 @@ func TestAPublicationSettlingIntoARangeAlreadyOnRecordIsHeldOnInsert(t *testing.
 	if _, err := st.InsertProbe(m, raw); err != nil {
 		t.Fatal(err)
 	}
+	confirmFailures(t, st, `promise_hash = 'held2'`)
 
 	var rowHeld int
 	if err := st.DB().QueryRow(`SELECT retention_unverified FROM probes WHERE promise_hash = 'held2'`).Scan(&rowHeld); err != nil {
@@ -946,6 +949,7 @@ func addPublication(t *testing.T, st *store.Store, hash string, height int64, cr
 			t.Fatal(err)
 		}
 	}
+	confirmFailures(t, st, `promise_hash = ?`, hash)
 }
 
 func rangeOver(id string, from, to int64) scan.ParamUncertainty {

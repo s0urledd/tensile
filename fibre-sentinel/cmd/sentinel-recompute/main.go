@@ -14,9 +14,9 @@
 //     withhold, and the deadline corrections a verified range produced
 //     (corrections.jsonl) — each redrawn rather than trusted, so a
 //     fabricated correction is a divergence;
-//   - the faults a second vantage cleared or confirmed, from its rows under
-//     vantages/<name>/measurements.jsonl when present, against the
-//     clearing amendments in amendments.jsonl (verdict.ConfirmFault);
+//   - the not-served rows a second vantage confirmed, from its rows under
+//     vantages/<name>/measurements.jsonl when present
+//     (verdict.ConfirmNotServed): only those can count;
 //   - with -sampling, the admission draws of every day whose secret is
 //     revealed (sampling-secrets.jsonl): which publications this observer
 //     should have probed against which ones it did, and which it recorded
@@ -109,6 +109,12 @@ func main() {
 			}
 		}
 		ms = kept
+	}
+	// The class each row was read with, before any late verdict or correction
+	// below: whether it was a failure a second location could confirm.
+	asRead := make([]probe.Classification, len(ms))
+	for i := range ms {
+		asRead[i] = ms[i].Classification
 	}
 	runs := loadRuns(filepath.Join(*dataDir, status.RunsFile))
 	fmt.Printf("recompute| %d publications, %d rows, %d prober runs on record, window=%s as_of=%s\n",
@@ -308,57 +314,48 @@ func main() {
 	fmt.Printf("params| %d x/fibre params range(s) on record, %d closed by a correction pass, %d still withholding verdicts; %d row(s) corrected, %d differ from corrections.jsonl\n",
 		len(ranges), len(correctedRanges), holding, corrected, corrDiffs)
 
-	// ---- not-served rows confirmed or cleared from a second vantage ----
+	// ---- not-served rows confirmed from a second vantage ----
 	//
 	// Redrawn from the other vantages' rows when the record carries them
-	// (vantages/<name>/measurements.jsonl), and compared with the
-	// amendments that withdrew a fault. Without those rows a clearing
-	// amendment cannot be redrawn; it is applied as recorded, so the
-	// obligations below match the API, and counted as unchecked.
+	// (vantages/<name>/measurements.jsonl): a not-served row counts only
+	// once one of them confirmed it (verdict.ConfirmNotServed), so without
+	// those rows nothing counts not served. A withdrawal the earlier rule
+	// wrote (an amendments.jsonl line with cleared_by) is applied as
+	// recorded, as the store holds it; the rule writes none any more.
 	confirms := loadConfirmations(filepath.Join(*dataDir, "vantages"))
-	var clearedN, confirmedN, clearDiffs, clearUnchecked int
+	confirmed := make([]bool, len(ms))
+	var servedN, confirmedN, withdrawn int
 	for i := range ms {
 		m := ms[i]
-		if !probe.Confirmable(m.ScheduleLabel, m.Classification) {
-			continue
-		}
-		a, amended := amendments[m.DedupeKey()]
-		recorded := amended && a.ClearedBy != ""
-		cs, have := confirms[m.PromiseHash+"|"+m.ValidatorAddress+"|"+m.ScheduledAt.UTC().Format(time.RFC3339Nano)]
-		if !have {
-			if recorded {
-				clearUnchecked++
-				ms[i].Classification = verdict.ClearedClass
-			}
-			continue
-		}
-		clearedBy, confirmedBy := verdict.ConfirmFaultBy(m.StartedAt, cs)
-		if confirmedBy != "" && clearedBy == "" {
-			confirmedN++
-		}
-		if clearedBy != "" {
-			clearedN++
+		if a, ok := amendments[m.DedupeKey()]; ok && a.ClearedBy != "" {
+			withdrawn++
 			ms[i].Classification = verdict.ClearedClass
+			continue
 		}
-		if (clearedBy != "") != recorded {
-			clearDiffs++
-			if printed < *maxDiff {
-				printed++
-				fmt.Printf("confirm| %s %s %s: amendments.jsonl says cleared_by=%q, recomputed cleared_by=%q\n", short(m.PromiseHash), m.ValidatorAddress,
-					m.ScheduledAt.UTC().Format(time.RFC3339), a.ClearedBy, clearedBy)
-			}
+		cs, have := confirms[m.PromiseHash+"|"+m.ValidatorAddress+"|"+m.ScheduledAt.UTC().Format(time.RFC3339Nano)]
+		due := probe.Confirmable(m.ScheduleLabel, m.Classification) || probe.Confirmable(m.ScheduleLabel, asRead[i]) || (m.Download.CommitmentVerified && m.Download.RowsReturned < m.AssignedRowCount)
+		if !have || !due {
+			continue
+		}
+		servedBy, confirmedBy := verdict.ConfirmNotServedBy(verdict.NotServed{StartedAt: m.StartedAt, ClockOffsetMS: m.ClockOffsetMS,
+			MustServeUntil: m.MustServeUntil}, cs)
+		if servedBy != "" {
+			servedN++
+		}
+		if confirmedBy != "" {
+			confirmedN++
+			confirmed[i] = true
 		}
 	}
-	if clearDiffs > 0 {
-		differs = true
-	}
-	fmt.Printf("confirm| %d not-served row(s) cleared and %d confirmed from another vantage, %d differ from amendments.jsonl, %d clearing(s) applied as recorded without the vantage's rows\n",
-		clearedN, confirmedN, clearDiffs, clearUnchecked)
+	fmt.Printf("confirm| %d not-served row(s) confirmed from another vantage (only these can count), %d fetched there; %d withdrawal(s) of the earlier rule applied as recorded\n",
+		confirmedN, servedN, withdrawn)
 
 	// ---- obligations ----
 	rows := make([]verdict.Row, 0, len(ms))
-	for _, m := range ms {
-		rows = append(rows, verdict.FromMeasurement(m))
+	for i, m := range ms {
+		r := verdict.FromMeasurement(m)
+		r.Confirmed = confirmed[i]
+		rows = append(rows, r)
 	}
 	heights := map[string]verdict.PromiseHeights{}
 	for _, p := range pubs {
@@ -393,8 +390,8 @@ func main() {
 	net, byVal := verdict.ComputeObligations(rows, settled, win, sus, blobs)
 	fmt.Printf("obligations| network: %s; %d suspect points left out\n", fmtObl(net), len(sus))
 	for _, p := range sus {
-		fmt.Printf("suspect| %s %s: %d of %d validators unreachable, %d faulted (%s), %d rows\n",
-			p.At.Format(time.RFC3339), p.Label, p.Unreachable, p.Validators, p.Faulted, p.Reason, p.Rows)
+		fmt.Printf("suspect| %s %s %s: %d of %d validators unreachable, %d faulted (%s), %d rows\n",
+			short(p.PromiseHash), p.At.Format(time.RFC3339), p.Label, p.Unreachable, p.Validators, p.Faulted, p.Reason, p.Rows)
 	}
 	addrs := make([]string, 0, len(byVal))
 	for a := range byVal {
@@ -805,7 +802,8 @@ func loadConfirmations(dir string) map[string][]verdict.Confirmation {
 				continue
 			}
 			k := m.PromiseHash + "|" + m.ValidatorAddress + "|" + m.ScheduledAt.UTC().Format(time.RFC3339Nano)
-			out[k] = append(out[k], verdict.Confirmation{Vantage: m.Vantage, StartedAt: m.StartedAt, Classification: m.Classification})
+			out[k] = append(out[k], verdict.Confirmation{Vantage: m.Vantage, StartedAt: m.StartedAt, ClockOffsetMS: m.ClockOffsetMS,
+				Phase: m.Phase, Classification: m.Classification, CommitmentVerified: m.Download.CommitmentVerified, ClientRules: m.ClientRules})
 		}
 		f.Close()
 	}

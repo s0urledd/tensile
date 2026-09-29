@@ -558,10 +558,11 @@ func (s *Server) monikers(ctx context.Context) (map[string]string, error) {
 
 // firstFaults finds each validator's first not-served reading on record
 // (addr's alone when addr is set): a reading whose rows did not come back on
-// a blob that could not be reconstructed (rollup.CountedClass), skipping any
-// the correlated-failure guard sets aside (the same rule every figure
-// applies). The returned entries have no ID; Link holds the promise hash for
-// the caller to turn into a URL.
+// a blob that could not be reconstructed, confirmed from the second
+// location (rollup.CountedClass), skipping any the correlated-failure guard
+// sets aside (the same rule every figure applies). The returned entries
+// have no ID; Link holds the promise hash for the caller to turn into a
+// URL.
 //
 // The entry ID has no time in it, so it must name the same reading for good:
 //
@@ -591,7 +592,7 @@ func (s *Server) firstFaults(ctx context.Context, addr string, now time.Time) (m
 	suspect := map[string]bool{}
 	for _, p := range pts {
 		if p.Reason() != "" {
-			suspect[p.At] = true
+			suspect[p.PromiseHash+"|"+p.At] = true
 		}
 	}
 	q := `SELECT validator_address, MIN(day) FROM obligation_daily WHERE broken > 0`
@@ -630,7 +631,7 @@ func (s *Server) firstFaults(ctx context.Context, addr string, now time.Time) (m
 		if err := rows.Scan(&a, &hash, &sched, &at, &label); err != nil {
 			return nil, err
 		}
-		if seen[a] || suspect[sched] {
+		if seen[a] || suspect[hash+"|"+sched] {
 			continue
 		}
 		seen[a] = true
@@ -641,7 +642,7 @@ func (s *Server) firstFaults(ctx context.Context, addr string, now time.Time) (m
 		out[a] = feed.Entry{Kind: "first-fault", At: t, Link: hash,
 			Title: "first not-served reading on record",
 			Summary: fmt.Sprintf("At the reading of blob %s (%s, %s) the validator did not hand over the rows it endorsed, "+
-				"and the blob could not be reconstructed from the rows the other validators returned.", hash, label, sched)}
+				"the blob could not be reconstructed from the rows the other validators returned, and a second location did not get them either.", hash, label, sched)}
 	}
 	return out, rows.Err()
 }
@@ -704,12 +705,12 @@ func (s *Server) networkFeed(ctx context.Context, authority string, now time.Tim
 			continue
 		}
 		at := parseTS(p.At)
-		es = append(es, feed.Entry{Kind: "vantage-incident", At: at, Link: "/",
-			ID:    feed.TagID(authority, feedTagDate, "tensile", fm.chainID, "incident", idTime(at)),
+		es = append(es, feed.Entry{Kind: "vantage-incident", At: at, Link: "/blob/?hash=" + p.PromiseHash,
+			ID:    feed.TagID(authority, feedTagDate, "tensile", fm.chainID, "incident", idTime(at), p.PromiseHash),
 			Title: fmt.Sprintf("Observer incident: %d of %d validators failed at once", maxI(p.Unreachable, p.Faulted), p.Validators),
-			Summary: fmt.Sprintf("At the reading scheduled %s (%s), %d of %d validators asked were unreachable and %d returned no rows, and the blob could not be reconstructed. "+
+			Summary: fmt.Sprintf("At the reading of blob %s scheduled %s (%s), %d of %d endorsing validators asked were unreachable and %d returned no rows, and the blob could not be reconstructed. "+
 				"From one location that cannot be told from this observer's own network, so nothing at this reading counts either way.",
-				p.At, p.Label, p.Unreachable, p.Validators, p.Faulted)})
+				p.PromiseHash, p.At, p.Label, p.Unreachable, p.Validators, p.Faulted)})
 	}
 
 	f := &feed.Feed{

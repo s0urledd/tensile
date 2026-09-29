@@ -2030,10 +2030,12 @@ type Amendment struct {
 	// taken to be on disk), so sentinel-recompute redraws it with the same
 	// bound rather than a constant. Zero on lines from before the field.
 	PruneToleranceS int64 `json:"prune_tolerance_s,omitempty"`
-	// ClearedBy is set on the amendment that withdraws a FAULT because
-	// another vantage fetched the same rows and they verified
-	// (verdict.ConfirmFault); ConfirmKey is that vantage's row and
-	// ConfirmStartedAt when it started, so the record names the evidence.
+	// ClearedBy is set on an amendment the earlier second-vantage rule
+	// wrote to withdraw a FAULT whose rows another vantage fetched;
+	// ConfirmKey is that vantage's row and ConfirmStartedAt when it
+	// started. The rule no longer withdraws anything
+	// (verdict.ConfirmNotServed), so no new line carries them; a stored
+	// one is replayed as it was written.
 	ClearedBy        string     `json:"cleared_by,omitempty"`
 	ConfirmKey       string     `json:"confirm_key,omitempty"`
 	ConfirmStartedAt *time.Time `json:"confirm_started_at,omitempty"`

@@ -269,10 +269,11 @@ func main() {
 			live.Set("late_verdicts", applied)
 		}
 	}
-	// Other vantages' answers to this observer's faults (verdict.ConfirmFault).
-	// A cleared fault is withdrawn by an amendment, logged before it is
-	// applied exactly as judgeLate's are, so a rebuild replays it and the
-	// export carries it; a confirmed one is marked on its row.
+	// Other vantages' answers to this observer's not-served readings
+	// (verdict.ConfirmNotServed): a confirmed one is marked on its row, and
+	// only then does it count; one whose rows the other vantage got is
+	// marked with who fetched them. Nothing is withdrawn or rewritten, so
+	// the answers leave no amendment.
 	judgeConfirmations := func(now time.Time) {
 		ds, err := st.JudgeConfirmations(ctx, now)
 		if err != nil {
@@ -280,45 +281,22 @@ func main() {
 			live.Error(fmt.Sprintf("confirmations: %v", err))
 			return
 		}
-		cleared, confirmed := 0, 0
+		served, confirmed := 0, 0
 		for _, d := range ds {
-			if a := d.Amendment; a != nil {
-				b, err := json.Marshal(a)
-				if err != nil {
-					log.Printf("amendments: marshal %s: %v", a.DedupeKey, err)
-					continue
-				}
-				if _, err := amendFile.Write(append(b, '\n')); err != nil {
-					log.Printf("amendments: write: %v", err)
-					live.Error(fmt.Sprintf("amendments write: %v", err))
-					continue
-				}
-				if err := amendFile.Sync(); err != nil {
-					log.Printf("amendments: sync: %v", err)
-					live.Error(fmt.Sprintf("amendments sync: %v", err))
-					continue
-				}
-				ok, err := st.ApplyAmendment(*a)
-				if err != nil {
-					log.Printf("confirmations: apply %s: %v", a.DedupeKey, err)
-					continue
-				}
-				if ok {
-					cleared++
-					log.Printf("fault cleared by %s: %s %s %s", d.Vantage, a.PromiseHash[:min(12, len(a.PromiseHash))], a.ValidatorAddress, a.ScheduledAt.UTC().Format(time.RFC3339))
-				}
-			}
 			if err := st.SettleConfirmation(d); err != nil {
 				log.Printf("confirmations: settle %s: %v", d.ConfirmKey, err)
 				continue
 			}
-			if d.Result == verdict.ConfirmConfirmed {
+			switch d.Result {
+			case verdict.ConfirmConfirmed:
 				confirmed++
+			case verdict.ConfirmServed:
+				served++
 			}
 		}
-		if cleared+confirmed > 0 {
-			log.Printf("confirmations: %d fault(s) cleared, %d confirmed from another vantage", cleared, confirmed)
-			live.Set("faults_cleared", cleared)
+		if served+confirmed > 0 {
+			log.Printf("confirmations: %d not-served reading(s) confirmed from another vantage, %d fetched there", confirmed, served)
+			live.Set("faults_cleared", served)
 		}
 	}
 	corrFile, err := os.OpenFile(*corrPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)

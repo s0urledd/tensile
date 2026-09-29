@@ -163,8 +163,10 @@ func (o *Obligations) Add(x Obligations) {
 	o.Pending += x.Pending
 }
 
-// Point is one schedule point's tally, as SuspectPoints returns it.
+// Point is one reading's tally (a promise at a scheduled time), as
+// SuspectPoints returns it.
 type Point struct {
+	PromiseHash string
 	At          string
 	Label       string
 	Unreachable int64
@@ -174,9 +176,9 @@ type Point struct {
 	Faulted    int64
 	Validators int64
 	Rows       int64
-	// Available is set when every blob read at the point was Available
-	// there: the guard does not apply (see verdict.SuspectPoints). It is
-	// only looked at, and so only set, where the guard would fire.
+	// Available is set when the reading's blob was Available there: the
+	// guard does not apply (see verdict.SuspectPoints). It is only looked
+	// at, and so only set, where the guard would fire.
 	Available bool
 }
 
@@ -267,17 +269,30 @@ func ObligationClass(alias string) string {
 
 // CountedClass is the class a row counts as once its blob's reading is
 // known: ObligationClass, except that a failure to hand over rows (FAULT)
-// counts only when the blob was Unavailable at the row's own reading, and
-// is 'NOT_COUNTED' otherwise; and on an Unavailable blob an end reading
+// counts only when the blob was Unavailable at the row's own reading and a
+// second location confirmed it (ConfirmedSQL, verdict.ConfirmNotServed),
+// and is 'NOT_COUNTED' otherwise; and on an Unavailable blob an end reading
 // that returned genuine rows, fewer than the validator holds, did not serve
-// them. The Go twin is verdict.Row.CountedClass; see verdict.BlobReading
-// for the rule.
+// them, which counts the same way, once confirmed. The Go twin is
+// verdict.Row.CountedClass; see verdict.BlobReading for the rule.
 //
 // alias must name the row's table or view (the correlated subqueries read
 // probes under an alias of their own). The blob's reading is only looked
 // at for a row that could fail, which is what keeps the cost of a tally
 // over many readings to the few of them that did not come back.
 func CountedClass(alias string) string {
+	return countedClass(alias, ConfirmedSQL(alias))
+}
+
+// CountedClassAsIfConfirmed is CountedClass with every confirmation taken
+// as given: FAULT for a reading that counts not served once the second
+// location confirms it. The API marks such a reading while it is not
+// confirmed.
+func CountedClassAsIfConfirmed(alias string) string {
+	return countedClass(alias, "1")
+}
+
+func countedClass(alias, confirmed string) string {
 	if alias == "" {
 		panic("rollup.CountedClass needs the row's alias")
 	}
@@ -286,10 +301,21 @@ func CountedClass(alias string) string {
 	unavail := unavailableSQL(p+"promise_hash", p+"scheduled_at")
 	short := `EXISTS (SELECT 1 FROM probes qs WHERE qs.promise_hash = ` + p + `promise_hash AND qs.scheduled_at = ` + p + `scheduled_at
 		AND qs.validator_address = ` + p + `validator_address AND qs.rows_returned < qs.assigned_row_count)`
-	return `(CASE WHEN ` + oc + ` = 'FAULT' THEN (CASE WHEN ` + unavail + ` = 1 THEN 'FAULT' ELSE '` + string(verdict.NotCounted) + `' END)` +
+	nc := `'` + string(verdict.NotCounted) + `'`
+	return `(CASE WHEN ` + oc + ` = 'FAULT' THEN (CASE WHEN ` + unavail + ` = 1 AND ` + confirmed + ` THEN 'FAULT' ELSE ` + nc + ` END)` +
 		` WHEN ` + p + `schedule_label = '` + probe.EndReadLabel + `' AND ` + p + `classification IN ` + EndGenuineRowsSQL +
-		` AND ` + oc + ` = 'HEALTHY' AND ` + short + ` AND ` + unavail + ` = 1 THEN 'FAULT'` +
+		` AND ` + oc + ` = 'HEALTHY' AND ` + short + ` AND ` + unavail + ` = 1 THEN (CASE WHEN ` + confirmed + ` THEN 'FAULT' ELSE ` + nc + ` END)` +
 		` ELSE ` + oc + ` END)`
+}
+
+// ConfirmedSQL is true when a second location confirmed the row under the
+// alias as not served (verdict.Row.Confirmed): the stored row's
+// confirmed_by, found by the row's promise, validator and scheduled time,
+// since the views the tallies read carry no such column.
+func ConfirmedSQL(alias string) string {
+	p := alias + "."
+	return `EXISTS (SELECT 1 FROM probes qc WHERE qc.promise_hash = ` + p + `promise_hash AND qc.scheduled_at = ` + p + `scheduled_at
+		AND qc.validator_address = ` + p + `validator_address AND qc.confirmed_by IS NOT NULL)`
 }
 
 // The pieces of one reading (promise h at scheduled time t, every vantage),
@@ -367,15 +393,15 @@ func AvailableSQL(h, t string) string {
 		ELSE 0 END)`
 }
 
-// pointAvailableSQL is 1 when every blob read at the scheduled time (?) was
-// Available there, which sets the guard aside for the point
+// pointAvailableSQL is 1 when the blob of one reading (promise ?, at ?) was
+// Available there, which sets the guard aside for the reading
 // (verdict.SuspectPoints). This is the seam a control read would use: a
 // blob of this observer's own read back whole from the same validators at
 // the same time would lift the guard here as well.
-var pointAvailableSQL = `SELECT COALESCE(MIN(` + AvailableSQL("pt.promise_hash", "pt.scheduled_at") + `), 0)
-	FROM (SELECT DISTINCT promise_hash, scheduled_at FROM probes WHERE scheduled_at = ?) pt`
+var pointAvailableSQL = `SELECT ` + AvailableSQL("pt.promise_hash", "pt.scheduled_at") + ` FROM (SELECT ? AS promise_hash, ? AS scheduled_at) pt`
 
-// SuspectPoints tallies every schedule point at which more than one
+// SuspectPoints tallies every reading (a promise at a scheduled time: two
+// blobs sharing a must_serve_until are two readings) at which more than one
 // validator was asked, over the assigned in-window rows that `where`
 // selects, in schedule order. The caller applies Reason. Validators counts
 // the validators that gave a reachability verdict at the point; a row that
@@ -395,21 +421,21 @@ var pointAvailableSQL = `SELECT COALESCE(MIN(` + AvailableSQL("pt.promise_hash",
 func SuspectPoints(ctx context.Context, db Querier, where string, args ...any) ([]Point, error) {
 	cls := EffectiveClass("")
 	failed := `(` + ObligationClass("") + ` = 'FAULT' AND classification <> 'NOT_REGISTERED')`
-	rows, err := db.QueryContext(ctx, `SELECT scheduled_at, schedule_label,
+	rows, err := db.QueryContext(ctx, `SELECT promise_hash, scheduled_at, MIN(schedule_label),
 			COUNT(DISTINCT CASE WHEN `+cls+` = 'UNREACHABLE' THEN validator_address END),
 			COUNT(DISTINCT CASE WHEN `+failed+` THEN validator_address END),
 			COUNT(DISTINCT CASE WHEN `+cls+` NOT IN `+GuardSilentSQL+` THEN validator_address END), COUNT(*)
 		FROM probe_rows probes
 		WHERE `+where+` AND assigned = 1 AND phase = 'in_window'
-		GROUP BY scheduled_at HAVING COUNT(DISTINCT CASE WHEN `+cls+` NOT IN `+GuardSilentSQL+` THEN validator_address END) > 1
-		ORDER BY scheduled_at`, args...)
+		GROUP BY promise_hash, scheduled_at HAVING COUNT(DISTINCT CASE WHEN `+cls+` NOT IN `+GuardSilentSQL+` THEN validator_address END) > 1
+		ORDER BY scheduled_at, promise_hash`, args...)
 	if err != nil {
 		return nil, err
 	}
 	var out []Point
 	for rows.Next() {
 		var p Point
-		if err := rows.Scan(&p.At, &p.Label, &p.Unreachable, &p.Faulted, &p.Validators, &p.Rows); err != nil {
+		if err := rows.Scan(&p.PromiseHash, &p.At, &p.Label, &p.Unreachable, &p.Faulted, &p.Validators, &p.Rows); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -425,7 +451,7 @@ func SuspectPoints(ctx context.Context, db Querier, where string, args ...any) (
 			continue
 		}
 		var avail int
-		if err := db.QueryRowContext(ctx, pointAvailableSQL, out[i].At).Scan(&avail); err != nil {
+		if err := db.QueryRowContext(ctx, pointAvailableSQL, out[i].PromiseHash, out[i].At).Scan(&avail); err != nil {
 			return nil, err
 		}
 		out[i].Available = avail == 1
@@ -433,19 +459,31 @@ func SuspectPoints(ctx context.Context, db Querier, where string, args ...any) (
 	return out, nil
 }
 
-// Exclusion is " AND <col> NOT IN (?, ...)" for the suspect points among
-// pts, with their arguments; empty when none is suspect.
-func Exclusion(col string, pts []Point) (string, []any) {
+// Exclusion is the clause that leaves the suspect readings among pts out,
+// with its arguments (ExclusionOf); empty when none is suspect. alias is
+// the rows' alias, or "" for a bare table.
+func Exclusion(alias string, pts []Point) (string, []any) {
 	var args []any
 	for _, p := range pts {
 		if p.Reason() != "" {
-			args = append(args, p.At)
+			args = append(args, p.PromiseHash, p.At)
 		}
 	}
-	if len(args) == 0 {
+	return ExclusionOf(alias, args)
+}
+
+// ExclusionOf is " AND (<alias>.promise_hash, <alias>.scheduled_at) NOT IN
+// (VALUES (?, ?), ...)" over args, (promise hash, scheduled time) pairs
+// flattened; empty when there are none.
+func ExclusionOf(alias string, args []any) (string, []any) {
+	if len(args) < 2 {
 		return "", nil
 	}
-	return " AND " + col + " NOT IN (?" + strings.Repeat(", ?", len(args)-1) + ")", args
+	p := ""
+	if alias != "" {
+		p = alias + "."
+	}
+	return " AND (" + p + "promise_hash, " + p + "scheduled_at) NOT IN (VALUES (?, ?)" + strings.Repeat(", (?, ?)", len(args)/2-1) + ")", args
 }
 
 // Config is the retention policy.
@@ -729,7 +767,7 @@ func rollDay(ctx context.Context, db *sql.DB, d, now time.Time, vantage string) 
 	if err != nil {
 		return 0, err
 	}
-	excl, exclArgs := Exclusion("pr.scheduled_at", pts)
+	excl, exclArgs := Exclusion("pr", pts)
 	// lo is the day's first moment; rows of a promise settled that day cannot
 	// have started before it, less the skew margin.
 	args := append([]any{store.TS(now), lo, hi, store.TS(now), RowLowerBound(lo)}, exclArgs...)
@@ -775,7 +813,7 @@ func rollDay(ctx context.Context, db *sql.DB, d, now time.Time, vantage string) 
 	if err != nil {
 		return 0, err
 	}
-	excl, exclArgs = Exclusion("scheduled_at", pts)
+	excl, exclArgs = Exclusion("", pts)
 	// probe_daily keeps four columns nothing reads any more: faults (a raw
 	// FAULT count, which counts failures the rule does not) and the
 	// per-reading attestation split (attested, unattested, unknown_att).

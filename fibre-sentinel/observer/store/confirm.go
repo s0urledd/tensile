@@ -11,24 +11,24 @@ import (
 
 // Other vantages' answers to this observer's not-served readings.
 //
-// A second vantage fetches the rows of every row that counts not served
-// once more (probe.Confirmable: a FAULT, or at the end reading any answer
-// that left the reader without rows; internal/probe/confirm.go) and writes the result to its own
-// measurements.jsonl, which is copied in beside this observer's record and
-// ingested here, into probe_confirmations: never into probes. Every
-// published figure is counted over probes, so a confirming row cannot add
-// an obligation, a reading or a served shard anywhere, by construction
-// rather than by a filter each query has to remember.
+// A second vantage fetches the rows of every row that can count not served
+// once more (probe.ConfirmationDue; internal/probe/confirm.go) and writes
+// the result to its own measurements.jsonl, which is copied in beside this
+// observer's record and ingested here, into probe_confirmations: never into
+// probes. Every published figure is counted over probes, so a confirming
+// row cannot add an obligation, a reading or a served shard anywhere, by
+// construction rather than by a filter each query has to remember.
 //
-// What a confirmation can do is decided by verdict.ConfirmFault and lands on
-// the fault's own row: cleared_by when another vantage got the verified rows
-// (the fault is withdrawn through an amendment, PROBE_ERROR, and the
-// amendment is logged like every other late verdict), confirmed_by when it
-// did not get them either.
+// What an answer does is decided by verdict.ConfirmNotServed and lands on
+// the row it answers: confirmed_by when the other vantage did not get the
+// rows either, which is what lets a not-served row count
+// (rollup.ConfirmedSQL); cleared_by when it got them, which only names who
+// did. Neither rewrites the row: its class, the blob's reading and the
+// correlated-failure guard stay this observer's own.
 
 var confirmMigration = migration{
 	version: 23,
-	note:    "second-vantage confirmation of faults: the other vantage's answers, and cleared_by / confirmed_by on the fault's row",
+	note:    "second-vantage confirmation of not-served readings: the other vantage's answers, and cleared_by / confirmed_by on the row",
 	stmts: []string{
 		// NULL on every row no other vantage answered.
 		`ALTER TABLE probes ADD COLUMN cleared_by TEXT`,
@@ -94,20 +94,18 @@ func (s *Store) InsertConfirmation(m probe.Measurement, raw []byte, own string) 
 // ConfirmDecision is the rule applied to one answer.
 type ConfirmDecision struct {
 	ConfirmKey string // the other vantage's row
-	ProbeKey   string // the fault's row
+	ProbeKey   string // this observer's row
 	Vantage    string
 	Result     verdict.ConfirmResult
-	// Amendment withdraws the fault; set when Result is ConfirmCleared.
-	// The caller logs it and applies it (ApplyAmendment) before settling
-	// the decision, in that order, as for every late verdict.
-	Amendment *Amendment
 }
 
-// JudgeConfirmations applies verdict.ConfirmFault to every answer not yet
-// judged whose fault row is in the store. Nothing is written: the caller
-// logs and applies each amendment, then SettleConfirmation. An answer to a
-// row that does not count not served (probe.Confirmable), or whose verdict
-// was already amended, is judged with no effect.
+// JudgeConfirmations applies verdict.ConfirmNotServed to every answer not
+// yet judged whose row is in the store. Nothing is written: the caller
+// settles each decision (SettleConfirmation). Nothing is ever withdrawn or
+// rewritten: a confirmation is what lets a not-served row count, and an
+// answer that got the rows only names who fetched them. An answer about a
+// row that cannot count not served (probe.ConfirmationDue: its rows came
+// back, or it names no host) is judged with no effect.
 func (s *Store) JudgeConfirmations(ctx context.Context, now time.Time) ([]ConfirmDecision, error) {
 	rows, err := s.db.QueryContext(ctx, judgeConfirmationsSQL)
 	if err != nil {
@@ -117,43 +115,49 @@ func (s *Store) JudgeConfirmations(ctx context.Context, now time.Time) ([]Confir
 	var out []ConfirmDecision
 	for rows.Next() {
 		var d ConfirmDecision
-		var cStarted, cCls, pStarted, pCls, hash, addr, sched, outcome, label string
-		var amended bool
-		if err := rows.Scan(&d.ConfirmKey, &d.ProbeKey, &d.Vantage, &cStarted, &cCls, &pStarted, &pCls, &amended, &hash, &addr, &sched, &outcome, &label); err != nil {
+		var cStarted, cPhase, cCls, pStarted, pMSU, pLabel, pCls, pAtProbe string
+		var cVerified, cRules, pVerified bool
+		var cOffset, pOffset int64
+		var pRows, pHeld int
+		if err := rows.Scan(&d.ConfirmKey, &d.ProbeKey, &d.Vantage, &cStarted, &cPhase, &cCls, &cVerified, &cRules, &cOffset,
+			&pStarted, &pOffset, &pMSU, &pLabel, &pCls, &pAtProbe, &pVerified, &pRows, &pHeld); err != nil {
 			return nil, err
 		}
-		if probe.Confirmable(label, probe.Classification(pCls)) && !amended {
-			ps, err1 := time.Parse(TimeLayout, pStarted)
-			cs, err2 := time.Parse(TimeLayout, cStarted)
-			if err1 == nil && err2 == nil {
-				d.Result = verdict.ConfirmFault(ps, verdict.Confirmation{Vantage: d.Vantage, StartedAt: cs, Classification: probe.Classification(cCls)})
-			}
-			if d.Result == verdict.ConfirmCleared {
-				scheduled, _ := time.Parse(TimeLayout, sched)
-				started := cs.UTC()
-				d.Amendment = &Amendment{
-					DedupeKey: d.ProbeKey, PromiseHash: hash, ValidatorAddress: addr, ScheduledAt: scheduled,
-					From: pCls, To: string(verdict.ClearedClass), Reason: verdict.ClearedReason(d.Vantage, cs, outcome),
-					JudgedAt: now.UTC(), ClearedBy: d.Vantage, ConfirmKey: d.ConfirmKey, ConfirmStartedAt: &started,
-				}
-			}
+		// The row as it was read: a deferred verdict drawn since, or a
+		// deadline correction, does not change whether it was a failure.
+		due := probe.Confirmable(pLabel, probe.Classification(pCls)) || probe.Confirmable(pLabel, probe.Classification(pAtProbe)) ||
+			(pVerified && pRows < pHeld)
+		ps, err1 := time.Parse(TimeLayout, pStarted)
+		cs, err2 := time.Parse(TimeLayout, cStarted)
+		msu, err3 := time.Parse(TimeLayout, pMSU)
+		if due && err1 == nil && err2 == nil && err3 == nil {
+			d.Result = verdict.ConfirmNotServed(verdict.NotServed{StartedAt: ps, ClockOffsetMS: pOffset, MustServeUntil: msu},
+				verdict.Confirmation{Vantage: d.Vantage, StartedAt: cs, ClockOffsetMS: cOffset, Phase: probe.Phase(cPhase),
+					Classification: probe.Classification(cCls), CommitmentVerified: cVerified, ClientRules: cRules})
 		}
 		out = append(out, d)
 	}
 	return out, rows.Err()
 }
 
-// SettleConfirmation records a decision: confirmed_by on the fault's row
-// when the other vantage failed too, and the answer marked judged either
-// way. A cleared fault's amendment has been applied by then.
+// SettleConfirmation records a decision: confirmed_by on the row when the
+// other vantage confirmed it, cleared_by when it got the rows (which also
+// takes back a confirmation another vantage gave: a row any vantage got
+// the rows of does not count, verdict.ConfirmNotServedBy), and the answer
+// marked judged either way.
 func (s *Store) SettleConfirmation(d ConfirmDecision) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if d.Result == verdict.ConfirmConfirmed {
-		if _, err := tx.Exec(`UPDATE probes SET confirmed_by = ? WHERE dedupe_key = ? AND confirmed_by IS NULL`, d.Vantage, d.ProbeKey); err != nil {
+	switch d.Result {
+	case verdict.ConfirmConfirmed:
+		if _, err := tx.Exec(`UPDATE probes SET confirmed_by = ? WHERE dedupe_key = ? AND confirmed_by IS NULL AND cleared_by IS NULL`, d.Vantage, d.ProbeKey); err != nil {
+			return err
+		}
+	case verdict.ConfirmServed:
+		if _, err := tx.Exec(`UPDATE probes SET cleared_by = COALESCE(cleared_by, ?), confirmed_by = NULL WHERE dedupe_key = ?`, d.Vantage, d.ProbeKey); err != nil {
 			return err
 		}
 	}
@@ -165,10 +169,13 @@ func (s *Store) SettleConfirmation(d ConfirmDecision) error {
 
 // judgeConfirmationsSQL runs every collector pass. It starts from the
 // answers not yet judged (a partial index: nearly none) and reaches each
-// fault by its primary key, so it costs what is new, not what is stored.
-const judgeConfirmationsSQL = `SELECT c.dedupe_key, c.probe_key, c.vantage, c.started_at, c.classification,
-		pr.started_at, pr.classification, pr.amended_at IS NOT NULL, pr.promise_hash, pr.validator_address, pr.scheduled_at, pr.outcome,
-		pr.schedule_label
+// row by its primary key, so it costs what is new, not what is stored. The
+// answer's client_rules flag and clock offset are read from its own record
+// (the table has no column for them).
+const judgeConfirmationsSQL = `SELECT c.dedupe_key, c.probe_key, c.vantage, c.started_at, c.phase, c.classification, c.commitment_verified,
+		COALESCE(json_extract(c.raw_json, '$.client_rules'), 0) = 1, COALESCE(json_extract(c.raw_json, '$.clock_offset_ms'), 0),
+		pr.started_at, COALESCE(pr.clock_offset_ms, 0), pr.must_serve_until,
+		pr.schedule_label, pr.classification, COALESCE(pr.classification_at_probe, ''), pr.commitment_verified, pr.rows_returned, pr.assigned_row_count
 	FROM probe_confirmations c JOIN probes pr ON pr.dedupe_key = c.probe_key
 	WHERE c.judged = 0
 	ORDER BY c.probe_key, c.vantage`

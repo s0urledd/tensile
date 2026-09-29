@@ -19,20 +19,23 @@ import (
 func rowsFromStore(t *testing.T, st *store.Store) ([]verdict.Row, map[string]time.Time, verdict.Blobs) {
 	t.Helper()
 	var rows []verdict.Row
-	prs, err := st.DB().Query(`SELECT raw_json FROM probes`)
+	prs, err := st.DB().Query(`SELECT raw_json, confirmed_by IS NOT NULL FROM probes`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for prs.Next() {
 		var raw string
-		if err := prs.Scan(&raw); err != nil {
+		var confirmed bool
+		if err := prs.Scan(&raw, &confirmed); err != nil {
 			t.Fatal(err)
 		}
 		var m probe.Measurement
 		if err := json.Unmarshal([]byte(raw), &m); err != nil {
 			t.Fatal(err)
 		}
-		rows = append(rows, verdict.FromMeasurement(m))
+		row := verdict.FromMeasurement(m)
+		row.Confirmed = confirmed
+		rows = append(rows, row)
 	}
 	prs.Close()
 	settled := map[string]time.Time{}

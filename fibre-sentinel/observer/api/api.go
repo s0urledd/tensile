@@ -1323,7 +1323,7 @@ func (s *Server) obligationArgs(win Window, ss suspectSet, extra ...any) []any {
 // is appended to the WHERE clause (a validator filter), its arguments last.
 func (s *Server) obligationsWhere(ctx context.Context, win Window, ss suspectSet, extra string, extraArgs ...any) (obligationStats, error) {
 	var r rollup.Obligations
-	err := s.st.DB().QueryRowContext(ctx, `SELECT `+obligationSums+` FROM (`+obligationBuckets+ss.clause("pr.scheduled_at")+extra+`)
+	err := s.st.DB().QueryRowContext(ctx, `SELECT `+obligationSums+` FROM (`+obligationBuckets+ss.clause("pr")+extra+`)
 			GROUP BY validator_address, promise_hash)`, s.obligationArgs(win, ss, extraArgs...)...).
 		Scan(scanObligations(&r)...)
 	if err != nil {
@@ -1334,7 +1334,7 @@ func (s *Server) obligationsWhere(ctx context.Context, win Window, ss suspectSet
 
 // obligationsByValidator is obligationsWhere grouped by validator.
 func (s *Server) obligationsByValidator(ctx context.Context, win Window, ss suspectSet, extra string, extraArgs ...any) (map[string]obligationStats, error) {
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT validator_address, `+obligationSums+` FROM (`+obligationBuckets+ss.clause("pr.scheduled_at")+extra+`)
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT validator_address, `+obligationSums+` FROM (`+obligationBuckets+ss.clause("pr")+extra+`)
 			GROUP BY validator_address, promise_hash) GROUP BY validator_address`, s.obligationArgs(win, ss, extraArgs...)...)
 	if err != nil {
 		return nil, err
@@ -1372,9 +1372,10 @@ type vantageHealth struct {
 	// MinValidators is the floor on how many validators must share the
 	// failure before a share means anything: one of two is half.
 	MinValidators int64 `json:"min_validators"`
-	// Suspect lists every reading in the window at which the share of
-	// validators unreachable, or the share that returned no rows, reached
-	// its threshold, and whose blob could not be reconstructed all the same.
+	// Suspect lists every reading in the window (a blob at its scheduled
+	// time) at which the share of the endorsing validators asked that were
+	// unreachable, or that returned no rows, reached its threshold, and
+	// whose blob could not be reconstructed all the same.
 	// Every row there counts neither way, served or not served: validators
 	// fail independently and one observer's network, or one observer's
 	// stale assignment, does not. SuspectRows is how many rows that removed.
@@ -1385,8 +1386,10 @@ type vantageHealth struct {
 	SuspectRows int64          `json:"suspect_rows"`
 }
 
-// suspectPoint is one reading the observer does not trust itself at.
+// suspectPoint is one reading the observer does not trust itself at: a
+// blob (promise_hash) at its scheduled time.
 type suspectPoint struct {
+	PromiseHash string `json:"promise_hash"`
 	At          string `json:"at"`
 	Label       string `json:"label"`
 	Validators  int64  `json:"validators"`
@@ -1397,18 +1400,20 @@ type suspectPoint struct {
 }
 
 // suspectSet is the SQL side of vantageHealth.Suspect: the clause that drops
-// those points from a population query, and its arguments.
+// those readings from a population query, and its arguments, (promise hash,
+// scheduled time) pairs.
 type suspectSet struct {
 	points []suspectPoint
 	args   []any
 }
 
-// clause is " AND <col> NOT IN (?, ...)" or "" when nothing is suspect.
-func (ss suspectSet) clause(col string) string {
-	if len(ss.args) == 0 {
-		return ""
-	}
-	return " AND " + col + " NOT IN (?" + strings.Repeat(", ?", len(ss.args)-1) + ")"
+func (ss *suspectSet) add(promise, at string) { ss.args = append(ss.args, promise, at) }
+
+// clause is rollup.ExclusionOf over the rows under alias ("" for a bare
+// table), or "" when nothing is suspect.
+func (ss suspectSet) clause(alias string) string {
+	c, _ := rollup.ExclusionOf(alias, ss.args)
+	return c
 }
 
 // excludeSet is the validator exclusion a reader asks for with `?exclude=`.
@@ -1557,10 +1562,10 @@ func (s *Server) suspectPoints(ctx context.Context, win Window) (vantageHealth, 
 		if reason == "" {
 			continue
 		}
-		out.Suspect = append(out.Suspect, suspectPoint{At: p.At, Label: p.Label, Validators: p.Validators,
+		out.Suspect = append(out.Suspect, suspectPoint{PromiseHash: p.PromiseHash, At: p.At, Label: p.Label, Validators: p.Validators,
 			Unreachable: rate(p.Unreachable, p.Validators), Fault: rate(p.Faulted, p.Validators), Reason: reason})
 		out.SuspectRows += p.Rows
-		ss.args = append(ss.args, p.At)
+		ss.add(p.PromiseHash, p.At)
 	}
 	out.Correlated = out.WorstPoint.Den > 0 && best >= correlatedUnreachableThreshold && out.WorstPoint.Num >= correlatedMinValidators
 	ss.points = out.Suspect
@@ -1718,7 +1723,7 @@ func (s *Server) computeNetwork(ctx context.Context, win Window, ex excludeSet, 
 		return nil, err
 	}
 	resp.VantageHealth = vh
-	pop := `started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'` + ss.clause("scheduled_at") + exv
+	pop := `started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'` + ss.clause("") + exv
 	popArgs := ex.args(append([]any{win.startArg(), win.endArg()}, ss.args...)...)
 
 	classes, _, err := s.classCountsWhere(ctx, pop, popArgs...)
@@ -1739,7 +1744,7 @@ func (s *Server) computeNetwork(ctx context.Context, win Window, ex excludeSet, 
 	// The same population the class tally above was drawn from, suspect
 	// points and all.
 	if resp.Attestation, err = s.attestationWhere(ctx,
-		`started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`+ss.clause("scheduled_at")+exv, popArgs...); err != nil {
+		`started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`+ss.clause("")+exv, popArgs...); err != nil {
 		return nil, err
 	}
 	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM probe_rows WHERE started_at >= ? AND started_at <= ?`+exv, ex.args(win.startArg(), win.endArg())...).Scan(&resp.ProbeCount)
@@ -2224,9 +2229,9 @@ type validatorRow struct {
 	// recorded with on the wire; see networkResponse.Classes.
 	Classes classCounts `json:"classes"`
 	// FaultsCleared is how many failed readings of the window a second
-	// vantage cleared: it fetched the same rows within the confirmation
-	// window and they verified, so the row is filed PROBE_ERROR with
-	// cleared_by. Absent when none.
+	// vantage fetched the same rows of, verified, before must_serve_until
+	// (cleared_by): not counted, like every not-served reading the second
+	// vantage did not confirm. Absent when none.
 	FaultsCleared    int64  `json:"faults_cleared,omitempty"`
 	AssignedRowsLast int    `json:"assigned_rows_last"`
 	ExpectedLoadBand string `json:"expected_load_band"` // floor | low | mid | high, by assigned rows
@@ -2364,7 +2369,7 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	if err != nil {
 		return nil, err
 	}
-	sus := ss.clause("scheduled_at")
+	sus := ss.clause("")
 	winArgs := append([]any{win.startArg(), win.endArg()}, ss.args...)
 	byAddr := map[string]*validatorRow{}
 	get := func(addr string) *validatorRow {
@@ -2505,8 +2510,9 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	// row publishes no verdict for one validator either, and the
 	// per-validator figures must add up to the network's.
 	cls := rollup.EffectiveClass("")
-	// Failures a second vantage cleared (verdict.ConfirmFault). Over the raw
-	// rows only: a rolled day keeps its counts, not who cleared what.
+	// Failed readings whose rows a second vantage fetched
+	// (verdict.ConfirmNotServed). Over the raw rows only: a rolled day
+	// keeps its counts, not who fetched what.
 	crows, err = db.QueryContext(ctx, `SELECT validator_address, COUNT(*) FROM probes INDEXED BY probes_cleared
 		WHERE cleared_by IS NOT NULL AND started_at >= ? AND started_at <= ? AND assigned = 1`+sus+vfilter("validator_address")+`
 		GROUP BY validator_address`, vargs(winArgs...)...)
@@ -3107,7 +3113,7 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 		if sw.Name == "all" {
 			suspectAll = ss.points
 		}
-		classes, total, err := s.classCountsWhere(ctx, `validator_address = ? AND started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`+ss.clause("scheduled_at"),
+		classes, total, err := s.classCountsWhere(ctx, `validator_address = ? AND started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`+ss.clause(""),
 			append([]any{addr, sw.startArg(), sw.endArg()}, ss.args...)...)
 		if err != nil {
 			return 0, nil, err
@@ -3481,7 +3487,7 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 			return nil, err
 		}
 		for _, p := range spts {
-			if p.At == rc.PointAt && p.Reason() != "" {
+			if p.PromiseHash == hash && p.At == rc.PointAt && p.Reason() != "" {
 				suspect = true
 			}
 		}
@@ -3822,9 +3828,9 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, p := range spts {
 		if reason := p.Reason(); reason != "" {
-			suspect = append(suspect, suspectPoint{At: p.At, Label: p.Label, Validators: p.Validators,
+			suspect = append(suspect, suspectPoint{PromiseHash: p.PromiseHash, At: p.At, Label: p.Label, Validators: p.Validators,
 				Unreachable: rate(p.Unreachable, p.Validators), Fault: rate(p.Faulted, p.Validators), Reason: reason})
-			ss.args = append(ss.args, p.At)
+			ss.add(p.PromiseHash, p.At)
 		}
 	}
 	if err := s.blobService(ctx, hash, ss, assigns); err != nil {
@@ -3851,7 +3857,7 @@ func (s *Server) blobService(ctx context.Context, hash string, ss suspectSet, as
 	now := time.Now().UTC()
 	args := []any{provisionalCutoff(now), store.TS(now), settled, settled, store.TS(now), rollup.RowLowerBound(settled)}
 	args = append(args, ss.args...)
-	rows, err := s.st.DB().QueryContext(ctx, blobServiceSQL+obligationBuckets+ss.clause("pr.scheduled_at")+` AND pr.promise_hash = ?)
+	rows, err := s.st.DB().QueryContext(ctx, blobServiceSQL+obligationBuckets+ss.clause("pr")+` AND pr.promise_hash = ?)
 			GROUP BY validator_address, promise_hash)`, append(args, hash)...)
 	if err != nil {
 		return err
@@ -4065,20 +4071,27 @@ type probeRow struct {
 	// Service is what this reading counts as for the validator, by the rule
 	// the obligations use (rollup.CountedClass): served (its rows came back
 	// verified, at a reading that speaks for the end of the window),
-	// not_served (they did not, and the blob could not be reconstructed), or
-	// empty: it counts neither way (a failure on a blob that was Available
-	// all the same, a reading the correlated-failure guard set aside, an
-	// earlier schedule's early reading, this observer's own gap).
+	// not_served (they did not, the blob could not be reconstructed, and the
+	// second location did not get them either: confirmed_by), or empty: it
+	// counts neither way (a failure on a blob that was Available all the
+	// same, one the second location did not confirm, a reading the
+	// correlated-failure guard set aside, an earlier schedule's early
+	// reading, this observer's own gap).
 	Service string `json:"service,omitempty"`
+	// Unconfirmed marks a reading that would count not served had the
+	// second location confirmed it: it counts neither way (awaiting the
+	// second location until must_serve_until, then for good).
+	Unconfirmed bool `json:"unconfirmed,omitempty"`
 	// Provisional marks a not_served reading younger than
-	// verdict.FaultSettling: it counts, and it can still be withdrawn
-	// (provisional.go).
+	// verdict.FaultSettling: it counts, and an x/fibre params change not
+	// reconciled yet can still withdraw it (provisional.go).
 	Provisional bool `json:"provisional,omitempty"`
-	// ClearedBy names the vantage that fetched this FAULT's rows again
-	// within the confirmation window and got them verified: the fault is
-	// withdrawn, the row reads PROBE_ERROR and classification_at_probe says
-	// FAULT (verdict.ConfirmFault). ConfirmedBy names the vantage that
-	// tried and did not get them either; the fault stands.
+	// ConfirmedBy names the vantage that read the same rows before
+	// must_serve_until under the same client rules and did not get them
+	// either: the reading counts (verdict.ConfirmNotServed). ClearedBy names
+	// the vantage that got them, verified: the reading does not count. Rows
+	// withdrawn by the earlier rule read PROBE_ERROR with cleared_by set and
+	// classification_at_probe the class they had.
 	ClearedBy   string `json:"cleared_by,omitempty"`
 	ConfirmedBy string `json:"confirmed_by,omitempty"`
 }
@@ -4099,7 +4112,7 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, args ..
 		COALESCE(shadow_gap, ''), COALESCE(classification_at_probe, ''), COALESCE(amended_at, ''),
 		COALESCE(host_at_settlement, ''), COALESCE(settlement_host_outcome, ''), settlement_host_served,
 		retention_unverified, COALESCE(phase_at_probe, ''), COALESCE(corrected_at, ''),
-		COALESCE(cleared_by, ''), COALESCE(confirmed_by, ''), ` + rollup.CountedClass("probes") + `,
+		COALESCE(cleared_by, ''), COALESCE(confirmed_by, ''), ` + rollup.CountedClass("probes") + `, ` + unconfirmedSQL + `,
 		` + lateSQL + `
 		FROM probes`
 	if where != "" {
@@ -4123,13 +4136,13 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, args ..
 		var idxJSON string
 		var served sql.NullInt64
 		var counted string
-		var late bool
+		var late, unconfirmed bool
 		if err := rows.Scan(&p.Vantage, &p.PromiseHash, &p.ValidatorAddress, &p.ValidatorHost, &assigned, &att, &p.AssignedRowCount, &p.ScheduleLabel,
 			&p.ScheduledAt, &p.StartedAt, &p.Phase, &p.Outcome, &p.Classification, &p.Reason, &p.RowsReturned, &p.RowsExpected,
 			&p.TotalDurationMS, &tls, &id, &p.RawError, &p.RetryFirstOutcome, &p.ClockOffsetMS,
 			&idxJSON, &p.RowsSHA256, &p.RPCCode, &p.ShadowedBy, &p.ObserverBuild, &p.AppVersion,
 			&p.ShadowGap, &p.ClassificationAtProbe, &p.AmendedAt, &p.HostAtSettlement, &p.SettlementHostOutcome, &served,
-			&held, &p.PhaseAtProbe, &p.CorrectedAt, &p.ClearedBy, &p.ConfirmedBy, &counted, &late); err != nil {
+			&held, &p.PhaseAtProbe, &p.CorrectedAt, &p.ClearedBy, &p.ConfirmedBy, &counted, &unconfirmed, &late); err != nil {
 			return nil, err
 		}
 		p.RetentionUnverified = held == 1
@@ -4140,6 +4153,8 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, args ..
 			p.Service = "not_served"
 		case counted == "HEALTHY" && late:
 			p.Service = "served"
+		case unconfirmed:
+			p.Unconfirmed = true
 		}
 		p.HostChanged = p.HostAtSettlement != "" && p.ValidatorHost != "" && p.ValidatorHost != p.HostAtSettlement
 		if served.Valid {
@@ -4160,7 +4175,41 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, args ..
 		return nil, err
 	}
 	rows.Close()
-	return out, s.blankSuspect(ctx, out)
+	if err := s.blankSuspect(ctx, out); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Reason = serviceReason(out[i])
+	}
+	return out, nil
+}
+
+// unconfirmedSQL is 1 for a reading of the probes table that would count
+// not served had a second location confirmed it: CountedClass with every
+// confirmation taken as given, FAULT, while the row itself has none.
+var unconfirmedSQL = `(confirmed_by IS NULL AND ` + rollup.CountedClassAsIfConfirmed("probes") + ` = 'FAULT')`
+
+// serviceReason words a reading's reason by the rule it counts by, where
+// the reason recorded at the probe (a statement about the wire, written
+// for any schedule) would say otherwise: a counted not-served reading, one
+// not counted for want of the second location's confirmation, and genuine
+// rows that count as served. What came back on the wire follows.
+func serviceReason(p probeRow) string {
+	switch {
+	case p.Service == "not_served":
+		return "not served: the rows did not come back, the blob could not be reconstructed from the whole set, and " + p.ConfirmedBy +
+			" did not get them either before must_serve_until; on the wire: " + p.Reason
+	case p.Unconfirmed && p.Classification == string(probe.ClassNotRegistered):
+		return "not counted: the blob could not be reconstructed, but no host is registered for a second location to confirm it from; on the wire: " + p.Reason
+	case p.Unconfirmed && p.ClearedBy != "":
+		return "not counted: " + p.ClearedBy + " fetched these rows before must_serve_until and they verified; on the wire: " + p.Reason
+	case p.Unconfirmed:
+		return "not counted: the rows did not come back and the blob could not be reconstructed, but a not-served reading counts only once " +
+			"the second location reads the same rows before must_serve_until and does not get them either, and it has not; on the wire: " + p.Reason
+	case p.Service == "served" && (p.Classification == string(probe.ClassShadowedShard) || p.Classification == string(probe.ClassUnmatchedGenuine)):
+		return "served: rows of this blob came back and verified against the commitment, though not as this promise's own set; on the wire: " + p.Reason
+	}
+	return p.Reason
 }
 
 // lateSQL says whether a reading of the probes table speaks for the end of
@@ -4177,7 +4226,7 @@ func (s *Server) blankSuspect(ctx context.Context, rows []probeRow) error {
 	var ats []any
 	seen := map[string]bool{}
 	for _, p := range rows {
-		if p.Service != "" && !seen[p.ScheduledAt] {
+		if (p.Service != "" || p.Unconfirmed) && !seen[p.ScheduledAt] {
 			seen[p.ScheduledAt] = true
 			ats = append(ats, p.ScheduledAt)
 		}
@@ -4192,12 +4241,12 @@ func (s *Server) blankSuspect(ctx context.Context, rows []probeRow) error {
 	suspect := map[string]bool{}
 	for _, p := range pts {
 		if p.Reason() != "" {
-			suspect[p.At] = true
+			suspect[p.PromiseHash+"|"+p.At] = true
 		}
 	}
 	for i := range rows {
-		if suspect[rows[i].ScheduledAt] {
-			rows[i].Service, rows[i].Provisional = "", false
+		if suspect[rows[i].PromiseHash+"|"+rows[i].ScheduledAt] {
+			rows[i].Service, rows[i].Provisional, rows[i].Unconfirmed = "", false, false
 		}
 	}
 	return nil
@@ -4238,8 +4287,9 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 	}
 	// served=no: the readings the obligations count as not served
 	// (rollup.CountedClass): no rows came back, on a blob that could not be
-	// reconstructed. Readings the correlated-failure guard sets aside are
-	// left out below, as every count leaves them out.
+	// reconstructed, and the second location confirmed it. Readings the
+	// correlated-failure guard sets aside are left out below, as every count
+	// leaves them out.
 	notServed := q.Get("served") == "no"
 	if notServed {
 		conds = append(conds, rollup.CountedClass("probes")+` = 'FAULT'`)
@@ -4281,7 +4331,7 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 			s.writeInternal(w, r.URL.Path, err)
 			return
 		}
-		if x, xargs := rollup.Exclusion("scheduled_at", pts); x != "" {
+		if x, xargs := rollup.Exclusion("", pts); x != "" {
 			conds[len(conds)-1] += x
 			args = append(args, xargs...)
 		}

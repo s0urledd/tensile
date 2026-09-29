@@ -94,6 +94,7 @@ func insertProbe(t *testing.T, st *store.Store, hash, addr string, at time.Time,
 	if _, err := st.InsertProbe(m, raw); err != nil {
 		t.Fatal(err)
 	}
+	confirmFailures(t, st, `promise_hash = ? AND validator_address = ?`, hash, addr)
 }
 
 type blobListRow struct {

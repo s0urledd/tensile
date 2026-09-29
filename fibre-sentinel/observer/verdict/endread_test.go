@@ -22,7 +22,9 @@ func newReading() *reading {
 }
 
 // add records validator v's answer: its class, and when rows came back
-// verified, their indices. holds is the rows it is endorsed for.
+// verified, their indices. holds is the rows it is endorsed for. Every
+// failure is confirmed from a second location, as the rule needs before it
+// counts; TestANotServedRowCountsOnlyOnceConfirmed covers the rest.
 func (rd *reading) add(v string, cls probe.Classification, holds int, rows ...uint32) {
 	out := probe.OutcomeServedOK
 	switch cls {
@@ -46,7 +48,7 @@ func (rd *reading) add(v string, cls probe.Classification, holds int, rows ...ui
 	rd.rows = append(rd.rows, Row{PromiseHash: "p", Validator: v, ScheduleLabel: probe.EndReadLabel, ScheduledAt: rd.at, StartedAt: rd.at,
 		MustServeUntil: rd.msu, Assigned: true, Attested: true, Phase: probe.PhaseInWindow, Classification: cls, Outcome: out,
 		TLSOK:      cls != probe.ClassUnreachable && cls != probe.ClassNotProbed && cls != probe.ClassProbeError,
-		RowIndices: rows, RowsReturned: len(rows), CommitmentVerified: len(rows) > 0, AssignedRowCount: holds})
+		RowIndices: rows, RowsReturned: len(rows), CommitmentVerified: len(rows) > 0, AssignedRowCount: holds, Confirmed: true})
 }
 
 func span(from, n int) []uint32 {

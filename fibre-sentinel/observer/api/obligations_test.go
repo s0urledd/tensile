@@ -115,6 +115,7 @@ func obligationsFixture(t *testing.T) *httptest.Server {
 			}
 		}
 	}
+	confirmFailures(t, st, `promise_hash = ?`, hash)
 	// A second blob whose retention window has not ended: one served probe
 	// so far. Its obligation is pending, not served, until must_serve_until
 	// passes; a verdict drawn before the last probe is not a verdict.
@@ -216,6 +217,7 @@ func insertReading(t *testing.T, st *store.Store, hash string, created, msu time
 			t.Fatal(err)
 		}
 	}
+	confirmFailures(t, st, `promise_hash = ?`, hash)
 }
 
 // inWindowFractions are the prober's in-window schedule fractions
@@ -256,7 +258,30 @@ var (
 // The blob needs every row it assigns (original_rows is their sum), so a
 // validator that does not serve at a point leaves the blob unreadable there:
 // its failure counts, as the rule says only an unreadable blob's failures do.
+//
+// Every failure it writes is confirmed from a second location (confirmed_by),
+// so it counts as the rule has it; insertProbeSetUnconfirmed leaves them
+// unconfirmed.
 func insertProbeSet(t *testing.T, st *store.Store, hash string, created, msu time.Time, profile map[string][]wire, allSuspect bool) {
+	t.Helper()
+	insertProbeSetUnconfirmed(t, st, hash, created, msu, profile)
+	confirmFailures(t, st, `promise_hash = ?`, hash)
+}
+
+// confirmFailures marks every failed reading the rows under where hold as
+// confirmed from a second location, as the collector would once de-1
+// answered: the failures of a fixture count as the rule has them.
+func confirmFailures(t *testing.T, st *store.Store, where string, args ...any) {
+	t.Helper()
+	if _, err := st.DB().Exec(`UPDATE probes SET confirmed_by = 'de-1'
+		WHERE commitment_verified = 0 AND classification NOT IN ('NOT_PROBED', 'PROBE_ERROR') AND `+where, args...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// insertProbeSetUnconfirmed is insertProbeSet with no second location's
+// answer.
+func insertProbeSetUnconfirmed(t *testing.T, st *store.Store, hash string, created, msu time.Time, profile map[string][]wire) {
 	t.Helper()
 	now := time.Now().UTC()
 	var vals []scan.ValidatorAssignment

@@ -3,9 +3,10 @@ package api
 // Provisional not-served readings, and the network reference beside a
 // validator's rate.
 //
-// A reading that counts as not served (rollup.CountedClass FAULT) and is
-// younger than verdict.FaultSettling can still be withdrawn by evidence
-// already on its way (a params range the scanner has not noticed yet). This
+// A reading that counts as not served (rollup.CountedClass FAULT: the
+// second location has confirmed it) and is younger than
+// verdict.FaultSettling can still be withdrawn by evidence already on its
+// way (a params range the scanner has not noticed yet). This
 // file labels it: a reading carries provisional: true, and a not-served
 // obligation whose every such reading is that young is counted in
 // provisional_faults beside the figure it is already part of.
@@ -59,8 +60,7 @@ type provisionalFaults struct {
 	Note            string `json:"note"`
 }
 
-const provisionalNote = "Counted in broken and in the rate, and final at `until` unless withdrawn: by an x/fibre params change not reconciled yet, " +
-	"or the rows verified from a second location."
+const provisionalNote = "Counted in broken and in the rate, and final at `until` unless an x/fibre params change not reconciled yet withdraws it."
 
 // provisionalCutoff is the started_at bound above which a FAULT is
 // provisional at now.
@@ -84,7 +84,7 @@ func (s *Server) provisionalByValidator(ctx context.Context, win Window, ss susp
 	args := append(s.obligationArgs(win, ss, extraArgs...), provisionalCutoff(now))
 	// obligationBuckets leaves its inner FROM ( open for the caller's
 	// filters, hence the ")" before its GROUP BY, as in obligationsWhere.
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT validator_address, COUNT(*), MAX(first_fault) FROM (`+obligationBuckets+ss.clause("pr.scheduled_at")+extra+`)
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT validator_address, COUNT(*), MAX(first_fault) FROM (`+obligationBuckets+ss.clause("pr")+extra+`)
 			GROUP BY validator_address, promise_hash)
 		WHERE NOT pending AND faults > 0 AND first_fault > ?
 		GROUP BY validator_address`, args...)

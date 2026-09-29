@@ -17,14 +17,19 @@ import (
 )
 
 // The correlated-failure guard, the owner's decision until a control read
-// exists. At or above UnreachableThreshold of the validators asked at one
-// reading being unreachable, or FaultThreshold of them failing to hand over
-// rows (failedClass), the likeliest explanation is the observer's own side
-// (its network, a stale pin, a broken coder) rather than that many
-// independent operators at the same minute; such a reading is suspect and
-// every figure leaves its rows out, counted neither way, unless its blob was
-// Available all the same (verified rows are not the observer's trouble).
-// MinValidators is the floor under which a share is not a signal.
+// exists. At or above UnreachableThreshold of the endorsing validators asked
+// at one reading (one promise at one scheduled time) being unreachable, or
+// FaultThreshold of them failing to hand over rows (failedClass), the
+// likeliest explanation is the observer's own side (its network, a stale
+// pin, a broken coder) rather than that many independent operators at the
+// same minute; such a reading is suspect and every figure leaves its rows
+// out, counted neither way, unless its blob was Available all the same
+// (verified rows are not the observer's trouble). MinValidators is the
+// floor under which a share is not a signal. The shares are drawn from this
+// observer's own rows alone, so a second location's answer never moves
+// them. The prober applies the same guard at the end of a reading
+// (probe.GuardSetsAside), and sends no confirmation request for a reading
+// it sets aside.
 //
 // The shares count validators, not the rows they hold. On a stake-weighted
 // assignment the largest holders failing can leave a blob Unavailable with
@@ -38,9 +43,9 @@ import (
 // comes back whole would show the observer's side was fine. The seam is
 // Point.Available in the SQL twin and pointAvailable here.
 const (
-	UnreachableThreshold = 0.5
-	FaultThreshold       = 0.5
-	MinValidators        = 3
+	UnreachableThreshold = probe.GuardShare
+	FaultThreshold       = probe.GuardShare
+	MinValidators        = probe.GuardMinValidators
 )
 
 // EndSegmentDivisor cuts the tail off a retention window: the final
@@ -92,6 +97,11 @@ type Row struct {
 	RowsReturned       int
 	CommitmentVerified bool
 	AssignedRowCount   int
+	// Confirmed is set when a second location confirmed this row as not
+	// served (ConfirmNotServed): the only way a failure counts against the
+	// validator. Derived from the other vantage's rows (the store's
+	// confirmed_by), never from the row itself.
+	Confirmed bool
 }
 
 // EffectiveClass is the classification every rule below is built from: the
@@ -127,18 +137,21 @@ func (r Row) ObligationClass() probe.Classification {
 
 // CountedClass is the class a row counts as once its blob's reading is
 // known (BlobReading): a failure to hand over rows (FAULT) counts only when
-// the blob was Unavailable at that reading and is NotCounted otherwise, and
-// on an Unavailable blob a validator whose verified rows are fewer than it
-// holds did not serve them. Every other class passes through. unavailable is
-// Reading.Unavailable for the row's own reading. The SQL twin is
-// rollup.CountedClass.
+// the blob was Unavailable at that reading and a second location confirmed
+// it (Confirmed), and is NotCounted otherwise; on an Unavailable blob a
+// validator whose verified rows are fewer than it holds did not serve them,
+// which counts the same way, once confirmed. Every other class passes
+// through. unavailable is Reading.Unavailable for the row's own reading.
+// The SQL twin is rollup.CountedClass.
 func (r Row) CountedClass(unavailable bool) probe.Classification {
 	c := r.ObligationClass()
 	switch {
-	case c == probe.ClassFault && !unavailable:
+	case c == probe.ClassFault && (!unavailable || !r.Confirmed):
 		return NotCounted
-	case c == probe.ClassHealthy && unavailable && r.shortGenuine():
+	case c == probe.ClassHealthy && unavailable && r.shortGenuine() && r.Confirmed:
 		return probe.ClassFault
+	case c == probe.ClassHealthy && unavailable && r.shortGenuine():
+		return NotCounted
 	}
 	return c
 }
@@ -217,8 +230,10 @@ func (w Window) holds(t time.Time) bool {
 	return w.All || !t.Before(w.Start)
 }
 
-// SuspectPoint is one reading the figures leave out.
+// SuspectPoint is one reading the figures leave out: a promise at a
+// scheduled time.
 type SuspectPoint struct {
+	PromiseHash string
 	At          time.Time
 	Label       string
 	Validators  int
@@ -239,31 +254,32 @@ func failedClass(r Row) bool {
 }
 
 // SuspectPoints applies the correlated-failure guard: over assigned
-// in-window rows started in the window, grouped by scheduled time, with
-// more than one validator asked at the point. "Asked" is a row that
-// carries a reachability verdict for the endpoint, which is the only kind
-// of row that could land in either numerator — see noReachVerdict. A row
-// that could not be in the numerator whatever happened at the point must
-// not sit in the denominator either, or it drags the share down by its
-// mere presence. Rows counts every row at the point, excluded ones
-// included, because the exclusion removes them all.
+// in-window rows started in the window, grouped by reading (one promise at
+// one scheduled time: two blobs sharing a must_serve_until are two
+// readings), with more than one validator asked at the reading. "Asked" is
+// a row that carries a reachability verdict for the endpoint, which is the
+// only kind of row that could land in either numerator — see
+// noReachVerdict. A row that could not be in the numerator whatever
+// happened at the reading must not sit in the denominator either, or it
+// drags the share down by its mere presence. Rows counts every row at the
+// reading, excluded ones included, because the exclusion removes them all.
 //
-// A point whose every blob was Available is never suspect: the rows that
-// came back verified, and the failures beside them count for nothing
-// anyway. blobs supplies what that needs (BlobFacts); a blob it does not
-// name is not taken as Available.
+// A reading whose blob was Available is never suspect: the rows that came
+// back verified, and the failures beside them count for nothing anyway.
+// blobs supplies what that needs (BlobFacts); a blob it does not name is
+// not taken as Available.
 func SuspectPoints(rows []Row, w Window, blobs Blobs) []SuspectPoint {
 	type acc struct {
 		label                  string
 		vals, unreach, faulted map[string]bool
 		n                      int
 	}
-	groups := map[time.Time]*acc{}
+	groups := map[pointKey]*acc{}
 	for _, r := range rows {
 		if !r.Assigned || r.Phase != probe.PhaseInWindow || !w.holds(r.StartedAt) {
 			continue
 		}
-		k := r.ScheduledAt.UTC()
+		k := pointKey{r.PromiseHash, r.ScheduledAt.UTC()}
 		g, ok := groups[k]
 		if !ok {
 			g = &acc{label: r.ScheduleLabel, vals: map[string]bool{}, unreach: map[string]bool{}, faulted: map[string]bool{}}
@@ -284,7 +300,7 @@ func SuspectPoints(rows []Row, w Window, blobs Blobs) []SuspectPoint {
 	}
 	var rd *readings
 	var out []SuspectPoint
-	for at, g := range groups {
+	for k, g := range groups {
 		all := len(g.vals)
 		if all <= 1 {
 			continue
@@ -306,30 +322,20 @@ func SuspectPoints(rows []Row, w Window, blobs Blobs) []SuspectPoint {
 		if rd == nil {
 			rd = newReadings(rows, blobs)
 		}
-		if pointAvailable(rd, at) {
+		if rd.at(k.promise, k.at).Available() {
+			// verified rows are not this observer's trouble (the SQL
+			// twin is rollup's pointAvailableSQL)
 			continue
 		}
-		out = append(out, SuspectPoint{At: at, Label: g.label, Validators: all, Unreachable: bad, Faulted: faulted, Rows: g.n, Reason: reason})
+		out = append(out, SuspectPoint{PromiseHash: k.promise, At: k.at, Label: g.label, Validators: all, Unreachable: bad, Faulted: faulted, Rows: g.n, Reason: reason})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].At.Equal(out[j].At) {
+			return out[i].At.Before(out[j].At)
+		}
+		return out[i].PromiseHash < out[j].PromiseHash
+	})
 	return out
-}
-
-// pointAvailable reports whether every blob read at a scheduled time was
-// Available there, which sets the guard aside for that point. The SQL twin
-// is rollup's pointAvailableSQL.
-func pointAvailable(rd *readings, at time.Time) bool {
-	found := false
-	for k := range rd.rows {
-		if !k.at.Equal(at.UTC()) {
-			continue
-		}
-		found = true
-		if !rd.at(k.promise, k.at).Available() {
-			return false
-		}
-	}
-	return found
 }
 
 // Obligations are the buckets one validator's (or the network's) proven
@@ -393,19 +399,9 @@ func isGap(c probe.Classification) bool {
 // and the endpoint answered or refused: an identity failure, a throttle or
 // a server error is positive evidence that the network was up, so it
 // belongs there.
-var GuardSilentClasses = []probe.Classification{
-	probe.ClassNotProbed, probe.ClassProbeError, probe.ClassNotRegistered, probe.ClassUnattested,
-	probe.ClassRetentionUnverified,
-}
+var GuardSilentClasses = probe.GuardSilentClasses
 
-func noReachVerdict(c probe.Classification) bool {
-	for _, s := range GuardSilentClasses {
-		if c == s {
-			return true
-		}
-	}
-	return false
-}
+func noReachVerdict(c probe.Classification) bool { return probe.GuardSilent(c) }
 
 // ComputeObligations buckets every proven obligation: an assigned,
 // attested (validator, promise) pair whose promise settled in the window,
@@ -416,9 +412,9 @@ func noReachVerdict(c probe.Classification) bool {
 // out. blobs carries what the reading needs (BlobFacts). The network total
 // is the sum over validators.
 func ComputeObligations(rows []Row, settled map[string]time.Time, w Window, suspect []SuspectPoint, blobs Blobs) (Obligations, map[string]Obligations) {
-	sus := map[time.Time]bool{}
+	sus := map[pointKey]bool{}
 	for _, p := range suspect {
-		sus[p.At.UTC()] = true
+		sus[pointKey{p.PromiseHash, p.At.UTC()}] = true
 	}
 	rd := newReadings(rows, blobs)
 	type key struct{ validator, promise string }
@@ -435,7 +431,7 @@ func ComputeObligations(rows []Row, settled map[string]time.Time, w Window, susp
 		if !ok || !w.holds(st) || r.StartedAt.After(w.End) {
 			continue
 		}
-		if !r.Assigned || !r.Attested || r.Phase != probe.PhaseInWindow || sus[r.ScheduledAt.UTC()] {
+		if !r.Assigned || !r.Attested || r.Phase != probe.PhaseInWindow || sus[pointKey{r.PromiseHash, r.ScheduledAt.UTC()}] {
 			continue
 		}
 		k := key{r.Validator, r.PromiseHash}
