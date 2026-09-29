@@ -3117,17 +3117,14 @@ func (s *Server) detailReadings(ctx context.Context, addr string, win Window, sp
 		probeWhere += ` AND started_at <= ?`
 		probeArgs = append(probeArgs, win.endArg())
 	}
-	probes, err := s.probeRows(ctx, probeWhere, 50, probeArgs...)
+	// Without the row indices and their hash: they are most of a reading's
+	// bytes and the page shows neither. /v1/probes?rows=1 carries them, and
+	// "the rest in the API" leads to /v1/probes.
+	probes, err := s.probeRows(ctx, probeWhere, 50, false, probeArgs...)
 	if err != nil {
 		return err
 	}
 	probes, moreProbes := trim(probes, 50)
-	// The row indices and their hash are most of a reading's bytes and the
-	// page shows neither; /v1/probes, where "the rest in the API" leads,
-	// carries them.
-	for i := range probes {
-		probes[i].RowIndices, probes[i].RowsSHA256 = nil, ""
-	}
 	inWindow, err := s.endorsedInRetention(ctx, addr, spanEnd)
 	if err != nil {
 		return err
@@ -3758,7 +3755,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		assigns = append(assigns, a)
 	}
 	rows.Close()
-	probes, err := s.probeRows(ctx, `promise_hash = ?`, 1000, hash)
+	probes, err := s.probeRows(ctx, `promise_hash = ?`, 1000, true, hash)
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
@@ -4012,7 +4009,12 @@ type probeRow struct {
 	Provisional bool `json:"provisional,omitempty"`
 }
 
-func (s *Server) probeRows(ctx context.Context, where string, limit int, args ...any) ([]probeRow, error) {
+// probeRows reads the readings where selects, newest first, one more than
+// limit. withRows false leaves out each reading's row indices and their
+// hash: not read at all, rather than read and dropped, because they are most
+// of the row's bytes and a thousand of them came to megabytes of JSON parsed
+// for nothing.
+func (s *Server) probeRows(ctx context.Context, where string, limit int, withRows bool, args ...any) ([]probeRow, error) {
 	// The effective classification, not the stored one. /v1/probes,
 	// /v1/blobs/{hash}.probes and a validator's recent probes are all
 	// served from here, and a held row published as a bare "FAULT" beside
@@ -4021,10 +4023,14 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, args ..
 	// retention_unverified rides along so a reader can see why, and
 	// phase_at_probe / classification_at_probe / corrected_at say what the
 	// row was stamped with before a correction moved it.
+	rowCols := `COALESCE(row_indices, ''), COALESCE(rows_sha256, '')`
+	if !withRows {
+		rowCols = `'', ''`
+	}
 	q := `SELECT vantage, promise_hash, validator_address, validator_host, assigned, attested, assigned_row_count, schedule_label, scheduled_at,
 		started_at, phase, outcome, ` + rollup.EffectiveClass("") + `, classification_reason, rows_returned, rows_expected, total_duration_ms, tls_ok, identity_ok, raw_error,
 		COALESCE(retry_first_outcome, ''), COALESCE(clock_offset_ms, 0),
-		COALESCE(row_indices, ''), COALESCE(rows_sha256, ''), COALESCE(rpc_code, ''), COALESCE(shadowed_by, ''), COALESCE(observer_build, ''), COALESCE(app_version, 0),
+		` + rowCols + `, COALESCE(rpc_code, ''), COALESCE(shadowed_by, ''), COALESCE(observer_build, ''), COALESCE(app_version, 0),
 		COALESCE(shadow_gap, ''), COALESCE(classification_at_probe, ''), COALESCE(amended_at, ''),
 		COALESCE(host_at_settlement, ''), COALESCE(settlement_host_outcome, ''), settlement_host_served,
 		retention_unverified, COALESCE(phase_at_probe, ''), COALESCE(corrected_at, ''),
@@ -4212,17 +4218,12 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 		}
 		conds, args = append(conds, `started_at < ?`), append(args, store.TS(t))
 	}
-	rows, err := s.probeRows(r.Context(), strings.Join(conds, " AND "), limit, args...)
+	rows, err := s.probeRows(r.Context(), strings.Join(conds, " AND "), limit, withRows, args...)
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
 	rows, truncated := trim(rows, limit)
-	if !withRows {
-		for i := range rows {
-			rows[i].RowIndices, rows[i].RowsSHA256 = nil, ""
-		}
-	}
 	out := map[string]any{"vantage": s.vantage, "probes": rows, "limit": limit, "truncated": truncated, "rows_included": withRows}
 	if truncated && len(rows) > 0 {
 		// Where to continue from: everything strictly older than the last row
