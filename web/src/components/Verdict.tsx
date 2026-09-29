@@ -58,11 +58,11 @@ const VERDICTS: Record<string, Def> = {
   },
   THROTTLED: {
     label: "rate limited", tier: "hold",
-    def: "Refused with a rate limit, which Tensile's own requests may have caused. Counted neither way.",
+    def: "Refused with a rate limit instead of the shard. Not served when the blob could not be reconstructed; otherwise counted neither way.",
   },
   UNATTESTED: {
     label: "not endorsed", tier: "held",
-    def: "No verified endorsement from this validator on the settled promise, so nothing proves it stored the shard. Not rated.",
+    def: "No verified endorsement from this validator on the settled promise, so nothing proves it stored the shard. Asked like the rest; its rows count toward the blob. Not rated.",
   },
   NOT_REGISTERED: {
     label: "no endpoint", tier: "held",

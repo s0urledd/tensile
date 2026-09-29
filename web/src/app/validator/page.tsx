@@ -30,6 +30,8 @@ type Detail = {
   last_endpoint_check?: EndpointCheck;
   /** the network's service rate over the same window from the same vantage; absent on a pinned window */
   network_reference?: NetworkReference;
+  /** endorsed shards whose retention window has not ended, from the chain's record */
+  in_retention_window?: number;
 };
 
 /** a fraction as the site prints a share */
@@ -250,8 +252,9 @@ function Page() {
             value={notLive ? "—" : int(o?.broken ?? 0)} tone={notLive ? "absent" : (o?.broken ?? 0) > 0 ? "fault" : !o || o.total === 0 ? "absent" : undefined}
             help={notLive ? " " : (o?.broken ?? 0) > 0 ? (prov > 0 ? `${int(prov)} provisional${clearedText}` : `of blobs that could not be reconstructed${clearedText}`) : `none in this period${clearedText}`}
             title={prov > 0 ? `${int(prov)} of these are younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.` : "Endorsed shards whose rows did not come back from a blob that could not be reconstructed."} />
-          <Metric label="In retention window" value={notLive ? "—" : int(o?.pending ?? 0)} tone={notLive || !o || o.total === 0 ? "absent" : undefined}
-            help={notLive ? " " : (notCountedText(o) || "read at the end of the window")} title="Endorsed shards whose retention window has not ended. Not counted: shards the reading did not need, or that failed on a blob that was available, or that Tensile did not read in time." />
+          <Metric label="In retention window" value={notLive || data.in_retention_window == null ? "—" : int(data.in_retention_window)}
+            tone={notLive || data.in_retention_window == null ? "absent" : undefined}
+            help={notLive ? " " : (notCountedText(o) || "read at the end of the window")} title="Endorsed shards whose retention window has not ended: each is read 10 minutes before its window ends. Not counted: shards the reading did not need, or that failed on a blob that was available, or that Tensile did not read in time." />
           <Metric label="Reachability"
             value={!bonded ? "—" : rw && rw.den > 0 ? pctOf(rw.num, rw.den) : "—"}
             tone={!bonded || !rw || rw.den === 0 ? "absent" : undefined}
@@ -266,7 +269,7 @@ function Page() {
         <div className="band">
           <div>
             <table className="periods">
-              <thead><tr><th>Period</th><th>Service rate</th><th>Not served</th><th>In retention window</th></tr></thead>
+              <thead><tr><th>Period</th><th>Service rate</th><th>Not served</th></tr></thead>
               <tbody>
                 {data.windows.map((w) => {
                   const wo = w.obligations, wd = wo.served + wo.broken;
@@ -277,7 +280,6 @@ function Page() {
                       <td><button type="button" className="rowlink" aria-pressed={name === win} onClick={() => setWin(name as typeof win)} title={`show the ${windowLabel(name)} period`}>{windowLabel(name)}</button></td>
                       <td>{notLive || wd === 0 ? "—" : <><span className={rateTone(wo.served, wd)}>{pctOf(wo.served, wd)}</span><span className="den"> · {int(wo.served)}/{int(wd)}</span></>}</td>
                       <td>{notLive ? "—" : wo.broken > 0 ? <><span className="word fault">{int(wo.broken)}</span>{wp > 0 && <span className="den" title="Counted, and still settling."> · {int(wp)} provisional</span>}</> : "0"}</td>
-                      <td>{notLive ? "—" : int(wo.pending)}</td>
                     </tr>
                   );
                 })}

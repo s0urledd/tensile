@@ -28,16 +28,16 @@ export default function Methodology() {
       <h2 id="reading">Reading a blob</h2>
       <p>Tensile reads each blob once, 10 minutes before its retention window ends, the way celestia-app&rsquo;s Fibre client downloads it:</p>
       <ul>
-        <li>It asks the validators that endorsed the promise, in the order the client uses (<code>validator.Set.Select</code>), and asks the next one whenever the rows still needed outnumber the rows already on their way.</li>
+        <li>It asks every validator the assignment gives rows, endorsing or not, in the order the client uses (<code>validator.Set.Select</code>), and asks the next one whenever the rows still needed outnumber the rows already on their way.</li>
         <li>Each request (connect, TLS with the consensus-key check, <code>DownloadShard</code>) gets 15 s. After a failed connection or a timeout it is made once more at once.</li>
         <li>Every row is verified against the blob commitment. The reading stops at 4096 distinct verified rows, enough to reconstruct the blob.</li>
-        <li>If every endorsing validator has been asked and the rows are still short, those that did not serve are asked again one minute later.</li>
+        <li>If every validator has been asked and the rows are still short, those that did not serve are asked again one minute later.</li>
       </ul>
       <p>Blobs settled before 27 September 2026, 16:20 UTC were read on an earlier schedule, at several points of the window; their stored readings are judged by the rules below.</p>
 
       <h2 id="verdicts">Available, served and not served</h2>
-      <p>A blob is <strong>available</strong> when at least 4096 distinct rows came back and verified (of 16384 for blob version 0). It is <strong>unavailable</strong> when fewer did after both passes: in celestia-app&rsquo;s words, &ldquo;not enough to reconstruct&rdquo;.</p>
-      <p>Only validators whose endorsement is on the settled promise owe the blob. A validator is <strong>served</strong> on a blob when its rows came back and verified. It is <strong>not served</strong> only when the blob was unavailable and its rows did not come back. A validator the reading did not need to ask, or one that failed while the blob was available all the same, is counted neither way. If a not-served reading was a power loss, the <a href={DISPUTE_URL} rel="noopener noreferrer" target="_blank">dispute route</a> puts it on the record.</p>
+      <p>A blob is <strong>available</strong> when at least 4096 distinct rows came back and verified (of 16384 for blob version 0). It is <strong>unavailable</strong> when, after both passes, fewer did: in celestia-app&rsquo;s words, &ldquo;not enough shards to reconstruct blob&rdquo;.</p>
+      <p>Only validators whose endorsement is on the settled promise owe the blob; the others are asked too, but never counted. A validator is <strong>served</strong> on a blob when its rows came back and verified. It is <strong>not served</strong> only when the blob was unavailable and its rows did not come back, whatever the reason, a rate limit included. A validator the reading did not need to ask, or one that failed while the blob was available all the same, is counted neither way. If a not-served reading was a power loss, the <a href={DISPUTE_URL} rel="noopener noreferrer" target="_blank">dispute route</a> puts it on the record.</p>
       <Legend />
 
       <h2 id="signing">Endorsements</h2>
@@ -54,7 +54,8 @@ export default function Methodology() {
       </ul>
 
       <h2 id="gaps">Gaps</h2>
-      <p>When Tensile could not read a blob in time, or its own request failed, nothing is counted for or against a validator. A reading in which at least half of the validators asked failed at once, and the blob could not be reconstructed, is treated as Tensile&rsquo;s own failure and set aside. Health is at <code>/api/v1/health</code>.</p>
+      <p>When Tensile could not read a blob in time, or its own request failed, nothing is counted for or against a validator.</p>
+      <p>When at least half of the validators asked failed at once and the blob could not be reconstructed, Tensile cannot tell its own failure from theirs, so that reading counts neither way. This stays until Tensile reads a blob of its own beside each reading. It counts validators, not rows: a blob that becomes unavailable with fewer than half of them failing is counted. Health is at <code>/api/v1/health</code>.</p>
 
       <h2 id="load-on-validators">Load on validators</h2>
       <p>A reading stops once the rows are enough, so a validator is asked for some blobs, not all of them, and never has more than one request from Tensile at a time.</p>

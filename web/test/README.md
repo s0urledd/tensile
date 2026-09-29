@@ -22,11 +22,12 @@ fibre-sentinel/bin/observer-api -db /tmp/fx/observer.db -listen 127.0.0.1:8099 \
 
 It creates the schema by running `observer-collector -once`, so it can never
 drift from the shipped migrations, then fills it with sixty validators, 260
-publications and one reading of each, as the prober makes it: the endorsing
-validators, largest stake first, until 4096 distinct rows came back, and a
-second pass when they did not. In one blob in forty the largest endorsing
-validators lost the shard (fewer than half of them, so the reading is not set
-aside as Tensile's own failure), so the unavailable and not-served words are
+publications and one reading of each, as the prober makes it: every validator
+with rows, endorsing or not, largest stake first, until 4096 distinct rows
+came back, and a second pass when they did not. In one blob in forty the
+largest endorsing validators lost the shard (fewer than half of them, so the
+reading is not set aside as Tensile's own failure) and the validators that
+did not endorse never stored it, so the unavailable and not-served words are
 present too. The draw is seeded, so the same fixture comes out every run and
 two screenshots are comparable.
 

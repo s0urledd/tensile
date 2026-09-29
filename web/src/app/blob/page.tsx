@@ -37,7 +37,6 @@ const SERVICE: Record<string, [string, string, string]> = {
 const REASON: Record<string, string> = {
   UNREACHABLE: "no answer", IDENTITY_MISMATCH: "wrong certificate", IDENTITY_EXPIRED: "certificate expired",
   SERVER_ERROR: "server error", THROTTLED: "rate limited", NOT_REGISTERED: "no endpoint",
-  NOT_PROBED: "not read by Tensile", PROBE_ERROR: "read failed",
 };
 const reasonOf = (p: Probe | undefined): string => {
   if (!p) return "";
@@ -81,12 +80,11 @@ function Page() {
   const served = count("served"), notServed = count("not_served");
   const asked = rc?.probed_validators ?? 0;
   // Available: enough rows came back to reconstruct the blob. Unavailable:
-  // every endorsing validator was asked, twice, and fewer came back ("some
-  // rows were retrieved, but not enough to reconstruct" is the client's own
-  // word for it).
+  // the validators asked could not give enough ("not enough shards to
+  // reconstruct blob" is the client's own word for it).
   const state: [string, string, string] =
-    rc?.status === "yes" ? ["ok", "Available", `Enough rows came back to reconstruct the blob, from ${int(served)} of the ${int(asked)} validators asked.`]
-    : rc?.status === "no" ? ["hold", "Unavailable", `Every endorsing validator was asked, and asked again a minute later, but fewer than the ${int(rc.needed_rows)} rows needed to reconstruct the blob came back.`]
+    rc?.status === "yes" ? ["ok", "Available", `Enough rows came back to reconstruct the blob, from ${int(rc.served_by_validators)} of the ${int(asked)} validators asked.`]
+    : rc?.status === "no" ? ["hold", "Unavailable", `Fewer than the ${int(rc.needed_rows)} rows needed to reconstruct the blob came back from the validators asked.`]
     : !over ? ["none", "In retention window", "Read once, 10 minutes before the retention window ends."]
     : ["none", "Not read by Tensile", "No reading of this blob decides it: Tensile did not read it in time, or set the reading aside as its own failure. Nothing is counted for or against a validator."];
 
@@ -150,7 +148,7 @@ function Page() {
       </section>
 
       <section className="group" id="observed">
-        <div className="vhead"><div><h2>Observed by Tensile</h2><p className="sub">{endRead ? "Read once, 10 minutes before the retention window ends, as celestia-app’s client downloads it: the endorsing validators in its order, until enough rows came back."
+        <div className="vhead"><div><h2>Observed by Tensile</h2><p className="sub">{endRead ? "Read once, 10 minutes before the retention window ends, as celestia-app’s client downloads it: the validators in its order, until enough rows came back."
             : probes.length > 0 ? "Read on the earlier schedule, at several points in the retention window, and judged by the same rule."
             : "Not read by Tensile."}</p></div></div>
         <Metrics>
@@ -158,7 +156,7 @@ function Page() {
             help={shown ? `of ${int(rc!.total_rows)} · ${int(rc!.needed_rows)} needed${rc!.point_at ? ` · read ${hhmm(rc!.point_at)}` : ""}` : !over ? `read before ${hhmm(b.must_serve_until)}` : "no reading completed"}
             title="Distinct rows retrieved and verified against the commitment." />
           <Metric label="Served" value={judged ? int(served) : "—"} tone={judged ? undefined : "absent"}
-            help={judged ? `of ${int(asked)} asked · ${int(signedN)} endorsing` : !over ? "read at the end of the window" : "no reading"}
+            help={judged ? `${int(asked)} asked · ${int(signedN)} endorsing` : !over ? "read at the end of the window" : "no reading"}
             title="Endorsing validators whose rows came back and verified." />
           <Metric label="Not served" value={judged ? int(notServed) : "—"} tone={!judged ? "absent" : notServed > 0 ? "fault" : undefined}
             help={!judged ? " " : rc?.status === "yes" ? "none: the blob was available" : "rows did not come back"}
@@ -195,9 +193,15 @@ function Page() {
                 const sv = a.service ? SERVICE[a.service] : null;
                 const reason = a.service === "not_served" ? reasonOf(p) : "";
                 const word = sv ? `${sv[1]}${reason ? ` · ${reason}` : ""}${a.provisional ? " · provisional" : ""}` : "";
-                // an endorsing validator with no word counts neither way: not asked, or failed on an available blob
-                const neither = !sv && a.attested === true && judged ? (!p ? "not asked" : p.classification === "NOT_PROBED" || p.classification === "PROBE_ERROR" ? reasonOf(p) : `${p.outcome === "SERVED_OK" ? "served earlier" : reasonOf(p)} · not counted`) : "";
-                const neitherTitle = p && (p.classification === "NOT_PROBED" || p.classification === "PROBE_ERROR") ? "Tensile did not read this validator in time: counted neither way." : p ? "Counted neither way: the blob was available all the same." : "Not asked: the reading had enough rows before it reached this validator. Counted neither way.";
+                // A validator that did not endorse owes nothing; the reading asks it like the rest, and
+                // its rows count toward the blob when they come back.
+                const lent = !sv && a.attested === false && p?.outcome === "SERVED_OK";
+                // No word: no Tensile result, counted neither way. What happened stays in the tooltip.
+                const quietTitle = a.attested === false ? (lent ? "Not endorsed: nothing owed. Its rows came back and counted toward the blob." : "Not endorsed: nothing owed.")
+                  : !judged ? "No reading that counts."
+                  : !p ? "Not asked: the reading had enough rows before it reached this validator. Counted neither way."
+                  : p.classification === "NOT_PROBED" || p.classification === "PROBE_ERROR" ? "Tensile could not read this validator: counted neither way."
+                  : rc?.status === "yes" ? "Counted neither way: the blob was available all the same." : "Counted neither way.";
                 const detail = p ? `${p.schedule_label === "end" ? "end reading" : `reading ${p.schedule_label}`} · ${utcWord(p.started_at)} · ${int(p.rows_returned)} / ${int(p.rows_expected)} rows · ${int(p.total_duration_ms)} ms${p.raw_error ? ` · ${p.raw_error}` : ""}` : "";
                 return (
                   <tr key={a.validator_address} className={a.service === "not_served" ? "fault-row" : undefined}>
@@ -205,8 +209,8 @@ function Page() {
                     <td className="num">{int(a.voting_power)}</td>
                     <td className="num">{int(a.row_count)}</td>
                     <td title={a.attested === true ? "Signature verified against the consensus key." : a.attested === false ? "No verified signature on the settlement: nothing owed. A settlement needs ⅔ of the voting power." : "Recorded before signatures were verified."}>{a.attested === true ? "yes" : a.attested === false ? <span className="soft">no</span> : "—"}</td>
-                    <td title={[sv?.[2] ?? (neither ? neitherTitle : ""), detail].filter(Boolean).join(" · ") || (a.attested === false ? "Not endorsed: nothing owed." : "No reading that counts.")}>
-                      {sv ? <><span className={"mk " + sv[0]} /> <span className={"word" + (sv[0] === "fault" ? " fault" : "")}>{word}</span></> : <span className="soft">{neither || "—"}</span>}
+                    <td title={[sv?.[2] ?? quietTitle, detail].filter(Boolean).join(" · ")}>
+                      {sv ? <><span className={"mk " + sv[0]} /> <span className={"word" + (sv[0] === "fault" ? " fault" : "")}>{word}</span></> : <span className="soft">{lent ? "served" : "—"}</span>}
                     </td>
                     <td className="mono soft">{a.host_at_settlement ? a.host_at_settlement : a.host_at_settlement === "" ? <span title="no endpoint registered when the promise settled">—</span> : <span className="sans" title="the registry could not be read at that height">not read</span>}</td>
                     <td className="go"><Link href={`/validator/?addr=${a.validator_address}`} aria-label={`open ${a.moniker || a.validator_address}`}>→</Link></td>

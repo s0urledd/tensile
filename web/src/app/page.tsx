@@ -58,17 +58,21 @@ function Overview() {
   // chain's: the Available share over the blobs whose reading decides them, and the
   // latest blob's own result, in the Blobs list's words.
   const rec = whole.data?.reconstructable?.recoverable;
+  // The figure is drawn over the newest sample_limit blobs with a reading;
+  // when there were more, say so.
+  const examined = whole.data?.reconstructable?.publications_examined ?? 0;
+  const examinedAll = examined < (whole.data?.reconstructable?.sample_limit ?? Infinity);
   const st = last ? recon(last) : null;
   const observed = (rec || st) && (
     <aside className="ov-obs" aria-label="Observed by Tensile">
       <span className="obs-tag"><Eye />Observed by Tensile</span>
       <dl className="ov-obs-grid">
         {rec && (
-          <div title="Observed by Tensile: blobs whose rows were enough to reconstruct them, over the blobs read (available plus unavailable).">
+          <div title="Observed by Tensile: blobs whose rows were enough to reconstruct them, over the blobs read (available plus unavailable): the newest ones with a reading, up to the API's sample limit.">
             <dt>Available</dt>
             <dd>
               <span className={`ov-obs-v num${rec.den > 0 ? "" : " absent"}`}>{pctOf(rec.num, rec.den)}</span>
-              <span className="ov-obs-h">{rec.den > 0 ? `${int(rec.num)} of ${int(rec.den)} blobs read` : "none read"}</span>
+              <span className="ov-obs-h">{rec.den > 0 ? `${int(rec.num)} of ${examinedAll ? "" : "the newest "}${int(rec.den)} blobs read` : "none read"}</span>
             </dd>
           </div>
         )}

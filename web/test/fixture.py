@@ -334,9 +334,11 @@ for p in range(PUBS):
 
 # --- readings -------------------------------------------------------------
 # Each blob is read once, 10 minutes before must_serve_until, as the prober
-# reads it: the endorsing validators, largest stake first, until 4096
-# distinct rows came back; when they did not, everyone who did not serve is
-# asked again, and the blob is unavailable if the rows are still short.
+# reads it: every validator with rows, endorsing or not, largest stake first,
+# until 4096 distinct rows came back; when they did not, everyone who did not
+# serve is asked again, and the blob is unavailable if the rows are still
+# short. A validator that did not endorse is asked like the rest, and its rows
+# count toward the blob; it is never counted either way.
 READ_OFFSET = timedelta(minutes=10)
 K = 4096
 counts = {}
@@ -370,7 +372,8 @@ def add_probe(pub, v, rows, label, at, phase, outcome, cls, **kw):
     if at > NOW:
         return
     counts[cls] = counts.get(cls, 0) + 1
-    ok = cls in ("HEALTHY",)
+    # rows that came back and verified: an endorser's, or one that owes nothing
+    ok = cls == "HEALTHY" or (cls == "UNATTESTED" and outcome == "SERVED_OK")
     idx = json.dumps(pub["idx"][v["cons"]]) if ok else None
     key = hashlib.sha256(f"{pub['ph']}{v['cons']}{label}".encode()).hexdigest()
     ms = kw["ms"] if "ms" in kw else duration_ms(v, rows, ok)
@@ -466,21 +469,23 @@ def emit(pub, v, rows, label, at, phase, outcome, kw, attested):
 for pub in pubs:
     at = pub["msu"] - READ_OFFSET
     endorsing = sorted((v for v, _ in pub["assigned"] if pub["attested"][v["cons"]]), key=lambda v: -v["power"])
+    everyone = sorted((v for v, _ in pub["assigned"]), key=lambda v: -v["power"])
     rows_of = {v["cons"]: r for v, r in pub["assigned"]}
     # A lost blob: its largest endorsing validators lost the shard, until the
-    # rest hold too few rows to rebuild it. Fewer than half of them, so the
-    # reading is not taken for Tensile's own failure and set aside.
-    lost = set()
+    # rest hold too few rows to rebuild it, and the validators that did not
+    # endorse never stored it. Fewer than half of the endorsers, so the reading
+    # is not taken for Tensile's own failure and set aside.
+    lost = set(v["cons"] for v in everyone if pub["lost"] and not pub["attested"][v["cons"]])
     if pub["lost"]:
         for v in endorsing:
-            if 2 * (len(lost) + 1) >= len(endorsing):
+            if 2 * (len(lost & {x["cons"] for x in endorsing}) + 1) >= len(endorsing):
                 break
             lost.add(v["cons"])
             rest = set().union(*(pub["idx"][x["cons"]] for x in endorsing if x["cons"] not in lost))
             if len(rest) < K:
                 break
     have, answers = set(), []
-    for n, v in enumerate(endorsing):
+    for n, v in enumerate(everyone):
         if len(have) >= K:
             break                                  # the rest are not asked
         t = at + timedelta(milliseconds=40 * n)
@@ -501,7 +506,7 @@ for pub in pubs:
         answers = again
     for v, t, outcome, kw in answers:
         # every row of a reading carries the reading's own time, as the prober writes it
-        emit(pub, v, rows_of[v["cons"]], "end", t, "in_window", outcome, dict(kw, sched=at), True)
+        emit(pub, v, rows_of[v["cons"]], "end", t, "in_window", outcome, dict(kw, sched=at), pub["attested"][v["cons"]])
 
 PROBE_ROWS.sort(key=lambda r: r[0])
 db.executemany("""INSERT INTO probes (

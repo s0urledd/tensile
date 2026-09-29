@@ -4,10 +4,10 @@ import type { Tier } from "@/components/Verdict";
 /**
  * A blob's status as Tensile read it, as a mark and a word, in the same
  * channel the verdicts use. Available: enough rows came back to reconstruct
- * the blob. Unavailable: every endorsing validator was asked, twice, and
- * fewer came back ("some rows were retrieved, but not enough to reconstruct"
- * in celestia-app's own client). One function, so the Blobs list and the
- * overview's latest blob cannot disagree.
+ * the blob. Unavailable: the validators, asked in the client's order and
+ * again a minute later, could not give enough ("not enough shards to
+ * reconstruct blob" in celestia-app's own client). One function, so the
+ * Blobs list and the overview's latest blob cannot disagree.
  */
 export function recon(b: Blob): { word: string; tier: Tier; title: string } {
   const r = b.reconstructable;

@@ -273,7 +273,7 @@ export type Obligations = {
   broken: number;
   /** counted neither way: not asked because the rows were already enough, a failure on a blob that was available, or no reading that decides it */
   not_counted: number;
-  /** the retention window has not ended */
+  /** read, and the retention window has not ended (an endorsed shard not read yet has no obligation row) */
   pending: number;
   /** the deadline rests on a parameter range the observer has not read; no verdict either way */
   held_param_unverified?: number;
@@ -434,9 +434,9 @@ export type Probe = {
   service?: "served" | "not_served";
   /** a not-served reading younger than the settling period: counted, and still able to be withdrawn */
   provisional?: boolean;
-  /** the second location fetched the same rows within the confirmation window and they verified: the fault is withdrawn (classification PROBE_ERROR, classification_at_probe FAULT) */
+  /** the second location fetched the same rows within the confirmation window and they verified: the not-served reading is withdrawn (classification PROBE_ERROR, classification_at_probe the class it had) */
   cleared_by?: string;
-  /** the second location tried the same rows and did not get them either: the fault stands */
+  /** the second location tried the same rows and did not get them either: the not-served reading stands */
   confirmed_by?: string;
 };
 
@@ -460,10 +460,10 @@ export function rateTone(served: number, assessed: number): RateTone | undefined
 
 /**
  * A blob's reading: yes (Available: enough rows came back to reconstruct it),
- * no (Unavailable: every endorsing validator was asked, twice, and too few
- * came back), pending (its window is open), not_read (its window closed
- * without a reading that decides it: Tensile's own gap), unknown (no
- * assignment to judge it by).
+ * no (Unavailable: the validators, asked in the client's order and again a
+ * minute later, could not give enough), pending (its window is open),
+ * not_read (its window closed without a reading that decides it: Tensile's
+ * own gap), unknown (no assignment to judge it by).
  */
 export type Reconstruct = {
   status: "yes" | "no" | "pending" | "not_read" | "unknown";
@@ -476,7 +476,7 @@ export type Reconstruct = {
   total_rows: number;
   /** validators whose rows came back verified */
   served_by_validators: number;
-  /** validators the reading asked; it stops once the rows are enough */
+  /** validators the reading asked, endorsing or not; it stops once the rows are enough */
   probed_validators: number;
 };
 
