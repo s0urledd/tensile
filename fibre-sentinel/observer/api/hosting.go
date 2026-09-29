@@ -18,11 +18,13 @@ import (
 )
 
 // registerExtraRoutes adds the routes that live outside api.go: the hosting
-// summary and the Atom feeds. Called once from NewWithVantage.
+// summary, the Atom feeds and a validator's status. Called once from
+// NewWithVantage.
 func (s *Server) registerExtraRoutes() {
 	s.mux.HandleFunc("GET /v1/hosting", s.handleHosting)
 	s.mux.HandleFunc("GET /v1/feed.atom", s.handleNetworkFeed)
 	s.mux.HandleFunc("GET /v1/validators/{addr}/feed.atom", s.handleValidatorFeed)
+	s.mux.HandleFunc("GET /v1/validators/{addr}/status", s.handleValidatorStatus) // validator_status.go
 }
 
 // attachHosting sets Hosting on every row whose open endpoint the collector
