@@ -8,6 +8,13 @@
  */
 export const SOURCE_URL = (process.env.NEXT_PUBLIC_SOURCE_URL ?? "https://github.com/s0urledd/tensile").replace(/\/$/, "");
 
+/**
+ * The API's public address, as the API page prints it in every command. The
+ * site's own pages call the same routes on their own origin (/api), so this
+ * is only what a reader copies.
+ */
+export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "https://tensile.huginn.tech/api/v1").replace(/\/$/, "");
+
 /** The dispute route: what to do about a verdict you think is wrong. */
 export const DISPUTE_URL = `${SOURCE_URL}/blob/main/docs/verdicts.md#disputing-a-verdict`;
 
