@@ -481,7 +481,7 @@ export default function Developers() {
             <li>Sizes are bytes. <code>blob_size</code> is the blob&rsquo;s upload size, the size its fee is charged on; shard data is the row data a validator holds.</li>
             <li>Amounts are utia: 1 TIA is 1,000,000 utia.</li>
             <li>Times are RFC 3339 in UTC. A name ending in <code>_s</code> is seconds, <code>_ms</code> milliseconds.</li>
-            <li>A rate is <code>{"{num, den, value}"}</code>: <code>value</code> is num / den, and null when den is 0. A share is a fraction from 0 to 1.</li>
+            <li>A rate is <code>{"{num, den, value}"}</code>: <code>value</code> is num / den, and null when den is 0. A share is a fraction from 0 to 1. <code>median_rate</code> is a plain number from 0 to 1, or null when no validator has 20 decided shards.</li>
           </Topic>
           <Topic id="pages" title="Pages">
             <li><code>/blobs</code>: <code>limit</code> 1 to 500, 50 by default. Page on with <code>before_height</code> and <code>before_tx_index</code> from the answer&rsquo;s <code>next_before_height</code> and <code>next_before_tx_index</code>, or with <code>offset</code> up to 100,000.</li>
