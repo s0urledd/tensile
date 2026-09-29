@@ -57,6 +57,8 @@ func (f *derivedFixture) server(dir string) *Server {
 	if dir != "" {
 		s.origRows.file = filepath.Join(dir, originalRowsFile)
 		s.recent.file = filepath.Join(dir, endorsementLedgerFile)
+		// No write of the memo's outlives the test and its directory.
+		f.t.Cleanup(s.origRows.wait)
 	}
 	return s
 }
@@ -463,5 +465,67 @@ func TestTheLedgerFoldIsTheOneItsVersionNames(t *testing.T) {
 	if want := folds[ledgerVersion]; got != want {
 		t.Fatalf("the fold under ledgerVersion %d digests to %s, recorded %q: it has changed, so bump ledgerVersion and record this under it",
 			ledgerVersion, got, want)
+	}
+}
+
+// No computation waits for the memo's file. With a write holding it for as
+// long as it likes, a computation still reads the file's state, learns what
+// the memo lacks and answers, and the write it asks for is made once the
+// file is free, in the background.
+func TestAComputationDoesNotWaitForTheMemosFile(t *testing.T) {
+	f := newDerivedFixture(t, 9)
+	ctx := context.Background()
+	s := f.server(f.dir)
+	f.figures(s)
+	s.origRows.wait()
+
+	f.grow(40)
+	want := f.figures(f.server(""))
+	s.origRows.mu.Lock()
+	s.origRows.savedAt = time.Time{} // as if memoSaveEvery had passed
+	s.origRows.mu.Unlock()
+	s.origRows.fileMu.Lock() // a write that takes its time
+	held := true
+	release := func() {
+		if held {
+			held = false
+			s.origRows.fileMu.Unlock()
+		}
+	}
+	defer release()
+	done := make(chan error, 1)
+	go func() {
+		for _, win := range fxWindows(f.now) {
+			if _, err := s.loadByValidatorAt(ctx, win, "", f.now); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("a computation waited for a write of the memo's file")
+	}
+	release()
+	if got := f.figures(s); got != want {
+		t.Fatalf("with the file held:\n got %s\nwant %s", got, want)
+	}
+
+	s.origRows.wait()
+	var mf memoFile
+	if ok, why := readDerived(filepath.Join(f.dir, originalRowsFile), &mf); !ok {
+		t.Fatalf("the memo's file: %s", why)
+	}
+	n := len(mf.Nulls)
+	for _, hs := range mf.Values {
+		n += len(hs)
+	}
+	if n != s.origRows.size() {
+		t.Errorf("the file holds %d entries, the memo %d: the write asked for while the file was held was not made", n, s.origRows.size())
 	}
 }

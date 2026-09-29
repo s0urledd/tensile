@@ -353,8 +353,10 @@ func newServer(st *store.Store, info VantageInfo, log *scan.Logger, opts ...Opti
 }
 
 // keepDerived writes the memo and the ledger out now if they have grown,
-// whatever their pace: for a process about to end.
+// whatever their pace: for a process about to end. A write of the memo's
+// already running in the background ends first.
 func (s *Server) keepDerived(ctx context.Context) error {
+	s.origRows.wait()
 	err := s.origRows.save(ctx, s.st.DB(), true)
 	s.recent.mu.Lock()
 	defer s.recent.mu.Unlock()

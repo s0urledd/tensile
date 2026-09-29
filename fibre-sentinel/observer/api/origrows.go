@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -39,6 +40,12 @@ import (
 // rowid, so a VACUUM that renumbered rows costs one rebuild at the next
 // start, not a wrong value.
 //
+// The file is written in the background (saveLater), never by the
+// computation that learned what it adds, and no computation waits for it:
+// the file is rewritten whole, and at a year's volume that is hundreds of
+// megabytes, seconds of work that would otherwise come out of a snapshot's
+// timeout.
+//
 // The zero value is ready to use.
 type originalRowsMemo struct {
 	mu sync.Mutex
@@ -48,19 +55,23 @@ type originalRowsMemo struct {
 	// odd are the hashes whose value is neither an integer nor NULL: looked
 	// up once, then left to the statement every time.
 	odd map[string]bool
-
-	// file is where the memo is kept, or "" for nowhere. fileMu orders
-	// reading and writing it; opened says it has been read (or found
-	// missing, or refused) by this process, saved is how many entries the
-	// file holds as last written and savedAt when, and origin says how
-	// this process's memo began, which log (when set) is told.
-	file    string
-	log     logf
-	fileMu  sync.Mutex
-	opened  bool
+	// saved is how many entries the file holds as last written and savedAt
+	// when; writing, while a write saveLater started runs, is closed when it
+	// ends.
 	saved   int
 	savedAt time.Time
-	origin  string
+	writing chan struct{}
+
+	// file is where the memo is kept, or "" for nowhere. fileMu orders
+	// reading the file and writing it, and is taken by a computation only
+	// until the file has been read: opened says it has been (or found
+	// missing, or refused) by this process. origin says how this process's
+	// memo began, which log (when set) is told.
+	file   string
+	log    logf
+	fileMu sync.Mutex
+	opened atomic.Bool
+	origin string
 }
 
 // memoSaveEvery is how often a grown memo is written out.
@@ -161,9 +172,7 @@ func (m *originalRowsMemo) doc(ctx context.Context, db *sql.DB, start, end, now 
 		if err := m.learn(ctx, db, missing); err != nil {
 			return "", err
 		}
-		// Not being able to write the file costs the next start a lookup,
-		// not this computation its answer.
-		_ = m.save(ctx, db, false)
+		m.saveLater(db)
 	}
 
 	var b strings.Builder
@@ -259,15 +268,20 @@ func (m *originalRowsMemo) learn(ctx context.Context, db *sql.DB, hashes []strin
 // entries if the store is still the one they were computed from (derived.go);
 // otherwise the file is removed and the memo starts empty, as it did before
 // there were files. An error is a query that failed, and the next
-// computation tries again.
+// computation tries again. Once the file has been read, open takes no lock,
+// so a computation never waits for a write.
 func (m *originalRowsMemo) open(ctx context.Context, db *sql.DB) error {
+	if m.opened.Load() {
+		return nil
+	}
 	m.fileMu.Lock()
 	defer m.fileMu.Unlock()
-	if m.opened {
+	if m.opened.Load() {
 		return nil
 	}
 	if m.file == "" {
-		m.opened, m.origin = true, "not kept on disk"
+		m.origin = "not kept on disk"
+		m.opened.Store(true)
 		return nil
 	}
 	t0 := time.Now()
@@ -275,33 +289,30 @@ func (m *originalRowsMemo) open(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	m.opened = true
-	defer func() {
-		if m.log != nil {
-			m.log("original_rows memo: %s (%s)", m.origin, time.Since(t0).Round(time.Millisecond))
-		}
-	}()
 	switch {
 	case why != "":
 		_ = os.Remove(m.file)
 		m.origin = "built from the store: " + m.file + " refused: " + string(why)
-		return nil
 	case vals == nil:
 		m.origin = "built from the store: no " + m.file
-		return nil
-	}
-	m.mu.Lock()
-	if m.vals == nil {
-		m.vals = map[string]memoRows{}
-	}
-	for h, v := range vals {
-		if _, ok := m.vals[h]; !ok {
-			m.vals[h] = v
+	default:
+		m.mu.Lock()
+		if m.vals == nil {
+			m.vals = map[string]memoRows{}
 		}
+		for h, v := range vals {
+			if _, ok := m.vals[h]; !ok {
+				m.vals[h] = v
+			}
+		}
+		m.saved, m.savedAt = len(vals), time.Now()
+		m.mu.Unlock()
+		m.origin = "loaded " + strconv.Itoa(len(vals)) + " entries from " + m.file + " (publications through rowid " + strconv.FormatInt(n, 10) + ")"
 	}
-	m.mu.Unlock()
-	m.saved, m.savedAt = len(vals), time.Now()
-	m.origin = "loaded " + strconv.Itoa(len(vals)) + " entries from " + m.file + " (publications through rowid " + strconv.FormatInt(n, 10) + ")"
+	m.opened.Store(true)
+	if m.log != nil {
+		m.log("original_rows memo: %s (%s)", m.origin, time.Since(t0).Round(time.Millisecond))
+	}
 	return nil
 }
 
@@ -395,35 +406,86 @@ func (m *originalRowsMemo) load(ctx context.Context, db *sql.DB) (map[string]mem
 	return vals, f.Mark.Rowid, "", nil
 }
 
-// save writes the memo out when it has grown since the last write and
-// memoSaveEvery has passed or it has doubled; force writes whatever has
-// grown. The mark is read after the entries are taken, so every entry is of
-// a publication at or below it.
-func (m *originalRowsMemo) save(ctx context.Context, db *sql.DB, force bool) error {
+// due reports whether a memo of n entries is to be written: it has grown
+// since the last write, and memoSaveEvery has passed or it has doubled;
+// force asks only that it has grown. The caller holds mu.
+func (m *originalRowsMemo) due(n int, force bool) bool {
+	return n > m.saved && (force || n >= 2*m.saved || time.Since(m.savedAt) >= memoSaveEvery)
+}
+
+// saveLater starts save in the background when the memo is due to be
+// written and no write saveLater started is running. One that is running
+// already, or one that fails, leaves the entries to the next lookup that
+// finds the memo due; not being able to write costs the next start a
+// lookup, never a computation its answer.
+func (m *originalRowsMemo) saveLater(db *sql.DB) {
 	if m.file == "" {
-		return nil
+		return
+	}
+	m.mu.Lock()
+	if m.writing != nil || !m.due(len(m.vals), false) {
+		m.mu.Unlock()
+		return
+	}
+	done := make(chan struct{})
+	m.writing = done
+	m.mu.Unlock()
+	go func() {
+		defer func() {
+			m.mu.Lock()
+			m.writing = nil
+			m.mu.Unlock()
+			close(done)
+		}()
+		_ = m.save(context.Background(), db, false)
+	}()
+}
+
+// wait returns once no write saveLater started is running.
+func (m *originalRowsMemo) wait() {
+	m.mu.Lock()
+	done := m.writing
+	m.mu.Unlock()
+	if done != nil {
+		<-done
+	}
+}
+
+// save writes the memo out when it is due; force writes whatever has grown.
+// Only the copy of the entries is made under mu, which is all a computation
+// can wait for; the file is made and written under fileMu, which only
+// another write and the first read take. The mark is read after the entries
+// are taken, so every entry is of a publication at or below it.
+func (m *originalRowsMemo) save(ctx context.Context, db *sql.DB, force bool) error {
+	if m.file == "" || !m.opened.Load() {
+		return nil // not kept, or nothing learned yet that the file does not have
 	}
 	m.fileMu.Lock()
 	defer m.fileMu.Unlock()
-	if !m.opened {
-		return nil // nothing learned yet that the file does not have
+	type entry struct {
+		h string
+		v memoRows
 	}
-	f := memoFile{Values: map[string][]string{}, Nulls: []string{}}
 	m.mu.Lock()
 	n := len(m.vals)
-	if n <= m.saved || !(force || n >= 2*m.saved || time.Since(m.savedAt) >= memoSaveEvery) {
+	if !m.due(n, force) {
 		m.mu.Unlock()
 		return nil
 	}
+	entries := make([]entry, 0, n)
 	for h, v := range m.vals {
-		if v.null {
-			f.Nulls = append(f.Nulls, h)
-			continue
-		}
-		k := strconv.FormatInt(v.n, 10)
-		f.Values[k] = append(f.Values[k], h)
+		entries = append(entries, entry{h, v})
 	}
 	m.mu.Unlock()
+	f := memoFile{Values: map[string][]string{}, Nulls: []string{}}
+	for _, e := range entries {
+		if e.v.null {
+			f.Nulls = append(f.Nulls, e.h)
+			continue
+		}
+		k := strconv.FormatInt(e.v.n, 10)
+		f.Values[k] = append(f.Values[k], e.h)
+	}
 	id, err := readStoreIdentity(ctx, db)
 	if err != nil {
 		return err
@@ -436,7 +498,9 @@ func (m *originalRowsMemo) save(ctx context.Context, db *sql.DB, force bool) err
 	if err := writeDerived(m.file, f); err != nil {
 		return err
 	}
+	m.mu.Lock()
 	m.saved, m.savedAt = n, time.Now()
+	m.mu.Unlock()
 	return nil
 }
 
