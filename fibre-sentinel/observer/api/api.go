@@ -9,8 +9,8 @@
 // endorsed the blob, its rows did not come back, and the blob was
 // Unavailable; the Service rate is served over served plus not served, per
 // (validator, blob). A reading this observer did not make (NOT_PROBED), or
-// one in which every request failed on its own side, is not read by
-// Tensile: reported as a gap, and no one is not served on it.
+// one in which not a single request reached a server, is not read by
+// Tensile: reported as a gap, and nothing counts on it.
 package api
 
 import (
@@ -3067,7 +3067,7 @@ type reconstruct struct {
 	// client's order, and fewer rows came back; Error says which of the
 	// client's errors), pending (the retention window is open and the
 	// reading is not in), not_read (the window closed without a reading:
-	// Tensile missed it, or every request failed on its own side) or unknown
+	// Tensile missed it, or not a single request reached a server) or unknown
 	// (no assignment to judge it by).
 	Status string `json:"status"`
 	// Error is the Fibre client's error on an Unavailable blob: "no shards
@@ -3075,7 +3075,8 @@ type reconstruct struct {
 	Error string `json:"error,omitempty"`
 	// PointAt is when the reading was scheduled: 10 minutes before
 	// must_serve_until, or for a blob read on the earlier schedule the newest
-	// point a validator answered at.
+	// point in the window every endorsing validator was reached at (or
+	// failing that, any validator).
 	PointAt    string `json:"point_at"`
 	WindowOver bool   `json:"window_over"`
 	// ServedRows is the distinct rows that came back verified, NeededRows
@@ -3244,12 +3245,12 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 		return nil, err
 	}
 
-	// Every in-window reading row of the blob as of the pin. The row lists
-	// are parsed only at the reading the blob is judged at.
+	// Every reading row of the blob as of the pin. The row lists are parsed
+	// only at the reading the blob is judged at.
 	pb, pargs := pin.bound("probes", []any{hash})
-	prows, err := db.QueryContext(ctx, `SELECT validator_address, schedule_label, scheduled_at, classification, outcome,
-			commitment_verified, rows_returned, COALESCE(row_indices, ''), assigned
-		FROM probes WHERE promise_hash = ? AND phase = 'in_window'`+pb, pargs...)
+	prows, err := db.QueryContext(ctx, `SELECT validator_address, schedule_label, scheduled_at, phase, classification, outcome,
+			commitment_verified, rows_returned, COALESCE(row_indices, ''), assigned, COALESCE(tcp_ok, 0)
+		FROM probes WHERE promise_hash = ?`+pb, pargs...)
 	if err != nil {
 		return nil, err
 	}
@@ -3261,15 +3262,16 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 	var all []readRow
 	for prows.Next() {
 		var rr readRow
-		var cls, out string
-		var verified, assigned int
-		if err := prows.Scan(&rr.row.Validator, &rr.row.ScheduleLabel, &rr.at, &cls, &out, &verified, &rr.row.RowsReturned, &rr.idx, &assigned); err != nil {
+		var phase, cls, out string
+		var verified, assigned, tcp int
+		if err := prows.Scan(&rr.row.Validator, &rr.row.ScheduleLabel, &rr.at, &phase, &cls, &out, &verified, &rr.row.RowsReturned, &rr.idx,
+			&assigned, &tcp); err != nil {
 			prows.Close()
 			return nil, err
 		}
 		rr.row.ScheduledAt, _ = time.Parse(store.TimeLayout, rr.at)
-		rr.row.Phase, rr.row.Classification, rr.row.Outcome = probe.PhaseInWindow, probe.Classification(cls), probe.Outcome(out)
-		rr.row.CommitmentVerified, rr.row.Assigned = verified == 1, assigned == 1
+		rr.row.Phase, rr.row.Classification, rr.row.Outcome = probe.Phase(phase), probe.Classification(cls), probe.Outcome(out)
+		rr.row.CommitmentVerified, rr.row.Assigned, rr.row.TCPOK = verified == 1, assigned == 1, tcp == 1
 		all = append(all, rr)
 	}
 	prows.Close()
@@ -3376,7 +3378,7 @@ type reconstructSummary struct {
 	NoByError map[string]int64 `json:"no_by_error"`
 	// Pending, NotRead and Unknown are publications with no verdict: the
 	// window still open and the reading not in; the window closed without a
-	// reading (Tensile missed it, or every request failed on its own side);
+	// reading (Tensile missed it, or not a single request reached a server);
 	// no assignment to judge it by.
 	Pending int64 `json:"pending"`
 	NotRead int64 `json:"not_read"`
@@ -3392,9 +3394,9 @@ type reconstructSummary struct {
 	NotYetRead           int64 `json:"not_yet_read"`
 }
 
-// readableSQL selects the publications with a reading on record (a
-// validator answered in the window): the ones a verdict can be drawn from.
-// bound is the pin's bound on the reading rows (asOfPin.bound).
+// readableSQL selects the publications with a reading on record (a request
+// of it reached a server, rollup.Reached): the ones a verdict can be drawn
+// from. bound is the pin's bound on the reading rows (asOfPin.bound).
 //
 // Without it the sample was simply the newest publications, and a blob is
 // read near the end of its retention window: under a burst of blobs the
@@ -3402,13 +3404,13 @@ type reconstructSummary struct {
 // without one while the prober was behind, and the figure read "none read"
 // beside thousands of blobs read and found Available.
 //
-// The unary + keeps phase and assigned off the index choice: probes_window
-// leads with them and would walk every in-window reading per publication,
-// where probes_promise finds the publication's own few.
+// The unary + keeps assigned off the index choice: probes_window leads with
+// it and would walk every assigned reading row per publication, where
+// probes_promise finds the publication's own few.
 func readableSQL(bound string) string {
 	return `EXISTS (SELECT 1 FROM probes r
-		WHERE r.promise_hash = publications.promise_hash AND +r.phase = 'in_window' AND +r.assigned = 1
-		  AND r.classification NOT IN ('NOT_PROBED','PROBE_ERROR')` + bound + `)`
+		WHERE r.promise_hash = publications.promise_hash AND +r.assigned = 1
+		  AND ` + rollup.Reached("r") + bound + `)`
 }
 
 func (s *Server) reconstructableCount(ctx context.Context, win Window) (reconstructSummary, error) {
@@ -3644,7 +3646,7 @@ func (s *Server) blobService(ctx context.Context, hash string, assigns []assignm
 	}
 	now := time.Now().UTC()
 	args := []any{provisionalCutoff(now), store.TS(now), settled, settled, store.TS(now), rollup.RowLowerBound(settled)}
-	rows, err := s.st.DB().QueryContext(ctx, blobServiceSQL+obligationBuckets+` AND pr.promise_hash = ?)
+	rows, err := s.st.DB().QueryContext(ctx, blobServiceSQL+rollup.BlobObligationBuckets+` AND pr.promise_hash = ?)
 			GROUP BY validator_address, promise_hash)`, append(args, hash)...)
 	if err != nil {
 		return err
@@ -4010,7 +4012,7 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 	// (rollup.CountedClass): no rows came back, on a blob that was
 	// Unavailable.
 	if q.Get("served") == "no" {
-		conds = append(conds, rollup.CountedClass("probes")+` = 'FAULT'`)
+		conds = append(conds, rollup.NotServedSQL("probes"))
 	}
 	// at: one reading, by its scheduled time, so the rows behind a blob's
 	// reading are one link away.

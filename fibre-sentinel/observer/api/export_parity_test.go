@@ -45,8 +45,8 @@ func writeJSONL(t *testing.T, path string, vs ...any) {
 //     NOT_FOUND, one timed out; both are not served.
 //   - Unavailable, no shards retrieved: every validator answered without
 //     rows; every one is not served.
-//   - Not read: every request failed on this observer's side; nothing
-//     counts.
+//   - Not read: not a single request reached a server (two failed on this
+//     observer's side, the third validator has no host); nothing counts.
 func TestTheExportRedrawsTheAPIsCounts(t *testing.T) {
 	data := t.TempDir()
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
@@ -90,6 +90,10 @@ func TestTheExportRedrawsTheAPIsCounts(t *testing.T) {
 				StartedAt: at.Add(time.Duration(i) * time.Second), FinishedAt: at.Add(time.Duration(i+1) * time.Second), Phase: probe.PhaseInWindow,
 				Outcome: v.out, Classification: cls, ClassificationReason: reason, TotalDurationMS: 10, ClientRules: true}
 			m.Read = &probe.ReadInfo{Order: i, BlobResult: result, BlobError: clientErr}
+			// the connection was opened unless the request never left: no
+			// host, or a failure on this observer's side
+			m.TCP.Attempted = v.out != probe.OutcomeNoHost
+			m.TCP.OK = m.TCP.Attempted && v.out != probe.OutcomeProbeError
 			if v.out == probe.OutcomeServedOK {
 				m.Download.OK, m.Download.RowsReturned, m.Download.RowsExpected = true, 2, 2
 				m.Download.CommitmentVerified, m.Download.AssignmentVerified = true, true
@@ -104,7 +108,8 @@ func TestTheExportRedrawsTheAPIsCounts(t *testing.T) {
 		val{"okval", probe.OutcomeServedOK}, val{"goneval", probe.OutcomeNotFound}, val{"downval", probe.OutcomeRPCTimeout})
 	noShards := blob(3, probe.ReadUnavailable, probe.ClientErrNoShards,
 		val{"n1", probe.OutcomeNotFound}, val{"n2", probe.OutcomeThrottled}, val{"n3", probe.OutcomeTLSFail})
-	notRead := blob(4, probe.ReadNotRead, "", val{"l1", probe.OutcomeProbeError}, val{"l2", probe.OutcomeProbeError})
+	notRead := blob(4, probe.ReadNotRead, "", val{"l1", probe.OutcomeProbeError}, val{"l2", probe.OutcomeProbeError},
+		val{"l3", probe.OutcomeNoHost})
 	writeJSONL(t, filepath.Join(data, "publications.jsonl"), pubs...)
 	writeJSONL(t, filepath.Join(data, "measurements.jsonl"), ms...)
 
@@ -125,7 +130,7 @@ func TestTheExportRedrawsTheAPIsCounts(t *testing.T) {
 		"a1": {1, 0}, "a2": {1, 0}, "a3": {0, 0},
 		"okval": {1, 0}, "goneval": {0, 1}, "downval": {0, 1},
 		"n1": {0, 1}, "n2": {0, 1}, "n3": {0, 1},
-		"l1": {0, 0}, "l2": {0, 0},
+		"l1": {0, 0}, "l2": {0, 0}, "l3": {0, 0},
 	} {
 		if got := byAddr[addr]; got.Served != want[0] || got.Broken != want[1] {
 			t.Errorf("the API, %s: %+v; want served %d, not served %d", addr, got, want[0], want[1])

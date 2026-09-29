@@ -65,7 +65,7 @@ func TestTheSQLAndTheGoTwinCountEveryCellTheSame(t *testing.T) {
 			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			c.key, "t", c.key, "c", 0, "2026-01-01T00:00:00.000000000Z", 1,
 			"v", "h", b(c.assigned), b(c.attested), 2, probe.EndReadLabel, "2026-01-01T00:00:00.000000000Z", "2026-01-01T00:00:00.000000000Z",
-			"2026-01-01T00:00:00.000000000Z", 0, 1, 0, 1, 0, 1, 0, 1, 1,
+			"2026-01-01T00:00:00.000000000Z", 0, 1, 0, b(connected(c.out)), 0, 1, 0, 1, 1,
 			0, 2, 2, b(c.verified), b(c.verified), string(c.phase), string(c.out),
 			string(c.cls), 10, "{}", b(c.held)); err != nil {
 			t.Fatalf("insert %s: %v", c.key, err)
@@ -75,16 +75,21 @@ func TestTheSQLAndTheGoTwinCountEveryCellTheSame(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rows, err := db.QueryContext(ctx, `SELECT dedupe_key, `+rollup.CountedClass("probes")+` FROM probes`)
+	rows, err := db.QueryContext(ctx, `SELECT dedupe_key, `+rollup.CountedClass("probes")+`, `+rollup.CountedClassBulk("probes")+`,
+		`+rollup.NotServedSQL("probes")+` FROM probes`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
 	got := map[string]string{}
 	for rows.Next() {
-		var k, c string
-		if err := rows.Scan(&k, &c); err != nil {
+		var k, c, bulk string
+		var notServed bool
+		if err := rows.Scan(&k, &c, &bulk, &notServed); err != nil {
 			t.Fatal(err)
+		}
+		if bulk != c || notServed != (c == "FAULT") {
+			t.Errorf("%s: CountedClass %q, bulk %q, not served %v", k, c, bulk, notServed)
 		}
 		got[k] = c
 	}
@@ -97,7 +102,7 @@ func TestTheSQLAndTheGoTwinCountEveryCellTheSame(t *testing.T) {
 	for _, c := range cells {
 		r := verdict.Row{PromiseHash: c.key, Validator: "v", ScheduleLabel: probe.EndReadLabel, Classification: c.cls, Outcome: c.out,
 			RetentionUnverified: c.held, CommitmentVerified: c.verified, Assigned: c.assigned, Attested: c.attested, Phase: c.phase,
-			RowsReturned: 2, AssignedRowCount: 2}
+			TCPOK: connected(c.out), RowsReturned: 2, AssignedRowCount: 2}
 		want := r.CountedClass(verdict.ReadingOf([]verdict.Row{r}, verdict.BlobFacts{}))
 		if got[c.key] != string(want) {
 			t.Errorf("(%s, %s, held=%v, verified=%v, assigned=%v, attested=%v, %s): SQL says %q, the Go twin says %q",

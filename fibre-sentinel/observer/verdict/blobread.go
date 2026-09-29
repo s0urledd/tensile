@@ -17,11 +17,15 @@ import (
 //     some did, fewer than Needed.
 //
 // Nothing else for a reading that happened. A reading did not happen when
-// not a single request reached a validator (every request failed on this
-// observer's side: Answered holds for none) or when the prober missed its
-// requests (a NOT_PROBED row: it was down, restarting, or late) and the
-// rows are short; then the blob was not read by Tensile, or is still in its
-// retention window, and no one is not served on it.
+// not a single request reached a server (this observer's own network was
+// down: Reached holds for none) or when the prober missed its requests (a
+// NOT_PROBED row: it was down, restarting, or late) and the rows are short;
+// then the blob was not read by Tensile, or is still in its retention
+// window, and nothing counts on it.
+//
+// A reading is judged from all of its rows (one promise, one scheduled
+// time), whatever phase each row carries: the rows that came back are the
+// client's result.
 //
 // What counts for a validator follows from it (Row.CountedClass): served
 // when its rows came back verified; not served when it endorsed the
@@ -88,12 +92,11 @@ func BlobsOf(pubs []scan.Publication) Blobs {
 	return out
 }
 
-// Answered reports whether a row is a validator's own answer at a reading
-// (probe.OwnAnswer): in the window, and rows that verified, or anything but
-// this observer's own gap (NOT_PROBED, PROBE_ERROR). A reading with none
-// did not happen.
-func Answered(r Row) bool {
-	return probe.OwnAnswer(r.Phase, r.Classification, r.CommitmentVerified)
+// Reached reports whether a row's request got through to a server
+// (probe.Reached): its connection was opened, its host refused it, or rows
+// came back verified. A reading with none did not happen.
+func Reached(r Row) bool {
+	return probe.Reached(r.TCPOK, r.Outcome, r.CommitmentVerified)
 }
 
 // Reading is what the rows of one reading of a blob come to.
@@ -107,7 +110,7 @@ type Reading struct {
 	// before they were kept), so Have is a floor rather than a count; the
 	// served shards' bound (Lower) still decides Available.
 	IndicesMissing bool
-	// Ran: a request reached a validator (Answered).
+	// Ran: a request reached a server (Reached).
 	Ran bool
 	// Missed: the prober missed a request of this reading (a NOT_PROBED row
 	// of an assigned validator in the window).
@@ -120,7 +123,7 @@ type Reading struct {
 }
 
 // ReadingOf reduces the rows of one reading (one promise, one scheduled
-// time) with the publication's facts.
+// time) with the publication's facts, whatever phase each row carries.
 func ReadingOf(point []Row, f BlobFacts) Reading {
 	rd := Reading{Needed: f.Needed}
 	seen := map[uint32]struct{}{}
@@ -134,11 +137,8 @@ func ReadingOf(point []Row, f BlobFacts) Reading {
 		if r.Classification != probe.ClassNotProbed && r.Classification != probe.ClassProbeError {
 			asked[r.Validator] = true
 		}
-		if Answered(r) {
+		if Reached(r) {
 			rd.Ran = true
-		}
-		if r.Phase != probe.PhaseInWindow {
-			continue
 		}
 		if r.Outcome == probe.OutcomeServedOK && r.RowsReturned > servedOK[r.Validator] {
 			servedOK[r.Validator] = r.RowsReturned
@@ -213,18 +213,13 @@ func BlobReading(point []Row, f BlobFacts, windowOpen bool) BlobResult {
 }
 
 // BlobOf judges one blob from all its rows: at the reading ReadingPoint
-// picks, over that reading's rows in the window, with the retention window
-// open when asOf is not after must_serve_until. It is what the API's
-// reference (reconstructable) draws from the store.
+// picks, over all of that reading's rows, with the retention window open
+// when asOf is not after must_serve_until. It is what the API's reference
+// (reconstructable) draws from the store.
 func BlobOf(rows []Row, f BlobFacts, mustServeUntil, asOf time.Time) BlobResult {
-	var in, point []Row
-	for _, r := range rows {
-		if r.Phase == probe.PhaseInWindow {
-			in = append(in, r)
-		}
-	}
-	if at, ok := ReadingPoint(in, f); ok {
-		for _, r := range in {
+	var point []Row
+	if at, ok := ReadingPoint(rows, f); ok {
+		for _, r := range rows {
 			if r.ScheduledAt.UTC().Equal(at) {
 				point = append(point, r)
 			}
@@ -235,10 +230,11 @@ func BlobOf(rows []Row, f BlobFacts, mustServeUntil, asOf time.Time) BlobResult 
 
 // ReadingPoint picks the reading a blob is judged at from its rows: the
 // end-of-window reading when there is one. A blob read on the earlier
-// schedule was read at several points, each written a validator at a time:
-// it is judged at the newest point every endorsing validator answered at,
-// or failing that the newest point any validator answered at. ok is false
-// when there is none.
+// schedule was read at several points, each written a validator at a time,
+// some of them after its window: it is judged at the newest point in the
+// window every endorsing validator was reached at, or failing that the
+// newest point in the window any validator was reached at. ok is false when
+// there is none.
 func ReadingPoint(rows []Row, f BlobFacts) (at time.Time, ok bool) {
 	for _, r := range rows {
 		if r.ScheduleLabel == probe.EndReadLabel {
@@ -247,7 +243,7 @@ func ReadingPoint(rows []Row, f BlobFacts) (at time.Time, ok bool) {
 	}
 	answered := map[time.Time]map[string]bool{}
 	for _, r := range rows {
-		if !Answered(r) {
+		if r.Phase != probe.PhaseInWindow || !Reached(r) {
 			continue
 		}
 		k := r.ScheduledAt.UTC()

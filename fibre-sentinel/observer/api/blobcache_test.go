@@ -87,6 +87,7 @@ func insertProbe(t *testing.T, st *store.Store, hash, addr string, at time.Time,
 		m.Download.OK, m.Download.RowsReturned, m.Download.RowsExpected = true, 2, 2
 		m.Download.CommitmentVerified, m.Download.AssignmentVerified = true, true
 	}
+	m.TCP.Attempted, m.TCP.OK = true, opensConnection(outcome)
 	raw, err := json.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
@@ -94,6 +95,19 @@ func insertProbe(t *testing.T, st *store.Store, hash, addr string, at time.Time,
 	if _, err := st.InsertProbe(m, raw); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// opensConnection reports whether a request with this outcome opened its
+// connection: everything but the answers from before one (no host to
+// connect to, a lookup or a connect that failed, a failure on this
+// observer's side, a request never made).
+func opensConnection(o probe.Outcome) bool {
+	switch o {
+	case probe.OutcomeNoHost, probe.OutcomeBadHost, probe.OutcomeDNSFail, probe.OutcomeTCPTimeout, probe.OutcomeTCPUnreachable,
+		probe.OutcomeTCPRefused, probe.OutcomeProbeError, probe.OutcomeMissed:
+		return false
+	}
+	return true
 }
 
 type blobListRow struct {

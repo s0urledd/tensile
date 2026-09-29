@@ -36,6 +36,8 @@ type valRows struct {
 	failLast bool // served at every point but the last, where it answers NOT_FOUND
 	missed   bool // the prober missed its request at every point (NOT_PROBED)
 	local    bool // its request failed on this observer's side at every point (PROBE_ERROR)
+	nohost   bool // no host to connect to (NO_REGISTERED_HOST): no request left
+	late     bool // its request started after must_serve_until (phase grace)
 }
 
 type blobCase struct {
@@ -55,10 +57,11 @@ func writeBlob(t *testing.T, st *store.Store, idx int, c blobCase) string {
 	db := st.DB()
 	hash := fmt.Sprintf("%064x", idx+1)
 	now := time.Now().UTC()
-	msu := store.TS(now.Add(2 * time.Hour))
+	msuT := now.Add(2 * time.Hour)
 	if c.over {
-		msu = store.TS(now.Add(-time.Hour))
+		msuT = now.Add(-time.Hour)
 	}
+	msu := store.TS(msuT)
 
 	sigma, seen := 0, map[int]struct{}{}
 	for _, v := range c.vals {
@@ -124,6 +127,8 @@ func writeBlob(t *testing.T, st *store.Store, idx int, c blobCase) string {
 				outcome, class = "MISSED", "NOT_PROBED"
 			case v.local:
 				outcome, class = "PROBE_ERROR", "PROBE_ERROR"
+			case v.nohost:
+				outcome, class = "NO_REGISTERED_HOST", "NOT_REGISTERED"
 			}
 			serves := v.served && !(last && v.failLast)
 			returned, verified := 0, 0
@@ -139,6 +144,10 @@ func writeBlob(t *testing.T, st *store.Store, idx int, c blobCase) string {
 					idx = string(b)
 				}
 			}
+			phase, started := "in_window", at
+			if v.late {
+				phase, started = "grace", store.TS(msuT.Add(5*time.Second))
+			}
 			key := fmt.Sprintf("%s-%s-%d", hash, v.addr, p)
 			if _, err := db.Exec(`INSERT INTO probes (
 				dedupe_key, vantage, promise_hash, commitment, blob_version, must_serve_until,
@@ -150,11 +159,11 @@ func writeBlob(t *testing.T, st *store.Store, idx int, c blobCase) string {
 				phase, outcome, classification, classification_reason, raw_error,
 				total_duration_ms, raw_json, attested, row_indices
 			) VALUES (?, 'v1', ?, ?, 0, ?, 1, ?, 'h:1', 1, ?, ?, ?, ?, ?, 0,
-				1,1,1,1,1,1,'TLS1.3','', 1,'', ?, 1, ?, ?, ?, ?,
-				'in_window', ?, ?, '', '', 1, '{}', ?, ?)`,
+				1,1,?,1,1,1,'TLS1.3','', 1,'', ?, 1, ?, ?, ?, ?,
+				?, ?, ?, '', '', 1, '{}', ?, ?)`,
 				key, hash, hash, msu, v.addr, len(v.rows), fmt.Sprintf("w%d", p+1),
-				at, at, at, boolInt(serves), returned, len(v.rows), verified, verified,
-				outcome, class, v.attested, idx); err != nil {
+				at, started, started, boolInt(!v.local && !v.missed && !v.nohost), boolInt(serves), returned, len(v.rows), verified, verified,
+				phase, outcome, class, v.attested, idx); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -233,7 +242,7 @@ func TestReconstructBatchMatchesReference(t *testing.T) {
 			{addr: "n2", rows: full[20:], attested: 1, missed: true},
 		},
 	}, {
-		name:   "not_read: every request failed on this observer's side",
+		name:   "not_read: no request reached a server, every one failed on this observer's side",
 		needed: 20, total: 160, points: 1, complete: true, over: true, want: "not_read",
 		vals: []valRows{
 			{addr: "r1", rows: full[:20], attested: 1, local: true},
@@ -245,6 +254,21 @@ func TestReconstructBatchMatchesReference(t *testing.T) {
 		vals: []valRows{
 			{addr: "s1", rows: full[:20], attested: 1, local: true},
 			{addr: "s2", rows: full[20:], attested: 1, served: false},
+		},
+	}, {
+		name:   "not_read: no request reached a server, a validator with no host among them",
+		needed: 20, total: 160, points: 1, complete: true, over: true, want: "not_read",
+		vals: []valRows{
+			{addr: "rh1", rows: full[:20], attested: 1, local: true},
+			{addr: "rh2", rows: full[20:], attested: 0, nohost: true},
+		},
+	}, {
+		name:   "yes: rows from a request that started after must_serve_until count toward the blob",
+		needed: 20, total: 160, points: 1, complete: true, over: true, want: "yes",
+		vals: []valRows{
+			{addr: "lt1", rows: full[:10], attested: 1, served: true},
+			{addr: "lt2", rows: full[10:20], attested: 1, served: true, late: true},
+			{addr: "lt3", rows: full[20:], attested: 1, served: false},
 		},
 	}, {
 		name:   "yes: rows the prober missed do not stand between a blob and Available",

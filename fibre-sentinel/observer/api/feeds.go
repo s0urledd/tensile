@@ -570,7 +570,7 @@ func (s *Server) monikers(ctx context.Context) (map[string]string, error) {
 //     none.
 func (s *Server) firstFaults(ctx context.Context, addr string, now time.Time) (map[string]feed.Entry, error) {
 	db := s.st.DB()
-	faultWhere := `assigned = 1 AND ` + rollup.CountedClass("probes") + ` = 'FAULT'`
+	faultWhere := `assigned = 1 AND ` + rollup.NotServedSQL("probes")
 	var args []any
 	if addr != "" {
 		faultWhere += ` AND validator_address = ?`

@@ -103,16 +103,17 @@ func (p asOfPin) over(msu string) bool {
 }
 
 // readingAgg is one reading (a scheduled time) of one publication, already
-// aggregated.
+// aggregated over all of its rows, whatever phase each carries.
 type readingAgg struct {
 	at       string
 	end      bool
 	asked    int  // distinct validators asked: a row other than NOT_PROBED or PROBE_ERROR
-	answered int  // with an answer of their own (verdict.Answered): the reading happened
-	endorsed int  // of those, endorsing validators that answered
+	reached  int  // whose request reached a server (verdict.Reached): the reading happened
+	inWin    int  // of those, with a row in the window: what picks a point of the earlier schedule
+	endorsed int  // endorsing validators reached in the window
 	served   int  // whose rows verified
 	upper    int  // every verified row
-	missed   bool // the prober missed a request (a NOT_PROBED row of an assigned validator)
+	missed   bool // the prober missed a request (a NOT_PROBED row of an assigned validator in the window)
 }
 
 // reconstructBatch returns the status of every publication in the selection,
@@ -184,20 +185,20 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 		return nil, err
 	}
 
-	// 3. every reading: who was asked, who answered, the verified rows, and
-	// whether the prober missed a request of it.
+	// 3. every reading: who was asked, who was reached, the verified rows,
+	// and whether the prober missed a request of it.
 	pb, pargs := pin.bound("p", args)
-	answered := rollup.Answered("p")
+	reached := rollup.Reached("p")
 	points := map[string][]readingAgg{}
 	rows, err = db.QueryContext(ctx, sel+`
 		SELECT p.promise_hash, p.scheduled_at, MAX(p.schedule_label = '`+probe.EndReadLabel+`'),
 		       COUNT(DISTINCT CASE WHEN p.classification NOT IN ('NOT_PROBED','PROBE_ERROR') THEN p.validator_address END),
-		       COUNT(DISTINCT CASE WHEN `+answered+` THEN p.validator_address END),
+		       COUNT(DISTINCT CASE WHEN `+reached+` THEN p.validator_address END),
+		       COUNT(DISTINCT CASE WHEN `+reached+` AND p.phase = 'in_window' THEN p.validator_address END),
 		       COUNT(DISTINCT CASE WHEN p.commitment_verified = 1 THEN p.validator_address END),
 		       COALESCE(SUM(CASE WHEN p.commitment_verified = 1 THEN p.rows_returned END), 0),
-		       MAX(p.classification = 'NOT_PROBED' AND p.assigned = 1)
-		FROM probes p JOIN sel ON sel.promise_hash = p.promise_hash
-		WHERE p.phase = 'in_window'`+pb+`
+		       MAX(p.classification = 'NOT_PROBED' AND p.assigned = 1 AND p.phase = 'in_window')
+		FROM probes p JOIN sel ON sel.promise_hash = p.promise_hash`+pb+`
 		GROUP BY p.promise_hash, p.scheduled_at`, pargs...)
 	if err != nil {
 		return nil, err
@@ -205,7 +206,7 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 	for rows.Next() {
 		var hash string
 		var ra readingAgg
-		if err := rows.Scan(&hash, &ra.at, &ra.end, &ra.asked, &ra.answered, &ra.served, &ra.upper, &ra.missed); err != nil {
+		if err := rows.Scan(&hash, &ra.at, &ra.end, &ra.asked, &ra.reached, &ra.inWin, &ra.served, &ra.upper, &ra.missed); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -224,7 +225,7 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 		SELECT promise_hash, scheduled_at, SUM(r) FROM (
 		  SELECT p.promise_hash AS promise_hash, p.scheduled_at AS scheduled_at, MAX(p.rows_returned) AS r
 		  FROM probes p JOIN sel ON sel.promise_hash = p.promise_hash
-		  WHERE p.phase = 'in_window' AND p.outcome = 'SERVED_OK'`+pb+`
+		  WHERE p.outcome = 'SERVED_OK'`+pb+`
 		  GROUP BY p.promise_hash, p.scheduled_at, p.validator_address)
 		GROUP BY promise_hash, scheduled_at`, pargs...)
 	if err != nil {
@@ -244,8 +245,8 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 		return nil, err
 	}
 
-	// 5. how many endorsing validators answered at each reading, for
-	// readingOf.
+	// 5. how many endorsing validators were reached in the window at each
+	// reading, for readingOf.
 	answeredBy := map[pointKey]int{}
 	rows, err = db.QueryContext(ctx, sel+`
 		SELECT promise_hash, scheduled_at, SUM(e) FROM (
@@ -254,7 +255,7 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 		  FROM probes p
 		  JOIN assignments a ON a.promise_hash = p.promise_hash AND a.validator_address = p.validator_address
 		  JOIN sel ON sel.promise_hash = p.promise_hash
-		  WHERE `+answered+` AND a.row_count > 0`+pb+`)
+		  WHERE `+reached+` AND p.phase = 'in_window' AND a.row_count > 0`+pb+`)
 		GROUP BY promise_hash, scheduled_at`, pargs...)
 	if err != nil {
 		return nil, err
@@ -300,13 +301,13 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 		switch {
 		case floor >= needed:
 			rc.Status = verdict.BlobAvailable
-		case pa.upper < needed && pa.answered > 0 && !pa.missed:
+		case pa.upper < needed && pa.reached > 0 && !pa.missed:
 			// short even counting every verified row, at a reading that
 			// happened
 			rc.Status, rc.Error = verdict.BlobUnavailable, probe.ClientError(pa.upper)
 		case pa.upper < needed:
-			// short, and the reading did not happen: every request failed
-			// here, or the prober missed some
+			// short, and the reading did not happen: no request reached a
+			// server, or the prober missed some
 			rc.Status = idle
 		default:
 			// Within the overlaps of the threshold (duplicated verified rows
@@ -325,8 +326,8 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 
 // readingOf picks the reading a blob is judged at from its aggregated
 // readings, as verdict.ReadingPoint does from rows: the end-of-window
-// reading; or the newest point at which every one of the endorsers
-// answered; or the newest point at which any validator answered.
+// reading; or the newest point at which every one of the endorsers was
+// reached in the window; or the newest point at which any validator was.
 func readingOf(pts []readingAgg, endorsers int) (readingAgg, bool) {
 	for _, pa := range pts {
 		if pa.end {
@@ -336,7 +337,7 @@ func readingOf(pts []readingAgg, endorsers int) (readingAgg, bool) {
 	var complete, newest readingAgg
 	whole, some := false, false
 	for _, pa := range pts {
-		if pa.answered == 0 {
+		if pa.inWin == 0 {
 			continue
 		}
 		if !some || pa.at > newest.at {

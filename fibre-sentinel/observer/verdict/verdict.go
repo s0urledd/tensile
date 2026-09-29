@@ -59,6 +59,8 @@ type Row struct {
 	// MarkRetentionUnverified, never from the row itself.
 	RetentionUnverified bool
 	TLSOK               bool
+	// TCPOK: the request's connection was opened (probe.Reached).
+	TCPOK bool
 	// What the reading handed over: the rows that came back, whether they
 	// verified against the commitment, and how many rows this validator
 	// holds. The counting rule reads them (BlobReading).
@@ -92,7 +94,9 @@ func (r Row) EffectiveClass() probe.Classification {
 //   - NOT_PROBED, PROBE_ERROR: this observer's gap, when the blob was not
 //     Unavailable; never counted;
 //   - NotCounted: any other answer without rows on a blob that was not
-//     Unavailable.
+//     Unavailable, and rows that came back on a blob not read by Tensile
+//     (the prober missed part of the reading and the rows are short):
+//     nothing counts on it.
 //
 // Over served and not served, the retention hold of EffectiveClass: a row
 // whose deadline this observer cannot vouch for publishes neither. A
@@ -105,6 +109,8 @@ func (r Row) CountedClass(rd Reading) probe.Classification {
 	switch {
 	case r.Phase != probe.PhaseInWindow || !r.Assigned || !r.Attested:
 		return r.Classification
+	case r.CommitmentVerified && rd.Missed && !rd.Available():
+		return NotCounted
 	case r.CommitmentVerified:
 		c = probe.ClassHealthy
 	case r.Classification == probe.ClassNotProbed:
@@ -159,7 +165,7 @@ func FromMeasurement(m probe.Measurement) Row {
 		PromiseHash: m.PromiseHash, Validator: m.ValidatorAddress, ScheduleLabel: m.ScheduleLabel,
 		ScheduledAt: m.ScheduledAt, StartedAt: m.StartedAt, MustServeUntil: m.MustServeUntil,
 		Assigned: m.Assigned, Attested: m.Attested && m.HasAttestation(),
-		Phase: m.Phase, Classification: m.Classification, Outcome: m.Outcome, TLSOK: m.TLS.OK,
+		Phase: m.Phase, Classification: m.Classification, Outcome: m.Outcome, TLSOK: m.TLS.OK, TCPOK: m.TCP.OK,
 		RowIndices: m.Download.RowIndices, RowsReturned: m.Download.RowsReturned,
 		CommitmentVerified: m.Download.CommitmentVerified, AssignedRowCount: m.AssignedRowCount,
 	}

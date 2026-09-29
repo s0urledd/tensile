@@ -46,10 +46,22 @@ func (rd *reading) add(v string, cls probe.Classification, holds int, rows ...ui
 	case probe.ClassUnmatchedGenuine:
 		out = probe.OutcomePartial
 	}
+	// the connection was opened unless the request never left (no host, a
+	// local failure, a missed reading)
+	connected := cls != probe.ClassNotRegistered && cls != probe.ClassNotProbed && cls != probe.ClassProbeError
 	rd.rows = append(rd.rows, Row{PromiseHash: "p", Validator: v, ScheduleLabel: probe.EndReadLabel, ScheduledAt: rd.at, StartedAt: rd.at,
 		MustServeUntil: rd.msu, Assigned: true, Attested: true, Phase: probe.PhaseInWindow, Classification: cls, Outcome: out,
-		TLSOK:      cls != probe.ClassUnreachable && cls != probe.ClassNotProbed && cls != probe.ClassProbeError,
+		TLSOK:      cls != probe.ClassUnreachable && connected,
+		TCPOK:      connected,
 		RowIndices: rows, RowsReturned: len(rows), CommitmentVerified: len(rows) > 0, AssignedRowCount: holds})
+}
+
+// unconnected records validator v's connect timing out: UNREACHABLE, and no
+// connection opened.
+func (rd *reading) unconnected(v string, holds int) {
+	rd.add(v, probe.ClassUnreachable, holds)
+	r := &rd.rows[len(rd.rows)-1]
+	r.Outcome, r.TCPOK = probe.OutcomeTCPTimeout, false
 }
 
 // other records a validator that did not endorse the promise: asked like
@@ -61,7 +73,7 @@ func (rd *reading) other(v string, holds int, rows ...uint32) {
 	}
 	rd.rows = append(rd.rows, Row{PromiseHash: "p", Validator: v, ScheduleLabel: probe.EndReadLabel, ScheduledAt: rd.at, StartedAt: rd.at,
 		MustServeUntil: rd.msu, Assigned: true, Phase: probe.PhaseInWindow, Classification: probe.ClassUnattested, Outcome: out,
-		TLSOK: true, RowIndices: rows, RowsReturned: len(rows), CommitmentVerified: len(rows) > 0, AssignedRowCount: holds})
+		TLSOK: true, TCPOK: true, RowIndices: rows, RowsReturned: len(rows), CommitmentVerified: len(rows) > 0, AssignedRowCount: holds})
 }
 
 func span(from, n int) []uint32 {
@@ -148,10 +160,11 @@ func TestAnAvailableBlobCountsNothingAgainstAnyone(t *testing.T) {
 // On an Unavailable blob every endorsing validator whose rows did not come
 // back is not served, whatever the client met: not found, a timeout, a
 // rate limit, a server error or a CANCELLED it sent, a certificate the
-// client rejects, no registered host, or a request that failed on this
-// observer's side while others reached their validators. Every validator
-// whose rows came back verified is served, a short shard included. A
-// validator that did not endorse owes nothing and is never counted.
+// client rejects, no registered host, a connect that timed out or found no
+// route, or a request that failed on this observer's side while others
+// reached their validators. Every validator whose rows came back verified
+// is served, a short shard included. A validator that did not endorse owes
+// nothing and is never counted.
 func TestNotServedOnlyOnAnUnavailableBlob(t *testing.T) {
 	rd := newReading()
 	rd.add("gone", probe.ClassFault, 4)
@@ -160,18 +173,19 @@ func TestNotServedOnlyOnAnUnavailableBlob(t *testing.T) {
 	rd.add("errs", probe.ClassServerError, 4)
 	rd.add("wrongkey", probe.ClassIdentityMismatch, 4)
 	rd.add("nohost", probe.ClassNotRegistered, 4)
+	rd.unconnected("noroute", 4)
 	rd.add("local", probe.ClassProbeError, 4)
 	rd.add("s1", probe.ClassHealthy, 2, 8, 9)
 	rd.add("short", probe.ClassUnmatchedGenuine, 4, 10)
 	rd.other("other", 4)
 	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"gone": 4, "slow": 4, "limited": 4, "errs": 4, "wrongkey": 4, "nohost": 4,
-		"local": 4, "s1": 2, "short": 4}}
+		"noroute": 4, "local": 4, "s1": 2, "short": 4}}
 	res := BlobReading(rd.rows, facts, false)
 	if res.Status != BlobUnavailable || res.Error != probe.ClientErrNotEnoughShards || res.Have != 3 {
 		t.Fatalf("reading = %+v, want Unavailable, not enough shards, 3 rows", res)
 	}
 	net, by := rd.obligations(facts)
-	for _, v := range []string{"gone", "slow", "limited", "errs", "wrongkey", "nohost", "local"} {
+	for _, v := range []string{"gone", "slow", "limited", "errs", "wrongkey", "nohost", "noroute", "local"} {
 		if by[v] != notServed {
 			t.Errorf("%s: %+v, want not served", v, by[v])
 		}
@@ -184,8 +198,8 @@ func TestNotServedOnlyOnAnUnavailableBlob(t *testing.T) {
 	if _, ok := by["other"]; ok {
 		t.Errorf("a validator that did not endorse has an obligation: %+v", by["other"])
 	}
-	if net.Broken != 7 || net.Served != 2 {
-		t.Errorf("network %+v, want 7 not served and 2 served", net)
+	if net.Broken != 8 || net.Served != 2 {
+		t.Errorf("network %+v, want 8 not served and 2 served", net)
 	}
 }
 
@@ -205,18 +219,23 @@ func TestTheWholeSetCountsTowardTheBlob(t *testing.T) {
 	}
 }
 
-// A reading that did not happen is not read and counts nothing against
-// anyone: every request failed on this observer's side before it reached a
-// validator (its own network was down), or the prober missed the reading,
-// or part of it (NOT_PROBED) and the rows are short. Rows that came back
-// are served all the same. Blobs whose window is still open are in their
-// retention window instead.
+// A reading that did not happen is not read and nothing counts on it: not
+// a single request reached a server (this observer's own network was
+// down: a local failure, no host to connect to, a connect that timed out),
+// or the prober missed the reading, or part of it (NOT_PROBED) and the rows
+// are short, the rows that came back included. Blobs whose window is still
+// open are in their retention window instead.
 func TestAReadingThatDidNotHappenIsNotRead(t *testing.T) {
 	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"a": 4, "b": 4, "c": 4}}
 	local := newReading()
-	for _, v := range []string{"a", "b", "c"} {
-		local.add(v, probe.ClassProbeError, 4)
+	local.add("a", probe.ClassProbeError, 4)
+	local.add("b", probe.ClassProbeError, 4)
+	local.add("c", probe.ClassNotRegistered, 4)
+	unconnected := newReading()
+	for _, v := range []string{"a", "b"} {
+		unconnected.unconnected(v, 4)
 	}
+	unconnected.add("c", probe.ClassNotRegistered, 4)
 	missed := newReading()
 	for _, v := range []string{"a", "b", "c"} {
 		missed.add(v, probe.ClassNotProbed, 4)
@@ -230,6 +249,7 @@ func TestAReadingThatDidNotHappenIsNotRead(t *testing.T) {
 		rd   *reading
 	}{
 		{"every request failed here", local},
+		{"not a single connection opened", unconnected},
 		{"missed", missed},
 		{"partly missed", part},
 	} {
@@ -240,18 +260,22 @@ func TestAReadingThatDidNotHappenIsNotRead(t *testing.T) {
 			t.Errorf("%s, window open: %s, want pending", c.name, res.Status)
 		}
 		net, by := c.rd.obligations(facts)
-		if net.Broken != 0 {
-			t.Errorf("%s: %+v, want no one not served", c.name, net)
+		if net.Broken != 0 || net.Served != 0 {
+			t.Errorf("%s: %+v, want nothing counted", c.name, net)
 		}
 		for v, o := range by {
-			want := notCounted
-			if c.rd == part && v == "a" {
-				want = served
-			}
-			if o != want {
-				t.Errorf("%s: %s %+v, want %+v", c.name, v, o, want)
+			if o != notCounted {
+				t.Errorf("%s: %s %+v, want %+v", c.name, v, o, notCounted)
 			}
 		}
+	}
+	// One refusal is a server's answer: the reading happened.
+	refused := newReading()
+	refused.unconnected("a", 4)
+	refused.unconnected("b", 4)
+	refused.rows[1].Outcome = probe.OutcomeTCPRefused
+	if res := BlobReading(refused.rows, facts, false); res.Status != BlobUnavailable || res.Error != probe.ClientErrNoShards {
+		t.Errorf("a refused connection: %s %q, want Unavailable", res.Status, res.Error)
 	}
 	// Rows the prober missed never stand between a blob and Available.
 	whole := newReading()
@@ -281,6 +305,48 @@ func TestVerifiedRowsCameBack(t *testing.T) {
 	_, by := rd.obligations(facts)
 	if by["big"] != notServed || by["deferred"] != served {
 		t.Errorf("big %+v deferred %+v", by["big"], by["deferred"])
+	}
+}
+
+// A reading is judged from all of its rows, whatever phase each carries:
+// the rows that came back are the client's result. Here a stored reading
+// whose request to b started after must_serve_until (the phase its own
+// start gave it, before a request took the reading's) handed over the rows
+// that made the blob Available, so the validator that timed out in the
+// window is not held to a blob the client could read.
+func TestAReadingIsJudgedFromAllItsRows(t *testing.T) {
+	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"a": 4, "b": 4, "c": 4}}
+	rd := newReading()
+	rd.add("a", probe.ClassHealthy, 4, span(0, 4)...)
+	rd.add("b", probe.ClassHealthy, 4, span(4, 4)...)
+	rd.add("c", probe.ClassUnreachable, 4)
+	late := &rd.rows[1]
+	late.Phase, late.StartedAt = probe.PhaseGrace, rd.msu.Add(5*time.Second)
+	res := BlobReading(rd.rows, facts, false)
+	if res.Status != BlobAvailable || res.Have != 8 {
+		t.Fatalf("reading %+v, want Available with 8 rows", res)
+	}
+	if got := BlobOf(rd.rows, facts, rd.msu, rd.msu.Add(time.Hour)); got.Status != BlobAvailable || got.Have != 8 {
+		t.Fatalf("BlobOf %+v, want Available with 8 rows", got)
+	}
+	_, by := rd.obligations(facts)
+	if by["a"] != served || by["c"] != notCounted {
+		t.Errorf("a %+v c %+v, want served and not counted", by["a"], by["c"])
+	}
+
+	// The same reading short of the rows: the validator that timed out is
+	// not served, and a verified row after the deadline still counts toward
+	// the blob.
+	short := newReading()
+	short.add("a", probe.ClassHealthy, 4, span(0, 2)...)
+	short.add("b", probe.ClassHealthy, 4, span(4, 2)...)
+	short.add("c", probe.ClassUnreachable, 4)
+	short.rows[1].Phase = probe.PhaseGrace
+	if res := BlobReading(short.rows, facts, false); res.Status != BlobUnavailable || res.Have != 4 {
+		t.Fatalf("short reading %+v, want Unavailable with 4 rows", res)
+	}
+	if _, by := short.obligations(facts); by["c"] != notServed {
+		t.Errorf("c %+v, want not served", by["c"])
 	}
 }
 
