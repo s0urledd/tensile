@@ -21,7 +21,7 @@ import (
 // observer's side: Answered holds for none) or when the prober missed its
 // requests (a NOT_PROBED row: it was down, restarting, or late) and the
 // rows are short; then the blob was not read by Tensile, or is still in its
-// retention window, and nothing in it counts.
+// retention window, and no one is not served on it.
 //
 // What counts for a validator follows from it (Row.CountedClass): served
 // when its rows came back verified; not served when it endorsed the

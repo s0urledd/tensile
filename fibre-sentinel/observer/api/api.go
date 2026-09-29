@@ -10,7 +10,7 @@
 // Unavailable; the Service rate is served over served plus not served, per
 // (validator, blob). A reading this observer did not make (NOT_PROBED), or
 // one in which every request failed on its own side, is not read by
-// Tensile: reported as a gap, never folded into a figure.
+// Tensile: reported as a gap, and no one is not served on it.
 package api
 
 import (

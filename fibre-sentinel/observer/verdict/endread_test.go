@@ -205,13 +205,13 @@ func TestTheWholeSetCountsTowardTheBlob(t *testing.T) {
 	}
 }
 
-// A reading that did not happen counts nothing and says so: every request
-// failed on this observer's side before it reached a validator (its own
-// network was down), or the prober missed the reading, or part of it
-// (NOT_PROBED) and the rows are short. Nothing in it counts, not even rows
-// that came back. Blobs whose window is still open are in their retention
-// window instead.
-func TestAReadingThatDidNotHappenCountsNothing(t *testing.T) {
+// A reading that did not happen is not read and counts nothing against
+// anyone: every request failed on this observer's side before it reached a
+// validator (its own network was down), or the prober missed the reading,
+// or part of it (NOT_PROBED) and the rows are short. Rows that came back
+// are served all the same. Blobs whose window is still open are in their
+// retention window instead.
+func TestAReadingThatDidNotHappenIsNotRead(t *testing.T) {
 	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"a": 4, "b": 4, "c": 4}}
 	local := newReading()
 	for _, v := range []string{"a", "b", "c"} {
@@ -240,12 +240,16 @@ func TestAReadingThatDidNotHappenCountsNothing(t *testing.T) {
 			t.Errorf("%s, window open: %s, want pending", c.name, res.Status)
 		}
 		net, by := c.rd.obligations(facts)
-		if net.Served+net.Broken != 0 {
-			t.Errorf("%s: %+v, want nothing counted", c.name, net)
+		if net.Broken != 0 {
+			t.Errorf("%s: %+v, want no one not served", c.name, net)
 		}
 		for v, o := range by {
-			if o != notCounted {
-				t.Errorf("%s: %s %+v, want not counted", c.name, v, o)
+			want := notCounted
+			if c.rd == part && v == "a" {
+				want = served
+			}
+			if o != want {
+				t.Errorf("%s: %s %+v, want %+v", c.name, v, o, want)
 			}
 		}
 	}

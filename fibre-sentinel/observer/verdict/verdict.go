@@ -92,9 +92,7 @@ func (r Row) EffectiveClass() probe.Classification {
 //   - NOT_PROBED, PROBE_ERROR: this observer's gap, when the blob was not
 //     Unavailable; never counted;
 //   - NotCounted: any other answer without rows on a blob that was not
-//     Unavailable, and anything on a reading that did not happen (the
-//     prober missed part of it and the rows are short: rows that came back
-//     count neither way there).
+//     Unavailable.
 //
 // Over served and not served, the retention hold of EffectiveClass: a row
 // whose deadline this observer cannot vouch for publishes neither. A
@@ -107,8 +105,6 @@ func (r Row) CountedClass(rd Reading) probe.Classification {
 	switch {
 	case r.Phase != probe.PhaseInWindow || !r.Assigned || !r.Attested:
 		return r.Classification
-	case r.CommitmentVerified && rd.Missed && !rd.Available():
-		return NotCounted
 	case r.CommitmentVerified:
 		c = probe.ClassHealthy
 	case r.Classification == probe.ClassNotProbed:

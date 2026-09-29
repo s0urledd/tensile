@@ -554,8 +554,8 @@ Stated here because they are properties of the machine, not of any validator.
 - **Unavailable needs a reading that happened.** A blob is unavailable only
   after the whole set was asked, as the client asks it; a reading this
   observer missed, or one in which every request failed on its own side, is
-  its gap, and nothing in it counts. While the observer is blind it can
-  withhold credit, never manufacture an accusation.
+  its gap, and no one is not served on it. While the observer is blind it
+  can withhold credit, never manufacture an accusation.
 - **The rows a reading did not need say nothing.** A reading stops at enough
   rows, so a validator later in the order is often not asked at all, and an
   available blob says nothing about the validators that failed in it.

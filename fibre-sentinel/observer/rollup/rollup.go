@@ -189,17 +189,14 @@ const DeadlineDerivedSQL = `('HEALTHY','FAULT')`
 // blob's reading is known, in the window: HEALTHY (served) when its rows
 // came back verified; FAULT (not served) when they did not and the reading
 // left the blob Unavailable; NOT_PROBED and PROBE_ERROR, this observer's
-// gap, and 'NOT_COUNTED' for any other answer, when it was not; and
-// 'NOT_COUNTED' for anything on a reading that did not happen (the prober
-// missed part of it, and the rows are short). Over served and not served,
-// the retention hold of EffectiveClass. A row outside the window, or of a
-// validator that did not endorse, keeps its own class. The Go twin is
-// verdict.Row.CountedClass.
+// gap, and 'NOT_COUNTED' for any other answer, when it was not. Over
+// served and not served, the retention hold of EffectiveClass. A row
+// outside the window, or of a validator that did not endorse, keeps its own
+// class. The Go twin is verdict.Row.CountedClass.
 //
 // The blob's reading is looked at only where it can change the count: a
-// row that could fail, and a served row whose reading the prober missed
-// part of (missedSQL, one list for the whole query). That keeps a tally
-// over many readings to the few of them that did not come back.
+// row whose rows did not come back. That keeps a tally over many readings
+// to the few of them that did not come back.
 //
 // alias must name the row's table or view (the correlated subqueries read
 // probes under an alias of their own).
@@ -214,8 +211,7 @@ func CountedClass(alias string) string {
 	}
 	nc := `'` + string(verdict.NotCounted) + `'`
 	return `(CASE WHEN ` + p + `phase <> 'in_window' OR COALESCE(` + p + `assigned, 0) <> 1 OR COALESCE(` + p + `attested, 0) <> 1 THEN ` + p + `classification` +
-		` WHEN ` + p + `commitment_verified = 1 THEN (CASE WHEN NOT ` + missedSQL(h, t) + ` THEN ` + held("HEALTHY") +
-		` WHEN ` + availableSQL(h, t) + ` = 1 THEN ` + held("HEALTHY") + ` ELSE ` + nc + ` END)` +
+		` WHEN ` + p + `commitment_verified = 1 THEN ` + held("HEALTHY") +
 		` WHEN ` + p + `classification = 'NOT_PROBED' THEN 'NOT_PROBED'` +
 		` WHEN ` + unavailableSQL(h, t) + ` = 1 THEN ` + held("FAULT") +
 		` WHEN ` + p + `classification = 'PROBE_ERROR' THEN 'PROBE_ERROR'` +
@@ -251,12 +247,20 @@ func ranSQL(h, t string) string {
 	return `EXISTS (SELECT 1 FROM probes q WHERE q.promise_hash = ` + h + ` AND q.scheduled_at = ` + t + ` AND ` + Answered("q") + `)`
 }
 
+// readingKey is one reading, promise h at scheduled time t, as a single
+// text value. SQLite probes a list of these far faster than a row value
+// (h, t) IN (SELECT ...): over 452,000 stored rows, half a second against
+// ten. A promise hash is hex, so the separator cannot occur in it.
+func readingKey(h, t string) string {
+	return `(` + h + ` || '|' || ` + t + `)`
+}
+
 // missedSQL is true when the prober missed a request of the reading of
 // promise h at t: a NOT_PROBED row of an assigned validator in the window.
 // The list is not correlated, so it is drawn once for a whole query, from
 // the covering index over assigned in-window rows.
 func missedSQL(h, t string) string {
-	return `((` + h + `, ` + t + `) IN (SELECT qm.promise_hash, qm.scheduled_at FROM probes qm
+	return `(` + readingKey(h, t) + ` IN (SELECT ` + readingKey("qm.promise_hash", "qm.scheduled_at") + ` FROM probes qm
 			WHERE qm.assigned = 1 AND qm.phase = 'in_window' AND qm.classification = 'NOT_PROBED'))`
 }
 
@@ -267,16 +271,6 @@ func missedSQL(h, t string) string {
 func Answered(alias string) string {
 	p := alias + "."
 	return `(` + p + `phase = 'in_window' AND (` + p + `commitment_verified = 1 OR ` + p + `classification NOT IN ('NOT_PROBED','PROBE_ERROR')))`
-}
-
-// availableSQL is 1 when the rows of the reading of promise h at t
-// reconstruct the blob (verdict.Reading.Available), 0 otherwise.
-func availableSQL(h, t string) string {
-	k := neededSQL(h)
-	return `(CASE WHEN COALESCE(` + k + `, 0) <= 0 THEN 0
-		WHEN ` + lowerSQL(h, t) + ` >= ` + k + ` THEN 1
-		WHEN ` + exactSQL(h, t) + ` >= ` + k + ` THEN 1
-		ELSE 0 END)`
 }
 
 // unavailableSQL is 1 when the reading of promise h at t happened and left

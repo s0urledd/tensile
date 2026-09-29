@@ -298,7 +298,8 @@ One sentence each, and what a reader should conclude.
   reading missed in part included), or every request failed on this
   observer's side before it reached a validator (`probe.OwnAnswer` holds
   for none). Then the blob is `not_read`, or `pending` while its window is
-  open, and nothing in it counts.
+  open, and no one is not served on it (rows that came back are served all
+  the same).
 - **What a validator's row counts as** (`verdict.CountedClass`, one per
   endorsed (validator, blob)):
   - `served` — its rows came back verified at the reading;
@@ -468,14 +469,16 @@ validators. On an available blob the same answers count neither way: the
 blob was there for any reader, and a validator the reading did not need to
 ask is no gap either. Rows that came back verified are served, whatever
 their class (`SHADOWED_SHARD`, `UNMATCHED_GENUINE`). A validator that did
-not endorse is never counted. A reading that did not happen counts nothing.
+not endorse is never counted. A reading that did not happen counts no one as
+not served.
 The row keeps its class; `verdict.CountedClass` and `rollup.CountedClass`
 say what it counts as.
 
 Readings stored by earlier builds are read by the same rule, with nothing
 rewritten: a reading with a `NOT_PROBED` row whose rows are short was
-missed in part, so it did not happen; one whose every request failed on
-this observer's side did not happen either.
+missed in part, so it did not happen (the rows that did come back in it are
+served); one whose every request failed on this observer's side did not
+happen either.
 
 ## Known limits of a probe
 

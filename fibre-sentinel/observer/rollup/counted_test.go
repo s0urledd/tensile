@@ -178,8 +178,8 @@ func fixture(t *testing.T) (*readings, map[string]string) {
 	hashes["local"] = r.blob(8, 32, validator{name: "l1", holds: rowsFrom(0, 4), gap: true},
 		validator{name: "l2", holds: rowsFrom(4, 4), gap: true})
 	// Not read: the prober missed part of the reading, as the older build
-	// stored readings a validator at a time, and the rows are short. Nothing
-	// in it counts, the rows that came back included.
+	// stored readings a validator at a time, and the rows are short. No one
+	// is not served; the rows that came back are served.
 	hashes["partmissed"] = r.blob(8, 32, served("m1", rowsFrom(0, 4)),
 		validator{name: "m2", holds: rowsFrom(4, 4), missed: true}, validator{name: "m3", holds: rowsFrom(8, 4), missed: true})
 	// Two blobs at one scheduled time (the publisher chose one
@@ -231,7 +231,7 @@ func TestTheSQLAndTheGoTwinCountTheSameRows(t *testing.T) {
 		"deferred":         {"bigd": "FAULT", "deferred": "HEALTHY"},
 		"wholeset":         {"e1": "FAULT", "e2": "HEALTHY", "other": "UNATTESTED"},
 		"local":            {"l1": "PROBE_ERROR", "l2": "PROBE_ERROR"},
-		"partmissed":       {"m1": "NOT_COUNTED", "m2": "NOT_PROBED", "m3": "NOT_PROBED"},
+		"partmissed":       {"m1": "HEALTHY", "m2": "NOT_PROBED", "m3": "NOT_PROBED"},
 		"pair-available":   {"q1": "HEALTHY"},
 		"pair-unavailable": {"t1": "FAULT", "u0": "HEALTHY"},
 	} {
@@ -302,12 +302,12 @@ func TestTheSQLAndTheGoTwinAgreeOnTheObligations(t *testing.T) {
 			t.Errorf("%s: %+v, want one not served", v, b)
 		}
 	}
-	for _, v := range []string{"slow", "here", "l1", "l2", "m1", "m2", "m3"} {
+	for _, v := range []string{"slow", "here", "l1", "l2", "m2", "m3"} {
 		if b := byVal[v]; b.Broken != 0 || b.Served != 0 {
 			t.Errorf("%s: %+v, want counted neither way", v, b)
 		}
 	}
-	for _, v := range []string{"short", "deferred", "u0", "q1"} {
+	for _, v := range []string{"short", "deferred", "u0", "q1", "m1"} {
 		if b := byVal[v]; b.Served != 1 {
 			t.Errorf("%s: %+v, want served", v, b)
 		}
