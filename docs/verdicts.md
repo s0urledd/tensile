@@ -391,7 +391,8 @@ One sentence each, and what a reader should conclude.
 - **Reachability** (`reachability_window`) is heartbeats that completed TLS
   over heartbeats sent, per validator and network-wide. The numerator is
   `tcp_ok = 1 AND tls_ok = 1`; whether the certificate was the right one is
-  the separate `identity_rate_window` ("Endorsed"). Heartbeats exist only
+  the separate identity rate ("Endorsed"), which is computed and no longer
+  served (`identity_status` is the published word). Heartbeats exist only
   while the validator is in `AllBondedFibreProviders`, so a jailed or
   unbonded validator's denominator stops growing and the table prints no
   percentage for it. The table's status word is liveness only: the chain's
@@ -419,8 +420,9 @@ One sentence each, and what a reader should conclude.
   download step alone because the dial, handshake and identity check cost
   the same for a 148-row shard as for a 4,096-row one, so a whole-probe
   figure rises with stake by construction; and it is bytes rather than rows
-  because a row is as wide as its blob's square. `serve_latency_p50_ms` and
-  `_p95_ms` remain the whole probe, dial to verified rows.
+  because a row is as wide as its blob's square. The whole-probe latency,
+  dial to verified rows (p50 and p95), is still computed and no longer
+  served.
 - **TLS identity status** = the latest identity result: verified; expired
   (`IDENTITY_FAIL` with a stale reason: the right key, a lapsed window);
   mismatch (any other `IDENTITY_FAIL`); unverified (TLS completed, no
@@ -831,14 +833,16 @@ There is one, and it does not depend on this project's goodwill.
 **Check it yourself first.** Every FAULT row carries what produced it: the
 promise hash, the reading's time, the phase, the wire outcome, the row
 indices returned, a digest of the returned bytes, the gRPC status code, the
-observer build and the chain's app version at the time. `/v1/probes?blob=…&rows=1` and
-the day's export tarball both give the row in full, and `sentinel-recompute`
-re-derives the verdict from it. The three most common reasons a verdict is
-wrong are all visible in the row: the deadline was computed from params the
-server did not have (`must_serve_until_ambiguous`), the observer's path was
-the problem rather than the endpoint (the blob's other rows show whether
-the reading reached anyone), or the shard was served from a different
-promise (`shadowed_by`).
+observer build and the chain's app version at the time. The day's export
+tarball gives the row in full, and `sentinel-recompute` re-derives the
+verdict from it; `/v1/probes?blob=…&rows=1` gives the verdict's fields, the
+row indices, their digest and the gRPC status code, without the build and
+app version. The three most common reasons a verdict is wrong are all
+visible in the row: the deadline was computed from params the server did
+not have (`must_serve_until_ambiguous`), the observer's path was the problem
+rather than the endpoint (the blob's other rows show whether the reading
+reached anyone), or the shard was served from a different promise
+(`shadowed_by`).
 
 **Then say so, in public, on the record.** Open an issue on this repository
 with the promise hash and the reading's time. The record is append-only, so a
