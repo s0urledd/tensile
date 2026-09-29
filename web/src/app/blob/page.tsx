@@ -18,8 +18,6 @@ type Detail = {
   params: { shard_retention_s: number; payment_promise_timeout_s: number };
   assignments: Assignment[] | null;
   probes: Probe[] | null;
-  /** readings, by scheduled_at, the observer does not trust itself at: nothing there counts */
-  suspect_points?: { promise_hash: string; at: string; label: string; reason: string }[] | null;
 };
 
 /** when the single end-of-window reading began (END_READ_SINCE on the observer) */
@@ -28,7 +26,7 @@ const END_READ_SINCE = "2026-09-27T16:20:28Z";
 /** the service word and its mark */
 const SERVICE: Record<string, [string, string, string]> = {
   served: ["ok", "Served", "The endorsed rows came back and verified against the commitment."],
-  not_served: ["fault", "Not served", "The endorsed rows did not come back, the blob could not be reconstructed, and the second location did not get them either."],
+  not_served: ["fault", "Not served", "The endorsed rows did not come back, and the blob could not be reconstructed."],
   in_retention_window: ["none", "In retention window", "Read once, 10 minutes before the retention window ends."],
   deadline_unverified: ["gone", "Deadline unverified", "The retention deadline cannot be computed yet, so no verdict either way."],
 };
@@ -70,7 +68,6 @@ function Page() {
   const signedKnown = assignments.some((a) => a.attested != null);
   const signedN = assignments.filter((a) => a.attested === true).length;
   const stake = b.total_voting_power ? (b.attested_voting_power ?? 0) / b.total_voting_power : null;
-  const suspectAt = new Set((data.suspect_points ?? []).map((sp) => sp.at));
   const rc = b.reconstructable;
   const judged = !!rc && (rc.status === "yes" || rc.status === "no");
   const over = new Date(b.must_serve_until).getTime() <= Date.now();
@@ -79,21 +76,19 @@ function Page() {
   const count = (s: string) => assignments.filter((a) => a.service === s).length;
   const served = count("served"), notServed = count("not_served");
   const asked = rc?.probed_validators ?? 0;
-  // Available: enough rows came back to reconstruct the blob. Unavailable:
-  // the validators asked could not give enough ("not enough shards to
-  // reconstruct blob" is the client's own word for it).
+  // The client's result: Available, enough rows came back to reconstruct
+  // the blob; Unavailable, with the client's own error.
   const state: [string, string, string] =
     rc?.status === "yes" ? ["ok", "Available", `Enough rows came back to reconstruct the blob, from ${int(rc.served_by_validators)} of the ${int(asked)} validators asked.`]
-    : rc?.status === "no" ? ["hold", "Unavailable", `Fewer than the ${int(rc.needed_rows)} rows needed to reconstruct the blob came back from the validators asked.`]
+    : rc?.status === "no" ? ["hold", "Unavailable", `${rc.error ? `${rc.error[0].toUpperCase()}${rc.error.slice(1)}: ` : ""}${rc.error === "no shards retrieved" ? "no rows came back" : `fewer than the ${int(rc.needed_rows)} rows needed came back`} from the ${int(asked)} validators asked.`]
     : !over ? ["none", "In retention window", "Read once, 10 minutes before the retention window ends."]
-    : ["none", "Not read by Tensile", "No reading of this blob decides it: Tensile did not read it in time, or set the reading aside as its own failure. Nothing is counted for or against a validator."];
+    : ["none", "Not read by Tensile", "Tensile did not read this blob: it missed the reading, or every request failed on its own side. Nothing is counted for or against a validator."];
 
   // The reading behind each validator's word: the end reading, or on the
-  // earlier schedule the newest reading inside the window, outside any point
-  // the observer does not trust itself at.
+  // earlier schedule the newest reading inside the window.
   const reading = new Map<string, Probe>();
   for (const p of probes) {
-    if (p.phase !== "in_window" || suspectAt.has(p.scheduled_at)) continue;
+    if (p.phase !== "in_window") continue;
     const cur = reading.get(p.validator_address);
     const rank = (x: Probe) => (x.schedule_label === "end" ? "1" : "0") + x.started_at;
     if (!cur || rank(p) > rank(cur)) reading.set(p.validator_address, p);
@@ -160,7 +155,7 @@ function Page() {
             title="Endorsing validators whose rows came back and verified." />
           <Metric label="Not served" value={judged ? int(notServed) : "—"} tone={!judged ? "absent" : notServed > 0 ? "fault" : undefined}
             help={!judged ? " " : rc?.status === "yes" ? "none: the blob was available" : "rows did not come back"}
-            title="Endorsing validators whose rows did not come back from a blob that could not be reconstructed, confirmed from the second location. On an available blob a validator that failed counts neither way." />
+            title="Endorsing validators whose rows did not come back from a blob that could not be reconstructed. On an available blob a validator that failed counts neither way." />
         </Metrics>
         <div className="retrieved">
           {shown ? (
@@ -200,9 +195,7 @@ function Page() {
                 const quietTitle = a.attested === false ? (lent ? "Not endorsed: nothing owed. Its rows came back and counted toward the blob." : "Not endorsed: nothing owed.")
                   : !judged ? "No reading that counts."
                   : !p ? "Not asked: the reading had enough rows before it reached this validator. Counted neither way."
-                  : p.classification === "NOT_PROBED" || p.classification === "PROBE_ERROR" ? "Tensile could not read this validator: counted neither way."
-                  : p.cleared_by ? `Counted neither way: ${p.cleared_by} fetched these rows before the deadline.`
-                  : p.unconfirmed ? "Counted neither way: the second location has not confirmed that these rows did not come back."
+                  : p.classification === "NOT_PROBED" || p.classification === "PROBE_ERROR" ? "Tensile's request failed on its own side: counted neither way."
                   : rc?.status === "yes" ? "Counted neither way: the blob was available all the same." : "Counted neither way.";
                 const detail = p ? `${p.schedule_label === "end" ? "end reading" : `reading ${p.schedule_label}`} · ${utcWord(p.started_at)} · ${int(p.rows_returned)} / ${int(p.rows_expected)} rows · ${int(p.total_duration_ms)} ms${p.raw_error ? ` · ${p.raw_error}` : ""}` : "";
                 return (

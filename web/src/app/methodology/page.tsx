@@ -5,7 +5,7 @@ import ProtocolParams from "@/components/ProtocolParams";
 // The rules version, as verdict.MethodologyVersion in the Go code and
 // methodology_version in /v1/meta and every export manifest. Bumped in the
 // same change as any rule that can move a figure.
-const METHODOLOGY_VERSION = "2026-09-29.1";
+const METHODOLOGY_VERSION = "2026-09-29.2";
 
 export const metadata = { title: "Methodology · Tensile · Celestia Fibre" };
 
@@ -26,18 +26,16 @@ export default function Methodology() {
       <ProtocolParams />
 
       <h2 id="reading">Reading a blob</h2>
-      <p>Tensile reads each blob once, 10 minutes before its retention window ends, the way celestia-app&rsquo;s Fibre client downloads it:</p>
-      <ul>
-        <li>It asks every validator the assignment gives rows, endorsing or not, in the order the client uses (<code>validator.Set.Select</code>), and asks the next one whenever the rows still needed outnumber the rows already on their way.</li>
-        <li>Each request (connect, TLS with the consensus-key check, <code>DownloadShard</code>) gets 15 s. After a failed connection or a timeout it is made once more at once.</li>
-        <li>Every row is verified against the blob commitment. The reading stops at 4096 distinct verified rows, enough to reconstruct the blob.</li>
-        <li>If every validator has been asked and the rows are still short, those that did not serve are asked again one minute later.</li>
-      </ul>
-      <p>Blobs settled before 27 September 2026, 16:20 UTC were read on an earlier schedule, at several points of the window; their stored readings are judged by the rules below.</p>
+      <p>Tensile reads each blob once, 10 minutes before its retention window ends, exactly as celestia-app&rsquo;s Fibre client downloads it: the whole validator set in the client&rsquo;s order, 15 s per request with the client&rsquo;s one retry, every row verified against the blob commitment, until 4096 distinct rows are in hand. Blobs settled before 27 September 2026, 16:20 UTC were read on an earlier schedule; their stored readings are judged by the same rules.</p>
 
       <h2 id="verdicts">Available, served and not served</h2>
-      <p>A blob is <strong>available</strong> when at least 4096 distinct rows came back and verified (of 16384 for blob version 0). It is <strong>unavailable</strong> when, after both passes, fewer did: in celestia-app&rsquo;s words, &ldquo;not enough shards to reconstruct blob&rdquo;.</p>
-      <p>Only validators whose endorsement is on the settled promise owe the blob; the others are asked too, but never counted. A validator is <strong>served</strong> on a blob when its rows came back and verified. It is <strong>not served</strong> only when the blob was unavailable, its rows did not come back (a rate limit included), and the second location did not get them either. A validator the reading did not need to ask, or one that failed while the blob was available all the same, is counted neither way. If a not-served reading was a power loss, the <a href={DISPUTE_URL} rel="noopener noreferrer" target="_blank">dispute route</a> puts it on the record.</p>
+      <p>The blob&rsquo;s result is the client&rsquo;s, one of three:</p>
+      <ul>
+        <li><strong>Available</strong>: the download succeeded; enough rows came back to reconstruct the blob.</li>
+        <li><strong>Unavailable</strong>, &ldquo;no shards retrieved&rdquo;: no rows came back.</li>
+        <li><strong>Unavailable</strong>, &ldquo;not enough shards to reconstruct blob&rdquo;: some rows came back, fewer than 4096.</li>
+      </ul>
+      <p>A validator is <strong>served</strong> on a blob when its rows came back and verified. It is <strong>not served</strong> only when it endorsed the blob, the blob was unavailable, and its rows did not come back, for whatever reason. On an available blob nothing is counted against anyone. Validators that did not endorse are asked too, but never counted. If a not-served reading was a power loss, the <a href={DISPUTE_URL} rel="noopener noreferrer" target="_blank">dispute route</a> puts it on the record.</p>
       <Legend />
 
       <h2 id="signing">Endorsements</h2>
@@ -47,18 +45,17 @@ export default function Methodology() {
       <ul>
         <li><strong>Available</strong>: available blobs over available plus unavailable ones.</li>
         <li><strong>Service rate</strong>: served over served plus not served, per endorsed shard. A rate over fewer than twenty shards sorts after the others.</li>
-        <li><strong>In retention window</strong>: the window has not ended. <strong>Not read by Tensile</strong>: no reading decides the blob; nothing is counted either way.</li>
+        <li><strong>In retention window</strong>: the window has not ended. <strong>Not read by Tensile</strong>: see below; nothing is counted either way.</li>
         <li><strong>Provisional</strong>: a not-served reading younger than 30 minutes, counted but still open to withdrawal.</li>
         <li><strong>Reachability</strong>: completed handshakes over attempts, every five minutes per endpoint. One failed check after a success still counts as reachable; two in a row is unreachable.</li>
         <li><strong>Throughput</strong>: median download speed over served shards of 2 MiB or more, from three readings up.</li>
       </ul>
 
-      <h2 id="gaps">Gaps</h2>
-      <p>When Tensile could not read a blob in time, or its own request failed, nothing is counted for or against a validator.</p>
-      <p>When at least half of the endorsing validators asked failed at once and the blob could not be reconstructed, Tensile cannot tell its own failure from theirs, so that reading counts neither way. In that count, a validator Tensile could not ask again in time, because it was still busy with that validator on other blobs, counts as failed. This stays until Tensile reads a blob of its own beside each reading. It counts validators, not rows: in a blob that becomes unavailable with fewer than half of them failing, each failure counts once the second location confirms it. Health is at <code>/api/v1/health</code>.</p>
+      <h2 id="gaps">Not read by Tensile</h2>
+      <p>A blob is <strong>not read by Tensile</strong> when its reading did not happen: Tensile was down, restarting or late, or not a single request left Tensile because its own network was down. Then nothing is counted for or against any validator. Health is at <code>/api/v1/health</code>.</p>
 
       <h2 id="load-on-validators">Load on validators</h2>
-      <p>A reading stops once the rows are enough, so a validator is asked for some blobs, not all of them, and never has more than one request from Tensile at a time.</p>
+      <p>A reading stops once the rows are enough, so a validator is asked for some blobs, not all of them, as any client would ask it.</p>
 
       <h2 id="load">Load</h2>
       <p><strong>Load</strong> is the row data a validator committed to store: its rows, each <code>blob_size / original_rows</code> bytes, of every settled blob it endorsed, kept for the retention window. <strong>Rows per blob</strong> is its share of every blob, by stake. All of it is read from the chain, nothing measured.</p>
@@ -75,7 +72,7 @@ export default function Methodology() {
       <p>The validator, blob and Blobs pages show what the chain records under <strong>On chain</strong>, and Tensile&rsquo;s own readings under <strong>Observed by Tensile</strong>. Every snapshot names the block it was computed through (<code>record_through</code>). Daily exports are signed, <code>/api/v1/exports</code>, and <code>sentinel-recompute</code> re-derives every verdict and figure from them.</p>
 
       <h2 id="vantage">Two locations</h2>
-      <p>Endpoints are checked every five minutes from two locations; a host is unreachable only when both fail. A not-served reading counts only once the second location reads the same rows before the retention window ends and does not get them either; otherwise it counts neither way. Locations are in <code>/api/v1/meta</code>.</p>
+      <p>Endpoints are checked every five minutes from two locations; a host is unreachable only when both fail. Blobs are read from one location, as one client&rsquo;s download is. Locations are in <code>/api/v1/meta</code>.</p>
 
       <h2 id="not">What Tensile does not do</h2>
       <ul>

@@ -197,7 +197,6 @@ export type Network = {
   reconstructable: Reconstructable;
   probe_gaps: number;
   probe_gaps_by_outcome: ClassCounts;
-  vantage_health: VantageHealth;
   /** set when the window rests partly on the daily rollup: past the raw retention, "all" is the rollup for days before raw_from plus the raw rows */
   rolled_up?: RolledUp;
   /** whole-probe duration, dial to verified rows, over HEALTHY probes */
@@ -213,48 +212,20 @@ export type Network = {
   };
 };
 
-/** one reading the observer does not trust itself at */
-export type SuspectPoint = {
-  /** the blob whose reading this is: two blobs read at one time are two readings */
-  promise_hash: string;
-  at: string;
-  label: string;
-  validators: number;
-  unreachable: Rate;
-  fault: Rate;
-  /** "unreachable", "fault" or "unreachable,fault" */
-  reason: string;
-};
-
-/**
- * Correlated failures in the window: at least half of the endorsing
- * validators a reading asked failed at once, and the blob could not be
- * reconstructed.
- * Likely ours, not theirs: such a reading is left out of every count.
- */
-export type VantageHealth = {
-  worst_point: Rate;
-  at?: string;
-  label?: string;
-  correlated: boolean;
-  threshold: number;
-  fault_threshold: number;
-  min_validators: number;
-  suspect: SuspectPoint[];
-  suspect_rows: number;
-};
-
 /**
  * The Available tile: over the blobs whose reading decides them (recoverable
  * = yes over yes plus no), the newest sample_limit of them examined. The rest
  * say why a blob has no verdict: pending (its window is open), not_read (its
- * window closed without a reading that decides it: Tensile's own gap),
- * not_yet_read (its reading is still to come), unknown (no assignment).
+ * window closed without a reading: Tensile missed it, or every request
+ * failed on its own side), not_yet_read (its reading is still to come),
+ * unknown (no assignment).
  */
 export type Reconstructable = {
   recoverable: Rate;
   yes: number;
   no: number;
+  /** no, split by the Fibre client's error */
+  no_by_error?: Record<string, number>;
   pending: number;
   not_read: number;
   not_yet_read: number;
@@ -272,9 +243,9 @@ export type Obligations = {
   total: number;
   /** its rows came back and verified */
   served: number;
-  /** not served: the blob could not be reconstructed, its rows did not come back, and the second location confirmed it */
+  /** not served: the blob could not be reconstructed, and its rows did not come back */
   broken: number;
-  /** counted neither way: not asked because the rows were already enough, a failure on a blob that was available, a failure the second location did not confirm, a reading the guard set aside, or no reading that decides it */
+  /** counted neither way: not asked because the rows were already enough, a failure on a blob that was available, or a blob not read by Tensile */
   not_counted: number;
   /** read, and the retention window has not ended (an endorsed shard not read yet has no obligation row) */
   pending: number;
@@ -349,8 +320,6 @@ export type Validator = {
   attestation: Attestation;
   probe_count: number;
   classes: ClassCounts;
-  /** failed readings of the period whose rows the second location fetched, verified: not counted; absent when none */
-  faults_cleared?: number;
   assigned_rows_last: number;
   expected_load_band: string;
   /**
@@ -433,16 +402,10 @@ export type Probe = {
   /** the evidence probe of the settlement host, run when the current host did not serve; never the verdict */
   settlement_host_outcome?: string;
   settlement_host_served?: boolean;
-  /** what the reading counts as for the validator: served, not_served (confirmed from the second location), or absent when it counts neither way */
+  /** what the reading counts as for the validator: served, not_served (the blob was unavailable), or absent when it counts neither way */
   service?: "served" | "not_served";
-  /** would count not served, but the second location has not confirmed it: counted neither way */
-  unconfirmed?: boolean;
   /** a not-served reading younger than the settling period: counted, and an x/fibre params change can still withdraw it */
   provisional?: boolean;
-  /** the second location fetched the same rows, verified, before must_serve_until: not counted */
-  cleared_by?: string;
-  /** the second location read the same rows before must_serve_until and did not get them either: the not-served reading counts */
-  confirmed_by?: string;
 };
 
 // Below this many rated probes a percentage is noise dressed as a
@@ -464,14 +427,16 @@ export function rateTone(served: number, assessed: number): RateTone | undefined
 }
 
 /**
- * A blob's reading: yes (Available: enough rows came back to reconstruct it),
- * no (Unavailable: the validators, asked in the client's order and again a
- * minute later, could not give enough), pending (its window is open),
- * not_read (its window closed without a reading that decides it: Tensile's
- * own gap), unknown (no assignment to judge it by).
+ * A blob's reading, the Fibre client's result: yes (Available: enough rows
+ * came back to reconstruct it), no (Unavailable, with the client's error),
+ * pending (its window is open and the reading is not in), not_read (its
+ * window closed without a reading: Tensile missed it, or every request failed
+ * on its own side), unknown (no assignment to judge it by).
  */
 export type Reconstruct = {
   status: "yes" | "no" | "pending" | "not_read" | "unknown";
+  /** on an Unavailable blob, the client's error: "no shards retrieved" or "not enough shards to reconstruct blob" */
+  error?: string;
   /** when the reading was scheduled */
   point_at: string;
   window_over: boolean;

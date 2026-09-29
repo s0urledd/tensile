@@ -38,27 +38,27 @@ const VERDICTS: Record<string, Def> = {
   },
   FAULT: {
     label: "not found or bad rows", tier: "fault",
-    def: "Not found, or rows that do not verify against the blob commitment. Not served when the blob could not be reconstructed and the second location confirms it; otherwise counted neither way.",
+    def: "Not found, or rows that do not verify against the blob commitment. Not served when the blob could not be reconstructed; otherwise counted neither way.",
   },
   UNREACHABLE: {
     label: "unreachable", tier: "hold",
-    def: "No answer within 15 s, asked twice. Not served when the blob could not be reconstructed and the second location confirms it; otherwise counted neither way.",
+    def: "No answer within 15 s, asked twice (the client's re-dial). Not served when the blob could not be reconstructed; otherwise counted neither way.",
   },
   IDENTITY_EXPIRED: {
     label: "certificate expired", tier: "hold",
-    def: "The right key signed the certificate, but outside its validity window. Not served when the blob could not be reconstructed and the second location confirms it; otherwise counted neither way.",
+    def: "The right key signed the certificate, but outside its validity window. Not served when the blob could not be reconstructed; otherwise counted neither way.",
   },
   IDENTITY_MISMATCH: {
     label: "wrong certificate", tier: "hold",
-    def: "The certificate is not signed by this validator's consensus key. Not served when the blob could not be reconstructed and the second location confirms it; otherwise counted neither way.",
+    def: "The certificate is not signed by this validator's consensus key. Not served when the blob could not be reconstructed; otherwise counted neither way.",
   },
   SERVER_ERROR: {
     label: "server error", tier: "hold",
-    def: "An error, or an answer no client accepts, instead of the shard. Not served when the blob could not be reconstructed and the second location confirms it; otherwise counted neither way.",
+    def: "An error, or an answer no client accepts, instead of the shard. Not served when the blob could not be reconstructed; otherwise counted neither way.",
   },
   THROTTLED: {
     label: "rate limited", tier: "hold",
-    def: "Refused with a rate limit instead of the shard. Not served when the blob could not be reconstructed and the second location confirms it; otherwise counted neither way.",
+    def: "Refused with a rate limit instead of the shard. Not served when the blob could not be reconstructed; otherwise counted neither way.",
   },
   UNATTESTED: {
     label: "not endorsed", tier: "held",
@@ -66,15 +66,15 @@ const VERDICTS: Record<string, Def> = {
   },
   NOT_REGISTERED: {
     label: "no endpoint", tier: "held",
-    def: "No Fibre host in x/valaddr at the reading. No second location can confirm it, so it is counted neither way.",
+    def: "No Fibre host in x/valaddr at the reading, so no client could fetch its rows. Not served when the blob could not be reconstructed; otherwise counted neither way.",
   },
   SHADOWED_SHARD: {
     label: "shadowed", tier: "held",
-    def: "Genuine rows of the blob, but another settled promise's set: the store answers by commitment. Served, unless fewer rows than it holds came back from a blob that could not be reconstructed and the second location confirms it.",
+    def: "Genuine rows of the blob, but another settled promise's set: the store answers by commitment. The rows came back verified, so served.",
   },
   UNMATCHED_GENUINE: {
     label: "unmatched genuine rows", tier: "held",
-    def: "Genuine rows of the blob that match no settled promise's set. Served, unless fewer rows than it holds came back from a blob that could not be reconstructed and the second location confirms it.",
+    def: "Genuine rows of the blob that match no settled promise's set. The rows came back verified, so served.",
   },
   TOLERATED: {
     label: "tolerated", tier: "held",
@@ -102,7 +102,7 @@ const VERDICTS: Record<string, Def> = {
   },
   PROBE_ERROR: {
     label: "read failed", tier: "gap",
-    def: "Tensile's own request failed, the reading could not finish in time, or Tensile was still busy with this validator on other blobs. A gap, not a verdict.",
+    def: "Tensile's own request failed before it reached the validator. When every request of a reading did, the blob was not read by Tensile; otherwise it is this validator's rows not coming back.",
   },
   NOT_PROBED: {
     label: "not read by Tensile", tier: "gap",

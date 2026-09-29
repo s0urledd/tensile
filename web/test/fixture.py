@@ -473,13 +473,10 @@ for pub in pubs:
     rows_of = {v["cons"]: r for v, r in pub["assigned"]}
     # A lost blob: its largest endorsing validators lost the shard, until the
     # rest hold too few rows to rebuild it, and the validators that did not
-    # endorse never stored it. Fewer than half of the endorsers, so the reading
-    # is not taken for Tensile's own failure and set aside.
+    # endorse never stored it.
     lost = set(v["cons"] for v in everyone if pub["lost"] and not pub["attested"][v["cons"]])
     if pub["lost"]:
         for v in endorsing:
-            if 2 * (len(lost & {x["cons"] for x in endorsing}) + 1) >= len(endorsing):
-                break
             lost.add(v["cons"])
             rest = set().union(*(pub["idx"][x["cons"]] for x in endorsing if x["cons"] not in lost))
             if len(rest) < K:
@@ -493,17 +490,6 @@ for pub in pubs:
         answers.append((v, t, outcome, kw))
         if outcome == "SERVED_OK":
             have.update(pub["idx"][v["cons"]])
-    if len(have) < K:
-        # the second pass, a minute later, of those that did not serve
-        again = []
-        for v, t, outcome, kw in answers:
-            if outcome != "SERVED_OK":
-                t = t + timedelta(minutes=1)
-                outcome, kw = wire(BEHAVIOUR[v["i"]], v, t, "lost" if v["cons"] in lost else 0.9)
-                if outcome == "SERVED_OK":
-                    have.update(pub["idx"][v["cons"]])
-            again.append((v, t, outcome, kw))
-        answers = again
     for v, t, outcome, kw in answers:
         # every row of a reading carries the reading's own time, as the prober writes it
         emit(pub, v, rows_of[v["cons"]], "end", t, "in_window", outcome, dict(kw, sched=at), pub["attested"][v["cons"]])

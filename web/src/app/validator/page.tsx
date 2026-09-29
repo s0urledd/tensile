@@ -24,8 +24,6 @@ type Detail = {
   recent_probes_truncated?: boolean;
   /** set when this window rests partly on the daily rollup (the "all" window past the raw retention) */
   rolled_up?: { raw_from: string; days: number; note: string };
-  /** readings, over all time, that nothing counts: the observer's own correlated failures */
-  suspect_points: { promise_hash: string; at: string; label: string; reason: string }[];
   /** the newest heartbeat against this validator's host, stage by stage */
   last_endpoint_check?: EndpointCheck;
   /** the network's service rate over the same window from the same vantage; absent on a pinned window */
@@ -80,15 +78,11 @@ const whatCame = (p: Probe): string => {
 /**
  * The word for one reading. The observer says what it counts as (service):
  * served, not served (the rows did not come back from a blob that could not
- * be reconstructed, and the second location did not get them either), or
- * neither (a failure on a blob that was available all the same, one the
- * second location did not confirm, or Tensile's own gap); the page only
- * words it.
+ * be reconstructed), or neither (a failure on a blob that was available all
+ * the same, or a blob not read by Tensile); the page only words it.
  */
 const probeWord = (p: Probe): [string, string] => {
   if (p.service === "not_served") return [`Not served · ${whatCame(p)}`, "fault"];
-  // the second location fetched the rows: not counted either way
-  if (p.cleared_by) return [`${whatCame(p)[0].toUpperCase()}${whatCame(p).slice(1)} · not counted`, "gone"];
   if (p.service === "served") return ["Served", "ok"];
   if (p.classification === "UNATTESTED") return (p.outcome === "SERVED_OK" || p.outcome === "PARTIAL") ? ["Served, not endorsed", "unsigned"] : ["Not endorsed", "unsigned"];
   if (p.classification === "NOT_PROBED" || p.classification === "PROBE_ERROR") return wordOf(p.classification);
@@ -114,10 +108,8 @@ const identityWord: Record<string, string> = { verified: "verified", expired: "e
 const REACH_FAIL = new Set(["DNS_FAIL", "TCP_REFUSED", "TCP_TIMEOUT", "TCP_UNREACHABLE", "TLS_HANDSHAKE_FAIL", "RPC_UNAVAILABLE", "RPC_ERROR", "RPC_TIMEOUT"]);
 const GROUPS = ["served", "unreachable", "certificate rejected", "no endpoint", "not found", "answered with an error", "not counted", "other", "not served"] as const;
 type Group = (typeof GROUPS)[number];
-function groupOf(p: Probe, suspect: boolean): Group {
-  if (suspect) return "not counted";
+function groupOf(p: Probe): Group {
   if (p.service === "not_served") return "not served";
-  if (p.cleared_by) return "not counted";
   if (p.service === "served" || p.classification === "HEALTHY" || p.outcome === "SERVED_OK") return "served";
   if (p.classification === "NOT_REGISTERED") return "no endpoint";
   if (p.classification.startsWith("IDENTITY_")) return "certificate rejected";
@@ -159,18 +151,13 @@ function Page() {
   const e = endpoint(v);
   const bonded = !v.jailed && (!v.bond_status || v.bond_status === "BOND_STATUS_BONDED");
   const rw = v.reachability_window;
-  // failed readings whose rows the second location fetched: in no count
-  const cleared = v.faults_cleared ?? 0;
-  const clearedText = cleared > 0 ? ` · ${int(cleared)} fetched from the second location` : "";
   const self = !!SELF_VALIDATOR && [v.address, v.cons_address, v.operator_address].some((a) => !!a && a.toLowerCase() === SELF_VALIDATOR);
-  // a reading is a blob at its scheduled time
-  const suspect = new Map((data.suspect_points ?? []).map((s) => [`${s.promise_hash}|${s.at}`, s.reason.replace(",", " and ")]));
   // Readings inside the retention window: the earlier schedule's checks after
   // the deadline count in nothing and stay in the full history.
   const probes = data.recent_probes.filter((p) => p.phase === "in_window").sort((a, b) => b.started_at.localeCompare(a.started_at));
   // Each row with its outcome group, once: the summary counts them and the
   // filter selects on the same judgement, so the two cannot disagree.
-  const grouped = probes.map((p) => ({ p, g: groupOf(p, suspect.has(`${p.promise_hash}|${p.scheduled_at}`)) }));
+  const grouped = probes.map((p) => ({ p, g: groupOf(p) }));
   const notServedRows = grouped.filter((r) => r.g === "not served");
   const shown = onlyNotServed ? notServedRows : grouped;
   const lastNotServed = notServedRows[0]?.p;
@@ -241,7 +228,7 @@ function Page() {
       </section>
 
       <section className="group" id="observed">
-        <div className="vhead"><div><h2>Observed by Tensile</h2><p className="sub">Each blob is read once, near the end of its retention window, as celestia-app’s client downloads it. A validator is not served only when its rows did not come back, the blob could not be reconstructed, and a second location did not get them either.</p></div></div>
+        <div className="vhead"><div><h2>Observed by Tensile</h2><p className="sub">Each blob is read once, near the end of its retention window, as celestia-app’s client downloads it. A validator is not served only when its rows did not come back and the blob could not be reconstructed.</p></div></div>
         {/* the conclusion before the figures; before activation there is nothing to conclude, and StatusLine says so */}
         {!notLive && <Diagnosis v={v} check={data.last_endpoint_check} meta={meta} decided={decided} provisional={prov}
           failedShown={notServedRows.length} onShowFailed={showNotServed} failedHref={notServedHref} />}
@@ -250,14 +237,14 @@ function Page() {
             value={notLive || !o || o.total === 0 || decided === 0 ? "—" : pctOf(o.served, decided)}
             tone={notLive || !o || decided === 0 ? "absent" : rateTone(o.served, decided)}
             help={notLive ? " " : !o || o.total === 0 ? ((v.signing?.signed ?? 0) > 0 ? "not read yet" : "nothing endorsed in this period") : decided === 0 ? "not read yet" : `${int(o.served)} / ${int(decided)} read${refText ? ` · ${refText}` : ""}`}
-            title="Endorsed shards served, over served plus not served. Shards not asked for, that failed on a blob that was available, or that the second location did not confirm, count neither way." />
+            title="Endorsed shards served, over served plus not served. Shards not asked for, that failed on a blob that was available, or of a blob not read by Tensile, count neither way." />
           <Metric label="Not served"
             value={notLive ? "—" : int(o?.broken ?? 0)} tone={notLive ? "absent" : (o?.broken ?? 0) > 0 ? "fault" : !o || o.total === 0 ? "absent" : undefined}
-            help={notLive ? " " : (o?.broken ?? 0) > 0 ? (prov > 0 ? `${int(prov)} provisional${clearedText}` : `of blobs that could not be reconstructed${clearedText}`) : `none in this period${clearedText}`}
-            title={prov > 0 ? `${int(prov)} of these are younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.` : "Endorsed shards whose rows did not come back from a blob that could not be reconstructed, and that the second location did not get either."} />
+            help={notLive ? " " : (o?.broken ?? 0) > 0 ? (prov > 0 ? `${int(prov)} provisional` : "of blobs that could not be reconstructed") : "none in this period"}
+            title={prov > 0 ? `${int(prov)} of these are younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.` : "Endorsed shards whose rows did not come back from a blob that could not be reconstructed."} />
           <Metric label="In retention window" value={notLive || data.in_retention_window == null ? "—" : int(data.in_retention_window)}
             tone={notLive || data.in_retention_window == null ? "absent" : undefined}
-            help={notLive ? " " : (notCountedText(o) || "read at the end of the window")} title="Endorsed shards whose retention window has not ended: each is read 10 minutes before its window ends. Not counted: shards the reading did not need, that failed on a blob that was available, that the second location did not confirm, or that Tensile did not read in time." />
+            help={notLive ? " " : (notCountedText(o) || "read at the end of the window")} title="Endorsed shards whose retention window has not ended: each is read 10 minutes before its window ends. Not counted: shards the reading did not need, that failed on a blob that was available, or of a blob not read by Tensile." />
           <Metric label="Reachability"
             value={!bonded ? "—" : rw && rw.den > 0 ? pctOf(rw.num, rw.den) : "—"}
             tone={!bonded || !rw || rw.den === 0 ? "absent" : undefined}
@@ -324,31 +311,25 @@ function Page() {
               {probes.length > 0 && shown.length === 0 && <tr className="empty"><td colSpan={6}>
                 No not-served reading among the newest {int(probes.length)}.{(o?.broken ?? 0) > 0 && <> Older ones are <a href={notServedHref}>in the API →</a></>}</td></tr>}
               {shown.map(({ p, g }) => {
-                const sus = suspect.get(`${p.promise_hash}|${p.scheduled_at}`);
-                // at a point the observer does not trust itself at, nothing is this validator's: no red, no verdict word
-                const [word0, mk] = sus ? ["Not counted", "gone"] : probeWord(p);
+                const [word0, mk] = probeWord(p);
                 // a not-served reading younger than the settling period counts, and can still be withdrawn
-                const provisional = !sus && g === "not served" && !!p.provisional;
+                const provisional = g === "not served" && !!p.provisional;
                 const word = provisional ? `${word0} · provisional` : word0;
                 const earlier = p.schedule_label !== "end";
                 const notes = [
                   earlier && "read on the earlier schedule",
                   `outcome: ${p.outcome.toLowerCase().replace(/_/g, " ")}`,
-                  !sus && !p.service && mk === "gone" && p.attested !== false && "counted neither way",
-                  !sus && p.unconfirmed && !p.cleared_by && "the second location has not confirmed it, so it does not count",
+                  !p.service && mk === "gone" && p.attested !== false && "counted neither way",
                   g === "not served" && p.raw_error,
                   provisional && "provisional: counted, and can still be withdrawn",
                   p.attested === false && "not endorsed by this validator, so outside the rate",
                   p.retry_first_outcome && `first answer ${p.retry_first_outcome.toLowerCase().replace(/_/g, " ")}, asked again`,
                   p.host_changed && `re-registered during the window: the upload went to ${p.host_at_settlement}`,
-                  p.cleared_by && `${p.cleared_by} fetched the same rows before the deadline and they verified, so it does not count`,
-                  p.confirmed_by && `confirmed: ${p.confirmed_by} read the same rows before the deadline and did not get them either`,
                   p.rpc_code && `gRPC ${p.rpc_code}`,
                   p.shadowed_by && `answered from promise ${p.shadowed_by.slice(0, 10)}…`,
                 ].filter(Boolean).join(" · ");
                 return (
-                  <tr key={`${p.vantage}|${p.promise_hash}|${p.scheduled_at}`} className={sus ? "suspect" : g === "not served" ? "fault-row" : undefined}
-                    title={sus ? `In this reading ${sus} of the validators asked failed at once, which looks like Tensile's own failure: nothing here counts.` : notes}>
+                  <tr key={`${p.vantage}|${p.promise_hash}|${p.scheduled_at}`} className={g === "not served" ? "fault-row" : undefined} title={notes}>
                     <td title={utcWord(p.started_at)}>{hhmmss(p.started_at)}<span className="soft"> · {dateUTC(p.started_at)}</span></td>
                     <td><Link className="mono" href={`/blob/?hash=${p.promise_hash}`}>{p.promise_hash.slice(0, 10)}…</Link></td>
                     <td title={p.classification_reason || undefined}><span className={"mk " + mk} /> <span className={"word" + (mk === "fault" ? " fault" : "")}>{word}</span>{earlier && <span className="soft"> · earlier schedule</span>}</td>

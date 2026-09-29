@@ -173,7 +173,7 @@ export default function Diagnosis({ v, check, decided, provisional, failedShown,
       <p>{s.body}</p>
       {broken > 0 && (
         <p className="diag-fault">
-          <span className="mk fault" /> <b>{int(broken)} endorsed shard{broken === 1 ? "" : "s"} not served in this period</b>{provisional > 0 && <> ({int(provisional)} still settling)</>}: the rows did not come back, the blob could not be reconstructed, and the second location did not get them either.{" "}
+          <span className="mk fault" /> <b>{int(broken)} endorsed shard{broken === 1 ? "" : "s"} not served in this period</b>{provisional > 0 && <> ({int(provisional)} still settling)</>}: the rows did not come back, and the blob could not be reconstructed.{" "}
           {failedShown > 0
             ? <a href="#evidence" onClick={onShowFailed}>Show the {int(failedShown)} not-served reading{failedShown === 1 ? "" : "s"} below →</a>
             : <>None of the newest readings below is one of them; <a href={failedHref}>they are in the API →</a></>}

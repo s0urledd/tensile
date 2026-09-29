@@ -382,7 +382,6 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
 .col-pin { position: sticky; left: 0; z-index: 1; background: var(--paper); }
 tbody tr:hover .col-pin { background: color-mix(in srgb, var(--paper) 96%, var(--text)); }
 tr.warn .col-pin { background: color-mix(in srgb, var(--paper) 93%, var(--hold)); }
-tr.suspect td { color: var(--text-3); }
 .tnote { font-size: var(--t-small); color: var(--text-2); margin: 8px 0 0; }
 .empty td { color: var(--text-2); padding: 16px 12px; white-space: normal; }
 
