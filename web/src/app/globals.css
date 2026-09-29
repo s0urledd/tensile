@@ -363,10 +363,10 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
 .vt th:not(:first-child), .vt td:not(:first-child) { text-align: center; padding-left: 6px; padding-right: 6px; }
 @media (min-width: 900px) {
   .vt { table-layout: fixed; }
-  .vt th:first-child { width: 19%; }
+  .vt th:first-child { width: 22%; }
   /* widths follow what the cells hold */
-  .vt .c-ep { width: 12%; } .vt .c-host { width: 16%; } .vt .c-power { width: 12%; }
-  .vt .c-end { width: 13%; } .vt .c-last { width: 14%; } .vt .c-since { width: 14%; }
+  .vt .c-ep { width: 14%; } .vt .c-host { width: 19%; } .vt .c-power { width: 14%; }
+  .vt .c-end { width: 15%; } .vt .c-last { width: 16%; }
   .vt td:not(:first-child) { overflow: hidden; text-overflow: ellipsis; }
   .vt .hosting { max-width: 100%; vertical-align: middle; }
   .vt .hosting > span:not(.flag):not(.flag-none):not(.cc) { overflow: hidden; text-overflow: ellipsis; }
@@ -791,8 +791,8 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
 .ov-stake { --ov-halo: var(--canvas); --ov-hatch: rgb(var(--ink) / .56); --ov-rest: rgb(var(--ink) / .05); min-width: 0; }
 :root[data-theme="dark"] .ov-stake { --ov-hatch: rgb(255 255 255 / .42); --ov-rest: rgb(255 255 255 / .035); }
 .ov-hero { display: grid; gap: 8px; margin: 10px 0 0; }
-/* the panel's lead figure, two thirds of the page hero: it leads the panel without outweighing the map beside it */
-.ov-fig { font-size: 42px; font-weight: 600; letter-spacing: -.045em; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
+/* the panel's lead figure, about half the page hero: it leads the panel without outweighing the map beside it */
+.ov-fig { font-size: 32px; font-weight: 600; letter-spacing: -.045em; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
 :root[data-theme="dark"] .ov-fig { background: linear-gradient(180deg, #ffffff 35%, #b4e9ee); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .ov-hero-help { font-size: var(--t-cell); color: var(--text-2); }
 /* the bar fades toward its baseline like the charts' bars; the part without a provider is hatched */
@@ -866,7 +866,7 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
   .hostmap .fm-side > .fm-aside::before { content: none; }
 }
 @media (max-width: 720px) {
-  .ov-fig { font-size: 35px; }
+  .ov-fig { font-size: 28px; }
 }
 
 /* ---- the map: its counts, the dot field, the discs and their names ---- */
@@ -1101,6 +1101,8 @@ body { background: var(--canvas); }
 /* figures set on the panel: an eyebrow, the figure, one line */
 .figs .metric { padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; }
 .figs .metric .label { font-size: var(--t-tiny); font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--text-2); }
+/* the period after an eyebrow keeps its own case: "(24h)", not "(24H)" */
+.figs .metric .label .per { text-transform: none; letter-spacing: .03em; }
 .figs .metric .value { font-size: var(--t-fig); font-weight: 600; letter-spacing: -.035em; line-height: 1.05; margin: 10px 0 8px; font-variant-numeric: tabular-nums lining-nums; }
 .figs .metric.hero .value { font-size: var(--t-hero); letter-spacing: -.045em; line-height: 1; margin: 12px 0 10px; }
 .figs .metric .value .den { font-size: 18px; letter-spacing: -.01em; }
@@ -1190,6 +1192,11 @@ body { background: var(--canvas); }
 .metric .value, .cell .value { font-weight: 600; letter-spacing: -.03em; }
 .metric .value .den { font-weight: 400; }
 .metrics, .cells { gap: 12px; }
+/* the overview's cards share their rows (title, figure, help line), so a title that runs to
+   two lines ("Payment promise timeouts (24h)") keeps the figures of a row on one line; a
+   one-line title sits just above its figure */
+.ov-metrics > .metric { display: grid; grid-row: span 3; grid-template-rows: subgrid; row-gap: 0; }
+.ov-metrics > .metric > .label { align-self: end; }
 .chips > span { background: var(--paper); border-color: var(--border); box-shadow: var(--shadow-sm); }
 .panel-head { border-bottom: 0; padding-bottom: 2px; }
 

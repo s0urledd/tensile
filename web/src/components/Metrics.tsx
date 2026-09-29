@@ -10,8 +10,10 @@ import type { RateTone } from "@/lib/api";
  * panel of the Blobs and Publishers pages) it is set straight on the panel,
  * and `size="hero"` makes it the page's lead figure.
  */
-export function Metric({ label, value, den, help, tone, title, size }: {
+export function Metric({ label, period, value, den, help, tone, title, size }: {
   label: string;
+  /** the period the figure counts, after the name in parentheses: "Deposits (24h)". Set apart so an uppercase title keeps "24h" as it is. */
+  period?: string;
   value: ReactNode;
   /** printed after the value in the quieter colour: "/ 60" */
   den?: ReactNode;
@@ -22,15 +24,15 @@ export function Metric({ label, value, den, help, tone, title, size }: {
 }) {
   return (
     <div className={"metric" + (size ? " " + size : "")} title={title}>
-      <div className="label">{label}</div>
+      <div className="label">{label}{period && <> <span className="per">({period})</span></>}</div>
       <div className={"value num" + (tone ? " " + tone : "")}>{value}{den != null && <span className="den"> / {den}</span>}</div>
       <div className="help">{help ?? " "}</div>
     </div>
   );
 }
 
-export function Metrics({ children }: { children: ReactNode }) {
-  return <section className="metrics">{children}</section>;
+export function Metrics({ children, className }: { children: ReactNode; className?: string }) {
+  return <section className={"metrics" + (className ? " " + className : "")}>{children}</section>;
 }
 
 /** figures set on a panel rather than each in a card of its own */

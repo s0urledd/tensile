@@ -13,6 +13,7 @@ import { HostingFact } from "@/components/Hosting";
 import { SELF_VALIDATOR } from "@/lib/site";
 import PreLive from "@/components/PreLive";
 import Diagnosis from "@/components/Diagnosis";
+import { SHOW_SERVICE } from "@/lib/service";
 
 type Span = { window: Window; serve_rate: Rate; probe_count: number; obligations: Obligations; classes: ClassCounts; provisional_faults?: ProvisionalFaults };
 type Detail = {
@@ -75,7 +76,9 @@ const probeWord = (p: Probe): [string, string] => {
   // a fault the second location fetched and verified: withdrawn, not counted either way
   if (p.cleared_by) return ["Cleared", "gone"];
   // the end-of-window reading counts as a reader of the chain's client meets it
-  if (endNoRows(p)) return [`Not served · ${wordOf(p.classification)[0].toLowerCase()}`, "fault"];
+  if (SHOW_SERVICE && endNoRows(p)) return [`Not served · ${wordOf(p.classification)[0].toLowerCase()}`, "fault"];
+  // with the service figures off (lib/service) a reading without rows says what came back, never "not served"
+  if (!SHOW_SERVICE && p.classification === "FAULT") return [p.outcome === "NOT_FOUND" ? "Not found" : p.outcome === "INVALID_ROWS" ? "Rows do not verify" : p.outcome.toLowerCase().replace(/_/g, " "), "other"];
   if (endGenuine(p)) return ["Served, genuine rows", "ok"];
   if (p.classification === "UNATTESTED") return (p.outcome === "SERVED_OK" || p.outcome === "PARTIAL") ? ["Served, not endorsed", "unsigned"] : ["Not endorsed", "unsigned"];
   return wordOf(p.classification);
@@ -114,17 +117,21 @@ const identityWord: Record<string, string> = { verified: "verified", expired: "e
  * served, outside a suspect point, and nothing else.
  */
 const REACH_FAIL = new Set(["DNS_FAIL", "TCP_REFUSED", "TCP_TIMEOUT", "TCP_UNREACHABLE", "TLS_HANDSHAKE_FAIL", "RPC_UNAVAILABLE", "RPC_ERROR"]);
-const GROUPS = ["served", "unreachable", "certificate rejected", "no endpoint", "not found, not endorsed", "answered with an error", "not counted", "other", "not served"] as const;
+const GROUPS = ["served", "unreachable", "certificate rejected", "no endpoint", "not found", "not found, not endorsed", "answered with an error", "not counted", "other", "not served"] as const;
 type Group = (typeof GROUPS)[number];
+/** a counted reading that left the reader without the rows: what the obligations count as not served */
+const noRows = (p: Probe, suspect: boolean) => !suspect && !p.cleared_by && (p.classification === "FAULT" || endNoRows(p));
 function groupOf(p: Probe, suspect: boolean): Group {
   if (suspect) return "not counted";
   if (p.cleared_by) return "not counted";
-  if (p.classification === "FAULT" || endNoRows(p)) return "not served";
+  // with the service figures off (lib/service) such a reading falls to what came back below
+  if (SHOW_SERVICE && noRows(p, suspect)) return "not served";
   if (p.classification === "HEALTHY" || p.outcome === "SERVED_OK" || endGenuine(p)) return "served";
   if (p.classification === "NOT_REGISTERED") return "no endpoint";
   if (p.classification.startsWith("IDENTITY_")) return "certificate rejected";
   if (REACH_FAIL.has(p.outcome)) return "unreachable";
   if (p.outcome === "NOT_FOUND" && p.classification === "UNATTESTED") return "not found, not endorsed";
+  if (p.classification === "FAULT" && p.outcome === "NOT_FOUND") return "not found";
   if (p.classification === "SERVER_ERROR" || p.classification === "THROTTLED") return "answered with an error";
   return "other";
 }
@@ -132,7 +139,7 @@ function groupOf(p: Probe, suspect: boolean): Group {
 function evidenceSummary(rows: { g: Group }[]): string {
   const n = new Map<Group, number>();
   for (const r of rows) n.set(r.g, (n.get(r.g) ?? 0) + 1);
-  const parts = GROUPS.filter((g) => g === "not served" || (n.get(g) ?? 0) > 0).map((g) => `${int(n.get(g) ?? 0)} ${g}`);
+  const parts = GROUPS.filter((g) => (SHOW_SERVICE && g === "not served") || (n.get(g) ?? 0) > 0).map((g) => `${int(n.get(g) ?? 0)} ${g}`);
   return `Newest ${int(rows.length)} reading${rows.length === 1 ? "" : "s"}: ${parts.join(", ")}`;
 }
 /** " · 12 recent blobs sampled out": listed once each, not as a row per point */
@@ -145,7 +152,9 @@ function sampledText(d: Detail): string {
 function Page() {
   const addr = useSearchParams().get("addr") ?? "";
   const [win, setWin] = useWindow("24h");
-  const [onlyNotServed, setOnlyNotServed] = useState(false);
+  const [notServedPicked, setOnlyNotServed] = useState(false);
+  // the not-served filter only exists while the service figures are on (lib/service)
+  const onlyNotServed = SHOW_SERVICE && notServedPicked;
   const { data: meta, error: metaErr } = useApi<Meta>("/v1/meta");
   const d = useApi<Detail>(addr ? `/v1/validators/${addr}?window=${win}` : null);
   const notLive = !!meta?.app_version && !meta.fibre_active;
@@ -196,6 +205,16 @@ function Page() {
   const prov = provisionalNow(v.provisional_faults);
   const ref = data.network_reference;
   const refText = ref && ref.median_rate != null ? `network median ${pctFrac(ref.median_rate)}` : ref && ref.pooled_rate.den > 0 ? `network ${pctOf(ref.pooled_rate.num, ref.pooled_rate.den)}` : "";
+  // the newest readings by kind; the not-served one only while the service figures are on (lib/service)
+  const lasts = (
+    <p className="errs">
+      Last served <b>{lastServed ? whenUTC(lastServed.started_at) : "—"}</b>
+      {SHOW_SERVICE && <><br />Last not served {lastNotServed
+        ? <><b>{whenUTC(lastNotServed.started_at)}</b> · blob <Link className="mono" href={`/blob/?hash=${lastNotServed.promise_hash}`}>{lastNotServed.promise_hash.slice(0, 10)}…</Link></>
+        : (o?.broken ?? 0) > 0 ? <>older than the readings below · <a href={notServedHref}>in the API →</a></> : <b>none on record</b>}</>}
+      <br />Last failed handshake <b>{v.last_unreachable_at ? whenUTC(v.last_unreachable_at) : "none on record"}</b>
+    </p>
+  );
 
   return (
     <>
@@ -206,6 +225,7 @@ function Page() {
           <div className="chips">
             <span className="state" title={e.title}><i className={"dot " + e.dot} />{e.word}</span>
             {v.host && <span title={v.identity_reason || "The consensus-key check on the newest handshake."}>TLS identity <b className="word">{identityWord[v.identity_status] ?? v.identity_status}</b></span>}
+            {v.provider_since && <span title={`When this validator first appeared as a Fibre provider, whatever endpoint it had then: ${utcWord(v.provider_since)}`}>Fibre provider since <b className="word">{shortDate(v.provider_since)}</b></span>}
           </div>
         </div>
         <WindowSwitch value={win} onChange={setWin} />
@@ -251,17 +271,20 @@ function Page() {
         {/* the conclusion before the figures; before activation there is nothing to conclude, and StatusLine says so */}
         {!notLive && <Diagnosis v={v} check={data.last_endpoint_check} meta={meta} decided={decided} />}
         <Metrics>
-          <Metric label="Service rate"
-            value={notLive || !o || o.total === 0 || decided === 0 ? "—" : pctOf(o.served, decided)}
-            tone={notLive || !o || decided === 0 ? "absent" : rateTone(o.served, decided)}
-            help={notLive ? " " : !o || o.total === 0 ? ((v.signing?.signed ?? 0) > 0 ? "not read yet" : "nothing endorsed in this period") : decided === 0 ? "not read yet" : `${int(o.served)} / ${int(decided)} read${refText ? ` · ${refText}` : ""}`}
-            title="Endorsed shards served at the end reading, over those read." />
-          <Metric label="Not served"
-            value={notLive ? "—" : int(o?.broken ?? 0)} tone={notLive ? "absent" : (o?.broken ?? 0) > 0 ? "fault" : !o || o.total === 0 ? "absent" : undefined}
-            help={notLive ? " " : (o?.broken ?? 0) > 0 ? (prov > 0 ? `${int(prov)} provisional${clearedText}` : `endorsed shards not read back${clearedText}`) : `none in this period${clearedText}`}
-            title={prov > 0 ? `${int(prov)} of these are younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.` : "Endorsed shards whose rows did not come back at the end reading."} />
-          <Metric label="In retention window" value={notLive ? "—" : int(o?.pending ?? 0)} tone={notLive || !o || o.total === 0 ? "absent" : undefined}
-            help={notLive ? " " : (leftOutText(o) || "read at the end of the window")} title="Endorsed shards whose retention window has not ended." />
+          {/* the service figures, off until the protocol-level reading ships (lib/service) */}
+          {SHOW_SERVICE && <>
+            <Metric label="Service rate"
+              value={notLive || !o || o.total === 0 || decided === 0 ? "—" : pctOf(o.served, decided)}
+              tone={notLive || !o || decided === 0 ? "absent" : rateTone(o.served, decided)}
+              help={notLive ? " " : !o || o.total === 0 ? ((v.signing?.signed ?? 0) > 0 ? "not read yet" : "nothing endorsed in this period") : decided === 0 ? "not read yet" : `${int(o.served)} / ${int(decided)} read${refText ? ` · ${refText}` : ""}`}
+              title="Endorsed shards served at the end reading, over those read." />
+            <Metric label="Not served"
+              value={notLive ? "—" : int(o?.broken ?? 0)} tone={notLive ? "absent" : (o?.broken ?? 0) > 0 ? "fault" : !o || o.total === 0 ? "absent" : undefined}
+              help={notLive ? " " : (o?.broken ?? 0) > 0 ? (prov > 0 ? `${int(prov)} provisional${clearedText}` : `endorsed shards not read back${clearedText}`) : `none in this period${clearedText}`}
+              title={prov > 0 ? `${int(prov)} of these are younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.` : "Endorsed shards whose rows did not come back at the end reading."} />
+            <Metric label="In retention window" value={notLive ? "—" : int(o?.pending ?? 0)} tone={notLive || !o || o.total === 0 ? "absent" : undefined}
+              help={notLive ? " " : (leftOutText(o) || "read at the end of the window")} title="Endorsed shards whose retention window has not ended." />
+          </>}
           <Metric label="Reachability"
             value={!bonded ? "—" : rw && rw.den > 0 ? pctOf(rw.num, rw.den) : "—"}
             tone={!bonded || !rw || rw.den === 0 ? "absent" : undefined}
@@ -273,8 +296,10 @@ function Page() {
             title="Median download speed over shards of 2 MiB or more, shown from three." />
         </Metrics>
 
+        {/* With the service figures off (lib/service), the period table goes and
+            the endpoint check and the last readings take its two columns. */}
         <div className="band">
-          <div>
+          {SHOW_SERVICE && <div>
             <table className="periods">
               <thead><tr><th>Period</th><th>Service rate</th><th>Not served</th><th>In retention window</th></tr></thead>
               <tbody>
@@ -294,17 +319,12 @@ function Page() {
               </tbody>
             </table>
             {data.rolled_up && <p className="rolled">Before {data.rolled_up.raw_from}, from the daily rollup.</p>}
-          </div>
+          </div>}
           <div>
             {data.last_endpoint_check ? <EndpointCheckLine c={data.last_endpoint_check} /> : <p className="errs">No endpoint check yet.</p>}
-            <p className="errs">
-              Last served <b>{lastServed ? whenUTC(lastServed.started_at) : "—"}</b>
-              <br />Last not served {lastNotServed
-                ? <><b>{whenUTC(lastNotServed.started_at)}</b> · blob <Link className="mono" href={`/blob/?hash=${lastNotServed.promise_hash}`}>{lastNotServed.promise_hash.slice(0, 10)}…</Link></>
-                : (o?.broken ?? 0) > 0 ? <>older than the readings below · <a href={notServedHref}>in the API →</a></> : <b>none on record</b>}
-              <br />Last failed handshake <b>{v.last_unreachable_at ? whenUTC(v.last_unreachable_at) : "none on record"}</b>
-            </p>
+            {SHOW_SERVICE && lasts}
           </div>
+          {!SHOW_SERVICE && <div>{lasts}</div>}
         </div>
       </section>
 
@@ -312,7 +332,7 @@ function Page() {
         <div className="vhead">
           <div><h2>Readings</h2><p className="sub">{probes.length > 0 ? evidenceSummary(grouped) : "No reading yet"}{data.recent_probes_truncated ? " · the rest in the API" : ""}{sampledText(data)}</p></div>
           <div className="tools">
-            {probes.length > 0 && (
+            {SHOW_SERVICE && probes.length > 0 && (
               <div className="seg" role="group" aria-label="show rows">
                 <button type="button" aria-pressed={!onlyNotServed} onClick={() => setOnlyNotServed(false)}>All <span className="n">{int(probes.length)}</span></button>
                 <button type="button" aria-pressed={onlyNotServed} onClick={() => setOnlyNotServed(true)}>Not served <span className="n">{int(notServedRows.length)}</span></button>
@@ -339,7 +359,7 @@ function Page() {
                 const notes = [
                   earlier && `earlier schedule: ${POINT[p.schedule_label] ?? p.schedule_label}`,
                   `outcome: ${p.outcome.toLowerCase().replace(/_/g, " ")}`,
-                  g === "not served" && p.raw_error,
+                  noRows(p, !!sus) && p.raw_error,
                   provisional && "provisional: counted, and can still be withdrawn",
                   p.attested === false && "not endorsed by this validator, so outside the rate",
                   p.retry_first_outcome && `first attempt ${p.retry_first_outcome}, retried once`,

@@ -5,6 +5,7 @@ import { type Validator, type Probe, API_BASE, useApi, ago, utcWord, int } from 
 import type { Hosting } from "@/lib/hosting";
 import { FRAME, COUNTRIES, project, countryPoint } from "@/lib/map/project";
 import { verdictDef } from "@/components/Verdict";
+import { SHOW_SERVICE } from "@/lib/service";
 import { countryName } from "@/components/Flag";
 import Info from "@/components/Info";
 import { type EndpointState, endpointState, readiness } from "@/components/Readiness";
@@ -48,12 +49,12 @@ function StakeGauge({ rows }: { rows: Validator[] }) {
   const vars = { "--v": at(regPower), "--q": at(quorum) } as React.CSSProperties;
   return (
     <div className="ov-stake">
-      <h2 id="readiness-h" className="ov-eyebrow">Stake with a Fibre provider<Info label="Stake with a Fibre provider"><p>Share of the stake held by validators with a Fibre provider. A blob needs signatures from ⅔ of the stake to settle.</p></Info></h2>
+      <h2 id="readiness-h" className="ov-eyebrow">Voting power with a Fibre provider<Info label="Voting power with a Fibre provider"><p>Share of the stake held by validators with a Fibre provider. A blob needs signatures from ⅔ of the stake to settle.</p></Info></h2>
       <p className="ov-hero">
         <b className="ov-fig">{pct(regPower)}</b>
         <span className="ov-hero-help"> of voting power · {int(r.registered.length)} of {int(r.bonded.length)} validators</span>
       </p>
-      <div className="ov-gauge" style={vars} role="img" aria-label={`${pct(regPower)} of stake with a Fibre provider, ${pct(quorum)} needed`}>
+      <div className="ov-gauge" style={vars} role="img" aria-label={`${pct(regPower)} of voting power with a Fibre provider, ${pct(quorum)} needed`}>
         <span className="ov-needle"><span><Frac /> needed</span></span>
         <span className="ov-track"><i /></span>
         <span className="ov-ruler">{Array.from({ length: 11 }, (_, i) => <i key={i} />)}</span>
@@ -591,7 +592,8 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
           <ul className="ov-pins" aria-label="Fibre providers by location">
             {placed.map(({ c, x, y, d, s }) => {
               const isOpen = open === c.id;
-              const fault = c.hosts.some((h) => (h.v.obligations?.broken ?? 0) > 0);
+              // the red mark of a not-served shard, only while the service figures are on (lib/service)
+              const fault = SHOW_SERVICE && c.hosts.some((h) => (h.v.obligations?.broken ?? 0) > 0);
               const place = placeLabel(c);
               const counts = ORDER.map((st) => [st, c.hosts.filter((h) => h.state === st).length] as const).filter(([, n]) => n > 0);
               const split = canSplit(c);
@@ -639,7 +641,7 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
                             <span className="ov-share">{fmtShare(h.share)}</span>
                             <span className="ov-meta">
                               {[multi ? h.cc : "", h.provider, c.locs > 1 && h.city ? h.city : multi && !h.city ? countryName(h.cc) : "", h.state !== "reachable" ? STATE_WORD[h.state] : ""].filter(Boolean).join(" · ")}
-                              {(h.v.obligations?.broken ?? 0) > 0 && <span className="ov-broken"> · {h.v.obligations.broken} not served</span>}
+                              {SHOW_SERVICE && (h.v.obligations?.broken ?? 0) > 0 && <span className="ov-broken"> · {h.v.obligations.broken} not served</span>}
                             </span>
                           </li>
                         ))}
