@@ -38,6 +38,12 @@ func main() {
 		// chain has no name for an account, so every label is the operator's
 		// word and is published with its source.
 		labels = flag.String("publishers", "", "path to publishers.yaml, the publisher label registry (optional)")
+		// Where the window snapshots are kept across restarts, and a mode
+		// that only fills them: a new build computes its snapshots beside
+		// the running API before it replaces it, so it does not start cold
+		// (deploy/README.md, "Upgrading a running observer").
+		snapDir  = flag.String("snapshot-dir", "", "where the window snapshots are kept across restarts (default <data-dir>/snapshots; with -warm-only <data-dir>/snapshots.next)")
+		warmOnly = flag.Bool("warm-only", false, "compute every window snapshot once into -snapshot-dir, reading the database only, then exit; serves nothing, and refuses the live <data-dir>/snapshots")
 	)
 	flag.Parse()
 	if *check != "" {
@@ -45,6 +51,28 @@ func main() {
 	}
 	if *dbPath == "" {
 		*dbPath = filepath.Join(*dataDir, "observer.db")
+	}
+	live := filepath.Join(*dataDir, "snapshots")
+	switch {
+	case *snapDir != "":
+	case *warmOnly:
+		*snapDir = filepath.Join(*dataDir, "snapshots.next")
+	default:
+		*snapDir = live
+	}
+	// The live directory is the one beside the database too: a hand-run that
+	// names the database with -db and leaves -data-dir at its default would
+	// otherwise not recognise it.
+	if *warmOnly && (sameDir(*snapDir, live) || sameDir(*snapDir, filepath.Join(filepath.Dir(*dbPath), "snapshots"))) {
+		// The running API reads that directory and rewrites its files on
+		// every refresh, under the same temporary names a warm-up writes,
+		// so the two could trip over one file; and an older API restarted
+		// meanwhile would load market files computed under the new build's
+		// rules, whose revision does not carry the methodology version.
+		// The warm-up writes beside it and the switch copies the files in
+		// with the API stopped (deploy/README.md).
+		os.Stderr.WriteString("warm-only: -snapshot-dir " + *snapDir + " is the live snapshot directory; warm into another (default <data-dir>/snapshots.next) and copy the files in with the API stopped\n")
+		os.Exit(2)
 	}
 	log := scan.NewLogger(200)
 	// The collector creates the database and its schema; started in the same
@@ -85,7 +113,20 @@ func main() {
 	if len(reg) > 0 {
 		log.Printf("publisher labels: %d from %s", len(reg), *labels)
 	}
-	handler := api.NewWithVantage(st, info, log, api.WithPublisherLabels(reg), api.WithDataDir(*dataDir))
+	opts := []api.Option{api.WithPublisherLabels(reg), api.WithDataDir(*dataDir), api.WithSnapshotDir(*snapDir)}
+	if *warmOnly {
+		// The live API keeps serving meanwhile; this only reads. Every
+		// snapshot depends on the vantage (its heartbeats) and the market
+		// one on the labels, so the flags must be the unit's own.
+		log.Printf("warm-only: computing every window snapshot into %s (vantage=%s db=%s)", *snapDir, *vantage, *dbPath)
+		t0 := time.Now()
+		if err := api.WarmSnapshots(context.Background(), st, info, log, opts...); err != nil {
+			log.Fatalf("warm-only: %v", err)
+		}
+		log.Printf("warm-only: done in %s", time.Since(t0).Round(time.Second))
+		return
+	}
+	handler := api.NewWithVantage(st, info, log, opts...)
 
 	srv := &http.Server{
 		Addr:              *listen,
@@ -114,6 +155,20 @@ func main() {
 		log.Fatalf("serve: %v", err)
 	}
 	log.Printf("stopped")
+}
+
+// sameDir reports whether a and b name one directory: the same path once
+// made absolute, or, when both exist, the same directory under two names (a
+// symlink, a bind mount).
+func sameDir(a, b string) bool {
+	aa, errA := filepath.Abs(a)
+	bb, errB := filepath.Abs(b)
+	if errA == nil && errB == nil && aa == bb {
+		return true
+	}
+	fa, errA := os.Stat(a)
+	fb, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(fa, fb)
 }
 
 // healthCheck GETs url and returns a process exit code: 0 on HTTP 200.

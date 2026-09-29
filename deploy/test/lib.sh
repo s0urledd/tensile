@@ -19,6 +19,11 @@
 #   run_as_service runs a command exactly as the units do: the service user
 #                and the instance's EnvironmentFile, through systemd-run when
 #                it is there, through the parser above when it is not.
+#   snapshot_code a fresh API's first read of a window is a 503 with
+#                "computing": true until the window's first computation
+#                lands, about half a minute on a store the live one's size;
+#                the restore drill read it once and called a good backup
+#                broken.
 
 : "${FAILED:=0}"
 pass() { echo "  ok   $*"; }
@@ -122,6 +127,37 @@ run_as_service() {
     mapfile -t pairs < <(parse_envfile "$envfile")
     if [ "$(id -un)" = "$user" ]; then env "${pairs[@]}" "$@"; else sudo -u "$user" env "${pairs[@]}" "$@"; fi
   fi
+}
+
+# snapshot_code <url> <seconds> [outfile]: http_code for a read of a window
+# snapshot (/v1/network, /v1/validators, /v1/market), asking again while the
+# API answers that the window is still being computed. An API with no
+# snapshot file for a window (a first start, a restored directory) holds the
+# first reader a few seconds and then answers 503 with "computing": true and
+# retry_after_s until the computation lands; that answer is asked again after
+# retry_after_s seconds (5 when it names none) until <seconds> have passed.
+# Any other answer is final. The last body goes to outfile when one is given.
+# HTTP_TIMEOUT as for http_code.
+snapshot_code() {
+  local url=$1 secs=$2 out="${3:-}" body code after deadline
+  body=$(mktemp)
+  deadline=$(( $(date +%s) + secs ))
+  while :; do
+    code=$(http_code "$url" "$body")
+    after=""
+    if [ "$code" = 503 ]; then
+      after=$(python3 -c 'import json, sys
+b = json.load(open(sys.argv[1]))
+s = b.get("retry_after_s")
+if b.get("computing") is True:
+    print(max(1, int(s)) if isinstance(s, (int, float)) else 5)' "$body" 2>/dev/null || true)
+    fi
+    if [ -z "$after" ] || [ "$(date +%s)" -ge "$deadline" ]; then break; fi
+    sleep "$after"
+  done
+  if [ -n "$out" ]; then cp "$body" "$out"; fi
+  rm -f "$body"
+  printf '%s\n' "$code"
 }
 
 # free_port: a TCP port nothing listens on right now.

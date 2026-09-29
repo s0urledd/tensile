@@ -99,7 +99,7 @@ function Overview() {
       {/* No visible headline for now; the page keeps one for screen readers. */}
       <h1 className="sr-only">Tensile · Celestia Fibre</h1>
       <PreLive meta={meta} />
-      <StatusLine meta={meta} metaError={metaErr} snap={N} client={{ error: net.error, fetchedAt: net.fetchedAt, status: net.status }} measuring={measuring} />
+      <StatusLine meta={meta} metaError={metaErr} snap={N} client={{ error: net.error, fetchedAt: net.fetchedAt, status: net.status, computing: net.computing || whole.computing || vals.computing }} measuring={measuring} />
 
       {vals.data && <HostMap rows={rows} showReadiness={!!meta?.fibre_active} aside={aside || undefined} />}
 

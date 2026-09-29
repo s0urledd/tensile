@@ -244,10 +244,71 @@ restart is not otherwise different.
 
 The API computes the network summary, the validator list and the market
 figures for every window at startup rather than on demand, and keeps the
-last computed copy of each under `<DATA_DIR>/snapshots/`. A restarted API
-serves those copies at once, with their real age shown on the page, while
-the warm-up recomputes them behind; the first minute or two after a restart
-is busier than the steady state, but nobody waits for it.
+last computed copy of each under `<DATA_DIR>/snapshots/` (`-snapshot-dir`
+moves it). A restarted API serves those copies at once, with their real age
+shown on the page, while the warm-up recomputes them behind; the first
+minute or two after a restart is busier than the steady state, but nobody
+waits for it.
+
+That holds only while the copies are still valid. Each file carries the
+revision it was computed under (the rules, `verdict.MethodologyVersion`,
+the retention holds and whether Fibre is active), and the API serves a file
+only under the same revision. A build that changes the rules therefore
+starts with nothing it may serve, and its longer windows take minutes to
+compute. A reader of such a window waits at most eight seconds and then gets
+a 503 with `Retry-After` and `"computing": true`, which the site shows as
+figures being computed and asks again for; nothing hangs, but the figures
+are missing until the warm-up reaches them.
+
+To avoid that, compute the new build's snapshots before switching to it.
+`observer-api -warm-only` opens the database read-only, computes every window
+of every snapshot once under the current revision, writes the files to
+`-snapshot-dir` and exits 0 (non-zero, with the reason, on any failure).
+With `-warm-only` that directory defaults to `<data-dir>/snapshots.next`, and
+the live `<data-dir>/snapshots` is refused: the running API rewrites its
+files there under the same temporary names, and an old API restarted
+meanwhile would load the new build's market files. It must run as the
+service user and with the unit's own flags: the snapshots depend on
+`-vantage` (the heartbeats counted are that vantage's) and the market one on
+`-publishers`, and a file written for another vantage is not loaded.
+`systemd-run` gives it both, from the unit's env file, expanding `${…}` the
+way the unit's `ExecStart` does. After the collector has migrated the
+database (the new binary refuses an older schema), and while the old API
+keeps serving:
+
+```bash
+sudo install -m 0755 fibre-sentinel/bin/* /usr/local/bin/
+sudo install -m 0755 deploy/vantage-pull.sh /usr/local/bin/fibre-vantage-pull   # the timer runs it next minute
+sudo systemctl restart fibre-collector@mocha       # applies migrations
+# a few minutes, reading the database only, beside the running API
+sudo systemd-run --wait --pipe --collect -p User=fibre-observer -p Nice=10 \
+  -p EnvironmentFile=/etc/fibre-observer/mocha.env \
+  /usr/local/bin/observer-api -warm-only -data-dir '${DATA_DIR}' -snapshot-dir '${DATA_DIR}/snapshots.next' \
+  -vantage '${VANTAGE}' -vantage-location '${VANTAGE_LOCATION}' -vantage-provider '${VANTAGE_PROVIDER}' \
+  -publishers /etc/fibre-observer/publishers-mocha.yaml
+sudo systemctl stop fibre-api@mocha
+sudo -u fibre-observer sh -c 'cp /var/lib/fibre-observer/mocha/snapshots.next/*.json /var/lib/fibre-observer/mocha/snapshots/ &&
+  rm -r /var/lib/fibre-observer/mocha/snapshots.next'
+sudo systemctl start fibre-api@mocha
+sudo systemctl restart fibre-scan@mocha fibre-probe@mocha fibre-heartbeat@mocha
+```
+
+The copy runs as `fibre-observer` so the files stay its own: the API
+rewrites them on every refresh. For the same reason the warm-up does not run
+as root, which would also risk creating the database's `-shm` file owned by
+root. A hold or the activation landing between the warm-up and the start
+changes the revision: the files are then dropped and recomputed rather than
+served, which is the cold start again and never a stale figure.
+`journalctl -u fibre-api@mocha` shows `snapshot(s) loaded from disk` on
+start.
+
+This keeps the old API serving from the migrated database for the few
+minutes of the warm-up, where the plain upgrade above leaves it seconds, so
+use it only when the build's schema change, if any, is additive: new tables,
+columns or indexes the old API does not read. When a migration changes or
+drops something the old API reads, stop `fibre-api@mocha` before restarting
+the collector; the warm-up still spares the new build a cold start, but the
+API is down for those minutes.
 
 ## 5. Caddy
 
@@ -615,7 +676,10 @@ bonded validator `signalled` or `not signalled` (`upgrade_signal` on
 on that version).
 
 `registered_endpoints` moving off zero is the first sign the registry is being
-read. `reachability` follows within a heartbeat interval. Publications appear
+read. `reachability` follows within a heartbeat interval. The activation
+changes the snapshots' revision, so for the half minute or so the API takes
+to recompute the 24h window, `/v1/network` answers 503 with
+`"computing": true` and the last line prints `null` for all three: ask again. Publications appear
 only once somebody actually pays for a blob, which may be hours later; an
 empty publication feed on activation day is a quiet network, not a broken
 observer, and the site says which.
@@ -767,7 +831,7 @@ starting the units for real:
 sudo systemctl start fibre-scan@mocha fibre-heartbeat@mocha fibre-collector@mocha fibre-probe@mocha fibre-api@mocha
 systemctl --no-pager status 'fibre-*@mocha' | grep -E 'Active|Loaded'
 curl -s https://mocha.observer.example.org/api/v1/health | jq .status   # "ok" once every process has run a cycle
-curl -s https://mocha.observer.example.org/api/v1/network | jq .registered_endpoints
+curl -s https://mocha.observer.example.org/api/v1/network | jq .registered_endpoints   # null while the API still answers "computing": true, its first half minute or so: ask again
 ```
 
 Then check the site says where it watches from. If `complete` is false the

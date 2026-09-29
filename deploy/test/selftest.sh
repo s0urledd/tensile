@@ -33,6 +33,8 @@
 #   healthwatch     one alert per fault; a second failing check alerts while
 #                   the state stays degraded; recovery alerts; a two-line
 #                   state file from the older build does not alert by itself
+#   snapshot_code   a 503 with "computing": true is asked again until the
+#                   deadline; a 503 without it and a 200 are final at once
 #
 # Usage: deploy/test/selftest.sh     Exit 0 when every case passes.
 set -o errexit -o nounset -o pipefail
@@ -82,6 +84,18 @@ check not health_has_reason "$T/ok.json" "chain_liveness"
 printf 'not json' > "$T/garbage.json"
 check not health_has_reason "$T/garbage.json" "chain_liveness"
 check eq "$(health_bad_checks "$T/degraded.json")" "chain_liveness: newest block 11m3s old (2026-09-21T10:00:00Z)"
+
+echo "== snapshot_code"
+printf '{"error":"this figure is being computed; ask again in a few seconds","computing":true,"window":"24h","retry_after_s":1}' > "$T/computing.json"
+serve fake-http.py --code 503 --body "$T/computing.json"; pcomp=$PORT
+t0=$(date +%s)
+check eq "$(snapshot_code "http://127.0.0.1:$pcomp/v1/network?window=24h" 2)" 503
+check test "$(( $(date +%s) - t0 ))" -ge 2   # asked again until the deadline, not once
+t0=$(date +%s)
+check eq "$(snapshot_code "http://127.0.0.1:$p503/v1/network?window=24h" 30)" 503
+check eq "$(snapshot_code "http://127.0.0.1:$p200/v1/network?window=24h" 30 "$T/snap.json")" 200
+check test "$(( $(date +%s) - t0 ))" -lt 10  # neither waited for the deadline
+check eq "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$T/snap.json")" ok
 
 echo "== env parsing"
 cat > "$T/test.env" <<'E'

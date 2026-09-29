@@ -92,6 +92,10 @@ type Server struct {
 	// dataDir holds the status files the processes write (internal/status);
 	// empty means liveness is not reported.
 	dataDir string
+	// snapshotDir is where the snapshots are kept across restarts: this
+	// when set (WithSnapshotDir), <dataDir>/snapshots otherwise, nowhere
+	// when both are empty.
+	snapshotDir string
 
 	// Per-publication verdicts, keyed by what the publication's probes look
 	// like right now. See blobcache.go.
@@ -136,6 +140,11 @@ func WithPublisherLabels(m map[string]PublisherLabel) Option {
 // WithDataDir tells the server where the processes' status files live.
 func WithDataDir(dir string) Option { return func(s *Server) { s.dataDir = dir } }
 
+// WithSnapshotDir keeps the snapshots in dir rather than under the data
+// directory: observer-api -snapshot-dir, for a warm-up into a directory the
+// running API does not read (WarmSnapshots).
+func WithSnapshotDir(dir string) Option { return func(s *Server) { s.snapshotDir = dir } }
+
 // New builds a Server. vantage is the label rendered on every response.
 func New(st *store.Store, vantage string) *Server { return NewWithLogger(st, vantage, nil) }
 
@@ -148,63 +157,10 @@ func NewWithLogger(st *store.Store, vantage string, log *scan.Logger) *Server {
 // NewWithVantage is NewWithLogger with the vantage described rather than only
 // named.
 func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ...Option) *Server {
-	info.Verifiability = map[string]string{
-		"provider": "the operator's word: the hosting company",
-		"location": "the operator's word: geolocating an address is a guess, so nothing here proves it",
-	}
-	info.Complete = info.Location != "" && info.Provider != ""
-	s := &Server{st: st, vantage: info.Name, info: info, mux: http.NewServeMux(), log: log, blobs: newBlobCache(), labels: map[string]PublisherLabel{}}
-	for _, o := range opts {
-		o(s)
-	}
-	if s.lanes == (lanes{}) {
-		s.lanes = defaultLanes
-	}
-	// The cached summary is the unfiltered one. A `?exclude=` answer is
-	// computed per request and never stored here: writing it into the shared
-	// snapshot would publish one reader's filter as everyone's headline.
-	s.net = newSnapshotCache("network", func(ctx context.Context, win Window) (*networkResponse, error) {
-		resp, err := s.computeNetwork(ctx, win, excludeSet{}, nil)
-		if err == nil {
-			resp.RecordThrough = s.recordThrough(ctx)
-		}
-		return resp, err
-	})
-	// The publisher-side summary and the publisher list are one snapshot, so
-	// the publisher page's board and its table describe the same moment.
-	s.market = newSnapshotCache("market", s.computePublishing)
-	s.market.accept = marketSnapshotCurrent
-	s.vals = newSnapshotCache("validators", func(ctx context.Context, win Window) (validatorSnapshot, error) {
-		rows, err := s.validatorRows(ctx, win, "")
-		if err != nil {
-			return validatorSnapshot{}, err
-		}
-		return validatorSnapshot{Window: win, Rows: rows, RecordThrough: s.recordThrough(ctx)}, nil
-	})
-	// Both of these publish faults beside named validators, and both are
-	// cached for up to fifteen minutes. A hold landing in the database moves
-	// nothing they hold, so without this the figure a hold withdrew stays
-	// on the front page until the TTL runs out. The market snapshot carries
-	// no verdicts and needs no hold, but all three change meaning the moment
-	// Fibre goes live: a pre-activation zero served for minutes after the
-	// first publication says "nothing happened" when something did.
-	s.net.revision = s.snapshotRevision
-	s.vals.revision = s.snapshotRevision
-	s.market.revision = s.activationRevision
-	// The windows that do not take ttlFor's pace: the live lane's (the 24h
-	// validator list and every market window) and the network's "all",
-	// which holds the overview's Available figure. Set before anything reads
-	// the caches: ttl reads these without the lock.
-	s.vals.ttls = map[string]time.Duration{"24h": s.lanes.liveTTL}
-	s.market.ttls = map[string]time.Duration{}
-	for _, name := range warmWindows {
-		s.market.ttls[name] = s.lanes.liveTTL
-	}
-	s.net.ttls = map[string]time.Duration{"all": networkAllTTL}
+	s := newServer(st, info, log, opts...)
 	// Serve the previous process's snapshots at once, then warm every window
 	// so the first visitor is not the one who waits.
-	if s.dataDir != "" {
-		dir := filepath.Join(s.dataDir, "snapshots")
+	if dir := s.snapshotsIn(); dir != "" {
 		s.net.persistTo(dir, s.logf())
 		s.vals.persistTo(dir, s.logf())
 		s.market.persistTo(dir, s.logf())
@@ -259,6 +215,113 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 	s.mux.HandleFunc("GET /v1/params", s.handleParams)
 	s.mux.HandleFunc("GET /v1/signing", s.handleSigning)
 	s.registerExtraRoutes()
+	return s
+}
+
+// WarmSnapshots computes every window of every snapshot cache once, one after
+// another, writes each to the snapshot directory, and returns: nothing is
+// served and nothing is left running (observer-api -warm-only). The first
+// failure ends it.
+//
+// It is how a new build takes over without a cold start. A build whose rules
+// changed (verdict.MethodologyVersion) cannot serve the running API's files,
+// which carry the old revision, so it would start with nothing for any
+// window, and its longer windows take minutes to compute. Run with the new
+// binary beside the running API, into a directory of its own, then copied
+// into the live one while the API is stopped (deploy/README.md, "Upgrading a
+// running observer"), it hands the new API figures computed under its own
+// rules from its first request. The store is only read.
+//
+// A file is served only under the revision it was computed under
+// (snapshotCache.persistTo), so a hold or the activation landing between
+// the warm-up and the switch costs a recomputation, never a stale figure.
+func WarmSnapshots(ctx context.Context, st *store.Store, info VantageInfo, log *scan.Logger, opts ...Option) error {
+	s := newServer(st, info, log, opts...)
+	dir := s.snapshotsIn()
+	if dir == "" {
+		return errors.New("no snapshot directory: set a data directory or a snapshot directory")
+	}
+	for _, c := range []interface {
+		precompute(context.Context, string, logf) error
+	}{s.net, s.vals, s.market} {
+		if err := c.precompute(ctx, dir, s.logf()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// snapshotsIn is the directory the snapshots are kept in, or "" for none.
+func (s *Server) snapshotsIn() string {
+	if s.snapshotDir != "" {
+		return s.snapshotDir
+	}
+	if s.dataDir != "" {
+		return filepath.Join(s.dataDir, "snapshots")
+	}
+	return ""
+}
+
+// newServer builds a Server and its snapshot caches and starts nothing: no
+// warm-up, no keepers, no routes. NewWithVantage starts them; WarmSnapshots
+// only computes.
+func newServer(st *store.Store, info VantageInfo, log *scan.Logger, opts ...Option) *Server {
+	info.Verifiability = map[string]string{
+		"provider": "the operator's word: the hosting company",
+		"location": "the operator's word: geolocating an address is a guess, so nothing here proves it",
+	}
+	info.Complete = info.Location != "" && info.Provider != ""
+	s := &Server{st: st, vantage: info.Name, info: info, mux: http.NewServeMux(), log: log, blobs: newBlobCache(), labels: map[string]PublisherLabel{}}
+	for _, o := range opts {
+		o(s)
+	}
+	if s.lanes == (lanes{}) {
+		s.lanes = defaultLanes
+	}
+	// The cached summary is the unfiltered one. A `?exclude=` answer is
+	// computed per request and never stored here: writing it into the shared
+	// snapshot would publish one reader's filter as everyone's headline.
+	s.net = newSnapshotCache("network", func(ctx context.Context, win Window) (*networkResponse, error) {
+		resp, err := s.computeNetwork(ctx, win, excludeSet{}, nil)
+		if err == nil {
+			resp.RecordThrough = s.recordThrough(ctx)
+		}
+		return resp, err
+	})
+	// The publisher-side summary and the publisher list are one snapshot, so
+	// the publisher page's board and its table describe the same moment.
+	s.market = newSnapshotCache("market", s.computePublishing)
+	s.market.accept = marketSnapshotCurrent
+	s.vals = newSnapshotCache("validators", func(ctx context.Context, win Window) (validatorSnapshot, error) {
+		rows, err := s.validatorRows(ctx, win, "")
+		if err != nil {
+			return validatorSnapshot{}, err
+		}
+		return validatorSnapshot{Window: win, Rows: rows, RecordThrough: s.recordThrough(ctx)}, nil
+	})
+	// Both of these publish faults beside named validators, and both are
+	// cached for up to fifteen minutes. A hold landing in the database moves
+	// nothing they hold, so without this the figure a hold withdrew stays
+	// on the front page until the TTL runs out. The market snapshot carries
+	// no verdicts and needs no hold, but all three change meaning the moment
+	// Fibre goes live: a pre-activation zero served for minutes after the
+	// first publication says "nothing happened" when something did.
+	s.net.revision = s.snapshotRevision
+	s.vals.revision = s.snapshotRevision
+	s.market.revision = s.activationRevision
+	// The windows that do not take ttlFor's pace: the live lane's (the 24h
+	// validator list and every market window) and the network's "all",
+	// which holds the overview's Available figure. Set before anything reads
+	// the caches: ttl reads these without the lock.
+	s.vals.ttls = map[string]time.Duration{"24h": s.lanes.liveTTL}
+	s.market.ttls = map[string]time.Duration{}
+	for _, name := range warmWindows {
+		s.market.ttls[name] = s.lanes.liveTTL
+	}
+	s.net.ttls = map[string]time.Duration{"all": networkAllTTL}
+	// A snapshot file says which vantage it was computed for, and one for
+	// another vantage is not loaded (snapshotCache.vantage).
+	s.net.vantage, s.vals.vantage, s.market.vantage = s.vantage, s.vantage, s.vantage
 	return s
 }
 
@@ -382,6 +445,26 @@ func (s *Server) writeInternal(w http.ResponseWriter, where string, err error) {
 		s.log.Printf("api: %s: %v", where, err)
 	}
 	writeJSON(w, 500, map[string]any{"error": "internal error"})
+}
+
+// computingRetryAfter is the Retry-After, in seconds, of a read that found
+// its window still being computed.
+const computingRetryAfter = 5
+
+// writeSnapshotErr answers a snapshot read that failed. A window whose
+// computation is still running (errComputing) is not an error: it is a 503
+// with Retry-After and a body that says so, which the site shows as a
+// figure being computed and asks again for, rather than as the API down.
+func (s *Server) writeSnapshotErr(w http.ResponseWriter, r *http.Request, win Window, err error) {
+	if errors.Is(err, errComputing) {
+		w.Header().Set("Retry-After", strconv.Itoa(computingRetryAfter))
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error":     "this figure is being computed; ask again in a few seconds",
+			"computing": true, "window": win.Name, "retry_after_s": computingRetryAfter,
+		})
+		return
+	}
+	s.writeInternal(w, r.URL.Path, err)
 }
 
 // Window is a fixed lookback the dashboard offers.
@@ -1526,7 +1609,7 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, at, ms, err := s.net.get(r.Context(), s.logf(), win)
 	if err != nil {
-		s.writeInternal(w, r.URL.Path, err)
+		s.writeSnapshotErr(w, r, win, err)
 		return
 	}
 	// A copy, so a reader cannot mutate the cached snapshot and two concurrent
@@ -2836,7 +2919,7 @@ func (s *Server) handleValidators(w http.ResponseWriter, r *http.Request) {
 	}
 	snap, at, ms, err := s.vals.get(r.Context(), s.logf(), win)
 	if err != nil {
-		s.writeInternal(w, r.URL.Path, err)
+		s.writeSnapshotErr(w, r, win, err)
 		return
 	}
 	rows := snap.Rows
@@ -3034,17 +3117,14 @@ func (s *Server) detailReadings(ctx context.Context, addr string, win Window, sp
 		probeWhere += ` AND started_at <= ?`
 		probeArgs = append(probeArgs, win.endArg())
 	}
-	probes, err := s.probeRows(ctx, probeWhere, 50, probeArgs...)
+	// Without the row indices and their hash: they are most of a reading's
+	// bytes and the page shows neither. /v1/probes?rows=1 carries them, and
+	// "the rest in the API" leads to /v1/probes.
+	probes, err := s.probeRows(ctx, probeWhere, 50, false, probeArgs...)
 	if err != nil {
 		return err
 	}
 	probes, moreProbes := trim(probes, 50)
-	// The row indices and their hash are most of a reading's bytes and the
-	// page shows neither; /v1/probes, where "the rest in the API" leads,
-	// carries them.
-	for i := range probes {
-		probes[i].RowIndices, probes[i].RowsSHA256 = nil, ""
-	}
 	inWindow, err := s.endorsedInRetention(ctx, addr, spanEnd)
 	if err != nil {
 		return err
@@ -3675,7 +3755,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		assigns = append(assigns, a)
 	}
 	rows.Close()
-	probes, err := s.probeRows(ctx, `promise_hash = ?`, 1000, hash)
+	probes, err := s.probeRows(ctx, `promise_hash = ?`, 1000, true, hash)
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
@@ -3929,7 +4009,12 @@ type probeRow struct {
 	Provisional bool `json:"provisional,omitempty"`
 }
 
-func (s *Server) probeRows(ctx context.Context, where string, limit int, args ...any) ([]probeRow, error) {
+// probeRows reads the readings where selects, newest first, one more than
+// limit. withRows false leaves out each reading's row indices and their
+// hash: not read at all, rather than read and dropped, because they are most
+// of the row's bytes and a thousand of them came to megabytes of JSON parsed
+// for nothing.
+func (s *Server) probeRows(ctx context.Context, where string, limit int, withRows bool, args ...any) ([]probeRow, error) {
 	// The effective classification, not the stored one. /v1/probes,
 	// /v1/blobs/{hash}.probes and a validator's recent probes are all
 	// served from here, and a held row published as a bare "FAULT" beside
@@ -3938,10 +4023,14 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, args ..
 	// retention_unverified rides along so a reader can see why, and
 	// phase_at_probe / classification_at_probe / corrected_at say what the
 	// row was stamped with before a correction moved it.
+	rowCols := `COALESCE(row_indices, ''), COALESCE(rows_sha256, '')`
+	if !withRows {
+		rowCols = `'', ''`
+	}
 	q := `SELECT vantage, promise_hash, validator_address, validator_host, assigned, attested, assigned_row_count, schedule_label, scheduled_at,
 		started_at, phase, outcome, ` + rollup.EffectiveClass("") + `, classification_reason, rows_returned, rows_expected, total_duration_ms, tls_ok, identity_ok, raw_error,
 		COALESCE(retry_first_outcome, ''), COALESCE(clock_offset_ms, 0),
-		COALESCE(row_indices, ''), COALESCE(rows_sha256, ''), COALESCE(rpc_code, ''), COALESCE(shadowed_by, ''), COALESCE(observer_build, ''), COALESCE(app_version, 0),
+		` + rowCols + `, COALESCE(rpc_code, ''), COALESCE(shadowed_by, ''), COALESCE(observer_build, ''), COALESCE(app_version, 0),
 		COALESCE(shadow_gap, ''), COALESCE(classification_at_probe, ''), COALESCE(amended_at, ''),
 		COALESCE(host_at_settlement, ''), COALESCE(settlement_host_outcome, ''), settlement_host_served,
 		retention_unverified, COALESCE(phase_at_probe, ''), COALESCE(corrected_at, ''),
@@ -4033,9 +4122,37 @@ func serviceReason(p probeRow) string {
 const lateSQL = `(schedule_label = '` + probe.EndReadLabel + `' OR julianday(scheduled_at) >= julianday(must_serve_until) -
 		(julianday(must_serve_until) - julianday(COALESCE((SELECT settlement_time FROM publications pl WHERE pl.promise_hash = probes.promise_hash), must_serve_until))) / 4.0)`
 
+// The most rows /v1/probes returns in one answer: without the row indices,
+// and with them (?rows=1). A validator's reading lists the index of every row
+// it was asked for, several kilobytes on the observer's store in September
+// 2026 against well under one for the rest of the row, so a thousand
+// readings with their indices came to 8.5 to 11 MB. Walk past either cap
+// with next_before.
+const (
+	probesMax         = 1000
+	probesMaxWithRows = 200
+)
+
 func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	limit, err := parseLimit(r, 100, 1000)
+	// The row indices and their digest are what a verifier re-deriving a
+	// verdict needs (docs/verdicts.md), and most of every row's bytes. The
+	// readings themselves, which is what a page or an operator watching one
+	// validator reads, come without them unless asked for.
+	withRows := false
+	if v := q.Get("rows"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			writeErr(w, 400, "rows must be 1 or 0")
+			return
+		}
+		withRows = b
+	}
+	most := probesMax
+	if withRows {
+		most = probesMaxWithRows
+	}
+	limit, err := parseLimit(r, 100, most)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -4101,13 +4218,13 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 		}
 		conds, args = append(conds, `started_at < ?`), append(args, store.TS(t))
 	}
-	rows, err := s.probeRows(r.Context(), strings.Join(conds, " AND "), limit, args...)
+	rows, err := s.probeRows(r.Context(), strings.Join(conds, " AND "), limit, withRows, args...)
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
 	rows, truncated := trim(rows, limit)
-	out := map[string]any{"vantage": s.vantage, "probes": rows, "limit": limit, "truncated": truncated}
+	out := map[string]any{"vantage": s.vantage, "probes": rows, "limit": limit, "truncated": truncated, "rows_included": withRows}
 	if truncated && len(rows) > 0 {
 		// Where to continue from: everything strictly older than the last row
 		// returned. Paired with the same filters it walks the whole selection.
