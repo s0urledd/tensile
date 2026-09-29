@@ -22,9 +22,11 @@ import (
 // What an answer does is decided by verdict.ConfirmNotServed and lands on
 // the row it answers: confirmed_by when the other vantage did not get the
 // rows either, which is what lets a not-served row count
-// (rollup.ConfirmedSQL); cleared_by when it got them, which only names who
-// did. Neither rewrites the row: its class, the blob's reading and the
-// correlated-failure guard stay this observer's own.
+// (rollup.ConfirmedSQL); cleared_by when it got the validator's rows back
+// verified, which only names who did. Neither rewrites the row: its class,
+// the blob's reading and the correlated-failure guard stay this observer's
+// own. The collector draws every answer again at start
+// (RejudgeConfirmations), so what an older build decided never outlives it.
 
 var confirmMigration = migration{
 	version: 23,
@@ -114,34 +116,140 @@ func (s *Store) JudgeConfirmations(ctx context.Context, now time.Time) ([]Confir
 	defer rows.Close()
 	var out []ConfirmDecision
 	for rows.Next() {
-		var d ConfirmDecision
-		var cStarted, cPhase, cCls, pStarted, pMSU, pLabel, pCls, pAtProbe string
-		var cVerified, cRules, pVerified bool
-		var cOffset, pOffset int64
-		var pRows, pHeld int
-		if err := rows.Scan(&d.ConfirmKey, &d.ProbeKey, &d.Vantage, &cStarted, &cPhase, &cCls, &cVerified, &cRules, &cOffset,
-			&pStarted, &pOffset, &pMSU, &pLabel, &pCls, &pAtProbe, &pVerified, &pRows, &pHeld); err != nil {
+		d, err := judgeAnswer(rows)
+		if err != nil {
 			return nil, err
-		}
-		// The row as it was read: a deferred verdict drawn since, or a
-		// deadline correction, does not change whether it was a failure.
-		due := probe.Confirmable(pLabel, probe.Classification(pCls)) || probe.Confirmable(pLabel, probe.Classification(pAtProbe)) ||
-			(pVerified && pRows < pHeld)
-		ps, err1 := time.Parse(TimeLayout, pStarted)
-		cs, err2 := time.Parse(TimeLayout, cStarted)
-		msu, err3 := time.Parse(TimeLayout, pMSU)
-		if due && err1 == nil && err2 == nil && err3 == nil {
-			d.Result = verdict.ConfirmNotServed(verdict.NotServed{StartedAt: ps, ClockOffsetMS: pOffset, MustServeUntil: msu},
-				verdict.Confirmation{Vantage: d.Vantage, StartedAt: cs, ClockOffsetMS: cOffset, Phase: probe.Phase(cPhase),
-					Classification: probe.Classification(cCls), CommitmentVerified: cVerified, ClientRules: cRules})
 		}
 		out = append(out, d)
 	}
 	return out, rows.Err()
 }
 
+// judgeAnswer applies the rule to one row of judgeColumns.
+func judgeAnswer(rows interface{ Scan(...any) error }, extra ...any) (ConfirmDecision, error) {
+	var d ConfirmDecision
+	var cStarted, cPhase, cCls, pStarted, pMSU, pLabel, pCls, pAtProbe string
+	var cVerified, cAssigned, cRules, pVerified bool
+	var cOffset, pOffset int64
+	var cRows, pRows, pHeld int
+	dest := []any{&d.ConfirmKey, &d.ProbeKey, &d.Vantage, &cStarted, &cPhase, &cCls, &cVerified, &cAssigned, &cRows, &cRules, &cOffset,
+		&pStarted, &pOffset, &pMSU, &pLabel, &pCls, &pAtProbe, &pVerified, &pRows, &pHeld}
+	if err := rows.Scan(append(dest, extra...)...); err != nil {
+		return d, err
+	}
+	// The row as it was read: a deferred verdict drawn since, or a
+	// deadline correction, does not change whether it was a failure.
+	due := probe.Confirmable(pLabel, probe.Classification(pCls)) || probe.Confirmable(pLabel, probe.Classification(pAtProbe)) ||
+		(pVerified && pRows < pHeld)
+	ps, err1 := time.Parse(TimeLayout, pStarted)
+	cs, err2 := time.Parse(TimeLayout, cStarted)
+	msu, err3 := time.Parse(TimeLayout, pMSU)
+	if due && err1 == nil && err2 == nil && err3 == nil {
+		d.Result = verdict.ConfirmNotServed(verdict.NotServed{StartedAt: ps, ClockOffsetMS: pOffset, MustServeUntil: msu, Held: pHeld},
+			verdict.Confirmation{Vantage: d.Vantage, StartedAt: cs, ClockOffsetMS: cOffset, Phase: probe.Phase(cPhase),
+				Classification: probe.Classification(cCls), CommitmentVerified: cVerified, AssignmentVerified: cAssigned,
+				RowsReturned: cRows, ClientRules: cRules})
+	}
+	return d, nil
+}
+
+// RejudgeConfirmations draws every answer on record again under the rule
+// this build carries, in one transaction, and sets each answered row's
+// confirmed_by and cleared_by to what verdict.ConfirmNotServedBy draws from
+// its answers. The collector runs it once at start; it returns how many
+// rows it changed.
+//
+// A row stays as the build that judged its answer left it until something
+// judges it again, and rollup.ConfirmedSQL counts any confirmed_by. The
+// earlier rule confirmed a failure from any answer that was not a verified
+// one, with no client-rules check and no deadline, so an answer judged by
+// an older collector (a deploy that upgrades the prober first, or a
+// rollback) would count on the site while sentinel-recompute, which redraws
+// every answer with this rule, would not count it. Judging every answer
+// again at start holds the two together whatever order the components are
+// upgraded in, with no schema change. The cost is the answers on record, a
+// few per not-served reading.
+//
+// A withdrawal the earlier rule wrote (a FAULT amended to PROBE_ERROR, with
+// cleared_by and a line in amendments.jsonl) keeps its cleared_by: it is on
+// the record, and sentinel-recompute applies it as recorded.
+func (s *Store) RejudgeConfirmations(ctx context.Context) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, rejudgeConfirmationsSQL)
+	if err != nil {
+		return 0, err
+	}
+	type drawn struct {
+		served, confirmed      string // what the rule draws, first vantage in name order
+		clearedBy, confirmedBy string // what the row holds
+		withdrawn              bool
+	}
+	var order []string
+	per := map[string]*drawn{}
+	for rows.Next() {
+		var cleared, confirmed string
+		var withdrawn bool
+		d, err := judgeAnswer(rows, &cleared, &confirmed, &withdrawn)
+		if err != nil {
+			rows.Close()
+			return 0, err
+		}
+		a, ok := per[d.ProbeKey]
+		if !ok {
+			a = &drawn{clearedBy: cleared, confirmedBy: confirmed, withdrawn: withdrawn}
+			per[d.ProbeKey] = a
+			order = append(order, d.ProbeKey)
+		}
+		switch d.Result {
+		case verdict.ConfirmServed:
+			if a.served == "" {
+				a.served = d.Vantage
+			}
+		case verdict.ConfirmConfirmed:
+			if a.confirmed == "" {
+				a.confirmed = d.Vantage
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	changed := 0
+	for _, k := range order {
+		a := per[k]
+		cleared := a.served
+		if a.withdrawn {
+			cleared = a.clearedBy
+		}
+		confirmed := a.confirmed
+		if cleared != "" {
+			confirmed = ""
+		}
+		if cleared == a.clearedBy && confirmed == a.confirmedBy {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE probes SET cleared_by = NULLIF(?, ''), confirmed_by = NULLIF(?, '') WHERE dedupe_key = ?`,
+			cleared, confirmed, k); err != nil {
+			return 0, err
+		}
+		changed++
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE probe_confirmations SET judged = 1
+		WHERE judged = 0 AND EXISTS (SELECT 1 FROM probes pr WHERE pr.dedupe_key = probe_confirmations.probe_key)`); err != nil {
+		return 0, err
+	}
+	return changed, tx.Commit()
+}
+
 // SettleConfirmation records a decision: confirmed_by on the row when the
-// other vantage confirmed it, cleared_by when it got the rows (which also
+// other vantage confirmed it, cleared_by when it got the validator's rows
+// back verified (which also
 // takes back a confirmation another vantage gave: a row any vantage got
 // the rows of does not count, verdict.ConfirmNotServedBy), and the answer
 // marked judged either way.
@@ -171,11 +279,25 @@ func (s *Store) SettleConfirmation(d ConfirmDecision) error {
 // answers not yet judged (a partial index: nearly none) and reaches each
 // row by its primary key, so it costs what is new, not what is stored. The
 // answer's client_rules flag and clock offset are read from its own record
-// (the table has no column for them).
-const judgeConfirmationsSQL = `SELECT c.dedupe_key, c.probe_key, c.vantage, c.started_at, c.phase, c.classification, c.commitment_verified,
-		COALESCE(json_extract(c.raw_json, '$.client_rules'), 0) = 1, COALESCE(json_extract(c.raw_json, '$.clock_offset_ms'), 0),
-		pr.started_at, COALESCE(pr.clock_offset_ms, 0), pr.must_serve_until,
-		pr.schedule_label, pr.classification, COALESCE(pr.classification_at_probe, ''), pr.commitment_verified, pr.rows_returned, pr.assigned_row_count
+// (the table has no column for them; the retention pass never strips
+// probe_confirmations.raw_json).
+const judgeConfirmationsSQL = `SELECT ` + judgeColumns + `
 	FROM probe_confirmations c JOIN probes pr ON pr.dedupe_key = c.probe_key
 	WHERE c.judged = 0
+	ORDER BY c.probe_key, c.vantage`
+
+// judgeColumns are what judgeAnswer reads: the answer, then its row.
+const judgeColumns = `c.dedupe_key, c.probe_key, c.vantage, c.started_at, c.phase, c.classification, c.commitment_verified,
+		c.assignment_verified, c.rows_returned,
+		COALESCE(json_extract(c.raw_json, '$.client_rules'), 0) = 1, COALESCE(json_extract(c.raw_json, '$.clock_offset_ms'), 0),
+		pr.started_at, COALESCE(pr.clock_offset_ms, 0), pr.must_serve_until,
+		pr.schedule_label, pr.classification, COALESCE(pr.classification_at_probe, ''), pr.commitment_verified, pr.rows_returned, pr.assigned_row_count`
+
+// rejudgeConfirmationsSQL is every answer on record whose row is in the
+// store, in the order ConfirmNotServedBy folds them, with what the row
+// holds now and whether it is a withdrawal of the earlier rule.
+const rejudgeConfirmationsSQL = `SELECT ` + judgeColumns + `,
+		COALESCE(pr.cleared_by, ''), COALESCE(pr.confirmed_by, ''),
+		pr.cleared_by IS NOT NULL AND pr.amended_at IS NOT NULL AND pr.classification = 'PROBE_ERROR' AND COALESCE(pr.classification_at_probe, '') = 'FAULT'
+	FROM probe_confirmations c JOIN probes pr ON pr.dedupe_key = c.probe_key
 	ORDER BY c.probe_key, c.vantage`

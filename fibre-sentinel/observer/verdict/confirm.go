@@ -1,6 +1,10 @@
 package verdict
 
 import (
+	"bufio"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -25,13 +29,16 @@ import (
 //     inside the window by its own clock as well, and got no rows for a
 //     reason that is the validator's: a class that leaves the reader
 //     without rows (probe.Confirmable), not a gap on its own side.
-//   - Served: under the same conditions it got rows that verified against
-//     the commitment. The row does not count, and says who fetched them
-//     (cleared_by); nothing is withdrawn or rewritten, so the reading and
-//     the correlated-failure guard are this observer's own.
+//   - Served: under the same conditions it got the validator's rows back,
+//     verified: its own assignment, or at least as many rows as the
+//     validator holds, verified against the commitment. The row does not
+//     count, and says who fetched them (cleared_by); nothing is withdrawn
+//     or rewritten, so the reading and the correlated-failure guard are
+//     this observer's own.
 //   - Anything else (no answer, one past its deadline, a gap on the other
-//     side, a build that read by other rules): no confirmation, and the row
-//     does not count.
+//     side, a build that read by other rules, or verified rows fewer than
+//     the validator holds, which neither confirms the reading nor fetched
+//     the validator's rows): no confirmation, and the row does not count.
 
 // ConfirmWindow is probe.ConfirmWindow, named here beside the rule.
 const ConfirmWindow = probe.ConfirmWindow
@@ -41,6 +48,9 @@ type NotServed struct {
 	StartedAt      time.Time
 	ClockOffsetMS  int64
 	MustServeUntil time.Time
+	// Held is how many rows the validator holds (the row's
+	// assigned_row_count): an answer with fewer did not fetch its rows.
+	Held int
 }
 
 // Confirmation is what the rule needs from another vantage's answer.
@@ -51,6 +61,11 @@ type Confirmation struct {
 	Phase              probe.Phase
 	Classification     probe.Classification
 	CommitmentVerified bool
+	// AssignmentVerified: the rows that came back are the validator's own
+	// assignment, every one of them.
+	AssignmentVerified bool
+	// RowsReturned is how many rows came back.
+	RowsReturned int
 	// ClientRules: the answer was read under the Fibre client's rules.
 	ClientRules bool
 }
@@ -61,8 +76,8 @@ type ConfirmResult int
 const (
 	// ConfirmNone: no answer the rule can use; the row does not count.
 	ConfirmNone ConfirmResult = iota
-	// ConfirmServed: the other vantage got verified rows; the row does not
-	// count.
+	// ConfirmServed: the other vantage got the validator's rows back,
+	// verified; the row does not count.
 	ConfirmServed
 	// ConfirmConfirmed: the other vantage did not get the rows either, for
 	// a reason that is the validator's; the row counts.
@@ -85,12 +100,70 @@ func ConfirmNotServed(r NotServed, c Confirmation) ConfirmResult {
 		return ConfirmNone
 	}
 	switch {
-	case c.CommitmentVerified || c.Classification == probe.ClassHealthy:
+	case c.Classification == probe.ClassHealthy || c.AssignmentVerified ||
+		(c.CommitmentVerified && r.Held > 0 && c.RowsReturned >= r.Held):
 		return ConfirmServed
+	case c.CommitmentVerified:
+		// Verified rows, fewer than the validator holds: the other vantage
+		// did not fetch its rows, and it got some, so the answer neither
+		// confirms the reading nor clears it.
+		return ConfirmNone
 	case probe.Confirmable(probe.EndReadLabel, c.Classification):
 		return ConfirmConfirmed
 	}
 	return ConfirmNone
+}
+
+// ConfirmationOf is the rule's input from another vantage's row.
+func ConfirmationOf(m probe.Measurement) Confirmation {
+	return Confirmation{Vantage: m.Vantage, StartedAt: m.StartedAt, ClockOffsetMS: m.ClockOffsetMS, Phase: m.Phase,
+		Classification: m.Classification, CommitmentVerified: m.Download.CommitmentVerified,
+		AssignmentVerified: m.Download.AssignmentVerified, RowsReturned: m.Download.RowsReturned, ClientRules: m.ClientRules}
+}
+
+// NotServedOf is the rule's input from this observer's own row.
+func NotServedOf(m probe.Measurement) NotServed {
+	return NotServed{StartedAt: m.StartedAt, ClockOffsetMS: m.ClockOffsetMS, MustServeUntil: m.MustServeUntil, Held: m.AssignedRowCount}
+}
+
+// ConfirmationKey is the slot an answer is about, without a vantage: the
+// promise, the validator and the reading's scheduled time (the key of
+// probe.ConfirmRequest).
+func ConfirmationKey(promiseHash, validator string, scheduledAt time.Time) string {
+	return promiseHash + "|" + validator + "|" + scheduledAt.UTC().Format(time.RFC3339Nano)
+}
+
+// LoadConfirmations reads every other vantage's answers under dir, by
+// ConfirmationKey: <dir>/<name>/measurements.jsonl, which is the live
+// record's vantages directory and the same path in an untarred daily
+// export. Line by line and forgiving, as the collector's tail is: a copy
+// that ends in half a line (a pull in progress) loses that line only. A
+// missing dir is no answers.
+func LoadConfirmations(dir string) map[string][]Confirmation {
+	out := map[string][]Confirmation{}
+	files, _ := filepath.Glob(filepath.Join(dir, "*", "measurements.jsonl"))
+	sort.Strings(files)
+	for _, path := range files {
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		r := bufio.NewReaderSize(f, 1<<20)
+		for {
+			line, err := r.ReadBytes('\n')
+			if err != nil {
+				break
+			}
+			var m probe.Measurement
+			if json.Unmarshal(line, &m) != nil || m.Vantage == "" || m.PromiseHash == "" {
+				continue
+			}
+			k := ConfirmationKey(m.PromiseHash, m.ValidatorAddress, m.ScheduledAt)
+			out[k] = append(out[k], ConfirmationOf(m))
+		}
+		f.Close()
+	}
+	return out
 }
 
 // ConfirmNotServedBy folds every confirming row of one reading: servedBy is

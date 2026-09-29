@@ -183,7 +183,7 @@ func main() {
 	}
 	var exporter *export.Builder
 	if *expHour >= 0 {
-		exporter = &export.Builder{DataDir: *dataDir, Dir: *expDir, Vantage: *vantage, Build: status.BuildRevision(), Hour: *expHour, Logf: log.Printf}
+		exporter = &export.Builder{DataDir: *dataDir, VantagesDir: *vantDir, Dir: *expDir, Vantage: *vantage, Build: status.BuildRevision(), Hour: *expHour, Logf: log.Printf}
 		// A configured key that cannot be loaded stops the collector rather
 		// than falling back to unsigned: an operator who asked for signed
 		// exports would otherwise publish unsigned ones without noticing.
@@ -274,7 +274,25 @@ func main() {
 	// only then does it count; one whose rows the other vantage got is
 	// marked with who fetched them. Nothing is withdrawn or rewritten, so
 	// the answers leave no amendment.
+	//
+	// The first pass draws every answer on record again under this build's
+	// rule (store.RejudgeConfirmations), and keeps trying until it has: a
+	// row an older build confirmed counts only if this rule confirms it
+	// too, as sentinel-recompute draws it.
+	rejudged := false
 	judgeConfirmations := func(now time.Time) {
+		if !rejudged {
+			n, err := st.RejudgeConfirmations(ctx)
+			if err != nil {
+				log.Printf("confirmations: drawing the stored answers again: %v", err)
+				live.Error(fmt.Sprintf("confirmations re-judge: %v", err))
+				return
+			}
+			rejudged = true
+			if n > 0 {
+				log.Printf("confirmations: %d row(s) set to what this build's rule draws from their answers", n)
+			}
+		}
 		ds, err := st.JudgeConfirmations(ctx, now)
 		if err != nil {
 			log.Printf("confirmations: %v", err)

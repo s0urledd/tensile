@@ -15,8 +15,8 @@
 //     (corrections.jsonl) — each redrawn rather than trusted, so a
 //     fabricated correction is a divergence;
 //   - the not-served rows a second vantage confirmed, from its rows under
-//     vantages/<name>/measurements.jsonl when present
-//     (verdict.ConfirmNotServed): only those can count;
+//     vantages/<name>/measurements.jsonl, which the live record and every
+//     daily export carry (verdict.ConfirmNotServed): only those can count;
 //   - with -sampling, the admission draws of every day whose secret is
 //     revealed (sampling-secrets.jsonl): which publications this observer
 //     should have probed against which ones it did, and which it recorded
@@ -49,6 +49,7 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
+	"github.com/plsgiveup/fibre/fibre-sentinel/observer/export"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/policy"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/verdict"
@@ -316,13 +317,17 @@ func main() {
 
 	// ---- not-served rows confirmed from a second vantage ----
 	//
-	// Redrawn from the other vantages' rows when the record carries them
-	// (vantages/<name>/measurements.jsonl): a not-served row counts only
-	// once one of them confirmed it (verdict.ConfirmNotServed), so without
-	// those rows nothing counts not served. A withdrawal the earlier rule
-	// wrote (an amendments.jsonl line with cleared_by) is applied as
+	// Redrawn from the other vantages' rows (vantages/<name>/measurements.jsonl,
+	// in the live record and in every daily export): a not-served row counts
+	// only once one of them confirmed it (verdict.ConfirmNotServed), so
+	// without those rows nothing counts not served. A withdrawal the earlier
+	// rule wrote (an amendments.jsonl line with cleared_by) is applied as
 	// recorded, as the store holds it; the rule writes none any more.
-	confirms := loadConfirmations(filepath.Join(*dataDir, "vantages"))
+	confirms := verdict.LoadConfirmations(filepath.Join(*dataDir, export.VantagesMemberDir))
+	nConfirms := 0
+	for _, cs := range confirms {
+		nConfirms += len(cs)
+	}
 	confirmed := make([]bool, len(ms))
 	var servedN, confirmedN, withdrawn int
 	for i := range ms {
@@ -332,13 +337,12 @@ func main() {
 			ms[i].Classification = verdict.ClearedClass
 			continue
 		}
-		cs, have := confirms[m.PromiseHash+"|"+m.ValidatorAddress+"|"+m.ScheduledAt.UTC().Format(time.RFC3339Nano)]
+		cs, have := confirms[verdict.ConfirmationKey(m.PromiseHash, m.ValidatorAddress, m.ScheduledAt)]
 		due := probe.Confirmable(m.ScheduleLabel, m.Classification) || probe.Confirmable(m.ScheduleLabel, asRead[i]) || (m.Download.CommitmentVerified && m.Download.RowsReturned < m.AssignedRowCount)
 		if !have || !due {
 			continue
 		}
-		servedBy, confirmedBy := verdict.ConfirmNotServedBy(verdict.NotServed{StartedAt: m.StartedAt, ClockOffsetMS: m.ClockOffsetMS,
-			MustServeUntil: m.MustServeUntil}, cs)
+		servedBy, confirmedBy := verdict.ConfirmNotServedBy(verdict.NotServedOf(m), cs)
 		if servedBy != "" {
 			servedN++
 		}
@@ -347,8 +351,8 @@ func main() {
 			confirmed[i] = true
 		}
 	}
-	fmt.Printf("confirm| %d not-served row(s) confirmed from another vantage (only these can count), %d fetched there; %d withdrawal(s) of the earlier rule applied as recorded\n",
-		confirmedN, servedN, withdrawn)
+	fmt.Printf("confirm| %d answer(s) from other vantages on record; %d not-served row(s) confirmed there (only these can count), %d fetched there; %d withdrawal(s) of the earlier rule applied as recorded\n",
+		nConfirms, confirmedN, servedN, withdrawn)
 
 	// ---- obligations ----
 	rows := make([]verdict.Row, 0, len(ms))
@@ -776,38 +780,6 @@ func loadFrontier(dir string, pubs []scan.Publication) time.Time {
 		}
 	}
 	return out.UTC()
-}
-
-// loadConfirmations reads every other vantage's measurements.jsonl under
-// dir, keyed by the slot each row answers (promise|validator|scheduled_at);
-// a missing dir is none.
-func loadConfirmations(dir string) map[string][]verdict.Confirmation {
-	out := map[string][]verdict.Confirmation{}
-	files, _ := filepath.Glob(filepath.Join(dir, "*", "measurements.jsonl"))
-	for _, path := range files {
-		f, err := os.Open(path)
-		if err != nil {
-			continue
-		}
-		// Line by line and forgiving, as the collector's tail is: a copy
-		// that ends in half a line (a pull in progress) loses that line only.
-		r := bufio.NewReaderSize(f, 1<<20)
-		for {
-			line, err := r.ReadBytes('\n')
-			if err != nil {
-				break
-			}
-			var m probe.Measurement
-			if json.Unmarshal(line, &m) != nil || m.Vantage == "" || m.PromiseHash == "" {
-				continue
-			}
-			k := m.PromiseHash + "|" + m.ValidatorAddress + "|" + m.ScheduledAt.UTC().Format(time.RFC3339Nano)
-			out[k] = append(out[k], verdict.Confirmation{Vantage: m.Vantage, StartedAt: m.StartedAt, ClockOffsetMS: m.ClockOffsetMS,
-				Phase: m.Phase, Classification: m.Classification, CommitmentVerified: m.Download.CommitmentVerified, ClientRules: m.ClientRules})
-		}
-		f.Close()
-	}
-	return out
 }
 
 // loadAmendments reads amendments.jsonl by probe key; a missing file is

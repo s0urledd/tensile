@@ -67,6 +67,42 @@ func TestConfirmNotServed(t *testing.T) {
 	}
 }
 
+// The other vantage fetched the validator's rows only when it got all of
+// them back verified. Verified rows fewer than the validator holds are
+// neither: they do not say the rows were fetched, and the validator
+// answered with rows, so they do not confirm a not-served reading either.
+func TestAShortVerifiedAnswerThereIsNoAnswer(t *testing.T) {
+	at := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	r := NotServed{StartedAt: at, MustServeUntil: at.Add(10 * time.Minute), Held: 8}
+	for _, c := range []struct {
+		name               string
+		cls                probe.Classification
+		verified, assigned bool
+		rows               int
+		want               ConfirmResult
+	}{
+		{"its assignment, verified", probe.ClassHealthy, true, true, 8, ConfirmServed},
+		{"as many genuine rows as it holds", probe.ClassUnmatchedGenuine, true, false, 8, ConfirmServed},
+		{"the same short shard", probe.ClassUnmatchedGenuine, true, false, 4, ConfirmNone},
+		{"one of eight", probe.ClassShadowedShard, true, false, 1, ConfirmNone},
+		{"a short shard deferred there", probe.ClassProbeError, true, false, 3, ConfirmNone},
+		{"no rows there", probe.ClassFault, false, false, 0, ConfirmConfirmed},
+	} {
+		got := ConfirmNotServed(r, Confirmation{Vantage: "de-1", StartedAt: at.Add(3 * time.Minute), Phase: probe.PhaseInWindow,
+			Classification: c.cls, CommitmentVerified: c.verified, AssignmentVerified: c.assigned, RowsReturned: c.rows, ClientRules: true})
+		if got != c.want {
+			t.Errorf("%s: %d, want %d", c.name, got, c.want)
+		}
+	}
+	// A row that does not say how many rows the validator holds: only its
+	// own assignment, verified, is the rows fetched.
+	unknown := NotServed{StartedAt: at, MustServeUntil: at.Add(10 * time.Minute)}
+	if got := ConfirmNotServed(unknown, Confirmation{StartedAt: at.Add(time.Minute), Phase: probe.PhaseInWindow,
+		Classification: probe.ClassUnmatchedGenuine, CommitmentVerified: true, RowsReturned: 8, ClientRules: true}); got != ConfirmNone {
+		t.Errorf("genuine rows against a row that holds none on record: %d, want none", got)
+	}
+}
+
 // Several vantages: one that got the rows means the reading is not
 // confirmed, whatever another says.
 func TestConfirmNotServedByFoldsVantages(t *testing.T) {
