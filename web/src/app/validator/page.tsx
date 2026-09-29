@@ -218,7 +218,7 @@ function Page() {
               title="Rows the assignment gives this validator on the newest settled blob. Rows follow stake, not blob size." />
             <Metric label="Shard data" value={notLive ? "—" : bytes(load.bytes)} tone={notLive ? "absent" : undefined}
               help={`${int(load.promises)} endorsed blobs in the period`}
-              title="Bytes of the shards this validator stored and endorsed, over the settled blobs of the period." />
+              title="Row data of the shards this validator stored and endorsed over the period's settled blobs: blob_size / 4096 per row, padding included. The row proofs stored beside them are not counted." />
             <Metric label="Held now" value={bytes(load.stored_bytes)} help="retention window still running"
               title="Shard data this validator must hold at this moment: endorsed blobs whose retention window has not ended." />
           </>}

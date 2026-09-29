@@ -117,7 +117,7 @@ function stackPx(vals: number[], px: number): { ext: number; gap: number }[] {
   return out;
 }
 
-export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title, sub, figure, empty }: {
+export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title, sub, figure, figureTitle, empty }: {
   series: Series[];
   rows: Row[];
   fmt: (v: number) => string;
@@ -128,6 +128,8 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
   sub?: string;
   /** the period's total, printed large under the title: "1.35 GiB" (the period itself is in the title: "Blob size per day (7d)") */
   figure?: string;
+  /** the figure's hover text, when the total needs one sentence of explanation */
+  figureTitle?: string;
   empty?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -262,7 +264,7 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
         <div className="chart-title">{single && <i className="chart-key" aria-hidden="true" />}{title}</div>
         <div className="chart-figure">
           {figure !== undefined
-            ? <b className="num">{figure}</b>
+            ? <b className="num" title={figureTitle}>{figure}</b>
             : sub !== undefined ? <span>{sub}</span> : <b aria-hidden="true">&nbsp;</b>}
         </div>
       </div>

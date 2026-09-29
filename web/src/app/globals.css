@@ -382,10 +382,12 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
 }
 .rate.share { display: inline; }
 .rate.share.endorsed { font-weight: 400; color: var(--text); }
-/* the validators table's rows are set in DM Sans, bold, but for the provider and the last endorsement; the headings and the addresses keep the site's faces */
-.vt tbody td { font-family: var(--font-table); font-weight: 700; }
-.vt tbody .mon, .vt tbody .rate.share.endorsed { font-weight: 700; }
-.vt tbody .addr, .vt tbody td.plain { font-weight: 400; }
+/* the validators table's rows are set in DM Sans in three steps, as explorer tables are: the name that says whose
+   row it is semibold, the figures and the endpoint state medium, the provider and the last endorsement regular;
+   the headings and the addresses keep the site's faces */
+.vt tbody td { font-family: var(--font-table); font-weight: 400; }
+.vt tbody .mon { font-weight: 600; }
+.vt tbody .fig, .vt tbody .fig .rate, .vt tbody .state { font-weight: 500; }
 .vt tbody tr { position: relative; }
 .vt tbody tr:not(.empty) { cursor: pointer; }
 .vt .rowcover { position: absolute; inset: 0; z-index: 0; }

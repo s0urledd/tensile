@@ -129,7 +129,7 @@ function Page() {
           <div className="board-charts">
             <Chart title={withPeriod(`Fees paid per ${per}`, m.window.name)} figure={tia(m.fees_settled_utia)} series={[{ key: "fees", label: "fees", color: "var(--accent)" }]} rows={feeRows}
               fmt={(v) => tia(v)} fmtAxis={axisTia} height={210} />
-            <Chart title={withPeriod(`Blob size per ${per}, by publisher`, m.window.name)} figure={bytes(m.bytes)} series={series} rows={byteRows} fmt={mib} fmtAxis={axisMib} height={210} />
+            <Chart title={withPeriod(`Blob size per ${per}, by publisher`, m.window.name)} figure={bytes(m.bytes)} figureTitle="Summed over settlements: a blob settled twice counts twice." series={series} rows={byteRows} fmt={mib} fmtAxis={axisMib} height={210} />
           </div>
         );
       })()}

@@ -58,7 +58,7 @@ export default function Methodology() {
       <p>A reading stops once the rows are enough, so a validator is asked for some blobs, not all of them, as any client would ask it.</p>
 
       <h2 id="shard-data">Shard data</h2>
-      <p><strong>Shard data</strong> is the bytes of the shards a validator stored and endorsed: its rows, each <code>blob_size / original_rows</code> bytes, of every settled blob it endorsed, kept for the retention window. <strong>Rows per blob</strong> is its share of every blob, by stake. All of it is read from the chain, nothing measured.</p>
+      <p><strong>Shard data</strong> is the row data of the shards a validator stored and endorsed: its rows, each <code>blob_size / original_rows</code> bytes with padding, of every settled blob it endorsed, kept for the retention window. The row proofs a validator stores beside them, about a fifth more on a 16 MiB blob, are not counted. <strong>Rows per blob</strong> is its share of every blob, by stake. All of it is read from the chain, nothing measured.</p>
 
       <h2 id="publishers">Publishers and fees</h2>
       <ul>
