@@ -141,6 +141,9 @@ function send(req, res, status, found, rel) {
   (gzip ? stream.pipe(zlib.createGzip()) : stream).pipe(res);
 }
 
+// SLOW_MS is when an API answer is worth a journal line.
+const SLOW_MS = 1000;
+
 const HOP = new Set(["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer", "host"]);
 
 function proxy(req, res, u) {
@@ -149,6 +152,13 @@ function proxy(req, res, u) {
     return res.end();
   }
   if (!u.pathname.startsWith("/api/v1/avatars/") && !admit(req, res)) return;
+  // A page waiting on the API is the thing to catch before a visitor does:
+  // every answer slower than SLOW_MS goes to the journal with its time.
+  const t0 = Date.now();
+  res.on("finish", () => {
+    const ms = Date.now() - t0;
+    if (ms >= SLOW_MS) console.log(`site-server: slow ${u.pathname}${u.search} ${res.statusCode} ${ms} ms`);
+  });
   const headers = {};
   for (const [k, v] of Object.entries(req.headers)) if (!HOP.has(k)) headers[k] = v;
   const up = http.request({ host: API.host, port: API.port, method: req.method, path: u.pathname.slice(4) + u.search, headers, timeout: 60_000 }, (r) => {
