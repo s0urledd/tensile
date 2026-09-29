@@ -3094,9 +3094,12 @@ type blobRow struct {
 	CreationTimestamp  string `json:"creation_timestamp"`
 	MustServeUntil     string `json:"must_serve_until"`
 	ValidatorsWithRows int    `json:"validators_with_rows"`
-	SigmaRows          int    `json:"sigma_rows"`
-	DistinctRows       int    `json:"distinct_rows"`
-	AssignmentError    string `json:"assignment_error,omitempty"`
+	// SigmaRows and DistinctRows are the assignment's row counts, 16371 of
+	// 16384 on every blob of the current set; the verdict reads them from
+	// the store.
+	SigmaRows       int    `json:"-"`
+	DistinctRows    int    `json:"-"`
+	AssignmentError string `json:"assignment_error,omitempty"`
 	// AttestedPower is the voting power whose signature over the promise
 	// verified, over TotalPower, the set's total at the promise height; absent
 	// for a record from before signatures were verified.
@@ -3105,10 +3108,13 @@ type blobRow struct {
 	// AttestedWithRows is how many of ValidatorsWithRows carry a verified
 	// signature over the promise: the endorsements MsgPayForFibre settled
 	// with. Absent, like AttestedPower, before signatures were verified.
-	AttestedWithRows *int         `json:"attested_with_rows,omitempty"`
-	ProbeCount       int64        `json:"probe_count"`
-	Classes          classCounts  `json:"classes"`
-	Reconstructable  *reconstruct `json:"reconstructable"`
+	AttestedWithRows *int `json:"attested_with_rows,omitempty"`
+	// ProbeCount and Classes tally the blob's reading rows, the validators
+	// the reading never needed to ask included; kept with the verdict, not
+	// published.
+	ProbeCount      int64        `json:"-"`
+	Classes         classCounts  `json:"-"`
+	Reconstructable *reconstruct `json:"reconstructable"`
 	// Charge is the fee side of this promise from the payments table: what
 	// the module charged, and whether the promise settled or timed out. Null
 	// for a publication whose payment was not recorded (ingested before the
@@ -3135,8 +3141,10 @@ type reconstruct struct {
 	// must_serve_until, or for a blob read on the earlier schedule the newest
 	// point in the window every endorsing validator was reached at (or
 	// failing that, any validator).
-	PointAt    string `json:"point_at"`
-	WindowOver bool   `json:"window_over"`
+	PointAt string `json:"point_at"`
+	// WindowOver is must_serve_until at or before now, which the blob row
+	// publishes.
+	WindowOver bool `json:"-"`
 	// ServedRows is the distinct rows that came back verified, NeededRows
 	// the rows that reconstruct the blob (original_rows), TotalRows its
 	// encoded row count (16384 for blob version 0).
@@ -3585,7 +3593,7 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
-	out := map[string]any{"vantage": s.vantage, "blobs": blobs, "limit": limit, "offset": offset, "total": total, "truncated": truncated,
+	out := map[string]any{"blobs": blobs, "limit": limit, "offset": offset, "total": total, "truncated": truncated,
 		"namespace": strings.ToLower(r.URL.Query().Get("namespace"))}
 	if truncated && len(blobs) > 0 {
 		// The cursor this route already takes, filled in so a caller does not
@@ -3641,6 +3649,13 @@ const blobServiceSQL = `SELECT validator_address,
 func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	hash := strings.ToLower(r.PathValue("hash"))
 	ctx := r.Context()
+	// The readings' row indices and their digest, as on /v1/probes: what a
+	// verifier re-deriving the verdict needs, and most of the answer's bytes.
+	withRows, err := parseRows(r)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
 	blobs, err := s.blobRows(ctx, `promise_hash = ?`, 1, hash)
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)
@@ -3675,7 +3690,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		assigns = append(assigns, a)
 	}
 	rows.Close()
-	probes, err := s.probeRows(ctx, `promise_hash = ?`, 1000, true, hash)
+	probes, err := s.probeRows(ctx, `promise_hash = ?`, 1000, withRows, hash)
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
@@ -3691,7 +3706,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.st.DB().QueryRowContext(ctx, `SELECT shard_retention_s, payment_promise_timeout_s FROM publications WHERE promise_hash = ?`, hash).Scan(&params.ShardRetentionS, &params.PaymentPromiseTimeoutS)
 	writeJSON(w, 200, map[string]any{"blob": blobs[0], "params": params, "assignments": assigns,
-		"probes": probes, "probes_truncated": moreProbes, "vantage": s.vantage})
+		"probes": blobReadings(probes), "probes_truncated": moreProbes})
 }
 
 // blobService fills each assignment's Service from the obligation buckets
@@ -3846,7 +3861,9 @@ const policyRevealNote = "seven days"
 // ---- probes ----
 
 type probeRow struct {
-	Vantage          string `json:"vantage"`
+	// Vantage is the one this observer reads blobs from; the validator page
+	// keys its rows with it.
+	Vantage          string `json:"-"`
 	PromiseHash      string `json:"promise_hash"`
 	ValidatorAddress string `json:"validator_address"`
 	ValidatorHost    string `json:"validator_host"`
@@ -3866,26 +3883,21 @@ type probeRow struct {
 	RowsReturned     int    `json:"rows_returned"`
 	RowsExpected     int    `json:"rows_expected"`
 	TotalDurationMS  int64  `json:"total_duration_ms"`
-	TLSOK            bool   `json:"tls_ok"`
-	IdentityOK       bool   `json:"identity_ok"`
 	RawError         string `json:"raw_error,omitempty"`
 	// RetryFirstOutcome is set when this validator was asked twice in the
 	// reading (the client's re-dial after a failed dial, an unreachable or a
 	// timed-out peer): the outcome of the first attempt, so a reader can see
 	// "the first try timed out" rather than only the final answer.
 	RetryFirstOutcome string `json:"retry_first_outcome,omitempty"`
-	ClockOffsetMS     int64  `json:"clock_offset_ms,omitempty"`
 	// The evidence behind the verdict, when the row carries it (rows from
 	// before schema 9 do not): the row indices returned, a digest of the
-	// returned payload, the gRPC status code, the promise whose shard
-	// answered instead, and the observer build and chain app version the
-	// classification was made under.
-	RowIndices    []uint32 `json:"row_indices,omitempty"`
-	RowsSHA256    string   `json:"rows_sha256,omitempty"`
-	RPCCode       string   `json:"rpc_code,omitempty"`
-	ShadowedBy    string   `json:"shadowed_by,omitempty"`
-	ObserverBuild string   `json:"observer_build,omitempty"`
-	AppVersion    int64    `json:"app_version,omitempty"`
+	// returned payload, the gRPC status code, and the promise whose shard
+	// answered instead. The build, the chain app version and the clock the
+	// reading ran under are in the daily exports.
+	RowIndices []uint32 `json:"row_indices,omitempty"`
+	RowsSHA256 string   `json:"rows_sha256,omitempty"`
+	RPCCode    string   `json:"rpc_code,omitempty"`
+	ShadowedBy string   `json:"shadowed_by,omitempty"`
 	// RetentionUnverified says this row's publication sits inside an
 	// x/fibre params range this observer has not read every height of, so
 	// the deadline its phase and verdict were drawn against may not be the
@@ -3948,9 +3960,9 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 		rowCols = `'', ''`
 	}
 	q := `SELECT vantage, promise_hash, validator_address, validator_host, assigned, attested, assigned_row_count, schedule_label, scheduled_at,
-		started_at, phase, outcome, ` + rollup.EffectiveClass("") + `, classification_reason, rows_returned, rows_expected, total_duration_ms, tls_ok, identity_ok, raw_error,
-		COALESCE(retry_first_outcome, ''), COALESCE(clock_offset_ms, 0),
-		` + rowCols + `, COALESCE(rpc_code, ''), COALESCE(shadowed_by, ''), COALESCE(observer_build, ''), COALESCE(app_version, 0),
+		started_at, phase, outcome, ` + rollup.EffectiveClass("") + `, classification_reason, rows_returned, rows_expected, total_duration_ms, raw_error,
+		COALESCE(retry_first_outcome, ''),
+		` + rowCols + `, COALESCE(rpc_code, ''), COALESCE(shadowed_by, ''),
 		COALESCE(shadow_gap, ''), COALESCE(classification_at_probe, ''), COALESCE(amended_at, ''),
 		COALESCE(host_at_settlement, ''), COALESCE(settlement_host_outcome, ''), settlement_host_served,
 		retention_unverified, COALESCE(phase_at_probe, ''), COALESCE(corrected_at, ''),
@@ -3972,7 +3984,7 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 	now := time.Now()
 	for rows.Next() {
 		var p probeRow
-		var assigned, tls, id, held int
+		var assigned, held int
 		var att sql.NullInt64
 		var idxJSON string
 		var served sql.NullInt64
@@ -3980,8 +3992,8 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 		var late bool
 		if err := rows.Scan(&p.Vantage, &p.PromiseHash, &p.ValidatorAddress, &p.ValidatorHost, &assigned, &att, &p.AssignedRowCount, &p.ScheduleLabel,
 			&p.ScheduledAt, &p.StartedAt, &p.Phase, &p.Outcome, &p.Classification, &p.Reason, &p.RowsReturned, &p.RowsExpected,
-			&p.TotalDurationMS, &tls, &id, &p.RawError, &p.RetryFirstOutcome, &p.ClockOffsetMS,
-			&idxJSON, &p.RowsSHA256, &p.RPCCode, &p.ShadowedBy, &p.ObserverBuild, &p.AppVersion,
+			&p.TotalDurationMS, &p.RawError, &p.RetryFirstOutcome,
+			&idxJSON, &p.RowsSHA256, &p.RPCCode, &p.ShadowedBy,
 			&p.ShadowGap, &p.ClassificationAtProbe, &p.AmendedAt, &p.HostAtSettlement, &p.SettlementHostOutcome, &served,
 			&held, &p.PhaseAtProbe, &p.CorrectedAt, &counted, &late); err != nil {
 			return nil, err
@@ -4003,7 +4015,7 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 		if idxJSON != "" {
 			_ = json.Unmarshal([]byte(idxJSON), &p.RowIndices)
 		}
-		p.Assigned, p.TLSOK, p.IdentityOK = assigned == 1, tls == 1, id == 1
+		p.Assigned = assigned == 1
 		if att.Valid {
 			b := att.Int64 == 1
 			p.Attested = &b
@@ -4059,14 +4071,10 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 	// verdict needs (docs/verdicts.md), and most of every row's bytes. The
 	// readings themselves, which is what a page or an operator watching one
 	// validator reads, come without them unless asked for.
-	withRows := false
-	if v := q.Get("rows"); v != "" {
-		b, err := strconv.ParseBool(v)
-		if err != nil {
-			writeErr(w, 400, "rows must be 1 or 0")
-			return
-		}
-		withRows = b
+	withRows, err := parseRows(r)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
 	}
 	most := probesMax
 	if withRows {
@@ -4144,13 +4152,27 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, truncated := trim(rows, limit)
-	out := map[string]any{"vantage": s.vantage, "probes": rows, "limit": limit, "truncated": truncated, "rows_included": withRows}
+	out := map[string]any{"probes": rows, "limit": limit, "truncated": truncated, "rows_included": withRows}
 	if truncated && len(rows) > 0 {
 		// Where to continue from: everything strictly older than the last row
 		// returned. Paired with the same filters it walks the whole selection.
 		out["next_before"] = rows[len(rows)-1].StartedAt
 	}
 	writeJSON(w, 200, out)
+}
+
+// parseRows reads ?rows=, the opt-in for the readings' row indices and
+// their digest.
+func parseRows(r *http.Request) (bool, error) {
+	v := r.URL.Query().Get("rows")
+	if v == "" {
+		return false, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, errors.New("rows must be 1 or 0")
+	}
+	return b, nil
 }
 
 // trim cuts an over-fetched page back to the limit and says whether there was

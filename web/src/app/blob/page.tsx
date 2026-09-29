@@ -2,7 +2,7 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useApi, type Blob, type Probe, type Meta, int, bytes, tia, utcWord, hhmm, hhmmss, dur, shortMid, nsDisplay, notFound, pctOf, API_BASE } from "@/lib/api";
+import { useApi, type Blob, type BlobReading, type Meta, int, bytes, tia, utcWord, hhmm, hhmmss, dur, shortMid, nsDisplay, notFound, pctOf, API_BASE } from "@/lib/api";
 import StatusLine from "@/components/StatusLine";
 import { Metric, Metrics } from "@/components/Metrics";
 import Copy from "@/components/Copy";
@@ -17,7 +17,7 @@ type Detail = {
   blob: Blob;
   params: { shard_retention_s: number; payment_promise_timeout_s: number };
   assignments: Assignment[] | null;
-  probes: Probe[] | null;
+  probes: BlobReading[] | null;
 };
 
 /** when the single end-of-window reading began (END_READ_SINCE on the observer) */
@@ -36,7 +36,7 @@ const REASON: Record<string, string> = {
   UNREACHABLE: "no answer", IDENTITY_MISMATCH: "wrong certificate", IDENTITY_EXPIRED: "certificate expired",
   SERVER_ERROR: "server error", THROTTLED: "rate limited", NOT_REGISTERED: "no endpoint",
 };
-const reasonOf = (p: Probe | undefined): string => {
+const reasonOf = (p: BlobReading | undefined): string => {
   if (!p) return "";
   if (REASON[p.classification]) return REASON[p.classification];
   if (p.outcome === "NOT_FOUND") return "not found";
@@ -61,7 +61,7 @@ function Page() {
   }
   const b = data.blob;
   // the escrow owner, who paid; the transaction itself can be sent by anyone
-  const pub = b.publisher || b.charge?.publisher || b.signer;
+  const pub = b.publisher || b.signer;
   const probes = data.probes ?? [];
   const assignments = data.assignments ?? [];
   // signatures are a fact of the settled promise, not of any probe: read them from the assignments
@@ -86,11 +86,11 @@ function Page() {
 
   // The reading behind each validator's word: the end reading, or on the
   // earlier schedule the newest reading inside the window.
-  const reading = new Map<string, Probe>();
+  const reading = new Map<string, BlobReading>();
   for (const p of probes) {
     if (p.phase !== "in_window") continue;
     const cur = reading.get(p.validator_address);
-    const rank = (x: Probe) => (x.schedule_label === "end" ? "1" : "0") + x.started_at;
+    const rank = (x: BlobReading) => (x.schedule_label === "end" ? "1" : "0") + x.started_at;
     if (!cur || rank(p) > rank(cur)) reading.set(p.validator_address, p);
   }
   const decided = served + notServed;

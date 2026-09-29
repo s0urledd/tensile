@@ -238,7 +238,6 @@ func TestValidatorsAndBlobs(t *testing.T) {
 	var blobs struct {
 		Blobs []struct {
 			PromiseHash     string `json:"promise_hash"`
-			ProbeCount      int64  `json:"probe_count"`
 			Reconstructable struct {
 				Status     string
 				ServedRows int `json:"served_distinct_rows"`
@@ -254,7 +253,11 @@ func TestValidatorsAndBlobs(t *testing.T) {
 	}
 	probed := 0
 	for _, b := range blobs.Blobs {
-		if b.ProbeCount > 0 {
+		var readings struct{ Probes []any }
+		if code := get(t, ts, "/v1/probes?blob="+b.PromiseHash+"&limit=1", &readings); code != 200 {
+			t.Fatalf("readings of %s: %d", b.PromiseHash, code)
+		}
+		if len(readings.Probes) > 0 {
 			probed++
 			if b.Reconstructable.NeededRows != 4096 {
 				t.Fatalf("needed rows = %d", b.Reconstructable.NeededRows)

@@ -196,3 +196,38 @@ func validatorReadings(rows []probeRow) []validatorReading {
 	}
 	return out
 }
+
+// blobReading is one validator's reading of a blob as the blob page lists
+// it: what it answered, and the phase, schedule and class the page picks
+// each validator's reading by. The assignment beside it already names the
+// host, the rows owed and the endorsement; the row indices and their
+// digest come with ?rows=1.
+type blobReading struct {
+	ValidatorAddress string   `json:"validator_address"`
+	ScheduleLabel    string   `json:"schedule_label"`
+	StartedAt        string   `json:"started_at"`
+	Phase            string   `json:"phase"`
+	Outcome          string   `json:"outcome"`
+	Classification   string   `json:"classification"`
+	RowsReturned     int      `json:"rows_returned"`
+	RowsExpected     int      `json:"rows_expected"`
+	TotalDurationMS  int64    `json:"total_duration_ms"`
+	RawError         string   `json:"raw_error,omitempty"`
+	RowIndices       []uint32 `json:"row_indices,omitempty"`
+	RowsSHA256       string   `json:"rows_sha256,omitempty"`
+	RPCCode          string   `json:"rpc_code,omitempty"`
+	Service          string   `json:"service,omitempty"`
+}
+
+func blobReadings(rows []probeRow) []blobReading {
+	out := make([]blobReading, len(rows))
+	for i, p := range rows {
+		out[i] = blobReading{
+			ValidatorAddress: p.ValidatorAddress, ScheduleLabel: p.ScheduleLabel, StartedAt: p.StartedAt, Phase: p.Phase,
+			Outcome: p.Outcome, Classification: p.Classification, RowsReturned: p.RowsReturned, RowsExpected: p.RowsExpected,
+			TotalDurationMS: p.TotalDurationMS, RawError: p.RawError, RowIndices: p.RowIndices, RowsSHA256: p.RowsSHA256,
+			RPCCode: p.RPCCode, Service: p.Service,
+		}
+	}
+	return out
+}

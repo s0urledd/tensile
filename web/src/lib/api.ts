@@ -370,8 +370,8 @@ export type ValidatorReading = {
   provisional?: boolean;
 };
 
+/** one reading row of /v1/probes */
 export type Probe = {
-  vantage: string;
   promise_hash: string;
   validator_address: string;
   validator_host: string;
@@ -389,18 +389,13 @@ export type Probe = {
   rows_returned: number;
   rows_expected: number;
   total_duration_ms: number;
-  tls_ok: boolean;
-  identity_ok: boolean;
   raw_error?: string;
   retry_first_outcome?: string;
-  clock_offset_ms?: number;
-  /** the evidence behind the verdict, on rows that carry it (schema 9 and later) */
+  /** the evidence behind the verdict, on rows that carry it (schema 9 and later), with ?rows=1 */
   row_indices?: number[];
   rows_sha256?: string;
   rpc_code?: string;
   shadowed_by?: string;
-  observer_build?: string;
-  app_version?: number;
   /** the verdict the row was stamped with, when the collector's late shadow judgement replaced it */
   classification_at_probe?: string;
   amended_at?: string;
@@ -448,7 +443,6 @@ export type Reconstruct = {
   error?: string;
   /** when the reading was scheduled */
   point_at: string;
-  window_over: boolean;
   served_distinct_rows: number;
   needed_rows: number;
   /** the blob's encoded row count (16384 for blob v0) */
@@ -473,18 +467,35 @@ export type Blob = {
   /** MsgPayForFibre.signer: the account that submitted the settlement, not necessarily who paid */
   signer: string;
   /** who paid: the escrow owner, whose key signed the promise */
-  publisher?: string;
+  publisher: string;
   settlement_height: number;
+  /** the other half of the list's cursor, with settlement_height */
+  settlement_tx_index: number;
   settlement_time: string;
   creation_timestamp: string;
   must_serve_until: string;
   validators_with_rows: number;
-  sigma_rows: number;
-  distinct_rows: number;
   assignment_error?: string;
-  probe_count: number;
-  classes: ClassCounts;
   reconstructable: Reconstruct | null;
+};
+
+/** one validator's reading of a blob, as the blob page lists them */
+export type BlobReading = {
+  validator_address: string;
+  schedule_label: string;
+  started_at: string;
+  phase: string;
+  outcome: string;
+  classification: string;
+  rows_returned: number;
+  rows_expected: number;
+  total_duration_ms: number;
+  raw_error?: string;
+  /** with ?rows=1 */
+  row_indices?: number[];
+  rows_sha256?: string;
+  rpc_code?: string;
+  service?: "served" | "not_served";
 };
 
 /**
@@ -494,7 +505,6 @@ export type Blob = {
 export type Charge = {
   fee_utia: number;
   gas_units: number;
-  publisher: string;
   settled: boolean;
   timed_out: boolean;
   processor?: string;

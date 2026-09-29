@@ -704,9 +704,11 @@ func (s *Server) paymentRows(ctx context.Context, where string, limit int, args 
 
 // blobCharge is what the payments table knows about one promise.
 type blobCharge struct {
-	FeeUtia   int64  `json:"fee_utia"`
-	GasUnits  int64  `json:"gas_units"`
-	Publisher string `json:"publisher"`
+	FeeUtia  int64 `json:"fee_utia"`
+	GasUnits int64 `json:"gas_units"`
+	// Publisher is the account the chain charged, which the blob row
+	// publishes as its publisher.
+	Publisher string `json:"-"`
 	// Settled is true when a MsgPayForFibre for this promise is in the
 	// payments table; TimedOut when a MsgPaymentPromiseTimeout is. Both can
 	// be false for a publication ingested before payments were recorded.

@@ -480,20 +480,21 @@ func TestBlobChargeAndValidatorTimeouts(t *testing.T) {
 	}
 	var blob struct {
 		Blob struct {
-			Charge *struct {
-				Fee      int64  `json:"fee_utia"`
-				Gas      int64  `json:"gas_units"`
-				Settled  bool   `json:"settled"`
-				TimedOut bool   `json:"timed_out"`
-				Pub      string `json:"publisher"`
+			// the account the chain charged, where a payment is on record
+			Publisher string `json:"publisher"`
+			Charge    *struct {
+				Fee      int64 `json:"fee_utia"`
+				Gas      int64 `json:"gas_units"`
+				Settled  bool  `json:"settled"`
+				TimedOut bool  `json:"timed_out"`
 			} `json:"charge"`
 		} `json:"blob"`
 	}
 	if code := get(t, ts, "/v1/blobs/"+pubs[0].PromiseHash, &blob); code != 200 {
 		t.Fatalf("blob: %d", code)
 	}
-	if c := blob.Blob.Charge; c == nil || c.Fee != 695_000 || !c.Settled || c.TimedOut || c.Pub != samplePublisher {
-		t.Fatalf("charge: %+v", blob.Blob.Charge)
+	if c := blob.Blob.Charge; c == nil || c.Fee != 695_000 || !c.Settled || c.TimedOut || blob.Blob.Publisher != samplePublisher {
+		t.Fatalf("charge: %+v, publisher %s", blob.Blob.Charge, blob.Blob.Publisher)
 	}
 	if code := get(t, ts, "/v1/blobs/"+pubs[1].PromiseHash, &blob); code != 200 {
 		t.Fatalf("blob: %d", code)

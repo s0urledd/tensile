@@ -36,6 +36,30 @@ func ValidatorRowsJSON(st *store.Store, vantage, window string, asOf time.Time) 
 	return json.Marshal(map[string]any{"validators": rows})
 }
 
+// BlobTally is what the server computes for one publication beside what
+// /v1/blobs publishes: the reading tally, and whether its retention window
+// is over.
+type BlobTally struct {
+	ProbeCount int64
+	Classes    map[string]int64
+	WindowOver bool
+}
+
+// BlobTallies is BlobTally for every row of the /v1/blobs page at limit and
+// offset, by promise hash, through the server's own verdict cache.
+func (s *Server) BlobTallies(limit, offset int) (map[string]BlobTally, error) {
+	rows, err := s.blobRowsAt(context.Background(), "", limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	rows, _ = trim(rows, limit)
+	out := map[string]BlobTally{}
+	for _, b := range rows {
+		out[b.PromiseHash] = BlobTally{ProbeCount: b.ProbeCount, Classes: b.Classes, WindowOver: b.Reconstructable != nil && b.Reconstructable.WindowOver}
+	}
+	return out, nil
+}
+
 // NetworkJSON is the network summary of the window, whole, as the snapshot
 // stores it.
 func NetworkJSON(st *store.Store, vantage, window string, asOf time.Time) ([]byte, error) {
