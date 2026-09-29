@@ -23,11 +23,11 @@ func main() {
 		dbPath  = flag.String("db", "", "SQLite database path (default <data-dir>/observer.db)")
 		listen  = flag.String("listen", "127.0.0.1:8080", "HTTP listen address")
 		check   = flag.String("check", "", "health check: GET this URL, exit 0 on HTTP 200 (for container healthchecks; the image has no curl)")
-		vantage = flag.String("vantage", "local", "vantage name rendered on every response")
+		vantage = flag.String("vantage", "local", "vantage name: whose rows the figures count, the one /v1/meta marks primary, and the snapshot files' owner")
 		// Where this observer watches from. Every reachability observation is
-		// a statement about a network path and half that path is ours, so a
-		// reader cannot judge an UNREACHABLE without knowing where it was
-		// measured from. Both are operator-declared.
+		// a statement about a network path and half that path is ours. Both
+		// are operator-declared, and the API no longer publishes them: they
+		// feed only the startup warning below.
 		vLocation = flag.String("vantage-location", "", `human-readable place, e.g. "Helsinki, Finland"`)
 		vProvider = flag.String("vantage-provider", "", `hosting provider, e.g. "Hetzner"`)
 		// Accepted and ignored, so a unit written before the observer's
