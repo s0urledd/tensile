@@ -366,7 +366,7 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
   .vt th:first-child { width: 20%; }
   /* widths follow what the cells hold */
   .vt .c-ep { width: 11.5%; } .vt .c-host { width: 13%; } .vt .c-power { width: 10.5%; }
-  .vt .c-com { width: 13.5%; } .vt .c-end { width: 15.5%; } .vt .c-last { width: 16%; }
+  .vt .c-shard { width: 13.5%; } .vt .c-end { width: 15.5%; } .vt .c-last { width: 16%; }
   .vt td:not(:first-child) { overflow: hidden; text-overflow: ellipsis; }
   .vt .hosting { max-width: 100%; vertical-align: middle; }
   .vt .hosting > span:not(.flag):not(.flag-none):not(.cc) { overflow: hidden; text-overflow: ellipsis; }

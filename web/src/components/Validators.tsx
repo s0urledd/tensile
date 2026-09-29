@@ -13,7 +13,7 @@ import { isOperatorAccount } from "@/lib/addr";
 /**
  * The validators table: who, whether the endpoint answers right now, how
  * much stake, and what the chain records of its endorsements in the period:
- * the row data they committed it to store, and how often it endorsed. Default order
+ * the shard data it stored and endorsed, and how often it endorsed. Default order
  * is voting power, descending, which is the chain's own order and never a
  * performance rank; the filters are for inspection. Serving, throughput and
  * the raw rows are on the validator's page.
@@ -29,7 +29,7 @@ function isSelf(v: Validator): boolean {
 }
 
 type Filter = "all" | "unreachable" | "nohost";
-type SortKey = "power" | "committed" | "signed" | "last";
+type SortKey = "power" | "shard" | "signed" | "last";
 
 /**
  * A rejected certificate, in the words of the Fibre TLS identity spec
@@ -70,14 +70,14 @@ export function endpoint(v: Validator): { dot: string; word: string; title: stri
 
 const time = (s: string | null | undefined) => (s ? new Date(s).getTime() : null);
 
-/** row data of the settled blobs it endorsed in the period, as the validator page's Committed; none before Fibre is live */
-const committedBytes = (v: Validator, notLive?: boolean) => (!notLive && v.load && v.load.bytes > 0 ? v.load.bytes : null);
+/** the shard data of the settled blobs it endorsed in the period, as the validator page's Shard data; none before Fibre is live */
+const shardBytes = (v: Validator, notLive?: boolean) => (!notLive && v.load && v.load.bytes > 0 ? v.load.bytes : null);
 
 function sortValue(v: Validator, k: SortKey, notLive?: boolean): number | null {
   switch (k) {
     case "power": return v.voting_power;
-    // A validator that endorsed nothing in the period committed nothing and sorts last.
-    case "committed": return committedBytes(v, notLive);
+    // A validator that endorsed nothing in the period stored nothing for it and sorts last.
+    case "shard": return shardBytes(v, notLive);
     // Every validator with a settlement in the period is ranked by its share;
     // one with none has no share and sorts last.
     case "signed": { const s = v.signing; return s && s.assigned > 0 ? s.signed / s.assigned : null; }
@@ -85,7 +85,7 @@ function sortValue(v: Validator, k: SortKey, notLive?: boolean): number | null {
   }
 }
 
-/** `periodSwitch`, the page's period control, sits beside the heading: the period it selects is the Committed and Endorsements columns', named in their headings */
+/** `periodSwitch`, the page's period control, sits beside the heading: the period it selects is the Shard data and Endorsements columns', named in their headings */
 export default function Validators({ rows, window: win, notLive, loading, periodSwitch }: { rows: Validator[]; window: string; notLive?: boolean; loading?: boolean; periodSwitch?: ReactNode }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -132,7 +132,7 @@ export default function Validators({ rows, window: win, notLive, loading, period
   // A heading with a definition carries it behind an (i), opened by a click:
   // nothing appears on hover. The (i) sits outside the label's box so the
   // label stays centred over its column. A heading that counts the selected
-  // period names it after the label, in its own case: "Committed (24h)".
+  // period names it after the label, in its own case: "Shard data (24h)".
   const period = periodName(win);
   const Th = ({ k, dflt, label, title, info, col, per }: { k: SortKey; dflt: 1 | -1; label: string; title?: string; info?: string; col: string; per?: boolean }) => (
     <th className={"num " + col + (info ? " has-i" : "")} title={title}>
@@ -153,9 +153,9 @@ export default function Validators({ rows, window: win, notLive, loading, period
     if (!s || s.assigned === 0) return <span className="muted" title={s && s.unknown > 0 ? `${int(s.unknown)} assigned promise${s.unknown === 1 ? "" : "s"} recorded before signatures were verified: nothing to say either way.` : "No settled promise assigned this validator rows in this period."}>—</span>;
     return <span className="rate share endorsed" title={`${int(s.signed)} of ${int(s.assigned)} settled promises endorsed`}>{pctOf(s.signed, s.assigned)}</span>;
   };
-  // What its endorsements undertook to store, with the count of blobs behind it in the title.
-  const committed = (v: Validator) => {
-    const n = committedBytes(v, notLive);
+  // The shard data its endorsements stand for, with the count of blobs behind it in the title.
+  const shard = (v: Validator) => {
+    const n = shardBytes(v, notLive);
     if (n === null) return <span className="muted" title="No settled blob endorsed by this validator in this period.">—</span>;
     const p = v.load!.promises;
     return <span title={`${int(p)} endorsed blob${p === 1 ? "" : "s"} in the period`}>{bytes(n)}</span>;
@@ -191,7 +191,7 @@ export default function Validators({ rows, window: win, notLive, loading, period
               <th className="c-ep" title="Whether the validator's Fibre server answered our latest check.">Endpoint now</th>
               {showHosting && <th className="c-host" title="Where the validator's Fibre server is hosted.">Hosting</th>}
               <Th col="c-power" k="power" dflt={-1} label="Voting power" title="The default order. Not a performance ranking." />
-              <Th col="c-com" k="committed" dflt={-1} label="Committed" per info="Row data of the settled blobs this validator endorsed in the period: what its signature undertook to store." />
+              <Th col="c-shard" k="shard" dflt={-1} label="Shard data" per info="Bytes of the shards this validator stored and endorsed, over the settled blobs of the period." />
               <Th col="c-end" k="signed" dflt={-1} label="Endorsements" per info="How often this validator’s signature is in the settlement, counted while it had a Fibre provider. A settlement needs signatures from ⅔ of the stake, and the first validators to respond fill it." />
               <Th col="c-last" k="last" dflt={-1} label="Last endorsement" info="The last time this validator signed a blob, in any period." />
             </tr>
@@ -228,7 +228,7 @@ export default function Validators({ rows, window: win, notLive, loading, period
                   <td><Link className="rowcover" href={href(v)} tabIndex={-1} aria-hidden="true" /><span className="state" title={e.title}><i className={"dot " + e.dot} />{e.word}</span></td>
                   {showHosting && <td><HostingCell h={v.hosting} /></td>}
                   <td className="num">{int(v.voting_power)}</td>
-                  <td className="num">{committed(v)}</td>
+                  <td className="num">{shard(v)}</td>
                   <td className="num soft-col">{signed(v)}</td>
                   <td className="num">{last(v)}</td>
                 </tr>
