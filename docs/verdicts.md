@@ -382,7 +382,8 @@ One sentence each, and what a reader should conclude.
   did not serve and differs from it), `observer.build` (the observer's VCS revision), and
   `observer.assign_pin` / `observer.app_version`. The store keeps them as
   columns (`row_indices`, `rows_sha256`, `rpc_code`, `shadowed_by`,
-  `observer_build`, `app_version`) and `/v1/probes` publishes them. A
+  `observer_build`, `app_version`) and `/v1/probes` publishes them (the
+  row indices and their digest with `?rows=1`, being most of a row's bytes). A
   classification is a function of the wire result and the code; with these
   fields both halves are on the row.
 - **Reachability** (`reachability_window`) is heartbeats that completed TLS
@@ -829,7 +830,7 @@ There is one, and it does not depend on this project's goodwill.
 **Check it yourself first.** Every FAULT row carries what produced it: the
 promise hash, the reading's time, the phase, the wire outcome, the row
 indices returned, a digest of the returned bytes, the gRPC status code, the
-observer build and the chain's app version at the time. `/v1/probes?blob=` and
+observer build and the chain's app version at the time. `/v1/probes?blob=…&rows=1` and
 the day's export tarball both give the row in full, and `sentinel-recompute`
 re-derives the verdict from it. The three most common reasons a verdict is
 wrong are all visible in the row: the deadline was computed from params the

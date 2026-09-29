@@ -323,7 +323,9 @@ GET /v1/validators/{addr}     one validator, four windows (addr: consensus hex o
                               valcons1…, operator valoper1…, account address)
 GET /v1/blobs                 publication list (?limit=, ?offset=, ?namespace=; total)
 GET /v1/blobs/{hash}          one blob: its reading, each assigned validator's service word, the rows
-GET /v1/probes                raw rows (?blob=, ?at=, ?validator=)
+GET /v1/probes                raw rows (?blob=, ?validator=, ?at=, ?class=, ?served=no, ?since=,
+                              ?before=; up to 1000 a page, next_before continues; ?rows=1 adds
+                              each reading's row_indices and rows_sha256, up to 200 a page)
 GET /v1/runs                  every process start/stop with its config
 GET /v1/sampling              the earlier sampling: day commitments, and secrets once revealed
 GET /v1/exports[/{name}]      daily tarballs + digests

@@ -4116,9 +4116,37 @@ func serviceReason(p probeRow) string {
 const lateSQL = `(schedule_label = '` + probe.EndReadLabel + `' OR julianday(scheduled_at) >= julianday(must_serve_until) -
 		(julianday(must_serve_until) - julianday(COALESCE((SELECT settlement_time FROM publications pl WHERE pl.promise_hash = probes.promise_hash), must_serve_until))) / 4.0)`
 
+// The most rows /v1/probes returns in one answer: without the row indices,
+// and with them (?rows=1). A validator's reading lists the index of every row
+// it was asked for, several kilobytes on the observer's store in September
+// 2026 against well under one for the rest of the row, so a thousand
+// readings with their indices came to 8.5 to 11 MB. Walk past either cap
+// with next_before.
+const (
+	probesMax         = 1000
+	probesMaxWithRows = 200
+)
+
 func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	limit, err := parseLimit(r, 100, 1000)
+	// The row indices and their digest are what a verifier re-deriving a
+	// verdict needs (docs/verdicts.md), and most of every row's bytes. The
+	// readings themselves, which is what a page or an operator watching one
+	// validator reads, come without them unless asked for.
+	withRows := false
+	if v := q.Get("rows"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			writeErr(w, 400, "rows must be 1 or 0")
+			return
+		}
+		withRows = b
+	}
+	most := probesMax
+	if withRows {
+		most = probesMaxWithRows
+	}
+	limit, err := parseLimit(r, 100, most)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -4190,7 +4218,12 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, truncated := trim(rows, limit)
-	out := map[string]any{"vantage": s.vantage, "probes": rows, "limit": limit, "truncated": truncated}
+	if !withRows {
+		for i := range rows {
+			rows[i].RowIndices, rows[i].RowsSHA256 = nil, ""
+		}
+	}
+	out := map[string]any{"vantage": s.vantage, "probes": rows, "limit": limit, "truncated": truncated, "rows_included": withRows}
 	if truncated && len(rows) > 0 {
 		// Where to continue from: everything strictly older than the last row
 		// returned. Paired with the same filters it walks the whole selection.
