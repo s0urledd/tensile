@@ -11,15 +11,16 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/rollup"
 )
 
-// The validator page is the one live route with no snapshot behind it: every
-// request built the row and four spans of aggregates over the whole probe
-// table, and only then found out whether the address was on record at all.
-// An unknown address cost as much as a real one, a page polled by a few
-// viewers recomputed the same answer for each of them, and nothing bounded
-// how many ran at once. The answer is now
+// The validator page used to be the one live route with no snapshot behind
+// it: every request built the row and four spans of aggregates over the
+// validator's whole probe history, 4–11 s for an active validator, and only
+// then found out whether the address was on record at all. The answer is now
 //
 //   - refused with 404 before any aggregate when nothing about the address is
 //     on record (validatorKnown);
+//   - read from the validator snapshots for a live window: the row and the
+//     four spans are the validator's rows in them (detailFromSnapshots), and
+//     only the newest readings are read per request;
 //   - kept for detailTTL per (address, window) and dropped as soon as a
 //     parameter hold lands, like the network and validator snapshots;
 //   - computed once for concurrent readers of the same key under the same
@@ -86,6 +87,75 @@ func (s *Server) validatorKnown(ctx context.Context, addr string) (bool, error) 
 		OR EXISTS(SELECT 1 FROM validator_identities WHERE lower(cons_address) = ?)`,
 		addr, addr, addr, bech, addr).Scan(&known)
 	return known, err
+}
+
+// detailFromSnapshots answers a live window from the snapshots /v1/validators
+// serves: the row is the list's own row for addr and each span is addr's row
+// in that span's snapshot, so the page and the table agree to the figure. A
+// span's classes are the row's (assigned, in-window readings, rollup
+// included), and its probe_count their sum, as a computed span counts them.
+//
+// ok is false when a snapshot is still being computed, or does not list addr
+// yet because the validator appeared after it was taken; the caller then
+// computes the answer. It never waits for a snapshot.
+func (s *Server) detailFromSnapshots(ctx context.Context, addr string, win Window, now time.Time) (map[string]any, bool, error) {
+	main, at, ms, ok := s.vals.peek(s.logf(), win)
+	if !ok {
+		return nil, false, nil
+	}
+	row, ok := snapshotRow(main.Rows, addr)
+	if !ok {
+		return nil, false, nil
+	}
+	spans := make([]detailSpan, 0, len(detailSpans))
+	for _, name := range detailSpans {
+		snap := main
+		if name != win.Name {
+			if snap, _, _, ok = s.vals.peek(s.logf(), windowFor(name, now)); !ok {
+				return nil, false, nil
+			}
+		}
+		r, ok := snapshotRow(snap.Rows, addr)
+		if !ok {
+			return nil, false, nil
+		}
+		_, label, err := s.rolledFor(ctx, snap.Window, addr)
+		if err != nil {
+			return nil, false, err
+		}
+		var n int64
+		for _, c := range r.Classes {
+			n += c
+		}
+		spans = append(spans, detailSpan{
+			Window: snap.Window, Count: n, Obligations: r.Obligations, ByObligation: r.ByObligation, Classes: r.Classes,
+			RolledUp: label, Provisional: r.ProvisionalFaults,
+		})
+	}
+	out := map[string]any{
+		"window":         main.Window,
+		"record_through": main.RecordThrough,
+		"validator":      row,
+		"windows":        spans,
+		// when the row was computed, as /v1/validators says it; each span's
+		// window ends at its own snapshot's moment
+		"computed_at": at.UTC().Format(time.RFC3339Nano),
+		"compute_ms":  ms,
+	}
+	if err := s.detailReadings(ctx, addr, win, now, out); err != nil {
+		return nil, false, err
+	}
+	return out, true, nil
+}
+
+// snapshotRow is addr's row in a snapshot's rows.
+func snapshotRow(rows []validatorRow, addr string) (validatorRow, bool) {
+	for _, r := range rows {
+		if r.Address == addr {
+			return r, true
+		}
+	}
+	return validatorRow{}, false
 }
 
 func (s *Server) serveValidatorDetail(w http.ResponseWriter, r *http.Request, addr string, win Window, now time.Time) {
@@ -178,9 +248,7 @@ func (s *Server) computeDetail(c *detailCache, key, fkey string, call *detailCal
 		return
 	}
 	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(out); err != nil {
+	if err := json.NewEncoder(&buf).Encode(out); err != nil {
 		call.err = err
 		return
 	}
