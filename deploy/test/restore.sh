@@ -21,8 +21,9 @@
 #   - rebuilds the database from the verified cut and requires it to hold
 #     exactly the cut's records;
 #   - starts a second observer-api on a spare port against it and reads
-#     /v1/meta, /v1/network and /v1/validators; the counts it serves must
-#     be the rebuilt ones.
+#     /v1/meta, /v1/network and /v1/validators, waiting out the first
+#     computation of each window; the counts it serves must be the rebuilt
+#     ones.
 #
 # The live host's counts are printed for orientation and compared with
 # nothing: they are a different moment.
@@ -115,10 +116,17 @@ fi
 code=$(http_code "http://127.0.0.1:$PORT/v1/meta" "$TMP/meta.json")
 read -r apub aprobe <<<"$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["counts"]; print(c["Publications"], c["Probes"])' "$TMP/meta.json")"
 [ "$code" = 200 ] && [ "$apub" = "$rpub" ] && [ "$aprobe" = "$rprobe" ] && pass "/v1/meta counts are the rebuilt ones (publications=$apub probes=$aprobe)" || fail "/v1/meta -> $code counts publications=$apub probes=$aprobe, rebuilt $rpub/$rprobe"
-code=$(HTTP_TIMEOUT=30 http_code "http://127.0.0.1:$PORT/v1/network?window=24h")
-[ "$code" = 200 ] && pass "/v1/network answers from the restored data" || fail "/v1/network -> $code"
-code=$(HTTP_TIMEOUT=30 http_code "http://127.0.0.1:$PORT/v1/validators?window=24h")
-[ "$code" = 200 ] && pass "/v1/validators answers from the restored data" || fail "/v1/validators -> $code"
+# The restored directory has no snapshot files, so this API computes every
+# window from its start, and a read that arrives before a window has been
+# computed is a 503 with "computing": true: not an answer yet, and asked
+# again (snapshot_code). The 24h windows take about half a minute on a store
+# the live one's size; the ten minutes are for a slow disk.
+for ep in network validators; do
+  t0=$(date +%s)
+  code=$(HTTP_TIMEOUT=30 snapshot_code "http://127.0.0.1:$PORT/v1/$ep?window=24h" 600)
+  took=$(( $(date +%s) - t0 ))
+  [ "$code" = 200 ] && pass "/v1/$ep answers from the restored data (after ${took}s)" || fail "/v1/$ep -> $code after ${took}s"
+done
 lc=$(curl -sS -m 10 "http://$API_LISTEN/v1/meta" 2>/dev/null | python3 -c 'import json,sys; c=json.load(sys.stdin)["counts"]; print(c["Publications"], c["Probes"])' 2>/dev/null || echo "? ?")
 echo "  live host now: publications/probes = $lc (a different moment; not compared)"
 

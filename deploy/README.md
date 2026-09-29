@@ -663,7 +663,10 @@ bonded validator `signalled` or `not signalled` (`upgrade_signal` on
 on that version).
 
 `registered_endpoints` moving off zero is the first sign the registry is being
-read. `reachability` follows within a heartbeat interval. Publications appear
+read. `reachability` follows within a heartbeat interval. The activation
+changes the snapshots' revision, so for the half minute or so the API takes
+to recompute the 24h window, `/v1/network` answers 503 with
+`"computing": true` and the last line prints `null` for all three: ask again. Publications appear
 only once somebody actually pays for a blob, which may be hours later; an
 empty publication feed on activation day is a quiet network, not a broken
 observer, and the site says which.
@@ -815,7 +818,7 @@ starting the units for real:
 sudo systemctl start fibre-scan@mocha fibre-heartbeat@mocha fibre-collector@mocha fibre-probe@mocha fibre-api@mocha
 systemctl --no-pager status 'fibre-*@mocha' | grep -E 'Active|Loaded'
 curl -s https://mocha.observer.example.org/api/v1/health | jq .status   # "ok" once every process has run a cycle
-curl -s https://mocha.observer.example.org/api/v1/network | jq .registered_endpoints
+curl -s https://mocha.observer.example.org/api/v1/network | jq .registered_endpoints   # null while the API still answers "computing": true, its first half minute or so: ask again
 ```
 
 Then check the site says where it watches from. If `complete` is false the
