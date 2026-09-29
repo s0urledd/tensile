@@ -386,7 +386,9 @@ endorsements), so a restart catches them up instead of rebuilding them
 (`derived.go`). Each is used only for the store it was computed from while
 that store still holds everything it was computed from: the store's creation
 time (`schema_migrations` version 1) and chain id, the newest row it read and
-that row's key, and its newest entries read again. Anything else, or a file
+that row's key, and its newest entries read again. Each also carries a
+sha256 of its own body, so an edit or damage below the entries read again
+is caught too. Anything else, a file whose digest is not its body's, or one
 that does not parse, is removed and rebuilt from the store. An older build
 does not read them.
 A file is served only under the revision it was computed under (holds,

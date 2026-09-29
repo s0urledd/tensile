@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -34,6 +35,9 @@ import (
 // identity is what the store keeps anyway (storeIdentity), and each file
 // carries, besides:
 //
+//   - a digest of its own body (sealDerived), so a file edited, or damaged
+//     in a way that still parses, is refused whole rather than believed
+//     beyond the entries the load reads again;
 //   - a definition: a digest of the SQL and constants its content is
 //     computed with, so a build that computes it differently rebuilds it;
 //   - a high-water mark: the rowid of the newest row it was computed from
@@ -42,12 +46,12 @@ import (
 //     again has another row under it.
 //
 // and the newest of its entries are looked up again and compared. Any doubt
-// is a rebuild: a file that does not parse, is of another format or
-// definition, names another store, or whose mark or entries do not match
-// what the store holds now is removed, and the memo or ledger is built from
-// the store as it was before there were files. A query that fails while a
-// file is checked is an error of the computation, which the next one
-// retries; it proves nothing about the file.
+// is a rebuild: a file whose digest is not its body's, that does not parse,
+// is of another format or definition, names another store, or whose mark
+// or entries do not match what the store holds now is removed, and the memo
+// or ledger is built from the store as it was before there were files. A
+// query that fails while a file is checked is an error of the computation,
+// which the next one retries; it proves nothing about the file.
 //
 // An older build does not know the files and never reads them, so going
 // back costs nothing. Coming forward again, a file written before the
@@ -81,6 +85,10 @@ func readStoreIdentity(ctx context.Context, db *sql.DB) (storeIdentity, error) {
 
 // derivedHeader opens every derived file.
 type derivedHeader struct {
+	// Digest is the sha256 of the file as it is with this field empty
+	// (sealDerived). It is the first field so that it opens the file,
+	// where readDerived finds it.
+	Digest     string        `json:"digest"`
 	Kind       string        `json:"kind"`
 	Format     int           `json:"format"`
 	Definition string        `json:"definition"`
@@ -125,7 +133,8 @@ func checkHeader(ctx context.Context, db *sql.DB, h derivedHeader, kind, definit
 }
 
 // readDerived reads path into v. A missing file is ok false with no
-// refusal; one that does not parse is refused.
+// refusal; one whose digest is not its body's, or that does not parse, is
+// refused.
 func readDerived(path string, v any) (ok bool, why refusal) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -134,17 +143,24 @@ func readDerived(path string, v any) (ok bool, why refusal) {
 		}
 		return false, refusal("unreadable: " + err.Error())
 	}
+	if why := unsealDerived(b); why != "" {
+		return false, why
+	}
 	if err := json.Unmarshal(b, v); err != nil {
 		return false, refusal("does not parse: " + err.Error())
 	}
 	return true, ""
 }
 
-// writeDerived writes v to path whole or not at all: a temporary file
-// renamed over it, so a reader never meets half a file.
+// writeDerived writes v, whose digest must be empty, to path sealed
+// (sealDerived), and whole or not at all: a temporary file renamed over
+// it, so a reader never meets half a file.
 func writeDerived(path string, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
+		return err
+	}
+	if b, err = sealDerived(b); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -155,4 +171,45 @@ func writeDerived(path string, v any) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// A file's digest covers every byte of it but the digest's own. The load
+// reads again only the newest of what a file holds, so a file edited, or
+// damaged in a way that still parses, below them would otherwise be
+// believed: an entry moved to another value, a validator dropped from the
+// ledger. The digest is what lets the load trust the rest; the checks
+// against the store are what tell it the store still is the one the file
+// was computed from.
+const (
+	digestOpen  = `{"digest":"`
+	digestEmpty = digestOpen + `"`
+)
+
+// sealDerived puts in body, a derived file with its digest empty, the
+// sha256 of body itself.
+func sealDerived(body []byte) ([]byte, error) {
+	if !bytes.HasPrefix(body, []byte(digestEmpty)) {
+		return nil, errors.New("a derived file must open with its digest, empty")
+	}
+	sum := sha256.Sum256(body)
+	out := make([]byte, 0, len(body)+2*sha256.Size)
+	out = append(out, digestOpen...)
+	out = hex.AppendEncode(out, sum[:])
+	return append(out, body[len(digestOpen):]...), nil
+}
+
+// unsealDerived refuses b unless it opens with a digest that is the sha256
+// of b with that digest emptied.
+func unsealDerived(b []byte) refusal {
+	n := len(digestOpen) + 2*sha256.Size
+	if len(b) <= n || !bytes.HasPrefix(b, []byte(digestOpen)) || b[n] != '"' {
+		return "no digest where the file opens"
+	}
+	h := sha256.New()
+	h.Write([]byte(digestOpen))
+	h.Write(b[n:])
+	if hex.EncodeToString(h.Sum(nil)) != string(b[len(digestOpen):n]) {
+		return "its digest is not its body's"
+	}
+	return ""
 }

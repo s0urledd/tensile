@@ -150,9 +150,13 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 		name string
 		// break the files in dir, or the store, before the next start
 		apply func(t *testing.T, f *derivedFixture, dir string)
-		// which file must be refused ("" for both)
-		memo, ledger bool
+		// what each file must be refused for, as its origin says it; ""
+		// is a file that must be loaded
+		memo, ledger string
 	}
+	// rewrite changes a file and seals it again, as a writer that got it
+	// wrong would leave it: the digest is right, the content is not, and the
+	// checks against the store are what must refuse it.
 	rewrite := func(t *testing.T, path string, change func(m map[string]any)) {
 		t.Helper()
 		b, err := os.ReadFile(path)
@@ -164,8 +168,31 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 			t.Fatal(err)
 		}
 		change(m)
-		b, err = json.Marshal(m)
+		delete(m, "digest")
+		if b, err = json.Marshal(m); err != nil {
+			t.Fatal(err)
+		}
+		if b, err = sealDerived(append([]byte(digestEmpty+","), b[1:]...)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// tamper changes a file as a hand or a damaged disk would: it still
+	// parses, keeps its layout and its digest, and the digest is what must
+	// refuse it.
+	tamper := func(t *testing.T, path string, v any, change func()) {
+		t.Helper()
+		b, err := os.ReadFile(path)
 		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(b, v); err != nil {
+			t.Fatal(err)
+		}
+		change()
+		if b, err = json.Marshal(v); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(path, b, 0o644); err != nil {
@@ -187,7 +214,7 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 			if err := s.keepDerived(ctx); err != nil {
 				t.Fatal(err)
 			}
-		}, true, true},
+		}, "computed from another store", "computed from another store"},
 		{"truncated", func(t *testing.T, f *derivedFixture, dir string) {
 			for _, name := range []string{originalRowsFile, endorsementLedgerFile} {
 				p := filepath.Join(dir, name)
@@ -199,20 +226,20 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-		}, true, true},
+		}, "its digest is not its body's", "its digest is not its body's"},
 		{"empty", func(t *testing.T, f *derivedFixture, dir string) {
 			for _, name := range []string{originalRowsFile, endorsementLedgerFile} {
 				if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
-		}, true, true},
+		}, "no digest where the file opens", "no digest where the file opens"},
 		{"another definition", func(t *testing.T, f *derivedFixture, dir string) {
 			both(t, dir, func(m map[string]any) { m["definition"] = "0" })
-		}, true, true},
+		}, "computed with another definition", "computed with another definition"},
 		{"another format", func(t *testing.T, f *derivedFixture, dir string) {
 			both(t, dir, func(m map[string]any) { m["format"] = 99 })
-		}, true, true},
+		}, "another format", "another format"},
 		{"the store restored from before the files", func(t *testing.T, f *derivedFixture, dir string) {
 			// What a restore from an older backup leaves: the newest rows
 			// gone.
@@ -223,7 +250,7 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 			if _, err := db.Exec(`DELETE FROM publications WHERE rowid > (SELECT MAX(rowid) - 5 FROM publications)`); err != nil {
 				t.Fatal(err)
 			}
-		}, true, true},
+		}, "older than the file", "older than the file"},
 		{"the newest rows replaced under the same rowids", func(t *testing.T, f *derivedFixture, dir string) {
 			db := f.st.DB()
 			if _, err := db.Exec(`DELETE FROM assignments WHERE rowid > (SELECT MAX(rowid) - 40 FROM assignments)`); err != nil {
@@ -233,7 +260,7 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.grow(10) // takes the freed rowids again, with other rows
-		}, true, true},
+		}, "is another one now", "is another one now"},
 		{"a memo entry the record contradicts", func(t *testing.T, f *derivedFixture, dir string) {
 			// The newest publication the memo holds a number for gets
 			// another number.
@@ -266,7 +293,7 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 				}
 				t.Fatal("fixture: none of the newest publications has a number in the memo")
 			})
-		}, true, false},
+		}, "not the file's", ""},
 		{"a ledger row the store contradicts", func(t *testing.T, f *derivedFixture, dir string) {
 			rewrite(t, filepath.Join(dir, endorsementLedgerFile), func(m map[string]any) {
 				for _, e := range m["validators"].(map[string]any) {
@@ -276,12 +303,55 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 					return
 				}
 			})
-		}, false, true},
+		}, "", "is not what the file says"},
 		{"a ledger mark the store contradicts", func(t *testing.T, f *derivedFixture, dir string) {
 			rewrite(t, filepath.Join(dir, endorsementLedgerFile), func(m map[string]any) {
 				m["up_to_row"].(map[string]any)["validator_address"] = "nobody"
 			})
-		}, false, true},
+		}, "", "is another one now"},
+		{"a memo entry below the ones read again, edited", func(t *testing.T, f *derivedFixture, dir string) {
+			// Past the newest memoChecked publications, which the load reads
+			// again: only the digest can tell.
+			var older []string
+			rows, err := f.st.DB().Query(`SELECT promise_hash FROM publications ORDER BY rowid DESC LIMIT -1 OFFSET ?`, memoChecked)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for rows.Next() {
+				var h string
+				if err := rows.Scan(&h); err != nil {
+					t.Fatal(err)
+				}
+				older = append(older, h)
+			}
+			rows.Close()
+			var mf memoFile
+			tamper(t, filepath.Join(dir, originalRowsFile), &mf, func() {
+				for _, want := range older {
+					for k, hs := range mf.Values {
+						for i, h := range hs {
+							if h == want {
+								mf.Values[k] = append(hs[:i:i], hs[i+1:]...)
+								mf.Values["24"] = append(mf.Values["24"], h)
+								return
+							}
+						}
+					}
+				}
+				t.Fatal("fixture: none of the older publications has a number in the memo")
+			})
+		}, "its digest is not its body's", ""},
+		{"a validator dropped from the ledger", func(t *testing.T, f *derivedFixture, dir string) {
+			// Nothing of it is left to read again, and only the assignments
+			// past up_to would be folded in later.
+			var lf ledgerFile
+			tamper(t, filepath.Join(dir, endorsementLedgerFile), &lf, func() {
+				for addr := range lf.Validators {
+					delete(lf.Validators, addr)
+					return
+				}
+			})
+		}, "", "its digest is not its body's"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -298,11 +368,11 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 			if got := f.figures(next); got != want {
 				t.Fatalf("after %s:\n got %s\nwant %s", c.name, got, want)
 			}
-			check := func(what, origin, file string, refused bool) {
+			check := func(what, origin, file, why string) {
 				t.Helper()
-				if refused {
-					if !strings.HasPrefix(origin, "built from the store: "+filepath.Join(dir, file)+" refused: ") {
-						t.Errorf("%s was used after %s: %q", what, c.name, origin)
+				if why != "" {
+					if !strings.HasPrefix(origin, "built from the store: "+filepath.Join(dir, file)+" refused: ") || !strings.Contains(origin, why) {
+						t.Errorf("%s after %s: %q, want it refused: ...%s", what, c.name, origin, why)
 					}
 					return
 				}
@@ -314,5 +384,35 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 			check("the ledger", next.recent.origin, endorsementLedgerFile, c.ledger)
 			t.Logf("memo: %s; ledger: %s", next.origRows.origin, next.recent.origin)
 		})
+	}
+}
+
+// A file as written is read back, and one with any single byte of it
+// changed, its digest's own included, is refused.
+func TestADerivedFileWithAnyByteChangedIsRefused(t *testing.T) {
+	f := newDerivedFixture(t, 7)
+	dir := t.TempDir()
+	s := f.server(dir)
+	f.figures(s)
+	if err := s.keepDerived(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{originalRowsFile, endorsementLedgerFile} {
+		p := filepath.Join(dir, name)
+		var v map[string]any
+		if ok, why := readDerived(p, &v); !ok {
+			t.Fatalf("%s as written: refused: %s", name, why)
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range b {
+			c := append([]byte(nil), b...)
+			c[i] ^= 1
+			if why := unsealDerived(c); why == "" {
+				t.Errorf("%s with byte %d changed from %q to %q: not refused", name, i, b[i], c[i])
+			}
+		}
 	}
 }
