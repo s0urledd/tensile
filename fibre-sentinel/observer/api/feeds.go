@@ -57,9 +57,17 @@ const feedConfirmBeats = 3
 // change: it is part of every entry's identity.
 const feedTagDate = "2026"
 
-// feedTTL is how long a rendered feed is reused. Feed readers poll every
-// few minutes to hours; the events are minutes-grained by construction.
+// feedTTL is how long a rendered feed is reused before it is rebuilt. Feed
+// readers poll every few minutes to hours; the events are minutes-grained by
+// construction. Past it the feed is still served as it stands while its
+// replacement is built behind it (serveFeed), so only the first reader after
+// a start waits for a build, about two seconds for the network feed on the
+// observer's store in September 2026.
 const feedTTL = 5 * time.Minute
+
+// feedBuildTimeout bounds a rebuild in the background, which has no request
+// whose context could end it.
+const feedBuildTimeout = 2 * time.Minute
 
 type cachedFeed struct {
 	body     []byte
@@ -75,19 +83,35 @@ type cachedFeed struct {
 var feedCache = struct {
 	sync.Mutex
 	m map[string]cachedFeed
-}{m: map[string]cachedFeed{}}
+	// refreshing marks the keys being rebuilt in the background, so a burst
+	// of readers of a stale feed starts one rebuild, not one each.
+	refreshing map[string]bool
+}{m: map[string]cachedFeed{}, refreshing: map[string]bool{}}
 
 const feedCacheMax = 2048
 
-func (s *Server) serveFeed(w http.ResponseWriter, r *http.Request, build func(ctx context.Context, authority string, now time.Time) (*feed.Feed, int, error)) {
+// feedBuilder builds one feed; status is http.StatusOK or the status to
+// answer with instead (a validator the observer has not seen).
+type feedBuilder func(ctx context.Context, authority string, now time.Time) (*feed.Feed, int, error)
+
+func (s *Server) serveFeed(w http.ResponseWriter, r *http.Request, build feedBuilder) {
 	authority := feedAuthority(r)
 	key := fmt.Sprintf("%p|%s|%s", s, authority, r.URL.Path)
 	now := time.Now()
 	feedCache.Lock()
 	c, ok := feedCache.m[key]
+	start := ok && now.Sub(c.at) > feedTTL && !feedCache.refreshing[key]
+	if start {
+		feedCache.refreshing[key] = true
+	}
 	feedCache.Unlock()
-	if !ok || now.Sub(c.at) > feedTTL {
-		f, status, err := build(r.Context(), authority, now)
+	switch {
+	case !ok:
+		// Nothing to serve: this reader waits for the build, as only the
+		// first reader of each feed after a start does.
+		var status int
+		var err error
+		c, status, err = renderFeed(r.Context(), build, authority, now)
 		if err != nil {
 			s.writeInternal(w, r.URL.Path, err)
 			return
@@ -96,24 +120,15 @@ func (s *Server) serveFeed(w http.ResponseWriter, r *http.Request, build func(ct
 			writeErr(w, status, validatorNotSeen)
 			return
 		}
-		body, err := f.Render()
-		if err != nil {
-			s.writeInternal(w, r.URL.Path, err)
-			return
-		}
-		sum := sha256.Sum256(body)
-		c = cachedFeed{body: body, etag: `"` + hex.EncodeToString(sum[:12]) + `"`, at: now, modified: f.Updated}
-		for _, e := range f.Entries {
-			if e.At.After(c.modified) {
-				c.modified = e.At
-			}
-		}
-		feedCache.Lock()
-		if len(feedCache.m) >= feedCacheMax {
-			feedCache.m = map[string]cachedFeed{} // crude, bounded; a refill costs one query set per feed
-		}
-		feedCache.m[key] = c
-		feedCache.Unlock()
+		storeFeed(key, c)
+	case start:
+		// Stale: served as it stands, rebuilt behind it. A feed a few
+		// minutes past its TTL says nothing false (every entry is dated, and
+		// so is the feed, by its newest entry); it can lack an entry from
+		// those minutes, which the next poll brings, as it would have
+		// brought one from the minutes after a fresh build. The reader who
+		// found it stale used to wait for the two-second build.
+		s.refreshFeed(key, build, authority)
 	}
 	h := w.Header()
 	h.Set("Content-Type", "application/atom+xml; charset=utf-8")
@@ -130,6 +145,65 @@ func (s *Server) serveFeed(w http.ResponseWriter, r *http.Request, build func(ct
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(c.body)
 	}
+}
+
+// renderFeed builds and renders one feed as the cache holds it.
+func renderFeed(ctx context.Context, build feedBuilder, authority string, now time.Time) (cachedFeed, int, error) {
+	f, status, err := build(ctx, authority, now)
+	if err != nil || status != http.StatusOK {
+		return cachedFeed{}, status, err
+	}
+	body, err := f.Render()
+	if err != nil {
+		return cachedFeed{}, 0, err
+	}
+	sum := sha256.Sum256(body)
+	c := cachedFeed{body: body, etag: `"` + hex.EncodeToString(sum[:12]) + `"`, at: now, modified: f.Updated}
+	for _, e := range f.Entries {
+		if e.At.After(c.modified) {
+			c.modified = e.At
+		}
+	}
+	return c, http.StatusOK, nil
+}
+
+func storeFeed(key string, c cachedFeed) {
+	feedCache.Lock()
+	defer feedCache.Unlock()
+	if len(feedCache.m) >= feedCacheMax {
+		feedCache.m = map[string]cachedFeed{} // crude, bounded; a refill costs one query set per feed
+	}
+	feedCache.m[key] = c
+}
+
+// refreshFeed rebuilds key in the background; the caller has marked it
+// refreshing. A failed rebuild keeps the feed being served and is logged,
+// and the next reader past the TTL tries again. A feed that now answers
+// otherwise than 200 (the validator is no longer on record) is dropped, so
+// the next reader gets that answer rather than the old feed.
+func (s *Server) refreshFeed(key string, build feedBuilder, authority string) {
+	s.bg.Add(1)
+	go func() {
+		defer s.bg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), feedBuildTimeout)
+		defer cancel()
+		c, status, err := renderFeed(ctx, build, authority, time.Now())
+		switch {
+		case err != nil:
+			if s.log != nil {
+				s.log.Printf("api: feed refresh %s: %v", key, err)
+			}
+		case status != http.StatusOK:
+			feedCache.Lock()
+			delete(feedCache.m, key)
+			feedCache.Unlock()
+		default:
+			storeFeed(key, c)
+		}
+		feedCache.Lock()
+		delete(feedCache.refreshing, key)
+		feedCache.Unlock()
+	}()
 }
 
 func etagMatch(header, etag string) bool {
