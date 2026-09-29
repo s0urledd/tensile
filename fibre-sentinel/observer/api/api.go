@@ -1306,24 +1306,72 @@ func (s *Server) obligationsWhere(ctx context.Context, win Window, extra string,
 	return obligationsOf(r), nil
 }
 
-// obligationsByValidator is obligationsWhere grouped by validator.
-func (s *Server) obligationsByValidator(ctx context.Context, win Window, extra string, extraArgs ...any) (map[string]obligationStats, error) {
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT validator_address, `+obligationSums+` FROM (`+obligationBuckets+extra+`)
-			GROUP BY validator_address, promise_hash) GROUP BY validator_address`, s.obligationArgs(win, extraArgs...)...)
+// obligationPass is the window's obligation buckets read once, per
+// validator: each validator's nine counts (rollup.ObligationSums) and the
+// part of its broken count still settling (provisional.go).
+type obligationPass struct {
+	byVal map[string]rollup.Obligations
+	prov  map[string]*provisionalFaults
+}
+
+// total is the counts over every validator the pass read. A bucket is one
+// validator's, so the groups add up to what obligationsWhere counts over
+// the same buckets ungrouped.
+func (p obligationPass) total() obligationStats {
+	var r rollup.Obligations
+	for _, o := range p.byVal {
+		r.Add(o)
+	}
+	return obligationsOf(r)
+}
+
+// byValidator is the counts per validator, for the validators the pass read.
+func (p obligationPass) byValidator() map[string]obligationStats {
+	out := make(map[string]obligationStats, len(p.byVal))
+	for addr, o := range p.byVal {
+		out[addr] = obligationsOf(o)
+	}
+	return out
+}
+
+// readObligations reduces the window's proven obligations to buckets once
+// and reads both of the figures published from them: the counts, and the
+// provisional faults among the broken ones, a fault being provisional while
+// it started after provisionalCutoff(now). extra is appended to the WHERE
+// clause (a validator filter), its arguments last.
+//
+// They were two statements over the same buckets, and the buckets are most
+// of what a snapshot costs: every window of the network summary and of the
+// validator list reduced every obligation row of the window twice.
+func (s *Server) readObligations(ctx context.Context, win Window, now time.Time, extra string, extraArgs ...any) (obligationPass, error) {
+	// The cutoff's two placeholders come before the buckets' in the text,
+	// so their arguments come first.
+	cutoff := provisionalCutoff(now)
+	args := append([]any{cutoff, cutoff}, s.obligationArgs(win, extraArgs...)...)
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT validator_address, `+obligationSums+`,
+			COALESCE(SUM(NOT pending AND faults > 0 AND first_fault > ?), 0),
+			MAX(CASE WHEN NOT pending AND faults > 0 AND first_fault > ? THEN first_fault END)
+		FROM (`+obligationBuckets+extra+`)
+			GROUP BY validator_address, promise_hash) GROUP BY validator_address`, args...)
 	if err != nil {
-		return nil, err
+		return obligationPass{}, err
 	}
 	defer rows.Close()
-	out := map[string]obligationStats{}
+	p := obligationPass{byVal: map[string]rollup.Obligations{}, prov: map[string]*provisionalFaults{}}
 	for rows.Next() {
 		var addr string
 		var r rollup.Obligations
-		if err := rows.Scan(append([]any{&addr}, scanObligations(&r)...)...); err != nil {
-			return nil, err
+		var settling int64
+		var youngest sql.NullString
+		if err := rows.Scan(append(append([]any{&addr}, scanObligations(&r)...), &settling, &youngest)...); err != nil {
+			return obligationPass{}, err
 		}
-		out[addr] = obligationsOf(r)
+		p.byVal[addr] = r
+		if settling > 0 {
+			p.prov[addr] = newProvisional(settling, youngest.String)
+		}
 	}
-	return out, rows.Err()
+	return p, rows.Err()
 }
 
 // excludeSet is the validator exclusion a reader asks for with `?exclude=`.
@@ -1569,15 +1617,13 @@ func (s *Server) computeNetwork(ctx context.Context, win Window, ex excludeSet, 
 	}
 	resp.Classes = classes
 	resp.RetentionUncertainty = s.retentionUncertaintyNow(ctx)
-	if resp.Obligations, err = s.obligationsWhere(ctx, win, ex.clause("pr.validator_address"), ex.addrs...); err != nil {
-		return nil, err
-	}
-	resp.ByObligation = resp.Obligations.Rate
-	prov, err := s.provisionalByValidator(ctx, win, s.now(), ex.clause("pr.validator_address"), ex.addrs...)
+	pass, err := s.readObligations(ctx, win, s.now(), ex.clause("pr.validator_address"), ex.addrs...)
 	if err != nil {
 		return nil, err
 	}
-	resp.ProvisionalFaults = provisionalTotal(prov)
+	resp.Obligations = pass.total()
+	resp.ByObligation = resp.Obligations.Rate
+	resp.ProvisionalFaults = provisionalTotal(pass.prov)
 	// The same population the class tally above was drawn from.
 	if resp.Attestation, err = s.attestationWhere(ctx, pop, popArgs...); err != nil {
 		return nil, err
@@ -2632,14 +2678,11 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	}
 
 	// one observation per (validator, blob): see obligationStats.
-	byObligation, err := s.obligationsByValidator(ctx, win, vfilter("pr.validator_address"), vargs()...)
+	pass, err := s.readObligations(ctx, win, s.now(), vfilter("pr.validator_address"), vargs()...)
 	if err != nil {
 		return nil, err
 	}
-	provisional, err := s.provisionalByValidator(ctx, win, s.now(), vfilter("pr.validator_address"), vargs()...)
-	if err != nil {
-		return nil, err
-	}
+	byObligation, provisional := pass.byValidator(), pass.prov
 
 	timeouts, err := s.timeoutsByAccount(ctx, win)
 	if err != nil {
@@ -2919,14 +2962,11 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 		if sw.Span > 0 {
 			sw.Start = spanEnd.Add(-sw.Span)
 		}
-		obl, err := s.obligationsWhere(ctx, sw, ` AND pr.validator_address = ?`, addr)
+		pass, err := s.readObligations(ctx, sw, s.now(), ` AND pr.validator_address = ?`, addr)
 		if err != nil {
 			return 0, nil, err
 		}
-		prov, err := s.provisionalByValidator(ctx, sw, s.now(), ` AND pr.validator_address = ?`, addr)
-		if err != nil {
-			return 0, nil, err
-		}
+		obl := pass.total()
 		rolled, label, err := s.rolledFor(ctx, sw, addr)
 		if err != nil {
 			return 0, nil, err
@@ -2934,7 +2974,7 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 		if rolled != nil {
 			addRolledObligations(&obl, rolled.ObligationsByVal[addr])
 		}
-		spans = append(spans, detailSpan{Window: sw, Obligations: obl, RolledUp: label, Provisional: prov[addr]})
+		spans = append(spans, detailSpan{Window: sw, Obligations: obl, RolledUp: label, Provisional: pass.prov[addr]})
 	}
 	rows, err := s.validatorRows(ctx, win, addr)
 	if err != nil {
