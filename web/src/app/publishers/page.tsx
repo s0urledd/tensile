@@ -63,7 +63,8 @@ function Page() {
 
       {error && <div className="note hold"><span className="label">Observer</span><p>Cannot reach the observer API: {error}. Nothing below is current.</p></div>}
 
-      {/* The escrow side; the period's fees paid are the total on the fees chart below. */}
+      {/* The escrow side, then who published and which promises timed out; the
+          period's fees paid are the total on the fees chart below. */}
       <section className="board board--stack" id="summary">
         <Figures className="row">
           <Metric label="Escrow held" value={pre || !m ? "—" : tia(m.escrow_total_utia ?? m.escrow_held_utia)} tone={pre || !m ? "absent" : undefined}
@@ -79,6 +80,14 @@ function Page() {
             tone={pre || !m || !m.largest_poster ? "absent" : undefined}
             help={pre || !m ? " " : m.largest_poster ? `of blob size · ${publisherName(m.largest_poster)}` : "nothing settled"}
             title="The publisher with the most blob size in the period, and its share." />
+          <Metric label="Publishers" period={period} value={pre || !m ? "—" : int(m.publishers_active)}
+            tone={pre || !m || m.publishers_active === 0 ? "absent" : undefined}
+            help={pre || !m || m.publishers_active > 0 ? " " : "none"}
+            title="Accounts that published blobs in this period." />
+          <Metric label="Payment promise timeouts" period={period} value={pre || !m ? "—" : int(m.timeouts)}
+            tone={pre || !m ? "absent" : undefined}
+            help={pre || !m ? " " : m.timeouts > 0 ? `${tia(m.timed_out_utia)} charged` : "none"}
+            title="Payment promises not settled within an hour. The account is charged anyway." />
         </Figures>
 
       {/* per UTC day; for 24h per UTC hour, as the Blobs charts are (the period of the answer shown decides) */}

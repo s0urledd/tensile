@@ -1113,7 +1113,13 @@ body { background: var(--canvas); }
 .rail { display: grid; align-content: start; gap: 36px; padding-top: 2px; }
 /* a long count runs into the gutter rather than losing its last digits */
 .rail .metric .value { overflow: visible; text-overflow: clip; }
-.figs.row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px 32px; }
+/* six figures, three to a row (two below 1000px). The figures of a row share its rows
+   (eyebrow, figure, help line), so an eyebrow that runs to two lines ("Payment promise
+   timeouts (24h)") keeps the figures of its row level; a one-line eyebrow sits just above
+   its figure. */
+.figs.row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px 32px; }
+.figs.row > .metric { display: grid; grid-row: span 3; grid-template-rows: subgrid; row-gap: 0; }
+.figs.row > .metric > .label { align-self: end; }
 .figs.row .metric .value { font-size: 34px; }
 .figs.row .metric .help { font-size: var(--t-small); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
