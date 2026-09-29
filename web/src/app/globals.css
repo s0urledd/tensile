@@ -382,9 +382,8 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
 }
 .rate.share { display: inline; }
 .rate.share.endorsed { font-weight: 400; color: var(--text); }
-/* the validators table's rows are set in Geist, their addresses and marks in Geist Mono; the headings keep the site's face */
+/* the validators table's rows are set in Onest; the headings and the addresses keep the site's faces */
 .vt tbody td { font-family: var(--font-table); }
-.vt tbody .mono, .vt tbody .avatar, .vt tbody .hosting .cc { font-family: var(--font-table-mono); }
 .vt tbody tr { position: relative; }
 .vt tbody tr:not(.empty) { cursor: pointer; }
 .vt .rowcover { position: absolute; inset: 0; z-index: 0; }

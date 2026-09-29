@@ -10,7 +10,7 @@ import { Header, Footer } from "@/components/Chrome";
 // the repository rather than fetched from Google at build time, so a build
 // never depends on Google being reachable. The latin files are preloaded, as
 // next/font did.
-const preloaded = ["ibm-plex-sans-latin", "ibm-plex-mono-latin", "ibm-plex-mono-latin-500", "geist-latin", "geist-mono-latin"];
+const preloaded = ["ibm-plex-sans-latin", "ibm-plex-mono-latin", "ibm-plex-mono-latin-500", "onest-latin"];
 
 export const metadata: Metadata = {
   title: "Tensile · Celestia Fibre observer",
