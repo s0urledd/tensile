@@ -60,6 +60,21 @@ func (s *Server) BlobTallies(limit, offset int) (map[string]BlobTally, error) {
 	return out, nil
 }
 
+// NetworkExcludingJSON is NetworkJSON over a window ending now, recomputed
+// without the validators named (hex), as ?exclude= recomputes it.
+func NetworkExcludingJSON(st *store.Store, vantage, window string, exclude []string) ([]byte, error) {
+	s := newServer(st, VantageInfo{Name: vantage}, nil)
+	var ex excludeSet
+	for _, a := range exclude {
+		ex.addrs = append(ex.addrs, a)
+	}
+	resp, err := s.computeNetwork(context.Background(), windowAt(window, time.Time{}), ex, exclude)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(resp)
+}
+
 // NetworkJSON is the network summary of the window, whole, as the snapshot
 // stores it.
 func NetworkJSON(st *store.Store, vantage, window string, asOf time.Time) ([]byte, error) {

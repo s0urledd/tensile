@@ -29,6 +29,12 @@ type obligationsJSON struct {
 // second blob whose only validator stops serving at the last point.
 func obligationsFixture(t *testing.T) *httptest.Server {
 	t.Helper()
+	ts, _ := obligationsFixtureStore(t)
+	return ts
+}
+
+func obligationsFixtureStore(t *testing.T) (*httptest.Server, *store.Store) {
+	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +140,7 @@ func obligationsFixture(t *testing.T) *httptest.Server {
 	}
 	ts := httptest.NewServer(api.New(st, "test"))
 	t.Cleanup(ts.Close)
-	return ts
+	return ts, st
 }
 
 // endVal is one endorsing validator of a reading insertReading writes: the
@@ -328,12 +334,10 @@ func insertProbeSet(t *testing.T, st *store.Store, hash string, created, msu tim
 // that as a kept promise made the serve rate rise while this observer was
 // down, and credited an operator for hours nobody watched.
 func TestAnObligationIsServedOnlyWhenTheEndOfItsWindowWasObserved(t *testing.T) {
-	ts := obligationsFixture(t)
+	ts, st := obligationsFixtureStore(t)
 
 	var net struct {
-		Obligations obligationsJSON          `json:"obligations"`
-		ByObl       struct{ Num, Den int64 } `json:"serve_rate_by_obligation"`
-		Classes     map[string]int64         `json:"classes"`
+		Obligations obligationsJSON `json:"obligations"`
 	}
 	if code := get(t, ts, "/v1/network?window=all", &net); code != 200 {
 		t.Fatalf("network: %d", code)
@@ -345,17 +349,19 @@ func TestAnObligationIsServedOnlyWhenTheEndOfItsWindowWasObserved(t *testing.T) 
 	if o.Total != 8 || o.Pending != 1 {
 		t.Errorf("total/pending = %d/%d, want 8/1: seven proven and decided, one still in its window", o.Total, o.Pending)
 	}
-	if net.Classes["FAULT"] != 1 {
-		t.Errorf("FAULT readings = %d, want 1", net.Classes["FAULT"])
+	// the reading tally, which the summary keeps and does not publish
+	var whole struct {
+		Classes map[string]int64 `json:"classes"`
+	}
+	networkOf(t, st, "test", "all", time.Time{}, &whole)
+	if whole.Classes["FAULT"] != 1 {
+		t.Errorf("FAULT readings = %d, want 1", whole.Classes["FAULT"])
 	}
 	if o.Served != 1 || o.Broken != 1 || o.NotCounted != 5 {
 		t.Errorf("served/broken/not_counted = %d/%d/%d, want 1/1/5: only the validator answering at the last point is vouched for", o.Served, o.Broken, o.NotCounted)
 	}
 	if o.Rate.Num != 1 || o.Rate.Den != 2 {
 		t.Errorf("obligation rate = %d/%d, want 1/2: only served and broken enter it", o.Rate.Num, o.Rate.Den)
-	}
-	if net.ByObl != o.Rate {
-		t.Errorf("serve_rate_by_obligation %+v must repeat obligations.rate %+v", net.ByObl, o.Rate)
 	}
 
 	var resp struct {

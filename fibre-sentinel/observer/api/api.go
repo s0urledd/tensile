@@ -1549,7 +1549,7 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 		resp.RecordThrough = s.recordThrough(r.Context())
 		resp.ComputedAt, resp.ComputeMs = t0.UTC().Format(time.RFC3339Nano), time.Since(t0).Milliseconds()
 		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, 200, resp)
+		writeJSON(w, 200, networkOutOf(resp))
 		return
 	}
 	resp, at, ms, err := s.net.get(r.Context(), s.logf(), win)
@@ -1559,9 +1559,9 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 	// A copy, so a reader cannot mutate the cached snapshot and two concurrent
 	// readers cannot race on it.
-	out := *resp
+	out := networkOutOf(resp)
 	out.ComputedAt, out.ComputeMs = at.UTC().Format(time.RFC3339Nano), ms
-	writeJSON(w, 200, &out)
+	writeJSON(w, 200, out)
 }
 
 // logf adapts the server's logger, which may be absent in tests, to what the

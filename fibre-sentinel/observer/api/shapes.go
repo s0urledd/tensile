@@ -16,6 +16,38 @@ import (
 // needed to ask, or figures only the validator page shows, which the list
 // leaves to it.
 
+// networkOut is /v1/network: the network's figures over the window. The
+// snapshot keeps more (the reading tallies, attestation, latency, the
+// previous span), which the page does not show and the rows of /v1/probes
+// state better; publications and their bytes are /v1/market's settlements
+// and bytes.
+type networkOut struct {
+	AsOfNote             string                `json:"as_of_note,omitempty"`
+	RolledUp             *rolledUp             `json:"rolled_up,omitempty"`
+	RetentionUncertainty *retentionUncertainty `json:"retention_uncertainty,omitempty"`
+	Window               Window                `json:"window"`
+	ComputedAt           string                `json:"computed_at,omitempty"`
+	ComputeMs            int64                 `json:"compute_ms,omitempty"`
+	RecordThrough        *recordThrough        `json:"record_through,omitempty"`
+	Excluded             []string              `json:"excluded,omitempty"`
+	ExcludeNote          string                `json:"exclude_note,omitempty"`
+	RegisteredEndpoints  int64                 `json:"registered_endpoints"`
+	Reachability         Rate                  `json:"reachability"`
+	ReachabilityWindow   Rate                  `json:"reachability_window"`
+	Obligations          obligationStats       `json:"obligations"`
+	Reconstructable      reconstructSummary    `json:"reconstructable"`
+	ProvisionalFaults    *provisionalFaults    `json:"provisional_faults,omitempty"`
+}
+
+func networkOutOf(r *networkResponse) networkOut {
+	return networkOut{
+		AsOfNote: r.AsOfNote, RolledUp: r.RolledUp, RetentionUncertainty: r.RetentionUncertainty, Window: r.Window,
+		ComputedAt: r.ComputedAt, ComputeMs: r.ComputeMs, RecordThrough: r.RecordThrough, Excluded: r.Excluded, ExcludeNote: r.ExcludeNote,
+		RegisteredEndpoints: r.RegisteredEndpoints, Reachability: r.Reachability, ReachabilityWindow: r.ReachabilityWindow,
+		Obligations: r.Obligations, Reconstructable: r.Reconstructable, ProvisionalFaults: r.ProvisionalFaults,
+	}
+}
+
 // validatorOut is one validator as /v1/validators lists it.
 type validatorOut struct {
 	Address          string             `json:"address"`

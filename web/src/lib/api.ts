@@ -173,12 +173,10 @@ export type Network = {
    * site can afford — so the page shows its age rather than implying it is now.
    */
   computed_at?: string;
-  compute_ms?: number;  window: Window;
+  compute_ms?: number;
+  window: Window;
   record_through?: RecordThrough;
-  vantage: string;
-  observed_from_one_location: boolean;
   registered_endpoints: number;
-  validators_probed: number;
   /** a census of the endpoints as of their newest evidence */
   reachability: Rate;
   /** every heartbeat in the window that completed TLS, over every one sent */
@@ -187,29 +185,14 @@ export type Network = {
   obligations: Obligations;
   /** the part of obligations.broken whose faults are all still settling; absent when none (see ProvisionalFaults) */
   provisional_faults?: ProvisionalFaults;
-  /** obligations.rate, repeated */
-  serve_rate_by_obligation: Rate;
-  attestation: Attestation;
-  probe_count: number;
-  classes: ClassCounts;
-  publications: number;
-  publication_bytes: number;
   reconstructable: Reconstructable;
-  probe_gaps: number;
-  probe_gaps_by_outcome: ClassCounts;
   /** set when the window rests partly on the daily rollup: past the raw retention, "all" is the rollup for days before raw_from plus the raw rows */
   rolled_up?: RolledUp;
-  /** whole-probe duration, dial to verified rows, over HEALTHY probes */
-  serve_latency_p50_ms: number | null;
-  serve_latency_p95_ms: number | null;
-  serve_latency_sample: number;
-  /** the same span ending where this window starts; absent on "all" and on a pinned window */
-  previous?: {
-    window: Window;
-    obligations: Obligations;
-    reachability_window: Rate;
-    serve_latency_p50_ms: number | null;
-  };
+  /** a pinned window (?as_of=): what is not rewound */
+  as_of_note?: string;
+  /** a window recomputed without named validators (?exclude=) */
+  excluded?: string[];
+  exclude_note?: string;
 };
 
 /**

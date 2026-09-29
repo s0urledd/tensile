@@ -99,7 +99,7 @@ func get(t *testing.T, ts *httptest.Server, path string, into any) int {
 }
 
 func TestMetaAndNetwork(t *testing.T) {
-	ts := serverWithSample(t)
+	ts, st := serverAndStore(t)
 	var meta struct {
 		ChainID   string                 `json:"chain_id"`
 		Counts    struct{ Probes int64 } `json:"counts"`
@@ -113,8 +113,6 @@ func TestMetaAndNetwork(t *testing.T) {
 		t.Fatalf("meta: %+v", meta)
 	}
 	var net struct {
-		Classes         map[string]int64 `json:"classes"`
-		ProbeCount      int64            `json:"probe_count"`
 		Reconstructable struct {
 			Recoverable          struct{ Num, Den int64 } `json:"recoverable"`
 			Yes, No              int64
@@ -128,12 +126,18 @@ func TestMetaAndNetwork(t *testing.T) {
 		t.Fatalf("network: %d", code)
 	}
 	// fixture run: in-window assigned readings are 27 HEALTHY and 9 FAULT,
-	// published under the classes they were recorded with.
-	if net.Classes["HEALTHY"] != 27 || net.Classes["FAULT"] != 9 {
-		t.Fatalf("classes = %v", net.Classes)
+	// tallied under the classes they were recorded with, which the summary
+	// keeps and does not publish
+	var whole struct {
+		Classes    map[string]int64 `json:"classes"`
+		ProbeCount int64            `json:"probe_count"`
 	}
-	if net.ProbeCount != 60 {
-		t.Fatalf("probe count = %d", net.ProbeCount)
+	networkOf(t, st, "test", "all", time.Time{}, &whole)
+	if whole.Classes["HEALTHY"] != 27 || whole.Classes["FAULT"] != 9 {
+		t.Fatalf("classes = %v", whole.Classes)
+	}
+	if whole.ProbeCount != 60 {
+		t.Fatalf("probe count = %d", whole.ProbeCount)
 	}
 	// the sample bound is published, and with a small fixture nothing is cut
 	if net.Reconstructable.SampleLimit == 0 || net.Reconstructable.Examined != net.Reconstructable.PublicationsInWindow {
