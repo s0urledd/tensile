@@ -65,7 +65,7 @@ const USES: Use[] = [
         call: "/validators/celestiavaloper1d2ktc37cme7ydk30ylzhamutcynhdvyet7nt3x/status",
         fields: [
           ["endpoint_state", <>reachable or unreachable: one failed check after a success still counts as reachable, two in a row do not.</>],
-          ["identity_status", <>verified when the endpoint&rsquo;s certificate is endorsed by your consensus key; expired, mismatch, no_tls or unreachable say why not.</>],
+          ["identity_status", <>verified when the endpoint&rsquo;s certificate is endorsed by your consensus key; expired, mismatch, no_tls or unreachable say why not. unverified is a handshake with no certificate check recorded yet, and unknown an endpoint not checked yet.</>],
           ["obligations.served", <>Endorsed shards whose rows came back verified when Tensile read the blob.</>],
           ["obligations.broken", <>Endorsed shards whose rows did not come back on a blob that was Unavailable, &ldquo;not served&rdquo; on the site.</>],
           ["signing", <>assigned is the settled promises that gave you rows while your host was registered; signed is how many carry your endorsement.</>],
@@ -159,10 +159,10 @@ const USES: Use[] = [
         lede: "Tensile reads every blob once, 10 minutes before its retention window ends, the way the Fibre client downloads it.",
         call: "/blobs/36f68ba9a781754e80037357ebf485d25e471332f436596904467099cfda2417",
         fields: [
-          ["blob.reconstructable.status", <>yes (Available) or no (Unavailable) once read; pending before the reading, not_read when the window closed without one.</>],
+          ["blob.reconstructable.status", <>yes (Available) or no (Unavailable) once read; pending before the reading, not_read when the window closed without one, and unknown when its rows could not be assigned to validators or their count is not on record.</>],
           ["blob.reconstructable.served_distinct_rows", <>Distinct verified rows that came back, against the needed_rows that rebuild the blob.</>],
           ["blob.must_serve_until", <>The end of the retention window: endorsing validators owe their rows until then.</>],
-          ["assignments[].service", <>served or not_served for each validator; absent when the reading had no result for it, such as a validator it never needed to ask.</>],
+          ["assignments[].service", <>For each validator: served or not_served once decided; in_retention_window while the window is still open, and deadline_unverified while the retention deadline cannot be computed. Absent when there is no result either way, such as a validator the reading never needed to ask.</>],
           ["blob.charge.fee_utia", <>What the promise was charged.</>],
         ],
         note: <>On an Unavailable blob, <code>reconstructable.error</code> carries the Fibre client&rsquo;s error. <code>rows=1</code> adds each reading&rsquo;s <code>row_indices</code>, the index of every row that came back, in the order returned, and <code>rows_sha256</code>, a digest of those rows.</>,
