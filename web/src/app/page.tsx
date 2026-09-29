@@ -26,7 +26,7 @@ function Overview() {
   const [win, setWin] = useWindow("24h");
   const { data: meta, error: metaErr } = useApi<Meta>("/v1/meta");
   const net = useApi<Network>(`/v1/network?window=${win}`);
-  // Tensile's Available figure is "now", not the period: every settlement read so far
+  // Tensile's Blob availability figure is "now", not the period: every settlement read so far
   const whole = useApi<Network>("/v1/network?window=all");
   // The 24h list is refreshed as often as every ten seconds on the observer
   // (endorsements move with every block; in September 2026 its 15-22 s
@@ -63,7 +63,7 @@ function Overview() {
     </div>
   );
   // Under the latest blob, Tensile's own readings, marked as such and set quieter than the
-  // chain's: the Available share over every settlement read near the end of its retention
+  // chain's: the Blob availability share (CIP-51's term) over every settlement read near the end of its retention
   // window, and the latest blob's own result, in the Blobs list's words.
   const rec = whole.data?.reconstructable?.recoverable;
   const st = last ? recon(last) : null;
@@ -73,7 +73,7 @@ function Overview() {
       <dl className="ov-obs-grid">
         {rec && (
           <div title="Observed by Tensile: settlements read near the end of their retention window whose rows were enough to reconstruct the blob.">
-            <dt>Available</dt>
+            <dt>Blob availability</dt>
             <dd>
               <span className={`ov-obs-v num${rec.den > 0 ? "" : " absent"}`}>{pctOf(rec.num, rec.den)}</span>
               <span className="ov-obs-h">{rec.den > 0 ? `${int(rec.num)} of ${int(rec.den)} read near the window's end` : "none read"}</span>

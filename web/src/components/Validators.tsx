@@ -27,7 +27,7 @@ function isSelf(v: Validator): boolean {
 }
 
 type Filter = "all" | "unreachable" | "nohost";
-type SortKey = "power" | "signed" | "last" | "since";
+type SortKey = "power" | "signed" | "last";
 
 /**
  * A rejected certificate, in the words of the Fibre TLS identity spec
@@ -75,7 +75,6 @@ function sortValue(v: Validator, k: SortKey): number | null {
     // one with none has no share and sorts last.
     case "signed": { const s = v.signing; return s && s.assigned > 0 ? s.signed / s.assigned : null; }
     case "last": return time(v.signing?.last_endorsed_at);
-    case "since": return time(v.provider_since);
   }
 }
 
@@ -148,10 +147,6 @@ export default function Validators({ rows, window: win, notLive, loading }: { ro
     const at = v.signing?.last_endorsed_at;
     return at ? <span title={utcWord(at)}>{ago(at)}</span> : <span className="muted">—</span>;
   };
-  const since = (v: Validator) => {
-    const at = v.provider_since;
-    return at ? <span title={utcWord(at)}>{new Date(at).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}</span> : <span className="muted">—</span>;
-  };
 
   return (
     <section>
@@ -178,7 +173,6 @@ export default function Validators({ rows, window: win, notLive, loading }: { ro
               <Th col="c-power" k="power" dflt={-1} label="Voting power" title="The default order. Not a performance ranking." />
               <Th col="c-end" k="signed" dflt={-1} label="Endorsements" info="How often this validator’s signature is in the settlement, counted while it had a Fibre provider. A settlement needs signatures from ⅔ of the stake, and the first validators to respond fill it." />
               <Th col="c-last" k="last" dflt={-1} label="Last endorsement" info="The last time this validator signed a blob, in any period." />
-              <Th col="c-since" k="since" dflt={1} label="Provider since" info="When this validator first appeared as a Fibre provider." />
             </tr>
           </thead>
           <tbody>
@@ -215,7 +209,6 @@ export default function Validators({ rows, window: win, notLive, loading }: { ro
                   <td className="num">{int(v.voting_power)}</td>
                   <td className="num soft-col">{signed(v)}</td>
                   <td className="num">{last(v)}</td>
-                  <td className="num">{since(v)}</td>
                 </tr>
               );
             })}

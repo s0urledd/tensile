@@ -48,12 +48,12 @@ function StakeGauge({ rows }: { rows: Validator[] }) {
   const vars = { "--v": at(regPower), "--q": at(quorum) } as React.CSSProperties;
   return (
     <div className="ov-stake">
-      <h2 id="readiness-h" className="ov-eyebrow">Stake with a Fibre provider<Info label="Stake with a Fibre provider"><p>Share of the stake held by validators with a Fibre provider. A blob needs signatures from ⅔ of the stake to settle.</p></Info></h2>
+      <h2 id="readiness-h" className="ov-eyebrow">Voting power with a Fibre provider<Info label="Voting power with a Fibre provider"><p>Share of the stake held by validators with a Fibre provider. A blob needs signatures from ⅔ of the stake to settle.</p></Info></h2>
       <p className="ov-hero">
         <b className="ov-fig">{pct(regPower)}</b>
         <span className="ov-hero-help"> of voting power · {int(r.registered.length)} of {int(r.bonded.length)} validators</span>
       </p>
-      <div className="ov-gauge" style={vars} role="img" aria-label={`${pct(regPower)} of stake with a Fibre provider, ${pct(quorum)} needed`}>
+      <div className="ov-gauge" style={vars} role="img" aria-label={`${pct(regPower)} of voting power with a Fibre provider, ${pct(quorum)} needed`}>
         <span className="ov-needle"><span><Frac /> needed</span></span>
         <span className="ov-track"><i /></span>
         <span className="ov-ruler">{Array.from({ length: 11 }, (_, i) => <i key={i} />)}</span>
