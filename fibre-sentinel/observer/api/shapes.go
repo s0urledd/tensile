@@ -193,6 +193,7 @@ type validatorOut struct {
 	EndpointClosedAt *string            `json:"endpoint_closed_at,omitempty"`
 	VotingPower      int64              `json:"voting_power"`
 	LastSeenAt       *string            `json:"last_seen_at"`
+	LastServedAt     *string            `json:"last_served_at"`
 	Reachable        *bool              `json:"reachable"`
 	EndpointState    string             `json:"endpoint_state,omitempty"`
 	IdentityStatus   string             `json:"identity_status"`
@@ -283,7 +284,8 @@ func listOf(v validatorRow) validatorOut {
 		Address: v.Address, ConsAddress: v.ConsAddress, Moniker: v.Moniker, Operator: v.Operator, AvatarURL: v.AvatarURL,
 		Jailed: v.Jailed, BondStatus: v.BondStatus, SignaledUpgrade: v.SignaledUpgrade,
 		Host: v.Host, LastHost: v.LastHost, EndpointClosedAt: v.EndpointClosedAt, VotingPower: v.VotingPower, LastSeenAt: v.LastSeenAt,
-		Reachable: v.Reachable, EndpointState: v.EndpointState, IdentityStatus: v.IdentityStatus, IdentityReason: v.IdentityReason,
+		LastServedAt: v.LastServedAt,
+		Reachable:    v.Reachable, EndpointState: v.EndpointState, IdentityStatus: v.IdentityStatus, IdentityReason: v.IdentityReason,
 		ConfirmedFrom: v.ConfirmedFrom, AlsoFailedFrom: v.AlsoFailedFrom, Reachability: v.Reachability, LastReachableAt: v.LastReachableAt,
 		Obligations: v.Obligations,
 		Signing: signingOut{Assigned: v.Signing.Assigned, Signed: v.Signing.Signed, Unknown: v.Signing.Unknown, NoHost: v.Signing.NoHost,

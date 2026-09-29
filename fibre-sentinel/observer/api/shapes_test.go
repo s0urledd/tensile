@@ -20,7 +20,7 @@ func fullRow() validatorRow {
 		Address: "aa", ConsAddress: "celestiavalcons1aa", Moniker: "m", Operator: "celestiavaloper1aa", KeybaseIdentity: "K",
 		AvatarURL: "/v1/avatars/K", Website: "https://example.org", Jailed: true, BondStatus: "BOND_STATUS_BONDED", SignaledUpgrade: &yes,
 		Host: "h:7980", EndpointSince: s("2026-09-01T00:00:00Z"), ProviderSince: s("2026-08-01T00:00:00Z"), LastHost: "old:7980",
-		EndpointClosedAt: s("2026-09-02T00:00:00Z"), VotingPower: 7, LastSeenAt: s("2026-09-03T00:00:00Z"), Reachable: &no,
+		EndpointClosedAt: s("2026-09-02T00:00:00Z"), VotingPower: 7, LastSeenAt: s("2026-09-03T00:00:00Z"), LastServedAt: s("2026-09-02T12:00:00Z"), Reachable: &no,
 		EndpointState: "unreachable", IdentityStatus: "no_tls", IdentityReason: "r", ConfirmedFrom: "de-1", AlsoFailedFrom: "de-2",
 		Reachability: rate(3, 4), IdentityValid: rate(1, 3), LastUnreachableAt: s("2026-09-04T00:00:00Z"), LastReachableAt: s("2026-09-05T00:00:00Z"),
 		Obligations:  obligationStats{Total: 9, Served: 5, Broken: 1, HeldParamUnverified: 1, NotCounted: 1, Pending: 1, Rate: rate(5, 6)},
@@ -85,7 +85,7 @@ func TestValidatorProjectionsCopyTheRow(t *testing.T) {
 	// the top-level fields, whole; signing, load and hosting are subsets,
 	// checked below
 	flat := []string{"address", "cons_address", "moniker", "operator_address", "avatar_url", "jailed", "bond_status",
-		"signaled_upgrade", "host", "last_host", "endpoint_closed_at", "voting_power", "last_seen_at", "reachable", "endpoint_state",
+		"signaled_upgrade", "host", "last_host", "endpoint_closed_at", "voting_power", "last_seen_at", "last_served_at", "reachable", "endpoint_state",
 		"identity_status", "identity_reason", "confirmed_from", "also_failed_from", "reachability_window", "last_reachable_at",
 		"obligations", "provisional_faults"}
 	split := func(m map[string]any) (signing, load, hosting map[string]any) {

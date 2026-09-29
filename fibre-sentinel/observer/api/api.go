@@ -2000,7 +2000,10 @@ type validatorRow struct {
 	EndpointClosedAt *string `json:"endpoint_closed_at,omitempty"`
 	VotingPower      int64   `json:"voting_power"` // from the latest assignment seen
 	LastSeenAt       *string `json:"last_seen_at"`
-	Reachable        *bool   `json:"reachable"` // debounced: up at the newest check, or failed only once since the one before; null if never probed
+	// LastServedAt is the start of the newest reading in the window whose
+	// rows came back verified (HEALTHY); null when none did.
+	LastServedAt *string `json:"last_served_at"`
+	Reachable    *bool   `json:"reachable"` // debounced: up at the newest check, or failed only once since the one before; null if never probed
 	// EndpointState says which: reachable (one failed check after a success
 	// still counts) | unreachable (two failures in a row, or no success on
 	// record). Empty when never checked.
@@ -2439,15 +2442,22 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	rows, err = db.QueryContext(ctx, `SELECT validator_address, COUNT(*), MAX(started_at) FROM probe_rows
+	// The readings in the window, the newest of them, and the newest whose
+	// rows came back verified (the effective class, so a held row is not
+	// one), which the overview's map names as the validators that served
+	// last.
+	rows, err = db.QueryContext(ctx, `SELECT validator_address, COUNT(*), MAX(started_at),
+			MAX(CASE WHEN `+cls+` = 'HEALTHY' THEN started_at END)
+		FROM probe_rows
 		WHERE started_at >= ? AND started_at <= ?`+vfilter("validator_address")+` GROUP BY validator_address`, vargs(win.startArg(), win.endArg())...)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var addr, last string
+		var served sql.NullString
 		var n int64
-		if err := rows.Scan(&addr, &n, &last); err != nil {
+		if err := rows.Scan(&addr, &n, &last, &served); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -2455,6 +2465,10 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 		v.ProbeCount = n
 		l := last
 		v.LastSeenAt = &l
+		if served.Valid {
+			s := served.String
+			v.LastServedAt = &s
+		}
 	}
 	rows.Close()
 	// The heartbeat history, which until now was written every five minutes for

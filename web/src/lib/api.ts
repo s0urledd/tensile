@@ -225,6 +225,8 @@ export type Validator = {
   endpoint_closed_at?: string;
   voting_power: number;
   last_seen_at: string | null;
+  /** the start of its newest reading in the period whose rows came back verified; null when none did */
+  last_served_at: string | null;
   reachable: boolean | null;
   /** reachable (one failed check after a good one still counts) | unreachable (two in a row) */
   endpoint_state?: "reachable" | "unreachable";
