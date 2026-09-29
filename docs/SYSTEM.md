@@ -213,7 +213,8 @@ client's result: **available** when the distinct verified rows reach
 retrieved` or `not enough shards to reconstruct blob`, when they do not. A
 reading that did not happen (the prober missed it, `NOT_PROBED`, or not a
 single request reached a server, `probe.Reached` for none) is `pending`
-while the window is open and `not_read` after, and nothing counts on it. A
+while the window is open and `not_read` after, and no one is not served on it
+(rows that did come back still count as served). A
 reading is judged from all of its rows, whatever phase each carries. A blob
 of the earlier schedule shows the reading at the newest point in the window
 every endorsing validator was reached at; each of its points counts as a
@@ -558,7 +559,7 @@ Stated here because they are properties of the machine, not of any validator.
 - **Unavailable needs a reading that happened.** A blob is unavailable only
   after the whole set was asked, as the client asks it; a reading this
   observer missed, or one in which not a single request reached a server,
-  is its gap, and nothing counts on it. While the observer is blind it
+  is its gap, and no one is not served on it. While the observer is blind it
   can withhold credit, never manufacture an accusation.
 - **The rows a reading did not need say nothing.** A reading stops at enough
   rows, so a validator later in the order is often not asked at all, and an

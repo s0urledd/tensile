@@ -75,7 +75,7 @@ func TestTheSQLAndTheGoTwinCountEveryCellTheSame(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rows, err := db.QueryContext(ctx, `SELECT dedupe_key, `+rollup.CountedClass("probes")+`, `+rollup.CountedClassBulk("probes")+`,
+	rows, err := db.QueryContext(ctx, `SELECT dedupe_key, `+rollup.CountedClass("probes")+`,
 		`+rollup.NotServedSQL("probes")+` FROM probes`)
 	if err != nil {
 		t.Fatal(err)
@@ -83,13 +83,13 @@ func TestTheSQLAndTheGoTwinCountEveryCellTheSame(t *testing.T) {
 	defer rows.Close()
 	got := map[string]string{}
 	for rows.Next() {
-		var k, c, bulk string
+		var k, c string
 		var notServed bool
-		if err := rows.Scan(&k, &c, &bulk, &notServed); err != nil {
+		if err := rows.Scan(&k, &c, &notServed); err != nil {
 			t.Fatal(err)
 		}
-		if bulk != c || notServed != (c == "FAULT") {
-			t.Errorf("%s: CountedClass %q, bulk %q, not served %v", k, c, bulk, notServed)
+		if notServed != (c == "FAULT") {
+			t.Errorf("%s: CountedClass %q, not served %v", k, c, notServed)
 		}
 		got[k] = c
 	}

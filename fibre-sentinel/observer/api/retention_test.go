@@ -227,7 +227,7 @@ func TestRollupAndPruneKeepTheAllWindow(t *testing.T) {
 	for _, w := range detail.Windows {
 		if w.Window.Name == "all" {
 			found = true
-			if w.RolledUp == nil || w.Obligations != byAddr[hexAddr].Obligations || w.Obligations.Total != 3 || w.Obligations.Served != 2 {
+			if w.RolledUp == nil || w.Obligations != byAddr[hexAddr].Obligations || w.Obligations.Total != 3 || w.Obligations.Served != 3 {
 				t.Errorf("detail all span: %+v vs %+v", w, byAddr[hexAddr].Obligations)
 			}
 		}

@@ -21,7 +21,8 @@ import (
 // down: Reached holds for none) or when the prober missed its requests (a
 // NOT_PROBED row: it was down, restarting, or late) and the rows are short;
 // then the blob was not read by Tensile, or is still in its retention
-// window, and nothing counts on it.
+// window, and no one is not served on it (rows that came back verified
+// still count as served).
 //
 // A reading is judged from all of its rows (one promise, one scheduled
 // time), whatever phase each row carries: the rows that came back are the

@@ -305,7 +305,8 @@ One sentence each, and what a reader should conclude.
   timed out or found no route reached no one). Blobs settled before 27
   September 2026 that the load policy of the time did not draw have no
   reading either. Then the blob is `not_read`, or `pending` while its
-  window is open, and nothing counts on it, rows that came back included.
+  window is open, and no one is not served on it; rows that came back
+  verified still count as served.
 - **What a validator's row counts as** (`verdict.CountedClass`, one per
   endorsed (validator, blob)):
   - `served` — its rows came back verified at the reading;
@@ -484,9 +485,9 @@ say what it counts as.
 
 Readings stored by earlier builds are read by the same rule, with nothing
 rewritten: a reading with a `NOT_PROBED` row whose rows are short was
-missed in part, so it did not happen, and nothing counts on it, not even
-the rows that did come back; one in which not a single request reached a
-server did not happen either.
+missed in part, so it did not happen, and no one is not served on it (the
+rows that did come back still count as served); one in which not a single
+request reached a server did not happen either.
 
 ## Known limits of a probe
 

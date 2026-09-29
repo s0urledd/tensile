@@ -65,18 +65,8 @@ import (
 // reads it; the API uses it to mark a broken obligation provisional while
 // even its oldest fault is younger than verdict.FaultSettling (see
 // observer/api/provisional.go). Sums ignore it, so the rollup is unchanged.
-//
-// It is a query over many readings, so a served row counts by
-// CountedClassBulk.
-var ObligationBuckets = obligationBuckets(CountedClassBulk("pr"))
 
-// BlobObligationBuckets is ObligationBuckets for the rows of one blob (the
-// caller filters on pr.promise_hash): a served row counts by CountedClass,
-// which looks at its own reading only.
-var BlobObligationBuckets = obligationBuckets(CountedClass("pr"))
-
-func obligationBuckets(cls string) string {
-	return `SELECT validator_address, promise_hash,
+var ObligationBuckets = `SELECT validator_address, promise_hash,
 			SUM(cls = 'FAULT')                AS faults,
 			SUM(cls = 'HEALTHY')              AS healthy,
 			SUM(cls = 'RETENTION_UNVERIFIED') AS held,
@@ -89,7 +79,7 @@ func obligationBuckets(cls string) string {
 			MIN(CASE WHEN cls = 'FAULT' THEN started_at END)            AS first_fault
 		FROM (
 			SELECT pr.validator_address, pr.promise_hash,
-			       ` + cls + ` AS cls,
+			       ` + CountedClass("pr") + ` AS cls,
 			       pr.tls_ok, pr.must_serve_until, pr.started_at,
 			       pr.scheduled_at, pr.schedule_label, pb.settlement_time,
 			       ROW_NUMBER() OVER (PARTITION BY pr.validator_address, pr.promise_hash
@@ -97,7 +87,6 @@ func obligationBuckets(cls string) string {
 			FROM ` + store.ObligationRowsVerified + ` pr JOIN publications pb ON pb.promise_hash = pr.promise_hash
 			WHERE pb.settlement_time >= ? AND pb.settlement_time <= ? AND pr.started_at <= ? AND pr.started_at >= ?
 			  AND pr.assigned = 1 AND pr.phase = 'in_window' AND pr.attested = 1`
-}
 
 // cls is CountedClass: served, not served on an Unavailable blob, and the
 // retention hold over both (a row whose deadline this observer cannot vouch
@@ -201,33 +190,33 @@ const DeadlineDerivedSQL = `('HEALTHY','FAULT')`
 // blob's reading is known, in the window: HEALTHY (served) when its rows
 // came back verified; FAULT (not served) when they did not and the reading
 // left the blob Unavailable; NOT_PROBED and PROBE_ERROR, this observer's
-// gap, and 'NOT_COUNTED' for any other answer, when it was not, and for
-// rows that came back on a blob not read by Tensile (the prober missed
-// part of the reading and the rows are short). Over served and not served,
-// the retention hold of EffectiveClass. A row outside the window, or of a
-// validator that did not endorse, keeps its own class. The Go twin is
-// verdict.Row.CountedClass.
+// gap, and 'NOT_COUNTED' for any other answer, when it was not. Over
+// served and not served, the retention hold of EffectiveClass. A row
+// outside the window, or of a validator that did not endorse, keeps its own
+// class. The Go twin is verdict.Row.CountedClass.
 //
 // The blob's reading is looked at only where it can change the count: a
-// row whose rows did not come back, or a served row of a reading the prober
-// missed part of (missedSQL, a list drawn once per query). That keeps a
-// tally over many readings to the few of them that need it. A served row of
-// a missed reading asks whether its own reading's rows reconstruct the
-// blob, which is right for the rows of one blob or a page of rows; a query
-// over many readings uses CountedClassBulk.
+// row whose rows did not come back. That keeps a tally over many readings
+// to the few of them that did not come back.
 //
 // alias must name the row's table or view (the correlated subqueries read
 // probes under an alias of their own).
 func CountedClass(alias string) string {
-	return countedClass(alias, false)
-}
-
-// CountedClassBulk is CountedClass for a query over many readings: a served
-// row of a missed reading is looked up in one list of the missed readings
-// that are short (notReadSQL), drawn once for the whole query, instead of
-// asking of each served row.
-func CountedClassBulk(alias string) string {
-	return countedClass(alias, true)
+	if alias == "" {
+		panic("rollup.CountedClass needs the row's alias")
+	}
+	p := alias + "."
+	h, t := p+"promise_hash", p+"scheduled_at"
+	held := func(c string) string {
+		return `(CASE WHEN ` + p + `retention_unverified = 1 AND ` + p + `outcome <> 'INVALID_ROWS' THEN 'RETENTION_UNVERIFIED' ELSE '` + c + `' END)`
+	}
+	nc := `'` + string(verdict.NotCounted) + `'`
+	return `(CASE WHEN ` + p + `phase <> 'in_window' OR COALESCE(` + p + `assigned, 0) <> 1 OR COALESCE(` + p + `attested, 0) <> 1 THEN ` + p + `classification` +
+		` WHEN ` + p + `commitment_verified = 1 THEN ` + held("HEALTHY") +
+		` WHEN ` + p + `classification = 'NOT_PROBED' THEN 'NOT_PROBED'` +
+		` WHEN ` + unavailableSQL(h, t) + ` = 1 THEN ` + held("FAULT") +
+		` WHEN ` + p + `classification = 'PROBE_ERROR' THEN 'PROBE_ERROR'` +
+		` ELSE ` + nc + ` END)`
 }
 
 // NotServedSQL is true of a row that counts as not served (CountedClass
@@ -238,35 +227,6 @@ func NotServedSQL(alias string) string {
 	p := alias + "."
 	return `(NOT (COALESCE(` + p + `commitment_verified, 0) = 1 AND ` + p + `phase = 'in_window' AND COALESCE(` + p + `assigned, 0) = 1 AND COALESCE(` +
 		p + `attested, 0) = 1) AND ` + CountedClass(alias) + ` = 'FAULT')`
-}
-
-func countedClass(alias string, bulk bool) string {
-	if alias == "" {
-		panic("rollup.CountedClass needs the row's alias")
-	}
-	p := alias + "."
-	h, t := p+"promise_hash", p+"scheduled_at"
-	held := func(c string) string {
-		return `(CASE WHEN ` + p + `retention_unverified = 1 AND ` + p + `outcome <> 'INVALID_ROWS' THEN 'RETENTION_UNVERIFIED' ELSE '` + c + `' END)`
-	}
-	nc := `'` + string(verdict.NotCounted) + `'`
-	// served, unless the prober missed part of the reading and the rows
-	// that came back do not reconstruct the blob (verdict.Reading.Available):
-	// not read by Tensile
-	served := `(CASE WHEN NOT ` + missedSQL(h, t) + ` THEN ` + held("HEALTHY") +
-		` WHEN ` + notAvailableSQL(h, t) + ` = 1 THEN ` + nc +
-		` ELSE ` + held("HEALTHY") + ` END)`
-	if bulk {
-		served = `(CASE WHEN NOT ` + missedSQL(h, t) + ` THEN ` + held("HEALTHY") +
-			` WHEN ` + notReadSQL(h, t) + ` THEN ` + nc +
-			` ELSE ` + held("HEALTHY") + ` END)`
-	}
-	return `(CASE WHEN ` + p + `phase <> 'in_window' OR COALESCE(` + p + `assigned, 0) <> 1 OR COALESCE(` + p + `attested, 0) <> 1 THEN ` + p + `classification` +
-		` WHEN ` + p + `commitment_verified = 1 THEN ` + served +
-		` WHEN ` + p + `classification = 'NOT_PROBED' THEN 'NOT_PROBED'` +
-		` WHEN ` + unavailableSQL(h, t) + ` = 1 THEN ` + held("FAULT") +
-		` WHEN ` + p + `classification = 'PROBE_ERROR' THEN 'PROBE_ERROR'` +
-		` ELSE ` + nc + ` END)`
 }
 
 // The pieces of one reading (promise h at scheduled time t), as
@@ -314,46 +274,6 @@ func readingKey(h, t string) string {
 func missedSQL(h, t string) string {
 	return `(` + readingKey(h, t) + ` IN (SELECT ` + readingKey("qm.promise_hash", "qm.scheduled_at") + ` FROM probes qm
 			WHERE qm.assigned = 1 AND qm.phase = 'in_window' AND qm.classification = 'NOT_PROBED'))`
-}
-
-// notAvailableSQL is 1 when the rows of the reading of promise h at t do not
-// reconstruct the blob (not verdict.Reading.Available), 0 when they do; k
-// is the rows needed. The cheap bounds settle nearly every reading.
-func notAvailableSQL(h, t string) string {
-	return notAvailableK(h, t, neededSQL(h))
-}
-
-func notAvailableK(h, t, k string) string {
-	return `(CASE WHEN COALESCE(` + k + `, 0) <= 0 THEN 1
-		WHEN ` + lowerSQL(h, t) + ` >= ` + k + ` THEN 0
-		WHEN ` + upperSQL(h, t) + ` < ` + k + ` THEN 1
-		WHEN ` + exactSQL(h, t) + ` >= ` + k + ` THEN 0
-		ELSE 1 END)`
-}
-
-// notReadSQL is true when the reading of promise h at t is one the prober
-// missed part of (missedSQL) and whose rows do not reconstruct the blob:
-// not read by Tensile, so the rows that came back count neither way. It is
-// a list rather than a question per row: the availability of every missed
-// reading is drawn once for a whole query, where a question per served row
-// took minutes over a day's obligations on a copy of the live store.
-// CountedClassBulk asks it only of a served row whose reading is missed, so
-// a query that meets none never draws it.
-//
-// The rows needed are read from one publication per protocol params
-// fingerprint (the fingerprint hashes original_rows, so it names one
-// value), since parsing each record's raw_json for it was most of the
-// list's cost; a record without a fingerprint is read on its own.
-func notReadSQL(h, t string) string {
-	return `(` + readingKey(h, t) + ` IN (WITH
-		mr AS MATERIALIZED (SELECT qm.promise_hash AS h, qm.scheduled_at AS t FROM probes qm
-			WHERE qm.assigned = 1 AND qm.phase = 'in_window' AND qm.classification = 'NOT_PROBED'
-			GROUP BY qm.promise_hash, qm.scheduled_at),
-		mp AS MATERIALIZED (SELECT mr.h AS h, mr.t AS t, pb.protocol_params_fingerprint AS fp FROM mr LEFT JOIN publications pb ON pb.promise_hash = mr.h),
-		fk AS MATERIALIZED (SELECT f.fp AS fp, ` + neededSQL("f.h") + ` AS k
-			FROM (SELECT mp.fp AS fp, MIN(mp.h) AS h FROM mp WHERE COALESCE(mp.fp, '') <> '' GROUP BY mp.fp) f)
-		SELECT ` + readingKey("mp.h", "mp.t") + ` FROM mp LEFT JOIN fk ON fk.fp = mp.fp
-		WHERE ` + notAvailableK("mp.h", "mp.t", "COALESCE(fk.k, "+neededSQL("mp.h")+")") + ` = 1))`
 }
 
 // Reached is verdict.Reached (probe.Reached) over a probes row under the

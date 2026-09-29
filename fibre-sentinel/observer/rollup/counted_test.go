@@ -96,8 +96,7 @@ func (r *readings) blob(needed, total int, vals ...validator) string {
 	p := scan.Publication{SchemaVersion: scan.AttestationSchemaVersion, PromiseHash: hash, SettlementHeight: int64(100 + r.n), SettlementTime: settled,
 		MustServeUntil: msu, Promise: scan.PromiseFields{Commitment: hash, Height: int64(99 + r.n), CreationTimestamp: settled}}
 	p.Assignment.ProtocolParams.OriginalRows, p.Assignment.ProtocolParams.TotalRows = needed, total
-	// the fingerprint names the params, as the scanner's does (the bulk
-	// count reads the rows needed once per fingerprint)
+	// the fingerprint names the params, as the scanner's does
 	p.Assignment.ProtocolParams.Fingerprint = fmt.Sprintf("fp-%d-%d", needed, total)
 	distinct := map[int]bool{}
 	for _, v := range vals {
@@ -208,8 +207,8 @@ func fixture(t *testing.T) (*readings, map[string]string) {
 		failed("n2", rowsFrom(4, 4), probe.ClassUnreachable, probe.OutcomeTCPTimeout),
 		failed("n3", rowsFrom(8, 4), probe.ClassNotRegistered, probe.OutcomeNoHost))
 	// Not read: the prober missed part of the reading, as the older build
-	// stored readings a validator at a time, and the rows are short. Nothing
-	// counts, the rows that came back included.
+	// stored readings a validator at a time, and the rows are short. No one
+	// is not served; the rows that came back are served all the same.
 	hashes["partmissed"] = r.blob(8, 32, served("m1", rowsFrom(0, 4)),
 		validator{name: "m2", holds: rowsFrom(4, 4), missed: true}, validator{name: "m3", holds: rowsFrom(8, 4), missed: true})
 	// A reading is judged from all of its rows, whatever phase each
@@ -237,27 +236,27 @@ func fixture(t *testing.T) (*readings, map[string]string) {
 }
 
 // Every row counts the same in SQL (rollup.CountedClass, which is how the
-// stored readings are re-read, with no file rewritten; its bulk form, and
-// NotServedSQL) and in the Go twin, and as the rule says.
+// stored readings are re-read, with no file rewritten, and NotServedSQL)
+// and in the Go twin, and as the rule says.
 func TestTheSQLAndTheGoTwinCountTheSameRows(t *testing.T) {
 	r, hashes := fixture(t)
 	ctx := context.Background()
 	rows, _, blobs := r.twin()
 
 	q, err := r.st.DB().QueryContext(ctx, `SELECT promise_hash, validator_address, `+rollup.CountedClass("probes")+`, `+
-		rollup.CountedClassBulk("probes")+`, `+rollup.NotServedSQL("probes")+` FROM probes`)
+		rollup.NotServedSQL("probes")+` FROM probes`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sqlCls := map[string]string{}
 	for q.Next() {
-		var h, v, c, bulk string
+		var h, v, c string
 		var notServed bool
-		if err := q.Scan(&h, &v, &c, &bulk, &notServed); err != nil {
+		if err := q.Scan(&h, &v, &c, &notServed); err != nil {
 			t.Fatal(err)
 		}
-		if bulk != c || notServed != (c == "FAULT") {
-			t.Errorf("%s %s: CountedClass %q, bulk %q, not served %v", h[60:], v, c, bulk, notServed)
+		if notServed != (c == "FAULT") {
+			t.Errorf("%s %s: CountedClass %q, not served %v", h[60:], v, c, notServed)
 		}
 		sqlCls[h+"|"+v] = c
 	}
@@ -281,7 +280,7 @@ func TestTheSQLAndTheGoTwinCountTheSameRows(t *testing.T) {
 		"wholeset":         {"e1": "FAULT", "e2": "HEALTHY", "other": "UNATTESTED"},
 		"local":            {"l1": "PROBE_ERROR", "l2": "PROBE_ERROR", "l3": "NOT_COUNTED"},
 		"unconnected":      {"n1": "NOT_COUNTED", "n2": "NOT_COUNTED", "n3": "NOT_COUNTED"},
-		"partmissed":       {"m1": "NOT_COUNTED", "m2": "NOT_PROBED", "m3": "NOT_PROBED"},
+		"partmissed":       {"m1": "HEALTHY", "m2": "NOT_PROBED", "m3": "NOT_PROBED"},
 		"straddle":         {"x1": "HEALTHY", "x3": "NOT_COUNTED"},
 		"straddle-short":   {"y1": "HEALTHY", "y3": "FAULT"},
 		"pair-available":   {"q1": "HEALTHY"},
@@ -400,12 +399,12 @@ func TestTheSQLAndTheGoTwinAgreeOnTheObligations(t *testing.T) {
 			t.Errorf("%s: %+v, want one not served", v, b)
 		}
 	}
-	for _, v := range []string{"slow", "here", "l1", "l2", "l3", "n1", "n2", "n3", "m1", "m2", "m3", "x3"} {
+	for _, v := range []string{"slow", "here", "l1", "l2", "l3", "n1", "n2", "n3", "m2", "m3", "x3"} {
 		if b := byVal[v]; b.Total != 1 || b.Broken != 0 || b.Served != 0 {
 			t.Errorf("%s: %+v, want counted neither way", v, b)
 		}
 	}
-	for _, v := range []string{"short", "deferred", "u0", "q1", "x1", "y1"} {
+	for _, v := range []string{"short", "deferred", "u0", "q1", "x1", "y1", "m1"} {
 		if b := byVal[v]; b.Served != 1 {
 			t.Errorf("%s: %+v, want served", v, b)
 		}

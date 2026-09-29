@@ -10,7 +10,7 @@
 // Unavailable; the Service rate is served over served plus not served, per
 // (validator, blob). A reading this observer did not make (NOT_PROBED), or
 // one in which not a single request reached a server, is not read by
-// Tensile: reported as a gap, and nothing counts on it.
+// Tensile: reported as a gap, and no one is not served on it.
 package api
 
 import (
@@ -3646,7 +3646,7 @@ func (s *Server) blobService(ctx context.Context, hash string, assigns []assignm
 	}
 	now := time.Now().UTC()
 	args := []any{provisionalCutoff(now), store.TS(now), settled, settled, store.TS(now), rollup.RowLowerBound(settled)}
-	rows, err := s.st.DB().QueryContext(ctx, blobServiceSQL+rollup.BlobObligationBuckets+` AND pr.promise_hash = ?)
+	rows, err := s.st.DB().QueryContext(ctx, blobServiceSQL+rollup.ObligationBuckets+` AND pr.promise_hash = ?)
 			GROUP BY validator_address, promise_hash)`, append(args, hash)...)
 	if err != nil {
 		return err
