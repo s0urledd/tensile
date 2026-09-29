@@ -259,21 +259,26 @@ func ranSQL(h, t string) string {
 	return `EXISTS (SELECT 1 FROM probes q WHERE q.promise_hash = ` + h + ` AND q.scheduled_at = ` + t + ` AND ` + Reached("q") + `)`
 }
 
-// readingKey is one reading, promise h at scheduled time t, as a single
-// text value. SQLite probes a list of these far faster than a row value
-// (h, t) IN (SELECT ...): over 452,000 stored rows, half a second against
-// ten. A promise hash is hex, so the separator cannot occur in it.
-func readingKey(h, t string) string {
-	return `(` + h + ` || '|' || ` + t + `)`
-}
-
 // missedSQL is true when the prober missed a request of the reading of
 // promise h at t: a NOT_PROBED row of an assigned validator in the window.
-// The list is not correlated, so it is drawn once for a whole query, from
-// the covering index over assigned in-window rows.
+//
+// It asks the reading's own rows, sought by probes_promise (promise_hash,
+// scheduled_at), so it costs what one reading's rows cost. It used to be a
+// list, not correlated, of every missed request the store holds, drawn from
+// probes_window once per statement: cheap per reading, but a walk of every
+// assigned in-window row ever stored (a tenth of a second per 484,000 of
+// them), once for each obligation statement of every window, so a 24h
+// figure paid for the whole retained history. The answer is the same: the
+// list held exactly the (promise_hash, scheduled_at) pairs this finds a row
+// for, and a hash has no '|' to make two pairs one key.
+//
+// The unary pluses keep the other three terms off every index. Left to
+// itself the planner seeks probes_window by (assigned, phase) for each
+// reading, because that index covers the columns the subquery reads, and
+// walks every assigned in-window row of the store once per reading asked.
 func missedSQL(h, t string) string {
-	return `(` + readingKey(h, t) + ` IN (SELECT ` + readingKey("qm.promise_hash", "qm.scheduled_at") + ` FROM probes qm
-			WHERE qm.assigned = 1 AND qm.phase = 'in_window' AND qm.classification = 'NOT_PROBED'))`
+	return `EXISTS (SELECT 1 FROM probes qm WHERE qm.promise_hash = ` + h + ` AND qm.scheduled_at = ` + t + `
+			AND +qm.assigned = 1 AND +qm.phase = 'in_window' AND +qm.classification = 'NOT_PROBED')`
 }
 
 // Reached is verdict.Reached (probe.Reached) over a probes row under the
