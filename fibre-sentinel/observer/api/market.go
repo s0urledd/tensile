@@ -916,7 +916,8 @@ func (s *Server) handlePublishers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
-	addr := strings.TrimSpace(r.PathValue("addr"))
+	// Bech32 may be written in upper case; the store holds it in lower.
+	addr := strings.ToLower(strings.TrimSpace(r.PathValue("addr")))
 	if hrp, _, err := bech32.DecodeAndConvert(addr); err != nil || hrp != "celestia" {
 		writeErr(w, 400, "publisher must be a celestia1... account address")
 		return

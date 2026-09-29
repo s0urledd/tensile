@@ -3480,8 +3480,9 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 		conds, args = append(conds, `commitment = ?`), append(args, commitment)
 	}
 	// publisher: the blobs this account paid for, as each blob row names its
-	// publisher (paidBy).
-	publisher := strings.TrimSpace(q.Get("publisher"))
+	// publisher (paidBy). Bech32 may be written in upper case; the store holds
+	// it as the chain prints it, in lower.
+	publisher := strings.ToLower(strings.TrimSpace(q.Get("publisher")))
 	if publisher != "" {
 		if hrp, _, err := bech32.DecodeAndConvert(publisher); err != nil || hrp != "celestia" {
 			writeErr(w, 400, "publisher must be a celestia1... account address")

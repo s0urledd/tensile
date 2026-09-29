@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -433,6 +434,15 @@ func TestPublishersListAndDetail(t *testing.T) {
 	}
 	if one.Publisher.Fees != 695_000 || len(one.Windows) != 4 || len(one.Payments) != 4 {
 		t.Fatalf("detail: %+v", one)
+	}
+	// the same account in upper case, which bech32 allows
+	var upper struct {
+		Publisher struct {
+			Publisher string `json:"publisher"`
+		} `json:"publisher"`
+	}
+	if code := get(t, ts, "/v1/publishers/"+strings.ToUpper(samplePublisher)+"?window=24h", &upper); code != 200 || upper.Publisher.Publisher != samplePublisher {
+		t.Fatalf("in upper case: %d %+v", code, upper)
 	}
 	for _, w := range one.Windows {
 		if w.Window.Name == "24h" && w.Settlements != 1 {

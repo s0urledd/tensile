@@ -155,6 +155,11 @@ func TestBlobsByPublisher(t *testing.T) {
 			t.Errorf("%s is listed for %s but names %s", b.PromiseHash, owner, b.Publisher)
 		}
 	}
+	// the same account in upper case, which bech32 allows
+	var upper filteredPage
+	if code := get(t, ts, "/v1/blobs?publisher="+strings.ToUpper(owner), &upper); code != 200 || upper.hashes() != "p2,p1" || upper.Total != 2 || upper.Publisher != owner {
+		t.Fatalf("in upper case: %d %s, total %d, echo %q", code, upper.hashes(), upper.Total, upper.Publisher)
+	}
 	// the submitter of every settlement paid for one of them
 	var sub filteredPage
 	if code := get(t, ts, "/v1/blobs?publisher="+samplePublisher, &sub); code != 200 || sub.hashes() != "p3" || sub.Total != 1 {
