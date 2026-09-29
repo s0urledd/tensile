@@ -19,7 +19,7 @@ type Detail = {
   assignments: Assignment[] | null;
   probes: Probe[] | null;
   /** readings, by scheduled_at, the observer does not trust itself at: nothing there counts */
-  suspect_points?: { at: string; label: string; reason: string }[] | null;
+  suspect_points?: { promise_hash: string; at: string; label: string; reason: string }[] | null;
 };
 
 /** when the single end-of-window reading began (END_READ_SINCE on the observer) */
@@ -201,6 +201,8 @@ function Page() {
                   : !judged ? "No reading that counts."
                   : !p ? "Not asked: the reading had enough rows before it reached this validator. Counted neither way."
                   : p.classification === "NOT_PROBED" || p.classification === "PROBE_ERROR" ? "Tensile could not read this validator: counted neither way."
+                  : p.cleared_by ? `Counted neither way: ${p.cleared_by} fetched these rows before the deadline.`
+                  : p.unconfirmed ? "Counted neither way: the second location has not confirmed that these rows did not come back."
                   : rc?.status === "yes" ? "Counted neither way: the blob was available all the same." : "Counted neither way.";
                 const detail = p ? `${p.schedule_label === "end" ? "end reading" : `reading ${p.schedule_label}`} · ${utcWord(p.started_at)} · ${int(p.rows_returned)} / ${int(p.rows_expected)} rows · ${int(p.total_duration_ms)} ms${p.raw_error ? ` · ${p.raw_error}` : ""}` : "";
                 return (

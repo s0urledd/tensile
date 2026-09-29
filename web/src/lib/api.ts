@@ -215,6 +215,8 @@ export type Network = {
 
 /** one reading the observer does not trust itself at */
 export type SuspectPoint = {
+  /** the blob whose reading this is: two blobs read at one time are two readings */
+  promise_hash: string;
   at: string;
   label: string;
   validators: number;
@@ -225,8 +227,9 @@ export type SuspectPoint = {
 };
 
 /**
- * Correlated failures in the window: at least half of the validators a
- * reading asked failed at once, and the blob could not be reconstructed.
+ * Correlated failures in the window: at least half of the endorsing
+ * validators a reading asked failed at once, and the blob could not be
+ * reconstructed.
  * Likely ours, not theirs: such a reading is left out of every count.
  */
 export type VantageHealth = {
@@ -346,7 +349,7 @@ export type Validator = {
   attestation: Attestation;
   probe_count: number;
   classes: ClassCounts;
-  /** failed probes of the period a second location cleared: it fetched the same rows and they verified. Not in faults; absent when none */
+  /** failed readings of the period whose rows the second location fetched, verified: not counted; absent when none */
   faults_cleared?: number;
   assigned_rows_last: number;
   expected_load_band: string;
@@ -430,13 +433,15 @@ export type Probe = {
   /** the evidence probe of the settlement host, run when the current host did not serve; never the verdict */
   settlement_host_outcome?: string;
   settlement_host_served?: boolean;
-  /** what the reading counts as for the validator: served, not_served, or absent when it counts neither way */
+  /** what the reading counts as for the validator: served, not_served (confirmed from the second location), or absent when it counts neither way */
   service?: "served" | "not_served";
-  /** a not-served reading younger than the settling period: counted, and still able to be withdrawn */
+  /** would count not served, but the second location has not confirmed it: counted neither way */
+  unconfirmed?: boolean;
+  /** a not-served reading younger than the settling period: counted, and an x/fibre params change can still withdraw it */
   provisional?: boolean;
-  /** the second location fetched the same rows within the confirmation window and they verified: the not-served reading is withdrawn (classification PROBE_ERROR, classification_at_probe the class it had) */
+  /** the second location fetched the same rows, verified, before must_serve_until: not counted */
   cleared_by?: string;
-  /** the second location tried the same rows and did not get them either: the not-served reading stands */
+  /** the second location read the same rows before must_serve_until and did not get them either: the not-served reading counts */
   confirmed_by?: string;
 };
 
@@ -1005,9 +1010,9 @@ export type EndpointCheck = {
 /**
  * Provisional faults: not-served obligations whose every failed reading is
  * younger than the observer's settling period (30 minutes). They are counted
- * in broken and in the rate; the flag says evidence still on its way (a
- * second location's check, an x/fibre params change not yet reconciled) can
- * withdraw them. `until` is when the youngest settles, so a cached answer
+ * in broken and in the rate; the flag says evidence still on its way (an
+ * x/fibre params change not yet reconciled) can withdraw them. `until` is
+ * when the youngest settles, so a cached answer
  * still tells the page when to drop the badge.
  */
 export type ProvisionalFaults = { obligations: number; until: string; settling_seconds: number; note: string };

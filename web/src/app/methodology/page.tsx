@@ -37,7 +37,7 @@ export default function Methodology() {
 
       <h2 id="verdicts">Available, served and not served</h2>
       <p>A blob is <strong>available</strong> when at least 4096 distinct rows came back and verified (of 16384 for blob version 0). It is <strong>unavailable</strong> when, after both passes, fewer did: in celestia-app&rsquo;s words, &ldquo;not enough shards to reconstruct blob&rdquo;.</p>
-      <p>Only validators whose endorsement is on the settled promise owe the blob; the others are asked too, but never counted. A validator is <strong>served</strong> on a blob when its rows came back and verified. It is <strong>not served</strong> only when the blob was unavailable and its rows did not come back, whatever the reason, a rate limit included. A validator the reading did not need to ask, or one that failed while the blob was available all the same, is counted neither way. If a not-served reading was a power loss, the <a href={DISPUTE_URL} rel="noopener noreferrer" target="_blank">dispute route</a> puts it on the record.</p>
+      <p>Only validators whose endorsement is on the settled promise owe the blob; the others are asked too, but never counted. A validator is <strong>served</strong> on a blob when its rows came back and verified. It is <strong>not served</strong> only when the blob was unavailable, its rows did not come back (a rate limit included), and the second location did not get them either. A validator the reading did not need to ask, or one that failed while the blob was available all the same, is counted neither way. If a not-served reading was a power loss, the <a href={DISPUTE_URL} rel="noopener noreferrer" target="_blank">dispute route</a> puts it on the record.</p>
       <Legend />
 
       <h2 id="signing">Endorsements</h2>
@@ -55,7 +55,7 @@ export default function Methodology() {
 
       <h2 id="gaps">Gaps</h2>
       <p>When Tensile could not read a blob in time, or its own request failed, nothing is counted for or against a validator.</p>
-      <p>When at least half of the validators asked failed at once and the blob could not be reconstructed, Tensile cannot tell its own failure from theirs, so that reading counts neither way. This stays until Tensile reads a blob of its own beside each reading. It counts validators, not rows: a blob that becomes unavailable with fewer than half of them failing is counted. Health is at <code>/api/v1/health</code>.</p>
+      <p>When at least half of the endorsing validators asked failed at once and the blob could not be reconstructed, Tensile cannot tell its own failure from theirs, so that reading counts neither way. This stays until Tensile reads a blob of its own beside each reading. It counts validators, not rows: a blob that becomes unavailable with fewer than half of them failing is counted. Health is at <code>/api/v1/health</code>.</p>
 
       <h2 id="load-on-validators">Load on validators</h2>
       <p>A reading stops once the rows are enough, so a validator is asked for some blobs, not all of them, and never has more than one request from Tensile at a time.</p>
@@ -75,7 +75,7 @@ export default function Methodology() {
       <p>The validator, blob and Blobs pages show what the chain records under <strong>On chain</strong>, and Tensile&rsquo;s own readings under <strong>Observed by Tensile</strong>. Every snapshot names the block it was computed through (<code>record_through</code>). Daily exports are signed, <code>/api/v1/exports</code>, and <code>sentinel-recompute</code> re-derives every verdict and figure from them.</p>
 
       <h2 id="vantage">Two locations</h2>
-      <p>Endpoints are checked every five minutes from two locations; a host is unreachable only when both fail. A not-served reading is re-checked from the second location within twenty minutes and withdrawn if the rows verify there. Locations are in <code>/api/v1/meta</code>.</p>
+      <p>Endpoints are checked every five minutes from two locations; a host is unreachable only when both fail. A not-served reading counts only once the second location reads the same rows before the retention window ends and does not get them either; otherwise it counts neither way. Locations are in <code>/api/v1/meta</code>.</p>
 
       <h2 id="not">What Tensile does not do</h2>
       <ul>
