@@ -226,31 +226,18 @@ var AllClassifications = []Classification{
 // minutes before its retention window ends (ScheduleConfig.EndReadOffset).
 const EndReadLabel = "end"
 
-// OwnAnswer reports whether a row is a validator's own answer at a reading:
-// in the window, and either rows that verified against the commitment, or
-// anything but this observer's own gap (NOT_PROBED: the request was never
-// made; PROBE_ERROR: it failed on this observer's side before it reached
-// the validator, a local resolver or no route out, or this build could not
-// handle the answer). A reading without one did not happen: not a single
-// request reached a validator, and the blob was not read by Tensile. The
-// prober's result (blobread.go) and the verdict's (observer/verdict,
-// rollup's Answered) are both built from it.
-func OwnAnswer(phase Phase, c Classification, verified bool) bool {
-	if phase != PhaseInWindow {
-		return false
-	}
-	return verified || (c != ClassNotProbed && c != ClassProbeError)
-}
-
-// VerdictDeferred reports whether a row's verdict is still to be drawn by
-// the collector (verdict.LateShadow): rows that verified against the
-// commitment and are not this promise's assignment, written PROBE_ERROR
-// with a shadow gap until the scanner has read far enough to say which
-// promise, if any, they belong to. The rows verified, so for the reading
-// they came back whatever that verdict comes to.
-func VerdictDeferred(m Measurement) bool {
-	return m.Classification == ClassProbeError && m.Download.ShadowGap != "" && m.Download.CommitmentVerified &&
-		(m.Outcome == OutcomeWrongRows || m.Outcome == OutcomePartial)
+// Reached reports whether a request of a reading got through to a server:
+// its connection was opened (tcpOK), or the host refused it, or rows came
+// back verified. A reading in which not a single request did so did not
+// happen: every request failed on this observer's side before it reached
+// any server (its resolver, no route out, its network down), and the blob
+// was not read by Tensile. It is a fact about the request, not about its
+// class: a validator with no public host, a connect that timed out and "no
+// route to host" reached no one, while a NOT_FOUND over a stale assignment
+// pin did. The prober's result (blobread.go) and the verdict's
+// (observer/verdict Reached, rollup.Reached) are all built from it.
+func Reached(tcpOK bool, o Outcome, verified bool) bool {
+	return verified || tcpOK || o == OutcomeTCPRefused
 }
 
 // DeadlineDerivedClasses is every classification whose membership of the

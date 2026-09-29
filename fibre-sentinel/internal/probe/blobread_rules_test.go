@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -90,8 +92,8 @@ func TestAnAnswerWithoutRowsIsTheValidators(t *testing.T) {
 	}
 	for _, m := range ms {
 		if m.Read.BlobResult != ReadUnavailable || m.Read.BlobError != ClientErrNotEnoughShards ||
-			!OwnAnswer(m.Phase, m.Classification, m.Download.CommitmentVerified) {
-			t.Fatalf("%s: %s / %s read %+v, want an answer of its own on an Unavailable reading", m.ValidatorAddress, m.Outcome, m.Classification, m.Read)
+			!Reached(m.TCP.OK, m.Outcome, m.Download.CommitmentVerified) {
+			t.Fatalf("%s: %s / %s read %+v, want a request that reached its validator on an Unavailable reading", m.ValidatorAddress, m.Outcome, m.Classification, m.Read)
 		}
 	}
 }
@@ -114,8 +116,8 @@ func TestVerifiedRowsAreAnAnswer(t *testing.T) {
 	if !m.Download.CommitmentVerified || m.Read.BlobResult != ReadUnavailable || m.Read.BlobError != ClientErrNotEnoughShards {
 		t.Fatalf("partial validator: %s / %s verified=%v read %+v, want Unavailable", m.Outcome, m.Classification, m.Download.CommitmentVerified, m.Read)
 	}
-	if !OwnAnswer(m.Phase, m.Classification, m.Download.CommitmentVerified) {
-		t.Fatal("verified rows are not an answer")
+	if !Reached(m.TCP.OK, m.Outcome, m.Download.CommitmentVerified) {
+		t.Fatal("verified rows did not reach a validator")
 	}
 }
 
@@ -181,5 +183,26 @@ func TestReadingsRunBesideTheCycleLoop(t *testing.T) {
 	wg.Wait()
 	if len(ms) != 6*8 {
 		t.Fatalf("%d rows, want every validator of every blob", len(ms))
+	}
+}
+
+// Under the client's rules "no route to host" is the validator's host not
+// answering, as the client meets it; only a failure that never left this
+// machine, such as "network is unreachable", is this observer's own.
+func TestNoRouteToHostIsTheHosts(t *testing.T) {
+	host := &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.EHOSTUNREACH)}
+	here := &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ENETUNREACH)}
+	if !isHostUnreachable(host) || isHostUnreachable(here) {
+		t.Fatalf("host unreachable: %v for %v, %v for %v", isHostUnreachable(host), host, isHostUnreachable(here), here)
+	}
+	if o := classifyDialError(host); o != OutcomeTCPUnreachable {
+		t.Fatalf("no route to host: %s, want TCP_UNREACHABLE", o)
+	}
+	// A request that failed before a server answered is asked again, as
+	// the client re-dials, whichever side the failure was on.
+	for _, o := range []Outcome{OutcomeTCPUnreachable, OutcomeProbeError} {
+		if !redials(Measurement{Outcome: o, DNS: StepResult{OK: true}, TCP: StepResult{Attempted: true}}) {
+			t.Fatalf("%s at the dial: not asked again", o)
+		}
 	}
 }

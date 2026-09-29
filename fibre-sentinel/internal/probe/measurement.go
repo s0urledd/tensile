@@ -152,7 +152,7 @@ type ReadInfo struct {
 	NovelRows     int `json:"novel_rows"`
 	BlobHaveAfter int `json:"blob_have_after"`
 	// BlobResult is what the whole reading came to: available, unavailable,
-	// or not_read (every request failed on this observer's side).
+	// or not_read (not a single request reached a server: Reached).
 	BlobResult string `json:"blob_result"`
 	// BlobError is the Fibre client's error on an unavailable reading: "no
 	// shards retrieved" or "not enough shards to reconstruct blob".

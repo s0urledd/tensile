@@ -14,22 +14,24 @@ package probe
 //     skipped as the client skips it;
 //   - a request already on its way when the rows are enough is let finish,
 //     as the client waits for it;
-//   - each request, dial and DownloadShard together, gets the client's
-//     RPCTimeout (15 s), and is made again at once after a failed dial or
-//     an unreachable or timed-out peer (fibre/internal/grpc/client_cache.go).
+//   - each request, lookup, dial and DownloadShard together, gets the
+//     client's RPCTimeout (15 s), and is made again at once after it failed
+//     before an answer came back: a failed lookup or dial, or an
+//     unreachable or timed-out peer (fibre/internal/grpc/client_cache.go).
 //
 // The reading ends as the client's Download does: Available, the rows
 // reconstruct the blob; or Unavailable with the client's error, "no shards
 // retrieved" when no verified row came back, "not enough shards to
 // reconstruct blob" when some did, fewer than it takes. The only other end
-// is a reading that did not happen: every request failed on this
-// observer's own side before it reached a validator (its resolver, no route
-// out), so not a single connection was made (ReadNotRead).
+// is a reading that did not happen: not a single request reached a server
+// (Reached), because this observer's own network was down (ReadNotRead).
 //
 // This observer's limits on requests and shard bytes in flight
 // (Config.Concurrency, Config.InFlightBytes) only delay a request: its time
-// starts once it is let go, and it is never dropped. The client has no
-// limit per validator, and neither has the reading.
+// starts once it is let go, it is never dropped, and it carries the phase
+// the reading started in (Input.ReadingPhase), so a request held back is
+// judged as the client, which asks at once, would have made it. The client
+// has no limit per validator, and neither has the reading.
 //
 // Nothing is written until the reading ends: then one row per validator
 // asked, together (MeasurementStore.AppendReading). A validator the reading
@@ -41,6 +43,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/celestiaorg/celestia-app/v10/pkg/rsema1d"
 
@@ -51,8 +54,8 @@ import (
 const (
 	ReadAvailable   = "available"
 	ReadUnavailable = "unavailable"
-	// ReadNotRead: every request failed on this observer's side (OwnAnswer
-	// holds for none of them); the blob was not read by Tensile.
+	// ReadNotRead: not a single request reached a server (Reached holds
+	// for none of them); the blob was not read by Tensile.
 	ReadNotRead = "not_read"
 )
 
@@ -99,6 +102,9 @@ type blobReading struct {
 	rec        *rsema1d.Reconstructor
 	targets    []readTarget
 	shadowGap  string
+	// phase is the reading's, taken when it started; every request carries
+	// it (Input.ReadingPhase).
+	phase Phase
 
 	mu      sync.Mutex
 	answers map[string]*answer
@@ -141,7 +147,8 @@ func (p *Prober) newBlobReading(ctx context.Context, pub scan.Publication, pt Sc
 		return nil, fmt.Errorf("client order: %w", err)
 	}
 	return &blobReading{p: p, pub: pub, point: pt, coder: coder, commitment: commitment, rec: rec,
-		targets: ordered, shadowGap: p.shadowBlindness(pub), answers: map[string]*answer{}}, nil
+		targets: ordered, shadowGap: p.shadowBlindness(pub), answers: map[string]*answer{},
+		phase: PhaseAt(time.Now().UTC(), pub, p.schedCfg())}, nil
 }
 
 // have is how many distinct verified rows the reading holds.
@@ -230,16 +237,17 @@ func (b *blobReading) record(a *answer) {
 }
 
 // ask makes one validator's request, and the client's one re-dial. The
-// request waits for room under this observer's limits (admit) and its time
-// starts once it is let go.
+// request waits for room under this observer's limits (admit), its time
+// starts once it is let go, and it carries the reading's phase.
 func (b *blobReading) ask(ctx context.Context, v readTarget) *answer {
 	p := b.p
 	a := &answer{t: v}
 	in := p.inputFor(b.pub, v.Target, b.point, b.commitment, b.rec, b.shadowGap)
+	in.ReadingPhase = b.phase
 	release := p.admit(in.ExpectedShardBytes)
 	defer release()
 	m := Run(ctx, in, b.coder, p.cfg.Timeouts)
-	if redials(m.Outcome) && ctx.Err() == nil {
+	if redials(m) && ctx.Err() == nil {
 		first := m
 		a.first = &first
 		m = Run(ctx, in, b.coder, p.cfg.Timeouts)
@@ -249,22 +257,28 @@ func (b *blobReading) ask(ctx context.Context, v readTarget) *answer {
 	return a
 }
 
-// redials reports the answers after which the client drops the connection
-// and asks again at once, re-resolving the host: a dial that failed, or a
-// peer that was unreachable or timed out (client_cache.go, isUnreachable).
-// An answer from a server that responded is final.
-func redials(o Outcome) bool {
-	switch o {
+// redials reports the requests after which the client drops the
+// connection and asks again at once, re-resolving the host
+// (client_cache.go): one that failed before a server answered, that is a
+// lookup or a dial that failed, whatever the cause (gRPC reports each as
+// Unavailable), or a peer that was unreachable or timed out
+// (isUnreachable). An answer from a server that responded is final, and a
+// request that never started (no key to check the certificate against)
+// would fail the same way again.
+func redials(m Measurement) bool {
+	switch m.Outcome {
 	case OutcomeDNSFail, OutcomeTCPRefused, OutcomeTCPTimeout, OutcomeTCPUnreachable,
 		OutcomeTLSFail, OutcomeIdentityFail, OutcomeRPCUnavailable, OutcomeRPCTimeout:
 		return true
+	case OutcomeProbeError:
+		return !m.TCP.OK && (m.DNS.Attempted || m.TCP.Attempted)
 	}
 	return false
 }
 
 // result is what the reading came to: ReadAvailable; ReadUnavailable with
 // the client's error; or ReadNotRead when not a single request reached a
-// validator (OwnAnswer holds for none).
+// server (Reached holds for none).
 func (b *blobReading) result() (result, clientErr string) {
 	if b.enough() {
 		return ReadAvailable, ""
@@ -272,7 +286,7 @@ func (b *blobReading) result() (result, clientErr string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for _, a := range b.answers {
-		if OwnAnswer(a.m.Phase, a.m.Classification, a.m.Download.CommitmentVerified) {
+		if Reached(a.m.TCP.OK, a.m.Outcome, a.m.Download.CommitmentVerified) {
 			return ReadUnavailable, ClientError(b.rec.Have())
 		}
 	}
@@ -303,8 +317,9 @@ func (b *blobReading) rows(result, clientErr string) []Measurement {
 }
 
 // clientOrder is Resolver's ordering of a reading's targets: the client's
-// own (validator.Set.Select, clientorder.go), falling back to voting power
-// when the set cannot be built.
+// own (validator.Set.Select, clientorder.go). When the set cannot be built
+// the reading does not start: it is tried again next cycle, and recorded
+// NOT_PROBED once its latest start has passed.
 func (r *Resolver) clientOrder(ctx context.Context, pub scan.Publication, targets []Target) ([]readTarget, error) {
 	members, err := r.validatorSet(ctx, pub.Assignment.ValidatorSetHeight)
 	if err != nil {

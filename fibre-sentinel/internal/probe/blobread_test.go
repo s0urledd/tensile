@@ -376,26 +376,39 @@ func TestSharedRowsCountOnce(t *testing.T) {
 	}
 }
 
-// A reading in which every request failed on this observer's side before
-// it reached a validator (here: no consensus key to check a certificate
-// against, so no connection is opened) did not happen: not read.
+// A reading in which not a single request reached a server did not happen:
+// not read. Here two requests fail on this observer's side (no consensus
+// key to check a certificate against, so no connection is opened) and the
+// third validator has no host to connect to at all: nobody was reached,
+// and a validator without a host is no answer that the reading happened.
 func TestEveryRequestFailingHereIsNotRead(t *testing.T) {
-	f := newReadFixture(t, 4, 8, []fakeVal{{rows: rowsOf(0, 2), serve: fakeServes}, {rows: rowsOf(1, 2), serve: fakeServes}})
+	f := newReadFixture(t, 4, 8, []fakeVal{{rows: rowsOf(0, 2), serve: fakeServes}, {rows: rowsOf(1, 2), serve: fakeServes},
+		{rows: rowsOf(2, 2), serve: fakeServes}})
 	for i := range f.targets {
 		f.targets[i].PubKey = nil
 	}
+	f.targets[2].Host = ""
+	f.targets[2].Attested = false
 	p := readProber(t, f)
 	ms := readNow(t, p, f.pub)
+	if len(ms) != 3 {
+		t.Fatalf("%d rows, want every validator asked", len(ms))
+	}
 	if r, e := resultOf(t, ms); r != ReadNotRead || e != "" {
 		t.Fatalf("reading: %s %q, want not read", r, e)
 	}
 	for _, m := range ms {
-		if m.Classification != ClassProbeError || OwnAnswer(m.Phase, m.Classification, m.Download.CommitmentVerified) {
-			t.Fatalf("row: %s / %s", m.Outcome, m.Classification)
+		if Reached(m.TCP.OK, m.Outcome, m.Download.CommitmentVerified) {
+			t.Fatalf("row reached a server: %s / %s", m.Outcome, m.Classification)
 		}
 	}
-	if f.calls[0].Load()+f.calls[1].Load() != 0 {
-		t.Fatal("a validator was reached")
+	if o := byValidator(ms)[f.targets[2].AddressHex].Outcome; o != OutcomeNoHost {
+		t.Fatalf("the hostless validator: %s", o)
+	}
+	for i := range f.calls {
+		if f.calls[i].Load() != 0 {
+			t.Fatal("a validator was reached")
+		}
 	}
 
 	// One validator reached is enough for the reading to have happened: the
@@ -409,15 +422,35 @@ func TestEveryRequestFailingHereIsNotRead(t *testing.T) {
 }
 
 // A request is made again at once only after the client would make it
-// again: a failed dial or an unreachable or timed-out peer, never an answer.
+// again: a lookup or a dial that failed, for whatever reason, or an
+// unreachable or timed-out peer; never after an answer.
 func TestRedialsLikeTheClient(t *testing.T) {
 	for o, want := range map[Outcome]bool{
 		OutcomeTCPRefused: true, OutcomeTCPTimeout: true, OutcomeDNSFail: true, OutcomeTLSFail: true,
 		OutcomeRPCUnavailable: true, OutcomeRPCTimeout: true,
 		OutcomeNotFound: false, OutcomeServerError: false, OutcomeInvalidRows: false, OutcomeThrottled: false, OutcomeServedOK: false,
+		OutcomeNoHost: false, OutcomeBadHost: false,
 	} {
-		if redials(o) != want {
+		if redials(Measurement{Outcome: o}) != want {
 			t.Errorf("%s: redial %v, want %v", o, !want, want)
+		}
+	}
+	for _, c := range []struct {
+		name string
+		m    Measurement
+		want bool
+	}{
+		// this observer's resolver did not answer: gRPC's resolver error is Unavailable
+		{"lookup", Measurement{Outcome: OutcomeProbeError, DNS: StepResult{Attempted: true}}, true},
+		// every address failed to dial here (no route out, a local errno)
+		{"dial", Measurement{Outcome: OutcomeProbeError, DNS: StepResult{OK: true}, TCP: StepResult{Attempted: true}}, true},
+		// no key to check a certificate against: the request never started
+		{"no key", Measurement{Outcome: OutcomeProbeError}, false},
+		// connected, then this build could not handle the answer
+		{"after connect", Measurement{Outcome: OutcomeProbeError, TCP: StepResult{Attempted: true, OK: true}}, false},
+	} {
+		if redials(c.m) != c.want {
+			t.Errorf("PROBE_ERROR, %s: redial %v, want %v", c.name, !c.want, c.want)
 		}
 	}
 	f := newReadFixture(t, 4, 8, []fakeVal{
@@ -527,6 +560,54 @@ func TestTheRequestLimitOnlyDelays(t *testing.T) {
 	}
 	if took := time.Since(start); took < 900*time.Millisecond {
 		t.Fatalf("the reading took %s: the requests were not one at a time", took)
+	}
+}
+
+// A request this observer's limit held back past must_serve_until carries
+// the phase the reading started in, as the client, which asks every
+// validator at once, would have asked it in the window: with room for one
+// request at a time, four slow validators are asked one after another, the
+// window ends while the later ones wait, and every row is in the window.
+func TestARequestHeldBackCarriesTheReadingsPhase(t *testing.T) {
+	var vals []fakeVal
+	for i := 0; i < 4; i++ {
+		vals = append(vals, fakeVal{rows: []int{i}, serve: fakeSlow(300 * time.Millisecond)})
+	}
+	f := newReadFixture(t, 4, 8, vals)
+	p := readProber(t, f)
+	p.cfg.Concurrency = 1
+	p.initPace()
+	p.cfg.Timeouts.Download = 2 * time.Second
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.dispatch(ctx)
+	}()
+	now := time.Now()
+	f.pub.MustServeUntil = now.Add(500 * time.Millisecond)
+	p.sched.push(&readJob{pub: f.pub, point: SchedulePoint{At: now, Phase: PhaseInWindow, Label: EndReadLabel}, start: now, latest: now.Add(time.Minute)})
+	for deadline := time.Now().Add(20 * time.Second); !p.sched.idle() && time.Now().Before(deadline); {
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	ms, err := LoadMeasurements(p.store.Path())
+	if err != nil || len(ms) != 4 {
+		t.Fatalf("%d rows, %v", len(ms), err)
+	}
+	late := 0
+	for _, m := range ms {
+		if m.Phase != PhaseInWindow || !m.Download.CommitmentVerified || m.Read.BlobResult != ReadAvailable {
+			t.Fatalf("row started %s after must_serve_until: %s %s / %s, read %+v", m.StartedAt.Sub(f.pub.MustServeUntil), m.Phase,
+				m.Outcome, m.Classification, m.Read)
+		}
+		if m.StartedAt.After(f.pub.MustServeUntil) {
+			late++
+		}
+	}
+	if late == 0 {
+		t.Fatal("no request was held past must_serve_until")
 	}
 }
 

@@ -184,22 +184,29 @@ type Input struct {
 	// ClientRules reads the validator the way celestia-app's Fibre client
 	// does (fibre/client_download.go), which is how every blob is read:
 	//
-	//   - the whole request, dial and DownloadShard, gets RequestTimeout
-	//     (ClientRPCTimeout); the connect and the TLS handshake are bounded
-	//     by it alone, as the client's are, and only the DNS lookup keeps a
-	//     step bound of its own (a lookup that times out is this observer's
-	//     resolver); a request that runs out of it after the connection was
-	//     made is the validator's (RPC_TIMEOUT);
+	//   - the whole request, lookup, dial and DownloadShard, gets
+	//     RequestTimeout (ClientRPCTimeout); the lookup, the connect and the
+	//     TLS handshake are bounded by it alone, as the client's are; a
+	//     request that runs out of it after the connection was made is the
+	//     validator's (RPC_TIMEOUT);
 	//   - the receive bound is the protocol's message bound, which is the
 	//     client's, and an answer over it, or one the client cannot parse,
 	//     is the validator's (MALFORMED_SHARD);
 	//   - an InvalidArgument or Unimplemented answer is the server's error;
-	//   - a DNS failure other than "no such host" is this observer's
-	//     resolver, never the validator.
+	//   - "no route to host" is the validator's host not answering, as the
+	//     client meets it; only a failure that never left this machine (no
+	//     route out, no local address, a local socket error) is this
+	//     observer's, and so is a DNS failure other than "no such host".
 	//
 	// Without it the request is judged by the earlier schedule's rules.
 	ClientRules    bool
 	RequestTimeout time.Duration
+	// ReadingPhase, when set, is the phase of the reading this request
+	// belongs to, taken when the reading started: every request of a
+	// reading carries it, as the client asks every validator at once, so a
+	// request this observer's own limits held back is judged as if it had
+	// not been. Empty takes the phase from the request's own start.
+	ReadingPhase Phase
 	// Verifier checks the rows against the commitment. A reading shares one
 	// across every validator it asks (the blob's Reconstructor), as the
 	// client does; nil builds one for this request alone.
@@ -261,13 +268,17 @@ func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measur
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, in.RequestTimeout)
 		defer cancel()
-		// The client bounds the connect and the handshake by the request's
-		// time alone (the RPCTimeout around DownloadShard covers gRPC's lazy
-		// dial), so a connect that takes 5 to 15 s is still made here.
-		to.TCP, to.TLS = in.RequestTimeout, in.RequestTimeout
+		// The client bounds the lookup, the connect and the handshake by the
+		// request's time alone (the RPCTimeout around DownloadShard covers
+		// gRPC's lazy dial and its resolver), so a lookup or a connect that
+		// takes 5 to 15 s is still made here.
+		to.DNS, to.TCP, to.TLS = in.RequestTimeout, in.RequestTimeout, in.RequestTimeout
 	}
 	now := time.Now().UTC()
 	phase := PhaseAtWindow(now, in.MustServeUntil, in.PruneTolerance)
+	if in.ReadingPhase != "" {
+		phase = in.ReadingPhase
+	}
 	m = Measurement{
 		SchemaVersion:      MeasurementSchemaVersion,
 		Vantage:            in.Vantage,
@@ -430,6 +441,11 @@ func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measur
 		}
 		attempts = append(attempts, cand+": "+err.Error())
 		local := isNoRoute(err) || localDialFault(err)
+		if in.ClientRules && isHostUnreachable(err) {
+			// "No route to host" is the host not answering (an ICMP
+			// unreachable from the path to it), as the client meets it.
+			local = false
+		}
 		if !local {
 			allLocal = false
 		}
@@ -1145,6 +1161,13 @@ func isNoRoute(err error) bool {
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "network is unreachable") || strings.Contains(s, "no route to host") ||
 		strings.Contains(s, "address family not supported") || strings.Contains(s, "cannot assign requested address")
+}
+
+// isHostUnreachable reports "no route to host" (EHOSTUNREACH): under the
+// client's rules the validator's host not answering, not this observer's
+// network (isNoRoute still counts it as local for the heartbeat).
+func isHostUnreachable(err error) bool {
+	return errors.Is(err, syscall.EHOSTUNREACH) || strings.Contains(strings.ToLower(err.Error()), "no route to host")
 }
 
 // ShardBytes estimates the wire size of one validator's shard for a blob:
