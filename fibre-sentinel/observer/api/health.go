@@ -24,7 +24,7 @@ import (
 // /v1/health is for machines: 200 when every component is alive and the
 // disk has room, 503 with the reasons otherwise. Point any uptime monitor at
 // it and the operator hears about a dead prober from the monitor, not from a
-// reader. /v1/meta carries the same components for the page.
+// reader.
 
 // expectedComponents is every process a deployment runs. A missing file is
 // reported, not ignored: a prober that never started looks exactly like one

@@ -56,7 +56,7 @@ const Version = "0.1.0"
 // public API is the wrong place for them: the site's diagnosis box names the
 // address where an operator is told to allow it.
 type VantageInfo struct {
-	// Name is the short label every response already carries.
+	// Name is the vantage's short label, as its rows carry it.
 	Name string `json:"name"`
 	// Location is where the machine physically sits, e.g. "Helsinki,
 	// Finland". Operator's word; an address cannot prove it.
@@ -66,8 +66,9 @@ type VantageInfo struct {
 	// Verifiability says, per field, what a reader can check and how, so the
 	// page rendering these cannot present a guess as a fact.
 	Verifiability map[string]string `json:"verifiability"`
-	// Complete is false while the operator has not filled this in, which is
-	// what the dashboard checks before claiming the vantage is described.
+	// Complete is false while the operator has not filled this in. The API no
+	// longer publishes the description; the startup log warns when it is
+	// incomplete.
 	Complete bool `json:"complete"`
 }
 
@@ -144,7 +145,8 @@ func WithDataDir(dir string) Option { return func(s *Server) { s.dataDir = dir }
 // running API does not read (WarmSnapshots).
 func WithSnapshotDir(dir string) Option { return func(s *Server) { s.snapshotDir = dir } }
 
-// New builds a Server. vantage is the label rendered on every response.
+// New builds a Server. vantage names this observer's vantage in /v1/meta's
+// vantages and on the rows it writes.
 func New(st *store.Store, vantage string) *Server { return NewWithLogger(st, vantage, nil) }
 
 // NewWithLogger is New with somewhere to put the detail of an internal error
