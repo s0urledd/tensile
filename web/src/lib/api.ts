@@ -715,8 +715,11 @@ function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<u
     };
     load();
     if (refreshMs > 0) st.timer = setInterval(load, refreshMs);
-  } else if (!st.last.loading) {
-    // a later subscriber gets the current value at once
+  } else if (!st.last.loading || st.last.computing) {
+    // A later subscriber gets the current value at once. So does one that
+    // arrives while the figure is being computed with nothing to show yet:
+    // that state is still "loading", and the subscriber would otherwise hear
+    // nothing of it until the next retry, seconds later.
     fn(st.last);
   }
   st.subs.add(fn);

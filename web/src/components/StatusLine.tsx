@@ -92,12 +92,14 @@ export default function StatusLine({ meta, metaError, snap, client }: {
     );
   }
   // After a restart or a change of rules a figure can take a minute or two to
-  // compute. The API says so rather than failing, and the page asks again by
-  // itself: a quiet line, not an outage.
+  // compute: a cold window takes half a minute or more, and a cache computes
+  // its windows one after another. The API says so rather than failing, and
+  // the page asks again by itself: a quiet line, not an outage, and no promise
+  // of how soon.
   if (!apiDown && client.computing) {
     lines.push(
       <p className="notice soft" key="computing">
-        Some figures on this page are being computed. They fill in by themselves in a few seconds.
+        Some figures on this page are being computed. They fill in by themselves when ready.
       </p>,
     );
   }
