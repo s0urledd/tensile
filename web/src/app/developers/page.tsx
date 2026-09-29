@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import Link from "next/link";
-import Copy from "@/components/Copy";
-import { API_URL, SOURCE_URL } from "@/lib/site";
+import { SOURCE_URL } from "@/lib/site";
 import * as ex from "./examples";
+import { BaseUrl, Call, Network } from "./live";
 
 export const metadata: Metadata = {
   title: "API · Tensile · Celestia Fibre",
@@ -352,17 +352,6 @@ function lines(text: string, xml?: boolean): ReactNode[] {
   });
 }
 
-/** One call as a curl command, with a button that copies it. */
-function Call({ path }: { path: string }) {
-  const cmd = `curl -s '${API_URL}${path}'`;
-  return (
-    <div className="api-call">
-      <code>{cmd}</code>
-      <Copy text={cmd} label="the curl command" />
-    </div>
-  );
-}
-
 function Example({ text, xml }: { text: string; xml?: boolean }) {
   return (
     <figure className="api-ex">
@@ -414,12 +403,9 @@ export default function Developers() {
       <section className="api-q api-intro" aria-label="Base URL">
         <div className="api-q-text">
           <p className="api-eyebrow">Base URL</p>
-          <div className="api-call api-base">
-            <code>{API_URL}</code>
-            <Copy text={API_URL} label="the base URL" />
-          </div>
+          <BaseUrl />
           <div className="chips">
-            <span>Celestia <b>Mocha</b> testnet, <code>mocha-5</code></span>
+            <Network />
             <span>Read-only: GET and HEAD</span>
             <span>No key, no sign-up</span>
             <span>JSON, times in UTC</span>

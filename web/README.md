@@ -12,8 +12,11 @@ npm run build                                               # writes out/ for Ca
 
 `NEXT_PUBLIC_API_BASE` defaults to same-origin `/api`, which is what the
 Caddyfile in `deploy/` proxies to `observer-api`. `NEXT_PUBLIC_API_URL` is
-the public address the API page (`/developers/`) prints in its commands,
-`https://tensile.huginn.tech/api/v1` unless set.
+the public address the API page (`/developers/`) prints in its commands.
+Unset, the page prints its own site's `/api/v1` (`NEXT_PUBLIC_API_BASE`
+resolved against the page's origin) and names the network `/v1/meta`
+reports, so one export serves every network's site; set it only when the
+API is published at another address.
 
 The pages share one small system, all in `src/app/globals.css`: white paper
 and hairlines rather than cards, IBM Plex Sans for prose and figures with

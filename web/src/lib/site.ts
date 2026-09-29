@@ -11,9 +11,12 @@ export const SOURCE_URL = (process.env.NEXT_PUBLIC_SOURCE_URL ?? "https://github
 /**
  * The API's public address, as the API page prints it in every command. The
  * site's own pages call the same routes on their own origin (/api), so this
- * is only what a reader copies.
+ * is only what a reader copies. Unset, the page prints its own site's /api/v1
+ * once it runs, since one export serves every network's site, and the
+ * public deployment's address until then; set, it is printed as it is.
  */
-export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "https://tensile.huginn.tech/api/v1").replace(/\/$/, "");
+export const API_URL_FIXED = !!process.env.NEXT_PUBLIC_API_URL;
+export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "https://tensile.huginn.tech/api/v1").replace(/\/$/, "");
 
 /** The dispute route: what to do about a verdict you think is wrong. */
 export const DISPUTE_URL = `${SOURCE_URL}/blob/main/docs/verdicts.md#disputing-a-verdict`;
