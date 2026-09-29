@@ -42,8 +42,8 @@ func main() {
 		// that only fills them: a new build computes its snapshots beside
 		// the running API before it replaces it, so it does not start cold
 		// (deploy/README.md, "Upgrading a running observer").
-		snapDir  = flag.String("snapshot-dir", "", "where the window snapshots are kept across restarts (default <data-dir>/snapshots)")
-		warmOnly = flag.Bool("warm-only", false, "compute every window snapshot once into -snapshot-dir, reading the database only, then exit; serves nothing")
+		snapDir  = flag.String("snapshot-dir", "", "where the window snapshots are kept across restarts (default <data-dir>/snapshots; with -warm-only <data-dir>/snapshots.next)")
+		warmOnly = flag.Bool("warm-only", false, "compute every window snapshot once into -snapshot-dir, reading the database only, then exit; serves nothing, and refuses the live <data-dir>/snapshots")
 	)
 	flag.Parse()
 	if *check != "" {
@@ -52,8 +52,24 @@ func main() {
 	if *dbPath == "" {
 		*dbPath = filepath.Join(*dataDir, "observer.db")
 	}
-	if *snapDir == "" {
-		*snapDir = filepath.Join(*dataDir, "snapshots")
+	live := filepath.Join(*dataDir, "snapshots")
+	switch {
+	case *snapDir != "":
+	case *warmOnly:
+		*snapDir = filepath.Join(*dataDir, "snapshots.next")
+	default:
+		*snapDir = live
+	}
+	if *warmOnly && sameDir(*snapDir, live) {
+		// The running API reads that directory and rewrites its files on
+		// every refresh, under the same temporary names a warm-up writes,
+		// so the two could trip over one file; and an older API restarted
+		// meanwhile would load market files computed under the new build's
+		// rules, whose revision does not carry the methodology version.
+		// The warm-up writes beside it and the switch copies the files in
+		// with the API stopped (deploy/README.md).
+		os.Stderr.WriteString("warm-only: -snapshot-dir " + *snapDir + " is the live snapshot directory; warm into another (default <data-dir>/snapshots.next) and copy the files in with the API stopped\n")
+		os.Exit(2)
 	}
 	log := scan.NewLogger(200)
 	// The collector creates the database and its schema; started in the same
@@ -136,6 +152,20 @@ func main() {
 		log.Fatalf("serve: %v", err)
 	}
 	log.Printf("stopped")
+}
+
+// sameDir reports whether a and b name one directory: the same path once
+// made absolute, or, when both exist, the same directory under two names (a
+// symlink, a bind mount).
+func sameDir(a, b string) bool {
+	aa, errA := filepath.Abs(a)
+	bb, errB := filepath.Abs(b)
+	if errA == nil && errB == nil && aa == bb {
+		return true
+	}
+	fa, errA := os.Stat(a)
+	fb, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(fa, fb)
 }
 
 // healthCheck GETs url and returns a process exit code: 0 on HTTP 200.

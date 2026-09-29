@@ -360,7 +360,8 @@ activation, `verdict.MethodologyVersion`) and for the vantage it was computed
 for. A window with nothing to serve makes a reader wait at most 8 s, then
 answers 503 with `Retry-After` and `"computing": true`, which the site shows
 as figures being computed; `observer-api -warm-only` computes a new build's
-snapshots beside the running API so a switch does not start cold
+snapshots beside the running API (into `<data-dir>/snapshots.next`; it
+refuses the live directory) so a switch does not start cold
 (deploy/README.md, "Upgrading a running observer").
 
 **Two paths bypass the cache and are rationed** (4-burst, then one per 2s;

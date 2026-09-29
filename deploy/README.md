@@ -263,8 +263,11 @@ are missing until the warm-up reaches them.
 To avoid that, compute the new build's snapshots before switching to it.
 `observer-api -warm-only` opens the database read-only, computes every window
 of every snapshot once under the current revision, writes the files to
-`-snapshot-dir` and exits 0 (non-zero, with the reason, on any failure). It
-must run as the service user and with the unit's own flags: the snapshots
+`-snapshot-dir` and exits 0 (non-zero, with the reason, on any failure).
+With `-warm-only` that directory defaults to `<data-dir>/snapshots.next`, and
+the live `<data-dir>/snapshots` is refused: the running API rewrites its
+files there under the same temporary names, and an old API restarted
+meanwhile would load the new build's market files. It must run as the service user and with the unit's own flags: the snapshots
 depend on `-vantage` (the heartbeats counted are that vantage's) and the
 market one on `-publishers`, and a file written for another vantage is not
 loaded. `systemd-run` gives it both, from the unit's env file, expanding
