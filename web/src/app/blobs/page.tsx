@@ -84,11 +84,11 @@ function Page() {
             <Chart title={withPeriod(`Upload size per ${per}`, win)} figure={m && series.length ? bytes(m.bytes) : undefined}
               series={[{ key: "bytes", label: "upload size", color: "var(--accent)" }]}
               rows={series.map((c) => ({ x: c.title, label: c.label, short: c.short, values: { bytes: c.bytes / (1 << 20) }, note: `${int(c.settlements)} settlement${c.settlements === 1 ? "" : "s"}` }))}
-              fmt={mib} fmtAxis={axisMib} empty={m ? "nothing settled in this period" : "loading…"} />
+              fmt={mib} fmtAxis={axisMib} empty={m && m.window.name === win ? "nothing settled" : "loading…"} />
             <Chart title={withPeriod(`Settlements per ${per}`, win)} figure={m && series.length ? int(m.settlements) : undefined}
               series={[{ key: "n", label: "settlements", color: "var(--accent-2)" }]}
               rows={series.map((c) => ({ x: c.title, label: c.label, short: c.short, values: { n: c.settlements }, note: bytes(c.bytes) }))}
-              fmt={(v) => int(v)} empty={m ? "nothing settled in this period" : "loading…"} />
+              fmt={(v) => int(v)} empty={m && m.window.name === win ? "nothing settled" : "loading…"} />
           </div>
         </div>
       </section>

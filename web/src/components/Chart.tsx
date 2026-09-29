@@ -117,19 +117,17 @@ function stackPx(vals: number[], px: number): { ext: number; gap: number }[] {
   return out;
 }
 
-export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title, sub, figure, figureNote, empty }: {
+export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title, sub, figure, empty }: {
   series: Series[];
   rows: Row[];
   fmt: (v: number) => string;
   fmtAxis?: (v: number) => string;
   height?: number;
   title: string;
-  /** a line beside the title in place of a figure (use figure/figureNote to set the figure large) */
+  /** a line beside the title in place of a figure (use figure to set the figure large) */
   sub?: string;
   /** the period's total, printed large under the title: "1.35 GiB" (the period itself is in the title: "Upload size per day (7d)") */
   figure?: string;
-  /** words after the figure, if it needs any */
-  figureNote?: string;
   empty?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -264,7 +262,7 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
         <div className="chart-title">{single && <i className="chart-key" aria-hidden="true" />}{title}</div>
         <div className="chart-figure">
           {figure !== undefined
-            ? <><b className="num">{figure}</b>{figureNote && <span>{figureNote}</span>}</>
+            ? <b className="num">{figure}</b>
             : sub !== undefined ? <span>{sub}</span> : <b aria-hidden="true">&nbsp;</b>}
         </div>
       </div>

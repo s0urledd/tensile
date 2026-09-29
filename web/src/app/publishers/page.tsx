@@ -119,7 +119,7 @@ function Page() {
         const axisMib = (v: number) => v >= 1024 ? `${(v / 1024).toFixed(v % 1024 ? 1 : 0)} GiB` : `${Number.isInteger(v) ? v : v.toFixed(1)} MiB`;
         return (
           <div className="board-charts">
-            <Chart title={withPeriod(`Fees paid per ${per} in TIA`, m.window.name)} figure={tia(m.fees_settled_utia)} series={[{ key: "fees", label: "fees", color: "var(--accent)" }]} rows={feeRows}
+            <Chart title={withPeriod(`Fees paid per ${per}`, m.window.name)} figure={tia(m.fees_settled_utia)} series={[{ key: "fees", label: "fees", color: "var(--accent)" }]} rows={feeRows}
               fmt={(v) => tia(v)} fmtAxis={axisTia} height={210} />
             <Chart title={withPeriod(`Upload size per ${per}, by publisher`, m.window.name)} figure={bytes(m.bytes)} series={series} rows={byteRows} fmt={mib} fmtAxis={axisMib} height={210} />
           </div>
