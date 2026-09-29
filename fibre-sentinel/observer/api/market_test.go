@@ -628,6 +628,31 @@ func TestMarketAsOfIsPinnedAndLeavesTheSnapshotAlone(t *testing.T) {
 	}
 }
 
+// A pinned market or publisher answer names what it leaves as of now, as
+// the validator routes do; an unpinned one has nothing to name.
+func TestMarketAndPublisherAsOfNotes(t *testing.T) {
+	ts, _ := marketServer(t, nil)
+	pin := time.Now().UTC().Add(-time.Hour).Truncate(time.Second).Format(time.RFC3339)
+	for path, want := range map[string]string{
+		"/v1/market?window=30d":                                          "",
+		"/v1/market?window=30d&as_of=" + pin:                             "escrow_held_utia",
+		"/v1/publishers?window=30d":                                      "",
+		"/v1/publishers?window=30d&as_of=" + pin:                         "pending_withdrawals",
+		"/v1/publishers/" + samplePublisher + "?window=30d":              "",
+		"/v1/publishers/" + samplePublisher + "?window=30d&as_of=" + pin: "recent_payments",
+	} {
+		var body struct {
+			Note string `json:"as_of_note"`
+		}
+		if code := get(t, ts, path, &body); code != 200 {
+			t.Fatalf("%s: HTTP %d", path, code)
+		}
+		if (want == "") != (body.Note == "") || !strings.Contains(body.Note, want) {
+			t.Errorf("%s: as_of_note %q, want one naming %q", path, body.Note, want)
+		}
+	}
+}
+
 // The escrow total is the module account's balance, read by the collector,
 // and it is published beside the sum over known publishers rather than in
 // place of it: the two differ exactly by the accounts nobody saw publish.

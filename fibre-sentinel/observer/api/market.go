@@ -125,6 +125,8 @@ type publisherShare struct {
 type marketResponse struct {
 	Window     Window `json:"window"`
 	ComputedAt string `json:"computed_at,omitempty"`
+	// AsOfNote is set on a pinned window (marketAsOfNote).
+	AsOfNote string `json:"as_of_note,omitempty"`
 	// RecordThrough is the point of the chain these figures rest on.
 	RecordThrough *recordThrough `json:"record_through,omitempty"`
 
@@ -820,6 +822,19 @@ func accountKey(bech string) string {
 
 // ---- handlers ----
 
+// The as_of notes of the market and publisher answers, as AsOfNote is for
+// the validator figures: payments are bounded by the pin, and each note
+// names exactly what is not. Escrow balances are state queries kept only
+// as last read, the withdrawal queue is not kept as a series of past states,
+// and a publisher's first and last movement span its whole record. A
+// publisher's answer pins its row alone; the spans and lists beside it are
+// the ones its page shows today.
+const (
+	marketAsOfNote     = "payments after as_of are left out; escrow_held_utia, escrow_accounts and escrow_total_utia are balances as of now, not as_of, and withdrawal_queue is not given, since past states of the queue are not kept"
+	publishersAsOfNote = "payments after as_of are left out of every row's figures; first_seen_at and last_seen_at span the whole record, and escrow and pending_withdrawals are as of now, not as_of"
+	publisherAsOfNote  = "only publisher is pinned: payments after as_of are left out of its figures, while its first_seen_at, last_seen_at, escrow and pending_withdrawals are as of now; windows, withdrawals, recent_payments and recent_blobs are as of now, not as_of"
+)
+
 func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 	win, err := parseWindow(r, time.Now())
 	if err != nil {
@@ -849,6 +864,7 @@ func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp.ComputedAt = t0.UTC().Format(time.RFC3339Nano)
+		resp.AsOfNote = marketAsOfNote
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, 200, resp)
 		return
@@ -912,7 +928,7 @@ func (s *Server) handlePublishers(w http.ResponseWriter, r *http.Request) {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"window": win, "publishers": publisherList(rows), "count": len(rows)})
+	writeJSON(w, 200, map[string]any{"window": win, "publishers": publisherList(rows), "count": len(rows), "as_of_note": publishersAsOfNote})
 }
 
 func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
@@ -1022,10 +1038,14 @@ func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{
+	out := map[string]any{
 		"window": win, "publisher": rows[0], "windows": spans, "withdrawals": withdrawals,
 		"recent_payments": payments, "recent_blobs": recentBlobs(blobs), "recent_blobs_truncated": moreBlobs,
-	})
+	}
+	if win.AsOf {
+		out["as_of_note"] = publisherAsOfNote
+	}
+	writeJSON(w, 200, out)
 }
 
 // sortShares orders a breakdown by fees, then bytes, then address.

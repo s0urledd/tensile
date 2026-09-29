@@ -470,7 +470,7 @@ export default function Developers() {
         <div className="api-ref-grid">
           <Topic id="periods" title="Periods">
             <li><code>window</code> is <code>24h</code> (the default), <code>7d</code>, <code>30d</code> or <code>all</code>, on <code>/validators</code>, a validator and its status, <code>/network</code>, <code>/signing</code>, <code>/market</code>, <code>/publishers</code> and a publisher.</li>
-            <li><code>as_of</code>, a time in RFC 3339 such as <code>2026-09-28T00:00:00Z</code>, ends the period then instead of now. The answer&rsquo;s <code>as_of_note</code> names what stays as of now: a validator&rsquo;s jailed flag, bond status and current host. The status route does not take it.</li>
+            <li><code>as_of</code>, a time in RFC 3339 such as <code>2026-09-28T00:00:00Z</code>, ends the period then instead of now. The answer&rsquo;s <code>as_of_note</code> names what stays as of now: on the validator routes, <code>/network</code> and <code>/signing</code>, a validator&rsquo;s jailed flag, bond status and current host; on <code>/market</code> and <code>/publishers</code>, escrow balances and queued withdrawals. A publisher&rsquo;s answer pins only <code>publisher</code>; the periods, lists and withdrawals beside it stay as of now. The status route does not take it.</li>
           </Topic>
           <Topic id="addresses" title="Addresses">
             <li>A validator: its consensus address as 40 hex characters or <code>celestiavalcons1…</code>, its operator address <code>celestiavaloper1…</code>, or the operator&rsquo;s account <code>celestia1…</code>. Answers use the consensus address in hex.</li>
