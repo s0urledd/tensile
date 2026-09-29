@@ -3,7 +3,7 @@ import { Suspense } from "react";
 import { useWindow, WindowSwitch, windowLabel } from "@/lib/window";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useApi, notFound, badRequest, throttled, hhmm, type Payment, type Blob, type Window, type PriceFormula, utc, ago, bytes, tia, shortHex, shortBech, nsDisplay, fmtShare } from "@/lib/api";
+import { useApi, notFound, badRequest, throttled, hhmm, type Payment, type RecentBlob, type Window, utc, ago, bytes, tia, shortHex, shortBech, nsDisplay, fmtShare } from "@/lib/api";
 import { Panel, Cell } from "@/components/Panel";
 import { WithdrawalQueue, pendingLine } from "@/components/Withdrawals";
 import type { PublisherWithQueue, PublisherWithdrawals } from "@/lib/withdrawals";
@@ -15,9 +15,7 @@ type Detail = {
   withdrawals: PublisherWithdrawals | null;
   windows: { window: Window; settlements: number; bytes: number; fees_utia: number; timeouts: number; paid_per_mib_utia: number | null }[];
   recent_payments: Payment[];
-  recent_blobs: Blob[];
-  price_formula: PriceFormula;
-  notes: string[];
+  recent_blobs: RecentBlob[];
 };
 
 const KIND: Record<Payment["kind"], string> = {

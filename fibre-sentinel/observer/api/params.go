@@ -76,10 +76,11 @@ type paramBound struct {
 	MaxS int64  `json:"max_s"`
 }
 
+// protocolConstants are read from celestia-app's fibre/protocol_params.go
+// (DefaultProtocolParams) and x/fibre/types/params.go at the pinned commit.
 type protocolConstants struct {
 	PinnedCelestiaApp        string `json:"pinned_celestia_app_commit"`
 	PinnedCelestiaAppVersion string `json:"pinned_celestia_app_version"`
-	Source                   string `json:"source"`
 
 	// Erasure coding, blob version 0.
 	OriginalRows  int     `json:"original_rows"`
@@ -112,8 +113,17 @@ type protocolConstants struct {
 	Bounds                      map[string]paramBound `json:"param_bounds"`
 }
 
+// paramsResponse is /v1/params. current and history are the x/fibre params
+// as the chain recorded them in params_history: the value in force where
+// the scan began (a seed entry, which says nothing about when it took
+// effect), then every EventUpdateFibreParams after it, dated from block
+// headers. The params can also change without an event (a chain upgrade's
+// migration); the scanner re-reads them from state and publishes any
+// disagreement as a params-uncertainty range (/v1/meta param_uncertainty)
+// rather than an entry here. The protocol constants are compiled into the
+// pinned celestia-app build and exposed by no RPC, so they are read from
+// that code, and the commit is named.
 type paramsResponse struct {
-	Source string `json:"source"`
 	// Current is the latest entry: the params in force at the scanner's
 	// checkpoint as far as the event record goes. Null before the scanner
 	// has seeded the history (Fibre not live yet).
@@ -122,14 +132,10 @@ type paramsResponse struct {
 	History  []paramEntry      `json:"history"`
 	Changes  int               `json:"changes"`
 	Protocol protocolConstants `json:"protocol"`
-	Notes    []string          `json:"notes"`
-}
-
-var paramsNotes = []string{
-	"current and history are the x/fibre params as the chain recorded them: the value in force where the scan began, then every EventUpdateFibreParams after it",
-	"a seed entry says what was in force at the height the scan began, not when it took effect; anything earlier is outside this record",
-	"the params can also change without an event (a chain upgrade's migration); the scanner re-reads them from state and publishes any disagreement as a params-uncertainty range rather than an entry here",
-	"protocol constants are compiled into the pinned celestia-app build and exposed by no RPC; they are read from that code, and the commit is named",
+	// PriceFormula is x/fibre's charge for a blob, from which every fee on
+	// /v1/market, /v1/publishers and /v1/blobs is recomputed: no chain
+	// event carries the amount.
+	PriceFormula priceFormula `json:"price_formula"`
 }
 
 func secs(d interface{ Seconds() float64 }) int64 { return int64(d.Seconds()) }
@@ -140,7 +146,6 @@ func pinnedProtocol() protocolConstants {
 	return protocolConstants{
 		PinnedCelestiaApp:        assign.PinnedCelestiaAppCommit,
 		PinnedCelestiaAppVersion: assign.PinnedCelestiaAppVersion,
-		Source:                   "celestia-app fibre/protocol_params.go (DefaultProtocolParams) and x/fibre/types/params.go at the pinned commit",
 
 		OriginalRows:  p.Rows,
 		ParityRows:    p.ParityRows(),
@@ -218,12 +223,7 @@ func (s *Server) handleParams(w http.ResponseWriter, r *http.Request) {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
-	resp := paramsResponse{
-		Source:   "params_history: the scanner's x/fibre params record (seed read from state, then EventUpdateFibreParams), dated from block headers",
-		History:  hist,
-		Protocol: pinnedProtocol(),
-		Notes:    paramsNotes,
-	}
+	resp := paramsResponse{History: hist, Protocol: pinnedProtocol(), PriceFormula: formula}
 	if n := len(hist); n > 0 {
 		cur := hist[n-1]
 		resp.Current = &cur

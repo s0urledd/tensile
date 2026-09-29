@@ -496,6 +496,7 @@ export type Charge = {
 /** a count and a total in utia, the shape every money figure takes */
 export type Sum = { count: number; utia: number };
 
+/** x/fibre's charge for a blob, on /v1/params: fee = (base_gas + gas_per_chunk × ⌈blob_size / chunk_bytes⌉) × utia_per_gas */
 export type PriceFormula = { base_gas: number; gas_per_chunk: number; chunk_bytes: number; utia_per_gas: number; note: string };
 
 export type PublisherShare = {
@@ -522,11 +523,8 @@ export type HourPublisher = { hour: string; publisher: string; label?: string; f
  */
 export type Market = {
   window: Window;
-  vantage: string;
   computed_at?: string;
-  compute_ms?: number;
   record_through?: RecordThrough;
-  source: string;
   settlements: number;
   /** distinct blobs (BlobID: blob_version || commitment) those settlements paid for, same window */
   blobs: number;
@@ -536,8 +534,6 @@ export type Market = {
   paid_per_mib_utia: number | null;
   timeouts: number;
   timed_out_utia: number;
-  settlement_rate: Rate;
-  timeout_processors: number;
   deposits: Sum;
   withdrawals_requested: Sum;
   withdrawals_executed: Sum;
@@ -555,8 +551,6 @@ export type Market = {
   top_publishers: PublisherShare[];
   other_publishers: PublisherShare | null;
   largest_poster: PublisherShare | null;
-  price_formula: PriceFormula;
-  notes: string[];
   /** namespaces the window's settlements used, and any settlement on record */
   namespaces?: number;
   namespaces_total?: number;
@@ -593,9 +587,21 @@ export type Payment = {
   promise_hash?: string;
   namespace?: string;
   blob_size?: number;
-  gas_units?: number;
   amount_utia: number;
   available_at?: string;
+};
+
+/** one of a publisher's newest blobs, as its page lists them; the whole row is /v1/blobs/{promise_hash} */
+export type RecentBlob = {
+  promise_hash: string;
+  commitment: string;
+  namespace: string;
+  blob_size: number;
+  settlement_height: number;
+  settlement_time: string;
+  validators_with_rows: number;
+  charge: { fee_utia: number } | null;
+  reconstructable: { status: Reconstruct["status"] } | null;
 };
 
 /**

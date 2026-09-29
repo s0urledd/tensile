@@ -48,6 +48,67 @@ func networkOutOf(r *networkResponse) networkOut {
 	}
 }
 
+// publisherListRow is a publisher as /v1/publishers lists it: the row, with
+// its queue as last read but not the read's height and time, which are the
+// same on every row and are /v1/market's withdrawal_queue.pending's.
+type publisherListRow struct {
+	publisherRow
+	PendingWithdrawals *pendingQueue `json:"pending_withdrawals"`
+}
+
+// publisherList is the rows of /v1/publishers, never nil.
+func publisherList(rows []publisherRow) []publisherListRow {
+	out := make([]publisherListRow, len(rows))
+	for i, p := range rows {
+		out[i].publisherRow = p
+		if p.PendingWithdrawals != nil {
+			q := p.PendingWithdrawals.pendingQueue
+			out[i].PendingWithdrawals = &q
+		}
+	}
+	return out
+}
+
+// recentBlob is one of a publisher's newest blobs as its page lists them:
+// the blob's identity, when it settled, what it was charged and whether it
+// was available. The whole row is /v1/blobs/{promise_hash}.
+type recentBlob struct {
+	PromiseHash        string        `json:"promise_hash"`
+	Commitment         string        `json:"commitment"`
+	Namespace          string        `json:"namespace"`
+	BlobSize           int64         `json:"blob_size"`
+	SettlementHeight   int64         `json:"settlement_height"`
+	SettlementTime     string        `json:"settlement_time"`
+	ValidatorsWithRows int           `json:"validators_with_rows"`
+	Charge             *recentCharge `json:"charge"`
+	Reconstructable    *recentStatus `json:"reconstructable"`
+}
+
+type recentCharge struct {
+	FeeUtia int64 `json:"fee_utia"`
+}
+
+type recentStatus struct {
+	Status string `json:"status"`
+}
+
+func recentBlobs(rows []blobRow) []recentBlob {
+	out := make([]recentBlob, len(rows))
+	for i, b := range rows {
+		out[i] = recentBlob{
+			PromiseHash: b.PromiseHash, Commitment: b.Commitment, Namespace: b.Namespace, BlobSize: b.BlobSize,
+			SettlementHeight: b.SettlementHeight, SettlementTime: b.SettlementTime, ValidatorsWithRows: b.ValidatorsWithRows,
+		}
+		if b.Charge != nil {
+			out[i].Charge = &recentCharge{FeeUtia: b.Charge.FeeUtia}
+		}
+		if b.Reconstructable != nil {
+			out[i].Reconstructable = &recentStatus{Status: b.Reconstructable.Status}
+		}
+	}
+	return out
+}
+
 // validatorOut is one validator as /v1/validators lists it.
 type validatorOut struct {
 	Address          string             `json:"address"`

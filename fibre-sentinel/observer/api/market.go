@@ -24,23 +24,22 @@ import (
 // something the chain recorded, in the payments table the scanner fills from
 // MsgPayForFibre, MsgPaymentPromiseTimeout, MsgDepositToEscrow,
 // MsgRequestWithdrawal and the begin-block withdrawal payout. Nothing here
-// was measured by this observer, and the response says so.
+// was measured by this observer.
 //
 // Two honesty rules shape the numbers:
 //
 //   - A settlement amount is not in any chain event. It is recomputed from
 //     the promise's blob_size with the module's own gas formula, which is
-//     what the module charges. PriceFormula publishes that formula.
+//     what the module charges. /v1/params publishes that formula.
 //   - A promise that was handed out and never settled leaves no trace on
 //     chain until someone submits its timeout, so "timed out" is a floor on
-//     abandoned promises, never a total. The settlement rate is stated over
-//     settlements plus known timeouts, and its denominator says so.
+//     abandoned promises, never a total.
 
 // MiB is the unit "paid per MiB" is quoted in.
 const MiB = 1 << 20
 
-// priceFormula is the module's charge, published so a reader can recompute
-// every fee on the site from a blob size.
+// priceFormula is the module's charge, published on /v1/params so a reader
+// can recompute every fee on the site from a blob size.
 type priceFormula struct {
 	BaseGas     uint64 `json:"base_gas"`
 	GasPerChunk uint64 `json:"gas_per_chunk"`
@@ -118,15 +117,16 @@ type publisherShare struct {
 	Publishers int64 `json:"publishers,omitempty"`
 }
 
+// marketResponse is /v1/market. Every figure is a chain record: settlements,
+// timeouts, deposits and withdrawals from the payments table, escrow
+// balances by state query; a settlement's fee is recomputed from blob_size
+// with the module's formula (/v1/params price_formula), and fees go to the
+// fee collector, so no per-validator share is shown.
 type marketResponse struct {
 	Window     Window `json:"window"`
-	Vantage    string `json:"vantage"`
 	ComputedAt string `json:"computed_at,omitempty"`
 	// RecordThrough is the point of the chain these figures rest on.
 	RecordThrough *recordThrough `json:"record_through,omitempty"`
-	ComputeMs     int64          `json:"compute_ms,omitempty"`
-	// Source says where every number on this response comes from.
-	Source string `json:"source"`
 
 	Settlements int64 `json:"settlements"`
 	// Blobs is how many distinct blobs those settlements paid for, over the
@@ -141,11 +141,8 @@ type marketResponse struct {
 	PaidPerMiBUtia   *float64 `json:"paid_per_mib_utia"` // fees / (bytes / MiB); null with no bytes
 	// Timeouts is the floor described above; TimedOutUtia what those
 	// promises were charged.
-	Timeouts       int64 `json:"timeouts"`
-	TimedOutUtia   int64 `json:"timed_out_utia"`
-	SettlementRate Rate  `json:"settlement_rate"` // settlements / (settlements + timeouts)
-	// TimeoutProcessors is how many distinct accounts submitted a timeout.
-	TimeoutProcessors int64 `json:"timeout_processors"`
+	Timeouts     int64 `json:"timeouts"`
+	TimedOutUtia int64 `json:"timed_out_utia"`
 
 	Deposits             sum `json:"deposits"`
 	WithdrawalsRequested sum `json:"withdrawals_requested"`
@@ -170,12 +167,10 @@ type marketResponse struct {
 	Hourly []hourBucket `json:"hourly,omitempty"`
 	// HourlyByPub is Hourly split by publisher as DailyByPub splits Daily,
 	// set with it.
-	HourlyByPub  []hourPublisher  `json:"hourly_by_publisher,omitempty"`
-	DailyByPub   []dayPublisher   `json:"daily_by_publisher"`
-	Top          []publisherShare `json:"top_publishers"`
-	Other        *publisherShare  `json:"other_publishers"`
-	PriceFormula priceFormula     `json:"price_formula"`
-	Notes        []string         `json:"notes"`
+	HourlyByPub []hourPublisher  `json:"hourly_by_publisher,omitempty"`
+	DailyByPub  []dayPublisher   `json:"daily_by_publisher"`
+	Top         []publisherShare `json:"top_publishers"`
+	Other       *publisherShare  `json:"other_publishers"`
 	// LargestPoster is the publisher with the most bytes in the window.
 	LargestPoster *publisherShare `json:"largest_poster"`
 	// Namespaces is how many namespaces the window's settlements used, and
@@ -195,17 +190,6 @@ type marketResponse struct {
 	// either.
 	PublishersListed bool `json:"publishers_listed,omitempty"`
 }
-
-var marketNotes = []string{
-	"every figure here is something the chain recorded; none was measured by this observer",
-	"a settlement's fee is not in any chain event; it is recomputed from blob_size with the module's own formula (price_formula)",
-	"blob_size is the padded blob size the module charges for, not the payload",
-	"timeouts count only promises whose timeout somebody submitted; an abandoned promise nobody reports leaves no trace, so this is a floor",
-	"fees go to the fee collector and are distributed by stake; the chain records no per-validator share, so none is shown",
-	"escrow balances are state reads for publishers already seen in a payment; there is no list-all query",
-}
-
-const marketSource = "x/fibre transactions and events (payments table); escrow balances by state query"
 
 // escrowInfo is a publisher's current escrow as the chain holds it.
 type escrowInfo struct {
@@ -314,7 +298,7 @@ func perMiB(fees, bytes int64) *float64 {
 
 func (s *Server) computeMarket(ctx context.Context, win Window) (*marketResponse, error) {
 	db := s.st.DB()
-	r := &marketResponse{Window: win, Vantage: s.vantage, Source: marketSource, PriceFormula: formula, Notes: marketNotes, RecordThrough: s.recordThrough(ctx)}
+	r := &marketResponse{Window: win, RecordThrough: s.recordThrough(ctx)}
 	// Both bounds, on every query below. Without the upper one a pinned
 	// window answered with the payments that arrived after the pin while
 	// the response's own window said otherwise, so ?as_of= on this route
@@ -341,12 +325,11 @@ func (s *Server) computeMarket(ctx context.Context, win Window) (*marketResponse
 		WHERE pay.kind = 'settlement' AND pay.time >= ? AND pay.time <= ?`, start, end).Scan(&r.Blobs); err != nil {
 		return nil, fmt.Errorf("blobs: %w", err)
 	}
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(amount_utia),0), COUNT(DISTINCT processor)
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(amount_utia),0)
 		FROM payments WHERE kind = 'timeout' AND time >= ? AND time <= ?`, start, end).
-		Scan(&r.Timeouts, &r.TimedOutUtia, &r.TimeoutProcessors); err != nil {
+		Scan(&r.Timeouts, &r.TimedOutUtia); err != nil {
 		return nil, fmt.Errorf("timeouts: %w", err)
 	}
-	r.SettlementRate = rate(r.Settlements, r.Settlements+r.Timeouts)
 	for kind, dst := range map[string]*sum{
 		"deposit": &r.Deposits, "withdrawal_request": &r.WithdrawalsRequested, "withdrawal_executed": &r.WithdrawalsExecuted,
 	} {
@@ -662,7 +645,8 @@ func (s *Server) publisherRows(ctx context.Context, win Window, only string) ([]
 	return out, rows.Err()
 }
 
-// paymentRow is one escrow movement as the API shows it.
+// paymentRow is one escrow movement as the API shows it. A settlement's or
+// a timeout's amount is its gas at one utia per gas.
 type paymentRow struct {
 	Kind        string `json:"kind"`
 	Height      int64  `json:"height"`
@@ -673,13 +657,12 @@ type paymentRow struct {
 	PromiseHash string `json:"promise_hash,omitempty"`
 	Namespace   string `json:"namespace,omitempty"`
 	BlobSize    int64  `json:"blob_size,omitempty"`
-	GasUnits    int64  `json:"gas_units,omitempty"`
 	AmountUtia  int64  `json:"amount_utia"`
 	AvailableAt string `json:"available_at,omitempty"`
 }
 
 func (s *Server) paymentRows(ctx context.Context, where string, limit int, args ...any) ([]paymentRow, error) {
-	q := `SELECT kind, height, time, tx_hash, publisher, processor, promise_hash, namespace, blob_size, gas_units, amount_utia, COALESCE(available_at, '')
+	q := `SELECT kind, height, time, tx_hash, publisher, processor, promise_hash, namespace, blob_size, amount_utia, COALESCE(available_at, '')
 		FROM payments`
 	if where != "" {
 		q += " WHERE " + where
@@ -694,7 +677,7 @@ func (s *Server) paymentRows(ctx context.Context, where string, limit int, args 
 	for rows.Next() {
 		var p paymentRow
 		if err := rows.Scan(&p.Kind, &p.Height, &p.Time, &p.TxHash, &p.Publisher, &p.Processor, &p.PromiseHash, &p.Namespace,
-			&p.BlobSize, &p.GasUnits, &p.AmountUtia, &p.AvailableAt); err != nil {
+			&p.BlobSize, &p.AmountUtia, &p.AvailableAt); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -845,18 +828,18 @@ func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 			s.writeInternal(w, r.URL.Path, err)
 			return
 		}
-		resp.ComputedAt, resp.ComputeMs = t0.UTC().Format(time.RFC3339Nano), time.Since(t0).Milliseconds()
+		resp.ComputedAt = t0.UTC().Format(time.RFC3339Nano)
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, 200, resp)
 		return
 	}
-	resp, at, ms, err := s.market.get(r.Context(), s.logf(), win)
+	resp, at, _, err := s.market.get(r.Context(), s.logf(), win)
 	if err != nil {
 		s.writeSnapshotErr(w, r, win, err)
 		return
 	}
 	cp := *resp
-	cp.ComputedAt, cp.ComputeMs = at.UTC().Format(time.RFC3339), ms
+	cp.ComputedAt = at.UTC().Format(time.RFC3339)
 	cp.Publishers, cp.PublishersListed = nil, false // /v1/publishers' half of the snapshot
 	writeJSON(w, 200, cp)
 }
@@ -872,19 +855,14 @@ func (s *Server) handlePublishers(w http.ResponseWriter, r *http.Request) {
 		// /v1/market for this window, so the two agree (computePublishing).
 		// The window is the one the rows were selected with, and
 		// computed_at says when.
-		snap, at, ms, err := s.market.get(r.Context(), s.logf(), win)
+		snap, at, _, err := s.market.get(r.Context(), s.logf(), win)
 		if err != nil {
 			s.writeSnapshotErr(w, r, win, err)
 			return
 		}
-		rows := snap.Publishers
-		if rows == nil {
-			rows = []publisherRow{}
-		}
 		writeJSON(w, 200, map[string]any{
-			"window": snap.Window, "publishers": rows, "count": len(rows),
-			"source": marketSource, "price_formula": formula, "notes": marketNotes, "vantage": s.vantage,
-			"computed_at": at.UTC().Format(time.RFC3339), "compute_ms": ms,
+			"window": snap.Window, "publishers": publisherList(snap.Publishers), "count": len(snap.Publishers),
+			"computed_at": at.UTC().Format(time.RFC3339),
 		})
 		return
 	}
@@ -914,10 +892,7 @@ func (s *Server) handlePublishers(w http.ResponseWriter, r *http.Request) {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{
-		"window": win, "publishers": rows, "count": len(rows),
-		"source": marketSource, "price_formula": formula, "notes": marketNotes, "vantage": s.vantage,
-	})
+	writeJSON(w, 200, map[string]any{"window": win, "publishers": publisherList(rows), "count": len(rows)})
 }
 
 func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
@@ -1039,8 +1014,7 @@ func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{
 		"window": win, "publisher": rows[0], "windows": spans, "withdrawals": withdrawals,
-		"recent_payments": payments, "recent_blobs": blobs, "recent_blobs_truncated": moreBlobs,
-		"source": marketSource, "price_formula": formula, "notes": marketNotes, "vantage": s.vantage,
+		"recent_payments": payments, "recent_blobs": recentBlobs(blobs), "recent_blobs_truncated": moreBlobs,
 	})
 }
 

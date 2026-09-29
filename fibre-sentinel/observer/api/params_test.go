@@ -56,7 +56,12 @@ type paramsBody struct {
 			Max int64  `json:"max_s"`
 		} `json:"param_bounds"`
 	} `json:"protocol"`
-	Notes []string `json:"notes"`
+	Formula *struct {
+		BaseGas     uint64 `json:"base_gas"`
+		GasPerChunk uint64 `json:"gas_per_chunk"`
+		ChunkBytes  uint64 `json:"chunk_bytes"`
+		UtiaPerGas  uint64 `json:"utia_per_gas"`
+	} `json:"price_formula"`
 }
 
 func paramsServer(t *testing.T) (*httptest.Server, *store.Store) {
@@ -108,8 +113,10 @@ func TestParamsEmpty(t *testing.T) {
 			t.Fatalf("bound %s: %+v, want %v", name, got, b)
 		}
 	}
-	if len(p.Notes) == 0 {
-		t.Fatal("no notes")
+	// the module's charge, from which every fee is recomputed, is here
+	// before any blob settles
+	if f := p.Formula; f == nil || f.BaseGas != 650_000 || f.GasPerChunk != 45_000 || f.ChunkBytes != 262144 || f.UtiaPerGas != 1 {
+		t.Fatalf("price formula: %+v", f)
 	}
 }
 
