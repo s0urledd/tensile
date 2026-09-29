@@ -254,15 +254,18 @@ type Confirmer struct {
 	run func(context.Context, Input, *Coder, StepTimeouts) Measurement
 	now func() time.Time
 
+	// what the chain was last read as (refreshChain), under mu: the pass's
+	// feed refreshes it while the workers read it (chainFacts)
 	chainID     string
 	clockOffset time.Duration
 	observer    ObserverInfo
 
-	offset int64 // bytes of the requests file consumed
+	offset int64 // bytes of the requests file consumed; the pass's feed alone reads it
 	status *status.Writer
 
 	// mu guards what a pass's workers share: the requests not yet probed,
-	// the starts of each validator's probes of the last hour, the coders.
+	// the starts of each validator's probes of the last hour, the coders,
+	// the chain facts.
 	mu      sync.Mutex
 	pending map[string]ConfirmRequest // by Key, not yet probed
 	spent   map[string][]time.Time    // by validator
@@ -326,6 +329,15 @@ func (c *Confirmer) Run(ctx context.Context) error {
 // pass reads new requests and probes what is due: Workers validators at a
 // time, one request per validator at a time, the oldest deadline first,
 // each validator within its hourly cap.
+//
+// The queue is fed while the pass runs: every PollEvery the requests file
+// is read again, and what is new joins the queue, as does a request left
+// for later (a validator over its cap, a chain read that failed). A
+// validator that hangs holds one worker for two RPC timeouts per request,
+// and a pass that only read the file at its start kept every request that
+// arrived meanwhile, for any validator, waiting behind that backlog while
+// the other workers sat idle, often past its deadline. The pass ends once
+// nothing is queued and nothing is in flight.
 func (c *Confirmer) pass(ctx context.Context) error {
 	if err := c.readRequests(); err != nil {
 		return fmt.Errorf("read %s: %w", c.cfg.RequestsPath, err)
@@ -333,56 +345,60 @@ func (c *Confirmer) pass(ctx context.Context) error {
 	if c.pendingLen() == 0 {
 		return nil
 	}
-	if c.chainID == "" {
-		id, _, err := c.chain.Status(ctx)
-		if err != nil {
-			return fmt.Errorf("chain status: %w", err)
-		}
-		c.chainID = id
+	if err := c.refreshChain(ctx); err != nil {
+		return err
 	}
-	if bt, err := c.chain.LatestBlockTime(ctx); err == nil {
-		c.clockOffset = c.now().Sub(bt)
-	}
-	if v, err := c.chain.AppVersion(ctx); err == nil {
-		c.observer.AppVersion = v
-		c.observer.PinStale = v > assign.PinnedCelestiaAppMajor
-	}
-
-	// Oldest deadline first: the request closest to expiring is the one a
-	// cap or a queue is most likely to cost.
-	c.mu.Lock()
-	queue := make([]ConfirmRequest, 0, len(c.pending))
-	for _, r := range c.pending {
-		queue = append(queue, r)
-	}
-	c.mu.Unlock()
-	sort.Slice(queue, func(i, j int) bool {
-		if !queue[i].Deadline.Equal(queue[j].Deadline) {
-			return queue[i].Deadline.Before(queue[j].Deadline)
-		}
-		return queue[i].Key() < queue[j].Key()
-	})
 
 	var (
-		mu       sync.Mutex
-		cond     = sync.NewCond(&mu)
+		mu    sync.Mutex
+		cond  = sync.NewCond(&mu)
+		queue []ConfirmRequest
+		// active is every request in the queue or in flight, by Key.
+		active   = map[string]bool{}
 		busy     = map[string]bool{}
+		inflight int
 		firstErr error
 		wg       sync.WaitGroup
 	)
+	// enqueue adds every pending request not already queued or in flight,
+	// and keeps the queue oldest deadline first: the request closest to
+	// expiring is the one a cap or a queue is most likely to cost. mu is
+	// held.
+	enqueue := func() {
+		c.mu.Lock()
+		for k, r := range c.pending {
+			if !active[k] {
+				active[k] = true
+				queue = append(queue, r)
+			}
+		}
+		c.mu.Unlock()
+		sort.Slice(queue, func(i, j int) bool {
+			if !queue[i].Deadline.Equal(queue[j].Deadline) {
+				return queue[i].Deadline.Before(queue[j].Deadline)
+			}
+			return queue[i].Key() < queue[j].Key()
+		})
+	}
+	mu.Lock()
+	enqueue()
+	mu.Unlock()
 	// next takes the oldest request whose validator is not being asked, and
-	// waits while every one left is for a validator that is.
+	// waits while every one left is for a validator that is, or while the
+	// queue is empty and a request is still in flight (the feed may bring
+	// more meanwhile).
 	next := func() (ConfirmRequest, bool) {
 		mu.Lock()
 		defer mu.Unlock()
 		for {
-			if ctx.Err() != nil || firstErr != nil || len(queue) == 0 {
+			if ctx.Err() != nil || firstErr != nil || (len(queue) == 0 && inflight == 0) {
 				return ConfirmRequest{}, false
 			}
 			for i, r := range queue {
 				if !busy[r.ValidatorAddress] {
 					queue = append(queue[:i], queue[i+1:]...)
 					busy[r.ValidatorAddress] = true
+					inflight++
 					return r, true
 				}
 			}
@@ -401,6 +417,10 @@ func (c *Confirmer) pass(ctx context.Context) error {
 				err := c.answer(ctx, r)
 				mu.Lock()
 				busy[r.ValidatorAddress] = false
+				inflight--
+				// Answered or dropped, it has left pending; left for later,
+				// the next feed queues it again.
+				delete(active, r.Key())
 				if err != nil && firstErr == nil {
 					firstErr = err
 				}
@@ -409,6 +429,38 @@ func (c *Confirmer) pass(ctx context.Context) error {
 			}
 		}()
 	}
+	// The feed: new requests, and those left for later, join the queue
+	// while the pass runs.
+	fed := make(chan struct{})
+	feedDone := make(chan struct{})
+	go func() {
+		defer close(feedDone)
+		tick := time.NewTicker(c.cfg.PollEvery)
+		defer tick.Stop()
+		for {
+			select {
+			case <-fed:
+				return
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+			}
+			if err := c.readRequests(); err != nil {
+				c.log.Printf("confirm: read %s: %v", c.cfg.RequestsPath, err)
+				continue
+			}
+			if err := c.refreshChain(ctx); err != nil {
+				c.log.Printf("confirm: %v", err)
+			}
+			if c.status != nil {
+				c.status.Set("pending", c.pendingLen())
+			}
+			mu.Lock()
+			enqueue()
+			cond.Broadcast()
+			mu.Unlock()
+		}
+	}()
 	// A worker waiting on a busy validator is woken when that request ends;
 	// a stop wakes every one of them.
 	stop := context.AfterFunc(ctx, func() {
@@ -417,8 +469,44 @@ func (c *Confirmer) pass(ctx context.Context) error {
 		mu.Unlock()
 	})
 	wg.Wait()
+	close(fed)
+	<-feedDone
 	stop()
 	return firstErr
+}
+
+// refreshChain reads the chain's id once, and its clock and app version
+// every time; a read that fails keeps the previous value.
+func (c *Confirmer) refreshChain(ctx context.Context) error {
+	id, _, _ := c.chainFacts()
+	if id == "" {
+		got, _, err := c.chain.Status(ctx)
+		if err != nil {
+			return fmt.Errorf("chain status: %w", err)
+		}
+		id = got
+	}
+	bt, btErr := c.chain.LatestBlockTime(ctx)
+	v, vErr := c.chain.AppVersion(ctx)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.chainID = id
+	if btErr == nil {
+		c.clockOffset = c.now().Sub(bt)
+	}
+	if vErr == nil {
+		c.observer.AppVersion = v
+		c.observer.PinStale = v > assign.PinnedCelestiaAppMajor
+	}
+	return nil
+}
+
+// chainFacts is what the chain was last read as: its id, this vantage's
+// clock offset from it, and the build and app version answers carry.
+func (c *Confirmer) chainFacts() (string, time.Duration, ObserverInfo) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.chainID, c.clockOffset, c.observer
 }
 
 // answer probes one request, or drops it once its deadline has passed. A
@@ -570,6 +658,7 @@ func (c *Confirmer) readRequests() error {
 // answer, so the reading is not confirmed.
 func (c *Confirmer) refused(r ConfirmRequest, err error) Measurement {
 	now := c.now().UTC()
+	_, offset, _ := c.chainFacts()
 	return Measurement{
 		SchemaVersion: MeasurementSchemaVersion, Vantage: c.cfg.Vantage,
 		PromiseHash: r.PromiseHash, Commitment: r.Commitment, BlobVersion: r.BlobVersion,
@@ -581,7 +670,7 @@ func (c *Confirmer) refused(r ConfirmRequest, err error) Measurement {
 		Phase:      PhaseAtWindow(now, r.MustServeUntil, time.Duration(r.PruneToleranceS)*time.Second),
 		Outcome:    OutcomeProbeError, Classification: ClassProbeError,
 		ClassificationReason: "confirmation not probed: " + err.Error(),
-		RawError:             err.Error(), ClockOffsetMS: c.clockOffset.Milliseconds(),
+		RawError:             err.Error(), ClockOffsetMS: offset.Milliseconds(),
 	}
 }
 
@@ -594,8 +683,9 @@ var errChainRead = errors.New("chain read failed")
 // and the assignment from the chain rather than taking them from the
 // request.
 func (c *Confirmer) input(ctx context.Context, r ConfirmRequest) (Input, *Coder, error) {
-	if r.ChainID != "" && c.chainID != "" && r.ChainID != c.chainID {
-		return Input{}, nil, fmt.Errorf("request is for chain %s, this vantage reads %s", r.ChainID, c.chainID)
+	chainID, offset, observer := c.chainFacts()
+	if r.ChainID != "" && chainID != "" && r.ChainID != chainID {
+		return Input{}, nil, fmt.Errorf("request is for chain %s, this vantage reads %s", r.ChainID, chainID)
 	}
 	members, err := c.chain.ValidatorSet(ctx, r.ValidatorSetHeight)
 	if err != nil {
@@ -649,7 +739,7 @@ func (c *Confirmer) input(ctx context.Context, r ConfirmRequest) (Input, *Coder,
 	}
 	c.mu.Unlock()
 	return Input{
-		Vantage: c.cfg.Vantage, ChainID: c.chainID, PromiseHash: r.PromiseHash,
+		Vantage: c.cfg.Vantage, ChainID: chainID, PromiseHash: r.PromiseHash,
 		Commitment: commitment, CommitmentHex: r.Commitment, BlobVersion: r.BlobVersion,
 		MustServeUntil: r.MustServeUntil, ValidatorSetHeight: r.ValidatorSetHeight,
 		Target: Target{
@@ -662,8 +752,8 @@ func (c *Confirmer) input(ctx context.Context, r ConfirmRequest) (Input, *Coder,
 		PruneTolerance:      time.Duration(r.PruneToleranceS) * time.Second,
 		ExpectedShardBytes:  ShardBytes(r.BlobSize, pp.OriginalRows, len(rows)),
 		MaxMessageSize:      maxMessageSizeFor(pp),
-		ClockOffsetMS:       c.clockOffset.Milliseconds(),
-		Observer:            c.observer,
+		ClockOffsetMS:       offset.Milliseconds(),
+		Observer:            observer,
 		// read as the Fibre client reads, like the reading it confirms
 		ClientRules:    true,
 		RequestTimeout: ClientRPCTimeout,
