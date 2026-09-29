@@ -63,8 +63,7 @@ function Page() {
 
       {error && <div className="note hold"><span className="label">Observer</span><p>Cannot reach the observer API: {error}. Nothing below is current.</p></div>}
 
-      {/* The escrow side: the network totals (fees paid, blob size,
-          publishers) are on the overview and are not repeated here. */}
+      {/* The escrow side; the period's fees paid are the total on the fees chart below. */}
       <section className="board board--stack" id="summary">
         <Figures className="row">
           <Metric label="Escrow held" value={pre || !m ? "—" : tia(m.escrow_total_utia ?? m.escrow_held_utia)} tone={pre || !m ? "absent" : undefined}
