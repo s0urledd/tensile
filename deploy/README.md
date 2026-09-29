@@ -665,25 +665,26 @@ What to check once the upgrade lands, in this order:
 curl -s localhost:${API_LISTEN}/v1/meta | jq '{fibre_active, app_version, chain_height}'
 curl -s localhost:${API_LISTEN}/v1/health | jq '.status, (.checks[] | select(.ok == false))'
 journalctl -u fibre-scan@mocha -n 50 --no-pager | grep -iE "seed|param|host history"
-curl -s localhost:${API_LISTEN}/v1/network | jq '{registered_endpoints, reachability, validators_probed}'
+curl -s localhost:${API_LISTEN}/v1/network | jq '{registered_endpoints, reachability, reachability_window}'
 ```
 
 Before that, the "not live yet" notice on the overview and the header chip
-carry x/signal's tally for the version that brings Fibre — how much voting
-power has signalled, the threshold, how many bonded validators have not, and
-the scheduled height once there is one — and the validator table marks each
-bonded validator `signalled` or `not signalled` (`upgrade_signal` on
-`/v1/meta`, `signaled_upgrade` on each row; both disappear once the chain is
-on that version).
+show the height x/signal scheduled the version that brings Fibre at and an
+estimate of when the chain reaches it, once there is one, and the validator
+table marks each bonded validator `signalled` or `not signalled`
+(`upgrade_signal.{upgrade_height, eta_seconds}` on `/v1/meta`,
+`signaled_upgrade` on each row; both disappear once the chain is on that
+version).
 
 `registered_endpoints` moving off zero is the first sign the registry is being
-read. `reachability` follows within a heartbeat interval. The activation
-changes the snapshots' revision, so for the half minute or so the API takes
-to recompute the 24h window, `/v1/network` answers 503 with
-`"computing": true` and the last line prints `null` for all three: ask again. Publications appear
-only once somebody actually pays for a blob, which may be hours later; an
-empty publication feed on activation day is a quiet network, not a broken
-observer, and the site says which.
+read. `reachability` follows within a heartbeat interval, and
+`reachability_window`, which pools every check in the window, with it. The
+activation changes the snapshots' revision, so for the half minute or so the
+API takes to recompute the 24h window, `/v1/network` answers 503 with
+`"computing": true` and the last line prints `null` for all three: ask again.
+Publications appear only once somebody actually pays for a blob, which may be
+hours later; an empty publication feed on activation day is a quiet network,
+not a broken observer, and the site says which.
 
 What does not self-heal: a scanner that exits on the same block at every
 restart (`systemctl status fibre-scan@mocha` shows it cycling; the last line
