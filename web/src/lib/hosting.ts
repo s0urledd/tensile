@@ -21,15 +21,12 @@ export type Hosting = {
   country_basis?: "geolocation" | "as_registry";
   /** city-level geolocation, when the collector has a city database: the map places the host here */
   city?: string;
-  region?: string;
   lat?: number;
   lon?: number;
   provider: string;
+  /** every address the host resolved to, sent only when they fall in more than one network */
   addresses?: HostingAddress[];
   mixed_networks?: boolean;
-  resolved_at?: string;
-  resolved_by?: "heartbeat" | "literal";
-  looked_up_at: string;
 };
 
 export type DBSource = { file: string; modified?: string; name: string; url: string; license: string; license_url: string; attribution?: string };

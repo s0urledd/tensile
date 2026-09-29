@@ -39,7 +39,7 @@ func TestHostingCity(t *testing.T) {
 	}
 	get(t, ts, "/v1/validators", &vraw)
 	for _, v := range vraw.Validators {
-		for _, k := range []string{`"city"`, `"region"`, `"lat"`, `"lon"`} {
+		for _, k := range []string{`"city"`, `"lat"`, `"lon"`} {
 			if strings.Contains(string(v.Hosting), k) {
 				t.Fatalf("%s without a city file: %s", k, v.Hosting)
 			}
@@ -109,8 +109,21 @@ func TestHostingCity(t *testing.T) {
 		if h == nil || h.City == "" || h.Lat == nil || h.Lon == nil {
 			t.Fatalf("%s: no city: %+v", v.Address, h)
 		}
-		if v.Address == f.addrs[2] && (h.City != "Roubaix" || h.Region != "Hauts-de-France" || h.Country != "FR" || *h.Lon != 3.17456) {
+		if v.Address == f.addrs[2] && (h.City != "Roubaix" || h.Country != "FR" || *h.Lon != 3.17456) {
 			t.Fatalf("gamma: %+v", h)
+		}
+	}
+	// the region stays in the row, which /v1/hosting groups cities by
+	var rows struct {
+		Validators []struct {
+			Address string        `json:"address"`
+			Hosting *hosting.Info `json:"hosting"`
+		} `json:"validators"`
+	}
+	rowsOf(t, f.st, "test", "24h", time.Time{}, &rows)
+	for _, v := range rows.Validators {
+		if v.Address == f.addrs[2] && (v.Hosting == nil || v.Hosting.Region != "Hauts-de-France") {
+			t.Fatalf("gamma's row: %+v", v.Hosting)
 		}
 	}
 }

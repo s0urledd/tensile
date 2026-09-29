@@ -18,8 +18,9 @@ import type { Rate, Window } from "./api";
  * newest assigned promises (up to 20) do.
  */
 export type Signing = {
-  assigned: number; signed: number; rate: Rate; unknown: number; no_host?: number;
+  assigned: number; signed: number; unknown: number; no_host?: number;
   last_endorsed_at?: string | null;
+  /** on the validator page only */
   recent?: { assigned: number; endorsed: number };
 };
 

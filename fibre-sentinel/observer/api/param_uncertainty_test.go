@@ -1028,25 +1028,36 @@ func TestPerValidatorFiguresHonourTheHoldAndAddUpToTheNetwork(t *testing.T) {
 	ts := httptest.NewServer(api.New(st, "test"))
 	defer ts.Close()
 
-	var network heldJSON
-	get(t, ts, "/v1/network?window=24h", &network)
 	var vals struct {
 		Validators []struct {
-			Address     string           `json:"address"`
-			Classes     map[string]int64 `json:"classes"`
-			Obligations obligationsJSON  `json:"obligations"`
+			Address     string          `json:"address"`
+			Obligations obligationsJSON `json:"obligations"`
 		} `json:"validators"`
 	}
 	if code := get(t, ts, "/v1/validators?window=24h", &vals); code != 200 || len(vals.Validators) != 8 {
 		t.Fatalf("validators: %d, %d rows", code, len(vals.Validators))
 	}
-	var held, faultClass int64
 	for _, v := range vals.Validators {
-		held += v.Classes["RETENTION_UNVERIFIED"]
-		faultClass += v.Classes["FAULT"]
 		if v.Obligations.Rate.Den != 0 {
 			t.Errorf("%s: a rate over held rows (den %d)", v.Address, v.Obligations.Rate.Den)
 		}
+	}
+	// the reading tallies, which the rows and the summary keep
+	var network heldJSON
+	networkOf(t, st, "test", "24h", time.Time{}, &network)
+	var rows struct {
+		Validators []struct {
+			Classes map[string]int64 `json:"classes"`
+		} `json:"validators"`
+	}
+	rowsOf(t, st, "test", "24h", time.Time{}, &rows)
+	if len(rows.Validators) != 8 {
+		t.Fatalf("%d validator rows, want 8", len(rows.Validators))
+	}
+	var held, faultClass int64
+	for _, v := range rows.Validators {
+		held += v.Classes["RETENTION_UNVERIFIED"]
+		faultClass += v.Classes["FAULT"]
 	}
 	if network.faults() != 0 || faultClass != 0 {
 		t.Fatalf("FAULT readings: network %d, per-validator sum %d; want 0 under the hold", network.faults(), faultClass)

@@ -91,15 +91,13 @@ func (s *Server) validatorKnown(ctx context.Context, addr string) (bool, error) 
 
 // detailFromSnapshots answers a live window from the snapshots /v1/validators
 // serves: the row is the list's own row for addr and each span is addr's row
-// in that span's snapshot, so the page and the table agree to the figure. A
-// span's classes are the row's (assigned, in-window readings, rollup
-// included), and its probe_count their sum, as a computed span counts them.
+// in that span's snapshot, so the page and the table agree to the figure.
 //
 // ok is false when a snapshot is still being computed, or does not list addr
 // yet because the validator appeared after it was taken; the caller then
 // computes the answer. It never waits for a snapshot.
 func (s *Server) detailFromSnapshots(ctx context.Context, addr string, win Window, now time.Time) (map[string]any, bool, error) {
-	main, at, ms, ok := s.vals.peek(s.logf(), win)
+	main, at, _, ok := s.vals.peek(s.logf(), win)
 	if !ok {
 		return nil, false, nil
 	}
@@ -123,24 +121,16 @@ func (s *Server) detailFromSnapshots(ctx context.Context, addr string, win Windo
 		if err != nil {
 			return nil, false, err
 		}
-		var n int64
-		for _, c := range r.Classes {
-			n += c
-		}
-		spans = append(spans, detailSpan{
-			Window: snap.Window, Count: n, Obligations: r.Obligations, ByObligation: r.ByObligation, Classes: r.Classes,
-			RolledUp: label, Provisional: r.ProvisionalFaults,
-		})
+		spans = append(spans, detailSpan{Window: snap.Window, Obligations: r.Obligations, RolledUp: label, Provisional: r.ProvisionalFaults})
 	}
 	out := map[string]any{
 		"window":         main.Window,
 		"record_through": main.RecordThrough,
-		"validator":      row,
+		"validator":      detailOf(row),
 		"windows":        spans,
 		// when the row was computed, as /v1/validators says it; each span's
 		// window ends at its own snapshot's moment
 		"computed_at": at.UTC().Format(time.RFC3339Nano),
-		"compute_ms":  ms,
 	}
 	if err := s.detailReadings(ctx, addr, win, now, out); err != nil {
 		return nil, false, err

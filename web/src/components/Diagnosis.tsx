@@ -1,6 +1,6 @@
 "use client";
 import type { ReactNode } from "react";
-import { type Validator, type EndpointCheck, type Meta, int, ago, whenUTC, dateUTC } from "@/lib/api";
+import { type ValidatorDetail, type EndpointCheck, type Meta, int, ago, whenUTC, dateUTC } from "@/lib/api";
 
 /**
  * The first thing on a validator's page: what state its Fibre endpoint is in,
@@ -47,7 +47,7 @@ function Docs({ href, children }: { href: string; children: ReactNode }) {
   return <a href={href} rel="noopener noreferrer" target="_blank">{children}</a>;
 }
 
-function state(v: Validator, c: EndpointCheck | undefined, decided: number): State {
+function state(v: ValidatorDetail, c: EndpointCheck | undefined, decided: number): State {
   if (v.jailed) {
     return {
       tone: "none", title: "Jailed: out of the bonded set",
@@ -147,7 +147,7 @@ function state(v: Validator, c: EndpointCheck | undefined, decided: number): Sta
 }
 
 export default function Diagnosis({ v, check, decided }: {
-  v: Validator;
+  v: ValidatorDetail;
   check?: EndpointCheck;
   meta?: Meta | null;
   /** served + broken obligations in the period */

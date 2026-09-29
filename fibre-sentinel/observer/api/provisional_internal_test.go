@@ -23,18 +23,18 @@ func TestNetworkReferenceMedian(t *testing.T) {
 		row(5, 0),     // too few to rank, still pooled
 		row(900, 100), // 0.90, and most of the pooled rate
 	}
-	ref := networkReferenceFrom(Window{Name: "24h"}, rows, time.Now())
+	ref := networkReferenceFrom(rows)
 	if ref.Validators != 4 || ref.Median == nil || *ref.Median < 0.8999 || *ref.Median > 0.9001 {
 		t.Fatalf("median over %d = %v, want 0.9 over 4", ref.Validators, ref.Median)
 	}
 	if ref.Pooled.Num != 953 || ref.Pooled.Den != 1065 {
 		t.Errorf("pooled = %d/%d", ref.Pooled.Num, ref.Pooled.Den)
 	}
-	even := networkReferenceFrom(Window{}, rows[:2], time.Now())
+	even := networkReferenceFrom(rows[:2])
 	if even.Median == nil || *even.Median < 0.9499 || *even.Median > 0.9501 {
 		t.Errorf("even median = %v, want 0.95", even.Median)
 	}
-	if none := networkReferenceFrom(Window{}, rows[3:4], time.Now()); none.Median != nil || none.Validators != 0 {
+	if none := networkReferenceFrom(rows[3:4]); none.Median != nil || none.Validators != 0 {
 		t.Errorf("a median was drawn from no ranked validator: %+v", none)
 	}
 }

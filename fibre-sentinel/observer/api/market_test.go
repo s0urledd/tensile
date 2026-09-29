@@ -502,17 +502,27 @@ func TestBlobChargeAndValidatorTimeouts(t *testing.T) {
 		t.Fatalf("a publication without a recorded payment must have a null charge, got %+v", blob.Blob.Charge)
 	}
 
+	// every listed validator, by the figure its page shows
 	var vals struct {
 		Validators []struct {
-			Address  string `json:"address"`
-			Timeouts int64  `json:"timeouts_enforced"`
+			Address string `json:"address"`
 		} `json:"validators"`
 	}
 	if code := get(t, ts, "/v1/validators?window=24h", &vals); code != 200 {
 		t.Fatalf("validators: %d", code)
 	}
 	found := false
-	for _, v := range vals.Validators {
+	for _, l := range vals.Validators {
+		var det struct {
+			Validator struct {
+				Address  string `json:"address"`
+				Timeouts int64  `json:"timeouts_enforced"`
+			} `json:"validator"`
+		}
+		if code := get(t, ts, "/v1/validators/"+l.Address+"?window=24h", &det); code != 200 {
+			t.Fatalf("validator %s: %d", l.Address, code)
+		}
+		v := det.Validator
 		if v.Address == sampleValidator {
 			found = true
 			if v.Timeouts != 1 {

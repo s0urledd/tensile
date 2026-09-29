@@ -131,9 +131,9 @@ func provisionalTotal(m map[string]*provisionalFaults) *provisionalFaults {
 
 // networkReference is the network's figure over the same window from the
 // same vantage, for the validator page's service rate: the median of the
-// validators' own rates and the pooled rate of every obligation.
+// validators' own rates and the pooled rate of every obligation. Its window
+// and moment are the answer's own (window, computed_at).
 type networkReference struct {
-	Window Window `json:"window"`
 	// Median is the median service rate over validators with at least
 	// MinRated decided obligations; nil when there are none. Every
 	// validator's rate counts once, so one large validator cannot move it.
@@ -146,21 +146,16 @@ type networkReference struct {
 	MinRated int64 `json:"min_rated"`
 	// Pooled is served / (served + broken) over every validator's
 	// obligations together: the network's own rate.
-	Pooled     Rate   `json:"pooled_rate"`
-	ComputedAt string `json:"computed_at"`
-	Note       string `json:"note"`
+	Pooled Rate `json:"pooled_rate"`
 }
 
 // networkReferenceMinRated mirrors the site's MIN_RATED: below 20 decided
 // obligations a rate is printed but never ranked.
 const networkReferenceMinRated = 20
 
-const networkReferenceNote = "The same window, the same vantage and the same obligation rule as this validator's rate. " +
-	"The median is over validators with at least min_rated decided obligations; the pooled rate is every obligation together."
-
 // networkReferenceFrom computes the reference from validator rows.
-func networkReferenceFrom(win Window, rows []validatorRow, at time.Time) *networkReference {
-	ref := &networkReference{Window: win, MinRated: networkReferenceMinRated, ComputedAt: at.UTC().Format(time.RFC3339), Note: networkReferenceNote}
+func networkReferenceFrom(rows []validatorRow) *networkReference {
+	ref := &networkReference{MinRated: networkReferenceMinRated}
 	var rates []float64
 	var served, decided int64
 	for _, v := range rows {
@@ -195,9 +190,9 @@ func (s *Server) networkReference(win Window) *networkReference {
 	if win.AsOf {
 		return nil
 	}
-	snap, at, _, ok := s.vals.peek(s.logf(), win)
+	snap, _, _, ok := s.vals.peek(s.logf(), win)
 	if !ok {
 		return nil
 	}
-	return networkReferenceFrom(snap.Window, snap.Rows, at)
+	return networkReferenceFrom(snap.Rows)
 }

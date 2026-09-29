@@ -261,25 +261,21 @@ export function notCountedText(o: Obligations | null | undefined): string {
   return n > 0 ? `${int(n)} not counted` : "";
 }
 
+/** one validator as /v1/validators lists it */
 export type Validator = {
   address: string;
   cons_address: string;
   /** the name the operator set in the staking module, read from the chain */
   moniker?: string;
   operator_address?: string;
-  keybase_identity?: string;
-  /** the API path of the Keybase picture behind keybase_identity, once the collector fetched it */
+  /** the API path of the operator's Keybase picture, once the collector fetched it */
   avatar_url?: string;
-  website?: string;
   /** the chain's own words about the validator, unlike everything we measure */
   jailed: boolean;
   bond_status?: string;
   /** signalled for the app version that brings Fibre; only while the chain is below it, and unset when the moniker cannot be attributed */
   signaled_upgrade?: boolean;
   host: string;
-  endpoint_since: string | null;
-  /** when it first appeared in x/valaddr's bonded Fibre provider list, whatever host it had then */
-  provider_since?: string;
   /** for a validator with no open endpoint: what was registered, and when it left the bonded list */
   last_host?: string;
   endpoint_closed_at?: string;
@@ -307,58 +303,71 @@ export type Validator = {
    * still gets 288 samples a day.
    */
   reachability_window: Rate;
-  /** of the heartbeats that saw a certificate, how many were endorsed */
-  identity_rate_window: Rate;
-  last_unreachable_at: string | null;
   last_reachable_at: string | null;
   /** one per (validator, blob) endorsed, judged by the blob's reading; the headline */
   obligations: Obligations;
   /** the part of obligations.broken whose faults are all still settling; absent when none (see ProvisionalFaults) */
   provisional_faults?: ProvisionalFaults;
-  /** obligations.rate, repeated */
-  serve_rate_by_obligation: Rate;
-  attestation: Attestation;
-  probe_count: number;
-  classes: ClassCounts;
-  assigned_rows_last: number;
-  expected_load_band: string;
-  /**
-   * How long this observer waited for a shard it did get. The percentiles are
-   * the whole probe — dial, TLS, DownloadShard, row verification — over the
-   * HEALTHY probes of the window.
-   *
-   * serve_bytes_per_second is the one to compare between validators: the
-   * median transfer rate over the download step alone. Assignments run from
-   * 148 rows to 4,096, so a large validator legitimately takes longer for the
-   * same quality of service, and the fixed cost of dial, handshake and
-   * identity check would flatter it if the whole probe were the basis.
-   */
-  serve_latency_p50_ms: number | null;
-  serve_latency_p95_ms: number | null;
-  serve_latency_sample: number;
-  serve_bytes_per_second: number | null;
-  /** healthy probes that carried a byte count; older records do not */
-  serve_throughput_sample: number;
-  /** newest publication: true proven to have stored it, false unproven, null not recorded */
-  attested_last: boolean | null;
-  /**
-   * The height whose validator set the row counts and voting power above were
-   * computed from. A validator that has left the active set keeps its last
-   * figures, and this says how stale they are.
-   */
-  assignment_height?: number;
-  /**
-   * MsgPaymentPromiseTimeout submitted by this validator's operator account
-   * in the window. The chain pays nothing for it; above zero says the
-   * operator runs the enforcement path at all.
-   */
-  timeouts_enforced?: number;
   /** signing participation over the period: see lib/signing.ts. Descriptive, never a fault. */
   signing?: Signing;
   /** the shard data it stored and endorsed in the period and what it holds now (from the chain) */
   load?: Load;
   /** network and country the open endpoint resolved into, from this vantage; absent when the lookup is off */
   hosting?: import("./hosting").Hosting;
+};
+
+/** the validator object of /v1/validators/{addr}: the list's fields and what only its page shows */
+export type ValidatorDetail = Validator & {
+  website?: string;
+  endpoint_since: string | null;
+  /** when it first appeared in x/valaddr's bonded Fibre provider list, whatever host it had then */
+  provider_since?: string;
+  last_unreachable_at: string | null;
+  /** the Endorsements figure of a record from before signing was counted per settlement */
+  attestation: Attestation;
+  /**
+   * The median transfer rate over the download step alone, over served
+   * shards of 2 MiB or more: comparable between validators whatever their
+   * row count. Null under three such shards.
+   */
+  serve_bytes_per_second: number | null;
+  /** healthy readings of such a shard that carried a byte count */
+  serve_throughput_sample: number;
+  /**
+   * MsgPaymentPromiseTimeout submitted by this validator's operator account
+   * in the window. The chain pays nothing for it; above zero says the
+   * operator runs the enforcement path at all.
+   */
+  timeouts_enforced?: number;
+};
+
+/** one of a validator's newest readings, as its page lists them */
+export type ValidatorReading = {
+  vantage: string;
+  promise_hash: string;
+  /** true proven obliged, false unproven, null recorded before verification existed */
+  attested: boolean | null;
+  schedule_label: string;
+  scheduled_at: string;
+  started_at: string;
+  phase: string;
+  outcome: string;
+  classification: string;
+  classification_reason: string;
+  rows_returned: number;
+  rows_expected: number;
+  total_duration_ms: number;
+  raw_error?: string;
+  retry_first_outcome?: string;
+  rpc_code?: string;
+  shadowed_by?: string;
+  /** where the upload went; host_changed when the host read differs (the validator re-registered during the window) */
+  host_at_settlement?: string;
+  host_changed?: boolean;
+  /** what the reading counts as for the validator: served, not_served (the blob was unavailable), or absent when it counts neither way */
+  service?: "served" | "not_served";
+  /** a not-served reading younger than the settling period: counted, and an x/fibre params change can still withdraw it */
+  provisional?: boolean;
 };
 
 export type Probe = {
@@ -893,7 +902,6 @@ export function shortBech(s: string): string {
  */
 export type Load = {
   promises: number;
-  rows: number;
   bytes: number;
   stored_bytes: number;
   rows_per_blob: number;
@@ -1043,25 +1051,20 @@ export function provisionalNow(p: ProvisionalFaults | null | undefined, now = Da
 
 /** the network's service rate over the same window from the same vantage, beside a validator's own */
 export type NetworkReference = {
-  window: Window;
   /** median of validators' own rates, over those with at least min_rated decided; null when none */
   median_rate: number | null;
   validators: number;
   min_rated: number;
   /** every obligation together */
   pooled_rate: Rate;
-  computed_at: string;
-  note: string;
 };
 
 /**
  * City placement from DB-IP's IP to City Lite file (optional on the
- * observer; every field is absent without it). Extends the types in
- * ./hosting: a `hosting` object may carry HostingCity's fields, and
- * /v1/hosting's summary may carry `by_city` and sources `city_db`.
- * lat/lon are the city's approximate point, not the machine's.
+ * observer; every field is absent without it): /v1/hosting's summary may
+ * carry `by_city` and sources `city_db`. lat/lon are the city's
+ * approximate point, not the machine's.
  */
-export type HostingCity = { city?: string; region?: string; lat?: number; lon?: number };
 
 /** One /v1/hosting summary.by_city entry. key "" = hosts with no city (listed last, no name or point). */
 export type HostingCityBucket = {

@@ -2856,25 +2856,21 @@ func (s *Server) handleValidators(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, 200, map[string]any{
-			"window": win, "vantage": s.vantage, "validators": rows, "as_of_note": AsOfNote,
+			"window": win, "validators": listOfRows(rows), "as_of_note": AsOfNote,
 			"record_through": s.recordThrough(r.Context()),
-			"computed_at":    t0.UTC().Format(time.RFC3339Nano), "compute_ms": time.Since(t0).Milliseconds(),
+			"computed_at":    t0.UTC().Format(time.RFC3339Nano),
 		})
 		return
 	}
-	snap, at, ms, err := s.vals.get(r.Context(), s.logf(), win)
+	snap, at, _, err := s.vals.get(r.Context(), s.logf(), win)
 	if err != nil {
 		s.writeSnapshotErr(w, r, win, err)
 		return
 	}
-	rows := snap.Rows
-	if rows == nil {
-		rows = []validatorRow{}
-	}
 	out := map[string]any{
-		"window": snap.Window, "vantage": s.vantage, "validators": rows,
+		"window": snap.Window, "validators": listOfRows(snap.Rows),
 		"record_through": snap.RecordThrough,
-		"computed_at":    at.UTC().Format(time.RFC3339Nano), "compute_ms": ms,
+		"computed_at":    at.UTC().Format(time.RFC3339Nano),
 	}
 	if _, label, err := s.rolledFor(r.Context(), win, ""); err == nil && label != nil {
 		out["rolled_up"] = label
@@ -2979,11 +2975,6 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 		if sw.Span > 0 {
 			sw.Start = spanEnd.Add(-sw.Span)
 		}
-		classes, total, err := s.classCountsWhere(ctx, `validator_address = ? AND started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`,
-			addr, sw.startArg(), sw.endArg())
-		if err != nil {
-			return 0, nil, err
-		}
 		obl, err := s.obligationsWhere(ctx, sw, ` AND pr.validator_address = ?`, addr)
 		if err != nil {
 			return 0, nil, err
@@ -2997,18 +2988,9 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 			return 0, nil, err
 		}
 		if rolled != nil {
-			if rp, ok := rolled.ProbesByVal[addr]; ok {
-				for c, n := range rp.Classes {
-					classes[c] += n
-					total += n
-				}
-			}
 			addRolledObligations(&obl, rolled.ObligationsByVal[addr])
 		}
-		spans = append(spans, detailSpan{
-			Window: sw, Count: total, Obligations: obl, ByObligation: obl.Rate, Classes: classes,
-			RolledUp: label, Provisional: prov[addr],
-		})
+		spans = append(spans, detailSpan{Window: sw, Obligations: obl, RolledUp: label, Provisional: prov[addr]})
 	}
 	rows, err := s.validatorRows(ctx, win, addr)
 	if err != nil {
@@ -3020,7 +3002,7 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 	out := map[string]any{
 		"window":         win,
 		"record_through": s.recordThrough(ctx),
-		"validator":      rows[0],
+		"validator":      detailOf(rows[0]),
 		"windows":        spans,
 	}
 	if win.AsOf {
@@ -3035,17 +3017,11 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 // detailSpans are the spans every validator answer carries beside its row.
 var detailSpans = []string{"24h", "7d", "30d", "all"}
 
-// detailSpan is one of them: the validator's obligations and readings over
-// that span.
+// detailSpan is one of them: the validator's obligations over that span.
 type detailSpan struct {
-	Window Window `json:"window"`
-	// Count is every assigned in-window reading in this window, not every
-	// row for the validator (validator.probe_count).
-	Count        int64           `json:"probe_count"`
-	Obligations  obligationStats `json:"obligations"`
-	ByObligation Rate            `json:"serve_rate_by_obligation"`
-	Classes      classCounts     `json:"classes"`
-	RolledUp     *rolledUp       `json:"rolled_up,omitempty"`
+	Window      Window          `json:"window"`
+	Obligations obligationStats `json:"obligations"`
+	RolledUp    *rolledUp       `json:"rolled_up,omitempty"`
 	// Provisional is the part of obligations.broken still settling.
 	Provisional *provisionalFaults `json:"provisional_faults,omitempty"`
 }
@@ -3074,9 +3050,8 @@ func (s *Server) detailReadings(ctx context.Context, addr string, win Window, sp
 	if err != nil {
 		return err
 	}
-	out["recent_probes"] = probes
+	out["recent_probes"] = validatorReadings(probes)
 	out["recent_probes_truncated"] = moreProbes
-	out["vantage"] = s.vantage
 	// in_retention_window is the endorsed shards whose retention window
 	// has not ended at the answer's moment, from the chain's record: a
 	// blob is read 10 minutes before its window ends, so these are

@@ -329,6 +329,32 @@ func compareStores(t *testing.T, what string, a, b *store.Store) {
 			t.Errorf("%s: %s differs at %s", what, p, d)
 		}
 	}
+	// and what the summary and the rows keep beside what they publish: the
+	// reading tallies, attestation, latency
+	for _, w := range []string{"24h", "7d", "all"} {
+		for name, whole := range map[string]func(*store.Store, string, string, time.Time) ([]byte, error){
+			"network": api.NetworkJSON, "validator rows": api.ValidatorRowsJSON,
+		} {
+			ra, err := whole(a, "test", w, time.Time{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rb, err := whole(b, "test", w, time.Time{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var va, vb any
+			if err := json.Unmarshal(ra, &va); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(rb, &vb); err != nil {
+				t.Fatal(err)
+			}
+			if d := firstDiff("", strip(va), strip(vb)); d != "" {
+				t.Errorf("%s: %s %s differs at %s", what, name, w, d)
+			}
+		}
+	}
 }
 
 // Every figure the site shows is the same whether a sampled-out publication
@@ -360,13 +386,16 @@ func TestSampledOutFiguresUnchanged(t *testing.T) {
 			NotCounted int64 `json:"not_counted"`
 			Pending    int64 `json:"pending"`
 		} `json:"obligations"`
-		Classes map[string]int64 `json:"classes"`
 	}
 	tr := httptest.NewServer(api.New(rows, "test"))
 	get(t, tr, "/v1/network?window=7d", &net)
 	tr.Close()
-	if net.Obligations.NotCounted < 10 || net.Obligations.Pending < 5 || net.Classes["NOT_PROBED"] == 0 {
-		t.Fatalf("fixture does not exercise the figures: %+v", net)
+	var whole struct {
+		Classes map[string]int64 `json:"classes"`
+	}
+	networkOf(t, rows, "test", "7d", time.Time{}, &whole)
+	if net.Obligations.NotCounted < 10 || net.Obligations.Pending < 5 || whole.Classes["NOT_PROBED"] == 0 {
+		t.Fatalf("fixture does not exercise the figures: %+v %v", net, whole.Classes)
 	}
 
 	compareStores(t, "decision", rows, dec)

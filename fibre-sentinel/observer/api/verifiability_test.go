@@ -43,8 +43,16 @@ func TestAsOfPinsTheWindow(t *testing.T) {
 			AsOf bool      `json:"as_of"`
 		} `json:"window"`
 		AsOfNote    string          `json:"as_of_note"`
-		ProbeCount  int64           `json:"probe_count"`
 		Obligations obligationsJSON `json:"obligations"`
+	}
+	// the reading count, which the summary keeps and does not publish
+	probeCount := func(asOf time.Time) int64 {
+		t.Helper()
+		var n struct {
+			ProbeCount int64 `json:"probe_count"`
+		}
+		networkOf(t, st, "test", "24h", asOf, &n)
+		return n.ProbeCount
 	}
 	// pinned between w2 and w3: two rows per validator, every obligation
 	// still pending
@@ -56,8 +64,12 @@ func TestAsOfPinsTheWindow(t *testing.T) {
 	if !pinned.Window.AsOf || pinned.AsOfNote == "" {
 		t.Errorf("pinned window not marked: %+v", pinned.Window)
 	}
-	if pinned.ProbeCount != 8 {
-		t.Errorf("probe_count at as_of = %d, want 8 (two points of four validators)", pinned.ProbeCount)
+	pinnedAt, err := time.Parse(time.RFC3339, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := probeCount(pinnedAt); n != 8 {
+		t.Errorf("probe_count at as_of = %d, want 8 (two points of four validators)", n)
 	}
 	if pinned.Obligations.Pending != 4 || pinned.Obligations.Served != 0 || pinned.Obligations.Broken != 0 {
 		t.Errorf("obligations at as_of = %+v, want 4 pending", pinned.Obligations)
@@ -68,21 +80,21 @@ func TestAsOfPinsTheWindow(t *testing.T) {
 	if code := get(t, ts, "/v1/network?window=24h&as_of="+now.Format(time.RFC3339), &pinnedNow); code != 200 {
 		t.Fatalf("as_of now: %d", code)
 	}
-	if pinnedNow.ProbeCount != live.ProbeCount || pinnedNow.Obligations != live.Obligations {
+	if pinnedNow.Obligations != live.Obligations {
 		t.Errorf("pinned at now differs from live:\n%+v\n%+v", pinnedNow, live)
 	}
-	if live.ProbeCount != 16 || live.Obligations.Served != 1 || live.Obligations.Broken != 3 || live.Obligations.NotCounted != 0 {
+	if n, l := probeCount(now), probeCount(time.Time{}); n != l || l != 16 {
+		t.Errorf("probe_count pinned at now %d, live %d, want 16 both", n, l)
+	}
+	if live.Obligations.Served != 1 || live.Obligations.Broken != 3 || live.Obligations.NotCounted != 0 {
 		t.Errorf("live = %+v", live)
 	}
 	// validators too
 	var vals struct {
 		AsOfNote   string `json:"as_of_note"`
 		Validators []struct {
-			Address     string           `json:"address"`
-			Obligations obligationsJSON  `json:"obligations"`
-			ProbeCount  int64            `json:"probe_count"`
-			Faults      int64            `json:"faults"`
-			Classes     map[string]int64 `json:"classes"`
+			Address     string          `json:"address"`
+			Obligations obligationsJSON `json:"obligations"`
 		} `json:"validators"`
 	}
 	if code := get(t, ts, "/v1/validators?window=24h&as_of="+at, &vals); code != 200 {
@@ -95,9 +107,22 @@ func TestAsOfPinsTheWindow(t *testing.T) {
 		if v.Obligations.Pending != 1 {
 			t.Errorf("%s at as_of: %+v, want pending", v.Address, v.Obligations)
 		}
-		// two served points by then; the later failures are not yet there
-		if v.ProbeCount != 2 || v.Faults != 0 || v.Classes["HEALTHY"] != 2 || len(v.Classes) != 1 {
-			t.Errorf("%s at as_of: probes=%d faults=%d classes=%v, want 2 HEALTHY rows only", v.Address, v.ProbeCount, v.Faults, v.Classes)
+	}
+	// two served points by then; the later failures are not yet there
+	var rows struct {
+		Validators []struct {
+			Address    string           `json:"address"`
+			ProbeCount int64            `json:"probe_count"`
+			Classes    map[string]int64 `json:"classes"`
+		} `json:"validators"`
+	}
+	rowsOf(t, st, "test", "24h", pinnedAt, &rows)
+	if len(rows.Validators) != 4 {
+		t.Fatalf("%d rows at as_of, want 4", len(rows.Validators))
+	}
+	for _, v := range rows.Validators {
+		if v.ProbeCount != 2 || v.Classes["HEALTHY"] != 2 || len(v.Classes) != 1 {
+			t.Errorf("%s at as_of: probes=%d classes=%v, want 2 HEALTHY rows only", v.Address, v.ProbeCount, v.Classes)
 		}
 	}
 	// uncached, and rationed: three pinned requests are spent, the burst
