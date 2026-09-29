@@ -272,9 +272,9 @@ export type Obligations = {
   total: number;
   /** its rows came back and verified */
   served: number;
-  /** not served: its rows did not come back, and the blob could not be reconstructed */
+  /** not served: the blob could not be reconstructed, its rows did not come back, and the second location confirmed it */
   broken: number;
-  /** counted neither way: not asked because the rows were already enough, a failure on a blob that was available, or no reading that decides it */
+  /** counted neither way: not asked because the rows were already enough, a failure on a blob that was available, a failure the second location did not confirm, a reading the guard set aside, or no reading that decides it */
   not_counted: number;
   /** read, and the retention window has not ended (an endorsed shard not read yet has no obligation row) */
   pending: number;

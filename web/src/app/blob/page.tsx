@@ -28,7 +28,7 @@ const END_READ_SINCE = "2026-09-27T16:20:28Z";
 /** the service word and its mark */
 const SERVICE: Record<string, [string, string, string]> = {
   served: ["ok", "Served", "The endorsed rows came back and verified against the commitment."],
-  not_served: ["fault", "Not served", "The endorsed rows did not come back, and the blob could not be reconstructed."],
+  not_served: ["fault", "Not served", "The endorsed rows did not come back, the blob could not be reconstructed, and the second location did not get them either."],
   in_retention_window: ["none", "In retention window", "Read once, 10 minutes before the retention window ends."],
   deadline_unverified: ["gone", "Deadline unverified", "The retention deadline cannot be computed yet, so no verdict either way."],
 };
@@ -160,7 +160,7 @@ function Page() {
             title="Endorsing validators whose rows came back and verified." />
           <Metric label="Not served" value={judged ? int(notServed) : "—"} tone={!judged ? "absent" : notServed > 0 ? "fault" : undefined}
             help={!judged ? " " : rc?.status === "yes" ? "none: the blob was available" : "rows did not come back"}
-            title="Endorsing validators whose rows did not come back from a blob that could not be reconstructed. On an available blob a validator that failed counts neither way." />
+            title="Endorsing validators whose rows did not come back from a blob that could not be reconstructed, confirmed from the second location. On an available blob a validator that failed counts neither way." />
         </Metrics>
         <div className="retrieved">
           {shown ? (

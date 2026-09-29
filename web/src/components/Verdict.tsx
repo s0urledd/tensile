@@ -70,11 +70,11 @@ const VERDICTS: Record<string, Def> = {
   },
   SHADOWED_SHARD: {
     label: "shadowed", tier: "held",
-    def: "Genuine rows of the blob, but another settled promise's set: the store answers by commitment. Served, unless fewer rows than it holds came back from a blob that could not be reconstructed.",
+    def: "Genuine rows of the blob, but another settled promise's set: the store answers by commitment. Served, unless fewer rows than it holds came back from a blob that could not be reconstructed and the second location confirms it.",
   },
   UNMATCHED_GENUINE: {
     label: "unmatched genuine rows", tier: "held",
-    def: "Genuine rows of the blob that match no settled promise's set. Served, unless fewer rows than it holds came back from a blob that could not be reconstructed.",
+    def: "Genuine rows of the blob that match no settled promise's set. Served, unless fewer rows than it holds came back from a blob that could not be reconstructed and the second location confirms it.",
   },
   TOLERATED: {
     label: "tolerated", tier: "held",
@@ -102,7 +102,7 @@ const VERDICTS: Record<string, Def> = {
   },
   PROBE_ERROR: {
     label: "read failed", tier: "gap",
-    def: "Tensile's own request failed, or the reading could not finish in time. A gap, not a verdict.",
+    def: "Tensile's own request failed, the reading could not finish in time, or Tensile was still busy with this validator on other blobs. A gap, not a verdict.",
   },
   NOT_PROBED: {
     label: "not read by Tensile", tier: "gap",

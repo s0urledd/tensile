@@ -55,7 +55,7 @@ export default function Methodology() {
 
       <h2 id="gaps">Gaps</h2>
       <p>When Tensile could not read a blob in time, or its own request failed, nothing is counted for or against a validator.</p>
-      <p>When at least half of the endorsing validators asked failed at once and the blob could not be reconstructed, Tensile cannot tell its own failure from theirs, so that reading counts neither way. This stays until Tensile reads a blob of its own beside each reading. It counts validators, not rows: a blob that becomes unavailable with fewer than half of them failing is counted. Health is at <code>/api/v1/health</code>.</p>
+      <p>When at least half of the endorsing validators asked failed at once and the blob could not be reconstructed, Tensile cannot tell its own failure from theirs, so that reading counts neither way. In that count, a validator Tensile could not ask again in time, because it was still busy with that validator on other blobs, counts as failed. This stays until Tensile reads a blob of its own beside each reading. It counts validators, not rows: in a blob that becomes unavailable with fewer than half of them failing, each failure counts once the second location confirms it. Health is at <code>/api/v1/health</code>.</p>
 
       <h2 id="load-on-validators">Load on validators</h2>
       <p>A reading stops once the rows are enough, so a validator is asked for some blobs, not all of them, and never has more than one request from Tensile at a time.</p>
