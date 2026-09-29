@@ -185,7 +185,6 @@ function Page() {
   // Every not-served row of the period, for when they are older than the
   // newest rows this page carries: served=no is the obligations' own rule.
   const notServedHref = `${API_BASE}/v1/probes?validator=${v.address}&served=no${data.window.start ? `&since=${encodeURIComponent(data.window.start)}` : ""}&limit=1000`;
-  const showNotServed = () => setOnlyNotServed(true);
   const measuring = !!o && o.total > 0 && decided < MIN_RATED && o.pending > 0;
   const att = v.attestation;
   const sig = v.signing;
@@ -250,8 +249,7 @@ function Page() {
       <section className="group" id="observed">
         <div className="vhead"><div><h2>Observed by Tensile</h2><p className="sub">Each endorsed shard is read once, near the end of its retention window.</p></div></div>
         {/* the conclusion before the figures; before activation there is nothing to conclude, and StatusLine says so */}
-        {!notLive && <Diagnosis v={v} check={data.last_endpoint_check} meta={meta} decided={decided} provisional={prov}
-          failedShown={notServedRows.length} onShowFailed={showNotServed} failedHref={notServedHref} />}
+        {!notLive && <Diagnosis v={v} check={data.last_endpoint_check} meta={meta} decided={decided} />}
         <Metrics>
           <Metric label="Service rate"
             value={notLive || !o || o.total === 0 || decided === 0 ? "—" : pctOf(o.served, decided)}

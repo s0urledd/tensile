@@ -10,16 +10,15 @@ import { type Validator, type EndpointCheck, type Meta, int, ago, whenUTC, dateU
  * operator who arrives from a link in a chat wants the conclusion first. That
  * conclusion is derived here from fields the API already publishes and from
  * nothing else: the chain's own words (jailed, bond status, x/valaddr host)
- * first, then the newest handshake stage by stage, then the certificate check,
- * then broken obligations. It never re-classifies a probe.
+ * first, then the newest handshake stage by stage, then the certificate check.
+ * It never re-classifies a probe, and it does not repeat the not-served count:
+ * the figures below carry it.
  *
  * Two rules the copy keeps:
  *
- * - It never states a fault the data does not show. Only a broken obligation
- *   is a fault, and only that line is ever red. Unreachable, a lapsed
- *   certificate or a missing registration are states, and the text says so,
- *   because from one location an unreachable endpoint can be this observer's
- *   own path.
+ * - It never states a fault. Unreachable, a lapsed certificate or a missing
+ *   registration are states, and the text says so, because from one location
+ *   an unreachable endpoint can be this observer's own path.
  * - One short paragraph: what was observed, whether it counts, then the
  *   general shape of the fix, pointing at the Celestia docs for the steps. A
  *   remote observer cannot see the operator's machine, and a confident
@@ -147,38 +146,23 @@ function state(v: Validator, c: EndpointCheck | undefined, decided: number): Sta
   };
 }
 
-export default function Diagnosis({ v, check, decided, provisional, failedShown, onShowFailed, failedHref }: {
+export default function Diagnosis({ v, check, decided }: {
   v: Validator;
   check?: EndpointCheck;
   meta?: Meta | null;
   /** served + broken obligations in the period */
   decided: number;
-  /** broken obligations still settling (provisionalNow) */
-  provisional: number;
-  /** failed probe rows among the recent evidence on this page */
-  failedShown: number;
-  /** switch the evidence table to its failed rows and bring it into view */
-  onShowFailed: () => void;
-  /** every failed probe row of the period, in the API */
-  failedHref: string;
 }) {
   const s = state(v, check, decided);
   const broken = v.obligations?.broken ?? 0;
   // A healthy endpoint with nothing broken needs no box: the state pills above already say so.
+  // With shards not served, the box stays and says the endpoint answers, so the count below
+  // is not read as an outage.
   if (s.tone === "ok" && broken === 0) return null;
-  const tone = broken > 0 && s.tone === "ok" ? "fault" : s.tone;
   return (
-    <section className={"diag " + tone} aria-label="Endpoint status">
+    <section className={"diag " + s.tone} aria-label="Endpoint status">
       <p className="diag-h"><i className={"dot " + (s.tone === "ok" ? "ok" : s.tone === "hold" ? "hold" : "none")} />{s.title}</p>
       <p>{s.body}</p>
-      {broken > 0 && (
-        <p className="diag-fault">
-          <span className="mk fault" /> <b>{int(broken)} endorsed shard{broken === 1 ? "" : "s"} not served in this period</b>{provisional > 0 && <> ({int(provisional)} still settling)</>}: the rows did not come back while this validator still had to serve them.{" "}
-          {failedShown > 0
-            ? <a href="#evidence" onClick={onShowFailed}>Show the {int(failedShown)} not-served reading{failedShown === 1 ? "" : "s"} below →</a>
-            : <>None of the newest readings below is one of them; <a href={failedHref}>they are in the API →</a></>}
-        </p>
-      )}
     </section>
   );
 }

@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { useApi, type Meta, type Tip, int, ago, span, utcWord } from "@/lib/api";
+import { useApi, type Meta, type Tip, int, ago, since, span, utcWord } from "@/lib/api";
 import { SOURCE_URL, DISPUTE_URL } from "@/lib/site";
 
 /**
@@ -156,7 +156,7 @@ function BlockTicker({ meta }: { meta: Meta | null }) {
   const sig = meta?.upgrade_signal;
   const countdown = !tip.fibre_active && sig?.eta_seconds ? span(sig.eta_seconds) : "";
   const title = [
-    `Block #${int(tip.height)}${tip.block_time ? ` · made ${utcWord(tip.block_time)}${age !== null ? `, ${age < 90 ? `${Math.round(age)}s` : ago(tip.block_time)} ago` : ""}` : ""}`,
+    `Block #${int(tip.height)}${tip.block_time ? ` · made ${utcWord(tip.block_time)}${age !== null ? `, ${age < 90 ? `${Math.round(age)}s` : since(tip.block_time)} ago` : ""}` : ""}`,
     error ? `API unreachable (${error}); showing the last reading` : "",
     countdown && sig?.upgrade_height ? `Fibre activates at #${int(sig.upgrade_height)}, about ${countdown} at the chain's recent pace` : "",
   ].filter(Boolean).join(" · ");

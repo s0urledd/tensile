@@ -156,7 +156,7 @@ func (s *Store) UpsertParamUncertainty(u scan.ParamUncertainty, raw []byte, now 
 	}
 	if n > 0 || raised > 0 {
 		// In the same transaction as the range and the holds it raises.
-		// The API's window snapshots run to a thirty-minute TTL and key on
+		// The API's window snapshots run to a fifteen-minute TTL and key on
 		// this, so a hold that commits while the snapshot holding the
 		// fault stays valid publishes the accusation the hold exists to
 		// withdraw.

@@ -72,12 +72,14 @@ type dayBucket struct {
 	TimedOutUtia int64  `json:"timed_out_utia"`
 }
 
-// hourBucket is one UTC hour of settlements, for the one-day chart: a day
+// hourBucket is one UTC hour of settlements, for the one-day charts: a day
 // of daily buckets is one bar.
 type hourBucket struct {
 	Hour        string `json:"hour"` // YYYY-MM-DDTHH, UTC
 	Bytes       int64  `json:"bytes"`
 	Settlements int64  `json:"settlements"`
+	// FeesUtia is what those settlements paid, as a day bucket's fees_utia.
+	FeesUtia int64 `json:"fees_utia"`
 }
 
 // dayPublisher is one publisher's share of one day, for the stacked daily
@@ -85,6 +87,17 @@ type hourBucket struct {
 // rest fold into one "other" row per day (publisher empty).
 type dayPublisher struct {
 	Day         string `json:"day"`
+	Publisher   string `json:"publisher"`
+	Label       string `json:"label,omitempty"`
+	FeesUtia    int64  `json:"fees_utia"`
+	Bytes       int64  `json:"bytes"`
+	Settlements int64  `json:"settlements"`
+}
+
+// hourPublisher is one publisher's share of one UTC hour, for the one-day
+// stacked chart, split as dayPublisher splits a day (splitByPublisher).
+type hourPublisher struct {
+	Hour        string `json:"hour"`
 	Publisher   string `json:"publisher"`
 	Label       string `json:"label,omitempty"`
 	FeesUtia    int64  `json:"fees_utia"`
@@ -154,7 +167,10 @@ type marketResponse struct {
 	Daily []dayBucket `json:"daily"`
 	// Hourly is set for windows of a day or less, where a daily chart is one
 	// bar.
-	Hourly       []hourBucket     `json:"hourly,omitempty"`
+	Hourly []hourBucket `json:"hourly,omitempty"`
+	// HourlyByPub is Hourly split by publisher as DailyByPub splits Daily,
+	// set with it.
+	HourlyByPub  []hourPublisher  `json:"hourly_by_publisher,omitempty"`
 	DailyByPub   []dayPublisher   `json:"daily_by_publisher"`
 	Top          []publisherShare `json:"top_publishers"`
 	Other        *publisherShare  `json:"other_publishers"`
@@ -166,6 +182,18 @@ type marketResponse struct {
 	// NamespacesTotal how many any settlement on record has used.
 	Namespaces      int64 `json:"namespaces"`
 	NamespacesTotal int64 `json:"namespaces_total"`
+	// Publishers is /v1/publishers over the same window, computed in the
+	// same pass (computePublishing), so the publisher page's board and its
+	// table cannot describe two moments. It is not part of /v1/market
+	// (handleMarket drops it); it is kept in the snapshot, and in its file,
+	// so a restarted API serves both at once.
+	Publishers []publisherRow `json:"publishers,omitempty"`
+	// PublishersListed says computePublishing filled Publishers. An empty list
+	// is left out of the snapshot file (omitempty), so the list alone cannot
+	// tell this build's file for a window with no publisher from an older
+	// build's, which never carried one; this can. Not part of /v1/market
+	// either.
+	PublishersListed bool `json:"publishers_listed,omitempty"`
 }
 
 var marketNotes = []string{
@@ -350,7 +378,7 @@ func (s *Server) computeMarket(ctx context.Context, win Window) (*marketResponse
 
 	if win.Span > 0 && win.Span <= 25*time.Hour {
 		hrows, err := db.QueryContext(ctx, `SELECT substr(time, 1, 13) AS hour,
-				COALESCE(SUM(blob_size), 0), COUNT(*)
+				COALESCE(SUM(blob_size), 0), COUNT(*), COALESCE(SUM(amount_utia), 0)
 			FROM payments WHERE kind = 'settlement' AND time >= ? AND time <= ?
 			GROUP BY hour ORDER BY hour`, start, end)
 		if err != nil {
@@ -359,7 +387,7 @@ func (s *Server) computeMarket(ctx context.Context, win Window) (*marketResponse
 		r.Hourly = []hourBucket{}
 		for hrows.Next() {
 			var h hourBucket
-			if err := hrows.Scan(&h.Hour, &h.Bytes, &h.Settlements); err != nil {
+			if err := hrows.Scan(&h.Hour, &h.Bytes, &h.Settlements, &h.FeesUtia); err != nil {
 				hrows.Close()
 				return nil, err
 			}
@@ -451,49 +479,128 @@ func (s *Server) computeMarket(ctx context.Context, win Window) (*marketResponse
 	for _, p := range r.Top {
 		top[p.Publisher] = true
 	}
-	drow, err := db.QueryContext(ctx, `SELECT substr(time, 1, 10) AS day, publisher, COUNT(*), COALESCE(SUM(amount_utia),0), COALESCE(SUM(blob_size),0)
-		FROM payments WHERE kind = 'settlement' AND time >= ? AND time <= ?
-		GROUP BY day, publisher ORDER BY day, publisher`, start, end)
+	days, err := s.splitByPublisher(ctx, dayKey, start, end, top)
 	if err != nil {
 		return nil, fmt.Errorf("daily by publisher: %w", err)
 	}
-	r.DailyByPub = []dayPublisher{}
-	otherByDay := map[string]*dayPublisher{}
-	var otherDays []string
-	for drow.Next() {
-		var d dayPublisher
-		if err := drow.Scan(&d.Day, &d.Publisher, &d.Settlements, &d.FeesUtia, &d.Bytes); err != nil {
-			drow.Close()
-			return nil, err
-		}
-		if top[d.Publisher] {
-			d.Label, _ = s.label(d.Publisher)
-			r.DailyByPub = append(r.DailyByPub, d)
-			continue
-		}
-		o := otherByDay[d.Day]
-		if o == nil {
-			o = &dayPublisher{Day: d.Day}
-			otherByDay[d.Day] = o
-			otherDays = append(otherDays, d.Day)
-		}
-		o.Settlements += d.Settlements
-		o.FeesUtia += d.FeesUtia
-		o.Bytes += d.Bytes
+	r.DailyByPub = make([]dayPublisher, len(days))
+	for i, d := range days {
+		r.DailyByPub[i] = dayPublisher{Day: d.Bucket, Publisher: d.Publisher, Label: d.Label, FeesUtia: d.FeesUtia, Bytes: d.Bytes, Settlements: d.Settlements}
 	}
-	drow.Close()
-	if err := drow.Err(); err != nil {
+	// The same split per hour where the window is charted by the hour, by
+	// the same ranking, so the one-day chart names the same publishers.
+	if r.Hourly != nil {
+		hours, err := s.splitByPublisher(ctx, hourKey, start, end, top)
+		if err != nil {
+			return nil, fmt.Errorf("hourly by publisher: %w", err)
+		}
+		r.HourlyByPub = make([]hourPublisher, len(hours))
+		for i, h := range hours {
+			r.HourlyByPub[i] = hourPublisher{Hour: h.Bucket, Publisher: h.Publisher, Label: h.Label, FeesUtia: h.FeesUtia, Bytes: h.Bytes, Settlements: h.Settlements}
+		}
+	}
+	return r, nil
+}
+
+// The prefixes of a block time (RFC 3339, UTC) that key a UTC day and a UTC
+// hour: "2026-09-21" and "2026-09-21T14".
+const (
+	dayKey  = len("2006-01-02")
+	hourKey = len("2006-01-02T15")
+)
+
+// publisherSlice is one publisher's share of one time bucket.
+type publisherSlice struct {
+	Bucket, Publisher, Label     string
+	FeesUtia, Bytes, Settlements int64
+}
+
+// splitByPublisher is the window's settlements per time bucket (the first
+// keyLen characters of the block time) per publisher in top, the rest of each
+// bucket folded into one row with no publisher, ordered by bucket, then
+// publisher. The daily and the hourly split are both this, so the two charts
+// fold and order alike.
+func (s *Server) splitByPublisher(ctx context.Context, keyLen int, start, end string, top map[string]bool) ([]publisherSlice, error) {
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT substr(time, 1, ?) AS bucket, publisher, COUNT(*), COALESCE(SUM(amount_utia),0), COALESCE(SUM(blob_size),0)
+		FROM payments WHERE kind = 'settlement' AND time >= ? AND time <= ?
+		GROUP BY bucket, publisher ORDER BY bucket, publisher`, keyLen, start, end)
+	if err != nil {
 		return nil, err
 	}
-	for _, day := range otherDays {
-		r.DailyByPub = append(r.DailyByPub, *otherByDay[day])
-	}
-	sort.Slice(r.DailyByPub, func(i, j int) bool {
-		if r.DailyByPub[i].Day != r.DailyByPub[j].Day {
-			return r.DailyByPub[i].Day < r.DailyByPub[j].Day
+	defer rows.Close()
+	out := []publisherSlice{}
+	other := map[string]*publisherSlice{}
+	var otherBuckets []string
+	for rows.Next() {
+		var p publisherSlice
+		if err := rows.Scan(&p.Bucket, &p.Publisher, &p.Settlements, &p.FeesUtia, &p.Bytes); err != nil {
+			return nil, err
 		}
-		return r.DailyByPub[i].Publisher < r.DailyByPub[j].Publisher
+		if top[p.Publisher] {
+			p.Label, _ = s.label(p.Publisher)
+			out = append(out, p)
+			continue
+		}
+		o := other[p.Bucket]
+		if o == nil {
+			o = &publisherSlice{Bucket: p.Bucket}
+			other[p.Bucket] = o
+			otherBuckets = append(otherBuckets, p.Bucket)
+		}
+		o.Settlements += p.Settlements
+		o.FeesUtia += p.FeesUtia
+		o.Bytes += p.Bytes
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, b := range otherBuckets {
+		out = append(out, *other[b])
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Bucket != out[j].Bucket {
+			return out[i].Bucket < out[j].Bucket
+		}
+		return out[i].Publisher < out[j].Publisher
 	})
+	return out, nil
+}
+
+// marketSnapshotCurrent vets a market snapshot read back from disk: a file
+// from before computePublishing carries no publisher list, and serving it
+// would answer /v1/publishers with an empty table until the warm-up
+// replaced it. Likewise a day's file from before the hours carried fees and
+// a publisher split: its hours would chart no fees and no publisher. Any
+// settlement in an hour puts that hour in the split, so hours with no split
+// are such a file.
+func marketSnapshotCurrent(r *marketResponse) bool {
+	return r != nil && r.PublishersListed && (len(r.Hourly) == 0 || len(r.HourlyByPub) > 0)
+}
+
+// computePublishing is the market snapshot: computeMarket and the publisher
+// list over the same window, one right after the other.
+//
+// /v1/publishers used to be computed per request while /v1/market was served
+// from a snapshot, and the publisher page shows both: its board ("largest
+// publisher 93.6%") from one and its table from the other, minutes apart
+// under a burst of blobs, so the page contradicted itself. Serving both from
+// one snapshot, refreshed on the live lane, keeps them one moment.
+func (s *Server) computePublishing(ctx context.Context, win Window) (*marketResponse, error) {
+	r, err := s.computeMarket(ctx, win)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.publisherRows(ctx, win, "")
+	if err != nil {
+		return nil, fmt.Errorf("publishers: %w", err)
+	}
+	if rows == nil {
+		rows = []publisherRow{}
+	}
+	if err := s.attachPending(ctx, rows); err != nil {
+		return nil, err
+	}
+	r.Publishers, r.PublishersListed = rows, true
 	return r, nil
 }
 
@@ -748,6 +855,7 @@ func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 	}
 	cp := *resp
 	cp.ComputedAt, cp.ComputeMs = at.UTC().Format(time.RFC3339), ms
+	cp.Publishers, cp.PublishersListed = nil, false // /v1/publishers' half of the snapshot
 	writeJSON(w, 200, cp)
 }
 
@@ -757,22 +865,41 @@ func (s *Server) handlePublishers(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	// Uncached and, on a pinned window, unbounded work: the same ration as
-	// every other route that computes an aggregate on demand.
-	if win.AsOf {
-		if !s.asOf.allow(time.Now()) {
-			w.Header().Set("Retry-After", "2")
-			writeErr(w, 429, "as_of requests are limited to one every two seconds")
+	if !win.AsOf {
+		// The market snapshot's publisher list: the same pass as
+		// /v1/market for this window, so the two agree (computePublishing).
+		// The window is the one the rows were selected with, and
+		// computed_at says when.
+		snap, at, ms, err := s.market.get(r.Context(), s.logf(), win)
+		if err != nil {
+			s.writeInternal(w, r.URL.Path, err)
 			return
 		}
-		if !s.asOf.enter() {
-			w.Header().Set("Retry-After", "5")
-			writeErr(w, 429, "as_of computations already in flight; try again shortly")
-			return
+		rows := snap.Publishers
+		if rows == nil {
+			rows = []publisherRow{}
 		}
-		defer s.asOf.leave()
-		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, 200, map[string]any{
+			"window": snap.Window, "publishers": rows, "count": len(rows),
+			"source": marketSource, "price_formula": formula, "notes": marketNotes, "vantage": s.vantage,
+			"computed_at": at.UTC().Format(time.RFC3339), "compute_ms": ms,
+		})
+		return
 	}
+	// A pinned window is computed on demand, unbounded work: the same ration
+	// as every other route that computes an aggregate on demand.
+	if !s.asOf.allow(time.Now()) {
+		w.Header().Set("Retry-After", "2")
+		writeErr(w, 429, "as_of requests are limited to one every two seconds")
+		return
+	}
+	if !s.asOf.enter() {
+		w.Header().Set("Retry-After", "5")
+		writeErr(w, 429, "as_of computations already in flight; try again shortly")
+		return
+	}
+	defer s.asOf.leave()
+	w.Header().Set("Cache-Control", "no-store")
 	rows, err := s.publisherRows(r.Context(), win, "")
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)

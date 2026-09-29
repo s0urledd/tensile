@@ -691,20 +691,14 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
 /* ------------------------------------------------ validator: diagnosis --- */
 /* The status callout at the top of a validator's page (components/
    Diagnosis.tsx) and the recent-evidence filter. The left rule carries the
-   state in the site's three words — ok, hold, neutral — and red appears only
-   on the broken-obligations line, which is the one fault the callout can
-   state; a callout whose endpoint is fine but has broken obligations takes
-   the red rule so the line is not missed. */
+   state in the site's three words — ok, hold, neutral; the callout states no
+   fault, so it has no red. */
 .diag { margin: 14px 0 0; padding: 12px 16px; border: 1px solid var(--line); border-left: 3px solid var(--neutral); border-radius: 6px; background: var(--paper); font-size: var(--t-cell); line-height: 1.55; color: var(--text-2); max-width: 88ch; }
 .diag.ok { border-left-color: var(--ok); }
 .diag.hold { border-left-color: var(--hold); background: var(--hold-tint); }
-.diag.fault { border-left-color: var(--fault); }
 .diag p { margin: 6px 0 0; }
 .diag p.diag-h { margin: 0; font-size: var(--t-h2); font-weight: 500; color: var(--text); }
 .diag p.diag-h .dot { vertical-align: 1px; }
-.diag .diag-fault { color: var(--text); }
-.diag .diag-fault b { color: var(--fault); font-weight: 500; }
-.diag .diag-fault .mk { vertical-align: 0; }
 .diag code { font-size: var(--t-small); overflow-wrap: anywhere; }
 .diag a { font-weight: 500; }
 /* the filter's counts sit in the button, quieter than its word */
