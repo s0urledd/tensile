@@ -16,7 +16,6 @@ import (
 type tipBody struct {
 	Height      int64      `json:"height"`
 	BlockTime   *time.Time `json:"block_time"`
-	Source      string     `json:"source"`
 	FibreActive bool       `json:"fibre_active"`
 }
 
@@ -53,7 +52,7 @@ func TestTipReadsTheScannerStatus(t *testing.T) {
 	srv := api.NewWithVantage(st, api.VantageInfo{Name: "test"}, nil, api.WithDataDir(dir))
 	defer srv.Close()
 	b, rec := getTip(t, srv)
-	if b.Height != 1082620 || b.Source != "scanner" || b.BlockTime == nil || !b.BlockTime.Equal(bt) || !b.FibreActive {
+	if b.Height != 1082620 || b.BlockTime == nil || !b.BlockTime.Equal(bt) || !b.FibreActive {
 		t.Errorf("tip %+v", b)
 	}
 	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
@@ -74,7 +73,7 @@ func TestTipFallsBackToTheCollector(t *testing.T) {
 	srv := api.NewWithVantage(st, api.VantageInfo{Name: "test"}, nil, api.WithDataDir(dir))
 	defer srv.Close()
 	b, _ := getTip(t, srv)
-	if b.Height != 1065000 || b.Source != "collector" || b.BlockTime == nil || b.FibreActive {
+	if b.Height != 1065000 || b.BlockTime == nil || b.FibreActive {
 		t.Errorf("tip %+v", b)
 	}
 }

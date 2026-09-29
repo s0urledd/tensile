@@ -18,11 +18,7 @@ type tipResponse struct {
 	Height int64 `json:"height"`
 	// BlockTime is the block's own timestamp; absent while the scanner is
 	// catching up, when the block it last read is not the tip.
-	BlockTime *time.Time `json:"block_time,omitempty"`
-	// ObservedAt is when the scanner last wrote this, so a frozen scanner
-	// shows as an aging reading rather than as a chain that stopped.
-	ObservedAt  *time.Time `json:"observed_at,omitempty"`
-	Source      string     `json:"source"` // "scanner" | "collector"
+	BlockTime   *time.Time `json:"block_time,omitempty"`
 	FibreActive bool       `json:"fibre_active"`
 	ServerTime  time.Time  `json:"server_time"`
 }
@@ -60,7 +56,6 @@ func (s *Server) readTip(now time.Time) tipResponse {
 	out.FibreActive = active == "yes"
 	if s.dataDir != "" {
 		if r, ok := status.ReadOne(filepath.Join(s.dataDir, "status"), "scanner"); ok {
-			out.Source = "scanner"
 			out.Height = r.Height
 			if v, ok := r.Detail["chain_tip"].(float64); ok && int64(v) > out.Height {
 				out.Height = int64(v)
@@ -70,14 +65,11 @@ func (s *Server) readTip(now time.Time) tipResponse {
 					out.BlockTime = &t
 				}
 			}
-			u := r.UpdatedAt
-			out.ObservedAt = &u
 			if out.Height > 0 {
 				return out
 			}
 		}
 	}
-	out.Source = "collector"
 	if v, _ := s.st.Meta("chain_height"); v != "" {
 		out.Height, _ = strconv.ParseInt(v, 10, 64)
 	}

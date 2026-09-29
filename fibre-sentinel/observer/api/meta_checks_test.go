@@ -42,12 +42,9 @@ func TestMetaCarriesTheHealthChecksThatAreNotProcesses(t *testing.T) {
 	defer func() { ts.Close(); srv.Close() }()
 
 	var meta struct {
-		Health     string `json:"health"`
-		PinStatus  string `json:"pin_status"`
-		Components []struct {
-			Component string `json:"component"`
-		} `json:"components"`
-		Checks []struct {
+		Health    string `json:"health"`
+		PinStatus string `json:"pin_status"`
+		Checks    []struct {
 			Name   string `json:"name"`
 			OK     bool   `json:"ok"`
 			Detail string `json:"detail"`
@@ -59,8 +56,11 @@ func TestMetaCarriesTheHealthChecksThatAreNotProcesses(t *testing.T) {
 	if meta.Health != "degraded" || meta.PinStatus != "chain_ahead" {
 		t.Fatalf("health=%s pin=%s, want degraded/chain_ahead", meta.Health, meta.PinStatus)
 	}
+	// the processes, which /v1/health lists
+	var h healthBody
+	getAny(t, ts, "/v1/health", &h)
 	for _, c := range meta.Checks {
-		for _, k := range meta.Components {
+		for _, k := range h.Components {
 			if c.Name == k.Component && !c.OK {
 				t.Fatalf("%s failed its check; this test needs every process healthy so the banner has only a non-process reason: %s", c.Name, c.Detail)
 			}
@@ -82,14 +82,12 @@ func TestMetaCarriesTheHealthChecksThatAreNotProcesses(t *testing.T) {
 	if pin == nil || pin.OK || pin.Detail == "" {
 		t.Fatalf("the failing pin check is not in meta.checks: %+v", meta.Checks)
 	}
-	for _, c := range meta.Components {
+	for _, c := range h.Components {
 		if c.Component == pin.Name {
 			t.Fatal("pin is a component; this test no longer exercises a non-process check")
 		}
 	}
 	// The same rows /v1/health serves, not a second opinion.
-	var h healthBody
-	getAny(t, ts, "/v1/health", &h)
 	if ok, detail, found := check(h, "pin"); !found || ok || detail != pin.Detail {
 		t.Fatalf("meta and health disagree on the pin check: health found=%v ok=%v %q vs meta %q", found, ok, detail, pin.Detail)
 	}

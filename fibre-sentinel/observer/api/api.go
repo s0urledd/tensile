@@ -31,7 +31,6 @@ import (
 
 	"github.com/cosmos/cosmos-sdk/types/bech32"
 
-	assign "github.com/plsgiveup/fibre/fibre-assign"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/export"
@@ -665,21 +664,22 @@ func rate(num, den int64) Rate {
 
 // ---- meta ----
 
+// metaResponse is /v1/meta: the chain and observer state the site's header,
+// banners and footer read, beside the store's row counts and the heartbeat
+// vantages, which the deploy tests and the team watch.
 type metaResponse struct {
 	APIVersion string `json:"api_version"`
 	// MethodologyVersion is verdict.MethodologyVersion: the rules the figures
 	// on every page were computed under.
-	MethodologyVersion     string      `json:"methodology_version"`
-	Vantage                string      `json:"vantage"`
-	VantageInfo            VantageInfo `json:"vantage_info"`
-	VantageCount           int         `json:"vantage_count"`
-	ObservedFromOneVantage bool        `json:"observed_from_one_location"`
-	ChainID                string      `json:"chain_id"`
+	MethodologyVersion string `json:"methodology_version"`
+	ChainID            string `json:"chain_id"`
 
 	// Vantages are the heartbeats whose rows reached this store in the last
 	// hour, this observer's own and any other vantage's copied in beside it,
 	// each with its newest row, in name order. Only this observer's rows are
 	// counted in the figures; another's confirm or contradict a failed check.
+	// No health check covers a second vantage, so this is where its
+	// heartbeats are seen to arrive.
 	Vantages []vantageSeen `json:"vantages"`
 
 	// AppVersion is the chain's current application version, and FibreActive
@@ -693,35 +693,24 @@ type metaResponse struct {
 	FibreAppVersion string `json:"fibre_app_version,omitempty"`
 	FibreActive     bool   `json:"fibre_active"`
 	// ChainHeight is the chain's tip as the collector last saw it, which is not
-	// LastScannedHeight: that is how far the SCANNER has read, and before Fibre
-	// activates there is nothing for it to read, so it stays empty while the
-	// chain is plainly making blocks. Reporting the chain's progress as our own,
-	// or ours as the chain's, would be wrong in opposite directions.
-	ChainHeight          string       `json:"chain_height,omitempty"`
-	LastScannedHeight    string       `json:"last_scanned_height"`
-	EndpointsHeight      string       `json:"endpoints_height"`
-	ProtocolParamsFinger string       `json:"protocol_params_fingerprint"`
-	PinnedCelestiaApp    string       `json:"pinned_celestia_app_commit"`
-	Counts               store.Counts `json:"counts"`
-	Collector            *runStatus   `json:"collector"`
-	Prober               *runStatus   `json:"prober"`
+	// how far the scanner has read (record_through on every figure says that):
+	// before Fibre activates there is nothing for the scanner to read, while
+	// the chain is plainly making blocks.
+	ChainHeight string       `json:"chain_height,omitempty"`
+	Counts      store.Counts `json:"counts"`
 	// LastProbeAt is the newest reading's start time. The prober writes
 	// JSONL only (it never touches this database), so this is the only live
 	// signal of it; a quiet chain makes it old without anything being wrong.
-	LastProbeAt *string           `json:"last_probe_at"`
-	Meta        map[string]string `json:"meta"`
-	ServerTime  time.Time         `json:"server_time"`
-	// Components is every observer process with its liveness, from the
-	// status files in the data directory (see /v1/health). Health is the
-	// same verdict /v1/health returns: ok, degraded or down.
-	Components []componentStatus `json:"components"`
-	Health     string            `json:"health"`
+	LastProbeAt *string   `json:"last_probe_at"`
+	ServerTime  time.Time `json:"server_time"`
+	// Health is the verdict /v1/health returns: ok, degraded or down.
+	Health string `json:"health"`
 	// Checks is every row behind Health, the same list /v1/health serves.
-	// Health alone told the site that something was wrong; the components
-	// told it which process, and nothing told it about a check that is not
-	// a process — a chain that stopped producing blocks, a scan gap, a stale
-	// pin — so the site announced "degraded" with nothing after the colon,
-	// on the one day (an upgrade halt) when everyone was looking.
+	// Health alone told the site that something was wrong, and nothing told
+	// it about a check that is not a process — a chain that stopped producing
+	// blocks, a scan gap, a stale pin — so the site announced "degraded" with
+	// nothing after the colon, on the one day (an upgrade halt) when everyone
+	// was looking.
 	Checks []healthCheck `json:"checks"`
 	// ScanGaps are height ranges the scanner could not read from its node,
 	// or that the operator told it to skip (-skip-heights; Reason says which).
@@ -738,19 +727,18 @@ type metaResponse struct {
 	// major this build's assignment constants are pinned to: matches,
 	// chain_ahead, chain_behind or unknown.
 	PinStatus string `json:"pin_status"`
-	// UnassignablePublications is how many publications have no row
-	// assignment (a blob version this build does not know), and so are never
-	// probed.
-	UnassignablePublications int64 `json:"unassignable_publications"`
-	// Evidence says, per headline figure, which of the three kinds of
-	// evidence it rests on; EvidenceKinds defines the three.
-	Evidence      map[string]string `json:"evidence"`
-	EvidenceKinds map[string]string `json:"evidence_kinds"`
-	// UpgradeSignal is x/signal's tally for the app version that brings
-	// Fibre, published only while the chain is below it: how much voting
-	// power has signalled, the threshold, who has not, and the scheduled
-	// height once there is one. A chain record, nothing measured here.
-	UpgradeSignal *upgradeSignal `json:"upgrade_signal,omitempty"`
+	// UpgradeSignal is the upgrade that brings Fibre, published only while
+	// the chain is below it: the height x/signal scheduled it at and the
+	// estimate of when the chain gets there (upgradeSignal).
+	UpgradeSignal *upgradeSignalOut `json:"upgrade_signal,omitempty"`
+}
+
+// upgradeSignalOut is the part of x/signal's tally the site shows: the
+// scheduled height, and an estimate at the chain's recent pace of how long
+// until it; both absent until they are known.
+type upgradeSignalOut struct {
+	UpgradeHeight int64 `json:"upgrade_height,omitempty"`
+	ETASeconds    int64 `json:"eta_seconds,omitempty"`
 }
 
 type upgradeSignal struct {
@@ -868,19 +856,12 @@ func (s *Server) upgradeSignalSets(ctx context.Context) (missing, shared map[str
 	return missing, shared, true
 }
 
-type runStatus struct {
-	RunID         int64   `json:"run_id"`
-	StartedAt     string  `json:"started_at"`
-	LastHeartbeat string  `json:"last_heartbeat_at"`
-	StoppedAt     *string `json:"stopped_at"`
-	Alive         bool    `json:"alive"` // heartbeat within the last 2 minutes
-}
-
 // vantageCount counts the distinct vantages that ever wrote a probe or a
 // heartbeat (a second location that only runs the heartbeat still counts).
 // vantageCount is how many distinct places the stored observations were made
-// from. It decides one sentence on every page — whether this is a single
-// vantage or several — and it was the most expensive query /v1/meta ran: no
+// from, which the network summary keeps as observed_from_one_location. It
+// once decided a sentence on every page, and was the most expensive query
+// /v1/meta ran: no
 // index covered `vantage`, so it scanned both probe tables in full and unioned
 // them through a temp B-tree (49ms of the endpoint's 58ms of SQL on an
 // 85,000-probe store). A cache keyed on each table's highest rowid kept it off
@@ -889,9 +870,7 @@ type runStatus struct {
 //
 // It is now asked of probes_vantage and reachability_vantage (migration 22),
 // one seek per distinct vantage, which is cheap enough to run on every request
-// and so needs no cache at all. Exact, as before: the claim this drives is the
-// one-vantage caveat printed above every page, and a cached count is a claim
-// about how much the site's own evidence is worth.
+// and so needs no cache at all.
 func (s *Server) vantageCount(ctx context.Context) int {
 	var n int
 	_ = s.st.DB().QueryRowContext(ctx, vantageCountSQL).Scan(&n)
@@ -956,24 +935,6 @@ func (s *Server) recentVantages(ctx context.Context, now time.Time) []vantageSee
 	return out
 }
 
-// latestRun is the newest run row for a component, with whether its heartbeat
-// is recent enough to call it alive.
-func (s *Server) latestRun(ctx context.Context, component string, now time.Time) (*runStatus, error) {
-	var rs runStatus
-	err := s.st.DB().QueryRowContext(ctx, `SELECT id, started_at, last_heartbeat_at, stopped_at FROM observer_runs
-		WHERE component = ? ORDER BY started_at DESC LIMIT 1`, component).Scan(&rs.RunID, &rs.StartedAt, &rs.LastHeartbeat, &rs.StoppedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if t, err := time.Parse(time.RFC3339Nano, rs.LastHeartbeat); err == nil && rs.StoppedAt == nil {
-		rs.Alive = now.Sub(t) < 2*time.Minute
-	}
-	return &rs, nil
-}
-
 func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	now := time.Now()
@@ -995,58 +956,29 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rows.Close()
-	vantages := s.vantageCount(ctx)
-	col, _ := s.latestRun(ctx, "collector", now)
-	pr, _ := s.latestRun(ctx, "prober", now)
 	var lastProbe *string
 	var lp sql.NullString
 	if err := s.st.DB().QueryRowContext(ctx, `SELECT MAX(started_at) FROM probes`).Scan(&lp); err == nil && lp.Valid {
 		lastProbe = &lp.String
 	}
-	var pinned string
-	_ = s.st.DB().QueryRowContext(ctx, `SELECT pinned_celestia_app FROM publications ORDER BY settlement_height DESC LIMIT 1`).Scan(&pinned)
-	// Before the first publication there is no row to read it from, and the
-	// footer printed no pin at all. The commit this binary assigns rows with
-	// is the same answer until a publication says otherwise.
-	if pinned == "" {
-		pinned = assign.PinnedCelestiaAppCommit
-	}
 	h := s.health(ctx, now)
-	// A run row's heartbeat is only as fresh as what reached the database:
-	// the prober writes JSONL and never this table, so its row kept the
-	// start time and read "alive": false beside a components entry, from
-	// the process's own status file, that said it was running. The status
-	// file is the live signal /v1/health already trusts; it decides here too.
-	for _, c := range h.Components {
-		if !c.Present {
-			continue
-		}
-		switch {
-		case c.Component == "collector" && col != nil:
-			col.Alive = c.Alive
-		case c.Component == "prober" && pr != nil:
-			pr.Alive = c.Alive
-		}
-	}
 	var ranges []paramUncertainty
 	if us, err := s.st.ParamRanges(ctx); err == nil {
 		for _, u := range us {
 			ranges = append(ranges, paramUncertaintyOf(u))
 		}
 	}
+	var signal *upgradeSignalOut
+	if u := upgradeSignalOf(meta, now); u != nil {
+		signal = &upgradeSignalOut{UpgradeHeight: u.UpgradeHeight, ETASeconds: u.ETASeconds}
+	}
 	writeJSON(w, 200, metaResponse{
-		Components: h.Components, Health: h.Status, Checks: h.Checks, ScanGaps: h.ScanGaps, PinStatus: h.PinStatus,
-		Evidence: evidenceOf, EvidenceKinds: evidenceKinds, UpgradeSignal: upgradeSignalOf(meta, now),
-		ParamUncertainty:         ranges,
-		UnassignablePublications: s.unassignablePublications(ctx),
-		APIVersion:               Version, Vantage: s.vantage, VantageInfo: s.info,
-		MethodologyVersion: verdict.MethodologyVersion,
-		VantageCount:       vantages, ObservedFromOneVantage: vantages == 1, Vantages: s.recentVantages(ctx, now),
-		ChainID: meta["chain_id"], LastScannedHeight: meta["last_scanned_height"], EndpointsHeight: meta["endpoints_height"],
+		APIVersion: Version, MethodologyVersion: verdict.MethodologyVersion, ChainID: meta["chain_id"],
+		Vantages:   s.recentVantages(ctx, now),
 		AppVersion: meta["app_version"], FibreAppVersion: meta["fibre_app_version"], FibreActive: meta["fibre_active"] == "yes",
-		ChainHeight:          meta["chain_height"],
-		ProtocolParamsFinger: meta["protocol_params_fingerprint"], PinnedCelestiaApp: pinned,
-		Counts: counts, Collector: col, Prober: pr, LastProbeAt: lastProbe, Meta: meta, ServerTime: now.UTC(),
+		ChainHeight: meta["chain_height"], Counts: counts, LastProbeAt: lastProbe, ServerTime: now.UTC(),
+		Health: h.Status, Checks: h.Checks, ScanGaps: h.ScanGaps, ParamUncertainty: ranges, PinStatus: h.PinStatus,
+		UpgradeSignal: signal,
 	})
 }
 
@@ -1101,24 +1033,6 @@ func (s *Server) recordThrough(ctx context.Context) *recordThrough {
 		return nil
 	}
 	return rt
-}
-
-// evidenceKinds names the three kinds of evidence a figure on the site can
-// rest on, and evidenceOf says which each headline figure rests on. They
-// are published on /v1/meta so an API reader has the same labels the site
-// prints, and so the three are never blurred: a count of what the chain
-// recorded, bytes this observer fetched and verified, and what this
-// observer's own network saw from one place are different claims.
-var evidenceKinds = map[string]string{
-	"chain_record":        "a count of something the chain recorded; nothing here was measured by this observer",
-	"verified_response":   "bytes this observer fetched and verified against the on-chain commitment, or a certificate checked against the validator's consensus key",
-	"vantage_observation": "what this observer's own network saw from one location; it says nothing about any shard",
-}
-var evidenceOf = map[string]string{
-	"obligations": "verified_response", "reconstructable": "verified_response", "endorsed": "verified_response",
-	"reachability": "vantage_observation", "throughput": "vantage_observation",
-	"publications": "chain_record", "signed_shards": "chain_record", "registered_endpoints": "chain_record", "fees_settled": "chain_record",
-	"publishers": "chain_record", "paid_per_mib": "chain_record", "timed_out": "chain_record", "settlement_rate": "chain_record", "escrow_held": "chain_record",
 }
 
 type networkResponse struct {
@@ -4224,8 +4138,7 @@ func (s *Server) handleExports(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	out := map[string]any{
-		"vantage": s.vantage,
-		"exports": entries,
+		"exports": exportList(entries),
 		"how_to_verify": "download /v1/exports/<name>, check its sha256 against the entry (and the .sha256 sidecar), " +
 			"untar, check each member against manifest.json, then run sentinel-recompute on the directory: it re-derives " +
 			"every row's phase and classification from the row's own fields and the run's recorded configuration, and every " +

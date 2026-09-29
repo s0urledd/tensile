@@ -29,14 +29,12 @@ export type Hosting = {
   mixed_networks?: boolean;
 };
 
-export type DBSource = { file: string; modified?: string; name: string; url: string; license: string; license_url: string; attribution?: string };
+export type DBSource = { name: string; url: string; license: string; license_url: string; attribution?: string };
 
-export type HostingSources = { enabled: boolean; asn_db?: DBSource; country_db?: DBSource; looked_up_at?: string; caveat: string };
+/** the lookup's databases, each with the licence and the attribution its use requires; city_db only with a city file */
+export type HostingSources = { enabled: boolean; asn_db?: DBSource; country_db?: DBSource; city_db?: DBSource; looked_up_at?: string };
 
 export type HostingBucket = { key: string; label?: string; provider?: string; hosts: number; host_share: number; stake: number; stake_share: number };
-
-/** a by_city bucket: key is the city, with where it is */
-export type HostingCityBucket = HostingBucket & { city?: string; region?: string; country?: string; lat?: number; lon?: number };
 
 export type Nakamoto = { count: number | null; entities: string[]; share: number; note: string };
 
@@ -50,17 +48,14 @@ export type HostingSummary = {
   by_provider: HostingBucket[];
   by_country: HostingBucket[];
   by_asn: HostingBucket[];
-  by_city?: HostingCityBucket[];
   nakamoto_third: { provider: Nakamoto; asn: Nakamoto; country: Nakamoto };
   basis: "stake" | "hosts";
 };
 
 export type HostingResponse = {
-  vantage: string;
   sources: HostingSources;
   summary?: HostingSummary;
   provider_asns: { asn: number; provider: string }[];
-  stake_basis: string;
   computed_at: string;
 };
 

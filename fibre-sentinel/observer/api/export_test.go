@@ -60,6 +60,25 @@ func (s *Server) BlobTallies(limit, offset int) (map[string]BlobTally, error) {
 	return out, nil
 }
 
+// UpgradeSignalJSON is x/signal's tally as the store holds it at now, whole:
+// /v1/meta publishes only its scheduled height and ETA.
+func UpgradeSignalJSON(st *store.Store, now time.Time) ([]byte, error) {
+	rows, err := st.DB().Query(`SELECT key, value FROM meta`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	meta := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		meta[k] = v
+	}
+	return json.Marshal(upgradeSignalOf(meta, now))
+}
+
 // NetworkExcludingJSON is NetworkJSON over a window ending now, recomputed
 // without the validators named (hex), as ?exclude= recomputes it.
 func NetworkExcludingJSON(st *store.Store, vantage, window string, exclude []string) ([]byte, error) {

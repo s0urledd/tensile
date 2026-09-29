@@ -1,6 +1,9 @@
 package api
 
 import (
+	"time"
+
+	"github.com/plsgiveup/fibre/fibre-sentinel/observer/export"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/hosting"
 )
 
@@ -105,6 +108,72 @@ func recentBlobs(rows []blobRow) []recentBlob {
 		if b.Reconstructable != nil {
 			out[i].Reconstructable = &recentStatus{Status: b.Reconstructable.Status}
 		}
+	}
+	return out
+}
+
+// exportOut is one daily export as /v1/exports lists it: the index entry
+// without the rule every entry repeats (the answer states it once), the
+// public key the signature block copies from signing.current, and the
+// byte ranges of the observer's own source files each member was read
+// from. The manifest inside the tarball keeps all of it.
+type exportOut struct {
+	Name        string            `json:"name"`
+	Bytes       int64             `json:"bytes"`
+	SHA256      string            `json:"sha256"`
+	Day         string            `json:"day"`
+	GeneratedAt time.Time         `json:"generated_at"`
+	Build       string            `json:"build"`
+	Methodology string            `json:"methodology_version,omitempty"`
+	Files       []exportMemberOut `json:"files"`
+	State       *exportMemberOut  `json:"state,omitempty"`
+	Signature   *exportSigOut     `json:"signature,omitempty"`
+}
+
+// exportMemberOut is one file inside an export.
+type exportMemberOut struct {
+	Name        string `json:"name"`
+	TimeField   string `json:"time_field"`
+	Lines       int64  `json:"lines"`
+	LateLines   int64  `json:"late_lines"`
+	Bytes       int64  `json:"bytes"`
+	SHA256      string `json:"sha256"`
+	SkewedLines int64  `json:"skewed_lines,omitempty"`
+}
+
+// exportSigOut is the signature over an export's manifest; the key it
+// verifies against is /v1/exports/pubkey (signing.current).
+type exportSigOut struct {
+	Algorithm      string `json:"algorithm"`
+	ManifestSHA256 string `json:"manifest_sha256"`
+	Message        string `json:"message"`
+	Signature      string `json:"signature"`
+	KeyFingerprint string `json:"key_fingerprint"`
+}
+
+func exportMemberOf(m export.Member) exportMemberOut {
+	return exportMemberOut{Name: m.Name, TimeField: m.TimeField, Lines: m.Lines, LateLines: m.LateLines, Bytes: m.Bytes, SHA256: m.SHA256, SkewedLines: m.SkewedLines}
+}
+
+// exportList is the entries of /v1/exports, never nil.
+func exportList(entries []export.Entry) []exportOut {
+	out := make([]exportOut, len(entries))
+	for i, e := range entries {
+		o := exportOut{
+			Name: e.Name, Bytes: e.Bytes, SHA256: e.SHA256, Day: e.Day, GeneratedAt: e.GeneratedAt, Build: e.Build,
+			Methodology: e.Methodology, Files: make([]exportMemberOut, len(e.Files)),
+		}
+		for j, m := range e.Files {
+			o.Files[j] = exportMemberOf(m)
+		}
+		if e.State != nil {
+			st := exportMemberOf(*e.State)
+			o.State = &st
+		}
+		if sg := e.Signature; sg != nil {
+			o.Signature = &exportSigOut{Algorithm: sg.Algorithm, ManifestSHA256: sg.ManifestSHA256, Message: sg.Message, Signature: sg.Signature, KeyFingerprint: sg.KeyFingerprint}
+		}
+		out[i] = o
 	}
 	return out
 }

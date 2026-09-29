@@ -128,8 +128,7 @@ func TestHostingOffThenOn(t *testing.T) {
 
 	var off struct {
 		Sources struct {
-			Enabled bool   `json:"enabled"`
-			Caveat  string `json:"caveat"`
+			Enabled bool `json:"enabled"`
 		} `json:"sources"`
 		Summary      *json.RawMessage `json:"summary"`
 		ProviderASNs []struct {
@@ -137,7 +136,7 @@ func TestHostingOffThenOn(t *testing.T) {
 			Provider string `json:"provider"`
 		} `json:"provider_asns"`
 	}
-	if code := get(t, ts, "/v1/hosting", &off); code != 200 || off.Sources.Enabled || off.Summary != nil || off.Sources.Caveat == "" || len(off.ProviderASNs) == 0 {
+	if code := get(t, ts, "/v1/hosting", &off); code != 200 || off.Sources.Enabled || off.Summary != nil || len(off.ProviderASNs) == 0 {
 		t.Fatalf("off: %d %+v", code, off)
 	}
 	if code := get(t, ts, "/v1/hosting?as_of=2026-01-01T00:00:00Z", nil); code != 400 {

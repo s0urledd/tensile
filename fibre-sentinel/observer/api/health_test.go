@@ -127,14 +127,13 @@ func TestHealthReadsStatusFiles(t *testing.T) {
 
 	// /v1/meta carries the same verdict.
 	var meta struct {
-		Health     string `json:"health"`
-		Components []any  `json:"components"`
-		PinStatus  string `json:"pin_status"`
+		Health    string `json:"health"`
+		PinStatus string `json:"pin_status"`
 	}
 	if code := get(t, ts, "/v1/meta", &meta); code != 200 {
 		t.Fatalf("meta: %d", code)
 	}
-	if meta.Health != "degraded" || len(meta.Components) != 4 || meta.PinStatus != "matches" {
+	if meta.Health != "degraded" || meta.PinStatus != "matches" {
 		t.Fatalf("meta: %+v", meta)
 	}
 

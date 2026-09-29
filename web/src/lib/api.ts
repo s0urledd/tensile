@@ -21,14 +21,11 @@ export type Attestation = {
 export type Window = { name: string; start: string; end: string };
 export type ClassCounts = Record<string, number>;
 
+/** /v1/meta: the chain and observer state the header, banners and footer read */
 export type Meta = {
   api_version: string;
   /** the rules every figure was computed under (a date); see the methodology page */
   methodology_version?: string;
-  vantage: string;
-  vantage_info: VantageInfo;
-  vantage_count: number;
-  observed_from_one_location: boolean;
   /**
    * Heartbeat vantages whose rows reached the store in the last hour, newest
    * row of each; primary is this observer's own, the one every figure counts.
@@ -47,50 +44,25 @@ export type Meta = {
   fibre_active: boolean;
   /** the chain's tip as the collector last saw it; not how far the scanner has read */
   chain_height?: string;
-  last_scanned_height: string;
-  endpoints_height: string;
-  protocol_params_fingerprint: string;
-  pinned_celestia_app_commit: string;
   counts: { Publications: number; Assignments: number; Probes: number; OpenEndpoints: number; Runs: number };
-  collector: RunStatus | null;
-  prober: RunStatus | null;
   /** newest measurement's start time; the prober's only live signal (it writes JSONL, never this database) */
   last_probe_at: string | null;
   server_time: string;
-  /** every observer process with its liveness; health is the /v1/health verdict */
-  components: Component[];
+  /** the /v1/health verdict */
   health: "ok" | "degraded" | "down";
   /** the /v1/health rows behind that verdict, so a page can say which check failed when no process did */
   checks?: { name: string; ok: boolean; detail: string }[];
   scan_gaps?: ScanGap[];
   /** matches | chain_ahead | chain_behind | unknown */
   pin_status: string;
-  unassignable_publications: number;
-  /** per headline figure, which of evidence_kinds it rests on */
-  evidence?: Record<string, string>;
-  evidence_kinds?: Record<string, string>;
   /**
-   * x/signal's tally for the app version that brings Fibre, published only
-   * while the chain is below it: a chain record, nothing measured here.
+   * The upgrade that brings Fibre, from x/signal, published only while the
+   * chain is below it: a chain record, nothing measured here.
    */
   upgrade_signal?: {
-    version: number;
-    voting_power: number;
-    threshold_power: number;
-    total_voting_power: number;
-    share: number;
-    threshold_share: number;
     upgrade_height?: number;
-    /** upgrade_height minus the chain tip, while the upgrade is scheduled and ahead */
-    blocks_remaining?: number;
-    /** the chain's average seconds per block, measured over pace_window_s; absent under half an hour of measurement */
-    block_time_s?: number;
-    pace_window_s?: number;
-    /** blocks_remaining at that pace: an estimate, not a promise */
+    /** the blocks left at the chain's recent pace: an estimate, not a promise */
     eta_seconds?: number;
-    /** monikers, as x/signal reports them */
-    missing_validators: string[] | null;
-    polled_at: string;
   };
 };
 
@@ -105,17 +77,6 @@ export function through(rt: RecordThrough | null | undefined): { text: string; t
 }
 /** a heartbeat vantage with rows in the last hour (Meta.vantages) */
 export type VantageSeen = { name: string; newest_at: string; primary: boolean };
-/** where this observer watches from; both fields are operator-declared */
-export type VantageInfo = {
-  name: string;
-  location?: string;
-  provider?: string;
-  /** per-field: what a reader can actually check, and how */
-  verifiability: Record<string, string>;
-  complete: boolean;
-};
-
-export type RunStatus = { run_id: number; started_at: string; last_heartbeat_at: string; stopped_at: string | null; alive: boolean };
 
 /** one observer process, from the status file it keeps in the data directory */
 export type Component = {
@@ -162,7 +123,7 @@ export type RecordThrough = {
   chain_height?: number;
   chain_tip_time?: string;
 };
-/** the three kinds of evidence a figure can rest on; /v1/meta defines them */
+/** the three kinds of evidence a figure can rest on */
 export type Evidence = "chain" | "verified" | "observed";
 
 export type Network = {
@@ -1009,8 +970,6 @@ export function fmtShare(v: number | null | undefined): string {
 export type Tip = {
   height: number;
   block_time?: string;
-  observed_at?: string;
-  source: "scanner" | "collector";
   fibre_active: boolean;
   server_time: string;
 };
@@ -1058,28 +1017,3 @@ export type NetworkReference = {
   pooled_rate: Rate;
 };
 
-/**
- * City placement from DB-IP's IP to City Lite file (optional on the
- * observer; every field is absent without it): /v1/hosting's summary may
- * carry `by_city` and sources `city_db`. lat/lon are the city's
- * approximate point, not the machine's.
- */
-
-/** One /v1/hosting summary.by_city entry. key "" = hosts with no city (listed last, no name or point). */
-export type HostingCityBucket = {
-  key: string;
-  city?: string;
-  region?: string;
-  country?: string;
-  lat?: number;
-  lon?: number;
-  hosts: number;
-  host_share: number;
-  stake: number;
-  stake_share: number;
-};
-
-export type HostingCityExtras = {
-  by_city?: HostingCityBucket[];
-  city_db?: import("./hosting").DBSource;
-};

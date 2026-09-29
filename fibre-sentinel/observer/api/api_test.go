@@ -101,16 +101,21 @@ func get(t *testing.T, ts *httptest.Server, path string, into any) int {
 func TestMetaAndNetwork(t *testing.T) {
 	ts, st := serverAndStore(t)
 	var meta struct {
-		ChainID   string                 `json:"chain_id"`
-		Counts    struct{ Probes int64 } `json:"counts"`
-		Collector *struct{ Alive bool }  `json:"collector"`
-		OneLoc    bool                   `json:"observed_from_one_location"`
+		ChainID string                 `json:"chain_id"`
+		Counts  struct{ Probes int64 } `json:"counts"`
 	}
 	if code := get(t, ts, "/v1/meta", &meta); code != 200 {
 		t.Fatalf("meta: %d", code)
 	}
-	if meta.ChainID != "fibre-devnet" || meta.Counts.Probes != 60 || meta.Collector == nil || !meta.Collector.Alive || !meta.OneLoc {
+	if meta.ChainID != "fibre-devnet" || meta.Counts.Probes != 60 {
 		t.Fatalf("meta: %+v", meta)
+	}
+	var oneLoc struct {
+		OneLoc bool `json:"observed_from_one_location"`
+	}
+	networkOf(t, st, "test", "all", time.Time{}, &oneLoc)
+	if !oneLoc.OneLoc {
+		t.Fatal("one vantage on record, counted as several")
 	}
 	var net struct {
 		Reconstructable struct {
@@ -420,13 +425,13 @@ func TestTwoVantagesDoNotDoubleCountReconstructability(t *testing.T) {
 			t.Fatalf("served_by %d, asked %d of 4 validators for %s", r.ServedBy, r.ProbedValidators, b.PromiseHash)
 		}
 	}
-	var meta struct {
-		VantageCount int  `json:"vantage_count"`
-		OneLoc       bool `json:"observed_from_one_location"`
+	// the summary keeps how many places the rows came from
+	var whole struct {
+		OneLoc bool `json:"observed_from_one_location"`
 	}
-	get(t, ts, "/v1/meta", &meta)
-	if meta.VantageCount != 2 || meta.OneLoc {
-		t.Fatalf("meta vantages: %+v", meta)
+	networkOf(t, st, "test", "all", time.Time{}, &whole)
+	if whole.OneLoc {
+		t.Fatal("rows from two vantages counted as one")
 	}
 }
 
