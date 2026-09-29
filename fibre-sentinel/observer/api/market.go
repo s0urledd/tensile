@@ -700,6 +700,26 @@ type blobCharge struct {
 	Processor string `json:"processor,omitempty"` // who submitted the timeout
 }
 
+// paidBy selects the publications addr paid for, as a WHERE term over
+// publications and its arguments: by the charge on record, or, for a
+// publication with no payment row, by the key that signed its promise, as
+// each blob row names its publisher. Not by the submitter: anyone can
+// submit a settlement, typically an endorsing validator.
+func (s *Server) paidBy(ctx context.Context, addr string) (string, []any, error) {
+	unpaid, err := s.unpaidPublicationsOf(ctx, addr)
+	if err != nil {
+		return "", nil, err
+	}
+	where, args := `promise_hash IN (SELECT promise_hash FROM payments WHERE kind = 'settlement' AND publisher = ?)`, []any{addr}
+	if len(unpaid) > 0 {
+		where += ` OR promise_hash IN (?` + strings.Repeat(", ?", len(unpaid)-1) + `)`
+		for _, h := range unpaid {
+			args = append(args, h)
+		}
+	}
+	return where, args, nil
+}
+
 // unpaidPublicationsOf lists the publications with no settlement payment on
 // record whose promise was signed by the key of addr. They are few (records
 // from before payments were kept), and the key is only readable in Go.
@@ -978,21 +998,10 @@ func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
-	// The blobs this account paid for: by the charge on record, or, for a
-	// publication with no payment row, by the key that signed its promise,
-	// as each blob row names its publisher. Not by the submitter: anyone can
-	// submit a settlement, typically an endorsing validator.
-	unpaid, err := s.unpaidPublicationsOf(ctx, addr)
+	where, wargs, err := s.paidBy(ctx, addr)
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
-	}
-	where, wargs := `promise_hash IN (SELECT promise_hash FROM payments WHERE kind = 'settlement' AND publisher = ?)`, []any{addr}
-	if len(unpaid) > 0 {
-		where += ` OR promise_hash IN (?` + strings.Repeat(", ?", len(unpaid)-1) + `)`
-		for _, h := range unpaid {
-			wargs = append(wargs, h)
-		}
 	}
 	blobs, err := s.blobRows(ctx, "("+where+")", 50, wargs...)
 	if err != nil {

@@ -3448,12 +3448,40 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	var where string
+	q := r.URL.Query()
+	var conds []string
 	var args []any
-	if ns := r.URL.Query().Get("namespace"); ns != "" {
-		where, args = `namespace = ?`, []any{strings.ToLower(ns)}
+	if ns := q.Get("namespace"); ns != "" {
+		conds, args = append(conds, `namespace = ?`), append(args, strings.ToLower(ns))
 	}
-	if before := r.URL.Query().Get("before_height"); before != "" {
+	// commitment: the blobs with this commitment, which a DA team holds where
+	// it does not hold the promise hash. One blob can be paid for and
+	// settled more than once, so this is a list.
+	commitment := strings.ToLower(q.Get("commitment"))
+	if commitment != "" {
+		if b, err := hex.DecodeString(commitment); err != nil || len(b) != 32 {
+			writeErr(w, 400, "commitment must be 64 hex characters")
+			return
+		}
+		conds, args = append(conds, `commitment = ?`), append(args, commitment)
+	}
+	// publisher: the blobs this account paid for, as each blob row names its
+	// publisher (paidBy).
+	publisher := strings.TrimSpace(q.Get("publisher"))
+	if publisher != "" {
+		if hrp, _, err := bech32.DecodeAndConvert(publisher); err != nil || hrp != "celestia" {
+			writeErr(w, 400, "publisher must be a celestia1... account address")
+			return
+		}
+		paid, paidArgs, err := s.paidBy(r.Context(), publisher)
+		if err != nil {
+			s.writeInternal(w, r.URL.Path, err)
+			return
+		}
+		conds, args = append(conds, "("+paid+")"), append(args, paidArgs...)
+	}
+	where := strings.Join(conds, " AND ")
+	if before := q.Get("before_height"); before != "" {
 		// The cursor is (height, tx_index) because a block can carry several
 		// publications: "< height" alone drops the rest of the block the page
 		// boundary fell inside. before_tx_index defaults to 0, which with
@@ -3464,7 +3492,7 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		idx := int64(0)
-		if raw := r.URL.Query().Get("before_tx_index"); raw != "" {
+		if raw := q.Get("before_tx_index"); raw != "" {
 			idx, err = strconv.ParseInt(raw, 10, 64)
 			if err != nil || idx < 0 {
 				writeErr(w, 400, "before_tx_index must be a non-negative integer")
@@ -3481,7 +3509,7 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 	// publication the filters select, cursor included, so a page reads
 	// "51–75 of total".
 	offset := 0
-	if raw := r.URL.Query().Get("offset"); raw != "" {
+	if raw := q.Get("offset"); raw != "" {
 		o, err := strconv.Atoi(raw)
 		if err != nil || o < 0 || o > maxBlobOffset {
 			writeErr(w, 400, fmt.Sprintf("offset must be an integer from 0 to %d", maxBlobOffset))
@@ -3508,7 +3536,14 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := map[string]any{"blobs": blobs, "limit": limit, "offset": offset, "total": total, "truncated": truncated,
-		"namespace": strings.ToLower(r.URL.Query().Get("namespace"))}
+		"namespace": strings.ToLower(q.Get("namespace"))}
+	// the other filters are echoed when they were asked for
+	if commitment != "" {
+		out["commitment"] = commitment
+	}
+	if publisher != "" {
+		out["publisher"] = publisher
+	}
 	if truncated && len(blobs) > 0 {
 		// The cursor this route already takes, filled in so a caller does not
 		// have to read the last row to build it.
