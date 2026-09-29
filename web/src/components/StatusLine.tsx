@@ -2,8 +2,9 @@
 import Link from "next/link";
 import { type Meta, type RecordThrough, type Window, type ScanGap, int, utcWord, apiFailing, throttled } from "@/lib/api";
 
-/** what the page's own data stream says about the API right now */
-export type Client = { error: string | null; fetchedAt: string | null; status?: number };
+/** what the page's own data stream says about the API right now. computing: a figure
+ *  it asked for is being computed, which is neither an error nor an outage (lib/api.ts, Fetch) */
+export type Client = { error: string | null; fetchedAt: string | null; status?: number; computing?: boolean };
 
 /** the part of a snapshot the status line reads */
 export type Snapshot = {
@@ -87,6 +88,16 @@ export default function StatusLine({ meta, metaError, snap, client }: {
           ? <><b>The chain has stopped producing blocks.</b> Nothing new can be settled or measured until it resumes; this is the network, not the observer.</>
           : <><b>Observer partly down:</b> {impacts.join("; ")}. Figures may lag.</>}{" "}
         <Link href="/methodology/#gaps">Why →</Link>
+      </p>,
+    );
+  }
+  // After a restart or a change of rules a figure can take a minute or two to
+  // compute. The API says so rather than failing, and the page asks again by
+  // itself: a quiet line, not an outage.
+  if (!apiDown && client.computing) {
+    lines.push(
+      <p className="notice soft" key="computing">
+        Some figures on this page are being computed. They fill in by themselves in a few seconds.
       </p>,
     );
   }

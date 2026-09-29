@@ -609,7 +609,14 @@ export type Payment = {
  * 5xx included, says nothing about the record and reads as the API not
  * answering.
  */
-export type Fetch<T> = { data: T | null; error: string | null; loading: boolean; fetchedAt: string | null; status?: number };
+/**
+ * computing is set while the API says the figure asked for is being computed
+ * (a 503 with `computing: true`, after a restart or a change of rules): not
+ * an error and not an outage. The stream keeps what is on screen, stays
+ * loading when there is nothing yet, and asks again after the few seconds the
+ * API names rather than at its next interval.
+ */
+export type Fetch<T> = { data: T | null; error: string | null; loading: boolean; fetchedAt: string | null; status?: number; computing?: boolean };
 
 /** the API answered that the thing asked for is not on record (404, 410) */
 export function notFound(f: { error: string | null; status?: number }): boolean {
@@ -636,10 +643,18 @@ export function throttled(f: { error: string | null; status?: number }): boolean
 // One in-flight request and one timer per (path, interval), however many
 // components ask for it: the header, the banner, the footer and the page all
 // want /v1/meta, which was four requests per interval per viewer.
-type Sub = { subs: Set<(f: Fetch<unknown>) => void>; timer: ReturnType<typeof setInterval> | null; last: Fetch<unknown> };
+// retry is the one early re-ask a stream has pending while its figure is
+// being computed.
+type Sub = { subs: Set<(f: Fetch<unknown>) => void>; timer: ReturnType<typeof setInterval> | null; retry: ReturnType<typeof setTimeout> | null; last: Fetch<unknown> };
 const streams = new Map<string, Sub>();
 
-async function fetchOnce(path: string): Promise<Fetch<unknown>> {
+/** how soon to ask again for a figure being computed: what the API says, kept between 2 and 30 s */
+function computingRetryMs(seconds: unknown): number {
+  const s = typeof seconds === "number" && isFinite(seconds) ? seconds : 5;
+  return Math.min(Math.max(s, 2), 30) * 1000;
+}
+
+async function fetchOnce(path: string): Promise<Fetch<unknown> & { retryMs?: number }> {
   try {
     // A hung API must read as unreachable rather than as a page that never
     // updates: every request is abandoned after 20 s.
@@ -649,7 +664,13 @@ async function fetchOnce(path: string): Promise<Fetch<unknown>> {
       const r = await fetch(API_BASE + path, { cache: "no-store", signal: ctl.signal });
       if (!r.ok) {
         let msg = `${r.status}`;
-        try { msg = (await r.json()).error ?? msg; } catch { /* keep status */ }
+        let body: { error?: string; computing?: boolean; retry_after_s?: number } | null = null;
+        try { body = await r.json(); msg = body?.error ?? msg; } catch { /* keep status */ }
+        if (r.status === 503 && body?.computing) {
+          // The figure is being computed, not failing: the Retry-After header
+          // is not readable across origins, so the body says how long.
+          return { data: null, error: null, loading: true, fetchedAt: null, status: r.status, computing: true, retryMs: computingRetryMs(body.retry_after_s) };
+        }
         return { data: null, error: msg, loading: false, fetchedAt: null, status: r.status };
       }
       return { data: await r.json(), error: null, loading: false, fetchedAt: new Date().toISOString() };
@@ -665,22 +686,30 @@ async function fetchOnce(path: string): Promise<Fetch<unknown>> {
 function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<unknown>) => void): () => void {
   let st = streams.get(key);
   if (!st) {
-    st = { subs: new Set(), timer: null, last: { data: null, error: null, loading: true, fetchedAt: null } };
+    st = { subs: new Set(), timer: null, retry: null, last: { data: null, error: null, loading: true, fetchedAt: null } };
     streams.set(key, st);
     const load = async () => {
-      const next = await fetchOnce(path);
+      const { retryMs, ...next } = await fetchOnce(path);
       const cur = streams.get(key);
       if (!cur) return;
-      // A refresh that fails does not erase the answer already on screen. It
-      // used to: fetchOnce returns {data: null, error} on any failure, so one
-      // 500 or one proxy hiccup replaced a rendered table with a loading
-      // message that never resolved, and the page said nothing about why.
-      // The error is carried beside the last good payload instead, for the
-      // page to show, and the figures keep their own computed_at so nobody
-      // reads stale numbers as fresh ones.
-      cur.last = next.error && cur.last.data !== null
-        ? { data: cur.last.data, error: next.error, loading: false, fetchedAt: cur.last.fetchedAt, status: next.status }
-        : next;
+      if (next.computing) {
+        // Being computed: what is on screen stays, without an error, and the
+        // stream asks again in a few seconds, once, whatever its interval
+        // (a stream with no interval asks again too).
+        cur.last = cur.last.data !== null ? { ...cur.last, error: null, loading: false, status: next.status, computing: true } : next;
+        if (!cur.retry) cur.retry = setTimeout(() => { cur.retry = null; load(); }, retryMs ?? 5000);
+      } else {
+        // A refresh that fails does not erase the answer already on screen. It
+        // used to: fetchOnce returns {data: null, error} on any failure, so one
+        // 500 or one proxy hiccup replaced a rendered table with a loading
+        // message that never resolved, and the page said nothing about why.
+        // The error is carried beside the last good payload instead, for the
+        // page to show, and the figures keep their own computed_at so nobody
+        // reads stale numbers as fresh ones.
+        cur.last = next.error && cur.last.data !== null
+          ? { data: cur.last.data, error: next.error, loading: false, fetchedAt: cur.last.fetchedAt, status: next.status }
+          : next;
+      }
       const out = cur.last;
       cur.subs.forEach((s) => s(out));
     };
@@ -697,6 +726,7 @@ function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<u
     cur.subs.delete(fn);
     if (cur.subs.size === 0) {
       if (cur.timer) clearInterval(cur.timer);
+      if (cur.retry) clearTimeout(cur.retry);
       streams.delete(key);
     }
   };

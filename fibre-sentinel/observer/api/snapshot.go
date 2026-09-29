@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -31,7 +33,12 @@ import (
 // Refreshing happens in the background, never two computations of one window
 // at once, and a stale snapshot keeps being served while its replacement is
 // computed, so a reader never waits for an aggregate. Every window is warmed
-// at startup, so the first visitor does not wait either. After that keepers
+// at startup, so the first visitor does not wait either. A window with
+// nothing to serve at all (the first computation after a start with no file
+// under the current revision, or the recomputation after a hold dropped its
+// snapshot) makes a reader wait a few seconds at most (firstReadWait); past
+// that the reader is told the figure is being computed and asks again,
+// rather than holding a request open for minutes. After that keepers
 // refresh every window as its TTL runs out, read or not: a refresh triggered
 // only by a read served the triggering reader a figure as old as the last
 // visit. A keeper computes its windows one after another, so what a reader
@@ -146,6 +153,21 @@ func timeoutFor(name string) time.Duration {
 	return snapshotTimeout
 }
 
+// firstReadWait is how long a reader waits for a window that has nothing to
+// serve: its first computation after a start, or its recomputation after a
+// hold, the activation or a new methodology dropped its snapshot. The cheap
+// windows land well inside it. The expensive ones (the longer windows of the
+// validator list and the network summary) take minutes on a store of any
+// size, and a reader held for all of that reached the site proxy's
+// 60-second timeout and got a bare 502. Past this wait the reader gets
+// errComputing (a 503 with Retry-After) and asks again; the computation is
+// the cache's, not the reader's, and carries on in the background.
+const firstReadWait = 8 * time.Second
+
+// errComputing is get's answer when a window has nothing to serve and its
+// computation did not land within the reader's wait.
+var errComputing = errors.New("snapshot is being computed")
+
 // logf is the bit of a logger a cache needs, so it does not depend on the whole
 // Server and stays usable with nothing.
 type logf func(format string, args ...any)
@@ -191,21 +213,42 @@ type snapshotCache[T any] struct {
 	// accept, when set, vets a snapshot read back from disk: an older
 	// build's file may parse and still lack something this build serves.
 	accept func(T) bool
+	// vantage is the vantage the figures are computed for (Server.vantage):
+	// the heartbeat counts are this vantage's own rows. It is written into
+	// every file, and a file computed for another vantage is not loaded.
+	// That matters once files come from another process (WarmSnapshots)
+	// started by hand with flags that may not match the unit's.
+	vantage string
+	// failed is the error of each window's last computation, when it
+	// failed, so a reader waiting for that computation is told rather
+	// than left to wait out firstReadWait.
+	failed map[string]error
+	// firstWait overrides firstReadWait (tests).
+	firstWait time.Duration
 }
 
 // persisted is the on-disk form of one snapshot.
 type persisted[T any] struct {
-	Label  string    `json:"label"`
-	Window string    `json:"window"`
-	At     time.Time `json:"at"`
-	Ms     int64     `json:"ms"`
-	Rev    string    `json:"rev,omitempty"`
-	Value  T         `json:"value"`
+	Label   string    `json:"label"`
+	Window  string    `json:"window"`
+	At      time.Time `json:"at"`
+	Ms      int64     `json:"ms"`
+	Rev     string    `json:"rev,omitempty"`
+	Vantage string    `json:"vantage,omitempty"`
+	Value   T         `json:"value"`
 }
 
 // persistTo enables the on-disk copy and loads whatever a previous process
 // left there. A file that does not parse (an older build's shape) is skipped;
 // the warm-up replaces it.
+//
+// A file is loaded whatever revision it was computed under, and served only
+// under the same one: current drops a snapshot whose revision is not the
+// store's, before any reader sees it. So a file warmed by a new build
+// (WarmSnapshots) is served by that build and not by an older one, whose
+// verdict.MethodologyVersion differs, and a hold or the activation landing
+// between the warm-up and the switch makes the file be recomputed rather
+// than served.
 func (c *snapshotCache[T]) persistTo(dir string, log logf) {
 	if dir == "" {
 		return
@@ -220,6 +263,15 @@ func (c *snapshotCache[T]) persistTo(dir string, log logf) {
 		}
 		var p persisted[T]
 		if err := json.Unmarshal(b, &p); err != nil || p.Label != c.label || p.Window != name {
+			continue
+		}
+		if p.Vantage != "" && p.Vantage != c.vantage {
+			// Computed for another vantage: its heartbeat counts are
+			// another machine's. A file from before the vantage was
+			// written (empty) was written by this process's unit.
+			if log != nil {
+				log("%s-%s: snapshot file computed for vantage %q, not %q; not loaded", c.label, name, p.Vantage, c.vantage)
+			}
 			continue
 		}
 		if c.accept != nil && !c.accept(p.Value) {
@@ -239,27 +291,28 @@ func (c *snapshotCache[T]) file(window string) string {
 	return filepath.Join(c.dir, c.label+"-"+window+".json")
 }
 
-// persist writes one snapshot, atomically. A failure is logged by the
-// caller's next refresh at worst; the in-memory copy is what is served.
-func (c *snapshotCache[T]) persist(window string, s *snap[T]) {
+// persist writes one snapshot, atomically. The API's own refreshes ignore a
+// failure: the in-memory copy is what is served, and the next refresh writes
+// again. WarmSnapshots, whose whole product is the file, does not.
+func (c *snapshotCache[T]) persist(window string, s *snap[T]) error {
 	if c.dir == "" {
-		return
+		return nil
 	}
-	b, err := json.Marshal(persisted[T]{Label: c.label, Window: window, At: s.at, Ms: s.ms, Rev: s.rev, Value: s.v})
+	b, err := json.Marshal(persisted[T]{Label: c.label, Window: window, At: s.at, Ms: s.ms, Rev: s.rev, Vantage: c.vantage, Value: s.v})
 	if err != nil {
-		return
+		return err
 	}
 	tmp := c.file(window) + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return
+		return err
 	}
-	_ = os.Rename(tmp, c.file(window))
+	return os.Rename(tmp, c.file(window))
 }
 
 func newSnapshotCache[T any](label string, compute func(context.Context, Window) (T, error)) *snapshotCache[T] {
 	return &snapshotCache[T]{
 		label: label, compute: compute,
-		entries: map[string]*snap[T]{}, refreshing: map[string]bool{},
+		entries: map[string]*snap[T]{}, refreshing: map[string]bool{}, failed: map[string]error{},
 	}
 }
 
@@ -286,9 +339,7 @@ func (c *snapshotCache[T]) stale(s *snap[T], name string, now time.Time) bool {
 	return now.Sub(s.at) >= wait
 }
 
-// get returns the snapshot for win with the moment it was taken and what it
-// cost, computing inline only when there is nothing at all to serve. A stale
-// snapshot is returned as it stands and a refresh is started behind it.
+// rev is the revision the cache's snapshots must carry to be served now.
 func (c *snapshotCache[T]) rev() string {
 	if c.revision == nil {
 		return ""
@@ -332,55 +383,74 @@ func (c *snapshotCache[T]) peek(log logf, win Window) (v T, at time.Time, ms int
 	return v, at, ms, false
 }
 
+// get returns the snapshot for win with the moment it was taken and what it
+// cost. A stale snapshot is returned as it stands and a refresh is started
+// behind it.
+//
+// When there is nothing at all to serve, the computation is started in the
+// background, one for any number of readers, and the reader waits for it at
+// most firstReadWait; then it gets errComputing and the computation carries
+// on. It used to be computed inline, on the reader's request, and the
+// longest windows took minutes: past the site proxy's timeout, so the reader
+// got a 502 and the computation was cancelled with the request.
 func (c *snapshotCache[T]) get(ctx context.Context, log logf, win Window) (T, time.Time, int64, error) {
 	var zero T
 	rev := c.rev()
-	if s := c.current(log, win, rev, false); s != nil {
+	if s := c.current(log, win, rev, true); s != nil {
 		return s.v, s.at, s.ms, nil
 	}
-
-	// Nothing to serve: this reader pays. Claiming the window first means a
-	// burst of first-time readers produces one computation, not one each.
-	got, claimed := c.await(ctx, win, rev)
-	if got != nil {
+	wait := c.firstWait
+	if wait <= 0 {
+		wait = firstReadWait
+	}
+	wctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	got, err := c.await(wctx, log, win, rev)
+	switch {
+	case got != nil:
 		return got.v, got.at, got.ms, nil
-	}
-	if !claimed {
-		return zero, time.Time{}, 0, ctx.Err()
-	}
-	got, err := c.fill(ctx, win)
-	if err != nil {
+	case err != nil:
 		return zero, time.Time{}, 0, err
+	case ctx.Err() != nil:
+		return zero, time.Time{}, 0, ctx.Err()
+	default:
+		return zero, time.Time{}, 0, errComputing
 	}
-	return got.v, got.at, got.ms, nil
 }
 
-// await blocks until win has a snapshot computed under rev, or claims the
-// window for the caller to compute once nothing is computing it, or gives up
-// with the caller.
+// await blocks until win has a snapshot computed under rev, or the
+// computation it waited for fails (its error), or ctx ends (nil, nil).
+// Whenever nothing is computing the window and nothing under rev is there to
+// serve, it starts a computation in the background.
 //
 // Only a snapshot under rev will do. The computation a reader finds running
 // may have started before a hold that this reader has already seen, and the
 // figure it lands carries the verdicts that hold withdrew; taking whatever
-// landed next served it once for every reader waiting on it.
-func (c *snapshotCache[T]) await(ctx context.Context, win Window, rev string) (*snap[T], bool) {
+// landed next served it once for every reader waiting on it. When such a
+// computation lands, the revision is read again before starting the next,
+// because the revision may instead have moved on since this reader read it.
+func (c *snapshotCache[T]) await(ctx context.Context, log logf, win Window, rev string) (*snap[T], error) {
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		c.mu.Lock()
-		if s := c.entries[win.Name]; s != nil && s.rev == rev {
-			c.mu.Unlock()
-			return s, false
-		}
-		if !c.refreshing[win.Name] {
-			c.refreshing[win.Name] = true
-			c.mu.Unlock()
-			return nil, true
-		}
+		s, busy, failed := c.entries[win.Name], c.refreshing[win.Name], c.failed[win.Name]
 		c.mu.Unlock()
+		if s != nil && s.rev == rev {
+			return s, nil
+		}
+		if !busy {
+			if failed != nil {
+				return nil, failed
+			}
+			rev = c.rev()
+			if s := c.current(log, win, rev, true); s != nil {
+				return s, nil
+			}
+		}
 		select {
 		case <-ctx.Done():
-			return nil, false
+			return nil, nil
 		case <-tick.C:
 		}
 	}
@@ -418,7 +488,8 @@ func (c *snapshotCache[T]) background(log logf, win Window) {
 	}
 }
 
-func (c *snapshotCache[T]) fill(ctx context.Context, win Window) (*snap[T], error) {
+// computeOnce computes win under the revision the store holds as it starts.
+func (c *snapshotCache[T]) computeOnce(ctx context.Context, win Window) (*snap[T], error) {
 	start := time.Now()
 	// The revision the figures were computed under is the one read before
 	// the queries ran. Read after, a hold landing mid-compute stamped a
@@ -427,23 +498,57 @@ func (c *snapshotCache[T]) fill(ctx context.Context, win Window) (*snap[T], erro
 	rev := c.rev()
 	v, err := c.compute(ctx, win)
 	if err != nil {
+		return nil, err
+	}
+	return &snap[T]{v: v, rev: rev, at: start, ms: time.Since(start).Milliseconds()}, nil
+}
+
+func (c *snapshotCache[T]) fill(ctx context.Context, win Window) (*snap[T], error) {
+	s, err := c.computeOnce(ctx, win)
+	if err != nil {
 		c.mu.Lock()
 		c.refreshing[win.Name] = false
+		c.failed[win.Name] = err
 		c.mu.Unlock()
 		return nil, err
 	}
-	s := &snap[T]{v: v, rev: rev, at: start, ms: time.Since(start).Milliseconds()}
+	// Written outside the lock, so a reader of any window never waits for a
+	// file write, and before the snapshot is served, so whoever is handed it
+	// finds its file already on disk. The window stays claimed (refreshing)
+	// until the file has landed, so two writes of the same file never
+	// overlap. A failed write is not a failed refresh (persist).
+	_ = c.persist(win.Name, s)
 	c.mu.Lock()
 	c.entries[win.Name] = s
-	c.mu.Unlock()
-	// Written outside the lock, so a reader of any window never waits for a
-	// file write. The window stays claimed (refreshing) until the file has
-	// landed, so two writes of the same file never overlap.
-	c.persist(win.Name, s)
-	c.mu.Lock()
 	c.refreshing[win.Name] = false
+	delete(c.failed, win.Name)
 	c.mu.Unlock()
 	return s, nil
+}
+
+// precompute computes every window once, one after another, and writes each
+// to dir; the first failure ends it. It is the warm-up of a process that
+// serves nothing (WarmSnapshots), so unlike warm it waits, and a file that
+// could not be written is an error: the file is all it is for. Nothing is
+// read from dir, so whatever an earlier run left there is replaced.
+func (c *snapshotCache[T]) precompute(ctx context.Context, dir string, log logf) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	c.dir = dir
+	for _, name := range warmWindows {
+		s, err := c.computeOnce(ctx, windowFor(name, time.Now()))
+		if err != nil {
+			return fmt.Errorf("%s %s: %w", c.label, name, err)
+		}
+		if err := c.persist(name, s); err != nil {
+			return fmt.Errorf("%s %s: %w", c.label, name, err)
+		}
+		if log != nil {
+			log("%s %s: computed in %s, written to %s", c.label, name, (time.Duration(s.ms) * time.Millisecond).Round(time.Millisecond), c.file(name))
+		}
+	}
+	return nil
 }
 
 // warm computes every window once, in the background, one at a time.

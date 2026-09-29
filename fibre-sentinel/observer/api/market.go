@@ -850,7 +850,7 @@ func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, at, ms, err := s.market.get(r.Context(), s.logf(), win)
 	if err != nil {
-		s.writeInternal(w, r.URL.Path, err)
+		s.writeSnapshotErr(w, r, win, err)
 		return
 	}
 	cp := *resp
@@ -872,7 +872,7 @@ func (s *Server) handlePublishers(w http.ResponseWriter, r *http.Request) {
 		// computed_at says when.
 		snap, at, ms, err := s.market.get(r.Context(), s.logf(), win)
 		if err != nil {
-			s.writeInternal(w, r.URL.Path, err)
+			s.writeSnapshotErr(w, r, win, err)
 			return
 		}
 		rows := snap.Publishers

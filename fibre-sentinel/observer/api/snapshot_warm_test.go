@@ -1,0 +1,156 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
+)
+
+// A window with nothing to serve makes its reader wait a few seconds at most.
+// The longest windows take minutes to compute, and a reader held for all of
+// it reached the site proxy's timeout; the reader is told the figure is being
+// computed instead, the computation carries on, and it is one computation
+// however many readers ask.
+func TestAColdWindowIsWaitedForABoundedTime(t *testing.T) {
+	var n atomic.Int32
+	release := make(chan struct{})
+	c := newSnapshotCache("test", func(ctx context.Context, win Window) (int, error) {
+		n.Add(1)
+		<-release
+		return 7, nil
+	})
+	c.firstWait = 100 * time.Millisecond
+	win := testWindow("all")
+
+	start := time.Now()
+	if _, _, _, err := c.get(context.Background(), nil, win); !errors.Is(err, errComputing) {
+		t.Fatalf("a read of a window still being computed returned %v, want errComputing", err)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("the reader waited %s; the wait is bounded at %s", took, c.firstWait)
+	}
+	if _, _, _, err := c.get(context.Background(), nil, win); !errors.Is(err, errComputing) {
+		t.Fatalf("second read: %v", err)
+	}
+	close(release)
+	c.firstWait = 5 * time.Second
+	v, _, _, err := c.get(context.Background(), nil, win)
+	if err != nil || v != 7 {
+		t.Fatalf("after the computation landed: %d, %v", v, err)
+	}
+	if got := n.Load(); got != 1 {
+		t.Fatalf("%d computations for three readers of one window, want 1", got)
+	}
+}
+
+// A computation that fails is the waiting reader's answer: it is not left to
+// wait out the bound, and not told that the figure is still coming.
+func TestAFailedComputationIsReturnedToTheReaderWaitingOnIt(t *testing.T) {
+	boom := errors.New("boom")
+	c := newSnapshotCache("test", func(ctx context.Context, win Window) (int, error) {
+		return 0, boom
+	})
+	c.firstWait = 5 * time.Second
+	start := time.Now()
+	if _, _, _, err := c.get(context.Background(), nil, testWindow("24h")); !errors.Is(err, boom) {
+		t.Fatalf("got %v, want the computation's error", err)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("the reader waited %s for a computation that had already failed", took)
+	}
+}
+
+// The 503 says what it is, so the site can show a figure being computed and
+// ask again instead of calling the API down.
+func TestAWindowBeingComputedIsA503WithRetryAfter(t *testing.T) {
+	s := newSnapshotServer(t)
+	release := make(chan struct{})
+	defer close(release)
+	s.net = newSnapshotCache("network", func(ctx context.Context, win Window) (*networkResponse, error) {
+		<-release
+		return &networkResponse{}, nil
+	})
+	s.net.firstWait = 50 * time.Millisecond
+	rec := httptest.NewRecorder()
+	s.handleNetwork(rec, httptest.NewRequest(http.MethodGet, "/v1/network?window=all", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got == "" {
+		t.Fatal("no Retry-After")
+	}
+	var body struct {
+		Computing bool   `json:"computing"`
+		Window    string `json:"window"`
+		Error     string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Computing || body.Window != "all" || body.Error == "" {
+		t.Fatalf("body %s", rec.Body.String())
+	}
+}
+
+// WarmSnapshots is how a new build starts on figures computed under its own
+// rules: it writes every window of every cache, and a process started on that
+// directory serves them, under the revision they were computed under and for
+// the vantage they were computed for, and not otherwise.
+func TestWarmSnapshotsFillsEveryWindowForTheNextProcess(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	dir := filepath.Join(t.TempDir(), "snapshots.next")
+	if err := WarmSnapshots(context.Background(), st, VantageInfo{Name: "eu1"}, nil, WithSnapshotDir(dir)); err != nil {
+		t.Fatal(err)
+	}
+	for _, label := range []string{"network", "validators", "market"} {
+		for _, w := range warmWindows {
+			if _, err := os.Stat(filepath.Join(dir, label+"-"+w+".json")); err != nil {
+				t.Errorf("%s-%s was not written: %v", label, w, err)
+			}
+		}
+	}
+
+	next := newServer(st, VantageInfo{Name: "eu1"}, nil, WithSnapshotDir(dir))
+	next.net.persistTo(next.snapshotsIn(), nil)
+	next.vals.persistTo(next.snapshotsIn(), nil)
+	win := testWindow("all")
+	if s := next.net.current(nil, win, next.net.rev(), false); s == nil {
+		t.Fatal("the warmed network snapshot was not served by the next process")
+	}
+	if s := next.vals.current(nil, win, next.vals.rev(), false); s == nil {
+		t.Fatal("the warmed validator snapshot was not served by the next process")
+	}
+
+	// Under another revision (here the activation landing between the
+	// warm-up and the switch) the file is dropped, not served.
+	if err := st.SetMeta("fibre_active", "yes", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if s := next.net.current(nil, win, next.net.rev(), false); s != nil {
+		t.Fatal("a snapshot warmed under an earlier revision was served")
+	}
+
+	// Warmed for another vantage (a hand-run warm-up without -vantage), it is
+	// not loaded at all.
+	other := newServer(st, VantageInfo{Name: "local"}, nil, WithSnapshotDir(dir))
+	other.vals.persistTo(other.snapshotsIn(), nil)
+	other.vals.mu.Lock()
+	n := len(other.vals.entries)
+	other.vals.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d snapshot(s) computed for vantage eu1 were loaded by vantage local", n)
+	}
+}

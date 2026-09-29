@@ -94,7 +94,7 @@ func (s *Server) handleHosting(w http.ResponseWriter, r *http.Request) {
 		win := Window{Name: "24h", Span: windows["24h"], Start: now.Add(-windows["24h"]), End: now}
 		snap, _, _, err := s.vals.get(ctx, s.logf(), win)
 		if err != nil {
-			s.writeInternal(w, r.URL.Path, err)
+			s.writeSnapshotErr(w, r, win, err)
 			return
 		}
 		cur, err := hosting.Current(ctx, s.st.DB())

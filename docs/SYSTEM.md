@@ -351,8 +351,15 @@ turns. A TTL is a floor, not a promise: a computation longer than its TTL
 waits twice its cost (the 24h validator list took 15–22 s in September 2026,
 so it refreshes about every 35–45 s), and the windows of one cache are taken
 at different moments, so a longer window can count less than a shorter one
-until its next refresh. Persisted to `<data-dir>/snapshots/` so a restart
-serves the last figures at once; the warm-up then replaces them.
+until its next refresh. Persisted to `<data-dir>/snapshots/` (`-snapshot-dir`)
+so a restart serves the last figures at once; the warm-up then replaces them.
+A file is served only under the revision it was computed under (holds,
+activation, `verdict.MethodologyVersion`) and for the vantage it was computed
+for. A window with nothing to serve makes a reader wait at most 8 s, then
+answers 503 with `Retry-After` and `"computing": true`, which the site shows
+as figures being computed; `observer-api -warm-only` computes a new build's
+snapshots beside the running API so a switch does not start cold
+(deploy/README.md, "Upgrading a running observer").
 
 **Two paths bypass the cache and are rationed** (4-burst, then one per 2s;
 429 with `Retry-After`):

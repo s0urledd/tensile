@@ -38,6 +38,12 @@ func main() {
 		// chain has no name for an account, so every label is the operator's
 		// word and is published with its source.
 		labels = flag.String("publishers", "", "path to publishers.yaml, the publisher label registry (optional)")
+		// Where the window snapshots are kept across restarts, and a mode
+		// that only fills them: a new build computes its snapshots beside
+		// the running API before it replaces it, so it does not start cold
+		// (deploy/README.md, "Upgrading a running observer").
+		snapDir  = flag.String("snapshot-dir", "", "where the window snapshots are kept across restarts (default <data-dir>/snapshots)")
+		warmOnly = flag.Bool("warm-only", false, "compute every window snapshot once into -snapshot-dir, reading the database only, then exit; serves nothing")
 	)
 	flag.Parse()
 	if *check != "" {
@@ -45,6 +51,9 @@ func main() {
 	}
 	if *dbPath == "" {
 		*dbPath = filepath.Join(*dataDir, "observer.db")
+	}
+	if *snapDir == "" {
+		*snapDir = filepath.Join(*dataDir, "snapshots")
 	}
 	log := scan.NewLogger(200)
 	// The collector creates the database and its schema; started in the same
@@ -85,7 +94,20 @@ func main() {
 	if len(reg) > 0 {
 		log.Printf("publisher labels: %d from %s", len(reg), *labels)
 	}
-	handler := api.NewWithVantage(st, info, log, api.WithPublisherLabels(reg), api.WithDataDir(*dataDir))
+	opts := []api.Option{api.WithPublisherLabels(reg), api.WithDataDir(*dataDir), api.WithSnapshotDir(*snapDir)}
+	if *warmOnly {
+		// The live API keeps serving meanwhile; this only reads. Every
+		// snapshot depends on the vantage (its heartbeats) and the market
+		// one on the labels, so the flags must be the unit's own.
+		log.Printf("warm-only: computing every window snapshot into %s (vantage=%s db=%s)", *snapDir, *vantage, *dbPath)
+		t0 := time.Now()
+		if err := api.WarmSnapshots(context.Background(), st, info, log, opts...); err != nil {
+			log.Fatalf("warm-only: %v", err)
+		}
+		log.Printf("warm-only: done in %s", time.Since(t0).Round(time.Second))
+		return
+	}
+	handler := api.NewWithVantage(st, info, log, opts...)
 
 	srv := &http.Server{
 		Addr:              *listen,
