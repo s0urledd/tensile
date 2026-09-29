@@ -11,7 +11,7 @@ import Chart from "@/components/Chart";
 import { Metric, Figures } from "@/components/Metrics";
 import { buckets } from "@/lib/buckets";
 import Pager, { usePage } from "@/components/Pager";
-import { useWindow, WindowSwitch } from "@/lib/window";
+import { useWindow, WindowSwitch, periodName, withPeriod } from "@/lib/window";
 
 /** rows per page of the blob list */
 const SIZE = 25;
@@ -24,7 +24,7 @@ const MAX_PAGE = Math.floor(100000 / SIZE) + 1;
 function Page() {
   const nsParam = useSearchParams().get("namespace") ?? "";
   const [ns, setNsRaw] = useState(nsParam);
-  const [win, setWin] = useWindow("7d");
+  const [win, setWin] = useWindow("24h");
   const [page, setPage] = usePage();
   const [tab, setTab] = useState<"blobs" | "namespaces">("blobs");
   // a new filter starts from the first page, and lives in the address so a link keeps it
@@ -48,6 +48,10 @@ function Page() {
   // the answer for another period, kept while this one loads, is not this chart
   const series = m && m.window.name === win ? buckets(m, win) : [];
   const per = win === "24h" ? "hour" : "day";
+  // Figures and charts name their period in the title. A figure keeps the last
+  // answer while another period loads, so it names that answer's period; a
+  // chart draws only the period selected, so it names that one.
+  const period = periodName(m?.window?.name ?? win);
   const mib = (v: number) => (v >= 1024 ? `${(v / 1024).toFixed(2)} GiB` : v >= 10 ? `${Math.round(v)} MiB` : `${v.toFixed(2)} MiB`);
   const axisMib = (v: number) => (v >= 1024 ? `${(v / 1024).toFixed(v % 1024 ? 1 : 0)} GiB` : `${Number.isInteger(v) ? v : v.toFixed(1)} MiB`);
   const nsN = nss.data?.namespaces.length ?? 0;
@@ -69,22 +73,22 @@ function Page() {
         </div>
         <div className="board board--rail">
           <Figures className="rail">
-            <Metric size="hero" label="Blobs" value={m ? int(m.blobs) : "—"} tone={m && m.blobs > 0 ? undefined : "absent"}
+            <Metric size="hero" label="Blobs" period={period} value={m ? int(m.blobs) : "—"} tone={m && m.blobs > 0 ? undefined : "absent"}
               help={m ? `${int(m.settlements)} settlement${m.settlements === 1 ? "" : "s"}` : " "}
               title="Blobs (BlobID) settled in the period, and the settlements that paid for them." />
-            <Metric label="Namespaces" value={m?.namespaces != null ? int(m.namespaces) : "—"} tone={m?.namespaces ? undefined : "absent"}
+            <Metric label="Namespaces" period={period} value={m?.namespaces != null ? int(m.namespaces) : "—"} tone={m?.namespaces ? undefined : "absent"}
               help={m?.namespaces_total != null ? `${int(m.namespaces_total)} on record` : " "}
               title="Namespaces the period's settlements used." />
           </Figures>
           <div className="board-charts">
-            <Chart title={`Upload size per ${per}`} figure={m && series.length ? bytes(m.bytes) : undefined} figureNote="in the period"
-              series={[{ key: "bytes", label: "upload size", color: "var(--accent)" }]}
+            <Chart title={withPeriod(`Blob size per ${per}`, win)} figure={m && series.length ? bytes(m.bytes) : undefined}
+              series={[{ key: "bytes", label: "blob size", color: "var(--accent)" }]}
               rows={series.map((c) => ({ x: c.title, label: c.label, short: c.short, values: { bytes: c.bytes / (1 << 20) }, note: `${int(c.settlements)} settlement${c.settlements === 1 ? "" : "s"}` }))}
-              fmt={mib} fmtAxis={axisMib} empty={m ? "nothing settled in this period" : "loading…"} />
-            <Chart title={`Settlements per ${per}`} figure={m && series.length ? int(m.settlements) : undefined} figureNote="in the period"
+              fmt={mib} fmtAxis={axisMib} empty={m && m.window.name === win ? "nothing settled" : "loading…"} />
+            <Chart title={withPeriod(`Settlements per ${per}`, win)} figure={m && series.length ? int(m.settlements) : undefined}
               series={[{ key: "n", label: "settlements", color: "var(--accent-2)" }]}
               rows={series.map((c) => ({ x: c.title, label: c.label, short: c.short, values: { n: c.settlements }, note: bytes(c.bytes) }))}
-              fmt={(v) => int(v)} empty={m ? "nothing settled in this period" : "loading…"} />
+              fmt={(v) => int(v)} empty={m && m.window.name === win ? "nothing settled" : "loading…"} />
           </div>
         </div>
       </section>
@@ -107,7 +111,7 @@ function Page() {
           <>
             <div className="tablewrap framed">
               <table className="bt blist">
-                <thead><tr><th>Blob</th><th>Height</th><th>Settled (UTC)</th><th>Namespace</th><th>Publisher</th><th>Upload size</th><th>Fee paid</th>
+                <thead><tr><th>Blob</th><th>Height</th><th>Settled (UTC)</th><th>Namespace</th><th>Publisher</th><th>Blob size</th><th>Fee paid</th>
                   <th title="Share of voting power whose signature on the settlement verified. A settlement needs ⅔.">Endorsed</th><th>Status</th></tr></thead>
                 <tbody>
                   {!rows && (loading || !!data) && <tr><td colSpan={9} className="muted">Loading…</td></tr>}
@@ -139,7 +143,7 @@ function Page() {
         {tab === "namespaces" && (
           <div className="tablewrap framed">
             <table className="bt nss">
-              <thead><tr><th>Namespace</th><th>Upload size</th><th>Settlements</th><th>Last 24h</th><th>Publishers</th><th>First seen</th><th>Last blob</th></tr></thead>
+              <thead><tr><th>Namespace</th><th>Blob size</th><th>Settlements</th><th>Last 24h</th><th>Publishers</th><th>First seen</th><th>Last blob</th></tr></thead>
               <tbody>
                 {!nss.data && <tr><td colSpan={7} className="muted">Loading…</td></tr>}
                 {nss.data?.namespaces.map((n) => (

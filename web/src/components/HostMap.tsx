@@ -12,11 +12,19 @@ import { type EndpointState, endpointState, readiness } from "@/components/Readi
 /**
  * The overview's host map: every registered Fibre host of the bonded set,
  * placed by the city its address geolocates to (hosting.lat/lon) or, without
- * one, by its country's label point, over Natural Earth country outlines.
- * Countries with a host are tinted. Hosts close together on screen share one
- * badge whose ring is split by endpoint state; a badge that holds several
- * places zooms in on them, so a dense region comes apart into countries and
- * cities. Beside the badges, a flag and a place name wherever they fit.
+ * one, by its country's label point, over Natural Earth country outlines drawn
+ * as one dot field, hosted countries lit in the accent. Above it the three
+ * counts; in its corner the key of Tensile's endpoint check and the zoom;
+ * under it, on a line of its own, the newest event.
+ *
+ * Every place is a disc carrying its count, sized by it, its ring split by
+ * endpoint state; hosts close together on screen share one disc (discs never
+ * touch), and in the dark theme a crowd glows in proportion to its count.
+ * Every disc is named the same way: its place with the most hosts, and "+n"
+ * for the other places it holds, which its popover lists. A name goes beside
+ * its disc where it fits, else a step out on a short leader, never nearer to
+ * another disc than to its own; one that fits nowhere is left to the popover.
+ * A disc that holds several places zooms in on them.
  *
  * Beside the map, the stake gauge, then the latest blob (`aside`).
  */
@@ -40,12 +48,12 @@ function StakeGauge({ rows }: { rows: Validator[] }) {
   const vars = { "--v": at(regPower), "--q": at(quorum) } as React.CSSProperties;
   return (
     <div className="ov-stake">
-      <h2 id="readiness-h" className="ov-eyebrow">Stake with a Fibre provider<Info label="Stake with a Fibre provider"><p>Share of the stake held by validators with a Fibre provider. A blob needs signatures from ⅔ of the stake to settle.</p></Info></h2>
+      <h2 id="readiness-h" className="ov-eyebrow">Voting power with a Fibre provider<Info label="Voting power with a Fibre provider"><p>Share of the stake held by validators with a Fibre provider. A blob needs signatures from ⅔ of the stake to settle.</p></Info></h2>
       <p className="ov-hero">
         <b className="ov-fig">{pct(regPower)}</b>
         <span className="ov-hero-help"> of voting power · {int(r.registered.length)} of {int(r.bonded.length)} validators</span>
       </p>
-      <div className="ov-gauge" style={vars} role="img" aria-label={`${pct(regPower)} of stake with a Fibre provider, ${pct(quorum)} needed`}>
+      <div className="ov-gauge" style={vars} role="img" aria-label={`${pct(regPower)} of voting power with a Fibre provider, ${pct(quorum)} needed`}>
         <span className="ov-needle"><span><Frac /> needed</span></span>
         <span className="ov-track"><i /></span>
         <span className="ov-ruler">{Array.from({ length: 11 }, (_, i) => <i key={i} />)}</span>
@@ -67,8 +75,23 @@ const STATE_WORD: Record<EndpointState, string> = { reachable: "reachable", unre
 const STATE_VAR: Record<EndpointState, string> = { reachable: "var(--accent)", unreachable: "var(--hold)", none: "var(--pending)" };
 const ORDER: EndpointState[] = ["reachable", "unreachable", "none"];
 
-/** the box's height over its width: the whole frame on a wide screen, a taller crop of it on a phone */
-const WIDE = FRAME.h / FRAME.w, TALL = 0.62;
+/**
+ * the box's height over its width. On a wide screen the world at a width that crops a
+ * little open Pacific at the sides (the edges fade out), and at the bottom cut under
+ * the southern capes, near 46°S, where no host sits, so the map holds no empty band
+ * below Cape Town. A taller crop on a phone, the whole height.
+ */
+const HOME_W = Math.min(FRAME.w, FRAME.h / 0.5);
+const SOUTH = project(0, -46)[1];
+const WIDE = SOUTH / HOME_W, TALL = 0.62;
+/** the room a view keeps beside the outermost hosts, as a share of their spread */
+const SIDE = 0.1;
+/** how wide a view the hosts need: their spread and the room beside it, never more than the home width */
+const hostsWidth = (pts: [number, number][]) => {
+  if (!pts.length) return HOME_W;
+  const xs = pts.map(([x]) => x);
+  return Math.min(HOME_W, (Math.max(...xs) - Math.min(...xs)) * (1 + 2 * SIDE));
+};
 const MAX_ZOOM = 12;
 
 function clampView(v: View, a: number): View {
@@ -82,9 +105,13 @@ function fitView(pts: [number, number][], a: number, pad = 0.35, minW = FRAME.w 
   const w = Math.max(minW, (x1 - x0) * (1 + 2 * pad), ((y1 - y0) * (1 + 2 * pad)) / a);
   return clampView({ w, x: (x0 + x1) / 2 - w / 2, y: (y0 + y1) / 2 - (w * a) / 2 }, a);
 }
-/** the whole world, or on a phone the widest crop of it that keeps the hosts in the middle */
-function homeView(pts: [number, number][], a: number): View {
-  const w = Math.min(FRAME.w, FRAME.h / a);
+/**
+ * the whole world (to the southern capes), or on a phone the widest crop of it that keeps the
+ * hosts in the middle. A wide box taller than that crop (the panel beside it is taller than
+ * the map) is filled by closing in on the hosts, never closer than they need.
+ */
+function homeView(pts: [number, number][], a: number, wide: boolean): View {
+  const w = wide ? Math.min(HOME_W, Math.max(hostsWidth(pts), SOUTH / a)) : Math.min(FRAME.w, FRAME.h / a);
   const xs = pts.map(([x]) => x), cx = xs.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : FRAME.w / 2;
   return clampView({ w, x: cx - w / 2, y: 0 }, a);
 }
@@ -103,8 +130,12 @@ const fmtShare = (s: number) => { const p = s * 100; return p >= 0.1 ? `${p.toFi
 
 /** badge diameter in px: a little larger for more hosts, so a crowd reads as one */
 const badge = (n: number, narrow: boolean) => Math.round((narrow ? 22 : 24) + Math.min(12, 3.2 * Math.sqrt(n - 1)));
+/** a lone host is the smallest disc, a step under the smallest group's */
+const drawn = (n: number, narrow: boolean) => (n === 1 ? (narrow ? 17 : 18) : badge(n, narrow));
+/** a crowd's glow: 0 for one host, rising to 1 at about twenty */
+const glowOf = (n: number) => Math.min(1, Math.sqrt((n - 1) / 20));
 
-/** hosts -> clusters: one per place (city, else country), then merged while two badges would touch on screen */
+/** hosts -> clusters: one per place (city, else country), then merged while two discs would touch on screen */
 function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
   const byLoc = new Map<string, Host[]>();
   for (const h of hosts) byLoc.set(h.loc, [...(byLoc.get(h.loc) ?? []), h]);
@@ -115,8 +146,8 @@ function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
     let best: [number, number, number] | null = null;
     for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) {
       const d = Math.hypot(cs[i].ux - cs[j].ux, cs[i].uy - cs[j].uy) * pxPerUnit;
-      // Neighbours may overlap a little before they merge, so a dense region keeps some shape.
-      const need = ((badge(cs[i].hosts.length, narrow) + badge(cs[j].hosts.length, narrow)) / 2) * 0.9;
+      // Two discs as drawn, their rings and halos clear of each other.
+      const need = (drawn(cs[i].hosts.length, narrow) + drawn(cs[j].hosts.length, narrow)) / 2 + 4;
       if (d < need && (!best || d - need < best[2])) best = [i, j, d - need];
     }
     if (!best) break;
@@ -126,7 +157,7 @@ function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
   }
   return cs.map((c) => {
     const hosts = [...c.hosts].sort((x, y) => (y.v.voting_power || 0) - (x.v.voting_power || 0));
-    // Countries by host count, so the first flag is the biggest share of the badge.
+    // Countries by host count, so the first is the biggest share of the disc.
     const n = new Map<string, number>();
     for (const h of hosts) if (h.cc) n.set(h.cc, (n.get(h.cc) ?? 0) + 1);
     const ccs = [...n.entries()].sort((p, q) => q[1] - p[1]).map(([cc]) => cc);
@@ -148,18 +179,23 @@ function ring(hosts: Host[]): string {
   return `conic-gradient(${stops.join(", ")})`;
 }
 
-/** what a badge is called: its city, its country, or its countries */
+/** what a disc is called: its city, its country, or its countries */
 function placeLabel(c: Cluster): string {
   if (c.locs === 1 && c.hosts[0].city) return `${c.hosts[0].city}, ${countryName(c.hosts[0].cc)}`;
   if (c.ccs.length === 1) return countryName(c.ccs[0]);
   if (c.ccs.length === 2) return c.ccs.map(countryName).join(", ");
   return `${c.ccs.length} countries`;
 }
-/** the short tag beside a badge: the name of the one place it holds, or nothing */
-function tagText(c: Cluster): string {
-  // Only a single place is named; a merged badge shows its count, and its places are in the popover.
-  if (c.locs !== 1) return "";
-  return c.hosts[0].city || (c.ccs.length === 1 ? countryName(c.ccs[0]) : "");
+/** a disc's places, most hosts first: its cities (or countries, where no city is known) */
+function cityCounts(c: Cluster): [string, number][] {
+  const n = new Map<string, number>();
+  for (const h of c.hosts) { const k = h.city || countryName(h.cc); n.set(k, (n.get(k) ?? 0) + 1); }
+  return [...n.entries()].sort((p, q) => q[1] - p[1] || p[0].localeCompare(q[0]));
+}
+/** the name beside a disc: its place with the most hosts, and how many other places it holds */
+function tagText(c: Cluster): { text: string; more: number } {
+  const places = cityCounts(c);
+  return places.length ? { text: places[0][0], more: places.length - 1 } : { text: "", more: 0 };
 }
 
 let measureCtx: CanvasRenderingContext2D | null | undefined;
@@ -170,11 +206,18 @@ function textWidth(s: string): number {
   return measureCtx ? measureCtx.measureText(s).width : s.length * 6.6;
 }
 
+/** a list that scrolls says which edges have more: the stylesheet fades those (data-more) */
+function scrollFade(el: HTMLElement | null) {
+  if (!el) return;
+  const more = [el.scrollTop > 1 ? "top" : "", el.scrollTop + el.clientHeight < el.scrollHeight - 1 ? "bottom" : ""].filter(Boolean).join(" ");
+  if (el.dataset.more !== more) el.dataset.more = more;
+}
+
 function reducedMotion(): boolean {
   try { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch { return false; }
 }
 
-// ---- the network feed: host registrations, for the pill before any blob settles ----
+// ---- the network feed: host registrations, for the line under the map before any blob settles ----
 type FeedEvent = { addr: string; term: string; at: string };
 function useFeedEvents(enabled: boolean): FeedEvent[] {
   const [events, setEvents] = useState<FeedEvent[]>([]);
@@ -229,21 +272,62 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows]);
 
-  // ---- size: the box keeps the frame's aspect ratio, so measuring it never shifts the layout ----
+  // ---- size: the box keeps at least the crop's shape, so measuring it never shifts the layout ----
   const box = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(760);
+  // the box's own height: beside the panel it grows to the panel's (CSS), up to what the hosts allow
+  const [boxH, setBoxH] = useState(0);
+  // the map is drawn once there is a host to place; measure whenever it (re)appears
+  const mapShown = total > 0 && (hosts.length > 0 || r.registered.length > 0);
   useLayoutEffect(() => {
     const el = box.current;
     if (!el) return;
     setWidth(el.clientWidth || 760);
-    const ro = new ResizeObserver(() => setWidth(el.clientWidth || 760));
+    setBoxH(el.clientHeight);
+    const ro = new ResizeObserver(() => { setWidth(el.clientWidth || 760); setBoxH(el.clientHeight); });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [mapShown]);
+  // the key and zoom in the map's corner: measured, so no place name is set under them
+  const tools = useRef<HTMLDivElement>(null);
+  const [toolsAt, setToolsAt] = useState<[number, number, number, number] | null>(null);
+  useLayoutEffect(() => {
+    const el = tools.current;
+    const at: [number, number, number, number] | null = el ? [el.offsetLeft, el.offsetTop, el.offsetWidth, el.offsetHeight] : null;
+    if (JSON.stringify(at) !== JSON.stringify(toolsAt)) setToolsAt(at);
+  });
   const narrow = width < 560;
-  const aspect = narrow ? TALL : WIDE;
+  // A wide box is at least the crop's shape and grows with the panel beside it, at most to the
+  // shape at which the whole frame's height still spans the hosts' width
+  const tallest = FRAME.h / hostsWidth(hosts.map((h) => [h.ux, h.uy]));
+  const aspect = narrow ? TALL : Math.round(1000 * Math.min(Math.max(WIDE, tallest), Math.max(WIDE, boxH / Math.max(1, width)))) / 1000;
   const height = width * aspect;
-  const home = useMemo(() => homeView(hosts.map((h) => [h.ux, h.uy]), aspect), [hosts, aspect]);
+  const base = useMemo(() => homeView(hosts.map((h) => [h.ux, h.uy]), aspect, !narrow), [hosts, aspect, narrow]);
+  // The key and zoom sit over the map's corner. A disc of the home view that would fall under
+  // them lifts the whole map clear of them, as far as the northernmost disc allows; where that
+  // is not far enough (the narrowest phones) the map also steps back a little, at most a fifth.
+  const [home, homeClusters] = useMemo((): [View, Cluster[]] => {
+    const first = cluster(hosts, width / base.w, narrow);
+    if (!toolsAt) return [base, first];
+    const [tx, ty, tw] = toolsAt, mid = base.x + base.w / 2;
+    let last: [View, Cluster[]] = [base, first];
+    for (let i = 0; i <= 5; i++) {
+      const w = base.w / (1 - 0.04 * i), s = width / w, x = Math.min(FRAME.w - w, Math.max(0, mid - w / 2));
+      const cs = i === 0 ? first : cluster(hosts, s, narrow);
+      // lo: the least lift that clears the key; hi: the most that keeps every disc and its halo in the box
+      let lo = base.y, hi = Infinity;
+      for (const c of cs) {
+        const px = (c.ux - x) * s, r = drawn(c.hosts.length, narrow) / 2 + 2;
+        if (px < -r || px > width + r) continue;
+        hi = Math.min(hi, c.uy - r / s);
+        if (px + r > tx - 2 && px - r < tx + tw + 2) lo = Math.max(lo, c.uy + (r + 2 - ty) / s);
+      }
+      if (i === 0 && lo <= base.y) return last;
+      last = [{ x, y: Math.min(lo, Math.max(hi, base.y)), w }, cs];
+      if (lo <= Math.max(hi, base.y)) break;
+    }
+    return last;
+  }, [base, hosts, toolsAt, width, narrow]);
 
   // ---- view: where the map is looking, animated toward a target ----
   const [view, setView] = useState<View>(home);
@@ -252,10 +336,11 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
   viewRef.current = view;
   const raf = useRef(0);
   // A new shape of box starts again from its home view; a data refresh that leaves home where it was does not.
-  const homeKey = `${aspect}|${Math.round(home.x)}|${Math.round(home.w)}`;
+  const homeKey = `${aspect}|${Math.round(home.x)}|${Math.round(home.y)}|${Math.round(home.w)}`;
   useLayoutEffect(() => { cancelAnimationFrame(raf.current); setView(home); setTarget(home); }, [homeKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const go = (to: View) => {
-    const t = clampView(to, aspect), from = viewRef.current;
+    // zoomed back out to the home view's width is the home view itself
+    const t = to.w >= home.w - 1 ? home : clampView(to, aspect), from = viewRef.current;
     setTarget(t);
     cancelAnimationFrame(raf.current);
     if (reducedMotion()) { setView(t); return; }
@@ -275,13 +360,13 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
   const scale = width / view.w; // px per map unit, now
   const toPx = (ux: number, uy: number): [number, number] => [(ux - view.x) * scale, (uy - view.y) * scale];
 
-  // Badges merge by the zoom the view is heading to, so they do not re-merge mid-flight.
-  const clusters = useMemo(() => cluster(hosts, width / target.w, narrow), [hosts, width, target.w, narrow]);
+  // Discs merge by the zoom the view is heading to, so they do not re-merge mid-flight.
+  const clusters = useMemo(() => (target.w === home.w ? homeClusters : cluster(hosts, width / target.w, narrow)), [homeClusters, home.w, hosts, width, target.w, narrow]);
 
   // ---- drag to pan, once zoomed in ----
   const drag = useRef<{ id: number; x: number; y: number; v: View; moved: boolean } | null>(null);
   const onPointerDown = (e: React.PointerEvent) => {
-    if (!zoomed || e.button !== 0 || (e.target as Element).closest(".fm-c, .fm-ctl")) return;
+    if (!zoomed || e.button !== 0 || (e.target as Element).closest(".ov-pin, .ov-map-tools")) return;
     cancelAnimationFrame(raf.current);
     drag.current = { id: e.pointerId, x: e.clientX, y: e.clientY, v: viewRef.current, moved: false };
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
@@ -303,6 +388,18 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
     go({ w, x: cx - w / 2, y: cy - (w * aspect) / 2 });
   };
 
+  // ---- the pins are one stop in the tab order: the arrow keys walk them, west to east ----
+  const [roving, setRoving] = useState<string | null>(null);
+  const walk = (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    const step = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : e.key === "Home" ? -Infinity : e.key === "End" ? Infinity : 0;
+    if (!step) return;
+    const all = [...(e.currentTarget.closest("ul")?.querySelectorAll<HTMLButtonElement>(".ov-b") ?? [])];
+    const i = all.indexOf(e.currentTarget);
+    const j = step === -Infinity ? 0 : step === Infinity ? all.length - 1 : Math.min(all.length - 1, Math.max(0, i + step));
+    all[j]?.focus();
+    e.preventDefault();
+  };
+
   // ---- open cluster (hover, focus, tap) ----
   const [open, setOpen] = useState<string | null>(null);
   const closeT = useRef<number | undefined>(undefined);
@@ -311,7 +408,7 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(null); };
-    const onDown = (e: PointerEvent) => { if (!(e.target as Element)?.closest?.(".fm-c")) setOpen(null); };
+    const onDown = (e: PointerEvent) => { if (!(e.target as Element)?.closest?.(".ov-pin")) setOpen(null); };
     document.addEventListener("keydown", onKey);
     document.addEventListener("pointerdown", onDown);
     return () => { document.removeEventListener("keydown", onKey); document.removeEventListener("pointerdown", onDown); };
@@ -319,7 +416,7 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
   const canSplit = (c: Cluster) => c.locs > 1 && target.w > FRAME.w / MAX_ZOOM + 1;
   const activate = (c: Cluster) => {
     if (canSplit(c)) {
-      // Zoom until the places in this badge come apart: at least twice as close, at most the zoom limit.
+      // Zoom until the places in this disc come apart: at least twice as close, at most the zoom limit.
       const fit = fitView(c.hosts.map((h) => [h.ux, h.uy]), aspect);
       const w = Math.min(fit.w, target.w / 2);
       setOpen(null);
@@ -327,7 +424,7 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
     } else openNow(c.id);
   };
 
-  // ---- live pill: who served most recently, or else the newest host events ----
+  // ---- the line under the map: who served most recently, or else the newest host events ----
   const blobs = rows.some((v) => (v.obligations?.total ?? 0) > 0);
   const probes = useApi<{ probes: Probe[] }>(blobs ? "/v1/probes?limit=60" : null, 30000);
   type Live = { v: Validator; host?: Host; event?: string; at: string };
@@ -374,17 +471,30 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
   const cur = live.length ? live[li % live.length] : null;
   const liveCluster = cur?.host ? clusters.find((c) => c.hosts.includes(cur.host!))?.id : undefined;
 
-  // ---- the land: every country once; hosted ones tinted, the open badge's stronger ----
+  // ---- the land: every country once; hosted ones lit, the open disc's brighter ----
   const hosted = useMemo(() => new Set(hosts.map((h) => h.cc)), [hosts]);
   // a registered host this observer has not checked yet gets its own entry in the key
   const unchecked = hosts.some((h) => h.state === "none");
   const openCcs = useMemo(() => new Set(clusters.find((c) => c.id === open)?.ccs ?? []), [clusters, open]);
-  const land = useMemo(() => COUNTRIES.map(([cc, d], i) => (
-    <path key={cc || i} d={d} className={openCcs.has(cc) ? "hi" : hosted.has(cc) ? "on" : undefined} />
-  )), [hosted, openCcs]);
+  const land = useMemo(() => (
+    <>
+      {/* a faint wash under a lit country's dots, so a lit region reads as one shape */}
+      {COUNTRIES.map(([cc, d], i) => hosted.has(cc) ? <path key={`w${cc || i}`} d={d} className={`ov-wash${openCcs.has(cc) ? " hi" : ""}`} /> : null)}
+      {COUNTRIES.map(([cc, d], i) => (
+        <path key={cc || i} d={d} className={openCcs.has(cc) ? "hi" : hosted.has(cc) ? "on" : undefined} />
+      ))}
+    </>
+  ), [hosted, openCcs]);
+  // The dots keep their spacing on screen: they grow with the zoom and halve their pitch every doubling.
+  const pitch = ((narrow ? 4.8 : 5.4) * home.w) / Math.max(1, width) / Math.pow(2, Math.max(0, Math.round(Math.log2(home.w / view.w))));
+  const dots = (["d", "on", "hi"] as const).map((k) => (
+    <pattern key={k} id={`ov-dots-${k}`} patternUnits="userSpaceOnUse" width={pitch} height={pitch}>
+      <circle className={`ov-dot-${k}`} cx={pitch / 2} cy={pitch / 2} r={pitch * (k === "d" ? 0.26 : 0.31)} />
+    </pattern>
+  ));
 
   if (total === 0) return null;
-  if (hosts.length === 0 && r.registered.length === 0) {
+  if (!mapShown) {
     // Nothing to place yet: the readiness answer alone, as before.
     return showReadiness ? (
       <section className="band readiness" aria-labelledby="readiness-h">
@@ -393,29 +503,62 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
     ) : null;
   }
 
-  // ---- badges on screen, and their tags where they fit ----
+  // ---- discs on screen, and their names where they fit ----
   const placed = clusters.map((c) => {
     const [x, y] = toPx(c.ux, c.uy);
-    return { c, x, y, d: badge(c.hosts.length, narrow) };
-  }).filter((p) => p.x >= p.d / 2 - 2 && p.x <= width - p.d / 2 + 2 && p.y >= p.d / 2 - 2 && p.y <= height - p.d / 2 + 2);
+    // d: the hit target, never under 24px; s: the disc that is drawn
+    const s = drawn(c.hosts.length, narrow);
+    return { c, x, y, d: Math.max(24, s), s };
+  }).filter((p) => p.x >= p.s / 2 - 2 && p.x <= width - p.s / 2 + 2 && p.y >= p.s / 2 - 2 && p.y <= height - p.s / 2 + 2);
   type Rect = [number, number, number, number];
   const hit = (a: Rect, b: Rect) => a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
-  const taken: Rect[] = placed.map((p) => [p.x - p.d / 2 - 2, p.y - p.d / 2 - 2, p.d + 4, p.d + 4]);
-  taken.push([0, height - 42, 80, 42]); // the zoom controls, bottom left
-  // Each tag tries the right of its badge, then the left, then a little higher or lower, then above and below.
-  const tags = new Map<string, { x: number; y: number; w: number; text: string }>();
+  const grow = (r: Rect, m: number): Rect => [r[0] - m, r[1] - m, r[2] + 2 * m, r[3] + 2 * m];
+  const discRect = (p: { x: number; y: number; s: number }): Rect => [p.x - p.s / 2, p.y - p.s / 2, p.s, p.s];
+  /** how far a rectangle is from a point */
+  const gapTo = (r: Rect, x: number, y: number) => Math.hypot(Math.max(r[0] - x, 0, x - (r[0] + r[2])), Math.max(r[1] - y, 0, y - (r[1] + r[3])));
+  // Every name reads the same way: beside its disc on the right, level with
+  // it, where it fits; else just above or below on the right; else the same
+  // a step out on a leader; only then the left, in the same order. Never
+  // straight above or under a disc, where it could name either of two. It
+  // may not cover a disc or another name, keeps clear of every other disc,
+  // and must sit clearly nearer its own disc than any other; a name that
+  // fits nowhere is left to the popover.
+  type Tag = { x: number; y: number; w: number; text: string; more: number; lead?: { x: number; y: number; len: number; ang: number } };
+  const tags = new Map<string, Tag>();
   if (!moving) {
-    for (const p of [...placed].sort((a, b) => b.c.hosts.length - a.c.hosts.length)) {
-      const text = tagText(p.c);
+    const labels: Rect[] = [];
+    const NEAR = 7, OUT = 20;
+    for (const p of [...placed].sort((a, b) => b.c.hosts.length - a.c.hosts.length || a.x - b.x)) {
+      const { text, more } = tagText(p.c);
       if (!text) continue;
-      const w = Math.ceil(10 + textWidth(text)), h = 20;
-      const r = p.d / 2 + 3, right = r, left = -r - w, mid = -w / 2;
-      for (const [dx, dy] of [[right, 0], [left, 0], [right, -11], [right, 11], [left, -11], [left, 11], [mid, -r - h / 2], [mid, r + h / 2]]) {
-        const rect: Rect = [p.x + dx, p.y + dy - h / 2, w, h];
-        if (rect[0] < 0 || rect[0] + w > width || rect[1] < 0 || rect[1] + h > height) continue;
-        if (taken.some((t) => hit(t, rect))) continue;
-        taken.push(rect);
-        tags.set(p.c.id, { x: dx, y: dy - h / 2, w, text });
+      const full = more > 0 ? `${text} +${more}` : text;
+      const w = Math.ceil(10 + textWidth(full)), h = 18;
+      const others = placed.filter((q) => q !== p);
+      const spots: [number, number, number][] = [];
+      for (const side of [1, -1]) for (const step of [NEAR, OUT]) {
+        const r = p.s / 2 + step, d = r * 0.7;
+        const xs = side > 0 ? r : -r - w, xd = side > 0 ? d : -d - w;
+        spots.push([step, xs, -h / 2], [step, xd, -d - h], [step, xd, d]);
+      }
+      for (const [step, dx, dy] of spots) {
+        const rect: Rect = [p.x + dx, p.y + dy, w, h];
+        if (rect[0] < 2 || rect[0] + w > width - 2 || rect[1] < 2 || rect[1] + h > height - 2) continue;
+        if (hit(grow(discRect(p), 3), rect)) continue;
+        if (toolsAt && hit(grow(toolsAt, 4), rect)) continue;
+        if (others.some((q) => hit(grow(discRect(q), 8), rect))) continue;
+        if (labels.some((l) => hit(grow(l, 4), rect))) continue;
+        const own = gapTo(rect, p.x, p.y) - p.s / 2;
+        if (others.some((q) => gapTo(rect, q.x, q.y) - q.s / 2 < own + 10)) continue;
+        labels.push(rect);
+        const t: Tag = { x: dx, y: dy, w, text, more };
+        if (step > NEAR) {
+          // a leader from the disc's rim to the name's nearest edge
+          const nx = Math.max(dx, Math.min(0, dx + w)), ny = Math.max(dy, Math.min(0, dy + h));
+          const len = Math.hypot(nx, ny), ux = nx / len, uy = ny / len;
+          const r0 = p.s / 2 + 2;
+          t.lead = { x: ux * r0, y: uy * r0, len: Math.max(0, len - r0 - 2), ang: (Math.atan2(uy, ux) * 180) / Math.PI };
+        }
+        tags.set(p.c.id, t);
         break;
       }
     }
@@ -427,100 +570,117 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
 
   return (
     <section className={`band hostmap${showReadiness ? "" : " solo"}`} aria-labelledby="hostmap-h">
-      <div className="fm-main">
-        <div className="fm-head">
-          <h2 id="hostmap-h">Fibre providers</h2>
-          <p className="fm-pill fm-stats">
-            <span><b>{hosts.length + unplaced}</b> Fibre providers</span>
-            <span><b>{countries}</b> countries</span>
-            <span><b>{providers}</b> hosting providers</span>
+      <div className="ov-map">
+        <div className="ov-map-head">
+          <h2 id="hostmap-h" className="ov-eyebrow">Fibre providers</h2>
+          <p className="ov-counts">
+            <span><b>{int(hosts.length + unplaced)}</b> Fibre providers</span>
+            <span><b>{int(countries)}</b> countries</span>
+            <span><b>{int(providers)}</b> hosting providers</span>
           </p>
         </div>
-        <div className={`fm-box${zoomed ? " zoomed" : ""}`} ref={box}
-          style={{ aspectRatio: `1 / ${aspect}` }}
+        <div className={`ov-atlas${zoomed ? " zoomed" : ""}`} ref={box}
+          style={{ aspectRatio: `1 / ${narrow ? TALL : WIDE}`, maxHeight: Math.ceil(width * (narrow ? TALL : Math.max(WIDE, tallest))) }}
           onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
-          <div className="fm-vp">
-            <svg className="fm-land" viewBox={`${view.x} ${view.y} ${view.w} ${view.w * aspect}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false">
+          <div className="ov-vp">
+            <svg className="ov-land" viewBox={`${view.x} ${view.y} ${view.w} ${view.w * aspect}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false">
+              <defs>{dots}</defs>
               {land}
             </svg>
           </div>
-          <ul className="fm-clusters" aria-label="Fibre providers by location">
-            {placed.map(({ c, x, y, d }) => {
+          <ul className="ov-pins" aria-label="Fibre providers by location">
+            {placed.map(({ c, x, y, d, s }) => {
               const isOpen = open === c.id;
               const fault = c.hosts.some((h) => (h.v.obligations?.broken ?? 0) > 0);
               const place = placeLabel(c);
-              const counts = ORDER.map((s) => [s, c.hosts.filter((h) => h.state === s).length] as const).filter(([, n]) => n > 0);
+              const counts = ORDER.map((st) => [st, c.hosts.filter((h) => h.state === st).length] as const).filter(([, n]) => n > 0);
               const split = canSplit(c);
               const tag = tags.get(c.id);
               const multi = c.ccs.length > 1;
-              // The list opens beside the badge on a wide map and under the map on a narrow one.
+              const n = c.hosts.length;
+              const one = n === 1;
+              // a merged disc's places, most hosts first, for the popover and the screen reader alike
+              const cities = c.locs > 1 ? cityCounts(c) : [];
+              const glow = glowOf(n);
+              // The list opens beside the disc on a wide map and under the map on a narrow one.
               const pop: React.CSSProperties = narrow
-                ? { left: -x, top: height - y + 8, width }
-                : { [x > width * 0.6 ? "right" : "left"]: d / 2 + 8, [y > height * 0.5 ? "bottom" : "top"]: -d / 2, width: 300 };
+                ? { left: -x, top: height - y + 10, width }
+                : { [x > width * 0.6 ? "right" : "left"]: s / 2 + 10, [y > height * 0.5 ? "bottom" : "top"]: -Math.max(s, 24) / 2, width: 300 };
               return (
-                <li key={c.id} className={`fm-c${isOpen ? " open" : ""}${liveCluster === c.id ? " live" : ""}`}
+                <li key={c.id} className={`ov-pin${one ? " one" : ""}${isOpen ? " open" : ""}${liveCluster === c.id ? " live" : ""}`}
                   style={{ left: x, top: y, zIndex: isOpen ? 30 : undefined }}
                   onMouseEnter={() => openNow(c.id)} onMouseLeave={closeSoon}>
-                  <button type="button" className="fm-b" aria-expanded={split ? undefined : isOpen}
-                    aria-label={`${place}: ${c.hosts.length} Fibre provider${c.hosts.length === 1 ? "" : "s"}, ${counts.map(([s, n]) => `${n} ${STATE_WORD[s]}`).join(", ")}${split ? ". Zoom in" : ""}`}
-                    style={{ width: d, height: d, background: ring(c.hosts) }}
-                    onFocus={() => openNow(c.id)} onClick={() => activate(c)}>
-                    <span>{c.hosts.length}</span>
-                    {fault && <i className="fm-fault" aria-hidden="true" />}
+                  {glow > 0 && <span className="ov-glow" aria-hidden="true" style={{ width: s + 76 * glow, height: s + 76 * glow, opacity: 0.35 + 0.65 * glow }} />}
+                  <button type="button" className="ov-b" aria-expanded={split ? undefined : isOpen} aria-describedby="ov-pins-keys"
+                    aria-label={`${place}${cities.length ? ` (${cities.map(([k, m]) => (m > 1 ? `${k} ${m}` : k)).join(", ")})` : ""}: ${n} Fibre provider${one ? "" : "s"}, ${counts.map(([st, k]) => `${k} ${STATE_WORD[st]}`).join(", ")}${split ? ". Zoom in" : ""}`}
+                    style={{ width: d, height: d, "--s": `${s}px`, "--ring": ring(c.hosts) } as React.CSSProperties}
+                    tabIndex={c.id === (placed.some((q) => q.c.id === roving) ? roving : placed[0]?.c.id) ? 0 : -1}
+                    onFocus={() => { setRoving(c.id); openNow(c.id); }} onKeyDown={walk} onClick={() => activate(c)}>
+                    <span className="ov-disc"><span>{n}</span></span>
+                    {fault && <i className="ov-fault" aria-hidden="true" />}
                   </button>
+                  {tag?.lead && <i className="ov-lead" aria-hidden="true" style={{ left: tag.lead.x, top: tag.lead.y, width: tag.lead.len, transform: `rotate(${tag.lead.ang}deg)` }} />}
                   {tag && (
-                    <span className="fm-tag" aria-hidden="true" style={{ left: tag.x, top: tag.y, width: tag.w }}>
-                      <span>{tag.text}</span>
-                    </span>
+                    <span className="ov-tag" aria-hidden="true" style={{ left: tag.x, top: tag.y, width: tag.w }}>{tag.text}{tag.more > 0 && <i> +{tag.more}</i>}</span>
                   )}
                   {isOpen && (
-                    <div className="fm-pop" style={pop} role="group" aria-label={place}>
-                      <p className="fm-pop-h">
+                    <div className="ov-pop" style={pop} role="group" aria-label={place}>
+                      <p className="ov-pop-h">
                         <b>{place}</b>
-                        <span>{c.hosts.length} provider{c.hosts.length === 1 ? "" : "s"}</span>
+                        <span>{n} provider{one ? "" : "s"}</span>
                       </p>
-                      <ul>
+                      {cities.length > 0 && <p className="ov-pop-cities">{cities.map(([k, m]) => <span key={k}>{k}{m > 1 && <i> {m}</i>}</span>)}</p>}
+                      {/* whole rows, the list fading at an edge that has more (scrollFade) */}
+                      <ul ref={scrollFade} onScroll={(e) => scrollFade(e.currentTarget)}>
                         {c.hosts.map((h) => (
                           <li key={h.v.address}>
-                            <i className="fm-dot" style={{ background: STATE_VAR[h.state] }} title={STATE_WORD[h.state]} />
-                            <Link href={valLink(h.v)} className="fm-name">{name(h.v)}</Link>
-                            <span className="fm-share">{fmtShare(h.share)}</span>
-                            <span className="fm-meta">
+                            <i className="ov-dot" style={{ background: STATE_VAR[h.state] }} title={STATE_WORD[h.state]} />
+                            <Link href={valLink(h.v)} className="ov-name">{name(h.v)}</Link>
+                            <span className="ov-share">{fmtShare(h.share)}</span>
+                            <span className="ov-meta">
                               {[multi ? h.cc : "", h.provider, c.locs > 1 && h.city ? h.city : multi && !h.city ? countryName(h.cc) : "", h.state !== "reachable" ? STATE_WORD[h.state] : ""].filter(Boolean).join(" · ")}
-                              {(h.v.obligations?.broken ?? 0) > 0 && <span className="fm-broken"> · {h.v.obligations.broken} not served</span>}
+                              {(h.v.obligations?.broken ?? 0) > 0 && <span className="ov-broken"> · {h.v.obligations.broken} not served</span>}
                             </span>
                           </li>
                         ))}
                       </ul>
-                      {split && <button type="button" className="fm-zoomin" onClick={() => activate(c)}>Zoom in</button>}
+                      {split && <button type="button" className="ov-zoomin" onClick={() => activate(c)}>Zoom in</button>}
                     </div>
                   )}
                 </li>
               );
             })}
           </ul>
-          <div className="fm-ctl" role="group" aria-label="Map view">
-            <span className="fm-seg">
-              <button type="button" aria-label="Zoom in" disabled={target.w <= FRAME.w / MAX_ZOOM + 1} onClick={() => zoomBy(2)}>+</button>
-              <button type="button" aria-label="Zoom out" disabled={!zoomed} onClick={() => zoomBy(0.5)}>−</button>
-            </span>
+          <span id="ov-pins-keys" className="sr-only">Arrow keys move between places.</span>
+          {/* the corner of the map: the quiet key of Tensile's check, and the zoom */}
+          <div className="ov-map-tools" ref={tools}>
+            <p className="ov-key" aria-hidden="true" title="Observed by Tensile">
+              <svg viewBox="0 0 16 16" width="12" height="12"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8Z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" /><circle cx="8" cy="8" r="2" fill="currentColor" /></svg>
+              <span><i style={{ background: STATE_VAR.reachable }} />reachable</span>
+              <span><i style={{ background: STATE_VAR.unreachable }} />unreachable</span>
+              {unchecked && <span><i style={{ background: STATE_VAR.none }} />not checked yet</span>}
+            </p>
+            <div className="ov-zoom" role="group" aria-label="Map view">
+              <button type="button" aria-label="Zoom in" disabled={target.w <= FRAME.w / MAX_ZOOM + 1} onClick={() => zoomBy(2)}>
+                <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+              </button>
+              <button type="button" aria-label="Zoom out" disabled={!zoomed} onClick={() => zoomBy(0.5)}>
+                <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 6h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+              </button>
+            </div>
           </div>
         </div>
-        <div className="fm-pills">
+        {/* under the map, on a line of its own: the newest event */}
+        <div className="ov-map-foot">
           {cur && (
-            <p className="fm-pill fm-live" key={`${cur.v.address}|${cur.at}|${cur.event ?? ""}`}>
-              <i className="fm-dot" style={{ background: cur.event === "last reachable" ? "var(--hold)" : "var(--accent)" }} />
-              <span className="fm-who"><Link href={valLink(cur.v)}>{name(cur.v)}</Link>{cur.event && <> {cur.event}</>}</span>
+            <p className="ov-live" key={`${cur.v.address}|${cur.at}|${cur.event ?? ""}`}>
+              <i className="ov-dot" style={{ background: cur.event === "last reachable" ? "var(--hold)" : "var(--accent)" }} />
+              <span><Link href={valLink(cur.v)}>{name(cur.v)}</Link>{cur.event && <> {cur.event}</>}</span>
               {cur.host?.cc && <span>{countryName(cur.host.cc)}</span>}
               {!cur.event && cur.host?.provider && <span>{cur.host.provider}</span>}
-              <span className="fm-ago" title={utcWord(cur.at)}>{ago(cur.at)}</span>
+              <span className="ov-ago" title={utcWord(cur.at)}>{ago(cur.at)}</span>
             </p>
           )}
-          <p className="fm-key" aria-hidden="true">
-            <span><i style={{ background: STATE_VAR.reachable }} />reachable</span>
-            <span><i style={{ background: STATE_VAR.unreachable }} />unreachable</span>
-            {unchecked && <span><i style={{ background: STATE_VAR.none }} />not checked yet</span>}
-          </p>
         </div>
       </div>
       {showReadiness && (

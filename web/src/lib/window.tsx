@@ -5,6 +5,10 @@ import { useSearchParams } from "next/navigation";
 export const WINDOWS = ["24h", "7d", "30d", "all"] as const;
 export type WindowName = (typeof WINDOWS)[number];
 export const windowLabel = (w: string) => (w === "all" ? "All" : w);
+/** the period as a title names it, in parentheses after the name: "24h", "7d", "30d", "all" */
+export const periodName = (w: string) => (w === "all" ? "all" : w);
+/** a title with the period it counts: "Blob size per day (7d)", "Blobs (all)" */
+export const withPeriod = (label: string, w: string) => `${label} (${periodName(w)})`;
 
 /**
  * The selected period, carried in the URL (?window=7d) so a link to a page

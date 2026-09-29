@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -131,35 +133,54 @@ func TestStaleSnapshotIsServedWhileRefreshing(t *testing.T) {
 	t.Error("a stale snapshot was served but no refresh replaced it")
 }
 
-func TestSnapshotTTLGrowsWithTheWindow(t *testing.T) {
-	// A minute of new data moves a day's figure and does not move a month's, so
-	// the month must not be recomputed as often as the day.
-	if ttlFor("24h") >= ttlFor("7d") || ttlFor("7d") >= ttlFor("30d") || ttlFor("30d") >= ttlFor("all") {
-		t.Errorf("TTLs do not increase with the window: 24h=%v 7d=%v 30d=%v all=%v",
-			ttlFor("24h"), ttlFor("7d"), ttlFor("30d"), ttlFor("all"))
-	}
-	if ttlFor("something-new") != ttlFor("all") {
-		t.Error("an unrecognised window should get the most conservative refresh rate, not the cheapest")
+// Only the current figures need to be fresh: 24h refreshes every minute, 7d
+// every five, 30d and "all" every fifteen, and a window added later takes the
+// slowest pace rather than the most expensive one.
+func TestLongWindowsRefreshSlowly(t *testing.T) {
+	for name, want := range map[string]time.Duration{
+		"24h": time.Minute, "7d": 5 * time.Minute, "30d": 15 * time.Minute, "all": 15 * time.Minute,
+		"something-new": 15 * time.Minute,
+	} {
+		if got := ttlFor(name); got != want {
+			t.Errorf("ttlFor(%s) = %s, want %s", name, got, want)
+		}
 	}
 }
 
-// A cache younger than the long windows' TTLs refreshes them faster: a fresh
-// deployment's "all" window is minutes of data, not months.
-func TestSnapshotTTLScalesWithCacheAge(t *testing.T) {
+// A cache's own TTL overrides ttlFor for the windows it names, from the first
+// moment: the live lane's windows must not wait a minute on a new cache.
+func TestSnapshotTTLOverride(t *testing.T) {
 	c := newSnapshotCache("t", func(context.Context, Window) (int, error) { return 0, nil })
-	if got := c.ttl("all"); got != time.Minute {
-		t.Fatalf("new cache: ttl(all) = %s, want 1m", got)
+	c.ttls = map[string]time.Duration{"24h": liveTTL}
+	if got := c.ttl("24h"); got != liveTTL {
+		t.Fatalf("ttl(24h) = %s, want the override %s", got, liveTTL)
 	}
-	c.born = time.Now().Add(-100 * time.Minute)
-	if got := c.ttl("all"); got < 10*time.Minute || got > 10*time.Minute+time.Second {
-		t.Fatalf("100 min old: ttl(all) = %s, want about 10m", got)
+	if got := c.ttl("7d"); got != ttlFor("7d") {
+		t.Fatalf("ttl(7d) = %s, want ttlFor's %s", got, ttlFor("7d"))
 	}
-	c.born = time.Now().Add(-48 * time.Hour)
-	if got := c.ttl("all"); got != ttlFor("all") {
-		t.Fatalf("two days old: ttl(all) = %s, want %s", got, ttlFor("all"))
+	now := time.Now()
+	s := &snap[int]{at: now.Add(-liveTTL - time.Millisecond), ms: 5}
+	if !c.stale(s, "24h", now) {
+		t.Error("a 24h snapshot past the override is not stale")
 	}
-	if got := c.ttl("24h"); got != time.Minute {
-		t.Fatalf("24h never below its own floor: %s", got)
+	if c.stale(s, "7d", now) {
+		t.Error("a 7d snapshot ten seconds old is stale")
+	}
+}
+
+// A computation that takes longer than its TTL is not rerun back to back: its
+// window waits twice the computation.
+func TestSlowComputationWaitsTwiceItsCost(t *testing.T) {
+	c := newSnapshotCache("t", func(context.Context, Window) (int, error) { return 0, nil })
+	c.ttls = map[string]time.Duration{"24h": liveTTL}
+	now := time.Now()
+	s := &snap[int]{at: now.Add(-15 * time.Second), ms: 12_000}
+	if c.stale(s, "24h", now) {
+		t.Error("a 12s computation was due again 15s after it started")
+	}
+	s.at = now.Add(-25 * time.Second)
+	if !c.stale(s, "24h", now) {
+		t.Error("a 12s computation was not due 25s after it started")
 	}
 }
 
@@ -279,5 +300,98 @@ func TestAReaderAfterAHoldDoesNotTakeTheRefreshStartedBeforeIt(t *testing.T) {
 	c.bg.Wait()
 	if r.err != nil || r.v != 3 {
 		t.Fatalf("the reader after the hold got %d (%v) after %d computations, want the figure computed after the hold", r.v, r.err, computed.Load())
+	}
+}
+
+// A market snapshot of a window in which no publisher did anything is read
+// back after a restart like any other: its empty publisher list is left out
+// of the file, and the file still says it carries one. A file from before the
+// list was kept in the snapshot is still refused.
+func TestMarketSnapshotWithNoPublisherIsReloaded(t *testing.T) {
+	s := newSnapshotServer(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	s.market = newSnapshotCache("market", s.computePublishing)
+	s.market.accept = marketSnapshotCurrent
+	s.market.persistTo(dir, nil)
+	win := testWindow("24h")
+	v, _, _, err := s.market.get(ctx, nil, win)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Publishers) != 0 || !v.PublishersListed {
+		t.Fatalf("an empty store gave %d publishers, listed %v", len(v.Publishers), v.PublishersListed)
+	}
+	b, err := os.ReadFile(s.market.file("24h"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Value map[string]json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(b, &file); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := file.Value["publishers"]; ok {
+		t.Fatal("the empty list was written to the file; this no longer tests what omitempty leaves out")
+	}
+	if string(file.Value["publishers_listed"]) != "true" {
+		t.Fatalf("the file does not say it carries the list: %s", file.Value["publishers_listed"])
+	}
+	calls := 0
+	c2 := newSnapshotCache("market", func(ctx context.Context, w Window) (*marketResponse, error) {
+		calls++
+		return s.computePublishing(ctx, w)
+	})
+	c2.accept = marketSnapshotCurrent
+	c2.persistTo(dir, nil)
+	if _, _, _, err := c2.get(ctx, nil, win); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatal("the snapshot of a window with no publisher was not read back; it was computed again")
+	}
+
+	old := *v
+	old.Publishers, old.PublishersListed = nil, false
+	s.market.persist("24h", &snap[*marketResponse]{v: &old, at: time.Now(), ms: 1})
+	c3 := newSnapshotCache[*marketResponse]("market", nil)
+	c3.accept = marketSnapshotCurrent
+	c3.persistTo(dir, nil)
+	c3.mu.Lock()
+	n := len(c3.entries)
+	c3.mu.Unlock()
+	if n != 0 {
+		t.Fatal("an older build's market snapshot, without the publisher list, was loaded")
+	}
+}
+
+// A day's market snapshot from before the hours carried fees and a publisher
+// split is refused as one from before the publisher list is: its hours would
+// chart no fees and no publisher until the warm-up replaced it. This build's
+// file is read back, and so is a day with no settlement, which has neither.
+func TestMarketSnapshotWithoutTheHourlySplitIsRefused(t *testing.T) {
+	hours := []hourBucket{{Hour: "2026-09-29T10", Bytes: 1 << 20, Settlements: 1, FeesUtia: 830_000}}
+	split := []hourPublisher{{Hour: "2026-09-29T10", Publisher: "celestia1zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3shxjgz", Bytes: 1 << 20, Settlements: 1, FeesUtia: 830_000}}
+	loads := func(r *marketResponse) bool {
+		dir := t.TempDir()
+		w := newSnapshotCache[*marketResponse]("market", nil)
+		w.persistTo(dir, nil)
+		w.persist("24h", &snap[*marketResponse]{v: r, at: time.Now(), ms: 1})
+		c := newSnapshotCache[*marketResponse]("market", nil)
+		c.accept = marketSnapshotCurrent
+		c.persistTo(dir, nil)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.entries["24h"] != nil
+	}
+	if loads(&marketResponse{PublishersListed: true, Hourly: hours}) {
+		t.Fatal("an older build's day, hours without the split, was loaded")
+	}
+	if !loads(&marketResponse{PublishersListed: true, Hourly: hours, HourlyByPub: split}) {
+		t.Fatal("this build's day was not read back")
+	}
+	if !loads(&marketResponse{PublishersListed: true, Hourly: []hourBucket{}}) {
+		t.Fatal("a day with no settlement was not read back")
 	}
 }

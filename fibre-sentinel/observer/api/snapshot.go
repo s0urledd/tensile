@@ -28,12 +28,17 @@ import (
 // implied. That is the honest shape for this product anyway: every other number
 // on the site is a stored observation with a timestamp, and now these are too.
 //
-// Refreshing happens in the background, one at a time per window, and a stale
-// snapshot keeps being served while its replacement is computed, so a reader
-// never waits for an aggregate. Every window is warmed at startup, so the first
-// visitor does not wait either. After that a keeper refreshes every window as
-// its TTL runs out (keepSnapshotsFresh), read or not: a refresh triggered only
-// by a read served the triggering reader a figure as old as the last visit.
+// Refreshing happens in the background, never two computations of one window
+// at once, and a stale snapshot keeps being served while its replacement is
+// computed, so a reader never waits for an aggregate. Every window is warmed
+// at startup, so the first visitor does not wait either. After that keepers
+// refresh every window as its TTL runs out, read or not: a refresh triggered
+// only by a read served the triggering reader a figure as old as the last
+// visit. A keeper computes its windows one after another, so what a reader
+// watches move each has a keeper of its own — the 24h validator list, the
+// publisher-side summary and the network summary's 24h window — and one more
+// takes the longer windows in turn (newKeepers). A slow computation on one
+// keeper never holds back another's.
 //
 // What this does not yet do: a refresh still recomputes the reconstructability
 // of every publication in the sample, and a publication whose retention window
@@ -43,28 +48,69 @@ import (
 // with a backlog, say — and getting that wrong would publish a stale verdict
 // about a named validator. It wants its own change, with the invalidation
 // reasoned through rather than bolted on.
-
-// ttlFor is how old a snapshot may be before a read starts a refresh, scaled by
-// how much a minute of new data can actually move the figure.
 //
-// A day's window turns over in a day, so a minute is well inside its
-// resolution. A thirty-day window does not meaningfully change in a minute, and
-// refreshing it as often would spend the same seconds of work to move a figure
-// in its third decimal place. None of these is tighter than the probe schedule
-// that produces the data, which moves in minutes: refreshing faster than the
-// measurements arrive buys nothing and costs a core.
+// Nor does it stop a snapshot's cost from growing with its window. The
+// validator list and the network summary are aggregates over the window's
+// rows (publications, probes, heartbeats), which grow with blobs, so the long
+// windows cost the most; they are also the ones refreshed least often (ttlFor).
+// The day's windows are not cheap either, and the 24h validator list already
+// costs more than its TTL (liveTTL).
+
+// ttlFor is how old a snapshot may be before it is refreshed, for a window its
+// cache gives no TTL of its own (snapshotCache.ttls): a minute for 24h, five
+// minutes for 7d, fifteen for 30d and "all".
+//
+// Only the current figures need to be fresh. The day's window is the one a
+// reader watches move; the week, the month and the whole history are read,
+// not watched, and recomputing them every minute would keep a core busy to
+// move figures nobody is waiting on. A cache takes a window faster where a
+// reader does watch it: the validator list's 24h window and every window of
+// the publisher-side summary are on the live lane (liveTTL), and the network
+// summary's "all" window, which holds the overview's Available figure, is
+// refreshed every five minutes (networkAllTTL).
+//
+// The TTL is a floor, not a promise. A window whose computation outgrows it
+// waits twice its computation instead (stale), and each keeper computes its
+// windows one after another, so a window can be older than its TTL by what
+// the computations ahead of it on its keeper cost. Every snapshot says when
+// it was taken (computed_at).
+//
+// Nor are the windows one moment. Each is refreshed on its own schedule, so
+// the windows of one cache are taken minutes apart, and a longer window can
+// count fewer blobs, endorsements or readings than a shorter one until its
+// next refresh.
 func ttlFor(name string) time.Duration {
 	switch name {
 	case "24h":
 		return time.Minute
 	case "7d":
 		return 5 * time.Minute
-	case "30d":
+	default: // "30d", "all", and anything added later
 		return 15 * time.Minute
-	default: // "all", and anything added later
-		return 30 * time.Minute
 	}
 }
+
+// liveTTL is the live lane's TTL, for the 24h validator list and every window
+// of the publisher-side summary: they are refreshed at most every ten seconds,
+// the collector's pass interval, since nothing they count lands more often.
+//
+// Like every TTL it is a floor (stale): a window whose computation takes
+// longer waits twice its computation. The publisher-side windows cost well
+// under a second and are refreshed every ten seconds or so. The 24h validator
+// list is not: on the observer's store in late September 2026 it took 15 to 22
+// seconds a computation, so it was refreshed about every 35 to 45 seconds, and
+// only a cheaper computation brings that closer to ten.
+const liveTTL = 10 * time.Second
+
+// networkAllTTL is how old the network summary's "all" window may get. It is
+// the overview's Available figure, which reads every settlement so far and is
+// shown whatever period the page is set to, so it is kept fresher than the
+// other long windows.
+const networkAllTTL = 5 * time.Minute
+
+// liveInterval is how often the live lane's keepers look. A tick that finds
+// a window a few milliseconds short of the TTL waits one tick, not one TTL.
+const liveInterval = 2 * time.Second
 
 // warmWindows is every window the dashboard offers, computed once at startup so
 // that no visitor is the one who pays for a cold aggregate.
@@ -124,22 +170,27 @@ type snap[T any] struct {
 type snapshotCache[T any] struct {
 	label      string
 	compute    func(context.Context, Window) (T, error)
-	born       time.Time
 	dir        string
 	mu         sync.Mutex
 	entries    map[string]*snap[T]
 	refreshing map[string]bool
 	// revision returns a token that changes when something happened that a
-	// cached aggregate cannot survive. The TTLs here run to thirty minutes,
-	// and a withheld fault republished for half an hour after the hold
-	// landed is exactly the accusation the hold exists to stop, so the
-	// answer is invalidation and not a shorter TTL. nil means nothing can
-	// invalidate this cache.
+	// cached aggregate cannot survive. A withheld fault republished for
+	// even a minute after the hold landed is exactly the accusation the
+	// hold exists to stop, and a slow window can be served for longer than
+	// its TTL, so the answer is invalidation and not a shorter TTL. nil
+	// means nothing can invalidate this cache.
 	revision func() string
 	// bg counts the background computations in flight (warm-up and
 	// refreshes), so Server.Close can wait for their files to land before
 	// the directory they write to goes away.
 	bg sync.WaitGroup
+	// ttls overrides ttlFor for the windows it names. It is set before the
+	// cache is shared and only read after.
+	ttls map[string]time.Duration
+	// accept, when set, vets a snapshot read back from disk: an older
+	// build's file may parse and still lack something this build serves.
+	accept func(T) bool
 }
 
 // persisted is the on-disk form of one snapshot.
@@ -169,6 +220,9 @@ func (c *snapshotCache[T]) persistTo(dir string, log logf) {
 		}
 		var p persisted[T]
 		if err := json.Unmarshal(b, &p); err != nil || p.Label != c.label || p.Window != name {
+			continue
+		}
+		if c.accept != nil && !c.accept(p.Value) {
 			continue
 		}
 		c.mu.Lock()
@@ -204,26 +258,32 @@ func (c *snapshotCache[T]) persist(window string, s *snap[T]) {
 
 func newSnapshotCache[T any](label string, compute func(context.Context, Window) (T, error)) *snapshotCache[T] {
 	return &snapshotCache[T]{
-		label: label, compute: compute, born: time.Now(),
+		label: label, compute: compute,
 		entries: map[string]*snap[T]{}, refreshing: map[string]bool{},
 	}
 }
 
-// ttl is ttlFor scaled down while the cache is young. The long windows' TTLs
-// assume a long history, where a minute of new data cannot move an "all"
-// figure; on a fresh deployment the whole history is minutes old and the
-// "all" tile showed one publication for half an hour while 24h showed eight.
-// A tenth of the cache's age, never under a minute, converges on the table
-// above within hours and costs nothing once it has.
+// ttl is how old this cache lets the window get: its own override when it has
+// one, ttlFor otherwise.
 func (c *snapshotCache[T]) ttl(name string) time.Duration {
-	t := ttlFor(name)
-	if young := time.Since(c.born) / 10; young < t {
-		if young < time.Minute {
-			return time.Minute
-		}
-		return young
+	if t, ok := c.ttls[name]; ok {
+		return t
 	}
-	return t
+	return ttlFor(name)
+}
+
+// stale reports whether s has outlived its window's refresh interval at now.
+// The interval is the TTL, or twice what s took to compute when that is
+// longer: a computation that outgrows its TTL then runs at most half the
+// time instead of back to back, which would pin a core, keep a reader open on
+// the database almost continuously (starving the collector's checkpoints)
+// and rewrite the snapshot file without pause.
+func (c *snapshotCache[T]) stale(s *snap[T], name string, now time.Time) bool {
+	wait := c.ttl(name)
+	if busy := 2 * time.Duration(s.ms) * time.Millisecond; busy > wait {
+		wait = busy
+	}
+	return now.Sub(s.at) >= wait
 }
 
 // get returns the snapshot for win with the moment it was taken and what it
@@ -248,7 +308,7 @@ func (c *snapshotCache[T]) get(ctx context.Context, log logf, win Window) (T, ti
 		delete(c.entries, win.Name)
 		s = nil
 	}
-	if s != nil && time.Since(s.at) >= c.ttl(win.Name) && !c.refreshing[win.Name] {
+	if s != nil && c.stale(s, win.Name, time.Now()) && !c.refreshing[win.Name] {
 		c.refreshing[win.Name] = true
 		c.bg.Add(1)
 		go func() {
@@ -331,6 +391,12 @@ func (c *snapshotCache[T]) background(log logf, win Window) {
 		// with the history behind it and the end of that growth is a window
 		// that stops refreshing at all.
 		log("%s snapshot refresh (%s) took %s (over %s); consider lowering -retain-raw", c.label, win.Name, took.Round(time.Second), slowRefresh)
+		return
+	}
+	if ttl := c.ttl(win.Name); took >= ttl {
+		// The window now refreshes every 2×took rather than every TTL (stale):
+		// its age is still published, but it is older than it is meant to be.
+		log("%s snapshot refresh (%s) took %s, longer than its %s refresh interval", c.label, win.Name, took.Round(time.Millisecond), ttl)
 	}
 }
 
@@ -342,22 +408,29 @@ func (c *snapshotCache[T]) fill(ctx context.Context, win Window) (*snap[T], erro
 	// current until the TTL ran out: the withheld fault republished.
 	rev := c.rev()
 	v, err := c.compute(ctx, win)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.refreshing[win.Name] = false
 	if err != nil {
+		c.mu.Lock()
+		c.refreshing[win.Name] = false
+		c.mu.Unlock()
 		return nil, err
 	}
 	s := &snap[T]{v: v, rev: rev, at: start, ms: time.Since(start).Milliseconds()}
+	c.mu.Lock()
 	c.entries[win.Name] = s
+	c.mu.Unlock()
+	// Written outside the lock, so a reader of any window never waits for a
+	// file write. The window stays claimed (refreshing) until the file has
+	// landed, so two writes of the same file never overlap.
 	c.persist(win.Name, s)
+	c.mu.Lock()
+	c.refreshing[win.Name] = false
+	c.mu.Unlock()
 	return s, nil
 }
 
 // warm computes every window once, in the background, one at a time.
-// Sequential on purpose: these are the heaviest queries the process runs, and
-// starting four at once against a cold page cache makes each of them slower
-// than running them in turn.
+// Sequential on purpose: starting four at once against a cold page cache
+// makes each of them slower than running them in turn.
 func (c *snapshotCache[T]) warm(log logf, now time.Time) {
 	c.bg.Add(1)
 	go func() {
@@ -391,27 +464,45 @@ func windowFor(name string, now time.Time) Window {
 	return w
 }
 
-// keeperInterval is how often the keeper looks for windows past their TTL.
-// The shortest TTL is a minute, so a looser tick would let the 24h window
-// run past it.
-const keeperInterval = time.Minute
+// keeperInterval is how often the keepers off the live lane look for windows
+// past their TTL. It is well under the shortest TTL they hold (a minute) on
+// purpose: a window's age runs from the moment its computation started, and a
+// tick as long as the TTL found a window computed a few seconds into the
+// previous tick a few seconds short of due, and left it for another whole TTL.
+const keeperInterval = 5 * time.Second
 
-// refreshDue recomputes, one at a time, every window whose snapshot has
-// outlived its TTL, was computed under another revision, or was dropped for
-// one. It does what a read would have started, without waiting for the read:
-// a stale snapshot is served whole to the reader who triggers its refresh,
-// and on a quiet site that reader may be the first of the morning, handed a
-// figure from the evening before.
-func (c *snapshotCache[T]) refreshDue(log logf, now time.Time) {
+// lanes is how the keepers pace themselves: the live lane's TTL, how often
+// the live lane's keepers look (liveEvery) and how often the others do
+// (slowEvery). NewWithVantage uses defaultLanes unless it is handed others
+// (withLanes, for tests).
+type lanes struct{ liveTTL, liveEvery, slowEvery time.Duration }
+
+var defaultLanes = lanes{liveTTL: liveTTL, liveEvery: liveInterval, slowEvery: keeperInterval}
+
+// withLanes sets the keepers' pace.
+func withLanes(l lanes) Option { return func(s *Server) { s.lanes = l } }
+
+// refreshDue recomputes, one at a time and in the order given (warmWindows
+// when only is empty: shortest first), every window whose snapshot is stale,
+// was computed under another revision, or was dropped for one. It does what a
+// read would have started, without waiting for the read: a stale snapshot is
+// served whole to the reader who triggers its refresh, and on a quiet site
+// that reader may be the first of the morning, handed a figure from the
+// evening before.
+func (c *snapshotCache[T]) refreshDue(log logf, now time.Time, only ...string) {
+	names := warmWindows
+	if len(only) > 0 {
+		names = only
+	}
 	rev := c.rev()
 	var due []string
 	c.mu.Lock()
-	for _, name := range warmWindows {
+	for _, name := range names {
 		s := c.entries[name]
 		if c.refreshing[name] {
 			continue
 		}
-		if s == nil || s.rev != rev || now.Sub(s.at) >= c.ttl(name) {
+		if s == nil || s.rev != rev || c.stale(s, name, now) {
 			c.refreshing[name] = true
 			due = append(due, name)
 		}
@@ -430,21 +521,63 @@ func (c *snapshotCache[T]) refreshDue(log logf, now time.Time) {
 	}
 }
 
-// keepSnapshotsFresh runs refreshDue for every cache until Close. The caches
-// take turns, as the warm-up does: these are the heaviest queries the
-// process runs, and a tick that finds the previous one still computing
-// skips the windows it holds rather than stacking a second copy.
-func (s *Server) keepSnapshotsFresh(every time.Duration) {
-	t := time.NewTicker(every)
+// refresher is what a keeper asks of a cache.
+type refresher interface {
+	refreshDue(log logf, now time.Time, only ...string)
+}
+
+// keeperJob is one cache's windows on a keeper, refreshed in the order given.
+type keeperJob struct {
+	cache   refresher
+	windows []string
+}
+
+// keeper is one goroutine of the schedule: it looks every `every` and
+// refreshes the due windows of its jobs one after another, never two at once.
+// A tick that finds the previous one still computing skips the windows it
+// holds rather than stacking a second copy.
+type keeper struct {
+	name  string
+	every time.Duration
+	jobs  []keeperJob
+}
+
+// newKeepers is the schedule: which keeper refreshes which window. Every
+// window of the three caches is on exactly one keeper, and NewWithVantage
+// starts one goroutine per keeper (keep).
+//
+// What a reader watches move each has a keeper of its own, so nothing
+// computed elsewhere holds it back. On one shared keeper the publisher-side
+// summary, a fraction of a second a window, waited out every computation of
+// the 24h validator list, and the network's 24h window waited behind the
+// longer windows whenever they came due, for over half a minute at a time.
+// The longer windows share a keeper and take turns, as the warm-up does:
+// their TTLs are minutes, and a turn costs them seconds.
+func (s *Server) newKeepers() []keeper {
+	long := []string{"7d", "30d", "all"}
+	return []keeper{
+		{name: "validators 24h", every: s.lanes.liveEvery, jobs: []keeperJob{{s.vals, []string{"24h"}}}},
+		{name: "market", every: s.lanes.liveEvery, jobs: []keeperJob{{s.market, warmWindows}}},
+		{name: "network 24h", every: s.lanes.slowEvery, jobs: []keeperJob{{s.net, []string{"24h"}}}},
+		{name: "longer windows", every: s.lanes.slowEvery, jobs: []keeperJob{{s.net, long}, {s.vals, long}}},
+	}
+}
+
+// keep runs one keeper until Close.
+func (s *Server) keep(k keeper) {
+	t := time.NewTicker(k.every)
 	defer t.Stop()
 	for {
 		select {
 		case <-s.stop:
 			return
-		case now := <-t.C:
-			s.net.refreshDue(s.logf(), now)
-			s.vals.refreshDue(s.logf(), now)
-			s.market.refreshDue(s.logf(), now)
+		case <-t.C:
+			for _, j := range k.jobs {
+				// The clock, not the tick: a tick delivered late, behind a
+				// long refresh, would make every window look younger than
+				// it is.
+				j.cache.refreshDue(s.logf(), time.Now(), j.windows...)
+			}
 		}
 	}
 }

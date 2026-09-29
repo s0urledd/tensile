@@ -939,7 +939,7 @@ func splitSQL(src string) []string {
 // "...:00.5Z".
 // MetaParamHoldsRev is bumped whenever a params hold is raised or lifted
 // or a correction moves a verdict, so the API's cached aggregates — which
-// run to a thirty-minute TTL — can tell that a figure they hold has been
+// run to a fifteen-minute TTL — can tell that a figure they hold has been
 // withdrawn instead of republishing it until the TTL runs out. Its value is
 // a counter; see bumpParamHoldsRev for why it is not a timestamp.
 const MetaParamHoldsRev = "param_holds_rev"

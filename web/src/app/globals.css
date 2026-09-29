@@ -227,8 +227,6 @@ button { font: inherit; color: inherit; }
 
 /* ----------------------------------------------------------- title block --- */
 .title { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding: 20px 0 0; }
-/* the overview's period switch, over the figures it drives */
-.period-row { display: flex; justify-content: flex-end; margin: 22px 0 -4px; }
 .lede { margin: 4px 0 0; font-size: var(--t-body); color: var(--text-2); }
 /* the one pre-activation line under a page title (components/PreLive) */
 .prelive { margin: 14px 0 16px; padding: 10px 14px; background: var(--wash); border-radius: 6px; font-size: var(--t-cell); color: var(--text-2); }
@@ -300,6 +298,9 @@ button.dis:hover, a.dis:hover { text-decoration: underline; }
 
 /* ------------------------------------------------------- validators head --- */
 .vhead { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding: 14px 0 10px; flex-wrap: wrap; }
+/* the overview's period switch, beside the heading of the table whose Endorsements it drives,
+   set a little clear of the map band's rule above it */
+.vtitle { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; margin-top: 8px; }
 .tools { display: flex; gap: 10px; flex-wrap: wrap; }
 .search { display: flex; align-items: center; gap: 8px; width: 290px; max-width: 100%; height: 34px; border: 1px solid var(--line); border-radius: 6px; padding: 0 12px; color: var(--text-3); font-size: var(--t-cell); background: var(--paper); }
 .search::before { content: ""; width: 10px; height: 10px; border: 1.5px solid currentColor; border-radius: 50%; box-shadow: 4px 4px 0 -2px currentColor; margin-right: 2px; flex: none; }
@@ -360,14 +361,24 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
 .vt { font-variant-numeric: tabular-nums; }
 .vt th:not(:first-child), .vt td:not(:first-child) { text-align: center; padding-left: 6px; padding-right: 6px; }
 @media (min-width: 900px) {
-  .vt { table-layout: fixed; }
-  .vt th:first-child { width: 19%; }
+  /* seven columns need about 1100px; narrower, the frame scrolls with the validator pinned instead of crowding the headings */
+  .vt { table-layout: fixed; min-width: 1100px; }
+  .vt th:first-child { width: 20%; }
   /* widths follow what the cells hold */
-  .vt .c-ep { width: 12%; } .vt .c-host { width: 16%; } .vt .c-power { width: 12%; }
-  .vt .c-end { width: 13%; } .vt .c-last { width: 14%; } .vt .c-since { width: 14%; }
+  .vt .c-ep { width: 11.5%; } .vt .c-host { width: 13%; } .vt .c-power { width: 10.5%; }
+  .vt .c-com { width: 13.5%; } .vt .c-end { width: 15.5%; } .vt .c-last { width: 16%; }
   .vt td:not(:first-child) { overflow: hidden; text-overflow: ellipsis; }
   .vt .hosting { max-width: 100%; vertical-align: middle; }
   .vt .hosting > span:not(.flag):not(.flag-none):not(.cc) { overflow: hidden; text-overflow: ellipsis; }
+}
+/* the period after a heading keeps its own case: "(24h)", not "(24H)" */
+.vt th .per { text-transform: none; letter-spacing: .03em; }
+/* Below the fixed layout a column is only as wide as its heading, and the (i),
+   which hangs outside the label, would run into the next heading: the heading
+   keeps room for it on either side, so the label stays centred over its cells. */
+@media (max-width: 899px) {
+  .tablewrap .vt thead th.has-i { padding-left: 27px; padding-right: 27px; }
+  .tablewrap .vt thead th.has-i:last-child { padding-right: 39px; }
 }
 .rate.share { display: inline; }
 .rate.share.endorsed { font-weight: 400; color: var(--text-2); }
@@ -650,7 +661,7 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
 .hosting .flag-none { width: 16px; flex: none; }
 /* Country flags (components/Flag.tsx): a hairline keeps white fields visible on the paper. */
 .flag { display: inline-block; flex: none; width: 16px; height: auto; aspect-ratio: 3 / 2; border-radius: 2px; box-shadow: 0 0 0 1px var(--line); vertical-align: -1px; margin-right: 6px; object-fit: cover; }
-.hosting .flag, .fm-tag .flag { margin-right: 0; }
+.hosting .flag { margin-right: 0; }
 .hosting .cc { font: 500 11px/1.4 var(--mono); color: var(--text-2); background: var(--tag-bg); border-radius: 3px; padding: 0 4px; }
 .hostingband .hkey { grid-template-columns: repeat(auto-fill, minmax(110px, auto)); gap: 8px 26px; }
 .hostingband .hkey .ours { margin-left: 5px; }
@@ -669,20 +680,14 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
 /* ------------------------------------------------ validator: diagnosis --- */
 /* The status callout at the top of a validator's page (components/
    Diagnosis.tsx) and the recent-evidence filter. The left rule carries the
-   state in the site's three words — ok, hold, neutral — and red appears only
-   on the broken-obligations line, which is the one fault the callout can
-   state; a callout whose endpoint is fine but has broken obligations takes
-   the red rule so the line is not missed. */
+   state in the site's three words — ok, hold, neutral; the callout states no
+   fault, so it has no red. */
 .diag { margin: 14px 0 0; padding: 12px 16px; border: 1px solid var(--line); border-left: 3px solid var(--neutral); border-radius: 6px; background: var(--paper); font-size: var(--t-cell); line-height: 1.55; color: var(--text-2); max-width: 88ch; }
 .diag.ok { border-left-color: var(--ok); }
 .diag.hold { border-left-color: var(--hold); background: var(--hold-tint); }
-.diag.fault { border-left-color: var(--fault); }
 .diag p { margin: 6px 0 0; }
 .diag p.diag-h { margin: 0; font-size: var(--t-h2); font-weight: 500; color: var(--text); }
 .diag p.diag-h .dot { vertical-align: 1px; }
-.diag .diag-fault { color: var(--text); }
-.diag .diag-fault b { color: var(--fault); font-weight: 500; }
-.diag .diag-fault .mk { vertical-align: 0; }
 .diag code { font-size: var(--t-small); overflow-wrap: anywhere; }
 .diag a { font-weight: 500; }
 /* the filter's counts sit in the button, quieter than its word */
@@ -718,28 +723,51 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
 
 /* ======================================================== host map ====== */
 /* The overview's map of registered Fibre hosts (components/HostMap.tsx).
-   Countries are flat ink at low opacity, separated by paper-coloured
-   hairlines; a country with a host is tinted with the accent, the open
-   badge's countries a little more. A badge's ring is split by endpoint
-   state: accent reachable, amber unreachable, grey not checked yet. Red appears
-   only as the small pip on a badge whose hosts have a broken obligation. */
-:root, :root[data-theme="light"] {
-  --map-land: rgb(var(--ink) / .085); --map-on: rgb(0 106 116 / .20); --map-hi: rgb(0 106 116 / .34);
-  --map-down: rgb(var(--ink) / .34);
+   The land is one dot field in both themes: ink dots at low opacity, a
+   country with a host lit in accent dots over a faint wash, the open disc's
+   countries brighter; the country hairlines stay as gaps. Every place is a
+   disc carrying its count, sized by it, its ring split by endpoint state
+   (accent reachable, amber unreachable, grey not checked yet); in the dark
+   theme a crowd glows in proportion to its count. Red appears only as the
+   small pip on a disc whose hosts have a broken obligation. Names and discs
+   carry a halo in the page's own colour, so they read over the dots. The
+   tokens sit on the map itself, where the halo is resolved. */
+.ov-map {
+  --ov-dot: rgb(var(--ink) / .19);
+  --ov-dot-on: rgb(0 128 140 / .78);
+  --ov-dot-hi: #00808c;
+  --ov-wash-on: rgb(0 106 116 / .045);
+  --ov-wash-hi: rgb(0 106 116 / .10);
+  --ov-halo: var(--canvas);
+  --ov-disc: #ffffff;
+  --ov-pin-shadow: 0 0 0 2px var(--ov-halo), 0 1px 3px 2px rgb(16 24 32 / .10);
+  --ov-dot-shadow: 0 0 0 1.5px var(--ov-halo), 0 1px 2px 1px rgb(16 24 32 / .10);
+  --ov-glow: rgb(0 106 116 / .24);
 }
-:root[data-theme="dark"] {
-  --map-land: rgb(var(--ink) / .11); --map-on: rgb(51 179 191 / .18); --map-hi: rgb(51 179 191 / .30);
-  --map-down: rgb(var(--ink) / .40);
+:root[data-theme="dark"] .ov-map {
+  --ov-dot: rgb(255 255 255 / .15);
+  --ov-dot-on: rgb(51 179 191 / .92);
+  --ov-dot-hi: #9be6ec;
+  --ov-wash-on: rgb(51 179 191 / .075);
+  --ov-wash-hi: rgb(51 179 191 / .16);
+  --ov-disc: #10171b;
+  --ov-pin-shadow: 0 0 0 2px var(--ov-halo), 0 0 16px -2px rgb(51 179 191 / .55);
+  --ov-dot-shadow: 0 0 0 1.5px var(--ov-halo), 0 0 10px -1px rgb(51 179 191 / .45);
+  --ov-glow: rgb(51 179 191 / .40);
 }
 
 .hostmap { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); padding: 16px 0 18px; }
 .hostmap.solo { grid-template-columns: 1fr; }
-.hostmap .fm-main { position: relative; min-width: 0; }
-/* beside the taller stake and latest-blob panel the map sits in the middle of
-   its column and the ticker row at the foot, so the height left over is shared */
+/* the map's column: its name and counts, the map, the newest event at the foot */
+.hostmap > .ov-map { position: relative; min-width: 0; display: flex; flex-direction: column; }
+/* beside the taller stake and latest-blob panel the map grows to the panel's
+   height, up to what the hosts allow (HostMap's maxHeight), and closes in on
+   them; any height still left over is shared above and below it, so the map
+   sits in the middle of its column and the newest event at its foot */
 @media (min-width: 961px) {
-  .hostmap .fm-main { display: flex; flex-direction: column; }
-  .hostmap .fm-main > .fm-box { margin-block: auto; }
+  .hostmap > .ov-map > .ov-map-head { padding-bottom: 18px; }
+  .hostmap > .ov-map > .ov-atlas { flex: 1 1 auto; margin: auto 0; }
+  .hostmap > .ov-map > .ov-map-foot { margin-top: 0; }
 }
 
 /* ---- beside the map: the stake gauge, the latest blob, and Tensile's readings under it ----
@@ -752,7 +780,8 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
 .ov-stake { --ov-halo: var(--canvas); --ov-hatch: rgb(var(--ink) / .56); --ov-rest: rgb(var(--ink) / .05); min-width: 0; }
 :root[data-theme="dark"] .ov-stake { --ov-hatch: rgb(255 255 255 / .42); --ov-rest: rgb(255 255 255 / .035); }
 .ov-hero { display: grid; gap: 8px; margin: 10px 0 0; }
-.ov-fig { font-size: var(--t-hero); font-weight: 600; letter-spacing: -.045em; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
+/* the panel's lead figure, about half the page hero: it leads the panel without outweighing the map beside it */
+.ov-fig { font-size: 32px; font-weight: 600; letter-spacing: -.045em; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
 :root[data-theme="dark"] .ov-fig { background: linear-gradient(180deg, #ffffff 35%, #b4e9ee); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .ov-hero-help { font-size: var(--t-cell); color: var(--text-2); }
 /* the bar fades toward its baseline like the charts' bars; the part without a provider is hatched */
@@ -826,95 +855,153 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
   .hostmap .fm-side > .fm-aside::before { content: none; }
 }
 @media (max-width: 720px) {
-  .ov-fig { font-size: 52px; }
+  .ov-fig { font-size: 28px; }
 }
 
-.fm-box { position: relative; width: 100%; margin-top: 12px; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
-.fm-box.zoomed { touch-action: none; cursor: grab; }
-.fm-box.zoomed:active { cursor: grabbing; }
-.fm-vp { position: absolute; inset: 0; overflow: hidden; border-radius: 6px; }
-.fm-box.zoomed .fm-vp { box-shadow: inset 0 0 0 1px var(--line-soft); }
-.fm-land { width: 100%; height: 100%; display: block; }
-.fm-land path {
-  fill: var(--map-land); stroke: var(--paper); stroke-width: .7; stroke-linejoin: round;
+/* ---- the map: its counts, the dot field, the discs and their names ---- */
+.ov-counts { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 28px; margin: 10px 0 0; font-size: var(--t-cell); color: var(--text-2); }
+.ov-counts b { margin-right: 6px; font-size: var(--t-total); font-weight: 600; letter-spacing: -.025em; line-height: 1.15; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
+:root[data-theme="dark"] .ov-counts b { background: linear-gradient(180deg, #ffffff 35%, #b4e9ee); -webkit-background-clip: text; background-clip: text; color: transparent; }
+
+.ov-atlas { position: relative; width: 100%; margin-top: 18px; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
+.ov-atlas.zoomed { touch-action: none; cursor: grab; }
+.ov-atlas.zoomed:active { cursor: grabbing; }
+.ov-vp { position: absolute; inset: 0; overflow: hidden; border-radius: 12px; }
+/* the whole world fades out where the frame cuts the far south and the open Pacific; a zoomed view fades at all four edges, no frame */
+.ov-atlas:not(.zoomed) .ov-vp {
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent), linear-gradient(180deg, transparent, #000 9%, #000 84%, transparent);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent), linear-gradient(180deg, transparent, #000 9%, #000 84%, transparent);
+  mask-composite: intersect;
+}
+.ov-atlas.zoomed .ov-vp {
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent), linear-gradient(180deg, transparent, #000 6%, #000 94%, transparent);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent), linear-gradient(180deg, transparent, #000 6%, #000 94%, transparent);
+  mask-composite: intersect;
+}
+.ov-land { width: 100%; height: 100%; display: block; }
+.ov-land path {
+  stroke: var(--ov-halo); stroke-width: .7; stroke-linejoin: round;
   vector-effect: non-scaling-stroke; transition: fill var(--dur) ease-out;
 }
-.fm-land path.on { fill: var(--map-on); }
-.fm-land path.hi { fill: var(--map-hi); }
+.ov-dot-d { fill: var(--ov-dot); } .ov-dot-on { fill: var(--ov-dot-on); } .ov-dot-hi { fill: var(--ov-dot-hi); }
+.ov-land .ov-wash { fill: var(--ov-wash-on); }
+.ov-land .ov-wash.hi { fill: var(--ov-wash-hi); }
+.ov-land path:not([class]) { fill: url(#ov-dots-d); }
+.ov-land path.on { fill: url(#ov-dots-on); }
+.ov-land path.hi { fill: url(#ov-dots-hi); }
 
-.fm-clusters { list-style: none; margin: 0; padding: 0; position: absolute; inset: 0; pointer-events: none; }
-.fm-c { position: absolute; width: 0; height: 0; z-index: 1; pointer-events: auto; }
-.fm-c.open, .fm-c:focus-within { z-index: 20; }
-.fm-b {
+.ov-pins { list-style: none; margin: 0; padding: 0; position: absolute; inset: 0; pointer-events: none; }
+.ov-pin { position: absolute; width: 0; height: 0; z-index: 1; pointer-events: auto; }
+.ov-pin:not(.one) { z-index: 2; }
+.ov-pin.open, .ov-pin:focus-within { z-index: 20; }
+/* a crowd's light: wider and stronger with its count; none on the light canvas, where it read as a smudge */
+.ov-glow { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%); border-radius: 50%; background: radial-gradient(closest-side, var(--ov-glow), transparent); pointer-events: none; }
+:root:not([data-theme="dark"]) .ov-glow { display: none; }
+/* the button is the hit target; the disc inside it is what is drawn */
+.ov-b {
   position: absolute; left: 0; top: 0; transform: translate(-50%, -50%);
-  display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%;
-  cursor: pointer; box-shadow: 0 0 0 2px var(--paper), 0 1px 4px 2px rgb(0 0 0 / .08);
-  transition: transform var(--dur) ease-out;
+  display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: none; cursor: pointer;
 }
-/* the paper disc inside the state ring, carrying the count */
-.fm-b > span {
-  display: grid; place-items: center; width: calc(100% - 6px); height: calc(100% - 6px); border-radius: 50%;
-  background: var(--paper); color: var(--text); font-size: var(--t-small); font-weight: 600;
-  font-variant-numeric: tabular-nums lining-nums; line-height: 1;
+.ov-b:focus-visible { outline: none; }
+.ov-disc {
+  display: grid; place-items: center; width: var(--s); height: var(--s); padding: 2px; border-radius: 50%;
+  background: var(--ring); box-shadow: var(--ov-pin-shadow); transition: transform var(--dur) ease-out;
 }
-.fm-b:hover, .fm-c.open .fm-b { transform: translate(-50%, -50%) scale(1.08); }
-.fm-b:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.fm-fault { position: absolute; top: -1px; right: -1px; width: 8px; height: 8px; border-radius: 50%; background: var(--fault); box-shadow: 0 0 0 2px var(--paper); }
-/* the pill's validator: one soft ring outwards, then still */
-.fm-c.live .fm-b::after {
+.ov-disc > span {
+  display: grid; place-items: center; width: 100%; height: 100%; border-radius: 50%; background: var(--ov-disc);
+  color: var(--text); font-size: clamp(10px, calc(var(--s) * .34), 12.5px); font-weight: 600; line-height: 1; letter-spacing: -.01em; font-variant-numeric: tabular-nums lining-nums;
+}
+/* a lone host: the smallest disc, its ring thinner and its figure quieter */
+.ov-pin.one .ov-disc { padding: 1.5px; box-shadow: var(--ov-dot-shadow); }
+.ov-pin.one .ov-disc > span { font-size: 9.5px; color: var(--text-2); }
+.ov-b:hover .ov-disc, .ov-pin.open .ov-disc { transform: scale(1.12); }
+.ov-b:focus-visible .ov-disc { outline: 2px solid var(--accent); outline-offset: 3px; }
+.ov-fault { position: absolute; top: 50%; left: 50%; width: 8px; height: 8px; margin: calc(var(--s) / -2 - 1px) 0 0 calc(var(--s) / 2 - 7px); border-radius: 50%; background: var(--fault); box-shadow: 0 0 0 2px var(--ov-halo); }
+/* the line's validator: one soft ring outwards, then still */
+.ov-pin.live .ov-disc { position: relative; }
+.ov-pin.live .ov-disc::after {
   content: ""; position: absolute; inset: -3px; border-radius: 50%; border: 2px solid var(--accent);
-  animation: fm-pulse 1.6s ease-out 2; opacity: 0; pointer-events: none;
+  animation: ov-pulse 1.6s ease-out 2; opacity: 0; pointer-events: none;
 }
-@keyframes fm-pulse { 0% { transform: scale(1); opacity: .7; } 100% { transform: scale(1.9); opacity: 0; } }
+@keyframes ov-pulse { 0% { transform: scale(1); opacity: .7; } 100% { transform: scale(2); opacity: 0; } }
 
-/* the flag and place beside a badge, placed only where it overlaps nothing */
-.fm-tag {
-  position: absolute; display: inline-flex; align-items: center; gap: 4px; box-sizing: border-box; overflow: hidden;
-  height: 20px; padding: 0 5px; border-radius: 4px; white-space: nowrap; pointer-events: none;
-  background: color-mix(in srgb, var(--paper) 86%, transparent); color: var(--text); font-size: 12px; font-weight: 500; line-height: 1;
-  animation: fm-in .2s ease-out;
+/* a city's name beside its disc, set like an atlas label: no box, a halo in the page's colour */
+.ov-tag {
+  position: absolute; display: flex; align-items: center; justify-content: center; height: 18px; padding: 0 5px; white-space: nowrap; pointer-events: none;
+  font-size: 12px; font-weight: 500; line-height: 1; letter-spacing: .005em; color: var(--text-2);
+  border-radius: 6px; background: color-mix(in srgb, var(--ov-halo) 88%, transparent);
+  box-shadow: 0 0 6px 3px color-mix(in srgb, var(--ov-halo) 75%, transparent);
+  animation: ov-in .25s ease-out;
 }
-.fm-tag .flag { width: 16px; }
+.ov-tag i { margin-left: 3px; font-style: normal; font-weight: 500; color: var(--text-3); font-variant-numeric: tabular-nums; }
+/* a name set a step out from its disc, tied to it */
+.ov-lead { position: absolute; height: 1px; transform-origin: 0 50%; background: var(--text-3); opacity: .65; pointer-events: none; animation: ov-in .25s ease-out; }
 
-.fm-ctl { position: absolute; left: 8px; bottom: 8px; display: flex; gap: 6px; z-index: 25; }
-.fm-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); overflow: hidden; }
-.fm-seg button {
-  min-width: 28px; height: 26px; padding: 0 9px; border: 0; background: none; color: var(--text-2); cursor: pointer;
-  font: inherit; font-size: var(--t-small); line-height: 1;
+/* a disc's places and hosts: the charts' tooltip surface */
+.ov-pop {
+  position: absolute; padding: 12px 14px 10px; border-radius: 12px; text-align: left; font-size: var(--t-cell);
+  background: color-mix(in srgb, var(--paper) 94%, transparent); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  border: 1px solid var(--border); box-shadow: var(--shadow-pop); animation: ov-in var(--dur) ease-out;
 }
-.fm-seg button + button { border-left: 1px solid var(--line); }
-.fm-seg button:hover:not(:disabled) { background: var(--wash); color: var(--text); }
-.fm-seg button[aria-pressed="true"] { background: var(--accent-tint); color: var(--accent-ink); font-weight: 600; }
-.fm-seg button:disabled { color: var(--text-3); opacity: .5; cursor: default; }
-.fm-seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ov-pop-h { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 0 0 8px; }
+.ov-pop-h b { font-weight: 600; color: var(--text); }
+.ov-pop-h span { flex: none; font-size: var(--t-small); font-weight: 500; color: var(--text-3); font-variant-numeric: tabular-nums; }
+/* a merged disc names its places here, not on the map. Each name brings its dot on its left; the
+   list is set 15px left and clipped there, so the first name of every line loses its dot */
+.ov-pop-cities { display: flex; flex-wrap: wrap; gap: 2px 0; margin: -2px 0 10px -15px; clip-path: inset(-4px -4px -4px 15px); font-size: var(--t-small); line-height: 18px; color: var(--text-2); }
+.ov-pop-cities > span { position: relative; padding-left: 15px; white-space: nowrap; }
+.ov-pop-cities > span::before { content: "·"; position: absolute; left: 5px; color: var(--text-3); }
+.ov-pop-cities i { font-style: normal; color: var(--text-3); font-variant-numeric: tabular-nums; }
+/* whole rows, four of 49px (7 + 18 + 16 + 7, and the rule above each), the list fading at an edge that has more */
+.ov-pop ul { list-style: none; margin: 0; padding: 0; max-height: 196px; overflow-y: auto; overscroll-behavior: contain; }
+.ov-pop ul[data-more="bottom"] { -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 30px), transparent); mask-image: linear-gradient(180deg, #000 calc(100% - 30px), transparent); }
+.ov-pop ul[data-more="top"] { -webkit-mask-image: linear-gradient(0deg, #000 calc(100% - 30px), transparent); mask-image: linear-gradient(0deg, #000 calc(100% - 30px), transparent); }
+.ov-pop ul[data-more="top bottom"] { -webkit-mask-image: linear-gradient(180deg, transparent, #000 30px, #000 calc(100% - 30px), transparent); mask-image: linear-gradient(180deg, transparent, #000 30px, #000 calc(100% - 30px), transparent); }
+.ov-pop li { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; column-gap: 8px; align-items: baseline; padding: 7px 0; line-height: 18px; border-top: 1px solid var(--line-soft); }
+.ov-pop .ov-dot { align-self: center; }
+.ov-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-share { color: var(--text-2); font-variant-numeric: tabular-nums; }
+.ov-meta { grid-column: 2 / 4; color: var(--text-3); font-size: var(--t-small); }
+.ov-pop .ov-meta { line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ov-broken { color: var(--fault); }
+.ov-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.ov-zoomin {
+  display: block; width: 100%; margin-top: 8px; height: 30px; border: 0; border-radius: 999px;
+  background: var(--accent-tint); color: var(--accent-ink); font: inherit; font-size: var(--t-small); font-weight: 600; cursor: pointer;
+}
+.ov-zoomin:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 
-.fm-pop {
-  position: absolute; background: var(--paper); border: 1px solid var(--line); border-radius: 6px;
-  box-shadow: 0 6px 24px rgb(0 0 0 / .10); padding: 10px 12px; font-size: var(--t-cell); text-align: left;
+/* the map's corner: the quiet key of Tensile's check and the zoom, over the map */
+.ov-atlas > .ov-map-tools {
+  position: absolute; right: 8px; bottom: 8px; z-index: 3; margin: 0;
+  display: inline-flex; align-items: center; gap: 12px; padding: 3px 3px 3px 12px; border-radius: 999px;
+  background: color-mix(in srgb, var(--paper) 84%, transparent); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  box-shadow: var(--shadow-sm), 0 0 0 1px var(--border);
 }
-:root[data-theme="dark"] .fm-pop { box-shadow: 0 6px 24px rgb(0 0 0 / .45); }
-.fm-pop-h { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 0 0 6px; }
-.fm-pop-h b { font-weight: 600; display: inline-flex; align-items: center; }
-.fm-pop-h span { color: var(--text-3); font-size: var(--t-small); }
-.fm-pop ul { list-style: none; margin: 0; padding: 0; max-height: 236px; overflow-y: auto; }
-.fm-pop li { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; column-gap: 8px; align-items: baseline; padding: 5px 0; border-top: 1px solid var(--line-soft); }
-.fm-pop .fm-dot { align-self: center; }
-.fm-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fm-share { color: var(--text-2); font-variant-numeric: tabular-nums; }
-.fm-meta { grid-column: 2 / 4; color: var(--text-3); font-size: var(--t-small); }
-.fm-meta .flag { width: 14px; margin-right: 5px; }
-.fm-broken { color: var(--fault); }
-.fm-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; }
-.fm-zoomin {
-  display: block; width: 100%; margin-top: 8px; padding: 5px 0; border: 1px solid var(--line); border-radius: 5px;
-  background: var(--wash); color: var(--accent-ink); font: inherit; font-size: var(--t-small); font-weight: 600; cursor: pointer;
-}
-.fm-zoomin:hover { background: var(--accent-tint); }
+.ov-key { display: inline-flex; align-items: center; gap: 10px; margin: 0; white-space: nowrap; font-size: var(--t-tiny); color: var(--text-3); }
+.ov-key svg { flex: none; margin-right: -4px; opacity: .8; }
+.ov-key i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
+.ov-zoom { display: inline-flex; gap: 2px; }
+.ov-zoom button { display: grid; place-items: center; width: 28px; height: 24px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--text-2); cursor: pointer; transition: background var(--dur), color var(--dur), box-shadow var(--dur); }
+.ov-zoom button:hover:not(:disabled) { background: var(--seg-on); color: var(--seg-on-ink); box-shadow: var(--seg-on-shadow); }
+.ov-zoom button:disabled { opacity: .38; cursor: default; }
+.ov-zoom button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-.fm-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
-/* the three counts beside the map's title: one frame, spread evenly, a size down */
-.fm-pill.fm-stats { display: grid; grid-template-columns: repeat(3, auto); justify-content: space-between; column-gap: 18px; min-width: 260px; font-size: var(--t-tiny); }
-.fm-pill.fm-stats > span:not(:last-child)::after { content: none; }
+/* under the map, on a line of its own: the newest event, its line kept while it loads so nothing moves when it arrives */
+.ov-map-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px; min-height: 30px; margin-top: auto; padding-top: 12px; font-size: var(--t-small); }
+.ov-live { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 0 8px; min-width: 0; margin: 0; color: var(--text-2); animation: ov-in .35s ease-out; }
+.ov-live > .ov-dot { width: 7px; height: 7px; margin-right: 2px; box-shadow: 0 0 0 3px var(--accent-tint); }
+.ov-live > span:not(:last-child)::after { content: "·"; margin-left: 8px; color: var(--text-3); }
+.ov-live a { color: var(--text); font-weight: 500; }
+.ov-live .ov-ago { color: var(--text-3); }
+@keyframes ov-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .ov-disc, .ov-land path, .ov-zoom button { transition: none; }
+  .ov-tag, .ov-lead, .ov-live, .ov-pop { animation: none; }
+  .ov-pin.live .ov-disc::after { animation: none; opacity: .8; transform: scale(1.3); }
+}
 /* a table that stands on its own: one frame, a tinted head, a line between rows */
 .tablewrap.framed { border: 1px solid var(--line); border-radius: 8px; margin-top: 12px; }
 .tablewrap.framed table { border-collapse: separate; border-spacing: 0; }
@@ -941,40 +1028,18 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
   .bt.nss th:nth-child(4) { width: 16%; } .bt.nss th:nth-child(5) { width: 9%; } .bt.nss th:nth-child(6) { width: 17%; } .bt.nss th:nth-child(7) { width: 17%; }
   .bt.blist th:nth-child(1) { width: 12%; } .bt.blist th:nth-child(2) { width: 10%; } .bt.blist th:nth-child(3) { width: 12%; } .bt.blist th:nth-child(4) { width: 11%; } .bt.blist th:nth-child(5) { width: 15%; } .bt.blist th:nth-child(6) { width: 8%; } .bt.blist th:nth-child(7) { width: 9%; } .bt.blist th:nth-child(8) { width: 8%; } .bt.blist th:nth-child(9) { width: 15%; }
 }
-.fm-key { margin: 0 0 0 auto; display: flex; gap: 14px; font-size: var(--t-tiny); color: var(--text-3); }
-.fm-key i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: 0; }
-
-.fm-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 8px; min-height: 30px; }
-.fm-pill {
-  display: inline-flex; align-items: center; flex-wrap: wrap; gap: 0 8px; margin: 0; min-height: 30px; padding: 4px 12px;
-  border: 1px solid var(--line); border-radius: 999px; background: var(--wash); font-size: var(--t-small); color: var(--text-2);
-  font-variant-numeric: tabular-nums lining-nums;
-}
-.fm-pill b { color: var(--text); font-weight: 600; }
-.fm-pill > span:not(:last-child)::after { content: "·"; margin-left: 8px; color: var(--text-3); }
-.fm-pill .flag { margin-right: 5px; }
-.fm-live { min-width: 0; animation: fm-in .35s ease-out; }
-.fm-live .fm-who { display: inline; color: var(--text-2); }
-.fm-live a { color: var(--text); font-weight: 500; }
-.fm-live .fm-ago { color: var(--text-3); }
-@keyframes fm-in { from { opacity: 0; } to { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) {
-  .fm-b, .fm-land path { transition: none; }
-  .fm-c.live .fm-b::after { animation: none; opacity: .8; transform: scale(1.25); }
-  .fm-live, .fm-tag { animation: none; }
-}
 
 @media (max-width: 960px) {
   .hostmap { grid-template-columns: 1fr; }
   .hostmap > div + div { padding: 18px 0 0; margin-top: 18px; border-left: 0; border-top: 1px solid var(--line-soft); }
   .hostmap > div { padding: 0; }
 }
-@media (max-width: 560px) {
-  .fm-key { margin-left: 0; }
-  .fm-pill { border-radius: 14px; }
-  .fm-pop { max-width: none; }
-  .fm-ctl { left: 4px; bottom: 4px; }
-  .fm-seg button { height: 24px; padding: 0 7px; }
+@media (max-width: 720px) {
+  .ov-counts { gap: 2px 20px; }
+  .ov-counts b { font-size: 22px; }
+  .ov-map-foot { min-height: 28px; padding-top: 10px; }
+  .ov-atlas > .ov-map-tools { right: 6px; bottom: 6px; gap: 8px; padding-left: 10px; }
+  .ov-key { gap: 8px; }
 }
 
 /* the validator page: its avatar beside the name */
@@ -1024,6 +1089,8 @@ body { background: var(--canvas); }
 /* figures set on the panel: an eyebrow, the figure, one line */
 .figs .metric { padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; }
 .figs .metric .label { font-size: var(--t-tiny); font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--text-2); }
+/* the period after an eyebrow keeps its own case: "(24h)", not "(24H)" */
+.figs .metric .label .per { text-transform: none; letter-spacing: .03em; }
 .figs .metric .value { font-size: var(--t-fig); font-weight: 600; letter-spacing: -.035em; line-height: 1.05; margin: 10px 0 8px; font-variant-numeric: tabular-nums lining-nums; }
 .figs .metric.hero .value { font-size: var(--t-hero); letter-spacing: -.045em; line-height: 1; margin: 12px 0 10px; }
 .figs .metric .value .den { font-size: 18px; letter-spacing: -.01em; }
@@ -1033,7 +1100,13 @@ body { background: var(--canvas); }
 .rail { display: grid; align-content: start; gap: 36px; padding-top: 2px; }
 /* a long count runs into the gutter rather than losing its last digits */
 .rail .metric .value { overflow: visible; text-overflow: clip; }
-.figs.row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px 32px; }
+/* six figures, three to a row (two below 1000px). The figures of a row share its rows
+   (eyebrow, figure, help line), so an eyebrow that runs to two lines ("Payment promise
+   timeouts (24h)") keeps the figures of its row level; a one-line eyebrow sits just above
+   its figure. */
+.figs.row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px 32px; }
+.figs.row > .metric { display: grid; grid-row: span 3; grid-template-rows: subgrid; row-gap: 0; }
+.figs.row > .metric > .label { align-self: end; }
 .figs.row .metric .value { font-size: 34px; }
 .figs.row .metric .help { font-size: var(--t-small); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 

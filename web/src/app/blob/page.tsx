@@ -129,7 +129,7 @@ function Page() {
       <section className="group" id="chain">
         <div className="vhead"><div><h2>On chain</h2><p className="sub">Read from the chain, nothing measured.</p></div></div>
         <Metrics>
-          <Metric label="Upload size" value={bytes(b.blob_size)} help="with padding, without parity" title="The size the blob paid for." />
+          <Metric label="Blob size" value={bytes(b.blob_size)} help="with padding, without parity" title="The size the blob paid for." />
           <Metric label="Fee paid" value={b.charge ? tia(b.charge.fee_utia) : "—"} tone={b.charge ? undefined : "absent"}
             help={b.charge ? `${int(b.charge.gas_units)} gas · ${b.charge.timed_out ? "timed out" : b.charge.settled ? "settled" : "not settled yet"}` : "recorded before payments were kept"}
             title="Charged to the publisher's escrow; not the settlement transaction's own fee." />

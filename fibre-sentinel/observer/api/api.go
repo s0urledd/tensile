@@ -107,12 +107,16 @@ type Server struct {
 	origRows originalRowsMemo
 	// recent keeps each validator's newest endorsements (see signing.go).
 	recent endorsementLedger
+	// lanes is the keepers' pace, and keepers the schedule they run (see
+	// snapshot.go).
+	lanes   lanes
+	keepers []keeper
 	// bg counts the server's own background work (the blob-page warm-up,
-	// the snapshot keeper), for Close.
+	// the snapshot keepers), for Close.
 	bg sync.WaitGroup
 	// tip holds the block ticker's answer for a second.
 	tip tipCache
-	// stop ends the snapshot keeper; Close closes it once.
+	// stop ends the snapshot keepers; Close closes it once.
 	stop     chan struct{}
 	stopOnce sync.Once
 }
@@ -153,6 +157,9 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 	for _, o := range opts {
 		o(s)
 	}
+	if s.lanes == (lanes{}) {
+		s.lanes = defaultLanes
+	}
 	// The cached summary is the unfiltered one. A `?exclude=` answer is
 	// computed per request and never stored here: writing it into the shared
 	// snapshot would publish one reader's filter as everyone's headline.
@@ -163,7 +170,10 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 		}
 		return resp, err
 	})
-	s.market = newSnapshotCache("market", s.computeMarket)
+	// The publisher-side summary and the publisher list are one snapshot, so
+	// the publisher page's board and its table describe the same moment.
+	s.market = newSnapshotCache("market", s.computePublishing)
+	s.market.accept = marketSnapshotCurrent
 	s.vals = newSnapshotCache("validators", func(ctx context.Context, win Window) (validatorSnapshot, error) {
 		rows, err := s.validatorRows(ctx, win, "")
 		if err != nil {
@@ -172,15 +182,25 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 		return validatorSnapshot{Window: win, Rows: rows, RecordThrough: s.recordThrough(ctx)}, nil
 	})
 	// Both of these publish faults beside named validators, and both are
-	// cached for up to half an hour. A hold landing in the database moves
+	// cached for up to fifteen minutes. A hold landing in the database moves
 	// nothing they hold, so without this the figure a hold withdrew stays
 	// on the front page until the TTL runs out. The market snapshot carries
 	// no verdicts and needs no hold, but all three change meaning the moment
-	// Fibre goes live: a pre-activation zero served for half an hour after
-	// the first publication says "nothing happened" when something did.
+	// Fibre goes live: a pre-activation zero served for minutes after the
+	// first publication says "nothing happened" when something did.
 	s.net.revision = s.snapshotRevision
 	s.vals.revision = s.snapshotRevision
 	s.market.revision = s.activationRevision
+	// The windows that do not take ttlFor's pace: the live lane's (the 24h
+	// validator list and every market window) and the network's "all",
+	// which holds the overview's Available figure. Set before anything reads
+	// the caches: ttl reads these without the lock.
+	s.vals.ttls = map[string]time.Duration{"24h": s.lanes.liveTTL}
+	s.market.ttls = map[string]time.Duration{}
+	for _, name := range warmWindows {
+		s.market.ttls[name] = s.lanes.liveTTL
+	}
+	s.net.ttls = map[string]time.Duration{"all": networkAllTTL}
 	// Serve the previous process's snapshots at once, then warm every window
 	// so the first visitor is not the one who waits.
 	if s.dataDir != "" {
@@ -196,11 +216,14 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 	// so a quiet night does not leave the first morning visitor a figure
 	// from the evening before.
 	s.stop = make(chan struct{})
-	s.bg.Add(1)
-	go func() {
-		defer s.bg.Done()
-		s.keepSnapshotsFresh(keeperInterval)
-	}()
+	s.keepers = s.newKeepers()
+	for _, k := range s.keepers {
+		s.bg.Add(1)
+		go func() {
+			defer s.bg.Done()
+			s.keep(k)
+		}()
+	}
 	// And the first page of blobs, for the same reason: with the verdict cache
 	// empty that page costs six queries per row, which is the one cold path
 	// left on the site. It is a single read of what /v1/blobs answers by
@@ -2768,11 +2791,11 @@ func parseAddr(s string) (string, error) {
 
 // validatorSnapshot is the cached validator list with the window its SQL
 // actually used. A snapshot is served for as long as its TTL allows, so the
-// window the caller asked for at request time is minutes newer than the one
-// the rows were selected with — up to half an hour on "all". Echoing the
-// request's window would have published bounds no figure in the response was
-// computed over, and this API's whole claim is that a reader can recompute
-// what it prints. computed_at says when; this says over what.
+// window the caller asked for at request time can be minutes newer than the
+// one the rows were selected with — fifteen minutes or more on 30d and "all".
+// Echoing the request's window would have published bounds no figure in the
+// response was computed over, and this API's whole claim is that a reader can
+// recompute what it prints. computed_at says when; this says over what.
 type validatorSnapshot struct {
 	Window        Window         `json:"window"`
 	Rows          []validatorRow `json:"rows"`

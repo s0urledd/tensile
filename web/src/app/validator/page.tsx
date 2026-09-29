@@ -165,7 +165,6 @@ function Page() {
   // Every not-served row of the period, for when they are older than the
   // newest rows this page carries: served=no is the obligations' own rule.
   const notServedHref = `${API_BASE}/v1/probes?validator=${v.address}&served=no${data.window.start ? `&since=${encodeURIComponent(data.window.start)}` : ""}&limit=1000`;
-  const showNotServed = () => setOnlyNotServed(true);
   const measuring = !!o && o.total > 0 && decided < MIN_RATED && o.pending > 0;
   const att = v.attestation;
   const sig = v.signing;
@@ -187,6 +186,7 @@ function Page() {
           <div className="chips">
             <span className="state" title={e.title}><i className={"dot " + e.dot} />{e.word}</span>
             {v.host && <span title={v.identity_reason || "The consensus-key check on the newest handshake."}>TLS identity <b className="word">{identityWord[v.identity_status] ?? v.identity_status}</b></span>}
+            {v.provider_since && <span title={`When this validator first appeared as a Fibre provider, whatever endpoint it had then: ${utcWord(v.provider_since)}`}>Fibre provider since <b className="word">{shortDate(v.provider_since)}</b></span>}
           </div>
         </div>
         <WindowSwitch value={win} onChange={setWin} />
@@ -230,8 +230,7 @@ function Page() {
       <section className="group" id="observed">
         <div className="vhead"><div><h2>Observed by Tensile</h2><p className="sub">Each blob is read once, near the end of its retention window, as celestia-app’s client downloads it. A validator is not served only when its rows did not come back and the blob could not be reconstructed.</p></div></div>
         {/* the conclusion before the figures; before activation there is nothing to conclude, and StatusLine says so */}
-        {!notLive && <Diagnosis v={v} check={data.last_endpoint_check} meta={meta} decided={decided} provisional={prov}
-          failedShown={notServedRows.length} onShowFailed={showNotServed} failedHref={notServedHref} />}
+        {!notLive && <Diagnosis v={v} check={data.last_endpoint_check} meta={meta} decided={decided} />}
         <Metrics>
           <Metric label="Service rate"
             value={notLive || !o || o.total === 0 || decided === 0 ? "—" : pctOf(o.served, decided)}

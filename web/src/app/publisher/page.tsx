@@ -70,10 +70,10 @@ function Page() {
         <Cell label="Fees paid" value={tia(p.fees_utia, { unit: false })} unit="TIA"
           tone={p.settlements === 0 ? "absent" : undefined}
           sub={`${p.settlements.toLocaleString("en-US")} settlement${p.settlements === 1 ? "" : "s"} · ${fmtShare(p.fees_share)} of the window`} />
-        <Cell label="Upload size" value={bytes(p.bytes)} sub={`${fmtShare(p.bytes_share)} of the window`} />
+        <Cell label="Blob size" value={bytes(p.bytes)} sub={`${fmtShare(p.bytes_share)} of the window`} />
         <Cell label="Paid per MiB" value={p.paid_per_mib_utia != null ? tia(p.paid_per_mib_utia, { unit: false }) : "—"} unit={p.paid_per_mib_utia != null ? "TIA" : undefined}
           tone={p.paid_per_mib_utia == null ? "absent" : undefined}
-          sub={p.avg_blob_bytes != null ? `average upload ${bytes(p.avg_blob_bytes)} · largest ${bytes(p.largest_blob_bytes)}` : "nothing settled"} />
+          sub={p.avg_blob_bytes != null ? `average blob ${bytes(p.avg_blob_bytes)} · largest ${bytes(p.largest_blob_bytes)}` : "nothing settled"} />
         <Cell label="Timed out" value={p.timeouts > 0 ? p.timeouts : "none"} tone={p.timeouts > 0 ? "fault" : "absent"}
           sub={p.timeouts > 0 ? `${tia(p.timed_out_utia)} charged` : "none reported"}
           detail={p.timeouts > 0 ? `${tia(p.timed_out_utia)} charged on promises this publisher abandoned.` : "No timeout reported. A floor, not a total: a promise nobody reports leaves no trace on chain."} />
@@ -83,7 +83,7 @@ function Page() {
       <Panel title="By window">
       <div className="tablewrap">
         <table>
-          <thead><tr><th>window</th><th className="right">settlements</th><th className="right">upload size</th><th className="right">fees paid</th><th className="right">per MiB</th><th className="right">timed out</th></tr></thead>
+          <thead><tr><th>window</th><th className="right">settlements</th><th className="right">blob size</th><th className="right">fees paid</th><th className="right">per MiB</th><th className="right">timed out</th></tr></thead>
           <tbody>
             {data.windows.map((w) => (
               <tr key={w.window.name}>
@@ -128,7 +128,7 @@ function Page() {
         <Panel title="Recent blobs" right={<>{data.recent_blobs.length} most recent · <Link href={`/blobs/`}>all blobs →</Link></>}>
         <div className="tablewrap">
           <table>
-            <thead><tr><th>blob</th><th>settled (UTC)</th><th>namespace</th><th className="right">upload size</th><th className="right">fee paid</th><th className="right">validators</th></tr></thead>
+            <thead><tr><th>blob</th><th>settled (UTC)</th><th>namespace</th><th className="right">blob size</th><th className="right">fee paid</th><th className="right">validators</th></tr></thead>
             <tbody>
               {data.recent_blobs.map((b) => (
                 <tr key={b.promise_hash}>
