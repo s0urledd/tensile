@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -489,7 +490,19 @@ func (c *snapshotCache[T]) background(log logf, win Window) {
 }
 
 // computeOnce computes win under the revision the store holds as it starts.
-func (c *snapshotCache[T]) computeOnce(ctx context.Context, win Window) (*snap[T], error) {
+//
+// A panic in it is a failed computation. Every computation runs on a
+// goroutine of its own (the warm-up, a keeper, a reader's first computation
+// of a window), where nothing recovers it the way net/http recovers one on a
+// request: it would end the whole API and leave the window marked
+// refreshing. As an error it is logged by background, returned to a reader
+// waiting on it as a 500, and the next refresh tries again.
+func (c *snapshotCache[T]) computeOnce(ctx context.Context, win Window) (s *snap[T], err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			s, err = nil, fmt.Errorf("panic: %v\n%s", p, debug.Stack())
+		}
+	}()
 	start := time.Now()
 	// The revision the figures were computed under is the one read before
 	// the queries ran. Read after, a hold landing mid-compute stamped a

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -66,6 +67,29 @@ func TestAFailedComputationIsReturnedToTheReaderWaitingOnIt(t *testing.T) {
 	}
 	if took := time.Since(start); took > 2*time.Second {
 		t.Fatalf("the reader waited %s for a computation that had already failed", took)
+	}
+}
+
+// A computation runs on a goroutine of its own, where nothing recovers a
+// panic the way net/http does on a request: one ended the whole API and left
+// the window marked refreshing. It is a failed computation instead, returned
+// to the reader waiting on it, and the next read computes the window again.
+func TestAPanickingComputationFailsWithoutEndingTheProcess(t *testing.T) {
+	var n atomic.Int32
+	c := newSnapshotCache("test", func(ctx context.Context, win Window) (int, error) {
+		if n.Add(1) == 1 {
+			panic("boom")
+		}
+		return 7, nil
+	})
+	c.firstWait = 5 * time.Second
+	win := testWindow("24h")
+	if _, _, _, err := c.get(context.Background(), nil, win); err == nil || !strings.Contains(err.Error(), "panic: boom") {
+		t.Fatalf("got %v, want the panic as the computation's error", err)
+	}
+	v, _, _, err := c.get(context.Background(), nil, win)
+	if err != nil || v != 7 {
+		t.Fatalf("the next read: %d, %v; want the window computed again", v, err)
 	}
 }
 

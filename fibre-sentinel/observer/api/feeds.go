@@ -38,6 +38,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -177,17 +178,18 @@ func storeFeed(key string, c cachedFeed) {
 }
 
 // refreshFeed rebuilds key in the background; the caller has marked it
-// refreshing. A failed rebuild keeps the feed being served and is logged,
-// and the next reader past the TTL tries again. A feed that now answers
-// otherwise than 200 (the validator is no longer on record) is dropped, so
-// the next reader gets that answer rather than the old feed.
+// refreshing. A failed rebuild, a panicking one included (rebuildFeed),
+// keeps the feed being served and is logged, and the next reader past the
+// TTL tries again. A feed that now answers otherwise than 200 (the validator
+// is no longer on record) is dropped, so the next reader gets that answer
+// rather than the old feed.
 func (s *Server) refreshFeed(key string, build feedBuilder, authority string) {
 	s.bg.Add(1)
 	go func() {
 		defer s.bg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), feedBuildTimeout)
 		defer cancel()
-		c, status, err := renderFeed(ctx, build, authority, time.Now())
+		c, status, err := rebuildFeed(ctx, build, authority, time.Now())
 		switch {
 		case err != nil:
 			if s.log != nil {
@@ -204,6 +206,20 @@ func (s *Server) refreshFeed(key string, build feedBuilder, authority string) {
 		delete(feedCache.refreshing, key)
 		feedCache.Unlock()
 	}()
+}
+
+// rebuildFeed is renderFeed for a rebuild in the background. On a request's
+// goroutine net/http recovers a panic and fails only that request; on a
+// goroutine of its own a panic would end the whole API and leave the feed
+// marked refreshing. It is a failed rebuild instead: logged, and the feed
+// served as it stands until the next reader past the TTL tries again.
+func rebuildFeed(ctx context.Context, build feedBuilder, authority string, now time.Time) (c cachedFeed, status int, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			c, status, err = cachedFeed{}, 0, fmt.Errorf("panic: %v\n%s", p, debug.Stack())
+		}
+	}()
+	return renderFeed(ctx, build, authority, now)
 }
 
 func etagMatch(header, etag string) bool {

@@ -35,17 +35,7 @@ func TestAStaleFeedIsServedAtOnceAndRebuiltBehindIt(t *testing.T) {
 		s.serveFeed(rec, httptest.NewRequest(http.MethodGet, "/v1/feed.atom", nil), build)
 		return rec
 	}
-	age := func() {
-		prefix := fmt.Sprintf("%p|", s)
-		feedCache.Lock()
-		defer feedCache.Unlock()
-		for k, c := range feedCache.m {
-			if strings.HasPrefix(k, prefix) {
-				c.at = c.at.Add(-2 * feedTTL)
-				feedCache.m[k] = c
-			}
-		}
-	}
+	age := func() { ageFeeds(s) }
 
 	if b := serve().Body.String(); !strings.Contains(b, "build 1") {
 		t.Fatalf("first read: %s", b)
@@ -75,5 +65,54 @@ func TestAStaleFeedIsServedAtOnceAndRebuiltBehindIt(t *testing.T) {
 	s.bg.Wait()
 	if code := serve().Code; code != http.StatusNotFound {
 		t.Fatalf("a feed whose rebuild answers 404 was still served (%d)", code)
+	}
+}
+
+// ageFeeds makes every feed s has cached older than the TTL.
+func ageFeeds(s *Server) {
+	prefix := fmt.Sprintf("%p|", s)
+	feedCache.Lock()
+	defer feedCache.Unlock()
+	for k, c := range feedCache.m {
+		if strings.HasPrefix(k, prefix) {
+			c.at = c.at.Add(-2 * feedTTL)
+			feedCache.m[k] = c
+		}
+	}
+}
+
+// A rebuild runs on a goroutine of its own, where nothing recovers a panic
+// the way net/http does on a request: one ended the whole API and left the
+// feed marked refreshing. It is a failed rebuild instead: the feed is served
+// as it stands, and the next reader past the TTL starts another rebuild.
+func TestAPanickingFeedRebuildKeepsTheFeedAndTheProcess(t *testing.T) {
+	s := &Server{}
+	var builds atomic.Int32
+	build := func(ctx context.Context, authority string, now time.Time) (*feed.Feed, int, error) {
+		n := builds.Add(1)
+		if n == 2 {
+			panic("boom")
+		}
+		return &feed.Feed{ID: "tag:test,2026:x", Title: fmt.Sprintf("build %d", n)}, http.StatusOK, nil
+	}
+	serve := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		s.serveFeed(rec, httptest.NewRequest(http.MethodGet, "/v1/feed.atom", nil), build)
+		return rec
+	}
+
+	serve()
+	ageFeeds(s)
+	serve() // stale: served, and the rebuild behind it panics
+	s.bg.Wait()
+	if rec := serve(); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "build 1") {
+		t.Fatalf("after a panicking rebuild: %d %s", rec.Code, rec.Body.String())
+	}
+	s.bg.Wait()
+	if n := builds.Load(); n != 3 {
+		t.Fatalf("%d builds, want 3: the feed stayed stale, so the next reader started another rebuild", n)
+	}
+	if b := serve().Body.String(); !strings.Contains(b, "build 3") {
+		t.Fatalf("after the next rebuild: %s", b)
 	}
 }
