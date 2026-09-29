@@ -379,6 +379,16 @@ so it refreshes about every 35–45 s), and the windows of one cache are taken
 at different moments, so a longer window can count less than a shorter one
 until its next refresh. Persisted to `<data-dir>/snapshots/` (`-snapshot-dir`)
 so a restart serves the last figures at once; the warm-up then replaces them.
+Two files beside them keep what the snapshots derive from the whole record,
+`original-rows.json` (each publication's `original_rows`, read once from its
+record) and `endorsement-ledger.json` (each validator's newest
+endorsements), so a restart catches them up instead of rebuilding them
+(`derived.go`). Each is used only for the store it was computed from while
+that store still holds everything it was computed from: the store's creation
+time (`schema_migrations` version 1) and chain id, the newest row it read and
+that row's key, and its newest entries read again. Anything else, or a file
+that does not parse, is removed and rebuilt from the store. An older build
+does not read them.
 A file is served only under the revision it was computed under (holds,
 activation, `verdict.MethodologyVersion`) and for the vantage it was computed
 for. A window with nothing to serve makes a reader wait at most 8 s, then

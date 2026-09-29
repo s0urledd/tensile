@@ -48,6 +48,12 @@ import (
 //	                             network is also computed without that many
 //	                             bonded validators (the lowest addresses)
 //	TENSILE_SNAPSHOT_CASES       optional: a regexp the case names must match
+//	TENSILE_SNAPSHOT_STATE       optional: the snapshot directory the memo and
+//	                             the ledger are kept in (derived.go); they are
+//	                             brought up to date for the whole record first,
+//	                             timed, and written there at the end
+//	TENSILE_SNAPSHOT_EXPECT      optional, with STATE: how both must have begun,
+//	                             "loaded" or "built"
 //
 // Run with -timeout 0: a busy store takes minutes per build.
 func TestSnapshotHarness(t *testing.T) {
@@ -90,9 +96,37 @@ func TestSnapshotHarness(t *testing.T) {
 		}
 		opts = append(opts, WithPublisherLabels(labels))
 	}
+	state := os.Getenv("TENSILE_SNAPSHOT_STATE")
+	if state != "" {
+		opts = append(opts, WithSnapshotDir(state))
+	}
 	s := newServer(st, VantageInfo{Name: vantage}, nil, opts...)
 	s.clock = func() time.Time { return now }
 	ctx := context.Background()
+	if state != "" {
+		// What a start costs before the first figure: the memo for every
+		// publication "all" reads, and the ledger for every assignment.
+		t0 := time.Now()
+		all := windowFor("all", now)
+		if _, err := s.origRows.doc(ctx, st.DB(), all.startArg(), all.endArg(), store.TS(now)); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.recent.fill(ctx, st.DB(), "", map[string]signingStats{}); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("memo and ledger up to date in %.3fs", time.Since(t0).Seconds())
+		t.Logf("memo: %s", s.origRows.origin)
+		t.Logf("ledger: %s", s.recent.origin)
+		if want := os.Getenv("TENSILE_SNAPSHOT_EXPECT"); want != "" &&
+			(!strings.HasPrefix(s.origRows.origin, want) || !strings.HasPrefix(s.recent.origin, want)) {
+			t.Errorf("the memo and the ledger were to be %s", want)
+		}
+		defer func() {
+			if err := s.keepDerived(ctx); err != nil {
+				t.Errorf("keeping the memo and the ledger: %v", err)
+			}
+		}()
+	}
 
 	cases := harnessCases(t, s, now)
 	var failed, compared int

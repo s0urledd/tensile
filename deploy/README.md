@@ -249,7 +249,12 @@ last computed copy of each under `<DATA_DIR>/snapshots/` (`-snapshot-dir`
 moves it). A restarted API serves those copies at once, with their real age
 shown on the page, while the warm-up recomputes them behind; the first
 minute or two after a restart is busier than the steady state, but nobody
-waits for it.
+waits for it. The same directory keeps `original-rows.json` and
+`endorsement-ledger.json`, two things the figures derive from the whole
+record, so a restart does not rebuild them; the API checks that each belongs
+to this database as it now stands and rebuilds it when it does not, and an
+older build ignores both. `-warm-only` writes them too, and the copy below
+carries them over with the snapshots.
 
 That holds only while the copies are still valid. Each file carries the
 revision it was computed under (the rules, `verdict.MethodologyVersion`,

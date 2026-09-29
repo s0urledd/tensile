@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // originalRowsMemo remembers each publication's original_rows, the one value
@@ -28,6 +31,14 @@ import (
 // Two computations that start cold may both look up the same records, which
 // costs what the statement would have cost without a memo, once.
 //
+// With file set it is kept across restarts (derived.go): read back before
+// the first computation uses it, and written again when it has grown, at
+// most every memoSaveEvery unless it has doubled since. What a restart
+// finds missing is only what was learned since the last write, and it is
+// looked up as any new publication is. The file's mark is a publications
+// rowid, so a VACUUM that renumbered rows costs one rebuild at the next
+// start, not a wrong value.
+//
 // The zero value is ready to use.
 type originalRowsMemo struct {
 	mu sync.Mutex
@@ -37,7 +48,50 @@ type originalRowsMemo struct {
 	// odd are the hashes whose value is neither an integer nor NULL: looked
 	// up once, then left to the statement every time.
 	odd map[string]bool
+
+	// file is where the memo is kept, or "" for nowhere. fileMu orders
+	// reading and writing it; opened says it has been read (or found
+	// missing, or refused) by this process, saved is how many entries the
+	// file holds as last written and savedAt when, and origin says how
+	// this process's memo began, which log (when set) is told.
+	file    string
+	log     logf
+	fileMu  sync.Mutex
+	opened  bool
+	saved   int
+	savedAt time.Time
+	origin  string
 }
+
+// memoSaveEvery is how often a grown memo is written out.
+const memoSaveEvery = 10 * time.Minute
+
+// memoDefinition is what the memo's entries are computed with.
+var memoDefinition = definitionOf(originalRowsSQL, "an integer or NULL, else not kept")
+
+// memoFile is the memo on disk: the hashes grouped by their original_rows,
+// which is the same number for nearly every publication.
+type memoFile struct {
+	derivedHeader
+	// Mark is the newest publication when the file was written: every
+	// entry is of a publication at or below it.
+	Mark struct {
+		Rowid       int64  `json:"rowid"`
+		PromiseHash string `json:"promise_hash"`
+	} `json:"mark"`
+	Values map[string][]string `json:"values"`
+	Nulls  []string            `json:"nulls"`
+}
+
+// memoCheckSQL reads original_rows again from the records of the newest
+// publications at or below a rowid (?), newest first, as many as the
+// second argument says.
+const memoCheckSQL = `SELECT p.promise_hash, ` + originalRowsSQL + ` FROM publications p
+		WHERE p.rowid <= ? ORDER BY p.rowid DESC LIMIT ?`
+
+// memoChecked is how many of the newest publications at or below the mark
+// are read again when a file is loaded and compared with its entries.
+const memoChecked = 32
 
 type memoRows struct {
 	n    int64
@@ -69,6 +123,9 @@ func memoKey(h string) bool {
 // publication committed between this and the statement is simply not in the
 // object, and the statement reads its record.
 func (m *originalRowsMemo) doc(ctx context.Context, db *sql.DB, start, end, now string) (string, error) {
+	if err := m.open(ctx, db); err != nil {
+		return "", err
+	}
 	rows, err := db.QueryContext(ctx, `SELECT p.promise_hash FROM publications p WHERE `+loadPopulationSQL, start, end, now)
 	if err != nil {
 		return "", err
@@ -103,6 +160,9 @@ func (m *originalRowsMemo) doc(ctx context.Context, db *sql.DB, start, end, now 
 		if err := m.learn(ctx, db, missing); err != nil {
 			return "", err
 		}
+		// Not being able to write the file costs the next start a lookup,
+		// not this computation its answer.
+		_ = m.save(ctx, db, false)
 	}
 
 	var b strings.Builder
@@ -185,6 +245,191 @@ func (m *originalRowsMemo) learn(ctx context.Context, db *sql.DB, hashes []strin
 	for h := range odd {
 		m.odd[h] = true
 	}
+	return nil
+}
+
+// open reads the memo's file the first time the memo is used, and keeps its
+// entries if the store is still the one they were computed from (derived.go);
+// otherwise the file is removed and the memo starts empty, as it did before
+// there were files. An error is a query that failed, and the next
+// computation tries again.
+func (m *originalRowsMemo) open(ctx context.Context, db *sql.DB) error {
+	m.fileMu.Lock()
+	defer m.fileMu.Unlock()
+	if m.opened {
+		return nil
+	}
+	if m.file == "" {
+		m.opened, m.origin = true, "not kept on disk"
+		return nil
+	}
+	t0 := time.Now()
+	vals, n, why, err := m.load(ctx, db)
+	if err != nil {
+		return err
+	}
+	m.opened = true
+	defer func() {
+		if m.log != nil {
+			m.log("original_rows memo: %s (%s)", m.origin, time.Since(t0).Round(time.Millisecond))
+		}
+	}()
+	switch {
+	case why != "":
+		_ = os.Remove(m.file)
+		m.origin = "built from the store: " + m.file + " refused: " + string(why)
+		return nil
+	case vals == nil:
+		m.origin = "built from the store: no " + m.file
+		return nil
+	}
+	m.mu.Lock()
+	if m.vals == nil {
+		m.vals = map[string]memoRows{}
+	}
+	for h, v := range vals {
+		if _, ok := m.vals[h]; !ok {
+			m.vals[h] = v
+		}
+	}
+	m.mu.Unlock()
+	m.saved, m.savedAt = len(vals), time.Now()
+	m.origin = "loaded " + strconv.Itoa(len(vals)) + " entries from " + m.file + " (publications through rowid " + strconv.FormatInt(n, 10) + ")"
+	return nil
+}
+
+// load reads and checks the file: its entries and mark when it may be used,
+// a refusal when it may not, nothing when there is none.
+func (m *originalRowsMemo) load(ctx context.Context, db *sql.DB) (map[string]memoRows, int64, refusal, error) {
+	var f memoFile
+	ok, why := readDerived(m.file, &f)
+	if !ok {
+		return nil, 0, why, nil
+	}
+	if why, err := checkHeader(ctx, db, f.derivedHeader, "original-rows", memoDefinition); why != "" || err != nil {
+		return nil, 0, why, err
+	}
+	vals := map[string]memoRows{}
+	add := func(h string, v memoRows) refusal {
+		if !memoKey(h) {
+			return refusal("an entry keyed " + strconv.Quote(h))
+		}
+		if _, dup := vals[h]; dup {
+			return refusal("two entries for " + h)
+		}
+		vals[h] = v
+		return ""
+	}
+	for k, hs := range f.Values {
+		n, err := strconv.ParseInt(k, 10, 64)
+		if err != nil {
+			return nil, 0, refusal("a value " + strconv.Quote(k)), nil
+		}
+		for _, h := range hs {
+			if why := add(h, memoRows{n: n}); why != "" {
+				return nil, 0, why, nil
+			}
+		}
+	}
+	for _, h := range f.Nulls {
+		if why := add(h, memoRows{null: true}); why != "" {
+			return nil, 0, why, nil
+		}
+	}
+	// The mark: the newest publication then must be the same one now, under
+	// the same rowid.
+	if f.Mark.Rowid <= 0 {
+		if len(vals) > 0 {
+			return nil, 0, "entries with no publication behind them", nil
+		}
+		return vals, 0, "", nil
+	}
+	var h string
+	switch err := db.QueryRowContext(ctx, `SELECT promise_hash FROM publications WHERE rowid = ?`, f.Mark.Rowid).Scan(&h); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, 0, refusal("the store has no publication " + strconv.FormatInt(f.Mark.Rowid, 10) + ": it is older than the file"), nil
+	case err != nil:
+		return nil, 0, "", err
+	case h != f.Mark.PromiseHash:
+		return nil, 0, refusal("publication " + strconv.FormatInt(f.Mark.Rowid, 10) + " is another one now"), nil
+	}
+	// And the newest entries are what their records say.
+	rows, err := db.QueryContext(ctx, memoCheckSQL, f.Mark.Rowid, memoChecked)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var h string
+		var v any
+		if err := rows.Scan(&h, &v); err != nil {
+			return nil, 0, "", err
+		}
+		e, kept := vals[h]
+		if !kept {
+			continue
+		}
+		switch x := v.(type) {
+		case nil:
+			if !e.null {
+				return nil, 0, refusal(h + " has no original_rows, the file says " + strconv.FormatInt(e.n, 10)), nil
+			}
+		case int64:
+			if e.null || e.n != x {
+				return nil, 0, refusal(h + " has original_rows " + strconv.FormatInt(x, 10) + ", not the file's"), nil
+			}
+		default:
+			return nil, 0, refusal(h + " has an original_rows the memo never keeps"), nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, "", err
+	}
+	return vals, f.Mark.Rowid, "", nil
+}
+
+// save writes the memo out when it has grown since the last write and
+// memoSaveEvery has passed or it has doubled; force writes whatever has
+// grown. The mark is read after the entries are taken, so every entry is of
+// a publication at or below it.
+func (m *originalRowsMemo) save(ctx context.Context, db *sql.DB, force bool) error {
+	if m.file == "" {
+		return nil
+	}
+	m.fileMu.Lock()
+	defer m.fileMu.Unlock()
+	if !m.opened {
+		return nil // nothing learned yet that the file does not have
+	}
+	f := memoFile{Values: map[string][]string{}, Nulls: []string{}}
+	m.mu.Lock()
+	n := len(m.vals)
+	if n <= m.saved || !(force || n >= 2*m.saved || time.Since(m.savedAt) >= memoSaveEvery) {
+		m.mu.Unlock()
+		return nil
+	}
+	for h, v := range m.vals {
+		if v.null {
+			f.Nulls = append(f.Nulls, h)
+			continue
+		}
+		k := strconv.FormatInt(v.n, 10)
+		f.Values[k] = append(f.Values[k], h)
+	}
+	m.mu.Unlock()
+	id, err := readStoreIdentity(ctx, db)
+	if err != nil {
+		return err
+	}
+	if err := db.QueryRowContext(ctx, `SELECT rowid, promise_hash FROM publications ORDER BY rowid DESC LIMIT 1`).
+		Scan(&f.Mark.Rowid, &f.Mark.PromiseHash); err != nil {
+		return err
+	}
+	f.derivedHeader = derivedHeader{Kind: "original-rows", Format: derivedFormat, Definition: memoDefinition, Store: id}
+	if err := writeDerived(m.file, f); err != nil {
+		return err
+	}
+	m.saved, m.savedAt = n, time.Now()
 	return nil
 }
 

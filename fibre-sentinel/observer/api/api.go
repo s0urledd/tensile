@@ -262,6 +262,13 @@ func WarmSnapshots(ctx context.Context, st *store.Store, info VantageInfo, log *
 			return err
 		}
 	}
+	// And the memo and the ledger as the computations left them, so the
+	// API that takes these files over does not build them again. Without
+	// them it builds them as it always did, so a failed write is logged, not
+	// fatal.
+	if err := s.keepDerived(ctx); err != nil && log != nil {
+		log.Printf("warm-only: keeping the memo and the ledger: %v", err)
+	}
 	return nil
 }
 
@@ -336,7 +343,22 @@ func newServer(st *store.Store, info VantageInfo, log *scan.Logger, opts ...Opti
 	// A snapshot file says which vantage it was computed for, and one for
 	// another vantage is not loaded (snapshotCache.vantage).
 	s.net.vantage, s.vals.vantage, s.market.vantage = s.vantage, s.vantage, s.vantage
+	// The memo and the ledger are kept beside the snapshots (derived.go).
+	if dir := s.snapshotsIn(); dir != "" {
+		s.origRows.file = filepath.Join(dir, originalRowsFile)
+		s.recent.file = filepath.Join(dir, endorsementLedgerFile)
+		s.origRows.log, s.recent.log = s.logf(), s.logf()
+	}
 	return s
+}
+
+// keepDerived writes the memo and the ledger out now if they have grown,
+// whatever their pace: for a process about to end.
+func (s *Server) keepDerived(ctx context.Context) error {
+	err := s.origRows.save(ctx, s.st.DB(), true)
+	s.recent.mu.Lock()
+	defer s.recent.mu.Unlock()
+	return errors.Join(err, s.recent.save(ctx, s.st.DB(), true))
 }
 
 // Close waits for the server's background work (snapshot warm-ups and
@@ -349,6 +371,7 @@ func (s *Server) Close() {
 	s.net.wait()
 	s.vals.wait()
 	s.market.wait()
+	_ = s.keepDerived(context.Background())
 }
 
 // ServeHTTP implements http.Handler with the headers every response shares.
