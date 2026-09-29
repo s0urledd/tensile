@@ -252,8 +252,9 @@ minute or two after a restart is busier than the steady state, but nobody
 waits for it. The same directory keeps `original-rows.json` and
 `endorsement-ledger.json`, two things the figures derive from the whole
 record, so a restart does not rebuild them; the API checks that each belongs
-to this database as it now stands and rebuilds it when it does not, and an
-older build ignores both. `-warm-only` writes them too, and the copy below
+to this database as it now stands, at its schema version, and was computed
+the way this build computes it, and rebuilds it when it does not (once after
+a migration), and an older build ignores both. `-warm-only` writes them too, and the copy below
 carries them over with the snapshots.
 
 That holds only while the copies are still valid. Each file carries the

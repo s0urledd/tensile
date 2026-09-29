@@ -231,6 +231,15 @@ type ledgerRow struct {
 	height, txIndex, rowid, attested int64
 }
 
+// ledgerVersion names how the ledger folds rows in: the order newer puts
+// them in, what add keeps (the newest recentEndorsements rows, and the
+// newest endorsement by settlement time, the first one read on a tie), and
+// which rows refresh hands it. It must be bumped whenever any of them
+// changes, so that a file folded the old way is rebuilt rather than caught
+// up (ledgerDefinition). TestTheLedgerFoldIsTheOneItsVersionNames holds the
+// fold to the version.
+const ledgerVersion = 1
+
 // newer orders ledger rows newest first.
 func (r ledgerRow) newer(o ledgerRow) bool {
 	if r.height != o.height {
@@ -283,9 +292,9 @@ const ledgerCheckSQL = `SELECT a.rowid, a.validator_address, a.attested,
 const ledgerSaveEvery = time.Minute
 
 // ledgerDefinition is what the ledger is computed with: the rows it reads,
-// how many it keeps, and the order that decides which.
+// how many it keeps, and the fold (ledgerVersion).
 var ledgerDefinition = definitionOf(ledgerRowsSQL, recentPopulationSQL, strconv.Itoa(recentEndorsements),
-	"newest by settlement height, then transaction index, then rowid; the newest endorsement by settlement_time, the first one read on a tie")
+	"ledger "+strconv.Itoa(ledgerVersion))
 
 // ledgerFile is the ledger on disk.
 type ledgerFile struct {

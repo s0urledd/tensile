@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -309,6 +311,14 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 				m["up_to_row"].(map[string]any)["validator_address"] = "nobody"
 			})
 		}, "", "is another one now"},
+		{"a migration since the files", func(t *testing.T, f *derivedFixture, dir string) {
+			// One may rewrite, for rows below the marks, a column the files
+			// were computed from; the load would never see it.
+			if _, err := f.st.DB().Exec(`INSERT INTO schema_migrations (version, applied_at)
+				SELECT MAX(version) + 1, ? FROM schema_migrations`, store.TS(f.now)); err != nil {
+				t.Fatal(err)
+			}
+		}, "computed under schema version", "computed under schema version"},
 		{"a memo entry below the ones read again, edited", func(t *testing.T, f *derivedFixture, dir string) {
 			// Past the newest memoChecked publications, which the load reads
 			// again: only the digest can tell.
@@ -414,5 +424,44 @@ func TestADerivedFileWithAnyByteChangedIsRefused(t *testing.T) {
 				t.Errorf("%s with byte %d changed from %q to %q: not refused", name, i, b[i], c[i])
 			}
 		}
+	}
+}
+
+// The ledger's fold is the one ledgerVersion names. A file keeps what the
+// fold made of the rows below its mark, and the load reads again only the
+// rows it publishes, so a fold changed under the same version would carry
+// on from a file folded the old way. This digests what add and newer make
+// of a fixed run of rows, in rowid order as refresh hands them, with ties
+// on height, transaction index and settlement time, and rows handed in
+// again. When it fails the fold has changed: bump ledgerVersion and record
+// the new digest under it.
+func TestTheLedgerFoldIsTheOneItsVersionNames(t *testing.T) {
+	folds := map[int]string{
+		1: "906f637593e789932422d479fd36836b2e5198ca3f90aa9262174d710903af66",
+	}
+	r := rand.New(rand.NewSource(1))
+	type in struct {
+		row ledgerRow
+		at  string
+	}
+	var seen []in
+	e := &ledgerEntry{}
+	var b strings.Builder
+	for id := int64(1); id <= 3000; id++ {
+		x := in{ledgerRow{height: 1000 + r.Int63n(300), txIndex: r.Int63n(3), rowid: id, attested: r.Int63n(2)},
+			fmt.Sprintf("2026-09-%02dT%02d:00:00Z", 1+r.Intn(28), r.Intn(4))}
+		if len(seen) > 0 && r.Intn(10) == 0 {
+			x = seen[r.Intn(len(seen))] // a refresh that failed half way, run again
+		} else {
+			seen = append(seen, x)
+		}
+		e.add(x.row, x.at)
+		fmt.Fprintf(&b, "%v %q %v %d\n", e.top, e.last, e.set, e.lastRow)
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	got := hex.EncodeToString(sum[:])
+	if want := folds[ledgerVersion]; got != want {
+		t.Fatalf("the fold under ledgerVersion %d digests to %s, recorded %q: it has changed, so bump ledgerVersion and record this under it",
+			ledgerVersion, got, want)
 	}
 }

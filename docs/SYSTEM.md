@@ -383,14 +383,16 @@ Two files beside them keep what the snapshots derive from the whole record,
 `original-rows.json` (each publication's `original_rows`, read once from its
 record) and `endorsement-ledger.json` (each validator's newest
 endorsements), so a restart catches them up instead of rebuilding them
-(`derived.go`). Each is used only for the store it was computed from while
-that store still holds everything it was computed from: the store's creation
-time (`schema_migrations` version 1) and chain id, the newest row it read and
-that row's key, and its newest entries read again. Each also carries a
-sha256 of its own body, so an edit or damage below the entries read again
-is caught too. Anything else, a file whose digest is not its body's, or one
-that does not parse, is removed and rebuilt from the store. An older build
-does not read them.
+(`derived.go`). Each is used only by a build that computes it the same way
+(a digest of its SQL and of a version of the Go that folds it), and only
+for the store it was computed from while that store still holds everything
+it was computed from: the store's creation time (`schema_migrations` version
+1), chain id and schema version (so a migration costs one rebuild), the
+newest row it read and that row's key, and its newest entries read again.
+Each also carries a sha256 of its own body, so an edit or damage below the
+entries read again is caught too. Anything else, a file whose digest is not
+its body's, or one that does not parse, is removed and rebuilt from the
+store. An older build does not read them.
 A file is served only under the revision it was computed under (holds,
 activation, `verdict.MethodologyVersion`) and for the vantage it was computed
 for. A window with nothing to serve makes a reader wait at most 8 s, then

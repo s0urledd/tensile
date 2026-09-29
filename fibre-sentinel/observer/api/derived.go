@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -39,7 +40,9 @@ import (
 //     in a way that still parses, is refused whole rather than believed
 //     beyond the entries the load reads again;
 //   - a definition: a digest of the SQL and constants its content is
-//     computed with, so a build that computes it differently rebuilds it;
+//     computed with and of the version of the Go that computes it
+//     (memoVersion, ledgerVersion), so a build that computes it differently
+//     rebuilds it;
 //   - a high-water mark: the rowid of the newest row it was computed from
 //     and that row's own key. A store restored from an older backup does not
 //     have the row; one whose newest rows were deleted and the rowids used
@@ -47,11 +50,12 @@ import (
 //
 // and the newest of its entries are looked up again and compared. Any doubt
 // is a rebuild: a file whose digest is not its body's, that does not parse,
-// is of another format or definition, names another store, or whose mark
-// or entries do not match what the store holds now is removed, and the memo
-// or ledger is built from the store as it was before there were files. A
-// query that fails while a file is checked is an error of the computation,
-// which the next one retries; it proves nothing about the file.
+// is of another format or definition, names another store or another
+// schema, or whose mark or entries do not match what the store holds now is
+// removed, and the memo or ledger is built from the store as it was before
+// there were files. A query that fails while a file is checked is an error
+// of the computation, which the next one retries; it proves nothing about
+// the file.
 //
 // An older build does not know the files and never reads them, so going
 // back costs nothing. Coming forward again, a file written before the
@@ -65,15 +69,25 @@ const (
 // storeIdentity is what names a store without writing to it: the moment it
 // was created (the applied_at of schema_migrations' version 1, written once
 // by the process that created the file and never again, so a copy keeps it
-// and a store built anew gets another) and the chain it records.
+// and a store built anew gets another), the chain it records, and the
+// schema it is at (the highest schema_migrations version).
+//
+// The schema is there because a migration may rewrite, for old rows, a
+// column a file was computed from: a backfill of assignments.attested, say.
+// The load reads again only the rows a file publishes, so rows that a
+// migration brought into the population below the file's mark would never
+// be folded in. A file from before a migration is refused, and the memo or
+// ledger rebuilt once.
 type storeIdentity struct {
 	Created string `json:"created"`
 	ChainID string `json:"chain_id"`
+	Schema  int    `json:"schema"`
 }
 
 func readStoreIdentity(ctx context.Context, db *sql.DB) (storeIdentity, error) {
 	var id storeIdentity
-	if err := db.QueryRowContext(ctx, `SELECT applied_at FROM schema_migrations WHERE version = 1`).Scan(&id.Created); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT applied_at, (SELECT MAX(version) FROM schema_migrations)
+			FROM schema_migrations WHERE version = 1`).Scan(&id.Created, &id.Schema); err != nil {
 		return id, err
 	}
 	err := db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'chain_id'`).Scan(&id.ChainID)
@@ -126,8 +140,11 @@ func checkHeader(ctx context.Context, db *sql.DB, h derivedHeader, kind, definit
 	if err != nil {
 		return "", err
 	}
-	if h.Store != id {
+	switch {
+	case h.Store.Created != id.Created || h.Store.ChainID != id.ChainID:
 		return refusal("computed from another store (created " + h.Store.Created + ", chain " + h.Store.ChainID + ")"), nil
+	case h.Store.Schema != id.Schema:
+		return refusal(fmt.Sprintf("computed under schema version %d, the store is at %d", h.Store.Schema, id.Schema)), nil
 	}
 	return "", nil
 }

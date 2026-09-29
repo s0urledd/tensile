@@ -66,8 +66,9 @@ type originalRowsMemo struct {
 // memoSaveEvery is how often a grown memo is written out.
 const memoSaveEvery = 10 * time.Minute
 
-// memoDefinition is what the memo's entries are computed with.
-var memoDefinition = definitionOf(originalRowsSQL, "an integer or NULL, else not kept")
+// memoDefinition is what the memo's entries are computed with: the value it
+// reads and how learn keeps it.
+var memoDefinition = definitionOf(originalRowsSQL, "memo "+strconv.Itoa(memoVersion))
 
 // memoFile is the memo on disk: the hashes grouped by their original_rows,
 // which is the same number for nearly every publication.
@@ -191,6 +192,12 @@ func (m *originalRowsMemo) doc(ctx context.Context, db *sql.DB, start, end, now 
 	b.WriteByte('}')
 	return b.String(), nil
 }
+
+// memoVersion names how learn turns what originalRowsSQL returns into an
+// entry: an integer kept as it is, NULL kept as none, anything else never
+// kept. It must be bumped whenever that changes, so that a file learned the
+// old way is rebuilt rather than trusted (memoDefinition).
+const memoVersion = 1
 
 // learn reads original_rows for hashes from their records and remembers what
 // it can. The lock is not held while the records are parsed.
