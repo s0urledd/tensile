@@ -667,9 +667,9 @@ pieces needed to re-run that function are published:
   was built is in the next export, counted as late. Every line of every file
   is in exactly one export.
 - **The code's configuration.** Each component appends its starts and
-  stops to `runs.jsonl` with its flags (`status.RunEvent`); the collector
-  replays them into `/v1/runs`, so a row can be traced to the prune
-  tolerance, schedule and timeouts that produced it, and to the build
+  stops to `runs.jsonl` with its flags (`status.RunEvent`), which every
+  daily export carries, so a row can be traced to the prune tolerance,
+  schedule and timeouts that produced it, and to the build
   (`observer.build` on the row itself since schema 9).
 - **A pinned window.** `?as_of=<RFC 3339>` on `/v1/network` and
   `/v1/validators` answers what the observer would have published at that

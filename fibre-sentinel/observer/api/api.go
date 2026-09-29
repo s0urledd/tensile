@@ -201,7 +201,6 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 	s.mux.HandleFunc("GET /v1/namespaces", s.handleNamespaces)
 	s.mux.HandleFunc("GET /v1/blobs/{hash}", s.handleBlob)
 	s.mux.HandleFunc("GET /v1/probes", s.handleProbes)
-	s.mux.HandleFunc("GET /v1/runs", s.handleRuns)
 	s.mux.HandleFunc("GET /v1/sampling", s.handleSampling)
 	s.mux.HandleFunc("GET /v1/exports", s.handleExports)
 	s.mux.HandleFunc("GET /v1/exports/pubkey", s.handleExportPubkey) // exports_signing.go; more specific than {name}
@@ -1049,60 +1048,6 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		ProtocolParamsFinger: meta["protocol_params_fingerprint"], PinnedCelestiaApp: pinned,
 		Counts: counts, Collector: col, Prober: pr, LastProbeAt: lastProbe, Meta: meta, ServerTime: now.UTC(),
 	})
-}
-
-// ---- runs (gaps) ----
-
-type runRow struct {
-	ID            int64   `json:"id"`
-	Component     string  `json:"component"`
-	Vantage       string  `json:"vantage"`
-	Version       string  `json:"version"`
-	StartedAt     string  `json:"started_at"`
-	LastHeartbeat string  `json:"last_heartbeat_at"`
-	StoppedAt     *string `json:"stopped_at"`
-	StopReason    *string `json:"stop_reason"`
-	PID           *int64  `json:"pid"`
-	Hostname      *string `json:"hostname"`
-	// Config is what the run was started with: every flag by name, as the
-	// component recorded it in runs.jsonl (status.RunEvent). It is what a
-	// verifier needs to re-derive this run's rows: the prune tolerance
-	// behind a phase, the schedule points, the timeouts, the policy file.
-	// Null for a run recorded before the file existed, and for the
-	// collector's own row.
-	Config json.RawMessage `json:"config"`
-}
-
-func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
-	win, err := parseWindow(r, time.Now())
-	if err != nil {
-		writeErr(w, 400, err.Error())
-		return
-	}
-	rows, err := s.st.DB().QueryContext(r.Context(), `SELECT id, component, vantage, version, started_at, last_heartbeat_at, stopped_at, stop_reason, pid, hostname, config_json
-		FROM observer_runs WHERE last_heartbeat_at >= ? AND started_at <= ? ORDER BY started_at`, win.startArg(), win.endArg())
-	if err != nil {
-		s.writeInternal(w, r.URL.Path, err)
-		return
-	}
-	defer rows.Close()
-	out := []runRow{}
-	for rows.Next() {
-		var rr runRow
-		var cfg *string
-		if err := rows.Scan(&rr.ID, &rr.Component, &rr.Vantage, &rr.Version, &rr.StartedAt, &rr.LastHeartbeat, &rr.StoppedAt, &rr.StopReason, &rr.PID, &rr.Hostname, &cfg); err != nil {
-			s.writeInternal(w, r.URL.Path, err)
-			return
-		}
-		if cfg != nil && json.Valid([]byte(*cfg)) {
-			rr.Config = json.RawMessage(*cfg)
-		} else {
-			rr.Config = json.RawMessage("null")
-		}
-		out = append(out, rr)
-	}
-	writeJSON(w, 200, map[string]any{"window": win, "runs": out,
-		"note": "a run without stopped_at whose component's status file is stale is a crash; config is the component's flags at start, from runs.jsonl"})
 }
 
 // ---- network ----

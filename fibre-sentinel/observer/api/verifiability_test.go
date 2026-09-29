@@ -11,7 +11,6 @@ import (
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
-	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/api"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/ingest"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
@@ -123,78 +122,6 @@ func TestAsOfPinsTheWindow(t *testing.T) {
 	// a future as_of is refused
 	if code := get(t, ts, "/v1/network?as_of="+now.Add(time.Hour).Format(time.RFC3339), nil); code != 400 {
 		t.Errorf("future as_of: %d, want 400", code)
-	}
-}
-
-// Every component's starts and stops, with the configuration it ran under,
-// come from runs.jsonl and are served at /v1/runs.
-func TestRunsCarryTheirConfiguration(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
-	dir := t.TempDir()
-	// a prober writing through the status package
-	w := status.New(dir, "prober", "eu", "abc123")
-	w.RecordRuns(map[string]any{"prune-tolerance": "2m30s", "in-window-probes": "4"})
-	w.Start()
-	w.Stop("signal")
-	// and a second start of the same component, still running
-	w2 := status.New(dir, "prober", "eu", "abc124")
-	w2.RecordRuns(map[string]any{"prune-tolerance": "3m0s"})
-	w2.Start()
-	t.Cleanup(func() { w2.Stop("test") })
-
-	now := time.Now()
-	res, err := ingest.Runs(st, filepath.Join(dir, status.RunsFile), now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Inserted != 3 { // two starts, one stop applied
-		t.Fatalf("replayed %d events, want 3 (%+v)", res.Inserted, res)
-	}
-	// replaying again changes nothing
-	if res, err := ingest.Runs(st, filepath.Join(dir, status.RunsFile), now); err != nil || res.Inserted != 0 {
-		t.Fatalf("second replay: %+v %v", res, err)
-	}
-	ts := httptestServer(t, st)
-	var out struct {
-		Runs []struct {
-			Component  string          `json:"component"`
-			Version    string          `json:"version"`
-			StoppedAt  *string         `json:"stopped_at"`
-			StopReason *string         `json:"stop_reason"`
-			PID        *int64          `json:"pid"`
-			Config     json.RawMessage `json:"config"`
-		} `json:"runs"`
-	}
-	if code := get(t, ts, "/v1/runs?window=all", &out); code != 200 {
-		t.Fatalf("runs: %d", code)
-	}
-	var stopped, open int
-	for _, r := range out.Runs {
-		if r.Component != "prober" {
-			continue
-		}
-		var cfg map[string]string
-		if err := json.Unmarshal(r.Config, &cfg); err != nil || cfg["prune-tolerance"] == "" {
-			t.Errorf("run %s config = %s", r.Version, r.Config)
-		}
-		if r.PID == nil {
-			t.Errorf("run %s has no pid", r.Version)
-		}
-		switch {
-		case r.Version == "abc123" && r.StoppedAt != nil && r.StopReason != nil && *r.StopReason == "signal":
-			stopped++
-		case r.Version == "abc124" && r.StoppedAt == nil:
-			open++
-		default:
-			t.Errorf("unexpected run row: %+v", r)
-		}
-	}
-	if stopped != 1 || open != 1 {
-		t.Errorf("stopped=%d open=%d, want 1 and 1: %+v", stopped, open, out.Runs)
 	}
 }
 

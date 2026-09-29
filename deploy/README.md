@@ -451,7 +451,7 @@ master key is never in it.
 `observer.db*` aside, start the collector: it recreates the schema, replays
 `registry.jsonl` (endpoint history), then tails the JSONL files from zero.
 Every record has a natural key and every insert is `ON CONFLICT DO
-NOTHING`, so a replay never duplicates. The run record (`/v1/runs`) comes
+NOTHING`, so a replay never duplicates. The run record (`observer_runs`) comes
 back from `runs.jsonl`, which every component appends its starts, stops
 and flags to, the revealed sampling secrets from
 `sampling-secrets.jsonl`, and the late shadow verdicts from

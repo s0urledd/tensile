@@ -326,7 +326,6 @@ GET /v1/blobs/{hash}          one blob: its reading, each assigned validator's s
 GET /v1/probes                raw rows (?blob=, ?validator=, ?at=, ?class=, ?served=no, ?since=,
                               ?before=; up to 1000 a page, next_before continues; ?rows=1 adds
                               each reading's row_indices and rows_sha256, up to 200 a page)
-GET /v1/runs                  every process start/stop with its config
 GET /v1/sampling              the earlier sampling: day commitments, and secrets once revealed
 GET /v1/exports[/{name}]      daily tarballs + digests
 GET /v1/avatars/{identity}    Keybase picture
@@ -454,7 +453,7 @@ or the `all` window would answer half the question.
   differs
 - **`?as_of=`**: any window as of any past moment, so a figure cannot be
   quietly restated
-- **`/v1/runs`**: the build and flags behind every row
+- **`runs.jsonl`** in every export: the build and flags behind every row
 
 What recompute is *not* trusted for: `assigned` and `attested` are the
 prober's own conclusions, so it checks them against `publications.jsonl` —

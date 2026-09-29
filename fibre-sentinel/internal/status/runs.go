@@ -21,8 +21,8 @@ const (
 // is a function of the wire result and the code, and the code's
 // configuration (the prune tolerance behind a phase, the schedule points,
 // the timeouts) is part of that function. The collector replays the file
-// into observer_runs, so it survives a database rebuild, and the API serves
-// it at /v1/runs.
+// into observer_runs, so it survives a database rebuild, and every daily
+// export carries it.
 //
 // A crash writes no stop event: the run's status file stops updating, and
 // the row stays open, which is what a crash looks like.
