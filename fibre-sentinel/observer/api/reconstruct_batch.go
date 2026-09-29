@@ -34,10 +34,11 @@ import (
 // where excess, sigma_rows - distinct_rows, is how many assigned row indices
 // the assignment hands to more than one validator. Available needs the
 // distinct rows at or above needed_rows, and Unavailable needs them, plus
-// the rows of the endorsing validators without an answer of their own,
-// below it; whenever the bounds land on one side, and on nearly every blob
-// they do, no row list is read. Only the narrow ambiguous band falls back to
-// the exact count, one blob at a time.
+// the rows of the validators without an answer of their own (every
+// validator the assignment gives rows, endorsing or not), below it; whenever
+// the bounds land on one side, and on nearly every blob they do, no row list
+// is read. Only the narrow ambiguous band falls back to the exact count, one
+// blob at a time.
 
 // blobSel is the selection every batch query joins against: the same ordering
 // and limit blobRows applies, expressed once as a CTE so the database does the
@@ -162,12 +163,13 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 		return map[string]*reconstruct{}, nil
 	}
 
-	// 2. the endorsing validators and the rows they hold, per publication.
-	endorsed, endorsers := map[string]int{}, map[string]int{}
+	// 2. the rows every validator the assignment gives rows holds (the set
+	// the client asks), and how many of them endorse, per publication.
+	held, endorsers := map[string]int{}, map[string]int{}
 	rows, err = db.QueryContext(ctx, sel+`
-		SELECT a.promise_hash, COALESCE(SUM(a.row_count), 0), COUNT(*)
+		SELECT a.promise_hash, COALESCE(SUM(a.row_count), 0), COALESCE(SUM(a.attested = 1 OR a.attested IS NULL), 0)
 		FROM assignments a JOIN sel ON sel.promise_hash = a.promise_hash
-		WHERE a.row_count > 0 AND (a.attested = 1 OR a.attested IS NULL) GROUP BY a.promise_hash`, args...)
+		WHERE a.row_count > 0 GROUP BY a.promise_hash`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +180,7 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 			rows.Close()
 			return nil, err
 		}
-		endorsed[hash], endorsers[hash] = n, v
+		held[hash], endorsers[hash] = n, v
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -191,7 +193,7 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 	pb, pargs := pin.bound("p", args)
 	cls := rollup.EffectiveClass("p")
 	failed := `(` + rollup.ObligationClass("p") + ` = 'FAULT' AND p.classification <> 'NOT_REGISTERED')`
-	answered := `p.classification NOT IN ('NOT_PROBED','PROBE_ERROR','THROTTLED')`
+	answered := rollup.Answered("p")
 	points := map[string][]readingAgg{}
 	rows, err = db.QueryContext(ctx, sel+`
 		SELECT p.promise_hash, p.scheduled_at, MAX(p.schedule_label = '`+probe.EndReadLabel+`'),
@@ -251,17 +253,18 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 		return nil, err
 	}
 
-	// 5. the endorsing validators that answered at each reading, and the
-	// rows they hold: what the rest, who might still have served, hold is
-	// the difference to step 2.
+	// 5. the validators that answered at each reading and the rows they
+	// hold: what the rest, who might still have served, hold is the
+	// difference to step 2. And how many of them endorse, for readingOf.
 	answeredRows, answeredBy := map[pointKey]int{}, map[pointKey]int{}
 	rows, err = db.QueryContext(ctx, sel+`
-		SELECT promise_hash, scheduled_at, SUM(rc), COUNT(*) FROM (
-		  SELECT DISTINCT p.promise_hash AS promise_hash, p.scheduled_at AS scheduled_at, p.validator_address AS v, a.row_count AS rc
+		SELECT promise_hash, scheduled_at, SUM(rc), SUM(e) FROM (
+		  SELECT DISTINCT p.promise_hash AS promise_hash, p.scheduled_at AS scheduled_at, p.validator_address AS v, a.row_count AS rc,
+		         (a.attested = 1 OR a.attested IS NULL) AS e
 		  FROM probes p
 		  JOIN assignments a ON a.promise_hash = p.promise_hash AND a.validator_address = p.validator_address
 		  JOIN sel ON sel.promise_hash = p.promise_hash
-		  WHERE p.phase = 'in_window' AND `+answered+` AND a.row_count > 0 AND (a.attested = 1 OR a.attested IS NULL)`+pb+`)
+		  WHERE `+answered+` AND a.row_count > 0`+pb+`)
 		GROUP BY promise_hash, scheduled_at`, pargs...)
 	if err != nil {
 		return nil, err
@@ -304,22 +307,25 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 		rc.PointAt, rc.ProbedValidators, rc.ServedBy = pa.at, pa.asked, pa.served
 		k := pointKey{hash, pa.at}
 		needed := int(f.needed)
-		potential := endorsed[hash] - answeredRows[k]
+		potential := held[hash] - answeredRows[k]
+		floor := lower[k] - f.excess // at most the distinct verified rows
 		switch {
-		case lower[k]-f.excess >= needed:
+		case floor >= needed:
 			rc.Status = verdict.BlobAvailable
 		case pa.upper < needed && pa.guard.Reason() != "":
 			// not Available, and set aside by the guard
 			rc.Status = idle
 		case pa.upper+potential < needed:
 			rc.Status = verdict.BlobUnavailable
-		case pa.upper < needed:
+		case pa.upper < needed && floor+potential >= needed:
 			// not Available, and the rows that might still have come back
-			// could have made it so
+			// could have made it so, even counted at the floor
 			rc.Status = idle
 		default:
-			// Within the overlaps of the threshold: only the exact count can
-			// answer. Rare enough to pay for one blob at a time.
+			// Within the overlaps of the threshold (duplicated verified rows
+			// put the distinct count anywhere between the bounds): only the
+			// exact count can answer. Rare enough to pay for one blob at a
+			// time.
 			ref, err := s.reconstructable(ctx, hash, pin)
 			if err != nil {
 				return nil, fmt.Errorf("reconstructable %s: %w", hash, err)

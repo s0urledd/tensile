@@ -16,14 +16,22 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 )
 
-// The correlated-failure guard. At or above UnreachableThreshold of the
-// validators asked at one reading being unreachable, or FaultThreshold of
-// them failing to hand over rows, the likeliest explanation is the
-// observer's own side (its network, a stale pin, a broken coder) rather
-// than that many independent operators at the same minute; such a reading
-// is suspect and every figure leaves its rows out, unless its blob was
+// The correlated-failure guard, the owner's decision until a control read
+// exists. At or above UnreachableThreshold of the validators asked at one
+// reading being unreachable, or FaultThreshold of them failing to hand over
+// rows (failedClass), the likeliest explanation is the observer's own side
+// (its network, a stale pin, a broken coder) rather than that many
+// independent operators at the same minute; such a reading is suspect and
+// every figure leaves its rows out, counted neither way, unless its blob was
 // Available all the same (verified rows are not the observer's trouble).
 // MinValidators is the floor under which a share is not a signal.
+//
+// The shares count validators, not the rows they hold. On a stake-weighted
+// assignment the largest holders failing can leave a blob Unavailable with
+// fewer than half of the validators failing; the guard does not fire then,
+// and those failures count. And a blob that takes half of them failing to
+// be Unavailable is set aside: its failures count neither way, until a
+// control read tells the observer's side apart.
 //
 // This is where a control read would lift the guard: a blob of this
 // observer's own, read from the same validators at the same time, that
@@ -222,9 +230,10 @@ type SuspectPoint struct {
 
 // failedClass reports whether a row left the reader without rows, for the
 // guard's second share: at an end-of-window reading every class that does
-// (the obligation class FAULT), less NOT_REGISTERED, which never reaches
-// the denominator (GuardSilentClasses); at an earlier schedule's point,
-// FAULT alone.
+// (the obligation class FAULT: no such shard, bad rows, no answer, a
+// certificate the client rejects, a server error, a rate limit), less
+// NOT_REGISTERED, which never reaches the denominator (GuardSilentClasses);
+// at an earlier schedule's point, FAULT alone.
 func failedClass(r Row) bool {
 	return r.Classification != probe.ClassNotRegistered && r.ObligationClass() == probe.ClassFault
 }

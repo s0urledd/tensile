@@ -297,6 +297,36 @@ func TestReconstructBatchMatchesReference(t *testing.T) {
 		},
 	})
 
+	// Verified rows that overlap: x1 and x2 return rows 15..19 both, so the
+	// distinct rows (25) sit below the served sum (30), and with the rows of
+	// the endorser that did not answer (5) the blob is still short of 32.
+	// The upper bound alone would leave it undecided; it is Unavailable.
+	overlap := func(prefix string, over bool) blobCase {
+		return blobCase{
+			name:   "no: overlapping verified rows and the rows still out are short (" + prefix + ")",
+			needed: 32, total: 160, points: 1, complete: false, over: over, want: "no",
+			vals: []valRows{
+				{addr: prefix + "1", rows: full[:20], attested: 1, served: true},
+				{addr: prefix + "2", rows: full[15:25], attested: 1, served: true},
+				{addr: prefix + "3", rows: full[25:30], attested: 1, served: false},
+			},
+		}
+	}
+	cases = append(cases, overlap("x", false), overlap("y", true))
+
+	// The client asks the whole set: the endorsers alone are short, but a
+	// validator that did not endorse, not asked, holds rows that could have
+	// made the blob. Not Unavailable.
+	cases = append(cases, blobCase{
+		name:   "pending: a validator that did not endorse could still have made up the rows",
+		needed: 30, total: 160, points: 1, complete: false, want: "pending",
+		vals: []valRows{
+			{addr: "o1", rows: full[:20], attested: 1, served: true},
+			{addr: "o2", rows: full[20:30], attested: 1, served: false},
+			{addr: "o3", rows: full[30:40], attested: 0, served: false},
+		},
+	})
+
 	hashes := make([]string, len(cases))
 	for i, c := range cases {
 		hashes[i] = writeBlob(t, st, i, c)

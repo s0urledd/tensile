@@ -1236,7 +1236,9 @@ type attestationStats struct {
 //	               blob that was Available all the same, or this observer did
 //	               not read it (its own gap, or a reading set aside by the
 //	               correlated-failure guard)
-//	pending        the retention window has not ended at as_of
+//	pending        read, and the retention window has not ended at as_of
+//	               (an obligation not read yet has no row here; the
+//	               validator page counts those as in_retention_window)
 //
 // Only served and broken enter the rate. An endorsing validator the reading
 // never asked (the blob was whole before its turn) has no row and no
@@ -3049,6 +3051,21 @@ func (s *Server) handleValidator(w http.ResponseWriter, r *http.Request) {
 
 const validatorNotSeen = "validator not seen in the registry or in any probe"
 
+// endorsedInRetention counts one validator's endorsed shards (rows
+// assigned, verified signature on the settled promise) whose retention
+// window has not ended at `at`: settled by then, must_serve_until after it.
+// It is read from the chain's record alone and seeks the publications still
+// in retention (publications_msu), so it costs what is in retention.
+func (s *Server) endorsedInRetention(ctx context.Context, addr string, at time.Time) (int64, error) {
+	var n int64
+	t := store.TS(at.UTC())
+	err := s.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM publications p
+		JOIN assignments a ON a.promise_hash = p.promise_hash AND a.validator_address = ?
+		WHERE p.must_serve_until > ? AND p.settlement_time <= ? AND p.settlement_tx_code = 0 AND p.assignment_error = ''
+		  AND a.row_count > 0 AND a.attested = 1`, addr, t, t).Scan(&n)
+	return n, err
+}
+
 // validatorDetail builds the /v1/validators/{addr} answer: the row over win,
 // the four standard spans beside it, and the newest readings. status is 200,
 // or 404 with an error body when nothing about addr is on record.
@@ -3141,6 +3158,10 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 		return 0, nil, err
 	}
 	probes, moreProbes := trim(probes, 50)
+	inWindow, err := s.endorsedInRetention(ctx, addr, spanEnd)
+	if err != nil {
+		return 0, nil, err
+	}
 	out := map[string]any{
 		"window":                  win,
 		"record_through":          s.recordThrough(ctx),
@@ -3150,6 +3171,11 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 		"recent_probes_truncated": moreProbes,
 		"suspect_points":          suspectAll,
 		"vantage":                 s.vantage,
+		// in_retention_window is the endorsed shards whose retention window
+		// has not ended at the answer's moment, from the chain's record: a
+		// blob is read 10 minutes before its window ends, so these are
+		// mostly not read yet, and none of them is counted either way.
+		"in_retention_window": inWindow,
 	}
 	if win.AsOf {
 		out["as_of_note"] = AsOfNote
@@ -3217,9 +3243,11 @@ type blobRow struct {
 // (verdict.BlobReading): whether enough distinct rows came back, verified
 // against the commitment, to reconstruct the blob.
 type reconstruct struct {
-	// Status is yes (Available), no (Unavailable: in the Fibre client's
-	// words, "some rows were retrieved, but not enough to reconstruct", or
-	// "no rows were retrieved"), pending (the retention window is open and
+	// Status is yes (Available), no (Unavailable: every validator the
+	// assignment gives rows was asked, in the Fibre client's order, twice,
+	// and fewer rows came back than reconstruct the blob; in the client's
+	// words "not enough shards to reconstruct blob", or "no shards
+	// retrieved"), pending (the retention window is open and
 	// the reading is not in), not_read (the window closed without a reading
 	// that decides it: Tensile's own gap, or a reading the correlated-failure
 	// guard set aside) or unknown (no assignment to judge it by).
@@ -3236,8 +3264,9 @@ type reconstruct struct {
 	NeededRows int `json:"needed_rows"`
 	TotalRows  int `json:"total_rows"`
 	// ServedBy is how many validators' rows came back verified, and
-	// ProbedValidators how many the reading asked. The reading stops once
-	// it has enough rows, so an endorsing validator it did not ask is no gap.
+	// ProbedValidators how many the reading asked, endorsing or not. The
+	// reading stops once it has enough rows, so a validator it did not ask
+	// is no gap.
 	ServedBy         int `json:"served_by_validators"`
 	ProbedValidators int `json:"probed_validators"`
 }
@@ -3371,20 +3400,24 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 		rc.Status = "unknown"
 		return rc, nil
 	}
-	facts := verdict.BlobFacts{Needed: int(needed.Int64), Excess: max(sigma-distinct, 0), Endorsed: map[string]int{}}
-	arows, err := db.QueryContext(ctx, `SELECT validator_address, row_count FROM assignments
-		WHERE promise_hash = ? AND row_count > 0 AND (attested = 1 OR attested IS NULL)`, hash)
+	facts := verdict.BlobFacts{Needed: int(needed.Int64), Excess: max(sigma-distinct, 0), Endorsed: map[string]int{}, Assigned: map[string]int{}}
+	arows, err := db.QueryContext(ctx, `SELECT validator_address, row_count, attested = 1 OR attested IS NULL FROM assignments
+		WHERE promise_hash = ? AND row_count > 0`, hash)
 	if err != nil {
 		return nil, err
 	}
 	for arows.Next() {
 		var addr string
 		var n int
-		if err := arows.Scan(&addr, &n); err != nil {
+		var endorsing bool
+		if err := arows.Scan(&addr, &n, &endorsing); err != nil {
 			arows.Close()
 			return nil, err
 		}
-		facts.Endorsed[addr] = n
+		facts.Assigned[addr] = n
+		if endorsing {
+			facts.Endorsed[addr] = n
+		}
 	}
 	arows.Close()
 	if err := arows.Err(); err != nil {

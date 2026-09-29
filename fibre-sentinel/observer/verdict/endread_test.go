@@ -134,10 +134,12 @@ func TestAnUnavailableBlobCountsTheValidatorsWhoseRowsDidNotComeBack(t *testing.
 	}
 }
 
-// A rate limit may be this observer's own request rate: it is no answer of
-// the validator's, counted neither way, and its rows count as ones that
-// might have come back.
-func TestARateLimitIsNotAnAnswer(t *testing.T) {
+// A rate limit at the reading is the validator not serving, as the Fibre
+// client meets it (ResourceExhausted is the server's answer: the client
+// skips the shard). Its rows are not counted as ones that might have come
+// back, so a throttle cannot shield the others; on an Unavailable blob it
+// is not served, and on an Available one it counts neither way.
+func TestARateLimitIsTheValidatorNotServing(t *testing.T) {
 	rd := newReading()
 	rd.add("big", probe.ClassFault, 4)
 	rd.add("limited", probe.ClassThrottled, 4)
@@ -145,8 +147,87 @@ func TestARateLimitIsNotAnAnswer(t *testing.T) {
 	rd.add("s2", probe.ClassHealthy, 2, 10, 11)
 	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"big": 4, "limited": 4, "s1": 2, "s2": 2}}
 	_, by := rd.obligations(facts)
-	if by["big"] != notCounted || by["limited"] != notCounted {
-		t.Errorf("big %+v limited %+v: the throttled rows could have filled the blob, so nothing counts", by["big"], by["limited"])
+	if by["big"] != notServed || by["limited"] != notServed || by["s1"] != served {
+		t.Errorf("big %+v limited %+v s1 %+v: the blob was Unavailable, and neither the throttle nor the not-found served", by["big"], by["limited"], by["s1"])
+	}
+	if res := BlobReading(rd.rows, facts, false, false); res.Status != BlobUnavailable || res.Potential != 0 {
+		t.Errorf("reading %+v, want Unavailable with nothing that might still have come back", res)
+	}
+
+	whole := newReading()
+	whole.add("a", probe.ClassHealthy, 8, span(0, 8)...)
+	whole.add("limited", probe.ClassThrottled, 4)
+	if _, by := whole.obligations(BlobFacts{Needed: 8, Endorsed: map[string]int{"a": 8, "limited": 4}}); by["limited"] != notCounted {
+		t.Errorf("a throttle on an Available blob: %+v, want not counted", by["limited"])
+	}
+}
+
+// The client asks the whole set, endorsing or not: a blob is Unavailable
+// only when every validator the assignment gives rows could not hand over
+// enough of them. A validator that did not endorse owes nothing, so it is
+// never counted, whatever it answered; its rows count toward the blob.
+func TestTheWholeSetDecidesUnavailable(t *testing.T) {
+	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"e1": 4, "e2": 2},
+		Assigned: map[string]int{"e1": 4, "e2": 2, "other": 8}}
+	// The endorsers alone are short, but a validator that did not endorse
+	// was never asked, and its rows could have made the blob: nothing counts.
+	rd := newReading()
+	rd.add("e1", probe.ClassFault, 4)
+	rd.add("e2", probe.ClassHealthy, 2, 4, 5)
+	if res := BlobReading(rd.rows, facts, false, false); res.Status != BlobNotRead || res.Potential != 8 {
+		t.Errorf("reading %+v, want not_read: the rest of the set was not asked", res)
+	}
+	if _, by := rd.obligations(facts); by["e1"] != notCounted {
+		t.Errorf("e1 %+v, want not counted", by["e1"])
+	}
+
+	// Asked, it had nothing either: the whole set could not rebuild the blob.
+	rd.rows = append(rd.rows, Row{PromiseHash: "p", Validator: "other", ScheduleLabel: probe.EndReadLabel, ScheduledAt: rd.at, StartedAt: rd.at,
+		MustServeUntil: rd.msu, Assigned: true, Attested: false, Phase: probe.PhaseInWindow, Classification: probe.ClassUnattested,
+		Outcome: probe.OutcomeNotFound, TLSOK: true, AssignedRowCount: 8})
+	if res := BlobReading(rd.rows, facts, false, false); res.Status != BlobUnavailable || res.Asked != 3 {
+		t.Errorf("reading %+v, want Unavailable with three asked", res)
+	}
+	_, by := rd.obligations(facts)
+	if by["e1"] != notServed || by["e2"] != served {
+		t.Errorf("e1 %+v e2 %+v", by["e1"], by["e2"])
+	}
+	if _, ok := by["other"]; ok {
+		t.Errorf("a validator that did not endorse has an obligation: %+v", by["other"])
+	}
+
+	// And its verified rows count toward the blob like anyone's.
+	lent := newReading()
+	lent.add("e1", probe.ClassFault, 4)
+	lent.add("e2", probe.ClassHealthy, 2, 4, 5)
+	lent.rows = append(lent.rows, Row{PromiseHash: "p", Validator: "other", ScheduleLabel: probe.EndReadLabel, ScheduledAt: lent.at, StartedAt: lent.at,
+		MustServeUntil: lent.msu, Assigned: true, Phase: probe.PhaseInWindow, Classification: probe.ClassUnattested, Outcome: probe.OutcomeServedOK,
+		TLSOK: true, RowIndices: span(8, 8), RowsReturned: 8, CommitmentVerified: true, AssignedRowCount: 8})
+	if res := BlobReading(lent.rows, facts, false, false); res.Status != BlobAvailable {
+		t.Errorf("reading %+v, want Available on the rows of a validator that did not endorse", res)
+	}
+}
+
+// A validator whose verified rows are already in hand has given them: a
+// row this observer could not judge yet (the late shadow verdict's
+// PROBE_ERROR over genuine rows) adds its rows to the blob and nothing to
+// what might still have come back, so the blob is not held open by it.
+func TestVerifiedRowsAreNeverCountedTwice(t *testing.T) {
+	rd := newReading()
+	rd.add("big", probe.ClassFault, 8)
+	rd.add("s1", probe.ClassHealthy, 1, 9)
+	rd.add("s2", probe.ClassHealthy, 1, 10)
+	rd.rows = append(rd.rows, Row{PromiseHash: "p", Validator: "deferred", ScheduleLabel: probe.EndReadLabel, ScheduledAt: rd.at, StartedAt: rd.at,
+		MustServeUntil: rd.msu, Assigned: true, Attested: true, Phase: probe.PhaseInWindow, Classification: probe.ClassProbeError,
+		Outcome: probe.OutcomePartial, TLSOK: true, RowIndices: []uint32{20}, RowsReturned: 1, CommitmentVerified: true, AssignedRowCount: 6})
+	facts := BlobFacts{Needed: 8, Endorsed: map[string]int{"big": 8, "s1": 1, "s2": 1, "deferred": 6}}
+	res := BlobReading(rd.rows, facts, false, false)
+	if res.Status != BlobUnavailable || res.Have != 3 || res.Potential != 0 {
+		t.Errorf("reading %+v, want Unavailable with 3 rows and nothing more to come", res)
+	}
+	_, by := rd.obligations(facts)
+	if by["big"] != notServed || by["deferred"] != notCounted {
+		t.Errorf("big %+v deferred %+v", by["big"], by["deferred"])
 	}
 }
 

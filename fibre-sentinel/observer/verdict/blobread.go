@@ -8,27 +8,29 @@ import (
 )
 
 // A blob is read the way celestia-app's Fibre client downloads one: the
-// endorsing validators are asked for their shards until enough distinct rows,
-// each verified against the commitment, are in hand to reconstruct it
-// (Needed: original_rows, 4096 for blob version 0). What that reading came
-// to decides what counts:
+// validators the assignment gives rows are asked for their shards, in the
+// client's order, until enough distinct rows, each verified against the
+// commitment, are in hand to reconstruct it (Needed: original_rows, 4096 for
+// blob version 0). What that reading came to decides what counts:
 //
 //   - Available: at least Needed distinct verified rows came back, from any
 //     validator, whatever else happened. Verified rows cannot come from this
 //     observer's own trouble, so nothing sets this aside.
-//   - Unavailable: fewer came back, and even every row of the endorsing
-//     validators that gave no answer of their own (none asked, none reached
-//     by this observer, a rate limit) could not have made up the difference:
-//     in the client's words, "some rows were retrieved, but not enough to
-//     reconstruct", or "no rows were retrieved".
+//   - Unavailable: fewer came back, and even every row of the validators
+//     without an answer of their own (not asked, or this observer's own
+//     failure: probe.OwnAnswer) could not have made up the difference. That
+//     is the client's own outcome over the whole set, endorsing or not:
+//     "not enough shards to reconstruct blob", or "no shards retrieved"
+//     (fibre.ErrNotEnoughShards, fibre.ErrNotFound).
 //   - otherwise the reading says nothing yet (pending, while the window is
 //     open) or nothing at all (not read by Tensile).
 //
-// A validator's failure to hand over its rows counts against it only on an
-// Unavailable blob: when the blob could be rebuilt without it, a reader was
-// not left without the data, and a failure then is as likely this
-// observer's own path as the validator. A validator whose rows came back is
-// served either way. The SQL twin is rollup.CountedClass.
+// A failure to hand over rows counts against a validator only when it
+// endorsed the promise (it owes the blob) and the blob was Unavailable: when
+// the blob could be rebuilt, a reader was not left without the data, and a
+// failure then is as likely this observer's own path as the validator. A
+// validator whose rows came back is served either way. The SQL twin is
+// rollup.CountedClass.
 
 // NotCounted is the class a row counts as when it left the reader without
 // rows on a blob that was Available all the same: counted neither for nor
@@ -57,6 +59,18 @@ type BlobFacts struct {
 	// signature on the promise, or a record from before signatures were
 	// verified) to the rows it holds.
 	Endorsed map[string]int
+	// Assigned maps every validator the assignment gives rows, endorsing or
+	// not, to the rows it holds: the set the client asks. nil falls back to
+	// Endorsed.
+	Assigned map[string]int
+}
+
+// holders is the set a reading asks: Assigned, or Endorsed without it.
+func (f BlobFacts) holders() map[string]int {
+	if f.Assigned != nil {
+		return f.Assigned
+	}
+	return f.Endorsed
 }
 
 // Blobs is BlobFacts by promise hash.
@@ -64,12 +78,17 @@ type Blobs map[string]BlobFacts
 
 // FactsOf reads the facts from a publication record.
 func FactsOf(p scan.Publication) BlobFacts {
-	f := BlobFacts{Needed: p.Assignment.ProtocolParams.OriginalRows, Excess: p.Assignment.Sigma - p.Assignment.Distinct, Endorsed: map[string]int{}}
+	f := BlobFacts{Needed: p.Assignment.ProtocolParams.OriginalRows, Excess: p.Assignment.Sigma - p.Assignment.Distinct,
+		Endorsed: map[string]int{}, Assigned: map[string]int{}}
 	if f.Excess < 0 {
 		f.Excess = 0
 	}
 	for _, v := range p.Assignment.Validators {
-		if v.RowCount > 0 && (v.Attested || !p.HasAttestation()) {
+		if v.RowCount <= 0 {
+			continue
+		}
+		f.Assigned[v.Address] = v.RowCount
+		if v.Attested || !p.HasAttestation() {
 			f.Endorsed[v.Address] = v.RowCount
 		}
 	}
@@ -86,19 +105,14 @@ func BlobsOf(pubs []scan.Publication) Blobs {
 }
 
 // Answered reports whether a row is the validator's own answer at a
-// reading: in the window, and neither this observer's gap (NOT_PROBED,
-// PROBE_ERROR) nor a rate limit, which may be this observer's own request
-// rate. A validator without such a row could still have served its rows,
-// so it is counted among those that might have made the blob readable.
+// reading (probe.OwnAnswer): in the window, and rows that verified, or
+// anything but this observer's own gap (NOT_PROBED, PROBE_ERROR). A rate
+// limit is an answer: the validator did not serve. A validator without such
+// a row could still have served its rows, so it is counted among those that
+// might have made the blob readable; one whose verified rows are in hand is
+// never counted a second time.
 func Answered(r Row) bool {
-	if r.Phase != probe.PhaseInWindow {
-		return false
-	}
-	switch r.Classification {
-	case probe.ClassNotProbed, probe.ClassProbeError, probe.ClassThrottled:
-		return false
-	}
-	return true
+	return probe.OwnAnswer(r.Phase, r.Classification, r.CommitmentVerified)
 }
 
 // Reading is what the rows of one reading of a blob come to, before the
@@ -109,8 +123,8 @@ type Reading struct {
 	// Lower and Upper bound Have from the counts alone: the served shards
 	// less the assignment's overlaps, and every verified row counted.
 	Lower, Upper int
-	// Potential is the rows the endorsing validators without an answer of
-	// their own hold.
+	// Potential is the rows the validators without an answer of their own
+	// hold: every validator the assignment gives rows, endorsing or not.
 	Potential int
 	// IndicesMissing: a verified row carries no index list, so Have is a
 	// floor rather than a count.
@@ -161,7 +175,7 @@ func ReadingOf(point []Row, f BlobFacts) Reading {
 		rd.Lower += n
 	}
 	rd.Lower -= f.Excess
-	for v, n := range f.Endorsed {
+	for v, n := range f.holders() {
 		if !answered[v] {
 			rd.Potential += n
 		}
@@ -182,8 +196,8 @@ func (rd Reading) Available() bool {
 }
 
 // Unavailable reports whether the blob could not be reconstructed from this
-// reading, and could not have been even had every endorsing validator
-// without an answer of its own served. The order of the tests is the SQL
+// reading, and could not have been even had every validator without an
+// answer of its own served. The order of the tests is the SQL
 // twin's (rollup.CountedClass), so the two agree on every row.
 func (rd Reading) Unavailable() bool {
 	switch {

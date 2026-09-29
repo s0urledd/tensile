@@ -236,12 +236,40 @@ const EndReadLabel = "end"
 //
 // EndNoRowsClasses are the reading's outcomes that return no rows to a
 // reader: nothing answered, a certificate the client rejects (wrong key, or
-// outside its validity window), a server error, no Fibre host registered.
-// FAULT is not listed: it is already no rows. A rate limit is not listed
-// either: it may be this observer's own request rate, so it counts neither
-// way.
+// outside its validity window), a server error, a rate limit, no Fibre host
+// registered. FAULT is not listed: it is already no rows. A rate limit is
+// the validator not serving: the client takes ResourceExhausted as the
+// server's answer, skips the shard and moves on (client_cache.go Request,
+// downloadBlob SkipShard), and a reading asks each validator once per pass.
 var EndNoRowsClasses = []Classification{
-	ClassUnreachable, ClassIdentityMismatch, ClassIdentityExpired, ClassServerError, ClassNotRegistered,
+	ClassUnreachable, ClassIdentityMismatch, ClassIdentityExpired, ClassServerError, ClassThrottled, ClassNotRegistered,
+}
+
+// OwnAnswer reports whether a row is the validator's own answer at a
+// reading: in the window, and either rows that verified against the
+// commitment, or anything but this observer's own gap (NOT_PROBED,
+// PROBE_ERROR). A validator without one could still have served its rows,
+// so a reading counts them among the rows that might have made the blob
+// readable; a validator whose verified rows are already in hand has given
+// them, and is never counted a second time. The prober's own Unavailable
+// test and the verdict's (observer/verdict, rollup's AnsweredSQL) are all
+// built from this one predicate.
+func OwnAnswer(phase Phase, c Classification, verified bool) bool {
+	if phase != PhaseInWindow {
+		return false
+	}
+	return verified || (c != ClassNotProbed && c != ClassProbeError)
+}
+
+// Confirmable reports whether a row is re-checked from a second location
+// (confirm.go): a FAULT on any schedule, and at the end reading every class
+// that left the reader without rows (EndReadClass FAULT), less
+// NOT_REGISTERED, which names no host another location could ask.
+func Confirmable(label string, c Classification) bool {
+	if c == ClassFault {
+		return true
+	}
+	return label == EndReadLabel && c != ClassNotRegistered && EndReadClass(c) == ClassFault
 }
 
 // EndGenuineRowsClasses are the end-reading outcomes where rows that verify

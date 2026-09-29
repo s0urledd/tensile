@@ -243,7 +243,7 @@ const DeadlineDerivedSQL = `('HEALTHY','FAULT')`
 // probe.EndGenuineRowsClasses as SQL IN lists; a test holds them to the Go
 // lists.
 const (
-	EndNoRowsSQL      = `('UNREACHABLE','IDENTITY_MISMATCH','IDENTITY_EXPIRED','SERVER_ERROR','NOT_REGISTERED')`
+	EndNoRowsSQL      = `('UNREACHABLE','IDENTITY_MISMATCH','IDENTITY_EXPIRED','SERVER_ERROR','THROTTLED','NOT_REGISTERED')`
 	EndGenuineRowsSQL = `('SHADOWED_SHARD','UNMATCHED_GENUINE')`
 )
 
@@ -294,8 +294,9 @@ func CountedClass(alias string) string {
 
 // The pieces of one reading (promise h at scheduled time t, every vantage),
 // as verdict.ReadingOf draws them: rows needed, the two bounds on the
-// distinct verified rows, the exact count, and the rows of endorsing
-// validators without an answer of their own (verdict.Answered).
+// distinct verified rows, the exact count, and the rows of the validators
+// the assignment gives rows, endorsing or not, without an answer of their
+// own (verdict.Answered).
 func neededSQL(h string) string {
 	return `(SELECT json_extract(pk.raw_json, '$.assignment.protocol_params.original_rows') FROM publications pk WHERE pk.promise_hash = ` + h + `)`
 }
@@ -322,13 +323,20 @@ func missingSQL(h, t string) string {
 			AND qm.phase = 'in_window' AND qm.commitment_verified = 1 AND qm.row_indices IS NULL AND qm.rows_returned > 0)`
 }
 
-// AnsweredSQL is verdict.Answered over a probes row aliased q: the
-// validator's own answer at the reading.
-const AnsweredSQL = `q.phase = 'in_window' AND q.classification NOT IN ('NOT_PROBED','PROBE_ERROR','THROTTLED')`
+// Answered is verdict.Answered (probe.OwnAnswer) over a probes row under
+// the alias given: the validator's own answer at the reading, rows that
+// verified or anything but this observer's own gap.
+func Answered(alias string) string {
+	p := alias + "."
+	return `(` + p + `phase = 'in_window' AND (` + p + `commitment_verified = 1 OR ` + p + `classification NOT IN ('NOT_PROBED','PROBE_ERROR')))`
+}
+
+// AnsweredSQL is Answered over a probes row aliased q.
+var AnsweredSQL = Answered("q")
 
 func potentialSQL(h, t string) string {
 	return `(SELECT COALESCE(SUM(a.row_count), 0) FROM assignments a
-			WHERE a.promise_hash = ` + h + ` AND a.row_count > 0 AND (a.attested = 1 OR a.attested IS NULL)
+			WHERE a.promise_hash = ` + h + ` AND a.row_count > 0
 			  AND NOT EXISTS (SELECT 1 FROM probes q WHERE q.promise_hash = ` + h + ` AND q.scheduled_at = ` + t + `
 			                   AND q.validator_address = a.validator_address AND ` + AnsweredSQL + `))`
 }

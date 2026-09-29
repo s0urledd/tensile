@@ -30,16 +30,17 @@ func newReadings(t *testing.T) *readings {
 	return &readings{t: t, st: openStore(t), settled: time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)}
 }
 
-// validator is one endorsing validator of a blob: the rows it holds, and
-// what the reading got from it.
+// validator is one validator of a blob: the rows it holds, and what the
+// reading got from it.
 type validator struct {
-	name    string
-	holds   []int
-	cls     probe.Classification
-	out     probe.Outcome
-	got     []uint32 // rows that came back verified
-	unasked bool     // the reading never got to it
-	gap     bool     // this observer could not read it (PROBE_ERROR)
+	name       string
+	holds      []int
+	cls        probe.Classification
+	out        probe.Outcome
+	got        []uint32 // rows that came back verified
+	unasked    bool     // the reading never got to it
+	gap        bool     // this observer could not read it (PROBE_ERROR)
+	unendorsed bool     // rows assigned, no endorsement on the promise
 }
 
 func served(name string, holds []int) validator {
@@ -77,7 +78,7 @@ func (r *readings) blob(needed, total int, vals ...validator) string {
 	p.Assignment.ProtocolParams.OriginalRows, p.Assignment.ProtocolParams.TotalRows = needed, total
 	distinct := map[int]bool{}
 	for _, v := range vals {
-		p.Assignment.Validators = append(p.Assignment.Validators, scan.ValidatorAssignment{Address: v.name, VotingPower: 10, RowCount: len(v.holds), Rows: v.holds, Attested: true})
+		p.Assignment.Validators = append(p.Assignment.Validators, scan.ValidatorAssignment{Address: v.name, VotingPower: 10, RowCount: len(v.holds), Rows: v.holds, Attested: !v.unendorsed})
 		p.Assignment.Sigma += len(v.holds)
 		for _, x := range v.holds {
 			distinct[x] = true
@@ -95,7 +96,7 @@ func (r *readings) blob(needed, total int, vals ...validator) string {
 		}
 		start := at.Add(time.Duration(i) * time.Second)
 		m := probe.Measurement{SchemaVersion: probe.MeasurementSchemaVersion, Vantage: "ut-1", PromiseHash: hash, Commitment: hash,
-			MustServeUntil: msu, ValidatorAddress: v.name, ValidatorHost: v.name + ":7980", Assigned: true, Attested: true,
+			MustServeUntil: msu, ValidatorAddress: v.name, ValidatorHost: v.name + ":7980", Assigned: true, Attested: !v.unendorsed,
 			AssignedRowCount: len(v.holds), ScheduleLabel: probe.EndReadLabel, ScheduledAt: at, StartedAt: start, FinishedAt: start.Add(time.Second),
 			Phase: probe.PhaseInWindow, Outcome: v.out, Classification: v.cls}
 		if v.gap {
@@ -150,6 +151,27 @@ func fixture(t *testing.T) (*readings, map[string]string) {
 		failed("b", rowsFrom(2, 2), probe.ClassServerError, probe.OutcomeServerError),
 		failed("c", rowsFrom(4, 2), probe.ClassUnreachable, probe.OutcomeTCPTimeout),
 		failed("d", rowsFrom(6, 2), probe.ClassFault, probe.OutcomeNotFound))
+	// A rate limit is the validator not serving, and does not shield the
+	// validator beside it.
+	hashes["throttled"] = r.blob(8, 32, failed("nf", rowsFrom(0, 4), probe.ClassFault, probe.OutcomeNotFound),
+		failed("thr", rowsFrom(4, 4), probe.ClassThrottled, probe.OutcomeThrottled),
+		served("s1", rowsFrom(8, 1)), served("s2", rowsFrom(9, 1)), served("s3", rowsFrom(10, 1)))
+	// Rows already verified, from a row whose verdict waits for the late
+	// shadow judgement (PROBE_ERROR): counted once, in the rows.
+	deferred := served("deferred", rowsFrom(20, 6))
+	deferred.cls, deferred.out, deferred.got = probe.ClassProbeError, probe.OutcomePartial, []uint32{20}
+	hashes["deferred"] = r.blob(8, 32, failed("bigd", rowsFrom(0, 8), probe.ClassFault, probe.OutcomeNotFound),
+		served("s1", rowsFrom(8, 1)), served("s2", rowsFrom(9, 1)), deferred)
+	// The endorsers alone are short, and a validator that did not endorse
+	// was not asked: its rows could have made the blob.
+	other := validator{name: "other", holds: rowsFrom(6, 8), unasked: true, unendorsed: true}
+	hashes["wholeset"] = r.blob(8, 32, failed("e1", rowsFrom(0, 4), probe.ClassFault, probe.OutcomeNotFound),
+		served("e2", rowsFrom(4, 2)), other)
+	// Asked, it had nothing either: Unavailable over the whole set.
+	other = failed("other", rowsFrom(6, 8), probe.ClassUnattested, probe.OutcomeNotFound)
+	other.unendorsed = true
+	hashes["wholeset-asked"] = r.blob(8, 32, failed("e1", rowsFrom(0, 4), probe.ClassFault, probe.OutcomeNotFound),
+		served("e2", rowsFrom(4, 2)), other)
 	// Available though most of those asked failed: the guard leaves it be.
 	hashes["mostfail"] = r.blob(8, 32, served("a", rowsFrom(0, 8)),
 		failed("x", rowsFrom(8, 2), probe.ClassUnreachable, probe.OutcomeTLSFail),
@@ -190,10 +212,14 @@ func TestTheSQLAndTheGoTwinCountTheSameRows(t *testing.T) {
 		}
 	}
 	for blob, want := range map[string]map[string]string{
-		"available":   {"a": "HEALTHY", "slow": "NOT_COUNTED"},
-		"unavailable": {"big": "FAULT", "s1": "HEALTHY", "gap": "PROBE_ERROR", "short": "FAULT"},
-		"incomplete":  {"b": "NOT_COUNTED"},
-		"mostfail":    {"x": "NOT_COUNTED"},
+		"available":      {"a": "HEALTHY", "slow": "NOT_COUNTED"},
+		"unavailable":    {"big": "FAULT", "s1": "HEALTHY", "gap": "PROBE_ERROR", "short": "FAULT"},
+		"incomplete":     {"b": "NOT_COUNTED"},
+		"mostfail":       {"x": "NOT_COUNTED"},
+		"throttled":      {"nf": "FAULT", "thr": "FAULT", "s1": "HEALTHY"},
+		"deferred":       {"bigd": "FAULT", "deferred": "PROBE_ERROR"},
+		"wholeset":       {"e1": "NOT_COUNTED", "e2": "HEALTHY"},
+		"wholeset-asked": {"e1": "FAULT", "e2": "HEALTHY", "other": "UNATTESTED"},
 	} {
 		for v, c := range want {
 			if got := sqlCls[hashes[blob]+"|"+v]; got != c {
