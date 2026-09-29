@@ -6,7 +6,7 @@ import Chart, { calendar, CATEGORICAL, OTHER_COLOR, type Row, type Series } from
 import Info from "@/components/Info";
 import { WithdrawalQueueCells, pendingLine } from "@/components/Withdrawals";
 import type { MarketWithQueue, PublisherWithQueue } from "@/lib/withdrawals";
-import { useWindow, WindowSwitch } from "@/lib/window";
+import { useWindow, WindowSwitch, periodName, withPeriod } from "@/lib/window";
 import PreLive, { notLiveOf } from "@/components/PreLive";
 import { unit } from "@/components/Unit";
 import { Metric, Figures } from "@/components/Metrics";
@@ -26,9 +26,9 @@ const SIZE = 25;
  * notes at the bottom say which ones are floors.
  */
 function Page() {
-  // 7d, not the site's 24h, as on the Blobs page: the charts open on a week
-  // of days; 24h charts the day by the hour.
-  const [win, setWinRaw] = useWindow("7d");
+  // 24h, as on the overview and the Blobs page: the charts open on the day by
+  // the hour; the longer periods chart by the day.
+  const [win, setWinRaw] = useWindow("24h");
   const [page, setPage] = usePage();
   // another period is another list: start from its first page
   const setWin = (w: typeof win) => { setWinRaw(w); setPage(1); };
@@ -39,6 +39,9 @@ function Page() {
   const { data: list } = useApi<{ publishers: PublisherWithQueue[] }>(`/v1/publishers?window=${win}`);
   const pubs = list?.publishers ?? [];
   const shown = pubs.slice((page - 1) * SIZE, page * SIZE);
+  // a figure of the period names it in its title: the period of the answer shown
+  // (the last one stays while another loads), else the one selected
+  const period = periodName(m?.window?.name ?? win);
 
   return (
     <>
@@ -67,13 +70,13 @@ function Page() {
           <Metric label="Escrow held" value={pre || !m ? "—" : tia(m.escrow_total_utia ?? m.escrow_held_utia)} tone={pre || !m ? "absent" : undefined}
             help={pre || !m ? " " : `${int(m.escrow_accounts)} escrow account${m.escrow_accounts === 1 ? "" : "s"}`}
             title="Every escrow on the chain, read from the x/fibre module account." />
-          <Metric label="Deposits" value={pre || !m ? "—" : tia(m.deposits.utia)} tone={pre || !m || m.deposits.count === 0 ? "absent" : undefined}
-            help={pre || !m ? " " : `${int(m.deposits.count)} in the period`}
+          <Metric label="Deposits" period={period} value={pre || !m ? "—" : tia(m.deposits.utia)} tone={pre || !m || m.deposits.count === 0 ? "absent" : undefined}
+            help={pre || !m ? " " : `${int(m.deposits.count)} deposit${m.deposits.count === 1 ? "" : "s"}`}
             title="TIA paid into escrow accounts in the period." />
-          <Metric label="Withdrawals" value={pre || !m ? "—" : tia(m.withdrawals_requested.utia)} tone={pre || !m || m.withdrawals_requested.count === 0 ? "absent" : undefined}
-            help={pre || !m ? " " : `${int(m.withdrawals_requested.count)} requested in the period`}
+          <Metric label="Withdrawals" period={period} value={pre || !m ? "—" : tia(m.withdrawals_requested.utia)} tone={pre || !m || m.withdrawals_requested.count === 0 ? "absent" : undefined}
+            help={pre || !m ? " " : `${int(m.withdrawals_requested.count)} requested`}
             title="TIA requested out of escrow in the period. What is still waiting to pay out is under Withdrawal queue." />
-          <Metric label="Largest publisher" value={pre || !m || m.largest_poster?.bytes_share == null ? "—" : fmtShare(m.largest_poster.bytes_share)}
+          <Metric label="Largest publisher" period={period} value={pre || !m || m.largest_poster?.bytes_share == null ? "—" : fmtShare(m.largest_poster.bytes_share)}
             tone={pre || !m || !m.largest_poster ? "absent" : undefined}
             help={pre || !m ? " " : m.largest_poster ? `of upload size · ${publisherName(m.largest_poster)}` : "nothing settled"}
             title="The publisher with the most upload size in the period, and its share." />
@@ -116,9 +119,9 @@ function Page() {
         const axisMib = (v: number) => v >= 1024 ? `${(v / 1024).toFixed(v % 1024 ? 1 : 0)} GiB` : `${Number.isInteger(v) ? v : v.toFixed(1)} MiB`;
         return (
           <div className="board-charts">
-            <Chart title={`Fees paid per ${per} (TIA)`} figure={tia(m.fees_settled_utia)} figureNote="in the period" series={[{ key: "fees", label: "fees", color: "var(--accent)" }]} rows={feeRows}
+            <Chart title={withPeriod(`Fees paid per ${per} in TIA`, m.window.name)} figure={tia(m.fees_settled_utia)} series={[{ key: "fees", label: "fees", color: "var(--accent)" }]} rows={feeRows}
               fmt={(v) => tia(v)} fmtAxis={axisTia} height={210} />
-            <Chart title={`Upload size per ${per}, by publisher`} figure={bytes(m.bytes)} figureNote="in the period" series={series} rows={byteRows} fmt={mib} fmtAxis={axisMib} height={210} />
+            <Chart title={withPeriod(`Upload size per ${per}, by publisher`, m.window.name)} figure={bytes(m.bytes)} series={series} rows={byteRows} fmt={mib} fmtAxis={axisMib} height={210} />
           </div>
         );
       })()}
@@ -177,7 +180,7 @@ function Page() {
       {/* The withdrawal queue, read from chain state rather than rebuilt from
           events (see WithdrawalQueueCells). Absent until the collector has
           read it, and on a pinned window. */}
-      {!pre && m?.withdrawal_queue && <WithdrawalQueueCells q={m.withdrawal_queue} win={win} />}
+      {!pre && m?.withdrawal_queue && <WithdrawalQueueCells q={m.withdrawal_queue} win={m.window.name} />}
     </>
   );
 }

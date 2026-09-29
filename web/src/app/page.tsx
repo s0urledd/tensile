@@ -2,7 +2,7 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { API_BASE, useApi, type Network, type Validator, type Meta, type Market, type Blob, int, pctOf, bytes, tia, ago, whenUTC, MIN_RATED } from "@/lib/api";
-import { useWindow, WindowSwitch } from "@/lib/window";
+import { useWindow, WindowSwitch, periodName } from "@/lib/window";
 import StatusLine from "@/components/StatusLine";
 import { Metric, Metrics, Eye } from "@/components/Metrics";
 import { Mark } from "@/components/Verdict";
@@ -92,6 +92,9 @@ function Overview() {
   const aside = latest || observed ? <>{latest}{observed}</> : null;
   const beside = !!vals.data && !!meta?.fibre_active;
   const none = !M || notLive;
+  // Each card names the period of its figure, in its title: the answer shown
+  // (the last one stays while another period loads), else the one selected.
+  const period = periodName(M?.window?.name ?? win);
 
   return (
     <>
@@ -104,32 +107,32 @@ function Overview() {
 
       {/* the period drives every card below it; the map, the stake and the latest blob are now */}
       <div className="period-row"><WindowSwitch value={win} onChange={setWin} /></div>
-      <Metrics>
-        <Metric label="Blobs"
+      <Metrics className="ov-metrics">
+        <Metric label="Blobs" period={period}
           value={none ? "—" : int(M.blobs)}
           tone={none || M.settlements === 0 ? "absent" : undefined}
           title="Blobs published through Fibre in this period. A blob paid for twice counts once."
-          help={none ? " " : M.settlements === 0 ? "none in this period" : `${int(M.settlements)} settlement${M.settlements === 1 ? "" : "s"}`} />
-        <Metric label="Upload size"
+          help={none ? " " : M.settlements === 0 ? "none" : `${int(M.settlements)} settlement${M.settlements === 1 ? "" : "s"}`} />
+        <Metric label="Upload size" period={period}
           value={none ? "—" : bytes(M.bytes)}
           tone={none || M.settlements === 0 ? "absent" : undefined}
           title="Total size of the blobs paid for in this period."
           help={none ? " " : "total upload size"} />
-        <Metric label="Fees paid"
+        <Metric label="Fees paid" period={period}
           value={none ? "—" : tia(M.fees_settled_utia)}
           tone={none || M.settlements === 0 ? "absent" : undefined}
           title="TIA paid for these blobs. It goes to validators and their delegators."
-          help={none ? " " : M.paid_per_mib_utia == null ? "none in this period" : `${tia(M.paid_per_mib_utia)} per MiB`} />
-        <Metric label="Publishers"
+          help={none ? " " : M.paid_per_mib_utia == null ? "none" : `${tia(M.paid_per_mib_utia)} per MiB`} />
+        <Metric label="Publishers" period={period}
           value={none ? "—" : int(M.publishers_active)}
           tone={none || M.publishers_active === 0 ? "absent" : undefined}
           title="Accounts that published blobs in this period."
           help=" " />
-        <Metric label="Payment promise timeouts"
+        <Metric label="Payment promise timeouts" period={period}
           value={none ? "—" : int(M.timeouts)}
           tone={none ? "absent" : undefined}
           title="Payment promises not settled within an hour. The account is charged anyway."
-          help={none ? " " : M.timeouts > 0 ? `${tia(M.timed_out_utia)} charged` : "none in this period"} />
+          help={none ? " " : M.timeouts > 0 ? `${tia(M.timed_out_utia)} charged` : "none"} />
       </Metrics>
 
       {/* Beside the map when it shows the stake panel; on its own otherwise. */}

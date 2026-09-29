@@ -2,6 +2,7 @@
 import { ago, span, tia, utc } from "@/lib/api";
 import { OUTCOME, type PendingSummary, type PublisherWithdrawals, type WithdrawalRow, type WithdrawalQueue as WithdrawalQueueT } from "@/lib/withdrawals";
 import { Panel, Cell } from "./Panel";
+import { withPeriod } from "@/lib/window";
 
 /**
  * "12.5 TIA in 2 withdrawals · next payable in 3 h" — one account's queue in
@@ -100,16 +101,16 @@ export function WithdrawalQueueCells({ q, win }: { q: WithdrawalQueueT; win: str
             <p>Escrow a publisher has asked to take back, locked until the withdrawal delay in force at the request has passed, then paid out by the chain in the first block after that.</p>
             <p>Read from the chain&rsquo;s own queue, not from events: when a settlement finds the available balance short, the chain takes the difference out of queued withdrawals, oldest first, and announces nothing.</p>
           </>} />
-        <Cell label="Paid out"
+        <Cell label={withPeriod("Paid out", win)}
           value={q.executed.count.toLocaleString("en-US")}
           tone={q.executed.count === 0 ? "absent" : undefined}
-          sub={d.median_s != null ? `median ${span(d.median_s)} request → payout` : `none in the ${win} window`}
+          sub={d.median_s != null ? `median ${span(d.median_s)} request → payout` : "none"}
           detail={d.count > 0 && d.min_s != null && d.max_s != null ? `${tia(q.executed.utia)} over ${d.count} payout${d.count === 1 ? "" : "s"}; request → payout from ${span(d.min_s)} to ${span(d.max_s)}${d.median_lag_s != null ? `, a median ${span(d.median_lag_s)} after becoming payable` : ""}.` : undefined}
           info={<p>Withdrawals that left the queue in the window and are matched to exactly one payout of their last-seen amount. The delay is from the request block to the payout block; only matched withdrawals have one.</p>} />
-        <Cell label="Consumed by settlements"
+        <Cell label={withPeriod("Consumed by settlements", win)}
           value={q.consumed.count.toLocaleString("en-US")}
           tone={q.consumed.count === 0 ? "absent" : undefined}
-          sub={q.consumed.count > 0 ? `${tia(q.consumed.utia)} never paid out` : "none in the window"}
+          sub={q.consumed.count > 0 ? `${tia(q.consumed.utia)} never paid out` : "none"}
           detail={other > 0 ? `${q.unattributed.count} more left the queue without a payout this observer could match, ${q.unresolved.count} still waiting for the scanner.` : undefined}
           info={<p>Withdrawals that vanished from the queue before they became payable. Only a settlement or timeout that found the available balance short can remove one then, so these are certain; the chain emits no event for it.</p>} />
       </div>

@@ -124,11 +124,11 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
   fmtAxis?: (v: number) => string;
   height?: number;
   title: string;
-  /** a line beside the title: "1.35 GiB in the period" (use figure/figureNote to set the figure large) */
+  /** a line beside the title in place of a figure (use figure/figureNote to set the figure large) */
   sub?: string;
-  /** the period's total, printed large under the title: "1.35 GiB" */
+  /** the period's total, printed large under the title: "1.35 GiB" (the period itself is in the title: "Upload size per day (7d)") */
   figure?: string;
-  /** the words after the figure: "in the period" */
+  /** words after the figure, if it needs any */
   figureNote?: string;
   empty?: string;
 }) {

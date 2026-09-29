@@ -1101,6 +1101,8 @@ body { background: var(--canvas); }
 /* figures set on the panel: an eyebrow, the figure, one line */
 .figs .metric { padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; }
 .figs .metric .label { font-size: var(--t-tiny); font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--text-2); }
+/* the period after an eyebrow keeps its own case: "(24h)", not "(24H)" */
+.figs .metric .label .per { text-transform: none; letter-spacing: .03em; }
 .figs .metric .value { font-size: var(--t-fig); font-weight: 600; letter-spacing: -.035em; line-height: 1.05; margin: 10px 0 8px; font-variant-numeric: tabular-nums lining-nums; }
 .figs .metric.hero .value { font-size: var(--t-hero); letter-spacing: -.045em; line-height: 1; margin: 12px 0 10px; }
 .figs .metric .value .den { font-size: 18px; letter-spacing: -.01em; }
@@ -1190,6 +1192,11 @@ body { background: var(--canvas); }
 .metric .value, .cell .value { font-weight: 600; letter-spacing: -.03em; }
 .metric .value .den { font-weight: 400; }
 .metrics, .cells { gap: 12px; }
+/* the overview's cards share their rows (title, figure, help line), so a title that runs to
+   two lines ("Payment promise timeouts (24h)") keeps the figures of a row on one line; a
+   one-line title sits just above its figure */
+.ov-metrics > .metric { display: grid; grid-row: span 3; grid-template-rows: subgrid; row-gap: 0; }
+.ov-metrics > .metric > .label { align-self: end; }
 .chips > span { background: var(--paper); border-color: var(--border); box-shadow: var(--shadow-sm); }
 .panel-head { border-bottom: 0; padding-bottom: 2px; }
 
