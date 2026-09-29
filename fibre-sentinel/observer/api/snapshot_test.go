@@ -365,3 +365,33 @@ func TestMarketSnapshotWithNoPublisherIsReloaded(t *testing.T) {
 		t.Fatal("an older build's market snapshot, without the publisher list, was loaded")
 	}
 }
+
+// A day's market snapshot from before the hours carried fees and a publisher
+// split is refused as one from before the publisher list is: its hours would
+// chart no fees and no publisher until the warm-up replaced it. This build's
+// file is read back, and so is a day with no settlement, which has neither.
+func TestMarketSnapshotWithoutTheHourlySplitIsRefused(t *testing.T) {
+	hours := []hourBucket{{Hour: "2026-09-29T10", Bytes: 1 << 20, Settlements: 1, FeesUtia: 830_000}}
+	split := []hourPublisher{{Hour: "2026-09-29T10", Publisher: "celestia1zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3shxjgz", Bytes: 1 << 20, Settlements: 1, FeesUtia: 830_000}}
+	loads := func(r *marketResponse) bool {
+		dir := t.TempDir()
+		w := newSnapshotCache[*marketResponse]("market", nil)
+		w.persistTo(dir, nil)
+		w.persist("24h", &snap[*marketResponse]{v: r, at: time.Now(), ms: 1})
+		c := newSnapshotCache[*marketResponse]("market", nil)
+		c.accept = marketSnapshotCurrent
+		c.persistTo(dir, nil)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.entries["24h"] != nil
+	}
+	if loads(&marketResponse{PublishersListed: true, Hourly: hours}) {
+		t.Fatal("an older build's day, hours without the split, was loaded")
+	}
+	if !loads(&marketResponse{PublishersListed: true, Hourly: hours, HourlyByPub: split}) {
+		t.Fatal("this build's day was not read back")
+	}
+	if !loads(&marketResponse{PublishersListed: true, Hourly: []hourBucket{}}) {
+		t.Fatal("a day with no settlement was not read back")
+	}
+}

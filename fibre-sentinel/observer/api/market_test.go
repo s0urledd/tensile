@@ -2,10 +2,13 @@ package api_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/cosmos/cosmos-sdk/types/bech32"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/api"
@@ -123,7 +126,12 @@ func TestMarketSummary(t *testing.T) {
 			Hour        string `json:"hour"`
 			Bytes       int64  `json:"bytes"`
 			Settlements int64  `json:"settlements"`
+			Fees        int64  `json:"fees_utia"`
 		} `json:"hourly"`
+		HourlyByPub []struct {
+			Publisher string `json:"publisher"`
+			Fees      int64  `json:"fees_utia"`
+		} `json:"hourly_by_publisher"`
 		Top []struct {
 			Publisher string   `json:"publisher"`
 			Label     string   `json:"label"`
@@ -163,15 +171,23 @@ func TestMarketSummary(t *testing.T) {
 		t.Fatal("no daily buckets")
 	}
 	// a day is charted by the hour: the same settlements, split by UTC hour
-	var hb, hs int64
+	var hb, hs, hf int64
 	for _, h := range m.Hourly {
 		if len(h.Hour) != 13 {
 			t.Fatalf("hour key %q, want YYYY-MM-DDTHH", h.Hour)
 		}
-		hb, hs = hb+h.Bytes, hs+h.Settlements
+		hb, hs, hf = hb+h.Bytes, hs+h.Settlements, hf+h.Fees
 	}
-	if hs != m.Settlements || hb != m.Bytes {
-		t.Fatalf("hourly sums to %d settlements, %d bytes; want %d, %d", hs, hb, m.Settlements, m.Bytes)
+	if hs != m.Settlements || hb != m.Bytes || hf != m.Fees {
+		t.Fatalf("hourly sums to %d settlements, %d bytes, %d utia; want %d, %d, %d", hs, hb, hf, m.Settlements, m.Bytes, m.Fees)
+	}
+	// and by publisher (TestHourlySplitSumsToTheDays holds it to the days)
+	var pf int64
+	for _, h := range m.HourlyByPub {
+		pf += h.Fees
+	}
+	if len(m.HourlyByPub) != 2 || pf != m.Fees {
+		t.Fatalf("hourly by publisher: %d rows, %d utia; want one per publisher, %d", len(m.HourlyByPub), pf, m.Fees)
 	}
 	if len(m.Top) != 2 || m.Top[0].Publisher != otherPublisher || m.Top[1].Label != "Sentinel test publisher" {
 		t.Fatalf("top: %+v", m.Top)
@@ -192,16 +208,166 @@ func TestMarketSummary(t *testing.T) {
 	var m30 struct {
 		Settlements int64
 		Hourly      []map[string]any `json:"hourly"`
+		HourlyByPub []map[string]any `json:"hourly_by_publisher"`
 	}
 	get(t, ts, "/v1/market?window=30d", &m30)
 	if m30.Settlements != 3 {
 		t.Fatalf("30d settlements: %d", m30.Settlements)
 	}
-	if m30.Hourly != nil {
-		t.Fatalf("a 30-day window carries hourly buckets: %d", len(m30.Hourly))
+	if m30.Hourly != nil || m30.HourlyByPub != nil {
+		t.Fatalf("a 30-day window carries hourly buckets: %d, %d by publisher", len(m30.Hourly), len(m30.HourlyByPub))
 	}
 	if code := get(t, ts, "/v1/market?window=1y", nil); code != 400 {
 		t.Fatalf("bad window: %d", code)
+	}
+}
+
+// A day is charted by the hour as longer periods are by the day: over the
+// same settlements the hours' fees add up to the days', and the hours split
+// by publisher as the days are, the same five named, the rest folded into
+// one row without a publisher, labelled and ordered alike, so every
+// publisher's hours (the fold's included) add up to its days.
+func TestHourlySplitSumsToTheDays(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	now := time.Now()
+	// Seven publishers, the n-th with n settlements of varied sizes spread
+	// over the last day, so the top five by fees are the last five and the
+	// first two fold into "other".
+	pubs := make([]string, 7)
+	for i := range pubs {
+		b := make([]byte, 20)
+		for j := range b {
+			b[j] = byte(i + 1)
+		}
+		if pubs[i], err = bech32.ConvertAndEncode("celestia", b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var ps []scan.Payment
+	for i, pub := range pubs {
+		for k := 0; k <= i; k++ {
+			n := len(ps)
+			size := uint32(65536 * (1 + (i+3*k)%9))
+			fee := 650_000 + 45_000*uint64((size+262143)/262144)
+			at := now.Add(-time.Duration(1+(5*i+3*k)%22)*time.Hour - time.Duration(7*k)*time.Minute)
+			ps = append(ps, scan.Payment{SchemaVersion: 1, DedupeKey: fmt.Sprintf("s%d", n), Kind: "settlement", Height: int64(100 + n), Time: at,
+				TxHash: fmt.Sprintf("tx%d", n), Publisher: pub, Processor: pub, PromiseHash: fmt.Sprintf("p%d", n), BlobSize: size, GasUnits: fee, Denom: "utia", AmountUtia: fee})
+		}
+	}
+	// a timeout, in the days' timeouts and in no split; a settlement two days
+	// old, in neither
+	ps = append(ps,
+		scan.Payment{SchemaVersion: 1, DedupeKey: "t", Kind: "timeout", Height: 90, Time: now.Add(-3 * time.Hour), TxHash: "tt",
+			Publisher: pubs[6], Processor: pubs[0], PromiseHash: "tp", BlobSize: 1 << 20, GasUnits: 830_000, Denom: "utia", AmountUtia: 830_000},
+		scan.Payment{SchemaVersion: 1, DedupeKey: "old", Kind: "settlement", Height: 80, Time: now.Add(-48 * time.Hour), TxHash: "to",
+			Publisher: pubs[0], Processor: pubs[0], PromiseHash: "op", BlobSize: 65536, GasUnits: 695_000, Denom: "utia", AmountUtia: 695_000})
+	if r, err := ingest.Payments(st, writePayments(t, dir, ps), now); err != nil || r.Inserted != int64(len(ps)) {
+		t.Fatalf("ingest payments: inserted=%d err=%v", r.Inserted, err)
+	}
+	labels := map[string]api.PublisherLabel{pubs[5]: {Address: pubs[5], Label: "Named publisher", Source: "test"}}
+	ts := httptest.NewServer(api.NewWithVantage(st, api.VantageInfo{Name: "test"}, nil, api.WithPublisherLabels(labels)))
+	t.Cleanup(ts.Close)
+
+	type slice struct {
+		Day, Hour, Publisher, Label string
+		Fees                        int64 `json:"fees_utia"`
+		Bytes, Settlements          int64
+	}
+	var m struct {
+		Fees        int64   `json:"fees_settled_utia"`
+		Bytes       int64   `json:"bytes"`
+		Settlements int64   `json:"settlements"`
+		Daily       []slice `json:"daily"`
+		Hourly      []slice `json:"hourly"`
+		DailyByPub  []slice `json:"daily_by_publisher"`
+		HourlyByPub []slice `json:"hourly_by_publisher"`
+		Top         []struct {
+			Publisher string `json:"publisher"`
+		} `json:"top_publishers"`
+		Other *struct {
+			Publishers int64 `json:"publishers"`
+		} `json:"other_publishers"`
+	}
+	if code := get(t, ts, "/v1/market?window=24h", &m); code != 200 {
+		t.Fatalf("market: %d", code)
+	}
+	if m.Settlements != 28 || len(m.Top) != 5 || m.Other == nil || m.Other.Publishers != 2 {
+		t.Fatalf("%d settlements, %d named, other %+v; want 28, 5 and 2 folded", m.Settlements, len(m.Top), m.Other)
+	}
+
+	// The hours' fees, bytes and settlements are the days'.
+	add := func(rows []slice) (f, b, n int64) {
+		for _, r := range rows {
+			f, b, n = f+r.Fees, b+r.Bytes, n+r.Settlements
+		}
+		return
+	}
+	df, db, dn := add(m.Daily)
+	hf, hb, hn := add(m.Hourly)
+	if hf != df || hb != db || hn != dn || hf != m.Fees || hb != m.Bytes || hn != m.Settlements {
+		t.Fatalf("hours sum to %d utia, %d bytes, %d settlements; days to %d, %d, %d; the period %d, %d, %d",
+			hf, hb, hn, df, db, dn, m.Fees, m.Bytes, m.Settlements)
+	}
+
+	// Each publisher's hours, and the fold's, are its days, under the same
+	// name, and the split names the same publishers the days do.
+	type tally struct {
+		label              string
+		fees, bytes, count int64
+	}
+	byPub := func(rows []slice) map[string]tally {
+		out := map[string]tally{}
+		for _, r := range rows {
+			x := out[r.Publisher]
+			x.label, x.fees, x.bytes, x.count = r.Label, x.fees+r.Fees, x.bytes+r.Bytes, x.count+r.Settlements
+			out[r.Publisher] = x
+		}
+		return out
+	}
+	days, hours := byPub(m.DailyByPub), byPub(m.HourlyByPub)
+	if len(hours) != 6 || len(days) != 6 {
+		t.Fatalf("the split names %d publishers by the hour, %d by the day; want the five and the fold", len(hours), len(days))
+	}
+	named := []string{""}
+	for _, p := range m.Top {
+		named = append(named, p.Publisher)
+	}
+	for _, p := range named {
+		if h, ok := hours[p]; !ok || h.count == 0 || h != days[p] {
+			t.Fatalf("publisher %q: hours %+v, days %+v", p, h, days[p])
+		}
+	}
+	if _, folded := hours[pubs[0]]; folded || hours[pubs[5]].label != "Named publisher" {
+		t.Fatalf("the fold or the label: %+v", hours)
+	}
+
+	// Every hour's split adds up to that hour, and is ordered as the days
+	// are: by time, then publisher, the fold first.
+	perHour := map[string]slice{}
+	for i, r := range m.HourlyByPub {
+		if i > 0 {
+			p := m.HourlyByPub[i-1]
+			if p.Hour > r.Hour || p.Hour == r.Hour && p.Publisher >= r.Publisher {
+				t.Fatalf("row %d (%s %q) after (%s %q)", i, r.Hour, r.Publisher, p.Hour, p.Publisher)
+			}
+		}
+		x := perHour[r.Hour]
+		x.Fees, x.Bytes, x.Settlements = x.Fees+r.Fees, x.Bytes+r.Bytes, x.Settlements+r.Settlements
+		perHour[r.Hour] = x
+	}
+	if len(perHour) != len(m.Hourly) {
+		t.Fatalf("the split covers %d hours, the buckets %d", len(perHour), len(m.Hourly))
+	}
+	for _, h := range m.Hourly {
+		x := perHour[h.Hour]
+		if x.Fees != h.Fees || x.Bytes != h.Bytes || x.Settlements != h.Settlements {
+			t.Fatalf("hour %s: split %+v, bucket %+v", h.Hour, x, h)
+		}
 	}
 }
 
