@@ -490,7 +490,7 @@ export default function Developers() {
             <li><code>/validators</code> and <code>/publishers</code> answer the whole list. A validator carries its newest 50 readings, a publisher its newest 100 payments and 50 blobs; <code>recent_probes_truncated</code> and <code>recent_blobs_truncated</code> say when there are more.</li>
           </Topic>
           <Topic id="errors" title="Errors">
-            <li>An error is JSON, <code>{"{\"error\": \"…\"}"}</code>, saying what was wrong.</li>
+            <li>An error is JSON, <code>{"{\"error\": \"…\"}"}</code>, saying what was wrong. Two are not: a <code>405</code> has no body, and a byte range an export archive cannot satisfy is a plain-text <code>416</code>.</li>
             <li><code>400</code> a parameter or address that cannot be read; <code>404</code> nothing on record, or no such route; <code>405</code> a method other than GET or HEAD; <code>429</code> over a limit below; <code>500</code> an internal error, its details kept back; <code>502</code> the API behind the site did not answer.</li>
             <li><code>503</code> with <code>&quot;computing&quot;: true</code> and <code>Retry-After: 5</code>: the figure is being computed, ask again in a few seconds. <code>/health</code> also answers 503 when one of its checks fails.</li>
           </Topic>
