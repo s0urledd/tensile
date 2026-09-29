@@ -118,30 +118,37 @@ func TestBlobsOffsetPageSeesNewProbes(t *testing.T) {
 		}
 		insert(p.hash, p.height, at)
 	}
-	ts := httptest.NewServer(api.New(st, "test"))
+	srv := api.New(st, "test")
+	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
 	type page struct {
 		Blobs []struct {
-			PromiseHash     string `json:"promise_hash"`
-			ProbeCount      int64  `json:"probe_count"`
-			Reconstructable *struct {
-				WindowOver bool `json:"window_over"`
-			} `json:"reconstructable"`
+			PromiseHash string `json:"promise_hash"`
 		} `json:"blobs"`
+	}
+	// the page's verdicts as the server holds them, reading tally included
+	tally := func() api.BlobTally {
+		t.Helper()
+		all, err := srv.BlobTallies(1, 52)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return all["b00"]
 	}
 	var before, after page
 	if code := get(t, ts, "/v1/blobs?limit=1&offset=52", &before); code != 200 || len(before.Blobs) != 1 || before.Blobs[0].PromiseHash != "b00" {
 		t.Fatalf("offset page: %d %+v", code, before)
 	}
-	if rc := before.Blobs[0].Reconstructable; rc == nil || !rc.WindowOver {
-		t.Fatalf("the fixture must give a verdict the cache keeps: %+v", rc)
+	first := tally()
+	if !first.WindowOver {
+		t.Fatalf("the fixture must give a verdict the cache keeps: %+v", first)
 	}
 	// a second reading of the blob, five minutes later, still in its window
 	insert("b00", 100, at.Add(5*time.Minute))
 	if code := get(t, ts, "/v1/blobs?limit=1&offset=52", &after); code != 200 || len(after.Blobs) != 1 {
 		t.Fatalf("offset page again: %d %+v", code, after)
 	}
-	if after.Blobs[0].ProbeCount != before.Blobs[0].ProbeCount+1 {
-		t.Errorf("probe_count %d after one more probe, was %d: a cached verdict outlived the change", after.Blobs[0].ProbeCount, before.Blobs[0].ProbeCount)
+	if again := tally(); again.ProbeCount != first.ProbeCount+1 {
+		t.Errorf("probe_count %d after one more probe, was %d: a cached verdict outlived the change", again.ProbeCount, first.ProbeCount)
 	}
 }

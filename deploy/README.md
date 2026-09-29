@@ -49,15 +49,16 @@ port, behind one Caddy with a site per network (see "Two networks").
   the node's data; the observer's data directory should not share the Fibre
   shard disk either.
 
-## 1a. Describe the vantage before you publish anything
+## 1a. Describe the vantage
 
 Every reachability verdict on the site is a statement about a network path,
-and half that path is yours, so a reader cannot judge an `UNREACHABLE`
-without knowing roughly where it was measured from. The env file has two
-settings for that, `VANTAGE_LOCATION` and `VANTAGE_PROVIDER`, and the API
-logs a warning at startup if a public vantage leaves them blank. Both are
-your word, and `/v1/meta` says so per field. The observer's own addresses
-and autonomous system are not published.
+and half that path is yours. The env file has two settings to describe it,
+`VANTAGE_LOCATION` and `VANTAGE_PROVIDER`, and the API logs a warning at
+startup if a public vantage leaves them blank. The API does not publish
+them: `/v1/meta` lists the vantages by name only (`vantages`), and what a
+reader is told about where the observer measures from is the methodology
+page's text. The observer's own addresses and autonomous system are not
+published either.
 
 ## 2. Build
 
@@ -201,7 +202,7 @@ data disk. `/v1/health` reads those files straight from disk and answers
 succeeding, the scanner is within 200 blocks of the chain, the disk has
 over 5% free, no scan gap is recorded and the chain has not upgraded past
 this build's pin, and 503 with the failing checks otherwise. `/v1/meta`
-carries the same components and verdict, and the header chip on the site
+carries the same verdict and checks, and the header chip on the site
 reflects it: green, amber with the failing processes in its tooltip, red
 when nothing is alive.
 
@@ -451,7 +452,7 @@ master key is never in it.
 `observer.db*` aside, start the collector: it recreates the schema, replays
 `registry.jsonl` (endpoint history), then tails the JSONL files from zero.
 Every record has a natural key and every insert is `ON CONFLICT DO
-NOTHING`, so a replay never duplicates. The run record (`/v1/runs`) comes
+NOTHING`, so a replay never duplicates. The run record (`observer_runs`) comes
 back from `runs.jsonl`, which every component appends its starts, stops
 and flags to, the revealed sampling secrets from
 `sampling-secrets.jsonl`, and the late shadow verdicts from
@@ -664,25 +665,26 @@ What to check once the upgrade lands, in this order:
 curl -s localhost:${API_LISTEN}/v1/meta | jq '{fibre_active, app_version, chain_height}'
 curl -s localhost:${API_LISTEN}/v1/health | jq '.status, (.checks[] | select(.ok == false))'
 journalctl -u fibre-scan@mocha -n 50 --no-pager | grep -iE "seed|param|host history"
-curl -s localhost:${API_LISTEN}/v1/network | jq '{registered_endpoints, reachability, validators_probed}'
+curl -s localhost:${API_LISTEN}/v1/network | jq '{registered_endpoints, reachability, reachability_window}'
 ```
 
 Before that, the "not live yet" notice on the overview and the header chip
-carry x/signal's tally for the version that brings Fibre — how much voting
-power has signalled, the threshold, how many bonded validators have not, and
-the scheduled height once there is one — and the validator table marks each
-bonded validator `signalled` or `not signalled` (`upgrade_signal` on
-`/v1/meta`, `signaled_upgrade` on each row; both disappear once the chain is
-on that version).
+show the height x/signal scheduled the version that brings Fibre at and an
+estimate of when the chain reaches it, once there is one, and the validator
+table marks each bonded validator `signalled` or `not signalled`
+(`upgrade_signal.{upgrade_height, eta_seconds}` on `/v1/meta`,
+`signaled_upgrade` on each row; both disappear once the chain is on that
+version).
 
 `registered_endpoints` moving off zero is the first sign the registry is being
-read. `reachability` follows within a heartbeat interval. The activation
-changes the snapshots' revision, so for the half minute or so the API takes
-to recompute the 24h window, `/v1/network` answers 503 with
-`"computing": true` and the last line prints `null` for all three: ask again. Publications appear
-only once somebody actually pays for a blob, which may be hours later; an
-empty publication feed on activation day is a quiet network, not a broken
-observer, and the site says which.
+read. `reachability` follows within a heartbeat interval, and
+`reachability_window`, which pools every check in the window, with it. The
+activation changes the snapshots' revision, so for the half minute or so the
+API takes to recompute the 24h window, `/v1/network` answers 503 with
+`"computing": true` and the last line prints `null` for all three: ask again.
+Publications appear only once somebody actually pays for a blob, which may be
+hours later; an empty publication feed on activation day is a quiet network,
+not a broken observer, and the site says which.
 
 What does not self-heal: a scanner that exits on the same block at every
 restart (`systemctl status fibre-scan@mocha` shows it cycling; the last line
@@ -709,7 +711,7 @@ is read from local files.
 | --- | --- | --- |
 | `ip2asn-combined.tsv.gz` (required) | [iptoasn.com](https://iptoasn.com/) — IPv4+IPv6 range → origin AS, AS name, AS registry country | Public Domain, [ODC PDDL v1.0](https://opendatacommons.org/licenses/pddl/1-0/) |
 | `dbip-country-lite.csv.gz` (optional) | [DB-IP IP to Country Lite](https://db-ip.com/db/download/ip-to-country-lite) — range → country (geolocation estimate) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); the site prints the required "IP Geolocation by DB-IP" credit |
-| `dbip-city-lite.csv.gz` (optional, ~85 MB) | [DB-IP IP to City Lite](https://db-ip.com/db/download/ip-to-city-lite) — range → city, region, coordinates (adds `city`/`region`/`lat`/`lon` to `hosting` and `by_city` to `/v1/hosting`; absent file = country only; `HOSTING_CITY_DB` / `-hosting-city-db` to move it, `HOSTING_SKIP_CITY=1` to skip it) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), same credit |
+| `dbip-city-lite.csv.gz` (optional, ~85 MB) | [DB-IP IP to City Lite](https://db-ip.com/db/download/ip-to-city-lite) — range → city, region, coordinates (adds `city`/`region`/`lat`/`lon` to each validator's `hosting`, which places it on the overview map; absent file = country only; `HOSTING_CITY_DB` / `-hosting-city-db` to move it, `HOSTING_SKIP_CITY=1` to skip it) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), same credit |
 
 Considered and not used: CAIDA's AS-to-Organization dataset (and the
 RouteViews pfx2as files usually paired with it) is under CAIDA's acceptable
@@ -834,17 +836,14 @@ curl -s https://mocha.observer.example.org/api/v1/health | jq .status   # "ok" o
 curl -s https://mocha.observer.example.org/api/v1/network | jq .registered_endpoints   # null while the API still answers "computing": true, its first half minute or so: ask again
 ```
 
-Then check the site says where it watches from. If `complete` is false the
-dashboard is publishing reachability verdicts without telling a reader which
-network they were measured on, and the API will have logged a warning at
-startup:
+Then check the vantage is described: with `VANTAGE_LOCATION` or
+`VANTAGE_PROVIDER` blank the API logs a warning at startup.
 
 ```bash
-curl -s https://observer.example.org/api/v1/meta | jq .vantage_info
+journalctl -u fibre-api@mocha --no-pager | grep 'vantage not fully described'   # no output is right
 ```
 
-Confirm the ASN you declared is the one your traffic actually carries, since
-that is the claim a reader will check:
+Confirm the provider you declared is the one your traffic actually carries:
 
 ```bash
 whois -h whois.radb.net "$(curl -4 -s https://ifconfig.co)" | grep -i origin

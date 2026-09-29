@@ -312,9 +312,10 @@ func soPaths() []string {
 
 func compareStores(t *testing.T, what string, a, b *store.Store) {
 	t.Helper()
-	ta := httptest.NewServer(api.New(a, "test"))
+	sa, sb := api.New(a, "test"), api.New(b, "test")
+	ta := httptest.NewServer(sa)
 	defer ta.Close()
-	tb := httptest.NewServer(api.New(b, "test"))
+	tb := httptest.NewServer(sb)
 	defer tb.Close()
 	for _, p := range soPaths() {
 		va, vb := fetch(t, ta, p), fetch(t, tb, p)
@@ -327,6 +328,44 @@ func compareStores(t *testing.T, what string, a, b *store.Store) {
 		}
 		if d := firstDiff("", va, vb); d != "" {
 			t.Errorf("%s: %s differs at %s", what, p, d)
+		}
+	}
+	// and what the servers keep beside what they publish: each blob's
+	// reading tally, and the summary's and the rows' tallies, attestation
+	// and latency
+	ba, err := sa.BlobTallies(50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bb, err := sb.BlobTallies(50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(ba, bb) {
+		t.Errorf("%s: blob tallies differ:\n%v\n%v", what, ba, bb)
+	}
+	for _, w := range []string{"24h", "7d", "all"} {
+		for name, whole := range map[string]func(*store.Store, string, string, time.Time) ([]byte, error){
+			"network": api.NetworkJSON, "validator rows": api.ValidatorRowsJSON,
+		} {
+			ra, err := whole(a, "test", w, time.Time{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rb, err := whole(b, "test", w, time.Time{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var va, vb any
+			if err := json.Unmarshal(ra, &va); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(rb, &vb); err != nil {
+				t.Fatal(err)
+			}
+			if d := firstDiff("", strip(va), strip(vb)); d != "" {
+				t.Errorf("%s: %s %s differs at %s", what, name, w, d)
+			}
 		}
 	}
 }
@@ -360,13 +399,16 @@ func TestSampledOutFiguresUnchanged(t *testing.T) {
 			NotCounted int64 `json:"not_counted"`
 			Pending    int64 `json:"pending"`
 		} `json:"obligations"`
-		Classes map[string]int64 `json:"classes"`
 	}
 	tr := httptest.NewServer(api.New(rows, "test"))
 	get(t, tr, "/v1/network?window=7d", &net)
 	tr.Close()
-	if net.Obligations.NotCounted < 10 || net.Obligations.Pending < 5 || net.Classes["NOT_PROBED"] == 0 {
-		t.Fatalf("fixture does not exercise the figures: %+v", net)
+	var whole struct {
+		Classes map[string]int64 `json:"classes"`
+	}
+	networkOf(t, rows, "test", "7d", time.Time{}, &whole)
+	if net.Obligations.NotCounted < 10 || net.Obligations.Pending < 5 || whole.Classes["NOT_PROBED"] == 0 {
+		t.Fatalf("fixture does not exercise the figures: %+v %v", net, whole.Classes)
 	}
 
 	compareStores(t, "decision", rows, dec)
@@ -433,13 +475,12 @@ func TestSampledOutFiguresUnchanged(t *testing.T) {
 func TestSampledOutBlobsCountTheRowsTheyStandFor(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	f := sampledOutFixture(now)
-	ts := httptest.NewServer(api.New(soStore(t, f, false), "test"))
+	srv := api.New(soStore(t, f, false), "test")
+	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
 	var blob struct {
 		Blob struct {
-			ProbeCount      int64            `json:"probe_count"`
-			Classes         map[string]int64 `json:"classes"`
 			Reconstructable struct {
 				Status string `json:"status"`
 			} `json:"reconstructable"`
@@ -447,8 +488,16 @@ func TestSampledOutBlobsCountTheRowsTheyStandFor(t *testing.T) {
 		Probes []any `json:"probes"`
 	}
 	get(t, ts, "/v1/blobs/outold", &blob)
-	if blob.Blob.ProbeCount != 36 || blob.Blob.Classes["NOT_PROBED"] != 36 || len(blob.Probes) != 0 {
-		t.Fatalf("blob counts %d %v, %d probe rows listed", blob.Blob.ProbeCount, blob.Blob.Classes, len(blob.Probes))
+	if len(blob.Probes) != 0 {
+		t.Fatalf("%d probe rows listed for a sampled-out blob", len(blob.Probes))
+	}
+	// its reading tally, which the server keeps with the verdict
+	all, err := srv.BlobTallies(50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tl, ok := all["outold"]; !ok || tl.ProbeCount != 36 || tl.Classes["NOT_PROBED"] != 36 {
+		t.Fatalf("blob counts %+v", tl)
 	}
 	if blob.Blob.Reconstructable.Status != "not_read" {
 		t.Fatalf("a sampled-out blob whose window closed reads %q, want not_read", blob.Blob.Reconstructable.Status)

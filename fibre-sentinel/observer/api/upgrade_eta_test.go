@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
@@ -45,20 +46,41 @@ func TestUpgradeSignalCarriesBlocksRemainingAndAnETAAtTheMeasuredPace(t *testing
 	ts := httptest.NewServer(srv)
 	defer func() { ts.Close(); srv.Close() }()
 
-	var meta struct {
-		UpgradeSignal *struct {
-			UpgradeHeight     int64     `json:"upgrade_height"`
-			BlocksRemaining   int64     `json:"blocks_remaining"`
-			BlockTimeS        float64   `json:"block_time_s"`
-			PaceWindowS       int64     `json:"pace_window_s"`
-			ETASeconds        int64     `json:"eta_seconds"`
-			MissingValidators *[]string `json:"missing_validators"`
-		} `json:"upgrade_signal"`
+	type signal struct {
+		UpgradeHeight     int64     `json:"upgrade_height"`
+		BlocksRemaining   int64     `json:"blocks_remaining"`
+		BlockTimeS        float64   `json:"block_time_s"`
+		PaceWindowS       int64     `json:"pace_window_s"`
+		ETASeconds        int64     `json:"eta_seconds"`
+		MissingValidators *[]string `json:"missing_validators"`
 	}
-	if code := get(t, ts, "/v1/meta", &meta); code != 200 {
-		t.Fatalf("meta: %d", code)
+	// /v1/meta publishes the height and the ETA; the rest of the tally is
+	// what the API computes them from
+	read := func() *signal {
+		t.Helper()
+		var meta struct {
+			UpgradeSignal *struct {
+				UpgradeHeight int64 `json:"upgrade_height"`
+				ETASeconds    int64 `json:"eta_seconds"`
+			} `json:"upgrade_signal"`
+		}
+		if code := get(t, ts, "/v1/meta", &meta); code != 200 {
+			t.Fatalf("meta: %d", code)
+		}
+		raw, err := api.UpgradeSignalJSON(st, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var u *signal
+		if err := json.Unmarshal(raw, &u); err != nil {
+			t.Fatal(err)
+		}
+		if p := meta.UpgradeSignal; (p == nil) != (u == nil) || (p != nil && (p.UpgradeHeight != u.UpgradeHeight || p.ETASeconds != u.ETASeconds)) {
+			t.Fatalf("meta publishes %+v of %+v", p, u)
+		}
+		return u
 	}
-	u := meta.UpgradeSignal
+	u := read()
 	// "null" on record, from an older collector, is published as a list
 	if u == nil || u.MissingValidators == nil || len(*u.MissingValidators) != 0 {
 		t.Fatalf("missing_validators must be a list: %+v", u)
@@ -77,11 +99,7 @@ func TestUpgradeSignalCarriesBlocksRemainingAndAnETAAtTheMeasuredPace(t *testing
 	// a measurement shorter than half an hour is not stated (a fresh
 	// decode target: omitted fields would otherwise keep the old values)
 	set(map[string]string{"chain_pace_from_height": "1016500", "chain_pace_from_time": store.TS(now.Add(-10 * time.Minute))})
-	meta.UpgradeSignal = nil
-	if code := get(t, ts, "/v1/meta", &meta); code != 200 {
-		t.Fatalf("meta: %d", code)
-	}
-	if u = meta.UpgradeSignal; u == nil || u.BlocksRemaining != 65887 || u.ETASeconds != 0 || u.BlockTimeS != 0 {
+	if u = read(); u == nil || u.BlocksRemaining != 65887 || u.ETASeconds != 0 || u.BlockTimeS != 0 {
 		t.Fatalf("short window should carry no pace: %+v", u)
 	}
 
@@ -91,11 +109,7 @@ func TestUpgradeSignalCarriesBlocksRemainingAndAnETAAtTheMeasuredPace(t *testing
 		"chain_tip_time":         store.TS(now.Add(-20 * time.Minute)),
 		"chain_pace_from_height": "1009126", "chain_pace_from_time": store.TS(now.Add(-6 * time.Hour)),
 	})
-	meta.UpgradeSignal = nil
-	if code := get(t, ts, "/v1/meta", &meta); code != 200 {
-		t.Fatalf("meta: %d", code)
-	}
-	if u = meta.UpgradeSignal; u == nil || u.BlocksRemaining != 65887 || u.ETASeconds != 0 {
+	if u = read(); u == nil || u.BlocksRemaining != 65887 || u.ETASeconds != 0 {
 		t.Fatalf("a stopped chain should carry no ETA: %+v", u)
 	}
 }

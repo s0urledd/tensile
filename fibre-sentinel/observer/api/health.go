@@ -24,7 +24,7 @@ import (
 // /v1/health is for machines: 200 when every component is alive and the
 // disk has room, 503 with the reasons otherwise. Point any uptime monitor at
 // it and the operator hears about a dead prober from the monitor, not from a
-// reader. /v1/meta carries the same components for the page.
+// reader.
 
 // expectedComponents is every process a deployment runs. A missing file is
 // reported, not ignored: a prober that never started looks exactly like one
@@ -67,7 +67,7 @@ const minBlockSeconds = 1
 // diskFloor is the free share of the data disk below which health fails.
 const diskFloor = 0.05
 
-// componentStatus is one process as /v1/meta and /v1/health show it.
+// componentStatus is one process as /v1/health shows it.
 type componentStatus struct {
 	Component string    `json:"component"`
 	Present   bool      `json:"present"`
@@ -88,7 +88,6 @@ type componentStatus struct {
 	Disk        *status.Disk   `json:"disk,omitempty"`
 	Vantage     string         `json:"vantage,omitempty"`
 	Version     string         `json:"version,omitempty"`
-	PID         int            `json:"pid,omitempty"`
 }
 
 // chainTipTime is the block time of the chain's newest block, as the
@@ -121,7 +120,6 @@ type healthResponse struct {
 	ScanGaps   []scan.ScanGap    `json:"scan_gaps,omitempty"`
 	PinStatus  string            `json:"pin_status"`
 	ServerTime time.Time         `json:"server_time"`
-	Vantage    string            `json:"vantage"`
 }
 
 // components reads the status directory into the API's shape.
@@ -159,7 +157,7 @@ func (s *Server) components(now time.Time) []componentStatus {
 			Component: n, Present: true, Alive: r.Alive(now), OK: r.OK,
 			StartedAt: r.StartedAt, UpdatedAt: r.UpdatedAt, AgeS: int64(now.Sub(r.UpdatedAt).Seconds()),
 			StoppedAt: r.StoppedAt, StopReason: r.StopReason, LastOKAt: r.LastOKAt, LastError: r.LastError, LastErrorAt: r.LastErrorAt,
-			Height: r.Height, Detail: r.Detail, Disk: r.Disk, Vantage: r.Vantage, Version: r.Version, PID: r.PID,
+			Height: r.Height, Detail: r.Detail, Disk: r.Disk, Vantage: r.Vantage, Version: r.Version,
 		})
 	}
 	return out
@@ -309,7 +307,7 @@ func (s *Server) health(ctx context.Context, now time.Time) healthResponse {
 	if alive == 0 {
 		st = "down"
 	}
-	return healthResponse{Status: st, Checks: checks, Components: comps, ScanGaps: gaps, PinStatus: pin, ServerTime: now.UTC(), Vantage: s.vantage}
+	return healthResponse{Status: st, Checks: checks, Components: comps, ScanGaps: gaps, PinStatus: pin, ServerTime: now.UTC()}
 }
 
 func orNone(s string) string {
@@ -331,9 +329,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, code, h)
 }
 
-// unassignablePublications is the count /v1/meta shows. Both /v1/meta and
-// /v1/health run it on every call, and it used to read every publication to
-// find the few with an assignment error; publications_unassignable
+// unassignablePublications is the count behind the health check of the same
+// name, which /v1/health and /v1/meta run on every call. It used to read
+// every publication to find the few with an assignment error;
+// publications_unassignable
 // (migration 22) is partial on exactly this test, so it now reads only
 // those. The predicate must stay spelled so SQLite can match it to the
 // index's WHERE (`<>` and `!=` are the same operator).

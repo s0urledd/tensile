@@ -382,14 +382,17 @@ One sentence each, and what a reader should conclude.
   did not serve and differs from it), `observer.build` (the observer's VCS revision), and
   `observer.assign_pin` / `observer.app_version`. The store keeps them as
   columns (`row_indices`, `rows_sha256`, `rpc_code`, `shadowed_by`,
-  `observer_build`, `app_version`) and `/v1/probes` publishes them (the
-  row indices and their digest with `?rows=1`, being most of a row's bytes). A
+  `observer_build`, `app_version`) and `/v1/probes` publishes the first four
+  (the row indices and their digest with `?rows=1`, being most of a row's
+  bytes); the build and app version are on every row of the record and of
+  the daily export. A
   classification is a function of the wire result and the code; with these
   fields both halves are on the row.
 - **Reachability** (`reachability_window`) is heartbeats that completed TLS
   over heartbeats sent, per validator and network-wide. The numerator is
   `tcp_ok = 1 AND tls_ok = 1`; whether the certificate was the right one is
-  the separate `identity_rate_window` ("Endorsed"). Heartbeats exist only
+  the separate identity rate ("Endorsed"), which is computed and no longer
+  served (`identity_status` is the published word). Heartbeats exist only
   while the validator is in `AllBondedFibreProviders`, so a jailed or
   unbonded validator's denominator stops growing and the table prints no
   percentage for it. The table's status word is liveness only: the chain's
@@ -417,8 +420,9 @@ One sentence each, and what a reader should conclude.
   download step alone because the dial, handshake and identity check cost
   the same for a 148-row shard as for a 4,096-row one, so a whole-probe
   figure rises with stake by construction; and it is bytes rather than rows
-  because a row is as wide as its blob's square. `serve_latency_p50_ms` and
-  `_p95_ms` remain the whole probe, dial to verified rows.
+  because a row is as wide as its blob's square. The whole-probe latency,
+  dial to verified rows (p50 and p95), is still computed and no longer
+  served.
 - **TLS identity status** = the latest identity result: verified; expired
   (`IDENTITY_FAIL` with a stale reason: the right key, a lapsed window);
   mismatch (any other `IDENTITY_FAIL`); unverified (TLS completed, no
@@ -645,14 +649,13 @@ what the measurement cannot separate.
 Every snapshot response — `/v1/network`, `/v1/validators`, `/v1/market` and
 `/v1/validators/<addr>` — carries `record_through`: the scanner's checkpoint
 height and block time as they stood when the figures were computed, beside
-the chain tip the collector had last seen (`last_scanned_height`,
-`last_scanned_time`, `chain_height`, `chain_tip_time` in `meta`).
+the chain tip the collector had last seen (`height`, `block_time`,
+`chain_height`, `chain_tip_time`).
 `computed_at` says when the figures were taken; `record_through` says over
 which part of the record, which is what a reader needs to check them against
-the chain. `/v1/meta` also publishes `evidence`, the kind of evidence each
-headline figure rests on — `chain_record`, `verified_response` or
-`vantage_observation`, defined under `evidence_kinds` — and the site prints
-the same three as tags beside the figures.
+the chain. The site tags each headline figure with the kind of evidence it
+rests on: a chain record, a verified response, or an observation from
+Tensile's own network (`EVIDENCE` in `web/src/components/Panel.tsx`).
 
 Every figure on the site is a function of the record and the code, and the
 pieces needed to re-run that function are published:
@@ -667,9 +670,9 @@ pieces needed to re-run that function are published:
   was built is in the next export, counted as late. Every line of every file
   is in exactly one export.
 - **The code's configuration.** Each component appends its starts and
-  stops to `runs.jsonl` with its flags (`status.RunEvent`); the collector
-  replays them into `/v1/runs`, so a row can be traced to the prune
-  tolerance, schedule and timeouts that produced it, and to the build
+  stops to `runs.jsonl` with its flags (`status.RunEvent`), which every
+  daily export carries, so a row can be traced to the prune tolerance,
+  schedule and timeouts that produced it, and to the build
   (`observer.build` on the row itself since schema 9).
 - **A pinned window.** `?as_of=<RFC 3339>` on `/v1/network` and
   `/v1/validators` answers what the observer would have published at that
@@ -830,14 +833,16 @@ There is one, and it does not depend on this project's goodwill.
 **Check it yourself first.** Every FAULT row carries what produced it: the
 promise hash, the reading's time, the phase, the wire outcome, the row
 indices returned, a digest of the returned bytes, the gRPC status code, the
-observer build and the chain's app version at the time. `/v1/probes?blob=…&rows=1` and
-the day's export tarball both give the row in full, and `sentinel-recompute`
-re-derives the verdict from it. The three most common reasons a verdict is
-wrong are all visible in the row: the deadline was computed from params the
-server did not have (`must_serve_until_ambiguous`), the observer's path was
-the problem rather than the endpoint (the blob's other rows show whether
-the reading reached anyone), or the shard was served from a different
-promise (`shadowed_by`).
+observer build and the chain's app version at the time. The day's export
+tarball gives the row in full, and `sentinel-recompute` re-derives the
+verdict from it; `/v1/probes?blob=…&rows=1` gives the verdict's fields, the
+row indices, their digest and the gRPC status code, without the build and
+app version. The three most common reasons a verdict is wrong are all
+visible in the row: the deadline was computed from params the server did
+not have (`must_serve_until_ambiguous`), the observer's path was the problem
+rather than the endpoint (the blob's other rows show whether the reading
+reached anyone), or the shard was served from a different promise
+(`shadowed_by`).
 
 **Then say so, in public, on the record.** Open an issue on this repository
 with the promise hash and the reading's time. The record is append-only, so a

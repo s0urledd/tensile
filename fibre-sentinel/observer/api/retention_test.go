@@ -14,11 +14,6 @@ import (
 
 type allSnapshot struct {
 	Obligations obligationsJSON          `json:"obligations"`
-	Classes     map[string]int64         `json:"classes"`
-	Faults      int64                    `json:"faults"`
-	ProbeCount  int64                    `json:"probe_count"`
-	Gaps        int64                    `json:"probe_gaps"`
-	Validators  int64                    `json:"validators_probed"`
 	ServeRate   struct{ Num, Den int64 } `json:"serve_rate"`
 	Coverage    struct{ Num, Den int64 } `json:"serve_rate_coverage"`
 	HeldOut     map[string]int64         `json:"serve_rate_held_out"`
@@ -35,12 +30,31 @@ type allSnapshot struct {
 	} `json:"rolled_up"`
 }
 
+// tallies is what the "all" window keeps and does not publish: the
+// reading tallies of the summary and of each validator's row.
+type tallies struct {
+	Classes    map[string]int64 `json:"classes"`
+	ProbeCount int64            `json:"probe_count"`
+	Gaps       int64            `json:"probe_gaps"`
+	Validators int64            `json:"validators_probed"`
+	Rows       []struct {
+		Address    string           `json:"address"`
+		Classes    map[string]int64 `json:"classes"`
+		ProbeCount int64            `json:"probe_count"`
+	} `json:"validators"`
+}
+
+func talliesOf(t *testing.T, st *store.Store) tallies {
+	t.Helper()
+	var out tallies
+	networkOf(t, st, "test", "all", time.Time{}, &out)
+	rowsOf(t, st, "test", "all", time.Time{}, &out)
+	return out
+}
+
 type valSnapshot struct {
 	Address     string                   `json:"address"`
 	Obligations obligationsJSON          `json:"obligations"`
-	Classes     map[string]int64         `json:"classes"`
-	Faults      int64                    `json:"faults"`
-	ProbeCount  int64                    `json:"probe_count"`
 	Reach       struct{ Num, Den int64 } `json:"reachability_window"`
 }
 
@@ -96,6 +110,7 @@ func TestRollupAndPruneKeepTheAllWindow(t *testing.T) {
 		Validators []valSnapshot `json:"validators"`
 	}
 	get(t, ts, "/v1/validators?window=all", &beforeVals)
+	beforeTallies := talliesOf(t, st)
 
 	// roll up (14 days after the day) and prune (rows older than 30 days)
 	cfg := rollup.Config{RetainRaw: 30 * 24 * time.Hour, RetainRawJSON: 7 * 24 * time.Hour, RollupAfter: 14 * 24 * time.Hour}
@@ -152,16 +167,39 @@ func TestRollupAndPruneKeepTheAllWindow(t *testing.T) {
 	if after.Obligations != before.Obligations {
 		t.Errorf("obligations changed:\nbefore %+v\nafter  %+v", before.Obligations, after.Obligations)
 	}
-	if after.Faults != before.Faults || after.ProbeCount != before.ProbeCount || after.Gaps != before.Gaps || after.Validators != before.Validators {
-		t.Errorf("counts changed: before faults=%d probes=%d gaps=%d validators=%d; after %d %d %d %d",
-			before.Faults, before.ProbeCount, before.Gaps, before.Validators, after.Faults, after.ProbeCount, after.Gaps, after.Validators)
-	}
 	if after.ServeRate != before.ServeRate || after.ReachWindow != before.ReachWindow {
 		t.Errorf("rates changed: serve %v -> %v, reach %v -> %v", before.ServeRate, after.ServeRate, before.ReachWindow, after.ReachWindow)
 	}
-	for c, n := range before.Classes {
-		if after.Classes[c] != n {
-			t.Errorf("class %s: %d -> %d", c, n, after.Classes[c])
+	// the tallies, which the summary and the rows keep, fold the rollup in
+	// the same way
+	afterTallies := talliesOf(t, st)
+	if bt, at := beforeTallies, afterTallies; bt.ProbeCount != at.ProbeCount || bt.Gaps != at.Gaps || bt.Validators != at.Validators || bt.ProbeCount == 0 {
+		t.Errorf("counts changed: before probes=%d gaps=%d validators=%d; after %d %d %d",
+			bt.ProbeCount, bt.Gaps, bt.Validators, at.ProbeCount, at.Gaps, at.Validators)
+	}
+	for c, n := range beforeTallies.Classes {
+		if afterTallies.Classes[c] != n {
+			t.Errorf("class %s: %d -> %d", c, n, afterTallies.Classes[c])
+		}
+	}
+	rowAfter := map[string]int{}
+	for i, r := range afterTallies.Rows {
+		rowAfter[r.Address] = i
+	}
+	for _, b := range beforeTallies.Rows {
+		i, ok := rowAfter[b.Address]
+		if !ok {
+			t.Errorf("%s has no row in the all window after the prune", b.Address)
+			continue
+		}
+		a := afterTallies.Rows[i]
+		if a.ProbeCount != b.ProbeCount {
+			t.Errorf("%s probe_count: %d -> %d", b.Address, b.ProbeCount, a.ProbeCount)
+		}
+		for c, n := range b.Classes {
+			if a.Classes[c] != n {
+				t.Errorf("%s class %s: %d -> %d", b.Address, c, n, a.Classes[c])
+			}
 		}
 	}
 	// docs/verdicts.md tells a reader to check the answer against itself.
@@ -203,13 +241,8 @@ func TestRollupAndPruneKeepTheAllWindow(t *testing.T) {
 			t.Errorf("%s vanished from the all window", b.Address)
 			continue
 		}
-		if a.Obligations != b.Obligations || a.Faults != b.Faults || a.ProbeCount != b.ProbeCount || a.Reach != b.Reach {
+		if a.Obligations != b.Obligations || a.Reach != b.Reach {
 			t.Errorf("%s changed:\nbefore %+v\nafter  %+v", b.Address, b, a)
-		}
-		for c, n := range b.Classes {
-			if a.Classes[c] != n {
-				t.Errorf("%s class %s: %d -> %d", b.Address, c, n, a.Classes[c])
-			}
 		}
 	}
 	// the validator detail's all span carries the label and the same obligations

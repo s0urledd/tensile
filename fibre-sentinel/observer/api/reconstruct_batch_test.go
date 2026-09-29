@@ -595,18 +595,37 @@ func TestBlobDetailNamesTheClientsErrorAndNoNullLists(t *testing.T) {
 	var probes []struct {
 		Addr    string `json:"validator_address"`
 		Label   string `json:"schedule_label"`
-		At      string `json:"scheduled_at"`
 		Service string `json:"service"`
 	}
 	if err := json.Unmarshal(got["probes"], &probes); err != nil {
 		t.Fatal(err)
 	}
+	// the reading's scheduled time, which /v1/probes lists
+	var rows struct {
+		Probes []struct {
+			Label string `json:"schedule_label"`
+			At    string `json:"scheduled_at"`
+		} `json:"probes"`
+	}
+	resp, err := http.Get(ts.URL + "/v1/probes?blob=" + short)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = json.NewDecoder(resp.Body).Decode(&rows)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("probes: %d %v", resp.StatusCode, err)
+	}
 	var w2 string
+	for _, p := range rows.Probes {
+		if p.Label == "w2" {
+			w2 = p.At
+		}
+	}
 	for _, p := range probes {
 		if p.Label != "w2" {
 			continue
 		}
-		w2 = p.At
 		want := "not_served"
 		if p.Addr == "j1" {
 			want = "" // served early in the window: not the end of it

@@ -90,18 +90,13 @@ type signingJSON struct {
 	Assigned int64 `json:"assigned"`
 	Signed   int64 `json:"signed"`
 	Unknown  int64 `json:"unknown"`
-	Rate     struct {
-		Num   int64    `json:"num"`
-		Den   int64    `json:"den"`
-		Value *float64 `json:"value"`
-	} `json:"rate"`
 }
 
 // The per-validator rate: assigned = settled promises that gave it rows and
 // whose signatures were verified; the pre-verification record is unknown on
 // neither side, and a failed transaction is no promise at all.
 func TestSigningParticipationPerValidator(t *testing.T) {
-	ts, _, _ := signingFixture(t)
+	ts, st, _ := signingFixture(t)
 	var resp struct {
 		Validators []struct {
 			Address string      `json:"address"`
@@ -120,12 +115,27 @@ func TestSigningParticipationPerValidator(t *testing.T) {
 		}
 		seen++
 		s := v.Signing
-		if s.Assigned != w[0] || s.Signed != w[1] || s.Unknown != w[2] || s.Rate.Num != w[1] || s.Rate.Den != w[0] {
+		if s.Assigned != w[0] || s.Signed != w[1] || s.Unknown != w[2] {
 			t.Errorf("%s: signing = %+v, want assigned %d signed %d unknown %d", v.Address[:4], s, w[0], w[1], w[2])
 		}
 	}
 	if seen != 3 {
 		t.Fatalf("saw %d of 3 validators", seen)
+	}
+	// the row keeps the rate the list leaves to signed over assigned
+	var rows struct {
+		Validators []struct {
+			Address string `json:"address"`
+			Signing struct {
+				Rate struct{ Num, Den int64 } `json:"rate"`
+			} `json:"signing"`
+		} `json:"validators"`
+	}
+	rowsOf(t, st, "test", "all", time.Time{}, &rows)
+	for _, v := range rows.Validators {
+		if w, ok := want[v.Address]; ok && (v.Signing.Rate.Num != w[1] || v.Signing.Rate.Den != w[0]) {
+			t.Errorf("%s: rate = %+v, want %d/%d", v.Address[:4], v.Signing.Rate, w[1], w[0])
+		}
 	}
 
 	// The detail route carries the same object.
@@ -145,7 +155,7 @@ func TestSigningParticipationPerValidator(t *testing.T) {
 // A window with nothing assigned is nothing to say: den 0 and a null value,
 // never 0%.
 func TestSigningEmptyWindowIsNull(t *testing.T) {
-	ts, _, _ := signingFixture(t)
+	ts, st, _ := signingFixture(t)
 	var det struct {
 		Validator struct {
 			Signing signingJSON `json:"signing"`
@@ -154,12 +164,31 @@ func TestSigningEmptyWindowIsNull(t *testing.T) {
 	// Every publication settled at least an hour before now; the 24h window
 	// holds them all, so move the question to one that holds none by asking
 	// as of a moment before the first settlement.
-	asOf := time.Now().UTC().Add(-7 * time.Hour).Format(time.RFC3339)
+	at := time.Now().UTC().Add(-7 * time.Hour).Truncate(time.Second)
+	asOf := at.Format(time.RFC3339)
 	if code := get(t, ts, "/v1/validators/"+sigV1+"?window=24h&as_of="+asOf, &det); code != 200 {
 		t.Fatalf("detail: %d", code)
 	}
-	if s := det.Validator.Signing; s.Assigned != 0 || s.Rate.Den != 0 || s.Rate.Value != nil {
-		t.Fatalf("signing = %+v, want an empty rate with a null value", s)
+	if s := det.Validator.Signing; s.Assigned != 0 || s.Signed != 0 {
+		t.Fatalf("signing = %+v, want nothing assigned", s)
+	}
+	// the row's rate, which the routes leave to signed over assigned
+	var rows struct {
+		Validators []struct {
+			Address string `json:"address"`
+			Signing struct {
+				Rate struct {
+					Den   int64    `json:"den"`
+					Value *float64 `json:"value"`
+				} `json:"rate"`
+			} `json:"signing"`
+		} `json:"validators"`
+	}
+	rowsOf(t, st, "test", "24h", at, &rows)
+	for _, v := range rows.Validators {
+		if v.Address == sigV1 && (v.Signing.Rate.Den != 0 || v.Signing.Rate.Value != nil) {
+			t.Fatalf("signing rate = %+v, want an empty rate with a null value", v.Signing.Rate)
+		}
 	}
 }
 
@@ -237,7 +266,7 @@ func TestSigningLeavesOutPromisesWithoutAHost(t *testing.T) {
 	if code := get(t, ts, "/v1/validators/"+sigV3+"?window=all", &det); code != 200 {
 		t.Fatalf("detail: %d", code)
 	}
-	if s := det.Validator.Signing; s.Assigned != 1 || s.Signed != 1 || s.NoHost != 2 || s.Rate.Den != 1 {
+	if s := det.Validator.Signing; s.Assigned != 1 || s.Signed != 1 || s.NoHost != 2 {
 		t.Fatalf("signing = %+v, want 1/1 with 2 promises without a host", s)
 	}
 }

@@ -2,7 +2,7 @@
 import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useApi, type Validator, type Probe, type Window, type RecordThrough, type Obligations, type ClassCounts, type Meta, type EndpointCheck, int, pctOf, bytes, utcWord, hhmmss, dateUTC, whenUTC, shortMid, notFound, rateTone, notCountedText, badRequest, MIN_RATED, API_BASE, provisionalNow, type ProvisionalFaults, type NetworkReference } from "@/lib/api";
+import { useApi, type ValidatorDetail, type ValidatorReading, type Window, type RecordThrough, type Obligations, type Meta, type EndpointCheck, int, pctOf, bytes, utcWord, hhmmss, dateUTC, whenUTC, shortMid, notFound, rateTone, notCountedText, badRequest, MIN_RATED, API_BASE, provisionalNow, type ProvisionalFaults, type NetworkReference } from "@/lib/api";
 import { useWindow, WindowSwitch, windowLabel } from "@/lib/window";
 import StatusLine from "@/components/StatusLine";
 import { Metric, Metrics } from "@/components/Metrics";
@@ -14,13 +14,13 @@ import { SELF_VALIDATOR } from "@/lib/site";
 import PreLive from "@/components/PreLive";
 import Diagnosis from "@/components/Diagnosis";
 
-type Span = { window: Window; probe_count: number; obligations: Obligations; classes: ClassCounts; provisional_faults?: ProvisionalFaults };
+type Span = { window: Window; obligations: Obligations; provisional_faults?: ProvisionalFaults };
 type Detail = {
   window: Window;
   record_through?: RecordThrough;
-  validator: Validator;
+  validator: ValidatorDetail;
   windows: Span[];
-  recent_probes: Probe[];
+  recent_probes: ValidatorReading[];
   recent_probes_truncated?: boolean;
   /** set when this window rests partly on the daily rollup (the "all" window past the raw retention) */
   rolled_up?: { raw_from: string; days: number; note: string };
@@ -68,7 +68,7 @@ function safeSite(raw?: string): string | null {
 
 const wordOf = (cls: string): [string, string] => WORDS[cls] ?? [cls.toLowerCase().replace(/_/g, " "), "other"];
 /** what came back, in a few words: the outcome of a FAULT, else the class */
-const whatCame = (p: Probe): string => {
+const whatCame = (p: ValidatorReading): string => {
   if (p.classification === "FAULT" || p.classification === "HEALTHY") {
     return ({ NOT_FOUND: "not found", INVALID_ROWS: "rows do not verify", PARTIAL: "short shard", WRONG_ROWS: "wrong rows", SERVED_OK: "served" } as Record<string, string>)[p.outcome]
       ?? p.outcome.toLowerCase().replace(/_/g, " ");
@@ -81,7 +81,7 @@ const whatCame = (p: Probe): string => {
  * be reconstructed), or neither (a failure on a blob that was available all
  * the same, or a blob not read by Tensile); the page only words it.
  */
-const probeWord = (p: Probe): [string, string] => {
+const probeWord = (p: ValidatorReading): [string, string] => {
   if (p.service === "not_served") return [`Not served · ${whatCame(p)}`, "fault"];
   if (p.service === "served") return ["Served", "ok"];
   if (p.classification === "UNATTESTED") return (p.outcome === "SERVED_OK" || p.outcome === "PARTIAL") ? ["Served, not endorsed", "unsigned"] : ["Not endorsed", "unsigned"];
@@ -108,7 +108,7 @@ const identityWord: Record<string, string> = { verified: "verified", expired: "e
 const REACH_FAIL = new Set(["DNS_FAIL", "TCP_REFUSED", "TCP_TIMEOUT", "TCP_UNREACHABLE", "TLS_HANDSHAKE_FAIL", "RPC_UNAVAILABLE", "RPC_ERROR", "RPC_TIMEOUT"]);
 const GROUPS = ["served", "unreachable", "certificate rejected", "no endpoint", "not found", "answered with an error", "not counted", "other", "not served"] as const;
 type Group = (typeof GROUPS)[number];
-function groupOf(p: Probe): Group {
+function groupOf(p: ValidatorReading): Group {
   if (p.service === "not_served") return "not served";
   if (p.service === "served" || p.classification === "HEALTHY" || p.outcome === "SERVED_OK") return "served";
   if (p.classification === "NOT_REGISTERED") return "no endpoint";

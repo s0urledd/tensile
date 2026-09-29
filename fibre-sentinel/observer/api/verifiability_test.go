@@ -11,7 +11,6 @@ import (
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
-	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/api"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/ingest"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
@@ -44,8 +43,16 @@ func TestAsOfPinsTheWindow(t *testing.T) {
 			AsOf bool      `json:"as_of"`
 		} `json:"window"`
 		AsOfNote    string          `json:"as_of_note"`
-		ProbeCount  int64           `json:"probe_count"`
 		Obligations obligationsJSON `json:"obligations"`
+	}
+	// the reading count, which the summary keeps and does not publish
+	probeCount := func(asOf time.Time) int64 {
+		t.Helper()
+		var n struct {
+			ProbeCount int64 `json:"probe_count"`
+		}
+		networkOf(t, st, "test", "24h", asOf, &n)
+		return n.ProbeCount
 	}
 	// pinned between w2 and w3: two rows per validator, every obligation
 	// still pending
@@ -57,8 +64,12 @@ func TestAsOfPinsTheWindow(t *testing.T) {
 	if !pinned.Window.AsOf || pinned.AsOfNote == "" {
 		t.Errorf("pinned window not marked: %+v", pinned.Window)
 	}
-	if pinned.ProbeCount != 8 {
-		t.Errorf("probe_count at as_of = %d, want 8 (two points of four validators)", pinned.ProbeCount)
+	pinnedAt, err := time.Parse(time.RFC3339, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := probeCount(pinnedAt); n != 8 {
+		t.Errorf("probe_count at as_of = %d, want 8 (two points of four validators)", n)
 	}
 	if pinned.Obligations.Pending != 4 || pinned.Obligations.Served != 0 || pinned.Obligations.Broken != 0 {
 		t.Errorf("obligations at as_of = %+v, want 4 pending", pinned.Obligations)
@@ -69,21 +80,21 @@ func TestAsOfPinsTheWindow(t *testing.T) {
 	if code := get(t, ts, "/v1/network?window=24h&as_of="+now.Format(time.RFC3339), &pinnedNow); code != 200 {
 		t.Fatalf("as_of now: %d", code)
 	}
-	if pinnedNow.ProbeCount != live.ProbeCount || pinnedNow.Obligations != live.Obligations {
+	if pinnedNow.Obligations != live.Obligations {
 		t.Errorf("pinned at now differs from live:\n%+v\n%+v", pinnedNow, live)
 	}
-	if live.ProbeCount != 16 || live.Obligations.Served != 1 || live.Obligations.Broken != 3 || live.Obligations.NotCounted != 0 {
+	if n, l := probeCount(now), probeCount(time.Time{}); n != l || l != 16 {
+		t.Errorf("probe_count pinned at now %d, live %d, want 16 both", n, l)
+	}
+	if live.Obligations.Served != 1 || live.Obligations.Broken != 3 || live.Obligations.NotCounted != 0 {
 		t.Errorf("live = %+v", live)
 	}
 	// validators too
 	var vals struct {
 		AsOfNote   string `json:"as_of_note"`
 		Validators []struct {
-			Address     string           `json:"address"`
-			Obligations obligationsJSON  `json:"obligations"`
-			ProbeCount  int64            `json:"probe_count"`
-			Faults      int64            `json:"faults"`
-			Classes     map[string]int64 `json:"classes"`
+			Address     string          `json:"address"`
+			Obligations obligationsJSON `json:"obligations"`
 		} `json:"validators"`
 	}
 	if code := get(t, ts, "/v1/validators?window=24h&as_of="+at, &vals); code != 200 {
@@ -96,9 +107,22 @@ func TestAsOfPinsTheWindow(t *testing.T) {
 		if v.Obligations.Pending != 1 {
 			t.Errorf("%s at as_of: %+v, want pending", v.Address, v.Obligations)
 		}
-		// two served points by then; the later failures are not yet there
-		if v.ProbeCount != 2 || v.Faults != 0 || v.Classes["HEALTHY"] != 2 || len(v.Classes) != 1 {
-			t.Errorf("%s at as_of: probes=%d faults=%d classes=%v, want 2 HEALTHY rows only", v.Address, v.ProbeCount, v.Faults, v.Classes)
+	}
+	// two served points by then; the later failures are not yet there
+	var rows struct {
+		Validators []struct {
+			Address    string           `json:"address"`
+			ProbeCount int64            `json:"probe_count"`
+			Classes    map[string]int64 `json:"classes"`
+		} `json:"validators"`
+	}
+	rowsOf(t, st, "test", "24h", pinnedAt, &rows)
+	if len(rows.Validators) != 4 {
+		t.Fatalf("%d rows at as_of, want 4", len(rows.Validators))
+	}
+	for _, v := range rows.Validators {
+		if v.ProbeCount != 2 || v.Classes["HEALTHY"] != 2 || len(v.Classes) != 1 {
+			t.Errorf("%s at as_of: probes=%d classes=%v, want 2 HEALTHY rows only", v.Address, v.ProbeCount, v.Classes)
 		}
 	}
 	// uncached, and rationed: three pinned requests are spent, the burst
@@ -123,78 +147,6 @@ func TestAsOfPinsTheWindow(t *testing.T) {
 	// a future as_of is refused
 	if code := get(t, ts, "/v1/network?as_of="+now.Add(time.Hour).Format(time.RFC3339), nil); code != 400 {
 		t.Errorf("future as_of: %d, want 400", code)
-	}
-}
-
-// Every component's starts and stops, with the configuration it ran under,
-// come from runs.jsonl and are served at /v1/runs.
-func TestRunsCarryTheirConfiguration(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
-	dir := t.TempDir()
-	// a prober writing through the status package
-	w := status.New(dir, "prober", "eu", "abc123")
-	w.RecordRuns(map[string]any{"prune-tolerance": "2m30s", "in-window-probes": "4"})
-	w.Start()
-	w.Stop("signal")
-	// and a second start of the same component, still running
-	w2 := status.New(dir, "prober", "eu", "abc124")
-	w2.RecordRuns(map[string]any{"prune-tolerance": "3m0s"})
-	w2.Start()
-	t.Cleanup(func() { w2.Stop("test") })
-
-	now := time.Now()
-	res, err := ingest.Runs(st, filepath.Join(dir, status.RunsFile), now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Inserted != 3 { // two starts, one stop applied
-		t.Fatalf("replayed %d events, want 3 (%+v)", res.Inserted, res)
-	}
-	// replaying again changes nothing
-	if res, err := ingest.Runs(st, filepath.Join(dir, status.RunsFile), now); err != nil || res.Inserted != 0 {
-		t.Fatalf("second replay: %+v %v", res, err)
-	}
-	ts := httptestServer(t, st)
-	var out struct {
-		Runs []struct {
-			Component  string          `json:"component"`
-			Version    string          `json:"version"`
-			StoppedAt  *string         `json:"stopped_at"`
-			StopReason *string         `json:"stop_reason"`
-			PID        *int64          `json:"pid"`
-			Config     json.RawMessage `json:"config"`
-		} `json:"runs"`
-	}
-	if code := get(t, ts, "/v1/runs?window=all", &out); code != 200 {
-		t.Fatalf("runs: %d", code)
-	}
-	var stopped, open int
-	for _, r := range out.Runs {
-		if r.Component != "prober" {
-			continue
-		}
-		var cfg map[string]string
-		if err := json.Unmarshal(r.Config, &cfg); err != nil || cfg["prune-tolerance"] == "" {
-			t.Errorf("run %s config = %s", r.Version, r.Config)
-		}
-		if r.PID == nil {
-			t.Errorf("run %s has no pid", r.Version)
-		}
-		switch {
-		case r.Version == "abc123" && r.StoppedAt != nil && r.StopReason != nil && *r.StopReason == "signal":
-			stopped++
-		case r.Version == "abc124" && r.StoppedAt == nil:
-			open++
-		default:
-			t.Errorf("unexpected run row: %+v", r)
-		}
-	}
-	if stopped != 1 || open != 1 {
-		t.Errorf("stopped=%d open=%d, want 1 and 1: %+v", stopped, open, out.Runs)
 	}
 }
 

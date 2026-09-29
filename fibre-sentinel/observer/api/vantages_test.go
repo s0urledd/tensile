@@ -77,7 +77,6 @@ type vantageValidator struct {
 		ConfirmedFrom   string  `json:"confirmed_from"`
 		AlsoFailedFrom  string  `json:"also_failed_from"`
 		Reachability    rateOf  `json:"reachability_window"`
-		IdentityValid   rateOf  `json:"identity_rate_window"`
 		LastUnreachable *string `json:"last_unreachable_at"`
 		LastReachable   *string `json:"last_reachable_at"`
 	} `json:"validator"`
@@ -183,12 +182,21 @@ func TestAnotherVantagesRowsMoveNoFigure(t *testing.T) {
 	type netBody struct {
 		Reach  rateOf `json:"reachability"`
 		Window rateOf `json:"reachability_window"`
-		Prev   *struct {
+	}
+	// what the summary and the rows keep and do not publish: the previous
+	// day's reachability and each validator's certificate rate
+	type wholeBody struct {
+		Prev *struct {
 			Reach rateOf `json:"reachability_window"`
 		} `json:"previous"`
+		Rows []struct {
+			Address       string `json:"address"`
+			IdentityValid rateOf `json:"identity_rate_window"`
+		} `json:"validators"`
 	}
 	type snapshot struct {
 		net   netBody
+		whole wholeBody
 		vals  map[string]vantageValidator
 		feeds map[string][]string
 	}
@@ -198,6 +206,8 @@ func TestAnotherVantagesRowsMoveNoFigure(t *testing.T) {
 		if code := getAny(t, ts, "/v1/network?window=24h", &s.net); code != 200 {
 			t.Fatalf("network: %d", code)
 		}
+		networkOf(t, f.st, "ut-1", "24h", time.Time{}, &s.whole)
+		rowsOf(t, f.st, "ut-1", "24h", time.Time{}, &s.whole)
 		s.vals = map[string]vantageValidator{}
 		s.feeds = map[string][]string{}
 		for _, a := range []string{v1, v2} {

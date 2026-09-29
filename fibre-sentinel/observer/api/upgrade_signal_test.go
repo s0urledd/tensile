@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
@@ -54,19 +55,31 @@ func TestTheUpgradeSignalIsPublishedUntilFibreIsLive(t *testing.T) {
 
 	var meta struct {
 		UpgradeSignal *struct {
-			Version        int64    `json:"version"`
-			Share          float64  `json:"share"`
-			ThresholdShare float64  `json:"threshold_share"`
-			UpgradeHeight  int64    `json:"upgrade_height"`
-			Missing        []string `json:"missing_validators"`
+			UpgradeHeight int64 `json:"upgrade_height"`
 		} `json:"upgrade_signal"`
 	}
 	if code := get(t, ts, "/v1/meta", &meta); code != 200 {
 		t.Fatalf("meta: %d", code)
 	}
-	u := meta.UpgradeSignal
-	if u == nil || u.Version != 10 || len(u.Missing) != 2 || u.UpgradeHeight != 0 {
-		t.Fatalf("upgrade_signal: %+v", u)
+	if meta.UpgradeSignal == nil || meta.UpgradeSignal.UpgradeHeight != 0 {
+		t.Fatalf("upgrade_signal: %+v", meta.UpgradeSignal)
+	}
+	// the tally behind it, which the validators' signaled_upgrade comes from
+	raw, err := api.UpgradeSignalJSON(st, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var u *struct {
+		Version        int64    `json:"version"`
+		Share          float64  `json:"share"`
+		ThresholdShare float64  `json:"threshold_share"`
+		Missing        []string `json:"missing_validators"`
+	}
+	if err := json.Unmarshal(raw, &u); err != nil {
+		t.Fatal(err)
+	}
+	if u == nil || u.Version != 10 || len(u.Missing) != 2 {
+		t.Fatalf("upgrade signal: %+v", u)
 	}
 	if u.Share < 0.156 || u.Share > 0.157 || u.ThresholdShare < 0.833 || u.ThresholdShare > 0.834 {
 		t.Fatalf("shares: %v / %v", u.Share, u.ThresholdShare)

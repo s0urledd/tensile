@@ -24,23 +24,22 @@ import (
 // something the chain recorded, in the payments table the scanner fills from
 // MsgPayForFibre, MsgPaymentPromiseTimeout, MsgDepositToEscrow,
 // MsgRequestWithdrawal and the begin-block withdrawal payout. Nothing here
-// was measured by this observer, and the response says so.
+// was measured by this observer.
 //
 // Two honesty rules shape the numbers:
 //
 //   - A settlement amount is not in any chain event. It is recomputed from
 //     the promise's blob_size with the module's own gas formula, which is
-//     what the module charges. PriceFormula publishes that formula.
+//     what the module charges. /v1/params publishes that formula.
 //   - A promise that was handed out and never settled leaves no trace on
 //     chain until someone submits its timeout, so "timed out" is a floor on
-//     abandoned promises, never a total. The settlement rate is stated over
-//     settlements plus known timeouts, and its denominator says so.
+//     abandoned promises, never a total.
 
 // MiB is the unit "paid per MiB" is quoted in.
 const MiB = 1 << 20
 
-// priceFormula is the module's charge, published so a reader can recompute
-// every fee on the site from a blob size.
+// priceFormula is the module's charge, published on /v1/params so a reader
+// can recompute every fee on the site from a blob size.
 type priceFormula struct {
 	BaseGas     uint64 `json:"base_gas"`
 	GasPerChunk uint64 `json:"gas_per_chunk"`
@@ -118,15 +117,18 @@ type publisherShare struct {
 	Publishers int64 `json:"publishers,omitempty"`
 }
 
+// marketResponse is /v1/market. Every figure is a chain record: settlements,
+// timeouts, deposits and withdrawals from the payments table, escrow
+// balances by state query; a settlement's fee is recomputed from blob_size
+// with the module's formula (/v1/params price_formula), and fees go to the
+// fee collector, so no per-validator share is shown.
 type marketResponse struct {
 	Window     Window `json:"window"`
-	Vantage    string `json:"vantage"`
 	ComputedAt string `json:"computed_at,omitempty"`
+	// AsOfNote is set on a pinned window (marketAsOfNote).
+	AsOfNote string `json:"as_of_note,omitempty"`
 	// RecordThrough is the point of the chain these figures rest on.
 	RecordThrough *recordThrough `json:"record_through,omitempty"`
-	ComputeMs     int64          `json:"compute_ms,omitempty"`
-	// Source says where every number on this response comes from.
-	Source string `json:"source"`
 
 	Settlements int64 `json:"settlements"`
 	// Blobs is how many distinct blobs those settlements paid for, over the
@@ -141,11 +143,8 @@ type marketResponse struct {
 	PaidPerMiBUtia   *float64 `json:"paid_per_mib_utia"` // fees / (bytes / MiB); null with no bytes
 	// Timeouts is the floor described above; TimedOutUtia what those
 	// promises were charged.
-	Timeouts       int64 `json:"timeouts"`
-	TimedOutUtia   int64 `json:"timed_out_utia"`
-	SettlementRate Rate  `json:"settlement_rate"` // settlements / (settlements + timeouts)
-	// TimeoutProcessors is how many distinct accounts submitted a timeout.
-	TimeoutProcessors int64 `json:"timeout_processors"`
+	Timeouts     int64 `json:"timeouts"`
+	TimedOutUtia int64 `json:"timed_out_utia"`
 
 	Deposits             sum `json:"deposits"`
 	WithdrawalsRequested sum `json:"withdrawals_requested"`
@@ -170,12 +169,10 @@ type marketResponse struct {
 	Hourly []hourBucket `json:"hourly,omitempty"`
 	// HourlyByPub is Hourly split by publisher as DailyByPub splits Daily,
 	// set with it.
-	HourlyByPub  []hourPublisher  `json:"hourly_by_publisher,omitempty"`
-	DailyByPub   []dayPublisher   `json:"daily_by_publisher"`
-	Top          []publisherShare `json:"top_publishers"`
-	Other        *publisherShare  `json:"other_publishers"`
-	PriceFormula priceFormula     `json:"price_formula"`
-	Notes        []string         `json:"notes"`
+	HourlyByPub []hourPublisher  `json:"hourly_by_publisher,omitempty"`
+	DailyByPub  []dayPublisher   `json:"daily_by_publisher"`
+	Top         []publisherShare `json:"top_publishers"`
+	Other       *publisherShare  `json:"other_publishers"`
 	// LargestPoster is the publisher with the most bytes in the window.
 	LargestPoster *publisherShare `json:"largest_poster"`
 	// Namespaces is how many namespaces the window's settlements used, and
@@ -195,17 +192,6 @@ type marketResponse struct {
 	// either.
 	PublishersListed bool `json:"publishers_listed,omitempty"`
 }
-
-var marketNotes = []string{
-	"every figure here is something the chain recorded; none was measured by this observer",
-	"a settlement's fee is not in any chain event; it is recomputed from blob_size with the module's own formula (price_formula)",
-	"blob_size is the padded blob size the module charges for, not the payload",
-	"timeouts count only promises whose timeout somebody submitted; an abandoned promise nobody reports leaves no trace, so this is a floor",
-	"fees go to the fee collector and are distributed by stake; the chain records no per-validator share, so none is shown",
-	"escrow balances are state reads for publishers already seen in a payment; there is no list-all query",
-}
-
-const marketSource = "x/fibre transactions and events (payments table); escrow balances by state query"
 
 // escrowInfo is a publisher's current escrow as the chain holds it.
 type escrowInfo struct {
@@ -314,7 +300,7 @@ func perMiB(fees, bytes int64) *float64 {
 
 func (s *Server) computeMarket(ctx context.Context, win Window) (*marketResponse, error) {
 	db := s.st.DB()
-	r := &marketResponse{Window: win, Vantage: s.vantage, Source: marketSource, PriceFormula: formula, Notes: marketNotes, RecordThrough: s.recordThrough(ctx)}
+	r := &marketResponse{Window: win, RecordThrough: s.recordThrough(ctx)}
 	// Both bounds, on every query below. Without the upper one a pinned
 	// window answered with the payments that arrived after the pin while
 	// the response's own window said otherwise, so ?as_of= on this route
@@ -341,12 +327,11 @@ func (s *Server) computeMarket(ctx context.Context, win Window) (*marketResponse
 		WHERE pay.kind = 'settlement' AND pay.time >= ? AND pay.time <= ?`, start, end).Scan(&r.Blobs); err != nil {
 		return nil, fmt.Errorf("blobs: %w", err)
 	}
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(amount_utia),0), COUNT(DISTINCT processor)
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(amount_utia),0)
 		FROM payments WHERE kind = 'timeout' AND time >= ? AND time <= ?`, start, end).
-		Scan(&r.Timeouts, &r.TimedOutUtia, &r.TimeoutProcessors); err != nil {
+		Scan(&r.Timeouts, &r.TimedOutUtia); err != nil {
 		return nil, fmt.Errorf("timeouts: %w", err)
 	}
-	r.SettlementRate = rate(r.Settlements, r.Settlements+r.Timeouts)
 	for kind, dst := range map[string]*sum{
 		"deposit": &r.Deposits, "withdrawal_request": &r.WithdrawalsRequested, "withdrawal_executed": &r.WithdrawalsExecuted,
 	} {
@@ -662,7 +647,8 @@ func (s *Server) publisherRows(ctx context.Context, win Window, only string) ([]
 	return out, rows.Err()
 }
 
-// paymentRow is one escrow movement as the API shows it.
+// paymentRow is one escrow movement as the API shows it. A settlement's or
+// a timeout's amount is its gas at one utia per gas.
 type paymentRow struct {
 	Kind        string `json:"kind"`
 	Height      int64  `json:"height"`
@@ -673,13 +659,12 @@ type paymentRow struct {
 	PromiseHash string `json:"promise_hash,omitempty"`
 	Namespace   string `json:"namespace,omitempty"`
 	BlobSize    int64  `json:"blob_size,omitempty"`
-	GasUnits    int64  `json:"gas_units,omitempty"`
 	AmountUtia  int64  `json:"amount_utia"`
 	AvailableAt string `json:"available_at,omitempty"`
 }
 
 func (s *Server) paymentRows(ctx context.Context, where string, limit int, args ...any) ([]paymentRow, error) {
-	q := `SELECT kind, height, time, tx_hash, publisher, processor, promise_hash, namespace, blob_size, gas_units, amount_utia, COALESCE(available_at, '')
+	q := `SELECT kind, height, time, tx_hash, publisher, processor, promise_hash, namespace, blob_size, amount_utia, COALESCE(available_at, '')
 		FROM payments`
 	if where != "" {
 		q += " WHERE " + where
@@ -694,7 +679,7 @@ func (s *Server) paymentRows(ctx context.Context, where string, limit int, args 
 	for rows.Next() {
 		var p paymentRow
 		if err := rows.Scan(&p.Kind, &p.Height, &p.Time, &p.TxHash, &p.Publisher, &p.Processor, &p.PromiseHash, &p.Namespace,
-			&p.BlobSize, &p.GasUnits, &p.AmountUtia, &p.AvailableAt); err != nil {
+			&p.BlobSize, &p.AmountUtia, &p.AvailableAt); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -704,15 +689,37 @@ func (s *Server) paymentRows(ctx context.Context, where string, limit int, args 
 
 // blobCharge is what the payments table knows about one promise.
 type blobCharge struct {
-	FeeUtia   int64  `json:"fee_utia"`
-	GasUnits  int64  `json:"gas_units"`
-	Publisher string `json:"publisher"`
+	FeeUtia  int64 `json:"fee_utia"`
+	GasUnits int64 `json:"gas_units"`
+	// Publisher is the account the chain charged, which the blob row
+	// publishes as its publisher.
+	Publisher string `json:"-"`
 	// Settled is true when a MsgPayForFibre for this promise is in the
 	// payments table; TimedOut when a MsgPaymentPromiseTimeout is. Both can
 	// be false for a publication ingested before payments were recorded.
 	Settled   bool   `json:"settled"`
 	TimedOut  bool   `json:"timed_out"`
 	Processor string `json:"processor,omitempty"` // who submitted the timeout
+}
+
+// paidBy selects the publications addr paid for, as a WHERE term over
+// publications and its arguments: by the charge on record, or, for a
+// publication with no payment row, by the key that signed its promise, as
+// each blob row names its publisher. Not by the submitter: anyone can
+// submit a settlement, typically an endorsing validator.
+func (s *Server) paidBy(ctx context.Context, addr string) (string, []any, error) {
+	unpaid, err := s.unpaidPublicationsOf(ctx, addr)
+	if err != nil {
+		return "", nil, err
+	}
+	where, args := `promise_hash IN (SELECT promise_hash FROM payments WHERE kind = 'settlement' AND publisher = ?)`, []any{addr}
+	if len(unpaid) > 0 {
+		where += ` OR promise_hash IN (?` + strings.Repeat(", ?", len(unpaid)-1) + `)`
+		for _, h := range unpaid {
+			args = append(args, h)
+		}
+	}
+	return where, args, nil
 }
 
 // unpaidPublicationsOf lists the publications with no settlement payment on
@@ -815,6 +822,19 @@ func accountKey(bech string) string {
 
 // ---- handlers ----
 
+// The as_of notes of the market and publisher answers, as AsOfNote is for
+// the validator figures: payments are bounded by the pin, and each note
+// names exactly what is not. Escrow balances are state queries kept only
+// as last read, the withdrawal queue is not kept as a series of past states,
+// and a publisher's first and last movement span its whole record. A
+// publisher's answer pins its row alone; the spans and lists beside it are
+// the ones its page shows today.
+const (
+	marketAsOfNote     = "payments after as_of are left out; escrow_held_utia, escrow_accounts and escrow_total_utia are balances as of now, not as_of, and withdrawal_queue is not given, since past states of the queue are not kept"
+	publishersAsOfNote = "payments after as_of are left out of every row's figures; first_seen_at and last_seen_at span the whole record, and escrow and pending_withdrawals are as of now, not as_of"
+	publisherAsOfNote  = "only publisher is pinned: payments after as_of are left out of its figures, while its first_seen_at, last_seen_at, escrow and pending_withdrawals are as of now; windows, withdrawals, recent_payments and recent_blobs are as of now, not as_of"
+)
+
 func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 	win, err := parseWindow(r, time.Now())
 	if err != nil {
@@ -843,18 +863,19 @@ func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 			s.writeInternal(w, r.URL.Path, err)
 			return
 		}
-		resp.ComputedAt, resp.ComputeMs = t0.UTC().Format(time.RFC3339Nano), time.Since(t0).Milliseconds()
+		resp.ComputedAt = t0.UTC().Format(time.RFC3339Nano)
+		resp.AsOfNote = marketAsOfNote
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, 200, resp)
 		return
 	}
-	resp, at, ms, err := s.market.get(r.Context(), s.logf(), win)
+	resp, at, _, err := s.market.get(r.Context(), s.logf(), win)
 	if err != nil {
 		s.writeSnapshotErr(w, r, win, err)
 		return
 	}
 	cp := *resp
-	cp.ComputedAt, cp.ComputeMs = at.UTC().Format(time.RFC3339), ms
+	cp.ComputedAt = at.UTC().Format(time.RFC3339)
 	cp.Publishers, cp.PublishersListed = nil, false // /v1/publishers' half of the snapshot
 	writeJSON(w, 200, cp)
 }
@@ -870,19 +891,14 @@ func (s *Server) handlePublishers(w http.ResponseWriter, r *http.Request) {
 		// /v1/market for this window, so the two agree (computePublishing).
 		// The window is the one the rows were selected with, and
 		// computed_at says when.
-		snap, at, ms, err := s.market.get(r.Context(), s.logf(), win)
+		snap, at, _, err := s.market.get(r.Context(), s.logf(), win)
 		if err != nil {
 			s.writeSnapshotErr(w, r, win, err)
 			return
 		}
-		rows := snap.Publishers
-		if rows == nil {
-			rows = []publisherRow{}
-		}
 		writeJSON(w, 200, map[string]any{
-			"window": snap.Window, "publishers": rows, "count": len(rows),
-			"source": marketSource, "price_formula": formula, "notes": marketNotes, "vantage": s.vantage,
-			"computed_at": at.UTC().Format(time.RFC3339), "compute_ms": ms,
+			"window": snap.Window, "publishers": publisherList(snap.Publishers), "count": len(snap.Publishers),
+			"computed_at": at.UTC().Format(time.RFC3339),
 		})
 		return
 	}
@@ -912,14 +928,12 @@ func (s *Server) handlePublishers(w http.ResponseWriter, r *http.Request) {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{
-		"window": win, "publishers": rows, "count": len(rows),
-		"source": marketSource, "price_formula": formula, "notes": marketNotes, "vantage": s.vantage,
-	})
+	writeJSON(w, 200, map[string]any{"window": win, "publishers": publisherList(rows), "count": len(rows), "as_of_note": publishersAsOfNote})
 }
 
 func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
-	addr := strings.TrimSpace(r.PathValue("addr"))
+	// Bech32 may be written in upper case; the store holds it in lower.
+	addr := strings.ToLower(strings.TrimSpace(r.PathValue("addr")))
 	if hrp, _, err := bech32.DecodeAndConvert(addr); err != nil || hrp != "celestia" {
 		writeErr(w, 400, "publisher must be a celestia1... account address")
 		return
@@ -1001,21 +1015,10 @@ func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
-	// The blobs this account paid for: by the charge on record, or, for a
-	// publication with no payment row, by the key that signed its promise,
-	// as each blob row names its publisher. Not by the submitter: anyone can
-	// submit a settlement, typically an endorsing validator.
-	unpaid, err := s.unpaidPublicationsOf(ctx, addr)
+	where, wargs, err := s.paidBy(ctx, addr)
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
-	}
-	where, wargs := `promise_hash IN (SELECT promise_hash FROM payments WHERE kind = 'settlement' AND publisher = ?)`, []any{addr}
-	if len(unpaid) > 0 {
-		where += ` OR promise_hash IN (?` + strings.Repeat(", ?", len(unpaid)-1) + `)`
-		for _, h := range unpaid {
-			wargs = append(wargs, h)
-		}
 	}
 	blobs, err := s.blobRows(ctx, "("+where+")", 50, wargs...)
 	if err != nil {
@@ -1035,11 +1038,14 @@ func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{
+	out := map[string]any{
 		"window": win, "publisher": rows[0], "windows": spans, "withdrawals": withdrawals,
-		"recent_payments": payments, "recent_blobs": blobs, "recent_blobs_truncated": moreBlobs,
-		"source": marketSource, "price_formula": formula, "notes": marketNotes, "vantage": s.vantage,
-	})
+		"recent_payments": payments, "recent_blobs": recentBlobs(blobs), "recent_blobs_truncated": moreBlobs,
+	}
+	if win.AsOf {
+		out["as_of_note"] = publisherAsOfNote
+	}
+	writeJSON(w, 200, out)
 }
 
 // sortShares orders a breakdown by fees, then bytes, then address.

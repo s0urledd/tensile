@@ -1,6 +1,6 @@
 "use client";
 import { ago, span, tia, utc } from "@/lib/api";
-import { OUTCOME, type PendingSummary, type PublisherWithdrawals, type WithdrawalRow, type WithdrawalQueue as WithdrawalQueueT } from "@/lib/withdrawals";
+import { OUTCOME, type PendingQueue, type PublisherWithdrawals, type WithdrawalRow, type WithdrawalQueue as WithdrawalQueueT } from "@/lib/withdrawals";
 import { Panel, Cell } from "./Panel";
 import { withPeriod } from "@/lib/window";
 
@@ -9,7 +9,7 @@ import { withPeriod } from "@/lib/window";
  * one line, or the reason there is none to show. null means the queue has
  * never been read for this account, which is not the same as empty.
  */
-export function pendingLine(p: PendingSummary | null | undefined): string {
+export function pendingLine(p: PendingQueue | null | undefined): string {
   if (!p) return "not read yet";
   if (p.count === 0) return "none queued";
   const n = `${tia(p.utia)} in ${p.count} withdrawal${p.count === 1 ? "" : "s"}`;

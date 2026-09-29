@@ -107,7 +107,6 @@ func TestPublisherWithdrawalQueue(t *testing.T) {
 				Pending    int64 `json:"pending_utia"`
 				Consistent bool  `json:"consistent"`
 			} `json:"check"`
-			Notes []string `json:"notes"`
 		} `json:"withdrawals"`
 	}
 	if code := get(t, ts, "/v1/publishers/"+samplePublisher+"?window=24h", &d); code != 200 {
@@ -117,8 +116,12 @@ func TestPublisherWithdrawalQueue(t *testing.T) {
 	if q == nil {
 		t.Fatal("no withdrawals section")
 	}
-	if q.Count != 2 || q.Utia != 300 || q.Reduced != 50 || q.ReadHeight == nil || *q.ReadHeight != 30 {
+	if q.Count != 2 || q.Utia != 300 || q.Reduced != 50 {
 		t.Fatalf("summary: %+v", q.pSum)
+	}
+	// the read it rests on is the publisher row's
+	if p := d.Publisher.Pending; p == nil || p.ReadHeight == nil || *p.ReadHeight != 30 || p.ReadAt == nil {
+		t.Fatalf("publisher row read: %+v", p)
 	}
 	wantNext := store.TS(settle.Add(time.Minute).Truncate(time.Second).Add(24 * time.Hour))
 	if q.Next == nil || *q.Next != wantNext {
@@ -155,9 +158,6 @@ func TestPublisherWithdrawalQueue(t *testing.T) {
 	}
 	if d.Publisher.Pending == nil || d.Publisher.Pending.Count != 2 {
 		t.Fatalf("publisher row pending: %+v", d.Publisher.Pending)
-	}
-	if len(q.Notes) == 0 {
-		t.Fatal("no notes")
 	}
 
 	// An escrow read that disagrees with the queue at the same height is
@@ -233,8 +233,6 @@ func TestMarketWithdrawalQueue(t *testing.T) {
 				MedianS *int64 `json:"median_s"`
 				Lag     *int64 `json:"median_lag_s"`
 			} `json:"payout_delay"`
-			Source string   `json:"source"`
-			Notes  []string `json:"notes"`
 		} `json:"withdrawal_queue"`
 	}
 	if code := get(t, ts, "/v1/market?window=24h", &m); code != 200 {
@@ -252,9 +250,6 @@ func TestMarketWithdrawalQueue(t *testing.T) {
 	}
 	if q.PayoutDelay.Count != 1 || q.PayoutDelay.MedianS == nil || *q.PayoutDelay.MedianS != int64((25*time.Hour+4*time.Minute)/time.Second) || q.PayoutDelay.Lag == nil {
 		t.Fatalf("payout delay: %+v", q.PayoutDelay)
-	}
-	if q.Source == "" || len(q.Notes) == 0 {
-		t.Fatal("honesty fields missing")
 	}
 	// A pinned window does not pretend to know the queue as it stood then.
 	var pinned struct {

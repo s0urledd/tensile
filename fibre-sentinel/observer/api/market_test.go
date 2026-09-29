@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,7 +117,6 @@ func TestMarketSummary(t *testing.T) {
 		PerMiB          *float64                    `json:"paid_per_mib_utia"`
 		Timeouts        int64                       `json:"timeouts"`
 		TimedOut        int64                       `json:"timed_out_utia"`
-		Rate            struct{ Num, Den int64 }    `json:"settlement_rate"`
 		Deposits        struct{ Count, Utia int64 } `json:"deposits"`
 		WithdrawalsExec struct{ Count, Utia int64 } `json:"withdrawals_executed"`
 		EscrowHeld      int64                       `json:"escrow_held_utia"`
@@ -137,16 +137,9 @@ func TestMarketSummary(t *testing.T) {
 			Label     string   `json:"label"`
 			FeesShare *float64 `json:"fees_share"`
 		} `json:"top_publishers"`
-		Other   *map[string]any             `json:"other_publishers"`
-		Largest *struct{ Publisher string } `json:"largest_poster"`
-		Formula struct {
-			BaseGas     uint64 `json:"base_gas"`
-			GasPerChunk uint64 `json:"gas_per_chunk"`
-			ChunkBytes  uint64 `json:"chunk_bytes"`
-		} `json:"price_formula"`
-		Notes      []string `json:"notes"`
-		Source     string   `json:"source"`
-		ComputedAt string   `json:"computed_at"`
+		Other      *map[string]any             `json:"other_publishers"`
+		Largest    *struct{ Publisher string } `json:"largest_poster"`
+		ComputedAt string                      `json:"computed_at"`
 	}
 	if code := get(t, ts, "/v1/market?window=24h", &m); code != 200 {
 		t.Fatalf("market: %d", code)
@@ -158,7 +151,7 @@ func TestMarketSummary(t *testing.T) {
 	if m.PerMiB == nil || *m.PerMiB < 1_000_000 || *m.PerMiB > 1_300_000 {
 		t.Fatalf("paid per MiB: %v", m.PerMiB)
 	}
-	if m.Timeouts != 1 || m.TimedOut != 830_000 || m.Rate.Num != 2 || m.Rate.Den != 3 {
+	if m.Timeouts != 1 || m.TimedOut != 830_000 {
 		t.Fatalf("timeouts: %+v", m)
 	}
 	if m.Deposits.Count != 1 || m.Deposits.Utia != 6_000_000_000 || m.WithdrawalsExec.Utia != 1000 {
@@ -198,11 +191,24 @@ func TestMarketSummary(t *testing.T) {
 	if m.Largest == nil || m.Largest.Publisher != otherPublisher {
 		t.Fatalf("largest poster: %+v", m.Largest)
 	}
-	if m.Formula.BaseGas != 650_000 || m.Formula.GasPerChunk != 45_000 || m.Formula.ChunkBytes != 262144 {
-		t.Fatalf("formula: %+v", m.Formula)
+	if m.ComputedAt == "" {
+		t.Fatal("no computed_at")
 	}
-	if len(m.Notes) < 4 || m.Source == "" || m.ComputedAt == "" {
-		t.Fatalf("honesty fields missing: notes=%d source=%q at=%q", len(m.Notes), m.Source, m.ComputedAt)
+	// every fee here is recomputed with the module's formula, which
+	// /v1/params publishes
+	var params struct {
+		Formula struct {
+			BaseGas     uint64 `json:"base_gas"`
+			GasPerChunk uint64 `json:"gas_per_chunk"`
+			ChunkBytes  uint64 `json:"chunk_bytes"`
+			UtiaPerGas  uint64 `json:"utia_per_gas"`
+		} `json:"price_formula"`
+	}
+	if code := get(t, ts, "/v1/params", &params); code != 200 {
+		t.Fatalf("params: %d", code)
+	}
+	if f := params.Formula; f.BaseGas != 650_000 || f.GasPerChunk != 45_000 || f.ChunkBytes != 262144 || f.UtiaPerGas != 1 {
+		t.Fatalf("formula: %+v", f)
 	}
 	// The old settlement is in 30d, not in 24h.
 	var m30 struct {
@@ -419,8 +425,7 @@ func TestPublishersListAndDetail(t *testing.T) {
 		Blobs    []struct {
 			PromiseHash string `json:"promise_hash"`
 			Charge      *struct {
-				Fee     int64 `json:"fee_utia"`
-				Settled bool  `json:"settled"`
+				Fee int64 `json:"fee_utia"`
 			} `json:"charge"`
 		} `json:"recent_blobs"`
 	}
@@ -430,12 +435,21 @@ func TestPublishersListAndDetail(t *testing.T) {
 	if one.Publisher.Fees != 695_000 || len(one.Windows) != 4 || len(one.Payments) != 4 {
 		t.Fatalf("detail: %+v", one)
 	}
+	// the same account in upper case, which bech32 allows
+	var upper struct {
+		Publisher struct {
+			Publisher string `json:"publisher"`
+		} `json:"publisher"`
+	}
+	if code := get(t, ts, "/v1/publishers/"+strings.ToUpper(samplePublisher)+"?window=24h", &upper); code != 200 || upper.Publisher.Publisher != samplePublisher {
+		t.Fatalf("in upper case: %d %+v", code, upper)
+	}
 	for _, w := range one.Windows {
 		if w.Window.Name == "24h" && w.Settlements != 1 {
 			t.Fatalf("24h span: %+v", w)
 		}
 	}
-	if len(one.Blobs) == 0 || one.Blobs[len(one.Blobs)-1].Charge == nil || !one.Blobs[len(one.Blobs)-1].Charge.Settled {
+	if len(one.Blobs) == 0 || one.Blobs[len(one.Blobs)-1].Charge == nil || one.Blobs[len(one.Blobs)-1].Charge.Fee != 695_000 {
 		t.Fatalf("the settled sample blob must carry its charge: %+v", one.Blobs)
 	}
 	// A publisher with history but nothing in the window still resolves.
@@ -480,20 +494,21 @@ func TestBlobChargeAndValidatorTimeouts(t *testing.T) {
 	}
 	var blob struct {
 		Blob struct {
-			Charge *struct {
-				Fee      int64  `json:"fee_utia"`
-				Gas      int64  `json:"gas_units"`
-				Settled  bool   `json:"settled"`
-				TimedOut bool   `json:"timed_out"`
-				Pub      string `json:"publisher"`
+			// the account the chain charged, where a payment is on record
+			Publisher string `json:"publisher"`
+			Charge    *struct {
+				Fee      int64 `json:"fee_utia"`
+				Gas      int64 `json:"gas_units"`
+				Settled  bool  `json:"settled"`
+				TimedOut bool  `json:"timed_out"`
 			} `json:"charge"`
 		} `json:"blob"`
 	}
 	if code := get(t, ts, "/v1/blobs/"+pubs[0].PromiseHash, &blob); code != 200 {
 		t.Fatalf("blob: %d", code)
 	}
-	if c := blob.Blob.Charge; c == nil || c.Fee != 695_000 || !c.Settled || c.TimedOut || c.Pub != samplePublisher {
-		t.Fatalf("charge: %+v", blob.Blob.Charge)
+	if c := blob.Blob.Charge; c == nil || c.Fee != 695_000 || !c.Settled || c.TimedOut || blob.Blob.Publisher != samplePublisher {
+		t.Fatalf("charge: %+v, publisher %s", blob.Blob.Charge, blob.Blob.Publisher)
 	}
 	if code := get(t, ts, "/v1/blobs/"+pubs[1].PromiseHash, &blob); code != 200 {
 		t.Fatalf("blob: %d", code)
@@ -502,17 +517,27 @@ func TestBlobChargeAndValidatorTimeouts(t *testing.T) {
 		t.Fatalf("a publication without a recorded payment must have a null charge, got %+v", blob.Blob.Charge)
 	}
 
+	// every listed validator, by the figure its page shows
 	var vals struct {
 		Validators []struct {
-			Address  string `json:"address"`
-			Timeouts int64  `json:"timeouts_enforced"`
+			Address string `json:"address"`
 		} `json:"validators"`
 	}
 	if code := get(t, ts, "/v1/validators?window=24h", &vals); code != 200 {
 		t.Fatalf("validators: %d", code)
 	}
 	found := false
-	for _, v := range vals.Validators {
+	for _, l := range vals.Validators {
+		var det struct {
+			Validator struct {
+				Address  string `json:"address"`
+				Timeouts int64  `json:"timeouts_enforced"`
+			} `json:"validator"`
+		}
+		if code := get(t, ts, "/v1/validators/"+l.Address+"?window=24h", &det); code != 200 {
+			t.Fatalf("validator %s: %d", l.Address, code)
+		}
+		v := det.Validator
 		if v.Address == sampleValidator {
 			found = true
 			if v.Timeouts != 1 {
@@ -600,6 +625,31 @@ func TestMarketAsOfIsPinnedAndLeavesTheSnapshotAlone(t *testing.T) {
 	if after != live || afterFees != liveFees || asOf {
 		t.Fatalf("after one pinned request the live answer became settlements=%d fees=%d as_of=%v, want %d/%d/false",
 			after, afterFees, asOf, live, liveFees)
+	}
+}
+
+// A pinned market or publisher answer names what it leaves as of now, as
+// the validator routes do; an unpinned one has nothing to name.
+func TestMarketAndPublisherAsOfNotes(t *testing.T) {
+	ts, _ := marketServer(t, nil)
+	pin := time.Now().UTC().Add(-time.Hour).Truncate(time.Second).Format(time.RFC3339)
+	for path, want := range map[string]string{
+		"/v1/market?window=30d":                                          "",
+		"/v1/market?window=30d&as_of=" + pin:                             "escrow_held_utia",
+		"/v1/publishers?window=30d":                                      "",
+		"/v1/publishers?window=30d&as_of=" + pin:                         "pending_withdrawals",
+		"/v1/publishers/" + samplePublisher + "?window=30d":              "",
+		"/v1/publishers/" + samplePublisher + "?window=30d&as_of=" + pin: "recent_payments",
+	} {
+		var body struct {
+			Note string `json:"as_of_note"`
+		}
+		if code := get(t, ts, path, &body); code != 200 {
+			t.Fatalf("%s: HTTP %d", path, code)
+		}
+		if (want == "") != (body.Note == "") || !strings.Contains(body.Note, want) {
+			t.Errorf("%s: as_of_note %q, want one naming %q", path, body.Note, want)
+		}
 	}
 }
 

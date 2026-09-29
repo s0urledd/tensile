@@ -68,7 +68,9 @@ func verifiedRange(created, msu time.Time) scan.ParamUncertainty {
 	}
 }
 
-// heldJSON is the part of /v1/network these tests read.
+// heldJSON is the part of the network summary these tests read: the
+// obligations and the uncertainty /v1/network publishes, and the reading
+// tally it keeps beside them (readHeld).
 type heldJSON struct {
 	Classes     map[string]int64 `json:"classes"`
 	Obligations struct {
@@ -91,6 +93,23 @@ type heldJSON struct {
 // faults is the FAULT readings of the window, in the class they carry: a
 // held row reads RETENTION_UNVERIFIED instead.
 func (h heldJSON) faults() int64 { return h.Classes["FAULT"] }
+
+// readHeld is /v1/network?window=24h as ts answers it, with the reading
+// tally the summary keeps and does not publish recomputed from st. The
+// answer's obligations must be the ones a fresh computation gives: a cached
+// answer that outlived a hold shows there, as a broken obligation the hold
+// withdrew.
+func readHeld(t *testing.T, ts *httptest.Server, st *store.Store) heldJSON {
+	t.Helper()
+	var out, fresh heldJSON
+	get(t, ts, "/v1/network?window=24h", &out)
+	networkOf(t, st, "test", "24h", time.Time{}, &fresh)
+	if out.Obligations != fresh.Obligations {
+		t.Errorf("published obligations %+v, a fresh computation says %+v", out.Obligations, fresh.Obligations)
+	}
+	out.Classes, out.ProbeCount = fresh.Classes, fresh.ProbeCount
+	return out
+}
 
 // heldFixture builds one publication whose promise sits at height 150,
 // inside the range 121-180 the tests open, with `outcomes` per validator
@@ -209,9 +228,7 @@ func networkHeld(t *testing.T, st *store.Store) heldJSON {
 	t.Helper()
 	ts := httptest.NewServer(api.New(st, "test"))
 	t.Cleanup(ts.Close)
-	var out heldJSON
-	get(t, ts, "/v1/network?window=24h", &out)
-	return out
+	return readHeld(t, ts, st)
 }
 
 // The open P1, closed. Two validators prune on the retention the server
@@ -821,9 +838,7 @@ func TestRecordingARangeWithholdsTheRowsAlreadyStored(t *testing.T) {
 	t.Cleanup(ts.Close)
 	read := func() heldJSON {
 		t.Helper()
-		var out heldJSON
-		get(t, ts, "/v1/network?window=24h", &out)
-		return out
+		return readHeld(t, ts, st)
 	}
 
 	// The faults are published, and now they are also cached.
@@ -963,9 +978,7 @@ func TestTwoRangesInOnePassEachInvalidateTheCachedAnswer(t *testing.T) {
 	t.Cleanup(ts.Close)
 	read := func() heldJSON {
 		t.Helper()
-		var out heldJSON
-		get(t, ts, "/v1/network?window=24h", &out)
-		return out
+		return readHeld(t, ts, st)
 	}
 	if got := read().faults(); got != 4 {
 		t.Fatalf("faults = %d before any range, want 4", got)
@@ -1028,25 +1041,36 @@ func TestPerValidatorFiguresHonourTheHoldAndAddUpToTheNetwork(t *testing.T) {
 	ts := httptest.NewServer(api.New(st, "test"))
 	defer ts.Close()
 
-	var network heldJSON
-	get(t, ts, "/v1/network?window=24h", &network)
 	var vals struct {
 		Validators []struct {
-			Address     string           `json:"address"`
-			Classes     map[string]int64 `json:"classes"`
-			Obligations obligationsJSON  `json:"obligations"`
+			Address     string          `json:"address"`
+			Obligations obligationsJSON `json:"obligations"`
 		} `json:"validators"`
 	}
 	if code := get(t, ts, "/v1/validators?window=24h", &vals); code != 200 || len(vals.Validators) != 8 {
 		t.Fatalf("validators: %d, %d rows", code, len(vals.Validators))
 	}
-	var held, faultClass int64
 	for _, v := range vals.Validators {
-		held += v.Classes["RETENTION_UNVERIFIED"]
-		faultClass += v.Classes["FAULT"]
 		if v.Obligations.Rate.Den != 0 {
 			t.Errorf("%s: a rate over held rows (den %d)", v.Address, v.Obligations.Rate.Den)
 		}
+	}
+	// the reading tallies, which the rows and the summary keep
+	var network heldJSON
+	networkOf(t, st, "test", "24h", time.Time{}, &network)
+	var rows struct {
+		Validators []struct {
+			Classes map[string]int64 `json:"classes"`
+		} `json:"validators"`
+	}
+	rowsOf(t, st, "test", "24h", time.Time{}, &rows)
+	if len(rows.Validators) != 8 {
+		t.Fatalf("%d validator rows, want 8", len(rows.Validators))
+	}
+	var held, faultClass int64
+	for _, v := range rows.Validators {
+		held += v.Classes["RETENTION_UNVERIFIED"]
+		faultClass += v.Classes["FAULT"]
 	}
 	if network.faults() != 0 || faultClass != 0 {
 		t.Fatalf("FAULT readings: network %d, per-validator sum %d; want 0 under the hold", network.faults(), faultClass)

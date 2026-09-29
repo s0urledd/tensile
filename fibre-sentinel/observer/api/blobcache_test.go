@@ -21,7 +21,7 @@ import (
 // closedBlob builds one publication whose retention window has already ended,
 // assigned to two validators, with one probe each: v1 served, v2 was never
 // probed at all. The verdict is therefore settled and cacheable.
-func closedBlob(t *testing.T) (*httptest.Server, *store.Store, string, time.Time) {
+func closedBlob(t *testing.T) (*httptest.Server, *api.Server, *store.Store, string, time.Time) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
@@ -64,9 +64,10 @@ func closedBlob(t *testing.T) (*httptest.Server, *store.Store, string, time.Time
 	if _, err := st.StartRun("collector", "test", "t", now); err != nil {
 		t.Fatal(err)
 	}
-	ts := httptest.NewServer(api.New(st, "test"))
+	srv := api.New(st, "test")
+	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
-	return ts, st, hash, point
+	return ts, srv, st, hash, point
 }
 
 func insertProbe(t *testing.T, st *store.Store, hash, addr string, at time.Time, outcome probe.Outcome) {
@@ -111,17 +112,19 @@ func opensConnection(o probe.Outcome) bool {
 }
 
 type blobListRow struct {
-	PromiseHash string           `json:"promise_hash"`
-	ProbeCount  int64            `json:"probe_count"`
-	Classes     map[string]int64 `json:"classes"`
+	PromiseHash string `json:"promise_hash"`
 	Recon       struct {
 		Status           string `json:"status"`
 		ProbedValidators int    `json:"probed_validators"`
-		WindowOver       bool   `json:"window_over"`
 	} `json:"reconstructable"`
+	// the rest of the verdict the server caches: its reading tally, which
+	// the list does not publish (api.Server.BlobTallies)
+	ProbeCount int64            `json:"-"`
+	Classes    map[string]int64 `json:"-"`
+	WindowOver bool             `json:"-"`
 }
 
-func blobList(t *testing.T, ts *httptest.Server) blobListRow {
+func blobList(t *testing.T, ts *httptest.Server, srv *api.Server) blobListRow {
 	t.Helper()
 	var resp struct {
 		Blobs []blobListRow `json:"blobs"`
@@ -132,17 +135,27 @@ func blobList(t *testing.T, ts *httptest.Server) blobListRow {
 	if len(resp.Blobs) != 1 {
 		t.Fatalf("want one publication, got %d", len(resp.Blobs))
 	}
-	return resp.Blobs[0]
+	b := resp.Blobs[0]
+	tallies, err := srv.BlobTallies(50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tl, ok := tallies[b.PromiseHash]
+	if !ok {
+		t.Fatalf("no tally for %s", b.PromiseHash)
+	}
+	b.ProbeCount, b.Classes, b.WindowOver = tl.ProbeCount, tl.Classes, tl.WindowOver
+	return b
 }
 
 // A probe that lands after the verdict was cached must change the verdict. The
 // window has closed, so nothing about the clock reopens it: only the new row
 // does, and only because the key notices it.
 func TestCachedBlobVerdictFollowsLateProbes(t *testing.T) {
-	ts, st, hash, point := closedBlob(t)
+	ts, srv, st, hash, point := closedBlob(t)
 
-	first := blobList(t, ts)
-	if !first.Recon.WindowOver {
+	first := blobList(t, ts, srv)
+	if !first.WindowOver {
 		t.Fatal("the fixture's window has not closed, so nothing would be cached")
 	}
 	if first.ProbeCount != 1 || first.Recon.ProbedValidators != 1 {
@@ -154,7 +167,7 @@ func TestCachedBlobVerdictFollowsLateProbes(t *testing.T) {
 	}
 
 	// The second read must be identical, which is the point of caching it.
-	second := blobList(t, ts)
+	second := blobList(t, ts, srv)
 	if second.ProbeCount != first.ProbeCount || second.Recon != first.Recon ||
 		len(second.Classes) != len(first.Classes) {
 		t.Errorf("second read differs from the first:\n %+v\n %+v", first, second)
@@ -169,7 +182,7 @@ func TestCachedBlobVerdictFollowsLateProbes(t *testing.T) {
 	// point as v1's: a complete point, which is what settles the verdict.
 	insertProbe(t, st, hash, "v2", point, probe.OutcomeServedOK)
 
-	third := blobList(t, ts)
+	third := blobList(t, ts, srv)
 	if third.ProbeCount != 2 || third.Recon.ProbedValidators != 2 {
 		t.Fatalf("after the late probe: probe_count %d, probed %d, want 2 and 2 — the cache did not notice a new row",
 			third.ProbeCount, third.Recon.ProbedValidators)
@@ -191,10 +204,10 @@ func TestCachedBlobVerdictFollowsLateProbes(t *testing.T) {
 // validator. On mocha this is the ordinary path, not an edge case: every
 // shadow_pending row is filed PROBE_ERROR and amended later.
 func TestCachedBlobVerdictFollowsAnAmendment(t *testing.T) {
-	ts, st, hash, point := closedBlob(t)
+	ts, srv, st, hash, point := closedBlob(t)
 
-	first := blobList(t, ts)
-	if !first.Recon.WindowOver {
+	first := blobList(t, ts, srv)
+	if !first.WindowOver {
 		t.Fatal("the fixture's window has not closed, so nothing would be cached")
 	}
 	if first.Classes["HEALTHY"] != 1 {
@@ -218,7 +231,7 @@ func TestCachedBlobVerdictFollowsAnAmendment(t *testing.T) {
 		t.Fatalf("amend: ok=%v err=%v", ok, err)
 	}
 
-	second := blobList(t, ts)
+	second := blobList(t, ts, srv)
 	if second.Classes["HEALTHY"] != 0 || second.Classes[string(probe.ClassUnmatchedGenuine)] != 1 {
 		t.Fatalf("after the amendment classes = %v, want the amended class only — the cache did not notice the rewrite", second.Classes)
 	}

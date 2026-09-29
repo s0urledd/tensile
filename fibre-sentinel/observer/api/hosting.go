@@ -18,11 +18,13 @@ import (
 )
 
 // registerExtraRoutes adds the routes that live outside api.go: the hosting
-// summary and the Atom feeds. Called once from NewWithVantage.
+// summary, the Atom feeds and a validator's status. Called once from
+// NewWithVantage.
 func (s *Server) registerExtraRoutes() {
 	s.mux.HandleFunc("GET /v1/hosting", s.handleHosting)
 	s.mux.HandleFunc("GET /v1/feed.atom", s.handleNetworkFeed)
 	s.mux.HandleFunc("GET /v1/validators/{addr}/feed.atom", s.handleValidatorFeed)
+	s.mux.HandleFunc("GET /v1/validators/{addr}/status", s.handleValidatorStatus) // validator_status.go
 }
 
 // attachHosting sets Hosting on every row whose open endpoint the collector
@@ -50,22 +52,55 @@ func (s *Server) attachHosting(ctx context.Context, rows []validatorRow, win Win
 	return nil
 }
 
-// hostingResponse is /v1/hosting.
+// hostingResponse is /v1/hosting. Its stake is the validator list's
+// voting_power (the latest assignment's, else the staking module's), over
+// the validators with an open Fibre endpoint. Every figure is as resolved
+// from this vantage (hosting.Caveat): GeoDNS, proxies, tunnels and anycast
+// can hide where a host really runs, and a country from a geolocation
+// database is an estimate.
 type hostingResponse struct {
-	Vantage string          `json:"vantage"`
-	Sources hosting.Sources `json:"sources"`
+	Sources hostingSources `json:"sources"`
 	// Summary is absent when the feature is off (no database file on the
 	// collector's host): an empty summary would read as "nothing
-	// concentrated", which is not what off means.
+	// concentrated", which is not what off means. It leaves out by_city:
+	// each validator's hosting.city is the same placement.
 	Summary *hosting.Summary `json:"summary,omitempty"`
 	// ProviderASNs is the AS-number list every provider bucket is drawn
 	// from, so a reader can check a bucket without reading the code.
 	ProviderASNs []hosting.ASNProvider `json:"provider_asns"`
-	// StakeBasis says where the stake figures come from: the validator
-	// list's voting_power (the latest assignment's, else the staking
-	// module's), over the validators with an open Fibre endpoint.
-	StakeBasis string `json:"stake_basis"`
-	ComputedAt string `json:"computed_at"`
+	ComputedAt   string                `json:"computed_at"`
+}
+
+// hostingSources is hosting.Sources as /v1/hosting publishes it: whether
+// the lookup is on, each database with the licence and attribution its use
+// requires, and when the files were consulted.
+type hostingSources struct {
+	Enabled    bool          `json:"enabled"`
+	ASN        *hostingDBOut `json:"asn_db,omitempty"`
+	Country    *hostingDBOut `json:"country_db,omitempty"`
+	City       *hostingDBOut `json:"city_db,omitempty"`
+	LookedUpAt string        `json:"looked_up_at,omitempty"`
+}
+
+// hostingDBOut is one data file's provenance, without where it lies on the
+// collector's host.
+type hostingDBOut struct {
+	Name        string `json:"name"`
+	URL         string `json:"url"`
+	License     string `json:"license"`
+	LicenseURL  string `json:"license_url"`
+	Attribution string `json:"attribution,omitempty"`
+}
+
+func hostingDBOf(d *hosting.DBSource) *hostingDBOut {
+	if d == nil {
+		return nil
+	}
+	return &hostingDBOut{Name: d.Name, URL: d.URL, License: d.License, LicenseURL: d.LicenseURL, Attribution: d.Attribution}
+}
+
+func hostingSourcesOf(s hosting.Sources) hostingSources {
+	return hostingSources{Enabled: s.Enabled, ASN: hostingDBOf(s.ASN), Country: hostingDBOf(s.Country), City: hostingDBOf(s.City), LookedUpAt: s.LookedUpAt}
 }
 
 func (s *Server) handleHosting(w http.ResponseWriter, r *http.Request) {
@@ -80,8 +115,7 @@ func (s *Server) handleHosting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := hostingResponse{
-		Vantage: s.vantage, Sources: src, ProviderASNs: hosting.ProviderASNs(),
-		StakeBasis: "voting_power of each validator with an open Fibre endpoint, as on /v1/validators",
+		Sources: hostingSourcesOf(src), ProviderASNs: hosting.ProviderASNs(),
 		ComputedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if src.Enabled {
@@ -114,6 +148,7 @@ func (s *Server) handleHosting(w http.ResponseWriter, r *http.Request) {
 			members = append(members, m)
 		}
 		sum := hosting.Concentrate(members)
+		sum.ByCity = nil
 		out.Summary = &sum
 	}
 	w.Header().Set("Cache-Control", "public, max-age=60")

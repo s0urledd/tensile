@@ -55,6 +55,34 @@ func serverAndStore(t *testing.T) (*httptest.Server, *store.Store) {
 	return ts, st
 }
 
+// rowsOf decodes every validator row of the window, whole, as the snapshot
+// keeps it (api.ValidatorRowsJSON), for a figure the list does not publish.
+// A zero asOf is the window ending now.
+func rowsOf(t *testing.T, st *store.Store, vantage, window string, asOf time.Time, into any) {
+	t.Helper()
+	raw, err := api.ValidatorRowsJSON(st, vantage, window, asOf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, into); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// networkOf decodes the network summary of the window, whole, as the
+// snapshot keeps it (api.NetworkJSON), for a figure /v1/network does not
+// publish. A zero asOf is the window ending now.
+func networkOf(t *testing.T, st *store.Store, vantage, window string, asOf time.Time, into any) {
+	t.Helper()
+	raw, err := api.NetworkJSON(st, vantage, window, asOf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, into); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func get(t *testing.T, ts *httptest.Server, path string, into any) int {
 	t.Helper()
 	resp, err := http.Get(ts.URL + path)
@@ -71,22 +99,25 @@ func get(t *testing.T, ts *httptest.Server, path string, into any) int {
 }
 
 func TestMetaAndNetwork(t *testing.T) {
-	ts := serverWithSample(t)
+	ts, st := serverAndStore(t)
 	var meta struct {
-		ChainID   string                 `json:"chain_id"`
-		Counts    struct{ Probes int64 } `json:"counts"`
-		Collector *struct{ Alive bool }  `json:"collector"`
-		OneLoc    bool                   `json:"observed_from_one_location"`
+		ChainID string                 `json:"chain_id"`
+		Counts  struct{ Probes int64 } `json:"counts"`
 	}
 	if code := get(t, ts, "/v1/meta", &meta); code != 200 {
 		t.Fatalf("meta: %d", code)
 	}
-	if meta.ChainID != "fibre-devnet" || meta.Counts.Probes != 60 || meta.Collector == nil || !meta.Collector.Alive || !meta.OneLoc {
+	if meta.ChainID != "fibre-devnet" || meta.Counts.Probes != 60 {
 		t.Fatalf("meta: %+v", meta)
 	}
+	var oneLoc struct {
+		OneLoc bool `json:"observed_from_one_location"`
+	}
+	networkOf(t, st, "test", "all", time.Time{}, &oneLoc)
+	if !oneLoc.OneLoc {
+		t.Fatal("one vantage on record, counted as several")
+	}
 	var net struct {
-		Classes         map[string]int64 `json:"classes"`
-		ProbeCount      int64            `json:"probe_count"`
 		Reconstructable struct {
 			Recoverable          struct{ Num, Den int64 } `json:"recoverable"`
 			Yes, No              int64
@@ -100,12 +131,18 @@ func TestMetaAndNetwork(t *testing.T) {
 		t.Fatalf("network: %d", code)
 	}
 	// fixture run: in-window assigned readings are 27 HEALTHY and 9 FAULT,
-	// published under the classes they were recorded with.
-	if net.Classes["HEALTHY"] != 27 || net.Classes["FAULT"] != 9 {
-		t.Fatalf("classes = %v", net.Classes)
+	// tallied under the classes they were recorded with, which the summary
+	// keeps and does not publish
+	var whole struct {
+		Classes    map[string]int64 `json:"classes"`
+		ProbeCount int64            `json:"probe_count"`
 	}
-	if net.ProbeCount != 60 {
-		t.Fatalf("probe count = %d", net.ProbeCount)
+	networkOf(t, st, "test", "all", time.Time{}, &whole)
+	if whole.Classes["HEALTHY"] != 27 || whole.Classes["FAULT"] != 9 {
+		t.Fatalf("classes = %v", whole.Classes)
+	}
+	if whole.ProbeCount != 60 {
+		t.Fatalf("probe count = %d", whole.ProbeCount)
 	}
 	// the sample bound is published, and with a small fixture nothing is cut
 	if net.Reconstructable.SampleLimit == 0 || net.Reconstructable.Examined != net.Reconstructable.PublicationsInWindow {
@@ -122,14 +159,12 @@ func TestMetaAndNetwork(t *testing.T) {
 }
 
 func TestValidatorsAndBlobs(t *testing.T) {
-	ts := serverWithSample(t)
+	ts, st := serverAndStore(t)
 	var vals struct {
 		Validators []struct {
-			Address        string           `json:"address"`
-			Classes        map[string]int64 `json:"classes"`
-			ProbeCount     int64            `json:"probe_count"`
-			IdentityStatus string           `json:"identity_status"`
-			Reachable      *bool            `json:"reachable"`
+			Address        string `json:"address"`
+			IdentityStatus string `json:"identity_status"`
+			Reachable      *bool  `json:"reachable"`
 		} `json:"validators"`
 	}
 	if code := get(t, ts, "/v1/validators?window=all", &vals); code != 200 {
@@ -138,31 +173,47 @@ func TestValidatorsAndBlobs(t *testing.T) {
 	if len(vals.Validators) != 4 {
 		t.Fatalf("want 4 validators, got %d", len(vals.Validators))
 	}
-	var faulted, verified int
+	var verified int
 	for _, v := range vals.Validators {
+		if v.IdentityStatus == "verified" {
+			verified++
+		}
+	}
+	if verified < 3 {
+		t.Fatalf("want at least 3 verified identities, got %d", verified)
+	}
+	// the reading tallies the rows keep and the list leaves out
+	var rows struct {
+		Validators []struct {
+			Address    string           `json:"address"`
+			Classes    map[string]int64 `json:"classes"`
+			ProbeCount int64            `json:"probe_count"`
+		} `json:"validators"`
+	}
+	rowsOf(t, st, "test", "all", time.Time{}, &rows)
+	if len(rows.Validators) != 4 {
+		t.Fatalf("want 4 validator rows, got %d", len(rows.Validators))
+	}
+	var faulted int
+	for _, v := range rows.Validators {
 		if v.ProbeCount == 0 {
 			t.Fatalf("validator %s has no readings", v.Address)
 		}
 		if v.Classes["FAULT"] > 0 {
 			faulted++
 		}
-		if v.IdentityStatus == "verified" {
-			verified++
-		}
 	}
 	if faulted != 1 {
 		t.Fatalf("want exactly the killed validator with a failed reading, got %d", faulted)
-	}
-	if verified < 3 {
-		t.Fatalf("want at least 3 verified identities, got %d", verified)
 	}
 	var one struct {
 		Window    struct{ Name string }    `json:"window"`
 		Validator struct{ Address string } `json:"validator"`
 		Windows   []struct {
-			Window struct{ Name string }    `json:"window"`
-			Count  int64                    `json:"probe_count"`
-			Oblig  struct{ Num, Den int64 } `json:"serve_rate_by_obligation"`
+			Window struct{ Name string } `json:"window"`
+			Oblig  struct {
+				Rate struct{ Num, Den int64 } `json:"rate"`
+			} `json:"obligations"`
 		} `json:"windows"`
 		Recent []any `json:"recent_probes"`
 	}
@@ -180,14 +231,10 @@ func TestValidatorsAndBlobs(t *testing.T) {
 	if one.Windows[3].Window.Name != "all" {
 		t.Fatalf("the spans must offer the same 'all' the overview does, got %q", one.Windows[3].Window.Name)
 	}
-	// the fixture is older than 30 days, so only "all" carries its probes
-	if one.Windows[3].Count == 0 {
-		t.Fatalf("the 'all' span has no probes: %+v", one.Windows[3])
-	}
 	// The sample predates signature verification (attested NULL), which is
 	// not evidence either way: no obligation in it is proven, so the
 	// obligation figures are empty rather than counted under older rules.
-	if one.Windows[3].Oblig.Den != 0 {
+	if one.Windows[3].Oblig.Rate.Den != 0 {
 		t.Fatalf("obligations counted over records with unknown attestation: %+v", one.Windows[3])
 	}
 	if code := get(t, ts, "/v1/validators/"+vals.Validators[0].Address+"?window=bogus", nil); code != 400 {
@@ -200,7 +247,6 @@ func TestValidatorsAndBlobs(t *testing.T) {
 	var blobs struct {
 		Blobs []struct {
 			PromiseHash     string `json:"promise_hash"`
-			ProbeCount      int64  `json:"probe_count"`
 			Reconstructable struct {
 				Status     string
 				ServedRows int `json:"served_distinct_rows"`
@@ -216,7 +262,11 @@ func TestValidatorsAndBlobs(t *testing.T) {
 	}
 	probed := 0
 	for _, b := range blobs.Blobs {
-		if b.ProbeCount > 0 {
+		var readings struct{ Probes []any }
+		if code := get(t, ts, "/v1/probes?blob="+b.PromiseHash+"&limit=1", &readings); code != 200 {
+			t.Fatalf("readings of %s: %d", b.PromiseHash, code)
+		}
+		if len(readings.Probes) > 0 {
 			probed++
 			if b.Reconstructable.NeededRows != 4096 {
 				t.Fatalf("needed rows = %d", b.Reconstructable.NeededRows)
@@ -375,13 +425,13 @@ func TestTwoVantagesDoNotDoubleCountReconstructability(t *testing.T) {
 			t.Fatalf("served_by %d, asked %d of 4 validators for %s", r.ServedBy, r.ProbedValidators, b.PromiseHash)
 		}
 	}
-	var meta struct {
-		VantageCount int  `json:"vantage_count"`
-		OneLoc       bool `json:"observed_from_one_location"`
+	// the summary keeps how many places the rows came from
+	var whole struct {
+		OneLoc bool `json:"observed_from_one_location"`
 	}
-	get(t, ts, "/v1/meta", &meta)
-	if meta.VantageCount != 2 || meta.OneLoc {
-		t.Fatalf("meta vantages: %+v", meta)
+	networkOf(t, st, "test", "all", time.Time{}, &whole)
+	if whole.OneLoc {
+		t.Fatal("rows from two vantages counted as one")
 	}
 }
 

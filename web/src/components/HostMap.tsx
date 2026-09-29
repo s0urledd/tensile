@@ -1,10 +1,9 @@
 "use client";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { type Validator, type Probe, API_BASE, useApi, ago, utcWord, int } from "@/lib/api";
+import { type Validator, API_BASE, ago, utcWord, int } from "@/lib/api";
 import type { Hosting } from "@/lib/hosting";
 import { FRAME, COUNTRIES, project, countryPoint } from "@/lib/map/project";
-import { verdictDef } from "@/components/Verdict";
 import { countryName } from "@/components/Flag";
 import Info from "@/components/Info";
 import { type EndpointState, endpointState, readiness } from "@/components/Readiness";
@@ -425,22 +424,17 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
   };
 
   // ---- the line under the map: who served most recently, or else the newest host events ----
+  // Each row says when its validator last served (last_served_at), so the
+  // five most recent come with the list, refreshed with it.
   const blobs = rows.some((v) => (v.obligations?.total ?? 0) > 0);
-  const probes = useApi<{ probes: Probe[] }>(blobs ? "/v1/probes?limit=60" : null, 30000);
   type Live = { v: Validator; host?: Host; event?: string; at: string };
   const served: Live[] = useMemo(() => {
-    const byAddr = new Map(hosts.map((h) => [h.v.address.toLowerCase(), h]));
-    const seen = new Set<string>();
-    const out: Live[] = [];
-    for (const p of probes.data?.probes ?? []) {
-      const a = p.validator_address.toLowerCase(), h = byAddr.get(a);
-      if (!h || seen.has(a) || verdictDef(p.classification || p.outcome).tier !== "kept") continue;
-      seen.add(a);
-      out.push({ v: h.v, host: h, at: p.started_at });
-      if (out.length === 5) break;
-    }
-    return out;
-  }, [hosts, probes.data]);
+    if (!blobs) return [];
+    return hosts.filter((h) => !!h.v.last_served_at)
+      .sort((a, b) => b.v.last_served_at!.localeCompare(a.v.last_served_at!))
+      .slice(0, 5)
+      .map((h) => ({ v: h.v, host: h, at: h.v.last_served_at! }));
+  }, [hosts, blobs]);
   const feed = useFeedEvents(served.length === 0);
   const live: Live[] = useMemo(() => {
     if (served.length) return served;

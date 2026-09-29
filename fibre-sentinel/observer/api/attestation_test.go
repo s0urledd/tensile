@@ -18,7 +18,7 @@ import (
 // a verified signature; v3 does not, so nothing proves v3 ever stored its
 // shard. All three are probed at the same in-window point: v1 and v2 serve,
 // v3 answers "no such shard".
-func attestedFixture(t *testing.T) *httptest.Server {
+func attestedFixture(t *testing.T) (*httptest.Server, *store.Store) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
@@ -107,24 +107,17 @@ func attestedFixture(t *testing.T) *httptest.Server {
 	}
 	ts := httptest.NewServer(api.New(st, "test"))
 	t.Cleanup(ts.Close)
-	return ts
+	return ts, st
 }
 
 // An unproven obligation is no obligation. v3 did not serve, but nothing on
 // chain says v3 ever stored the shard, so it owes nothing: its reading is
 // UNATTESTED, and it has no obligation to count either way.
 func TestAnUnattestedReadingIsNoObligation(t *testing.T) {
-	ts := attestedFixture(t)
+	ts, st := attestedFixture(t)
 
 	var net struct {
-		Classes     map[string]int64 `json:"classes"`
-		Obligations obligationsJSON  `json:"obligations"`
-		Attestation struct {
-			Attested   int64                    `json:"attested_blobs"`
-			Unattested int64                    `json:"unattested_blobs"`
-			Unknown    int64                    `json:"unknown_blobs"`
-			Coverage   struct{ Num, Den int64 } `json:"blob_coverage"`
-		} `json:"attestation"`
+		Obligations obligationsJSON `json:"obligations"`
 	}
 	if code := get(t, ts, "/v1/network?window=all", &net); code != 200 {
 		t.Fatalf("network: %d", code)
@@ -132,48 +125,74 @@ func TestAnUnattestedReadingIsNoObligation(t *testing.T) {
 	if net.Obligations.Total != 2 || net.Obligations.Pending != 2 {
 		t.Fatalf("obligations = %+v, want v1's and v2's, pending", net.Obligations)
 	}
-	if net.Classes["UNATTESTED"] != 1 || net.Classes["FAULT"] != 0 {
-		t.Fatalf("classes = %v, want one UNATTESTED and no FAULT", net.Classes)
+	// the reading tallies the summary keeps and does not publish
+	var whole struct {
+		Classes     map[string]int64 `json:"classes"`
+		Attestation struct {
+			Attested   int64                    `json:"attested_blobs"`
+			Unattested int64                    `json:"unattested_blobs"`
+			Unknown    int64                    `json:"unknown_blobs"`
+			Coverage   struct{ Num, Den int64 } `json:"blob_coverage"`
+		} `json:"attestation"`
 	}
-	if net.Attestation.Attested != 2 || net.Attestation.Unattested != 1 || net.Attestation.Unknown != 0 {
-		t.Fatalf("attestation = %+v, want 2 attested / 1 unattested / 0 unknown", net.Attestation)
+	networkOf(t, st, "test", "all", time.Time{}, &whole)
+	if whole.Classes["UNATTESTED"] != 1 || whole.Classes["FAULT"] != 0 {
+		t.Fatalf("classes = %v, want one UNATTESTED and no FAULT", whole.Classes)
 	}
-	if net.Attestation.Coverage.Num != 2 || net.Attestation.Coverage.Den != 3 {
-		t.Fatalf("coverage = %d/%d, want 2/3", net.Attestation.Coverage.Num, net.Attestation.Coverage.Den)
+	if whole.Attestation.Attested != 2 || whole.Attestation.Unattested != 1 || whole.Attestation.Unknown != 0 {
+		t.Fatalf("attestation = %+v, want 2 attested / 1 unattested / 0 unknown", whole.Attestation)
+	}
+	if whole.Attestation.Coverage.Num != 2 || whole.Attestation.Coverage.Den != 3 {
+		t.Fatalf("coverage = %d/%d, want 2/3", whole.Attestation.Coverage.Num, whole.Attestation.Coverage.Den)
 	}
 
 	var vals struct {
 		Validators []struct {
-			Address      string           `json:"address"`
-			Obligations  obligationsJSON  `json:"obligations"`
-			AttestedLast *bool            `json:"attested_last"`
-			Classes      map[string]int64 `json:"classes"`
+			Address     string          `json:"address"`
+			Obligations obligationsJSON `json:"obligations"`
 		} `json:"validators"`
 	}
 	if code := get(t, ts, "/v1/validators?window=all", &vals); code != 200 {
 		t.Fatalf("validators: %d", code)
 	}
+	var rows struct {
+		Validators []struct {
+			Address      string           `json:"address"`
+			AttestedLast *bool            `json:"attested_last"`
+			Classes      map[string]int64 `json:"classes"`
+		} `json:"validators"`
+	}
+	rowsOf(t, st, "test", "all", time.Time{}, &rows)
+	row := map[string]int{}
+	for i, v := range rows.Validators {
+		row[v.Address] = i
+	}
 	seen := 0
 	for _, v := range vals.Validators {
+		r, ok := row[v.Address]
+		if !ok {
+			t.Fatalf("%s is listed but has no row", v.Address)
+		}
+		w := rows.Validators[r]
 		switch v.Address {
 		case "v1", "v2":
 			seen++
 			if v.Obligations.Total != 1 || v.Obligations.Pending != 1 {
 				t.Fatalf("%s obligations = %+v, want one, pending", v.Address, v.Obligations)
 			}
-			if v.AttestedLast == nil || !*v.AttestedLast {
-				t.Fatalf("%s attested_last = %v, want true", v.Address, v.AttestedLast)
+			if w.AttestedLast == nil || !*w.AttestedLast {
+				t.Fatalf("%s attested_last = %v, want true", v.Address, w.AttestedLast)
 			}
 		case "v3":
 			seen++
 			if v.Obligations.Total != 0 {
 				t.Fatalf("v3 obligations = %+v, want none: nothing proves it stored the shard", v.Obligations)
 			}
-			if v.Classes["UNATTESTED"] != 1 {
-				t.Fatalf("v3 classes = %v, want one UNATTESTED", v.Classes)
+			if w.Classes["UNATTESTED"] != 1 {
+				t.Fatalf("v3 classes = %v, want one UNATTESTED", w.Classes)
 			}
-			if v.AttestedLast == nil || *v.AttestedLast {
-				t.Fatalf("v3 attested_last = %v, want false", v.AttestedLast)
+			if w.AttestedLast == nil || *w.AttestedLast {
+				t.Fatalf("v3 attested_last = %v, want false", w.AttestedLast)
 			}
 		}
 	}
@@ -185,7 +204,7 @@ func TestAnUnattestedReadingIsNoObligation(t *testing.T) {
 // v1 and v2 together returned all 4 rows the blob needs: it is Available,
 // whatever v3, which never endorsed it, answered.
 func TestReconstructabilityIgnoresUnattestedNonServers(t *testing.T) {
-	ts := attestedFixture(t)
+	ts, _ := attestedFixture(t)
 
 	var blob struct {
 		Blob struct {

@@ -316,32 +316,56 @@ earlier model needed, with its size and how to remove it.
 `observer-api`, read-only, `Access-Control-Allow-Origin: *` on every response.
 
 ```
-GET /v1/meta                  chain, counts, components, vantage
+GET /v1/meta                  what the site's header, banners and footer read: chain, app
+                              versions, health and its checks, scan gaps, counts (the site's own;
+                              not on the API page)
 GET /v1/network               the window summary
-GET /v1/validators            one row per validator
+GET /v1/validators            one row per validator (last_served_at: the newest reading whose rows
+                              came back verified, which the overview map names)
 GET /v1/validators/{addr}     one validator, four windows (addr: consensus hex or
                               valcons1…, operator valoper1…, account address)
-GET /v1/blobs                 publication list (?limit=, ?offset=, ?namespace=; total)
+GET /v1/validators/{addr}/status
+                              the few figures an alert needs, from the same snapshot row
+                              (?window=; ?as_of= is refused)
+GET /v1/validators/{addr}/feed.atom, /v1/feed.atom
+                              endpoint and registration events as Atom
+GET /v1/blobs                 publication list (?limit=, ?offset=, ?before_height= and
+                              ?before_tx_index=, ?namespace=, ?commitment=, ?publisher= the
+                              paying account; total)
 GET /v1/blobs/{hash}          one blob: its reading, each assigned validator's service word, the rows
+                              (?rows=1 adds each reading's row_indices and rows_sha256)
+GET /v1/namespaces            namespaces by newest settlement
 GET /v1/probes                raw rows (?blob=, ?validator=, ?at=, ?class=, ?served=no, ?since=,
                               ?before=; up to 1000 a page, next_before continues; ?rows=1 adds
                               each reading's row_indices and rows_sha256, up to 200 a page)
-GET /v1/runs                  every process start/stop with its config
 GET /v1/sampling              the earlier sampling: day commitments, and secrets once revealed
-GET /v1/exports[/{name}]      daily tarballs + digests
+GET /v1/exports[/{name}]      daily tarballs + digests; /v1/exports/pubkey the signing keys
 GET /v1/avatars/{identity}    Keybase picture
-GET /v1/health                machine-readable liveness (200 / 503)
+GET /v1/health                machine-readable liveness (200 / 503), each process's status
+GET /v1/tip                   the newest block read
 GET /v1/market                the publisher side
 GET /v1/publishers[/{addr}]   incl. the escrow withdrawal queue read from state
-GET /v1/params                x/fibre params + change log (heights, block times), pinned protocol constants
+GET /v1/params                x/fibre params + change log (heights, block times), pinned protocol
+                              constants, the fee formula (price_formula)
+GET /v1/signing               endorsements per settled promise against the ⅔ quorum
+GET /v1/hosting               where the registered endpoints are hosted, and how concentrated
 ```
+
+The public documentation is the site's API page (`web/src/app/developers`):
+the questions each kind of reader asks, the call and the fields that answer
+each one, and what every route shares. Its stability promise covers the
+fields and routes it names; anything else can change with the site that
+reads it, and `/v1/meta` is the site's own. A response carries what some
+reader uses: a field nothing reads is dropped from the answer, never from
+the store (the snapshot rows keep their internal figures; `shapes.go`
+projects them).
 
 **Windows**: `24h`, `7d`, `30d`, `all`.
 
 **Snapshots.** `/v1/network`, `/v1/validators`, `/v1/market` and the
 `/v1/publishers` list are aggregates over hundreds of thousands of rows, so
 they are computed on a schedule and served from `snapshotCache` — with the
-moment they were taken and how long they took published, rather than implied.
+moment they were taken published (`computed_at`), rather than implied.
 The market and the publisher list are one snapshot, so the publisher page's
 board and table describe the same moment. Keepers refresh every window as its
 TTL runs out, read or not (`newKeepers` in `snapshot.go`): the 24h validator
@@ -381,15 +405,18 @@ headline. Tests hold both paths off the cache.
 Next.js `output: "export"` — plain files, all data fetched in the browser from
 `NEXT_PUBLIC_API_BASE` (default `/api`, which Caddy proxies same-origin).
 
+Every page's header and footer read `/v1/meta` and `/v1/tip`.
+
 | route | reads |
 |---|---|
-| `/` | `/v1/meta`, `/v1/network`, `/v1/validators`, `/v1/market` |
+| `/` | `/v1/network` (the period, and `all` for Available), `/v1/validators` (the map's "served last" line is the rows' `last_served_at`), `/v1/blobs?limit=1` |
 | `/validator/?addr=` | `/v1/validators/{addr}` |
-| `/blobs/` | `/v1/blobs`, `/v1/namespaces`, `/v1/market`, `/v1/network` |
+| `/blobs/` | `/v1/blobs`, `/v1/namespaces`, `/v1/market` |
 | `/blob/?hash=` | `/v1/blobs/{hash}` |
 | `/publishers/` | `/v1/market`, `/v1/publishers` |
 | `/publisher/?addr=` | `/v1/publishers/{addr}` |
 | `/methodology/` | `/v1/params` (the protocol-parameters section; the rest is static) |
+| `/developers/` | nothing: the API page; its example answers are fixed text (`examples.ts`) |
 
 `MIN_RATED` (20) gates every *ranked rate* — service, reachability, throughput:
 below it the figure prints without a gauge and does not sort in either
@@ -454,7 +481,7 @@ or the `all` window would answer half the question.
   differs
 - **`?as_of=`**: any window as of any past moment, so a figure cannot be
   quietly restated
-- **`/v1/runs`**: the build and flags behind every row
+- **`runs.jsonl`** in every export: the build and flags behind every row
 
 What recompute is *not* trusted for: `assigned` and `attested` are the
 prober's own conclusions, so it checks them against `publications.jsonl` —
@@ -503,7 +530,8 @@ from outside the celestia-app module.
 6. **The filtered and pinned paths never touch the shared snapshot.**
 7. **The two obligation implementations move together**, and a test holds
    their shared constant.
-8. **Published figures carry their own age** (`computed_at`, `compute_ms`).
+8. **Published figures carry their own age** (`computed_at`; `/v1/network`
+   adds `compute_ms`).
 9. **The build revision on every row is a real commit.** A `-dirty` build is
    a row nobody can tie back to code.
 10. **The sampling master secret never leaves the host.**
@@ -597,6 +625,6 @@ Stated here because they are properties of the machine, not of any validator.
 | the service rate moved with no new readings | an amendment settled a deferred verdict (`probe_amendments`) |
 | every validator failed in one reading | the blob's rows (`/v1/probes?blob=`): if no request left this observer (`PROBE_ERROR` everywhere) the blob reads not read; otherwise it is unavailable, as a client would have found it |
 | the scanner stopped | scan gaps in `state.json`; `scanner_lag` and `chain_liveness` in `/v1/health` |
-| the prober records nothing | the prober's status `reads` block (queued, in progress, started late and missed in the last hour; `/v1/meta` components), `BackfillMissed` horizon |
+| the prober records nothing | the prober's status `reads` block (queued, in progress, started late and missed in the last hour; `/v1/health` components), `BackfillMissed` horizon |
 | the build says `-dirty` | an untracked file in the working tree at build time |
 | the API refuses to start | schema older or newer than the binary; run the collector once |

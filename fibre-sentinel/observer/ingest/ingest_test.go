@@ -1,12 +1,14 @@
 package ingest_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/ingest"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
@@ -117,5 +119,71 @@ func TestAmendmentForAMissingRowIsRetriedThenSkipped(t *testing.T) {
 	}
 	if !skipped || r.Line != 2 {
 		t.Fatalf("an orphan amendment must be skipped after bounded retries: %+v", r)
+	}
+}
+
+// Every component's starts and stops, with the configuration it ran under,
+// come from runs.jsonl into observer_runs, once however often the file is
+// replayed. The same file is in every daily export.
+func TestRunsCarryTheirConfiguration(t *testing.T) {
+	st := openStore(t)
+	dir := t.TempDir()
+	// a prober writing through the status package
+	w := status.New(dir, "prober", "eu", "abc123")
+	w.RecordRuns(map[string]any{"prune-tolerance": "2m30s", "in-window-probes": "4"})
+	w.Start()
+	w.Stop("signal")
+	// and a second start of the same component, still running
+	w2 := status.New(dir, "prober", "eu", "abc124")
+	w2.RecordRuns(map[string]any{"prune-tolerance": "3m0s"})
+	w2.Start()
+	t.Cleanup(func() { w2.Stop("test") })
+
+	now := time.Now()
+	res, err := ingest.Runs(st, filepath.Join(dir, status.RunsFile), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Inserted != 3 { // two starts, one stop applied
+		t.Fatalf("replayed %d events, want 3 (%+v)", res.Inserted, res)
+	}
+	// replaying again changes nothing
+	if res, err := ingest.Runs(st, filepath.Join(dir, status.RunsFile), now); err != nil || res.Inserted != 0 {
+		t.Fatalf("second replay: %+v %v", res, err)
+	}
+	rows, err := st.DB().Query(`SELECT version, stopped_at, stop_reason, pid, config_json FROM observer_runs WHERE component = 'prober'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var stopped, open int
+	for rows.Next() {
+		var version string
+		var stoppedAt, reason, cfgJSON *string
+		var pid *int64
+		if err := rows.Scan(&version, &stoppedAt, &reason, &pid, &cfgJSON); err != nil {
+			t.Fatal(err)
+		}
+		var cfg map[string]string
+		if cfgJSON == nil || json.Unmarshal([]byte(*cfgJSON), &cfg) != nil || cfg["prune-tolerance"] == "" {
+			t.Errorf("run %s config = %v", version, cfgJSON)
+		}
+		if pid == nil {
+			t.Errorf("run %s has no pid", version)
+		}
+		switch {
+		case version == "abc123" && stoppedAt != nil && reason != nil && *reason == "signal":
+			stopped++
+		case version == "abc124" && stoppedAt == nil:
+			open++
+		default:
+			t.Errorf("unexpected run row: %s stopped=%v reason=%v", version, stoppedAt, reason)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if stopped != 1 || open != 1 {
+		t.Errorf("stopped=%d open=%d, want 1 and 1", stopped, open)
 	}
 }

@@ -23,11 +23,11 @@ func main() {
 		dbPath  = flag.String("db", "", "SQLite database path (default <data-dir>/observer.db)")
 		listen  = flag.String("listen", "127.0.0.1:8080", "HTTP listen address")
 		check   = flag.String("check", "", "health check: GET this URL, exit 0 on HTTP 200 (for container healthchecks; the image has no curl)")
-		vantage = flag.String("vantage", "local", "vantage name rendered on every response")
+		vantage = flag.String("vantage", "local", "vantage name: whose rows the figures count, the one /v1/meta marks primary, and the snapshot files' owner")
 		// Where this observer watches from. Every reachability observation is
-		// a statement about a network path and half that path is ours, so a
-		// reader cannot judge an UNREACHABLE without knowing where it was
-		// measured from. Both are operator-declared.
+		// a statement about a network path and half that path is ours. Both
+		// are operator-declared, and the API no longer publishes them: they
+		// feed only the startup warning below.
 		vLocation = flag.String("vantage-location", "", `human-readable place, e.g. "Helsinki, Finland"`)
 		vProvider = flag.String("vantage-provider", "", `hosting provider, e.g. "Hetzner"`)
 		// Accepted and ignored, so a unit written before the observer's
@@ -98,9 +98,9 @@ func main() {
 	info := api.VantageInfo{Name: *vantage, Location: *vLocation, Provider: *vProvider}
 	if info.Location == "" || info.Provider == "" {
 		// Not fatal: a devnet or a local run has nothing meaningful to say
-		// here. But a public vantage that leaves it blank is publishing
-		// reachability verdicts without saying where they were measured from,
-		// and the About page points readers at this endpoint for exactly that.
+		// here. The API does not publish the description (/v1/meta names
+		// vantages only), so this line is where a public vantage that left
+		// it blank shows.
 		log.Printf("WARNING: vantage not fully described (location=%q provider=%q); "+
 			"a public vantage should set -vantage-location and -vantage-provider",
 			info.Location, info.Provider)

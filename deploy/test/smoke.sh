@@ -42,7 +42,7 @@ for key in NETWORK RPC VANTAGE DATA_DIR POLICY API_LISTEN; do
 done
 for key in VANTAGE_LOCATION VANTAGE_PROVIDER; do
   value=$(sed -n "s/^${key}=//p" "$ENVFILE" | head -1)
-  [ -n "$value" ] || echo "  WARNING: $key is empty; a public vantage publishes reachability verdicts without saying where from"
+  [ -n "$value" ] || echo "  note: $key is empty; the API does not publish it, only observer-api's startup log names the vantage"
 done
 echo "  ok"
 

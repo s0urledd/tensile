@@ -31,7 +31,6 @@ import (
 
 	"github.com/cosmos/cosmos-sdk/types/bech32"
 
-	assign "github.com/plsgiveup/fibre/fibre-assign"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/export"
@@ -57,7 +56,7 @@ const Version = "0.1.0"
 // public API is the wrong place for them: the site's diagnosis box names the
 // address where an operator is told to allow it.
 type VantageInfo struct {
-	// Name is the short label every response already carries.
+	// Name is the vantage's short label, as its rows carry it.
 	Name string `json:"name"`
 	// Location is where the machine physically sits, e.g. "Helsinki,
 	// Finland". Operator's word; an address cannot prove it.
@@ -67,8 +66,9 @@ type VantageInfo struct {
 	// Verifiability says, per field, what a reader can check and how, so the
 	// page rendering these cannot present a guess as a fact.
 	Verifiability map[string]string `json:"verifiability"`
-	// Complete is false while the operator has not filled this in, which is
-	// what the dashboard checks before claiming the vantage is described.
+	// Complete is false while the operator has not filled this in. The API no
+	// longer publishes the description; the startup log warns when it is
+	// incomplete.
 	Complete bool `json:"complete"`
 }
 
@@ -145,7 +145,8 @@ func WithDataDir(dir string) Option { return func(s *Server) { s.dataDir = dir }
 // running API does not read (WarmSnapshots).
 func WithSnapshotDir(dir string) Option { return func(s *Server) { s.snapshotDir = dir } }
 
-// New builds a Server. vantage is the label rendered on every response.
+// New builds a Server. vantage names this observer's vantage in /v1/meta's
+// vantages and on the rows it writes.
 func New(st *store.Store, vantage string) *Server { return NewWithLogger(st, vantage, nil) }
 
 // NewWithLogger is New with somewhere to put the detail of an internal error
@@ -201,7 +202,6 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 	s.mux.HandleFunc("GET /v1/namespaces", s.handleNamespaces)
 	s.mux.HandleFunc("GET /v1/blobs/{hash}", s.handleBlob)
 	s.mux.HandleFunc("GET /v1/probes", s.handleProbes)
-	s.mux.HandleFunc("GET /v1/runs", s.handleRuns)
 	s.mux.HandleFunc("GET /v1/sampling", s.handleSampling)
 	s.mux.HandleFunc("GET /v1/exports", s.handleExports)
 	s.mux.HandleFunc("GET /v1/exports/pubkey", s.handleExportPubkey) // exports_signing.go; more specific than {name}
@@ -409,7 +409,7 @@ func (w *statusWriter) WriteHeader(status int) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.ResponseWriter.WriteHeader(status)
-		_, _ = w.ResponseWriter.Write([]byte(`{"error":"no such endpoint; see /v1/meta"}` + "\n"))
+		_, _ = w.ResponseWriter.Write([]byte(`{"error":"no such endpoint"}` + "\n"))
 		return
 	}
 	w.ResponseWriter.WriteHeader(status)
@@ -666,21 +666,22 @@ func rate(num, den int64) Rate {
 
 // ---- meta ----
 
+// metaResponse is /v1/meta: the chain and observer state the site's header,
+// banners and footer read, beside the store's row counts and the heartbeat
+// vantages, which the deploy tests and the team watch.
 type metaResponse struct {
 	APIVersion string `json:"api_version"`
 	// MethodologyVersion is verdict.MethodologyVersion: the rules the figures
 	// on every page were computed under.
-	MethodologyVersion     string      `json:"methodology_version"`
-	Vantage                string      `json:"vantage"`
-	VantageInfo            VantageInfo `json:"vantage_info"`
-	VantageCount           int         `json:"vantage_count"`
-	ObservedFromOneVantage bool        `json:"observed_from_one_location"`
-	ChainID                string      `json:"chain_id"`
+	MethodologyVersion string `json:"methodology_version"`
+	ChainID            string `json:"chain_id"`
 
 	// Vantages are the heartbeats whose rows reached this store in the last
 	// hour, this observer's own and any other vantage's copied in beside it,
 	// each with its newest row, in name order. Only this observer's rows are
 	// counted in the figures; another's confirm or contradict a failed check.
+	// No health check covers a second vantage, so this is where its
+	// heartbeats are seen to arrive.
 	Vantages []vantageSeen `json:"vantages"`
 
 	// AppVersion is the chain's current application version, and FibreActive
@@ -694,35 +695,24 @@ type metaResponse struct {
 	FibreAppVersion string `json:"fibre_app_version,omitempty"`
 	FibreActive     bool   `json:"fibre_active"`
 	// ChainHeight is the chain's tip as the collector last saw it, which is not
-	// LastScannedHeight: that is how far the SCANNER has read, and before Fibre
-	// activates there is nothing for it to read, so it stays empty while the
-	// chain is plainly making blocks. Reporting the chain's progress as our own,
-	// or ours as the chain's, would be wrong in opposite directions.
-	ChainHeight          string       `json:"chain_height,omitempty"`
-	LastScannedHeight    string       `json:"last_scanned_height"`
-	EndpointsHeight      string       `json:"endpoints_height"`
-	ProtocolParamsFinger string       `json:"protocol_params_fingerprint"`
-	PinnedCelestiaApp    string       `json:"pinned_celestia_app_commit"`
-	Counts               store.Counts `json:"counts"`
-	Collector            *runStatus   `json:"collector"`
-	Prober               *runStatus   `json:"prober"`
+	// how far the scanner has read (record_through on every figure says that):
+	// before Fibre activates there is nothing for the scanner to read, while
+	// the chain is plainly making blocks.
+	ChainHeight string       `json:"chain_height,omitempty"`
+	Counts      store.Counts `json:"counts"`
 	// LastProbeAt is the newest reading's start time. The prober writes
 	// JSONL only (it never touches this database), so this is the only live
 	// signal of it; a quiet chain makes it old without anything being wrong.
-	LastProbeAt *string           `json:"last_probe_at"`
-	Meta        map[string]string `json:"meta"`
-	ServerTime  time.Time         `json:"server_time"`
-	// Components is every observer process with its liveness, from the
-	// status files in the data directory (see /v1/health). Health is the
-	// same verdict /v1/health returns: ok, degraded or down.
-	Components []componentStatus `json:"components"`
-	Health     string            `json:"health"`
+	LastProbeAt *string   `json:"last_probe_at"`
+	ServerTime  time.Time `json:"server_time"`
+	// Health is the verdict /v1/health returns: ok, degraded or down.
+	Health string `json:"health"`
 	// Checks is every row behind Health, the same list /v1/health serves.
-	// Health alone told the site that something was wrong; the components
-	// told it which process, and nothing told it about a check that is not
-	// a process — a chain that stopped producing blocks, a scan gap, a stale
-	// pin — so the site announced "degraded" with nothing after the colon,
-	// on the one day (an upgrade halt) when everyone was looking.
+	// Health alone told the site that something was wrong, and nothing told
+	// it about a check that is not a process — a chain that stopped producing
+	// blocks, a scan gap, a stale pin — so the site announced "degraded" with
+	// nothing after the colon, on the one day (an upgrade halt) when everyone
+	// was looking.
 	Checks []healthCheck `json:"checks"`
 	// ScanGaps are height ranges the scanner could not read from its node,
 	// or that the operator told it to skip (-skip-heights; Reason says which).
@@ -739,19 +729,18 @@ type metaResponse struct {
 	// major this build's assignment constants are pinned to: matches,
 	// chain_ahead, chain_behind or unknown.
 	PinStatus string `json:"pin_status"`
-	// UnassignablePublications is how many publications have no row
-	// assignment (a blob version this build does not know), and so are never
-	// probed.
-	UnassignablePublications int64 `json:"unassignable_publications"`
-	// Evidence says, per headline figure, which of the three kinds of
-	// evidence it rests on; EvidenceKinds defines the three.
-	Evidence      map[string]string `json:"evidence"`
-	EvidenceKinds map[string]string `json:"evidence_kinds"`
-	// UpgradeSignal is x/signal's tally for the app version that brings
-	// Fibre, published only while the chain is below it: how much voting
-	// power has signalled, the threshold, who has not, and the scheduled
-	// height once there is one. A chain record, nothing measured here.
-	UpgradeSignal *upgradeSignal `json:"upgrade_signal,omitempty"`
+	// UpgradeSignal is the upgrade that brings Fibre, published only while
+	// the chain is below it: the height x/signal scheduled it at and the
+	// estimate of when the chain gets there (upgradeSignal).
+	UpgradeSignal *upgradeSignalOut `json:"upgrade_signal,omitempty"`
+}
+
+// upgradeSignalOut is the part of x/signal's tally the site shows: the
+// scheduled height, and an estimate at the chain's recent pace of how long
+// until it; both absent until they are known.
+type upgradeSignalOut struct {
+	UpgradeHeight int64 `json:"upgrade_height,omitempty"`
+	ETASeconds    int64 `json:"eta_seconds,omitempty"`
 }
 
 type upgradeSignal struct {
@@ -869,19 +858,12 @@ func (s *Server) upgradeSignalSets(ctx context.Context) (missing, shared map[str
 	return missing, shared, true
 }
 
-type runStatus struct {
-	RunID         int64   `json:"run_id"`
-	StartedAt     string  `json:"started_at"`
-	LastHeartbeat string  `json:"last_heartbeat_at"`
-	StoppedAt     *string `json:"stopped_at"`
-	Alive         bool    `json:"alive"` // heartbeat within the last 2 minutes
-}
-
 // vantageCount counts the distinct vantages that ever wrote a probe or a
 // heartbeat (a second location that only runs the heartbeat still counts).
 // vantageCount is how many distinct places the stored observations were made
-// from. It decides one sentence on every page — whether this is a single
-// vantage or several — and it was the most expensive query /v1/meta ran: no
+// from, which the network summary keeps as observed_from_one_location. It
+// once decided a sentence on every page, and was the most expensive query
+// /v1/meta ran: no
 // index covered `vantage`, so it scanned both probe tables in full and unioned
 // them through a temp B-tree (49ms of the endpoint's 58ms of SQL on an
 // 85,000-probe store). A cache keyed on each table's highest rowid kept it off
@@ -890,9 +872,7 @@ type runStatus struct {
 //
 // It is now asked of probes_vantage and reachability_vantage (migration 22),
 // one seek per distinct vantage, which is cheap enough to run on every request
-// and so needs no cache at all. Exact, as before: the claim this drives is the
-// one-vantage caveat printed above every page, and a cached count is a claim
-// about how much the site's own evidence is worth.
+// and so needs no cache at all.
 func (s *Server) vantageCount(ctx context.Context) int {
 	var n int
 	_ = s.st.DB().QueryRowContext(ctx, vantageCountSQL).Scan(&n)
@@ -957,24 +937,6 @@ func (s *Server) recentVantages(ctx context.Context, now time.Time) []vantageSee
 	return out
 }
 
-// latestRun is the newest run row for a component, with whether its heartbeat
-// is recent enough to call it alive.
-func (s *Server) latestRun(ctx context.Context, component string, now time.Time) (*runStatus, error) {
-	var rs runStatus
-	err := s.st.DB().QueryRowContext(ctx, `SELECT id, started_at, last_heartbeat_at, stopped_at FROM observer_runs
-		WHERE component = ? ORDER BY started_at DESC LIMIT 1`, component).Scan(&rs.RunID, &rs.StartedAt, &rs.LastHeartbeat, &rs.StoppedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if t, err := time.Parse(time.RFC3339Nano, rs.LastHeartbeat); err == nil && rs.StoppedAt == nil {
-		rs.Alive = now.Sub(t) < 2*time.Minute
-	}
-	return &rs, nil
-}
-
 func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	now := time.Now()
@@ -996,113 +958,30 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rows.Close()
-	vantages := s.vantageCount(ctx)
-	col, _ := s.latestRun(ctx, "collector", now)
-	pr, _ := s.latestRun(ctx, "prober", now)
 	var lastProbe *string
 	var lp sql.NullString
 	if err := s.st.DB().QueryRowContext(ctx, `SELECT MAX(started_at) FROM probes`).Scan(&lp); err == nil && lp.Valid {
 		lastProbe = &lp.String
 	}
-	var pinned string
-	_ = s.st.DB().QueryRowContext(ctx, `SELECT pinned_celestia_app FROM publications ORDER BY settlement_height DESC LIMIT 1`).Scan(&pinned)
-	// Before the first publication there is no row to read it from, and the
-	// footer printed no pin at all. The commit this binary assigns rows with
-	// is the same answer until a publication says otherwise.
-	if pinned == "" {
-		pinned = assign.PinnedCelestiaAppCommit
-	}
 	h := s.health(ctx, now)
-	// A run row's heartbeat is only as fresh as what reached the database:
-	// the prober writes JSONL and never this table, so its row kept the
-	// start time and read "alive": false beside a components entry, from
-	// the process's own status file, that said it was running. The status
-	// file is the live signal /v1/health already trusts; it decides here too.
-	for _, c := range h.Components {
-		if !c.Present {
-			continue
-		}
-		switch {
-		case c.Component == "collector" && col != nil:
-			col.Alive = c.Alive
-		case c.Component == "prober" && pr != nil:
-			pr.Alive = c.Alive
-		}
-	}
 	var ranges []paramUncertainty
 	if us, err := s.st.ParamRanges(ctx); err == nil {
 		for _, u := range us {
 			ranges = append(ranges, paramUncertaintyOf(u))
 		}
 	}
+	var signal *upgradeSignalOut
+	if u := upgradeSignalOf(meta, now); u != nil {
+		signal = &upgradeSignalOut{UpgradeHeight: u.UpgradeHeight, ETASeconds: u.ETASeconds}
+	}
 	writeJSON(w, 200, metaResponse{
-		Components: h.Components, Health: h.Status, Checks: h.Checks, ScanGaps: h.ScanGaps, PinStatus: h.PinStatus,
-		Evidence: evidenceOf, EvidenceKinds: evidenceKinds, UpgradeSignal: upgradeSignalOf(meta, now),
-		ParamUncertainty:         ranges,
-		UnassignablePublications: s.unassignablePublications(ctx),
-		APIVersion:               Version, Vantage: s.vantage, VantageInfo: s.info,
-		MethodologyVersion: verdict.MethodologyVersion,
-		VantageCount:       vantages, ObservedFromOneVantage: vantages == 1, Vantages: s.recentVantages(ctx, now),
-		ChainID: meta["chain_id"], LastScannedHeight: meta["last_scanned_height"], EndpointsHeight: meta["endpoints_height"],
+		APIVersion: Version, MethodologyVersion: verdict.MethodologyVersion, ChainID: meta["chain_id"],
+		Vantages:   s.recentVantages(ctx, now),
 		AppVersion: meta["app_version"], FibreAppVersion: meta["fibre_app_version"], FibreActive: meta["fibre_active"] == "yes",
-		ChainHeight:          meta["chain_height"],
-		ProtocolParamsFinger: meta["protocol_params_fingerprint"], PinnedCelestiaApp: pinned,
-		Counts: counts, Collector: col, Prober: pr, LastProbeAt: lastProbe, Meta: meta, ServerTime: now.UTC(),
+		ChainHeight: meta["chain_height"], Counts: counts, LastProbeAt: lastProbe, ServerTime: now.UTC(),
+		Health: h.Status, Checks: h.Checks, ScanGaps: h.ScanGaps, ParamUncertainty: ranges, PinStatus: h.PinStatus,
+		UpgradeSignal: signal,
 	})
-}
-
-// ---- runs (gaps) ----
-
-type runRow struct {
-	ID            int64   `json:"id"`
-	Component     string  `json:"component"`
-	Vantage       string  `json:"vantage"`
-	Version       string  `json:"version"`
-	StartedAt     string  `json:"started_at"`
-	LastHeartbeat string  `json:"last_heartbeat_at"`
-	StoppedAt     *string `json:"stopped_at"`
-	StopReason    *string `json:"stop_reason"`
-	PID           *int64  `json:"pid"`
-	Hostname      *string `json:"hostname"`
-	// Config is what the run was started with: every flag by name, as the
-	// component recorded it in runs.jsonl (status.RunEvent). It is what a
-	// verifier needs to re-derive this run's rows: the prune tolerance
-	// behind a phase, the schedule points, the timeouts, the policy file.
-	// Null for a run recorded before the file existed, and for the
-	// collector's own row.
-	Config json.RawMessage `json:"config"`
-}
-
-func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
-	win, err := parseWindow(r, time.Now())
-	if err != nil {
-		writeErr(w, 400, err.Error())
-		return
-	}
-	rows, err := s.st.DB().QueryContext(r.Context(), `SELECT id, component, vantage, version, started_at, last_heartbeat_at, stopped_at, stop_reason, pid, hostname, config_json
-		FROM observer_runs WHERE last_heartbeat_at >= ? AND started_at <= ? ORDER BY started_at`, win.startArg(), win.endArg())
-	if err != nil {
-		s.writeInternal(w, r.URL.Path, err)
-		return
-	}
-	defer rows.Close()
-	out := []runRow{}
-	for rows.Next() {
-		var rr runRow
-		var cfg *string
-		if err := rows.Scan(&rr.ID, &rr.Component, &rr.Vantage, &rr.Version, &rr.StartedAt, &rr.LastHeartbeat, &rr.StoppedAt, &rr.StopReason, &rr.PID, &rr.Hostname, &cfg); err != nil {
-			s.writeInternal(w, r.URL.Path, err)
-			return
-		}
-		if cfg != nil && json.Valid([]byte(*cfg)) {
-			rr.Config = json.RawMessage(*cfg)
-		} else {
-			rr.Config = json.RawMessage("null")
-		}
-		out = append(out, rr)
-	}
-	writeJSON(w, 200, map[string]any{"window": win, "runs": out,
-		"note": "a run without stopped_at whose component's status file is stale is a crash; config is the component's flags at start, from runs.jsonl"})
 }
 
 // ---- network ----
@@ -1156,24 +1035,6 @@ func (s *Server) recordThrough(ctx context.Context) *recordThrough {
 		return nil
 	}
 	return rt
-}
-
-// evidenceKinds names the three kinds of evidence a figure on the site can
-// rest on, and evidenceOf says which each headline figure rests on. They
-// are published on /v1/meta so an API reader has the same labels the site
-// prints, and so the three are never blurred: a count of what the chain
-// recorded, bytes this observer fetched and verified, and what this
-// observer's own network saw from one place are different claims.
-var evidenceKinds = map[string]string{
-	"chain_record":        "a count of something the chain recorded; nothing here was measured by this observer",
-	"verified_response":   "bytes this observer fetched and verified against the on-chain commitment, or a certificate checked against the validator's consensus key",
-	"vantage_observation": "what this observer's own network saw from one location; it says nothing about any shard",
-}
-var evidenceOf = map[string]string{
-	"obligations": "verified_response", "reconstructable": "verified_response", "endorsed": "verified_response",
-	"reachability": "vantage_observation", "throughput": "vantage_observation",
-	"publications": "chain_record", "signed_shards": "chain_record", "registered_endpoints": "chain_record", "fees_settled": "chain_record",
-	"publishers": "chain_record", "paid_per_mib": "chain_record", "timed_out": "chain_record", "settlement_rate": "chain_record", "escrow_held": "chain_record",
 }
 
 type networkResponse struct {
@@ -1604,7 +1465,7 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 		resp.RecordThrough = s.recordThrough(r.Context())
 		resp.ComputedAt, resp.ComputeMs = t0.UTC().Format(time.RFC3339Nano), time.Since(t0).Milliseconds()
 		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, 200, resp)
+		writeJSON(w, 200, networkOutOf(resp))
 		return
 	}
 	resp, at, ms, err := s.net.get(r.Context(), s.logf(), win)
@@ -1614,9 +1475,9 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 	// A copy, so a reader cannot mutate the cached snapshot and two concurrent
 	// readers cannot race on it.
-	out := *resp
+	out := networkOutOf(resp)
 	out.ComputedAt, out.ComputeMs = at.UTC().Format(time.RFC3339Nano), ms
-	writeJSON(w, 200, &out)
+	writeJSON(w, 200, out)
 }
 
 // logf adapts the server's logger, which may be absent in tests, to what the
@@ -2141,7 +2002,10 @@ type validatorRow struct {
 	EndpointClosedAt *string `json:"endpoint_closed_at,omitempty"`
 	VotingPower      int64   `json:"voting_power"` // from the latest assignment seen
 	LastSeenAt       *string `json:"last_seen_at"`
-	Reachable        *bool   `json:"reachable"` // debounced: up at the newest check, or failed only once since the one before; null if never probed
+	// LastServedAt is the start of the newest reading in the window whose
+	// rows came back verified (HEALTHY); null when none did.
+	LastServedAt *string `json:"last_served_at"`
+	Reachable    *bool   `json:"reachable"` // debounced: up at the newest check, or failed only once since the one before; null if never probed
 	// EndpointState says which: reachable (one failed check after a success
 	// still counts) | unreachable (two failures in a row, or no success on
 	// record). Empty when never checked.
@@ -2580,15 +2444,22 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	rows, err = db.QueryContext(ctx, `SELECT validator_address, COUNT(*), MAX(started_at) FROM probe_rows
+	// The readings in the window, the newest of them, and the newest whose
+	// rows came back verified (the effective class, so a held row is not
+	// one), which the overview's map names as the validators that served
+	// last.
+	rows, err = db.QueryContext(ctx, `SELECT validator_address, COUNT(*), MAX(started_at),
+			MAX(CASE WHEN `+cls+` = 'HEALTHY' THEN started_at END)
+		FROM probe_rows
 		WHERE started_at >= ? AND started_at <= ?`+vfilter("validator_address")+` GROUP BY validator_address`, vargs(win.startArg(), win.endArg())...)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var addr, last string
+		var served sql.NullString
 		var n int64
-		if err := rows.Scan(&addr, &n, &last); err != nil {
+		if err := rows.Scan(&addr, &n, &last, &served); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -2596,6 +2467,10 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 		v.ProbeCount = n
 		l := last
 		v.LastSeenAt = &l
+		if served.Valid {
+			s := served.String
+			v.LastServedAt = &s
+		}
 	}
 	rows.Close()
 	// The heartbeat history, which until now was written every five minutes for
@@ -2911,25 +2786,21 @@ func (s *Server) handleValidators(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, 200, map[string]any{
-			"window": win, "vantage": s.vantage, "validators": rows, "as_of_note": AsOfNote,
+			"window": win, "validators": listOfRows(rows), "as_of_note": AsOfNote,
 			"record_through": s.recordThrough(r.Context()),
-			"computed_at":    t0.UTC().Format(time.RFC3339Nano), "compute_ms": time.Since(t0).Milliseconds(),
+			"computed_at":    t0.UTC().Format(time.RFC3339Nano),
 		})
 		return
 	}
-	snap, at, ms, err := s.vals.get(r.Context(), s.logf(), win)
+	snap, at, _, err := s.vals.get(r.Context(), s.logf(), win)
 	if err != nil {
 		s.writeSnapshotErr(w, r, win, err)
 		return
 	}
-	rows := snap.Rows
-	if rows == nil {
-		rows = []validatorRow{}
-	}
 	out := map[string]any{
-		"window": snap.Window, "vantage": s.vantage, "validators": rows,
+		"window": snap.Window, "validators": listOfRows(snap.Rows),
 		"record_through": snap.RecordThrough,
-		"computed_at":    at.UTC().Format(time.RFC3339Nano), "compute_ms": ms,
+		"computed_at":    at.UTC().Format(time.RFC3339Nano),
 	}
 	if _, label, err := s.rolledFor(r.Context(), win, ""); err == nil && label != nil {
 		out["rolled_up"] = label
@@ -3034,11 +2905,6 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 		if sw.Span > 0 {
 			sw.Start = spanEnd.Add(-sw.Span)
 		}
-		classes, total, err := s.classCountsWhere(ctx, `validator_address = ? AND started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`,
-			addr, sw.startArg(), sw.endArg())
-		if err != nil {
-			return 0, nil, err
-		}
 		obl, err := s.obligationsWhere(ctx, sw, ` AND pr.validator_address = ?`, addr)
 		if err != nil {
 			return 0, nil, err
@@ -3052,18 +2918,9 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 			return 0, nil, err
 		}
 		if rolled != nil {
-			if rp, ok := rolled.ProbesByVal[addr]; ok {
-				for c, n := range rp.Classes {
-					classes[c] += n
-					total += n
-				}
-			}
 			addRolledObligations(&obl, rolled.ObligationsByVal[addr])
 		}
-		spans = append(spans, detailSpan{
-			Window: sw, Count: total, Obligations: obl, ByObligation: obl.Rate, Classes: classes,
-			RolledUp: label, Provisional: prov[addr],
-		})
+		spans = append(spans, detailSpan{Window: sw, Obligations: obl, RolledUp: label, Provisional: prov[addr]})
 	}
 	rows, err := s.validatorRows(ctx, win, addr)
 	if err != nil {
@@ -3075,7 +2932,7 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 	out := map[string]any{
 		"window":         win,
 		"record_through": s.recordThrough(ctx),
-		"validator":      rows[0],
+		"validator":      detailOf(rows[0]),
 		"windows":        spans,
 	}
 	if win.AsOf {
@@ -3090,17 +2947,11 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 // detailSpans are the spans every validator answer carries beside its row.
 var detailSpans = []string{"24h", "7d", "30d", "all"}
 
-// detailSpan is one of them: the validator's obligations and readings over
-// that span.
+// detailSpan is one of them: the validator's obligations over that span.
 type detailSpan struct {
-	Window Window `json:"window"`
-	// Count is every assigned in-window reading in this window, not every
-	// row for the validator (validator.probe_count).
-	Count        int64           `json:"probe_count"`
-	Obligations  obligationStats `json:"obligations"`
-	ByObligation Rate            `json:"serve_rate_by_obligation"`
-	Classes      classCounts     `json:"classes"`
-	RolledUp     *rolledUp       `json:"rolled_up,omitempty"`
+	Window      Window          `json:"window"`
+	Obligations obligationStats `json:"obligations"`
+	RolledUp    *rolledUp       `json:"rolled_up,omitempty"`
 	// Provisional is the part of obligations.broken still settling.
 	Provisional *provisionalFaults `json:"provisional_faults,omitempty"`
 }
@@ -3129,9 +2980,8 @@ func (s *Server) detailReadings(ctx context.Context, addr string, win Window, sp
 	if err != nil {
 		return err
 	}
-	out["recent_probes"] = probes
+	out["recent_probes"] = validatorReadings(probes)
 	out["recent_probes_truncated"] = moreProbes
-	out["vantage"] = s.vantage
 	// in_retention_window is the endorsed shards whose retention window
 	// has not ended at the answer's moment, from the chain's record: a
 	// blob is read 10 minutes before its window ends, so these are
@@ -3174,9 +3024,12 @@ type blobRow struct {
 	CreationTimestamp  string `json:"creation_timestamp"`
 	MustServeUntil     string `json:"must_serve_until"`
 	ValidatorsWithRows int    `json:"validators_with_rows"`
-	SigmaRows          int    `json:"sigma_rows"`
-	DistinctRows       int    `json:"distinct_rows"`
-	AssignmentError    string `json:"assignment_error,omitempty"`
+	// SigmaRows and DistinctRows are the assignment's row counts, 16371 of
+	// 16384 on every blob of the current set; the verdict reads them from
+	// the store.
+	SigmaRows       int    `json:"-"`
+	DistinctRows    int    `json:"-"`
+	AssignmentError string `json:"assignment_error,omitempty"`
 	// AttestedPower is the voting power whose signature over the promise
 	// verified, over TotalPower, the set's total at the promise height; absent
 	// for a record from before signatures were verified.
@@ -3185,10 +3038,13 @@ type blobRow struct {
 	// AttestedWithRows is how many of ValidatorsWithRows carry a verified
 	// signature over the promise: the endorsements MsgPayForFibre settled
 	// with. Absent, like AttestedPower, before signatures were verified.
-	AttestedWithRows *int         `json:"attested_with_rows,omitempty"`
-	ProbeCount       int64        `json:"probe_count"`
-	Classes          classCounts  `json:"classes"`
-	Reconstructable  *reconstruct `json:"reconstructable"`
+	AttestedWithRows *int `json:"attested_with_rows,omitempty"`
+	// ProbeCount and Classes tally the blob's reading rows, the validators
+	// the reading never needed to ask included; kept with the verdict, not
+	// published.
+	ProbeCount      int64        `json:"-"`
+	Classes         classCounts  `json:"-"`
+	Reconstructable *reconstruct `json:"reconstructable"`
 	// Charge is the fee side of this promise from the payments table: what
 	// the module charged, and whether the promise settled or timed out. Null
 	// for a publication whose payment was not recorded (ingested before the
@@ -3215,8 +3071,10 @@ type reconstruct struct {
 	// must_serve_until, or for a blob read on the earlier schedule the newest
 	// point in the window every endorsing validator was reached at (or
 	// failing that, any validator).
-	PointAt    string `json:"point_at"`
-	WindowOver bool   `json:"window_over"`
+	PointAt string `json:"point_at"`
+	// WindowOver is must_serve_until at or before now, which the blob row
+	// publishes.
+	WindowOver bool `json:"-"`
 	// ServedRows is the distinct rows that came back verified, NeededRows
 	// the rows that reconstruct the blob (original_rows), TotalRows its
 	// encoded row count (16384 for blob version 0).
@@ -3606,12 +3464,47 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	var where string
+	q := r.URL.Query()
+	var conds []string
 	var args []any
-	if ns := r.URL.Query().Get("namespace"); ns != "" {
-		where, args = `namespace = ?`, []any{strings.ToLower(ns)}
+	if ns := q.Get("namespace"); ns != "" {
+		conds, args = append(conds, `namespace = ?`), append(args, strings.ToLower(ns))
 	}
-	if before := r.URL.Query().Get("before_height"); before != "" {
+	// commitment: the blobs with this commitment, which a DA team holds where
+	// it does not hold the promise hash. One blob can be paid for and
+	// settled more than once, so this is a list.
+	//
+	// Nothing indexes publications.commitment yet, so the page and its count
+	// each walk every publication: 45-65 ms at 8,600 publications, and they
+	// are never pruned. The index (and the collector's lookup of a
+	// commitment's other promises, which walks the same way) wants the next
+	// schema change, and has to land before mainnet volumes.
+	commitment := strings.ToLower(q.Get("commitment"))
+	if commitment != "" {
+		if b, err := hex.DecodeString(commitment); err != nil || len(b) != 32 {
+			writeErr(w, 400, "commitment must be 64 hex characters")
+			return
+		}
+		conds, args = append(conds, `commitment = ?`), append(args, commitment)
+	}
+	// publisher: the blobs this account paid for, as each blob row names its
+	// publisher (paidBy). Bech32 may be written in upper case; the store holds
+	// it as the chain prints it, in lower.
+	publisher := strings.ToLower(strings.TrimSpace(q.Get("publisher")))
+	if publisher != "" {
+		if hrp, _, err := bech32.DecodeAndConvert(publisher); err != nil || hrp != "celestia" {
+			writeErr(w, 400, "publisher must be a celestia1... account address")
+			return
+		}
+		paid, paidArgs, err := s.paidBy(r.Context(), publisher)
+		if err != nil {
+			s.writeInternal(w, r.URL.Path, err)
+			return
+		}
+		conds, args = append(conds, "("+paid+")"), append(args, paidArgs...)
+	}
+	where := strings.Join(conds, " AND ")
+	if before := q.Get("before_height"); before != "" {
 		// The cursor is (height, tx_index) because a block can carry several
 		// publications: "< height" alone drops the rest of the block the page
 		// boundary fell inside. before_tx_index defaults to 0, which with
@@ -3622,7 +3515,7 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		idx := int64(0)
-		if raw := r.URL.Query().Get("before_tx_index"); raw != "" {
+		if raw := q.Get("before_tx_index"); raw != "" {
 			idx, err = strconv.ParseInt(raw, 10, 64)
 			if err != nil || idx < 0 {
 				writeErr(w, 400, "before_tx_index must be a non-negative integer")
@@ -3639,7 +3532,7 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 	// publication the filters select, cursor included, so a page reads
 	// "51–75 of total".
 	offset := 0
-	if raw := r.URL.Query().Get("offset"); raw != "" {
+	if raw := q.Get("offset"); raw != "" {
 		o, err := strconv.Atoi(raw)
 		if err != nil || o < 0 || o > maxBlobOffset {
 			writeErr(w, 400, fmt.Sprintf("offset must be an integer from 0 to %d", maxBlobOffset))
@@ -3665,8 +3558,15 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
-	out := map[string]any{"vantage": s.vantage, "blobs": blobs, "limit": limit, "offset": offset, "total": total, "truncated": truncated,
-		"namespace": strings.ToLower(r.URL.Query().Get("namespace"))}
+	out := map[string]any{"blobs": blobs, "limit": limit, "offset": offset, "total": total, "truncated": truncated,
+		"namespace": strings.ToLower(q.Get("namespace"))}
+	// the other filters are echoed when they were asked for
+	if commitment != "" {
+		out["commitment"] = commitment
+	}
+	if publisher != "" {
+		out["publisher"] = publisher
+	}
 	if truncated && len(blobs) > 0 {
 		// The cursor this route already takes, filled in so a caller does not
 		// have to read the last row to build it.
@@ -3721,6 +3621,13 @@ const blobServiceSQL = `SELECT validator_address,
 func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	hash := strings.ToLower(r.PathValue("hash"))
 	ctx := r.Context()
+	// The readings' row indices and their digest, as on /v1/probes: what a
+	// verifier re-deriving the verdict needs, and most of the answer's bytes.
+	withRows, err := parseRows(r)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
 	blobs, err := s.blobRows(ctx, `promise_hash = ?`, 1, hash)
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)
@@ -3755,7 +3662,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		assigns = append(assigns, a)
 	}
 	rows.Close()
-	probes, err := s.probeRows(ctx, `promise_hash = ?`, 1000, true, hash)
+	probes, err := s.probeRows(ctx, `promise_hash = ?`, 1000, withRows, hash)
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
@@ -3771,7 +3678,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.st.DB().QueryRowContext(ctx, `SELECT shard_retention_s, payment_promise_timeout_s FROM publications WHERE promise_hash = ?`, hash).Scan(&params.ShardRetentionS, &params.PaymentPromiseTimeoutS)
 	writeJSON(w, 200, map[string]any{"blob": blobs[0], "params": params, "assignments": assigns,
-		"probes": probes, "probes_truncated": moreProbes, "vantage": s.vantage})
+		"probes": blobReadings(probes), "probes_truncated": moreProbes})
 }
 
 // blobService fills each assignment's Service from the obligation buckets
@@ -3926,7 +3833,9 @@ const policyRevealNote = "seven days"
 // ---- probes ----
 
 type probeRow struct {
-	Vantage          string `json:"vantage"`
+	// Vantage is the one this observer reads blobs from; the validator page
+	// keys its rows with it.
+	Vantage          string `json:"-"`
 	PromiseHash      string `json:"promise_hash"`
 	ValidatorAddress string `json:"validator_address"`
 	ValidatorHost    string `json:"validator_host"`
@@ -3946,26 +3855,21 @@ type probeRow struct {
 	RowsReturned     int    `json:"rows_returned"`
 	RowsExpected     int    `json:"rows_expected"`
 	TotalDurationMS  int64  `json:"total_duration_ms"`
-	TLSOK            bool   `json:"tls_ok"`
-	IdentityOK       bool   `json:"identity_ok"`
 	RawError         string `json:"raw_error,omitempty"`
 	// RetryFirstOutcome is set when this validator was asked twice in the
 	// reading (the client's re-dial after a failed dial, an unreachable or a
 	// timed-out peer): the outcome of the first attempt, so a reader can see
 	// "the first try timed out" rather than only the final answer.
 	RetryFirstOutcome string `json:"retry_first_outcome,omitempty"`
-	ClockOffsetMS     int64  `json:"clock_offset_ms,omitempty"`
 	// The evidence behind the verdict, when the row carries it (rows from
 	// before schema 9 do not): the row indices returned, a digest of the
-	// returned payload, the gRPC status code, the promise whose shard
-	// answered instead, and the observer build and chain app version the
-	// classification was made under.
-	RowIndices    []uint32 `json:"row_indices,omitempty"`
-	RowsSHA256    string   `json:"rows_sha256,omitempty"`
-	RPCCode       string   `json:"rpc_code,omitempty"`
-	ShadowedBy    string   `json:"shadowed_by,omitempty"`
-	ObserverBuild string   `json:"observer_build,omitempty"`
-	AppVersion    int64    `json:"app_version,omitempty"`
+	// returned payload, the gRPC status code, and the promise whose shard
+	// answered instead. The build, the chain app version and the clock the
+	// reading ran under are in the daily exports.
+	RowIndices []uint32 `json:"row_indices,omitempty"`
+	RowsSHA256 string   `json:"rows_sha256,omitempty"`
+	RPCCode    string   `json:"rpc_code,omitempty"`
+	ShadowedBy string   `json:"shadowed_by,omitempty"`
 	// RetentionUnverified says this row's publication sits inside an
 	// x/fibre params range this observer has not read every height of, so
 	// the deadline its phase and verdict were drawn against may not be the
@@ -4028,9 +3932,9 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 		rowCols = `'', ''`
 	}
 	q := `SELECT vantage, promise_hash, validator_address, validator_host, assigned, attested, assigned_row_count, schedule_label, scheduled_at,
-		started_at, phase, outcome, ` + rollup.EffectiveClass("") + `, classification_reason, rows_returned, rows_expected, total_duration_ms, tls_ok, identity_ok, raw_error,
-		COALESCE(retry_first_outcome, ''), COALESCE(clock_offset_ms, 0),
-		` + rowCols + `, COALESCE(rpc_code, ''), COALESCE(shadowed_by, ''), COALESCE(observer_build, ''), COALESCE(app_version, 0),
+		started_at, phase, outcome, ` + rollup.EffectiveClass("") + `, classification_reason, rows_returned, rows_expected, total_duration_ms, raw_error,
+		COALESCE(retry_first_outcome, ''),
+		` + rowCols + `, COALESCE(rpc_code, ''), COALESCE(shadowed_by, ''),
 		COALESCE(shadow_gap, ''), COALESCE(classification_at_probe, ''), COALESCE(amended_at, ''),
 		COALESCE(host_at_settlement, ''), COALESCE(settlement_host_outcome, ''), settlement_host_served,
 		retention_unverified, COALESCE(phase_at_probe, ''), COALESCE(corrected_at, ''),
@@ -4052,7 +3956,7 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 	now := time.Now()
 	for rows.Next() {
 		var p probeRow
-		var assigned, tls, id, held int
+		var assigned, held int
 		var att sql.NullInt64
 		var idxJSON string
 		var served sql.NullInt64
@@ -4060,8 +3964,8 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 		var late bool
 		if err := rows.Scan(&p.Vantage, &p.PromiseHash, &p.ValidatorAddress, &p.ValidatorHost, &assigned, &att, &p.AssignedRowCount, &p.ScheduleLabel,
 			&p.ScheduledAt, &p.StartedAt, &p.Phase, &p.Outcome, &p.Classification, &p.Reason, &p.RowsReturned, &p.RowsExpected,
-			&p.TotalDurationMS, &tls, &id, &p.RawError, &p.RetryFirstOutcome, &p.ClockOffsetMS,
-			&idxJSON, &p.RowsSHA256, &p.RPCCode, &p.ShadowedBy, &p.ObserverBuild, &p.AppVersion,
+			&p.TotalDurationMS, &p.RawError, &p.RetryFirstOutcome,
+			&idxJSON, &p.RowsSHA256, &p.RPCCode, &p.ShadowedBy,
 			&p.ShadowGap, &p.ClassificationAtProbe, &p.AmendedAt, &p.HostAtSettlement, &p.SettlementHostOutcome, &served,
 			&held, &p.PhaseAtProbe, &p.CorrectedAt, &counted, &late); err != nil {
 			return nil, err
@@ -4083,7 +3987,7 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 		if idxJSON != "" {
 			_ = json.Unmarshal([]byte(idxJSON), &p.RowIndices)
 		}
-		p.Assigned, p.TLSOK, p.IdentityOK = assigned == 1, tls == 1, id == 1
+		p.Assigned = assigned == 1
 		if att.Valid {
 			b := att.Int64 == 1
 			p.Attested = &b
@@ -4139,14 +4043,10 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 	// verdict needs (docs/verdicts.md), and most of every row's bytes. The
 	// readings themselves, which is what a page or an operator watching one
 	// validator reads, come without them unless asked for.
-	withRows := false
-	if v := q.Get("rows"); v != "" {
-		b, err := strconv.ParseBool(v)
-		if err != nil {
-			writeErr(w, 400, "rows must be 1 or 0")
-			return
-		}
-		withRows = b
+	withRows, err := parseRows(r)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
 	}
 	most := probesMax
 	if withRows {
@@ -4224,13 +4124,27 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, truncated := trim(rows, limit)
-	out := map[string]any{"vantage": s.vantage, "probes": rows, "limit": limit, "truncated": truncated, "rows_included": withRows}
+	out := map[string]any{"probes": rows, "limit": limit, "truncated": truncated, "rows_included": withRows}
 	if truncated && len(rows) > 0 {
 		// Where to continue from: everything strictly older than the last row
 		// returned. Paired with the same filters it walks the whole selection.
 		out["next_before"] = rows[len(rows)-1].StartedAt
 	}
 	writeJSON(w, 200, out)
+}
+
+// parseRows reads ?rows=, the opt-in for the readings' row indices and
+// their digest.
+func parseRows(r *http.Request) (bool, error) {
+	v := r.URL.Query().Get("rows")
+	if v == "" {
+		return false, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, errors.New("rows must be 1 or 0")
+	}
+	return b, nil
 }
 
 // trim cuts an over-fetched page back to the limit and says whether there was
@@ -4282,8 +4196,7 @@ func (s *Server) handleExports(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	out := map[string]any{
-		"vantage": s.vantage,
-		"exports": entries,
+		"exports": exportList(entries),
 		"how_to_verify": "download /v1/exports/<name>, check its sha256 against the entry (and the .sha256 sidecar), " +
 			"untar, check each member against manifest.json, then run sentinel-recompute on the directory: it re-derives " +
 			"every row's phase and classification from the row's own fields and the run's recorded configuration, and every " +

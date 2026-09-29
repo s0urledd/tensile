@@ -18,8 +18,9 @@ import type { Rate, Window } from "./api";
  * newest assigned promises (up to 20) do.
  */
 export type Signing = {
-  assigned: number; signed: number; rate: Rate; unknown: number; no_host?: number;
+  assigned: number; signed: number; unknown: number; no_host?: number;
   last_endorsed_at?: string | null;
+  /** on the validator page only */
   recent?: { assigned: number; endorsed: number };
 };
 
@@ -29,7 +30,8 @@ export type SigningBucket = { key: string; label: string; from: number; to: numb
 /** /v1/signing: how much voting power each settled promise in the period collected. */
 export type SigningDistribution = {
   window: Window;
-  threshold: { num: number; den: number; rule: string };
+  /** the chain's quorum: attested_voting_power ≥ floor(total_voting_power × num / den) */
+  threshold: { num: number; den: number };
   /** settled promises with verified signatures: the histogram's population */
   promises: number;
   /** settled promises recorded before signatures were verified, outside it */
@@ -40,6 +42,5 @@ export type SigningDistribution = {
   /** median assigned signers per promise: how many validators it took */
   signers_median: number | null;
   computed_at: string;
-  note: string;
 };
 

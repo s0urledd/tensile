@@ -346,16 +346,20 @@ type signingBucket struct {
 	Count          int64 `json:"count"`
 }
 
-// signingResponse is /v1/signing.
+// signingResponse is /v1/signing. A promise's share is the voting power
+// whose signature over it verified, over the total voting power of the set
+// at the promise height. Publishers stop collecting at the quorum, so mass
+// just above two thirds is the protocol working, not validators failing;
+// an unsigned validator is unproven, never at fault.
 type signingResponse struct {
-	Window  Window `json:"window"`
-	Vantage string `json:"vantage"`
-	// Threshold is the quorum the chain checks, stated as its own rule so a
-	// reader can reproduce which bucket a promise falls in.
+	Window Window `json:"window"`
+	// Threshold is the quorum the chain checks: attested_voting_power >=
+	// floor(total_voting_power * num / den), as x/fibre checks it when the
+	// transaction settles (keeper/msg_server.go,
+	// fibre/validator/signature_set.go).
 	Threshold struct {
-		Num  int64  `json:"num"`
-		Den  int64  `json:"den"`
-		Rule string `json:"rule"`
+		Num int64 `json:"num"`
+		Den int64 `json:"den"`
 	} `json:"threshold"`
 	// Promises is every settled promise in the window whose signatures were
 	// verified and whose validator set has voting power: the histogram's
@@ -379,13 +383,7 @@ type signingResponse struct {
 	SignersMedian *int64 `json:"signers_median"`
 	AsOfNote      string `json:"as_of_note,omitempty"`
 	ComputedAt    string `json:"computed_at"`
-	Note          string `json:"note"`
 }
-
-// signingNote goes out with every answer, because the histogram invites a
-// reading it does not support.
-const signingNote = "A promise's share is the voting power whose signature over it verified, over the total voting power of the set at the promise height. " +
-	"Publishers stop collecting at the quorum, so mass just above two thirds is the protocol working, not validators failing; an unsigned validator is unproven, never at fault."
 
 // The bucket edges, as fractions of total voting power. The first edge is the
 // chain's quorum, applied as the chain applies it (integer floor); the rest
@@ -404,9 +402,8 @@ var signingEdges = []struct {
 
 func (s *Server) computeSigning(ctx context.Context, win Window) (*signingResponse, error) {
 	db := s.st.DB()
-	resp := &signingResponse{Window: win, Vantage: s.vantage, Note: signingNote}
+	resp := &signingResponse{Window: win}
 	resp.Threshold.Num, resp.Threshold.Den = 2, 3
-	resp.Threshold.Rule = "attested_voting_power >= floor(total_voting_power * 2 / 3), the check x/fibre runs when the transaction settles (keeper/msg_server.go, fibre/validator/signature_set.go)"
 	if win.AsOf {
 		resp.AsOfNote = AsOfNote
 	}

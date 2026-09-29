@@ -21,7 +21,7 @@ import (
 // number of blobs it actually concerns, and "812 unattested" against a named
 // operator is not the same claim as "203 blobs carried no signature from you".
 
-// stabilityFixture builds two publications over two validators. v1 carries a
+// stabilityFixtureStore builds two publications over two validators. v1 carries a
 // verified signature on both; v2 carries none, which is what the two-thirds
 // quorum leaves behind. Every validator is probed at all four in-window
 // points of both blobs, so probe counts are exactly four times obligation
@@ -33,12 +33,6 @@ import (
 //
 // Reachability heartbeats: ten for each validator, of which v2's last three
 // did not complete TLS.
-func stabilityFixture(t *testing.T) *httptest.Server {
-	t.Helper()
-	ts, _ := stabilityFixtureStore(t)
-	return ts
-}
-
 func stabilityFixtureStore(t *testing.T) (*httptest.Server, *store.Store) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
@@ -196,17 +190,39 @@ type rateJSON struct {
 	Value *float64 `json:"value"`
 }
 
-func stabilityValidators(t *testing.T, ts *httptest.Server) map[string]stabilityValidator {
+// stabilityValidators reads every validator's reachability from the list,
+// and the rest from its row: the fixture's addresses are not ones the
+// validator page takes, and the list leaves out the attestation, the last
+// failed handshake, the reading tally and the certificate rate.
+func stabilityValidators(t *testing.T, ts *httptest.Server, st *store.Store) map[string]stabilityValidator {
 	t.Helper()
 	var resp struct {
-		Validators []stabilityValidator `json:"validators"`
+		Validators []struct {
+			Address string   `json:"address"`
+			Uptime  rateJSON `json:"reachability_window"`
+		} `json:"validators"`
 	}
 	if code := get(t, ts, "/v1/validators?window=all", &resp); code != 200 {
 		t.Fatalf("validators: %d", code)
 	}
+	var rows struct {
+		Validators []stabilityValidator `json:"validators"`
+	}
+	rowsOf(t, st, "test", "all", time.Time{}, &rows)
+	row := map[string]stabilityValidator{}
+	for _, v := range rows.Validators {
+		row[v.Address] = v
+	}
 	out := map[string]stabilityValidator{}
-	for _, v := range resp.Validators {
-		out[v.Address] = v
+	for _, l := range resp.Validators {
+		v, ok := row[l.Address]
+		if !ok {
+			t.Fatalf("%s is listed but has no row", l.Address)
+		}
+		if v.Uptime.Num != l.Uptime.Num || v.Uptime.Den != l.Uptime.Den {
+			t.Fatalf("%s: listed reachability %+v, row %+v", l.Address, l.Uptime, v.Uptime)
+		}
+		out[l.Address] = v
 	}
 	return out
 }
@@ -215,7 +231,8 @@ func stabilityValidators(t *testing.T, ts *httptest.Server) map[string]stability
 // readings: both blobs of v2 are unattested, and each was read four times on
 // the earlier schedule.
 func TestUnattestedIsCountedPerObligation(t *testing.T) {
-	vals := stabilityValidators(t, stabilityFixture(t))
+	ts, st := stabilityFixtureStore(t)
+	vals := stabilityValidators(t, ts, st)
 	v2, ok := vals["v2"]
 	if !ok {
 		t.Fatal("v2 missing from /v1/validators")
@@ -243,8 +260,8 @@ func TestUnattestedIsCountedPerObligation(t *testing.T) {
 // the publisher never collected a signature from. That is the one stability
 // figure whose coverage does not depend on attestation.
 func TestReachabilityHistoryIsPublishedPerValidator(t *testing.T) {
-	ts := stabilityFixture(t)
-	vals := stabilityValidators(t, ts)
+	ts, st := stabilityFixtureStore(t)
+	vals := stabilityValidators(t, ts, st)
 
 	v1 := vals["v1"]
 	if v1.Uptime.Num != 10 || v1.Uptime.Den != 10 {
@@ -297,7 +314,7 @@ func TestReachabilityHistoryIsPublishedPerValidator(t *testing.T) {
 // sizes, and a third that is genuinely slow. v1 carries four times v2's rows
 // and takes four times as long, so their throughput is identical and their
 // durations are not. v3 carries v2's rows at a quarter of the speed.
-func latencyFixture(t *testing.T) *httptest.Server {
+func latencyFixture(t *testing.T) (*httptest.Server, *store.Store) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
@@ -416,7 +433,7 @@ func latencyFixture(t *testing.T) *httptest.Server {
 	}
 	ts := httptest.NewServer(api.New(st, "test"))
 	t.Cleanup(ts.Close)
-	return ts
+	return ts, st
 }
 
 type latencyValidator struct {
@@ -429,13 +446,13 @@ type latencyValidator struct {
 }
 
 func TestLatencyIsServiceTimeAndSizeNormalised(t *testing.T) {
-	ts := latencyFixture(t)
+	_, st := latencyFixture(t)
+	// Latency is kept in the rows and published nowhere; throughput is on
+	// the validator's page, which the fixture's addresses cannot open.
 	var resp struct {
 		Validators []latencyValidator `json:"validators"`
 	}
-	if code := get(t, ts, "/v1/validators?window=all", &resp); code != 200 {
-		t.Fatalf("validators: %d", code)
-	}
+	rowsOf(t, st, "test", "all", time.Time{}, &resp)
 	by := map[string]latencyValidator{}
 	for _, v := range resp.Validators {
 		by[v.Address] = v
@@ -488,15 +505,13 @@ func TestLatencyIsServiceTimeAndSizeNormalised(t *testing.T) {
 		t.Errorf("v1 bytes/s = %d, want %d over the download step alone", *v1.BytesSec, want)
 	}
 
-	// The same figures network-wide.
+	// The same figures network-wide, which the summary keeps.
 	var net struct {
 		P50    *int64 `json:"serve_latency_p50_ms"`
 		P95    *int64 `json:"serve_latency_p95_ms"`
 		Sample int64  `json:"serve_latency_sample"`
 	}
-	if code := get(t, ts, "/v1/network?window=all", &net); code != 200 {
-		t.Fatalf("network: %d", code)
-	}
+	networkOf(t, st, "test", "all", time.Time{}, &net)
 	if net.Sample != 16 {
 		t.Errorf("network latency sample = %d, want 16 successful probes", net.Sample)
 	}

@@ -1217,3 +1217,79 @@ body { background: var(--canvas); }
   .figs.row .metric .value { font-size: 26px; }
   .figs .metric.hero .value { font-size: 44px; }
 }
+
+/* ------------------------------------------------------------------ API --- */
+/* The API page (app/developers): a question per row, its call and fields on
+   the left and a real answer on the right, the answer the one raised
+   surface; below 1000px the answer follows the text. */
+.api { padding-bottom: 16px; }
+.api code { overflow-wrap: anywhere; }
+.api-eyebrow { margin: 0 0 8px; font-size: var(--t-tiny); font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--text-2); }
+.api-q { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 20px 40px; align-items: start; padding: 32px 0; border-top: 1px solid var(--border); scroll-margin-top: 16px; }
+.api-q h3 { margin: 0 0 6px; font-size: 15px; font-weight: 600; letter-spacing: -.01em; line-height: 1.4; }
+.api-q h3 a { color: var(--text); }
+.api-q h3 a:hover { color: var(--accent-ink); text-decoration: none; }
+.api-lede { margin: 0 0 14px; color: var(--text-2); line-height: 1.55; }
+.api-intro { border-top: 0; padding-top: 28px; }
+.api-intro .chips { margin: 0 0 22px; }
+
+/* a call: the one-line curl, wrapping where it must, and its copy button */
+.api-call { display: flex; align-items: flex-start; gap: 10px; margin: 0 0 18px; padding: 8px 8px 8px 14px; border-radius: var(--r-ctl); background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow-sm); }
+.api-call code { flex: 1; min-width: 0; padding: 3px 0; background: none; font-size: 12.5px; line-height: 1.55; color: var(--text); white-space: pre-wrap; word-break: break-all; }
+.api-call .copy { flex: none; height: 26px; margin: 0; padding: 0 10px; border-radius: 6px; font-size: var(--t-small); }
+.api-base { margin-bottom: 14px; }
+.api-base code { font-size: var(--t-body); }
+
+/* the fields a question reads, one line each */
+.api-fields { display: grid; gap: 12px; margin: 0; }
+.api-fields > div { display: grid; gap: 3px; }
+.api-fields dt code { font-size: 12.5px; color: var(--text); }
+.api-fields dd { margin: 0; color: var(--text-2); line-height: 1.55; }
+.api-note { margin: 16px 0 0; font-size: var(--t-cell); color: var(--text-2); line-height: 1.55; }
+
+/* an example answer: the JSON's keys step back so its values read first */
+.api-ex { margin: 0; min-width: 0; border-radius: var(--r-card); background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow-sm); overflow: hidden; }
+.api-ex figcaption { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: var(--t-tiny); font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--text-2); }
+.api-ex figcaption span { margin-left: auto; padding: 2px 7px; border-radius: 4px; background: var(--tag-bg); font-weight: 500; letter-spacing: .04em; }
+.api-ex pre { margin: 0; padding: 14px 16px 16px; background: var(--surface-2); font: 12px/1.6 var(--mono); color: var(--text); white-space: pre-wrap; tab-size: 2; }
+.api-ex pre code { padding: 0; background: none; font-size: inherit; }
+.api-ex .ln { display: block; }
+.api-ex .k { color: var(--text-3); }
+.api-ex .s { display: inline-block; max-width: 100%; vertical-align: top; text-indent: 0; }
+
+/* pick your use: three cards, each its questions as links */
+.api-uses { margin: 8px 0 0; }
+.api-uses > h2 { margin: 0 0 14px; }
+.api-use-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.api-use { display: flex; flex-direction: column; gap: 8px; padding: 20px 22px; border-radius: var(--r-card); background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow-sm); }
+.api-use h3 { margin: 6px 0 0; font-size: 15px; font-weight: 600; }
+.api-use h3 a { color: var(--text); }
+.api-use > p { margin: 0; color: var(--text-2); line-height: 1.5; }
+.api-use ul { display: grid; gap: 8px; margin: 6px 0 0; padding: 12px 0 0; border-top: 1px solid var(--border); list-style: none; }
+.api-use li a { font-size: var(--t-cell); line-height: 1.45; }
+.api-more { margin: 14px 0 0; color: var(--text-2); }
+.api-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 36px; height: 36px; border-radius: 10px; background: var(--accent-tint); color: var(--accent-ink); }
+
+/* a reader's section, and the reference */
+.api-group, .api-ref { margin-top: 48px; scroll-margin-top: 16px; }
+.api-group-head { display: flex; align-items: flex-start; gap: 14px; padding-bottom: 20px; }
+.api-group-head p { margin: 4px 0 0; max-width: 76ch; color: var(--text-2); line-height: 1.55; }
+.api-ref-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 48px; }
+.api-topic { padding: 20px 0; border-top: 1px solid var(--border); scroll-margin-top: 16px; }
+.api-topic h3 { margin: 0 0 8px; font-size: var(--t-body); font-weight: 600; }
+.api-topic ul { margin: 0; padding-left: 1.1em; color: var(--text-2); }
+.api-topic li { margin-bottom: 6px; line-height: 1.55; }
+.api-topic li::marker { color: var(--text-3); }
+
+@media (max-width: 1000px) {
+  .api-q { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 800px) {
+  .api-use-grid, .api-ref-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 480px) {
+  .api-call { padding-left: 12px; }
+  .api-base code { font-size: 12px; }
+  .api-ex pre { padding: 12px; font-size: 11.5px; }
+  .api-group-head .api-icon { display: none; }
+}

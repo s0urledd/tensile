@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
+	"github.com/plsgiveup/fibre/fibre-sentinel/observer/api"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
@@ -23,6 +25,12 @@ var selfAddrs = map[string]string{
 }
 
 func excludeFixture(t *testing.T) *httptest.Server {
+	t.Helper()
+	ts, _ := excludeFixtureStore(t)
+	return ts
+}
+
+func excludeFixtureStore(t *testing.T) (*httptest.Server, *store.Store) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
@@ -43,15 +51,33 @@ func excludeFixture(t *testing.T) *httptest.Server {
 	insertReading(t, st, "ex2", created, msu, 2, probe.EndReadLabel, at, []endVal{
 		{addr: selfAddrs["broke"], rows: 2, w: gone},
 	})
-	return httptestServer(t, st)
+	return httptestServer(t, st), st
 }
 
 type netFigures struct {
-	Obligations obligationsJSON  `json:"obligations"`
-	Classes     map[string]int64 `json:"classes"`
-	ProbeCount  int64            `json:"probe_count"`
-	Excluded    []string         `json:"excluded"`
-	ExcludeNote string           `json:"exclude_note"`
+	Obligations obligationsJSON `json:"obligations"`
+	Excluded    []string        `json:"excluded"`
+	ExcludeNote string          `json:"exclude_note"`
+}
+
+// tallyFigures are the reading tallies the summary keeps and does not
+// publish, recomputed with or without an exclusion.
+type tallyFigures struct {
+	Classes    map[string]int64 `json:"classes"`
+	ProbeCount int64            `json:"probe_count"`
+}
+
+func talliesExcluding(t *testing.T, st *store.Store, exclude ...string) tallyFigures {
+	t.Helper()
+	raw, err := api.NetworkExcludingJSON(st, "test", "all", exclude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out tallyFigures
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 // This observer's own operator runs a validator on the network
@@ -59,7 +85,7 @@ type netFigures struct {
 // recompute the headline figures without it, so `?exclude=` is a filter on
 // the request and never a setting on the deployment.
 func TestExcludeRecomputesTheHeadlineWithoutAValidator(t *testing.T) {
-	ts := excludeFixture(t)
+	ts, st := excludeFixtureStore(t)
 
 	var all netFigures
 	if code := get(t, ts, "/v1/network?window=all", &all); code != 200 {
@@ -69,8 +95,9 @@ func TestExcludeRecomputesTheHeadlineWithoutAValidator(t *testing.T) {
 	if o.Total != 4 || o.Served != 1 || o.Broken != 1 || o.NotCounted != 2 {
 		t.Fatalf("fixture: obligations = %+v, want one served, one not served, two counted neither way", o)
 	}
-	if all.Classes["FAULT"] != 1 {
-		t.Fatalf("fixture: FAULT readings = %d, want 1", all.Classes["FAULT"])
+	allTallies := talliesExcluding(t, st)
+	if allTallies.Classes["FAULT"] != 1 {
+		t.Fatalf("fixture: FAULT readings = %d, want 1", allTallies.Classes["FAULT"])
 	}
 	if all.Excluded != nil || all.ExcludeNote != "" {
 		t.Errorf("an unfiltered answer must not claim an exclusion: %v %q", all.Excluded, all.ExcludeNote)
@@ -89,11 +116,12 @@ func TestExcludeRecomputesTheHeadlineWithoutAValidator(t *testing.T) {
 	if l.Rate.Num != 1 || l.Rate.Den != 1 {
 		t.Errorf("excluded rate = %d/%d, want 1/1", l.Rate.Num, l.Rate.Den)
 	}
-	if less.Classes["FAULT"] != 0 {
-		t.Errorf("excluded FAULT readings = %d, want 0: the only one was that validator's", less.Classes["FAULT"])
+	lessTallies := talliesExcluding(t, st, selfAddrs["broke"])
+	if lessTallies.Classes["FAULT"] != 0 {
+		t.Errorf("excluded FAULT readings = %d, want 0: the only one was that validator's", lessTallies.Classes["FAULT"])
 	}
-	if less.ProbeCount != all.ProbeCount-1 {
-		t.Errorf("excluded probe_count = %d, want %d: its one reading left with it", less.ProbeCount, all.ProbeCount-1)
+	if lessTallies.ProbeCount != allTallies.ProbeCount-1 {
+		t.Errorf("excluded probe_count = %d, want %d: its one reading left with it", lessTallies.ProbeCount, allTallies.ProbeCount-1)
 	}
 	if len(less.Excluded) != 1 || less.Excluded[0] != selfAddrs["broke"] {
 		t.Errorf("excluded = %v, want the address that was asked for", less.Excluded)
@@ -109,9 +137,8 @@ func TestExcludeRecomputesTheHeadlineWithoutAValidator(t *testing.T) {
 	if code := get(t, ts, "/v1/network?window=all", &again); code != 200 {
 		t.Fatalf("network after exclude: %d", code)
 	}
-	if again.Obligations != all.Obligations || again.Classes["FAULT"] != all.Classes["FAULT"] {
-		t.Errorf("the cached summary was poisoned by a filtered request: %+v (%d FAULT), want %+v (%d)",
-			again.Obligations, again.Classes["FAULT"], all.Obligations, all.Classes["FAULT"])
+	if again.Obligations != all.Obligations {
+		t.Errorf("the cached summary was poisoned by a filtered request: %+v, want %+v", again.Obligations, all.Obligations)
 	}
 	if again.Excluded != nil {
 		t.Errorf("the unfiltered answer came back claiming an exclusion: %v", again.Excluded)

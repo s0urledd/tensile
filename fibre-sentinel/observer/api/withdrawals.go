@@ -39,23 +39,28 @@ import (
 //     module pays in the first block whose time reaches available_at
 //     (x/fibre/keeper/abci.go:52-71), so this is the withdrawal_delay in
 //     force at the request plus payout_lag_s, the wait for that block.
+//
+// The queue is read for every publisher already seen in a payment, at one
+// height per poll, with the escrow balances (EscrowAccount) at the same
+// height; payouts come from the begin-block EventWithdrawFromEscrowExecuted.
+// A withdrawal that left the queue is executed only when exactly one payout
+// of its last-seen amount lands between the two reads that bracket its
+// departure.
 
-// withdrawalNotes are published wherever the queue is.
-var withdrawalNotes = []string{
-	"the queue is read from x/fibre state (Withdrawals query) for every publisher already seen in a payment, at one height per poll; it is not rebuilt from events, because a settlement that finds the available balance short shrinks or deletes queued withdrawals without any event",
-	"pending is the queue as of the last read, not a window figure",
-	"reduced_utia is what a settlement shortfall took from a withdrawal while this observer was watching it; a reduction before its first sighting is not visible, so it is a floor",
-	"a withdrawal that left the queue is executed only when exactly one payout of its last-seen amount lands between the two reads that bracket its departure; one that left before its available_at was consumed by a shortfall; anything else is unattributed and has no payout delay",
-}
-
-// pendingSummary is one account's queue, or the market's, as last read.
-type pendingSummary struct {
+// pendingQueue is one account's queue, or the market's, as last read.
+type pendingQueue struct {
 	Count           int64   `json:"count"`
 	Utia            int64   `json:"utia"`
 	NextAvailableAt *string `json:"next_available_at"`
 	// ReducedUtia is the part of the pending amount's first sightings a
-	// settlement shortfall has already taken (see withdrawalNotes).
+	// settlement shortfall has already taken: a floor, since a reduction
+	// before the first sighting is not visible.
 	ReducedUtia int64 `json:"reduced_utia"`
+}
+
+// pendingSummary is pendingQueue with the read it rests on.
+type pendingSummary struct {
+	pendingQueue
 	// ReadHeight and ReadAt are the height of the read the figures rest on
 	// and that block's time. On the market they are the latest poll's;
 	// an account whose own read failed on that poll keeps its older one.
@@ -99,14 +104,14 @@ type queueCheck struct {
 }
 
 // publisherWithdrawals is the "withdrawals" object of /v1/publishers/{addr}.
+// The read it rests on is the page's publisher.pending_withdrawals.
 type publisherWithdrawals struct {
-	pendingSummary
+	pendingQueue
 	Pending []withdrawalRow `json:"pending"`
 	// LeftQueue is the most recent withdrawals that left the queue,
 	// newest departure first.
 	LeftQueue []withdrawalRow `json:"left_queue"`
 	Check     *queueCheck     `json:"check"`
-	Notes     []string        `json:"notes"`
 }
 
 // payoutDelay summarises request→payout over executed withdrawals.
@@ -137,11 +142,7 @@ type withdrawalQueue struct {
 	Unattributed outcomeSum  `json:"unattributed"`
 	Unresolved   outcomeSum  `json:"unresolved"`
 	PayoutDelay  payoutDelay `json:"payout_delay"`
-	Source       string      `json:"source"`
-	Notes        []string    `json:"notes"`
 }
-
-const withdrawalSource = "x/fibre Withdrawals and EscrowAccount state queries at one height per poll; payouts from the begin-block EventWithdrawFromEscrowExecuted"
 
 func nullStr(v sql.NullString) *string {
 	if !v.Valid || v.String == "" {
@@ -285,7 +286,7 @@ func (s *Server) publisherWithdrawalDetail(ctx context.Context, addr string) (*p
 	if sum == nil {
 		return nil, nil
 	}
-	out := &publisherWithdrawals{pendingSummary: *sum, Notes: withdrawalNotes}
+	out := &publisherWithdrawals{pendingQueue: sum.pendingQueue}
 	if out.Pending, err = s.withdrawalRows(ctx, `publisher = ? AND gone_height IS NULL ORDER BY available_at, requested_at`, 500, addr); err != nil {
 		return nil, err
 	}
@@ -309,7 +310,7 @@ func (s *Server) publisherWithdrawalDetail(ctx context.Context, addr string) (*p
 // delays are the window's; pending is the current queue.
 func (s *Server) withdrawalQueueSummary(ctx context.Context, win Window) (*withdrawalQueue, error) {
 	db := s.st.DB()
-	q := &withdrawalQueue{Source: withdrawalSource, Notes: withdrawalNotes}
+	q := &withdrawalQueue{}
 	var next sql.NullString
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(amount_utia), 0), MIN(available_at),
 			COALESCE(SUM(first_amount_utia - amount_utia), 0), COUNT(DISTINCT publisher)

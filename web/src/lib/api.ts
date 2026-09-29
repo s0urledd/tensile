@@ -21,14 +21,11 @@ export type Attestation = {
 export type Window = { name: string; start: string; end: string };
 export type ClassCounts = Record<string, number>;
 
+/** /v1/meta: the chain and observer state the header, banners and footer read */
 export type Meta = {
   api_version: string;
   /** the rules every figure was computed under (a date); see the methodology page */
   methodology_version?: string;
-  vantage: string;
-  vantage_info: VantageInfo;
-  vantage_count: number;
-  observed_from_one_location: boolean;
   /**
    * Heartbeat vantages whose rows reached the store in the last hour, newest
    * row of each; primary is this observer's own, the one every figure counts.
@@ -47,50 +44,25 @@ export type Meta = {
   fibre_active: boolean;
   /** the chain's tip as the collector last saw it; not how far the scanner has read */
   chain_height?: string;
-  last_scanned_height: string;
-  endpoints_height: string;
-  protocol_params_fingerprint: string;
-  pinned_celestia_app_commit: string;
   counts: { Publications: number; Assignments: number; Probes: number; OpenEndpoints: number; Runs: number };
-  collector: RunStatus | null;
-  prober: RunStatus | null;
   /** newest measurement's start time; the prober's only live signal (it writes JSONL, never this database) */
   last_probe_at: string | null;
   server_time: string;
-  /** every observer process with its liveness; health is the /v1/health verdict */
-  components: Component[];
+  /** the /v1/health verdict */
   health: "ok" | "degraded" | "down";
   /** the /v1/health rows behind that verdict, so a page can say which check failed when no process did */
   checks?: { name: string; ok: boolean; detail: string }[];
   scan_gaps?: ScanGap[];
   /** matches | chain_ahead | chain_behind | unknown */
   pin_status: string;
-  unassignable_publications: number;
-  /** per headline figure, which of evidence_kinds it rests on */
-  evidence?: Record<string, string>;
-  evidence_kinds?: Record<string, string>;
   /**
-   * x/signal's tally for the app version that brings Fibre, published only
-   * while the chain is below it: a chain record, nothing measured here.
+   * The upgrade that brings Fibre, from x/signal, published only while the
+   * chain is below it: a chain record, nothing measured here.
    */
   upgrade_signal?: {
-    version: number;
-    voting_power: number;
-    threshold_power: number;
-    total_voting_power: number;
-    share: number;
-    threshold_share: number;
     upgrade_height?: number;
-    /** upgrade_height minus the chain tip, while the upgrade is scheduled and ahead */
-    blocks_remaining?: number;
-    /** the chain's average seconds per block, measured over pace_window_s; absent under half an hour of measurement */
-    block_time_s?: number;
-    pace_window_s?: number;
-    /** blocks_remaining at that pace: an estimate, not a promise */
+    /** the blocks left at the chain's recent pace: an estimate, not a promise */
     eta_seconds?: number;
-    /** monikers, as x/signal reports them */
-    missing_validators: string[] | null;
-    polled_at: string;
   };
 };
 
@@ -105,17 +77,6 @@ export function through(rt: RecordThrough | null | undefined): { text: string; t
 }
 /** a heartbeat vantage with rows in the last hour (Meta.vantages) */
 export type VantageSeen = { name: string; newest_at: string; primary: boolean };
-/** where this observer watches from; both fields are operator-declared */
-export type VantageInfo = {
-  name: string;
-  location?: string;
-  provider?: string;
-  /** per-field: what a reader can actually check, and how */
-  verifiability: Record<string, string>;
-  complete: boolean;
-};
-
-export type RunStatus = { run_id: number; started_at: string; last_heartbeat_at: string; stopped_at: string | null; alive: boolean };
 
 /** one observer process, from the status file it keeps in the data directory */
 export type Component = {
@@ -162,7 +123,7 @@ export type RecordThrough = {
   chain_height?: number;
   chain_tip_time?: string;
 };
-/** the three kinds of evidence a figure can rest on; /v1/meta defines them */
+/** the three kinds of evidence a figure can rest on */
 export type Evidence = "chain" | "verified" | "observed";
 
 export type Network = {
@@ -173,12 +134,10 @@ export type Network = {
    * site can afford — so the page shows its age rather than implying it is now.
    */
   computed_at?: string;
-  compute_ms?: number;  window: Window;
+  compute_ms?: number;
+  window: Window;
   record_through?: RecordThrough;
-  vantage: string;
-  observed_from_one_location: boolean;
   registered_endpoints: number;
-  validators_probed: number;
   /** a census of the endpoints as of their newest evidence */
   reachability: Rate;
   /** every heartbeat in the window that completed TLS, over every one sent */
@@ -187,29 +146,14 @@ export type Network = {
   obligations: Obligations;
   /** the part of obligations.broken whose faults are all still settling; absent when none (see ProvisionalFaults) */
   provisional_faults?: ProvisionalFaults;
-  /** obligations.rate, repeated */
-  serve_rate_by_obligation: Rate;
-  attestation: Attestation;
-  probe_count: number;
-  classes: ClassCounts;
-  publications: number;
-  publication_bytes: number;
   reconstructable: Reconstructable;
-  probe_gaps: number;
-  probe_gaps_by_outcome: ClassCounts;
   /** set when the window rests partly on the daily rollup: past the raw retention, "all" is the rollup for days before raw_from plus the raw rows */
   rolled_up?: RolledUp;
-  /** whole-probe duration, dial to verified rows, over HEALTHY probes */
-  serve_latency_p50_ms: number | null;
-  serve_latency_p95_ms: number | null;
-  serve_latency_sample: number;
-  /** the same span ending where this window starts; absent on "all" and on a pinned window */
-  previous?: {
-    window: Window;
-    obligations: Obligations;
-    reachability_window: Rate;
-    serve_latency_p50_ms: number | null;
-  };
+  /** a pinned window (?as_of=): what is not rewound */
+  as_of_note?: string;
+  /** a window recomputed without named validators (?exclude=) */
+  excluded?: string[];
+  exclude_note?: string;
 };
 
 /**
@@ -261,30 +205,28 @@ export function notCountedText(o: Obligations | null | undefined): string {
   return n > 0 ? `${int(n)} not counted` : "";
 }
 
+/** one validator as /v1/validators lists it */
 export type Validator = {
   address: string;
   cons_address: string;
   /** the name the operator set in the staking module, read from the chain */
   moniker?: string;
   operator_address?: string;
-  keybase_identity?: string;
-  /** the API path of the Keybase picture behind keybase_identity, once the collector fetched it */
+  /** the API path of the operator's Keybase picture, once the collector fetched it */
   avatar_url?: string;
-  website?: string;
   /** the chain's own words about the validator, unlike everything we measure */
   jailed: boolean;
   bond_status?: string;
   /** signalled for the app version that brings Fibre; only while the chain is below it, and unset when the moniker cannot be attributed */
   signaled_upgrade?: boolean;
   host: string;
-  endpoint_since: string | null;
-  /** when it first appeared in x/valaddr's bonded Fibre provider list, whatever host it had then */
-  provider_since?: string;
   /** for a validator with no open endpoint: what was registered, and when it left the bonded list */
   last_host?: string;
   endpoint_closed_at?: string;
   voting_power: number;
   last_seen_at: string | null;
+  /** the start of its newest reading in the period whose rows came back verified; null when none did */
+  last_served_at: string | null;
   reachable: boolean | null;
   /** reachable (one failed check after a good one still counts) | unreachable (two in a row) */
   endpoint_state?: "reachable" | "unreachable";
@@ -307,52 +249,11 @@ export type Validator = {
    * still gets 288 samples a day.
    */
   reachability_window: Rate;
-  /** of the heartbeats that saw a certificate, how many were endorsed */
-  identity_rate_window: Rate;
-  last_unreachable_at: string | null;
   last_reachable_at: string | null;
   /** one per (validator, blob) endorsed, judged by the blob's reading; the headline */
   obligations: Obligations;
   /** the part of obligations.broken whose faults are all still settling; absent when none (see ProvisionalFaults) */
   provisional_faults?: ProvisionalFaults;
-  /** obligations.rate, repeated */
-  serve_rate_by_obligation: Rate;
-  attestation: Attestation;
-  probe_count: number;
-  classes: ClassCounts;
-  assigned_rows_last: number;
-  expected_load_band: string;
-  /**
-   * How long this observer waited for a shard it did get. The percentiles are
-   * the whole probe — dial, TLS, DownloadShard, row verification — over the
-   * HEALTHY probes of the window.
-   *
-   * serve_bytes_per_second is the one to compare between validators: the
-   * median transfer rate over the download step alone. Assignments run from
-   * 148 rows to 4,096, so a large validator legitimately takes longer for the
-   * same quality of service, and the fixed cost of dial, handshake and
-   * identity check would flatter it if the whole probe were the basis.
-   */
-  serve_latency_p50_ms: number | null;
-  serve_latency_p95_ms: number | null;
-  serve_latency_sample: number;
-  serve_bytes_per_second: number | null;
-  /** healthy probes that carried a byte count; older records do not */
-  serve_throughput_sample: number;
-  /** newest publication: true proven to have stored it, false unproven, null not recorded */
-  attested_last: boolean | null;
-  /**
-   * The height whose validator set the row counts and voting power above were
-   * computed from. A validator that has left the active set keeps its last
-   * figures, and this says how stale they are.
-   */
-  assignment_height?: number;
-  /**
-   * MsgPaymentPromiseTimeout submitted by this validator's operator account
-   * in the window. The chain pays nothing for it; above zero says the
-   * operator runs the enforcement path at all.
-   */
-  timeouts_enforced?: number;
   /** signing participation over the period: see lib/signing.ts. Descriptive, never a fault. */
   signing?: Signing;
   /** the shard data it stored and endorsed in the period and what it holds now (from the chain) */
@@ -361,8 +262,62 @@ export type Validator = {
   hosting?: import("./hosting").Hosting;
 };
 
-export type Probe = {
+/** the validator object of /v1/validators/{addr}: the list's fields and what only its page shows */
+export type ValidatorDetail = Validator & {
+  website?: string;
+  endpoint_since: string | null;
+  /** when it first appeared in x/valaddr's bonded Fibre provider list, whatever host it had then */
+  provider_since?: string;
+  last_unreachable_at: string | null;
+  /** the Endorsements figure of a record from before signing was counted per settlement */
+  attestation: Attestation;
+  /**
+   * The median transfer rate over the download step alone, over served
+   * shards of 2 MiB or more: comparable between validators whatever their
+   * row count. Null under three such shards.
+   */
+  serve_bytes_per_second: number | null;
+  /** healthy readings of such a shard that carried a byte count */
+  serve_throughput_sample: number;
+  /**
+   * MsgPaymentPromiseTimeout submitted by this validator's operator account
+   * in the window. The chain pays nothing for it; above zero says the
+   * operator runs the enforcement path at all.
+   */
+  timeouts_enforced?: number;
+};
+
+/** one of a validator's newest readings, as its page lists them */
+export type ValidatorReading = {
   vantage: string;
+  promise_hash: string;
+  /** true proven obliged, false unproven, null recorded before verification existed */
+  attested: boolean | null;
+  schedule_label: string;
+  scheduled_at: string;
+  started_at: string;
+  phase: string;
+  outcome: string;
+  classification: string;
+  classification_reason: string;
+  rows_returned: number;
+  rows_expected: number;
+  total_duration_ms: number;
+  raw_error?: string;
+  retry_first_outcome?: string;
+  rpc_code?: string;
+  shadowed_by?: string;
+  /** where the upload went; host_changed when the host read differs (the validator re-registered during the window) */
+  host_at_settlement?: string;
+  host_changed?: boolean;
+  /** what the reading counts as for the validator: served, not_served (the blob was unavailable), or absent when it counts neither way */
+  service?: "served" | "not_served";
+  /** a not-served reading younger than the settling period: counted, and an x/fibre params change can still withdraw it */
+  provisional?: boolean;
+};
+
+/** one reading row of /v1/probes */
+export type Probe = {
   promise_hash: string;
   validator_address: string;
   validator_host: string;
@@ -380,18 +335,13 @@ export type Probe = {
   rows_returned: number;
   rows_expected: number;
   total_duration_ms: number;
-  tls_ok: boolean;
-  identity_ok: boolean;
   raw_error?: string;
   retry_first_outcome?: string;
-  clock_offset_ms?: number;
-  /** the evidence behind the verdict, on rows that carry it (schema 9 and later) */
+  /** the evidence behind the verdict, on rows that carry it (schema 9 and later), with ?rows=1 */
   row_indices?: number[];
   rows_sha256?: string;
   rpc_code?: string;
   shadowed_by?: string;
-  observer_build?: string;
-  app_version?: number;
   /** the verdict the row was stamped with, when the collector's late shadow judgement replaced it */
   classification_at_probe?: string;
   amended_at?: string;
@@ -439,7 +389,6 @@ export type Reconstruct = {
   error?: string;
   /** when the reading was scheduled */
   point_at: string;
-  window_over: boolean;
   served_distinct_rows: number;
   needed_rows: number;
   /** the blob's encoded row count (16384 for blob v0) */
@@ -464,18 +413,35 @@ export type Blob = {
   /** MsgPayForFibre.signer: the account that submitted the settlement, not necessarily who paid */
   signer: string;
   /** who paid: the escrow owner, whose key signed the promise */
-  publisher?: string;
+  publisher: string;
   settlement_height: number;
+  /** the other half of the list's cursor, with settlement_height */
+  settlement_tx_index: number;
   settlement_time: string;
   creation_timestamp: string;
   must_serve_until: string;
   validators_with_rows: number;
-  sigma_rows: number;
-  distinct_rows: number;
   assignment_error?: string;
-  probe_count: number;
-  classes: ClassCounts;
   reconstructable: Reconstruct | null;
+};
+
+/** one validator's reading of a blob, as the blob page lists them */
+export type BlobReading = {
+  validator_address: string;
+  schedule_label: string;
+  started_at: string;
+  phase: string;
+  outcome: string;
+  classification: string;
+  rows_returned: number;
+  rows_expected: number;
+  total_duration_ms: number;
+  raw_error?: string;
+  /** with ?rows=1 */
+  row_indices?: number[];
+  rows_sha256?: string;
+  rpc_code?: string;
+  service?: "served" | "not_served";
 };
 
 /**
@@ -485,7 +451,6 @@ export type Blob = {
 export type Charge = {
   fee_utia: number;
   gas_units: number;
-  publisher: string;
   settled: boolean;
   timed_out: boolean;
   processor?: string;
@@ -494,6 +459,7 @@ export type Charge = {
 /** a count and a total in utia, the shape every money figure takes */
 export type Sum = { count: number; utia: number };
 
+/** x/fibre's charge for a blob, on /v1/params: fee = (base_gas + gas_per_chunk × ⌈blob_size / chunk_bytes⌉) × utia_per_gas */
 export type PriceFormula = { base_gas: number; gas_per_chunk: number; chunk_bytes: number; utia_per_gas: number; note: string };
 
 export type PublisherShare = {
@@ -520,11 +486,8 @@ export type HourPublisher = { hour: string; publisher: string; label?: string; f
  */
 export type Market = {
   window: Window;
-  vantage: string;
   computed_at?: string;
-  compute_ms?: number;
   record_through?: RecordThrough;
-  source: string;
   settlements: number;
   /** distinct blobs (BlobID: blob_version || commitment) those settlements paid for, same window */
   blobs: number;
@@ -534,8 +497,6 @@ export type Market = {
   paid_per_mib_utia: number | null;
   timeouts: number;
   timed_out_utia: number;
-  settlement_rate: Rate;
-  timeout_processors: number;
   deposits: Sum;
   withdrawals_requested: Sum;
   withdrawals_executed: Sum;
@@ -553,8 +514,6 @@ export type Market = {
   top_publishers: PublisherShare[];
   other_publishers: PublisherShare | null;
   largest_poster: PublisherShare | null;
-  price_formula: PriceFormula;
-  notes: string[];
   /** namespaces the window's settlements used, and any settlement on record */
   namespaces?: number;
   namespaces_total?: number;
@@ -591,9 +550,21 @@ export type Payment = {
   promise_hash?: string;
   namespace?: string;
   blob_size?: number;
-  gas_units?: number;
   amount_utia: number;
   available_at?: string;
+};
+
+/** one of a publisher's newest blobs, as its page lists them; the whole row is /v1/blobs/{promise_hash} */
+export type RecentBlob = {
+  promise_hash: string;
+  commitment: string;
+  namespace: string;
+  blob_size: number;
+  settlement_height: number;
+  settlement_time: string;
+  validators_with_rows: number;
+  charge: { fee_utia: number } | null;
+  reconstructable: { status: Reconstruct["status"] } | null;
 };
 
 /**
@@ -893,7 +864,6 @@ export function shortBech(s: string): string {
  */
 export type Load = {
   promises: number;
-  rows: number;
   bytes: number;
   stored_bytes: number;
   rows_per_blob: number;
@@ -1002,8 +972,6 @@ export function fmtShare(v: number | null | undefined): string {
 export type Tip = {
   height: number;
   block_time?: string;
-  observed_at?: string;
-  source: "scanner" | "collector";
   fibre_active: boolean;
   server_time: string;
 };
@@ -1043,41 +1011,11 @@ export function provisionalNow(p: ProvisionalFaults | null | undefined, now = Da
 
 /** the network's service rate over the same window from the same vantage, beside a validator's own */
 export type NetworkReference = {
-  window: Window;
   /** median of validators' own rates, over those with at least min_rated decided; null when none */
   median_rate: number | null;
   validators: number;
   min_rated: number;
   /** every obligation together */
   pooled_rate: Rate;
-  computed_at: string;
-  note: string;
 };
 
-/**
- * City placement from DB-IP's IP to City Lite file (optional on the
- * observer; every field is absent without it). Extends the types in
- * ./hosting: a `hosting` object may carry HostingCity's fields, and
- * /v1/hosting's summary may carry `by_city` and sources `city_db`.
- * lat/lon are the city's approximate point, not the machine's.
- */
-export type HostingCity = { city?: string; region?: string; lat?: number; lon?: number };
-
-/** One /v1/hosting summary.by_city entry. key "" = hosts with no city (listed last, no name or point). */
-export type HostingCityBucket = {
-  key: string;
-  city?: string;
-  region?: string;
-  country?: string;
-  lat?: number;
-  lon?: number;
-  hosts: number;
-  host_share: number;
-  stake: number;
-  stake_share: number;
-};
-
-export type HostingCityExtras = {
-  by_city?: HostingCityBucket[];
-  city_db?: import("./hosting").DBSource;
-};
