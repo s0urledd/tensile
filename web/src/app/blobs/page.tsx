@@ -81,8 +81,8 @@ function Page() {
               title="Namespaces the period's settlements used." />
           </Figures>
           <div className="board-charts">
-            <Chart title={withPeriod(`Upload size per ${per}`, win)} figure={m && series.length ? bytes(m.bytes) : undefined}
-              series={[{ key: "bytes", label: "upload size", color: "var(--accent)" }]}
+            <Chart title={withPeriod(`Blob size per ${per}`, win)} figure={m && series.length ? bytes(m.bytes) : undefined}
+              series={[{ key: "bytes", label: "blob size", color: "var(--accent)" }]}
               rows={series.map((c) => ({ x: c.title, label: c.label, short: c.short, values: { bytes: c.bytes / (1 << 20) }, note: `${int(c.settlements)} settlement${c.settlements === 1 ? "" : "s"}` }))}
               fmt={mib} fmtAxis={axisMib} empty={m && m.window.name === win ? "nothing settled" : "loading…"} />
             <Chart title={withPeriod(`Settlements per ${per}`, win)} figure={m && series.length ? int(m.settlements) : undefined}
@@ -111,7 +111,7 @@ function Page() {
           <>
             <div className="tablewrap framed">
               <table className="bt blist">
-                <thead><tr><th>Blob</th><th>Height</th><th>Settled (UTC)</th><th>Namespace</th><th>Publisher</th><th>Upload size</th><th>Fee paid</th>
+                <thead><tr><th>Blob</th><th>Height</th><th>Settled (UTC)</th><th>Namespace</th><th>Publisher</th><th>Blob size</th><th>Fee paid</th>
                   <th title="Share of voting power whose signature on the settlement verified. A settlement needs ⅔.">Endorsed</th><th>Status</th></tr></thead>
                 <tbody>
                   {!rows && (loading || !!data) && <tr><td colSpan={9} className="muted">Loading…</td></tr>}
@@ -143,7 +143,7 @@ function Page() {
         {tab === "namespaces" && (
           <div className="tablewrap framed">
             <table className="bt nss">
-              <thead><tr><th>Namespace</th><th>Upload size</th><th>Settlements</th><th>Last 24h</th><th>Publishers</th><th>First seen</th><th>Last blob</th></tr></thead>
+              <thead><tr><th>Namespace</th><th>Blob size</th><th>Settlements</th><th>Last 24h</th><th>Publishers</th><th>First seen</th><th>Last blob</th></tr></thead>
               <tbody>
                 {!nss.data && <tr><td colSpan={7} className="muted">Loading…</td></tr>}
                 {nss.data?.namespaces.map((n) => (

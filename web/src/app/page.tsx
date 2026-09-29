@@ -52,7 +52,7 @@ function Overview() {
       <dl className="ov-spec">
         <div><dt>Height</dt><dd>{int(last.settlement_height)}</dd></div>
         <div><dt>Time</dt><dd>{whenUTC(last.settlement_time)}</dd></div>
-        <div><dt>Upload size</dt><dd>{bytes(last.blob_size)}</dd></div>
+        <div><dt>Blob size</dt><dd>{bytes(last.blob_size)}</dd></div>
         {last.attested_with_rows != null && <div><dt>Endorsements</dt><dd>{int(last.attested_with_rows)} <span className="ov-of">of {int(last.validators_with_rows)} validators</span></dd></div>}
         {last.attested_voting_power != null && !!last.total_voting_power && <div className="ov-wide"><dt>Endorsed voting power</dt><dd>{pctOf(last.attested_voting_power, last.total_voting_power)}</dd></div>}
       </dl>
@@ -113,11 +113,11 @@ function Overview() {
           tone={none || M.settlements === 0 ? "absent" : undefined}
           title="Blobs published through Fibre in this period. A blob paid for twice counts once."
           help={none ? " " : M.settlements === 0 ? "none" : `${int(M.settlements)} settlement${M.settlements === 1 ? "" : "s"}`} />
-        <Metric label="Upload size" period={period}
+        <Metric label="Blob size" period={period}
           value={none ? "—" : bytes(M.bytes)}
           tone={none || M.settlements === 0 ? "absent" : undefined}
           title="Total size of the blobs paid for in this period."
-          help={none ? " " : "total upload size"} />
+          help={none ? " " : "total blob size"} />
         <Metric label="Fees paid" period={period}
           value={none ? "—" : tia(M.fees_settled_utia)}
           tone={none || M.settlements === 0 ? "absent" : undefined}

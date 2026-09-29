@@ -126,7 +126,7 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
   title: string;
   /** a line beside the title in place of a figure (use figure to set the figure large) */
   sub?: string;
-  /** the period's total, printed large under the title: "1.35 GiB" (the period itself is in the title: "Upload size per day (7d)") */
+  /** the period's total, printed large under the title: "1.35 GiB" (the period itself is in the title: "Blob size per day (7d)") */
   figure?: string;
   empty?: string;
 }) {
