@@ -25,7 +25,8 @@ Live at **https://tensile.huginn.tech**.
 - **Signed daily exports** of the full record, so every figure can be
   recomputed offline ([`docs/exports-signing.md`](docs/exports-signing.md)).
 - **A public API**: read-only JSON at `https://tensile.huginn.tech/api/v1/`, with every rate published
-  beside its numerator and denominator.
+  beside its numerator and denominator, documented at
+  [tensile.huginn.tech/developers](https://tensile.huginn.tech/developers/).
 
 ## Modules
 

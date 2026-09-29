@@ -30,7 +30,8 @@ the export; the tarball digest adds only gzip and tar framing. No trailing
 newline, no other bytes. The domain prefix stops the signature being reused
 as a signature over some other hex string.
 
-`<name>.sig` (and the index entry's `signature`):
+`<name>.sig` (the index entry's `signature` is the same without
+`public_key`, which `/v1/exports` carries once, in `signing.current`):
 
 ```json
 {

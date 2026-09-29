@@ -382,8 +382,10 @@ One sentence each, and what a reader should conclude.
   did not serve and differs from it), `observer.build` (the observer's VCS revision), and
   `observer.assign_pin` / `observer.app_version`. The store keeps them as
   columns (`row_indices`, `rows_sha256`, `rpc_code`, `shadowed_by`,
-  `observer_build`, `app_version`) and `/v1/probes` publishes them (the
-  row indices and their digest with `?rows=1`, being most of a row's bytes). A
+  `observer_build`, `app_version`) and `/v1/probes` publishes the first four
+  (the row indices and their digest with `?rows=1`, being most of a row's
+  bytes); the build and app version are on every row of the record and of
+  the daily export. A
   classification is a function of the wire result and the code; with these
   fields both halves are on the row.
 - **Reachability** (`reachability_window`) is heartbeats that completed TLS
@@ -645,14 +647,13 @@ what the measurement cannot separate.
 Every snapshot response — `/v1/network`, `/v1/validators`, `/v1/market` and
 `/v1/validators/<addr>` — carries `record_through`: the scanner's checkpoint
 height and block time as they stood when the figures were computed, beside
-the chain tip the collector had last seen (`last_scanned_height`,
-`last_scanned_time`, `chain_height`, `chain_tip_time` in `meta`).
+the chain tip the collector had last seen (`height`, `block_time`,
+`chain_height`, `chain_tip_time`).
 `computed_at` says when the figures were taken; `record_through` says over
 which part of the record, which is what a reader needs to check them against
-the chain. `/v1/meta` also publishes `evidence`, the kind of evidence each
-headline figure rests on — `chain_record`, `verified_response` or
-`vantage_observation`, defined under `evidence_kinds` — and the site prints
-the same three as tags beside the figures.
+the chain. The site tags each headline figure with the kind of evidence it
+rests on: a chain record, a verified response, or an observation from
+Tensile's own network (`EVIDENCE` in `web/src/components/Panel.tsx`).
 
 Every figure on the site is a function of the record and the code, and the
 pieces needed to re-run that function are published:

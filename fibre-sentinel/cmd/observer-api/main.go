@@ -98,9 +98,9 @@ func main() {
 	info := api.VantageInfo{Name: *vantage, Location: *vLocation, Provider: *vProvider}
 	if info.Location == "" || info.Provider == "" {
 		// Not fatal: a devnet or a local run has nothing meaningful to say
-		// here. But a public vantage that leaves it blank is publishing
-		// reachability verdicts without saying where they were measured from,
-		// and the About page points readers at this endpoint for exactly that.
+		// here. The API does not publish the description (/v1/meta names
+		// vantages only), so this line is where a public vantage that left
+		// it blank shows.
 		log.Printf("WARNING: vantage not fully described (location=%q provider=%q); "+
 			"a public vantage should set -vantage-location and -vantage-provider",
 			info.Location, info.Provider)
