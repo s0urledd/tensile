@@ -363,14 +363,24 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
 .vt { font-variant-numeric: tabular-nums; }
 .vt th:not(:first-child), .vt td:not(:first-child) { text-align: center; padding-left: 6px; padding-right: 6px; }
 @media (min-width: 900px) {
-  .vt { table-layout: fixed; }
-  .vt th:first-child { width: 22%; }
+  /* seven columns need about 1100px; narrower, the frame scrolls with the validator pinned instead of crowding the headings */
+  .vt { table-layout: fixed; min-width: 1100px; }
+  .vt th:first-child { width: 20%; }
   /* widths follow what the cells hold */
-  .vt .c-ep { width: 14%; } .vt .c-host { width: 19%; } .vt .c-power { width: 14%; }
-  .vt .c-end { width: 15%; } .vt .c-last { width: 16%; }
+  .vt .c-ep { width: 11.5%; } .vt .c-host { width: 13%; } .vt .c-power { width: 10.5%; }
+  .vt .c-com { width: 13.5%; } .vt .c-end { width: 15.5%; } .vt .c-last { width: 16%; }
   .vt td:not(:first-child) { overflow: hidden; text-overflow: ellipsis; }
   .vt .hosting { max-width: 100%; vertical-align: middle; }
   .vt .hosting > span:not(.flag):not(.flag-none):not(.cc) { overflow: hidden; text-overflow: ellipsis; }
+}
+/* the period after a heading keeps its own case: "(24h)", not "(24H)" */
+.vt th .per { text-transform: none; letter-spacing: .03em; }
+/* Below the fixed layout a column is only as wide as its heading, and the (i),
+   which hangs outside the label, would run into the next heading: the heading
+   keeps room for it on either side, so the label stays centred over its cells. */
+@media (max-width: 899px) {
+  .tablewrap .vt thead th.has-i { padding-left: 27px; padding-right: 27px; }
+  .tablewrap .vt thead th.has-i:last-child { padding-right: 39px; }
 }
 .pair { display: inline-grid; grid-template-columns: 5ch minmax(7ch, auto); column-gap: 6px; align-items: baseline; }
 .pair > .rate { text-align: right; }

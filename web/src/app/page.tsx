@@ -102,7 +102,7 @@ function Overview() {
       {/* Beside the map when it shows the stake panel; on its own otherwise. */}
       {aside && !beside && <section className="band" id="outcomes"><div>{aside}</div></section>}
 
-      {/* the period drives the table's Endorsements; the map, the stake and the latest blob are now */}
+      {/* the period drives the table's Committed and Endorsements; the map, the stake and the latest blob are now */}
       <Validators rows={rows} window={win} notLive={notLive} loading={vals.loading}
         periodSwitch={<WindowSwitch value={win} onChange={setWin} />} />
       <p className="tnote"><a href={`${API_BASE}/v1/feed.atom`} type="application/atom+xml">Network events (Atom)</a></p>
