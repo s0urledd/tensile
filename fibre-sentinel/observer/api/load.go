@@ -26,10 +26,12 @@ type loadStats struct {
 	// Bytes is the row data it committed to store for those promises.
 	Bytes int64 `json:"bytes"`
 	// StoredBytes is the row data it has to hold right now: endorsed promises
-	// whose retention window has not ended, whatever the selected period.
+	// whose retention window has not ended, whatever the selected period. On
+	// a pinned window "now" is the pin (heldAt).
 	StoredBytes int64 `json:"stored_bytes"`
-	// RowsPerBlob is its assignment on the newest settled promise; rows follow
-	// stake, not blob size, so it is the same for every blob of that set.
+	// RowsPerBlob is its assignment on the newest settled promise, the
+	// newest by the pin on a pinned window; rows follow stake, not blob size,
+	// so it is the same for every blob of that set.
 	RowsPerBlob int64 `json:"rows_per_blob"`
 }
 
@@ -42,11 +44,17 @@ const rowBytesSQL = `(p.blob_size * 1.0 / NULLIF(CASE WHEN m.promise_hash IS NOT
 			ELSE json_extract(p.raw_json, '$.assignment.protocol_params.original_rows') END, 0))`
 
 // loadPopulationSQL selects the publications loadSQL reads: settled, with an
-// assignment, and either in the window (?1, ?2) or still under retention at
-// ?3. originalRowsMemo.doc selects the same set, to know which entries to
-// pass.
+// assignment, and either in the window (?1, ?2) or held at ?3 (heldSQL).
+// originalRowsMemo.doc selects the same set, to know which entries to pass.
 const loadPopulationSQL = `p.settlement_tx_code = 0 AND p.assignment_error = ''
-			AND ((p.settlement_time >= ?1 AND p.settlement_time <= ?2) OR p.must_serve_until > ?3)`
+			AND ((p.settlement_time >= ?1 AND p.settlement_time <= ?2) OR ` + heldSQL + `)`
+
+// heldSQL is a publication a validator holds at ?3: settled by then, and its
+// retention not over. The settlement bound only matters on a pinned window,
+// where ?3 is the pin: without it, a promise settled after the pin and
+// still under retention was counted as held at the pin, and a pinned
+// answer was not the answer the observer would have given then.
+const heldSQL = `(p.must_serve_until > ?3 AND p.settlement_time <= ?3)`
 
 // loadSQL is every figure loadByValidator reads from assignments, in one
 // statement; filter narrows it to one validator (?5).
@@ -73,7 +81,7 @@ func loadSQL(filter string) string {
 		pb AS MATERIALIZED (
 			SELECT p.promise_hash, ` + rowBytesSQL + ` AS rb,
 				(p.settlement_time >= ?1 AND p.settlement_time <= ?2) AS in_win,
-				(p.must_serve_until > ?3) AS held
+				` + heldSQL + ` AS held
 			FROM publications p LEFT JOIN m ON m.promise_hash = p.promise_hash
 			WHERE ` + loadPopulationSQL + `)
 		SELECT a.validator_address,
@@ -89,13 +97,25 @@ func loadSQL(filter string) string {
 // loadByValidator computes loadStats per validator over win, for one
 // validator when only is set.
 func (s *Server) loadByValidator(ctx context.Context, win Window, only string) (map[string]loadStats, error) {
-	return s.loadByValidatorAt(ctx, win, only, time.Now())
+	return s.loadByValidatorAt(ctx, win, only, heldAt(win, time.Now()))
+}
+
+// heldAt is the moment "held now" is asked at: now, or the pin on a pinned
+// window. It was the wall clock on both, so a pinned answer counted what
+// validators hold today, promises settled after the pin included, beside
+// figures that leave out every row after it (AsOfNote).
+func heldAt(win Window, now time.Time) time.Time {
+	if win.AsOf {
+		return win.End
+	}
+	return now
 }
 
 // loadByValidatorAt is loadByValidator with "held now" asked at now.
 func (s *Server) loadByValidatorAt(ctx context.Context, win Window, only string, now time.Time) (map[string]loadStats, error) {
 	db := s.st.DB()
-	// held now: retention not over at now, whatever the window
+	// held now: settled by now and retention not over at now, whatever the
+	// window
 	nowArg := store.TS(now.UTC())
 	doc, err := s.origRows.doc(ctx, db, win.startArg(), win.endArg(), nowArg)
 	if err != nil {
@@ -127,11 +147,11 @@ func (s *Server) loadByValidatorAt(ctx context.Context, win Window, only string,
 		return nil, err
 	}
 
-	// rows on the newest settled promise
+	// rows on the newest promise settled by now
 	var newest string
 	if err := db.QueryRowContext(ctx, `SELECT promise_hash FROM publications
-		WHERE settlement_tx_code = 0 AND assignment_error = ''
-		ORDER BY settlement_height DESC, settlement_tx_index DESC LIMIT 1`).Scan(&newest); err != nil {
+		WHERE settlement_tx_code = 0 AND assignment_error = '' AND settlement_time <= ?
+		ORDER BY settlement_height DESC, settlement_tx_index DESC LIMIT 1`, nowArg).Scan(&newest); err != nil {
 		return out, nil // nothing settled yet
 	}
 	lastArgs := []any{newest}
