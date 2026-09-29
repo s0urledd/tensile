@@ -100,7 +100,7 @@ const USES: Use[] = [
           ["probes[].rows_returned", <>Rows that came back from the download; 0 when it never started.</>],
           ["next_before", <>Pass it back as <code>before</code>, with the same filters, for the next page.</>],
         ],
-        note: <>Up to 1,000 readings a page (<code>limit</code>, 100 by default). <code>rows=1</code> adds the index of every row each reading asked for and their digest, 200 readings a page.</>,
+        note: <>Up to 1,000 readings a page (<code>limit</code>, 100 by default). <code>rows=1</code> adds <code>row_indices</code>, the index of every row that came back, in the order returned, and <code>rows_sha256</code>, a digest of those rows; with it a page holds at most 200 (<code>limit</code> up to 200).</>,
         example: ex.failed,
       },
       {
@@ -165,7 +165,7 @@ const USES: Use[] = [
           ["assignments[].service", <>served or not_served for each validator; absent when the reading had no result for it, such as a validator it never needed to ask.</>],
           ["blob.charge.fee_utia", <>What the promise was charged.</>],
         ],
-        note: <>On an Unavailable blob, <code>reconstructable.error</code> carries the Fibre client&rsquo;s error. <code>rows=1</code> adds the row indices each reading asked for and their digest.</>,
+        note: <>On an Unavailable blob, <code>reconstructable.error</code> carries the Fibre client&rsquo;s error. <code>rows=1</code> adds each reading&rsquo;s <code>row_indices</code>, the index of every row that came back, in the order returned, and <code>rows_sha256</code>, a digest of those rows.</>,
         example: ex.blob,
       },
       {
@@ -485,7 +485,7 @@ export default function Developers() {
           </Topic>
           <Topic id="pages" title="Pages">
             <li><code>/blobs</code>: <code>limit</code> 1 to 500, 50 by default. Page on with <code>before_height</code> and <code>before_tx_index</code> from the answer&rsquo;s <code>next_before_height</code> and <code>next_before_tx_index</code>, or with <code>offset</code> up to 100,000.</li>
-            <li><code>/probes</code>: <code>limit</code> up to 1,000, 100 by default (200 with <code>rows=1</code>). Page on with <code>before</code> from <code>next_before</code>.</li>
+            <li><code>/probes</code>: <code>limit</code> up to 1,000, 100 by default; with <code>rows=1</code> a page holds at most 200 (<code>limit</code> up to 200). Page on with <code>before</code> from <code>next_before</code>.</li>
             <li><code>/namespaces</code>: <code>limit</code> up to 500, 100 by default; <code>truncated</code> says there are more.</li>
             <li><code>/validators</code> and <code>/publishers</code> answer the whole list. A validator carries its newest 50 readings, a publisher its newest 100 payments and 50 blobs; <code>recent_probes_truncated</code> and <code>recent_blobs_truncated</code> say when there are more.</li>
           </Topic>
