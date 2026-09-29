@@ -227,9 +227,9 @@ export default function Validators({ rows, window: win, notLive, loading, period
                   </td>
                   <td><Link className="rowcover" href={href(v)} tabIndex={-1} aria-hidden="true" /><span className="state" title={e.title}><i className={"dot " + e.dot} />{e.word}</span></td>
                   {showHosting && <td><HostingCell h={v.hosting} /></td>}
-                  <td className="num">{int(v.voting_power)}</td>
-                  <td className="num">{shard(v)}</td>
-                  <td className="num soft-col">{signed(v)}</td>
+                  <td className="num fig">{int(v.voting_power)}</td>
+                  <td className="num fig">{shard(v)}</td>
+                  <td className="num soft-col fig">{signed(v)}</td>
                   <td className="num">{last(v)}</td>
                 </tr>
               );
