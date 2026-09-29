@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { type Validator, int, pctOf, ago, utcWord, shortMid } from "@/lib/api";
 import Avatar from "./Avatar";
@@ -78,7 +78,8 @@ function sortValue(v: Validator, k: SortKey): number | null {
   }
 }
 
-export default function Validators({ rows, window: win, notLive, loading }: { rows: Validator[]; window: string; notLive?: boolean; loading?: boolean }) {
+/** `periodSwitch`, the page's period control, sits beside the heading: the period it selects is the Endorsements column's */
+export default function Validators({ rows, window: win, notLive, loading, periodSwitch }: { rows: Validator[]; window: string; notLive?: boolean; loading?: boolean; periodSwitch?: ReactNode }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "power", dir: -1 });
@@ -151,7 +152,10 @@ export default function Validators({ rows, window: win, notLive, loading }: { ro
   return (
     <section>
       <div className="vhead">
-        <div><h2>Validators</h2><p className="sub">{notLive ? "Bonded set" : "Endorsements over the selected period"}</p></div>
+        <div>
+          <div className="vtitle"><h2>Validators</h2>{periodSwitch}</div>
+          <p className="sub">{notLive ? "Bonded set" : "Endorsements over the selected period"}</p>
+        </div>
         <div className="tools">
           <label className="search"><span className="sr-only">Search validators</span><input type="search" placeholder="Search name or address" value={q} onChange={(e) => setQ(e.target.value)} /></label>
           <label className="select"><span className="sr-only">Filter</span>

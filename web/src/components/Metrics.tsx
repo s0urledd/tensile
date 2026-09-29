@@ -31,8 +31,8 @@ export function Metric({ label, period, value, den, help, tone, title, size }: {
   );
 }
 
-export function Metrics({ children, className }: { children: ReactNode; className?: string }) {
-  return <section className={"metrics" + (className ? " " + className : "")}>{children}</section>;
+export function Metrics({ children }: { children: ReactNode }) {
+  return <section className="metrics">{children}</section>;
 }
 
 /** figures set on a panel rather than each in a card of its own */

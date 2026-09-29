@@ -1,10 +1,10 @@
 "use client";
 import { Suspense } from "react";
 import Link from "next/link";
-import { API_BASE, useApi, type Network, type Validator, type Meta, type Market, type Blob, int, pctOf, bytes, tia, ago, whenUTC, MIN_RATED } from "@/lib/api";
-import { useWindow, WindowSwitch, periodName } from "@/lib/window";
+import { API_BASE, useApi, type Network, type Validator, type Meta, type Blob, int, pctOf, bytes, ago, whenUTC, MIN_RATED } from "@/lib/api";
+import { useWindow, WindowSwitch } from "@/lib/window";
 import StatusLine from "@/components/StatusLine";
-import { Metric, Metrics, Eye } from "@/components/Metrics";
+import { Eye } from "@/components/Metrics";
 import { Mark } from "@/components/Verdict";
 import Validators from "@/components/Validators";
 import PreLive from "@/components/PreLive";
@@ -18,9 +18,9 @@ const LIVE_POLL_MS = 15000;
 /**
  * The overview, from the chain's own records: which validators run a Fibre
  * provider and how much stake that is (x/valaddr, x/staking), the newest
- * settlement, what x/fibre settled over the selected period, and each
- * validator's endorsements. Whether an endpoint answers is this observer's
- * check, and the table says so; serving is on the validator's page.
+ * settlement, and each validator's endorsements over the selected period.
+ * Whether an endpoint answers is this observer's check, and the table says
+ * so; serving is on the validator's page.
  */
 function Overview() {
   const [win, setWin] = useWindow("24h");
@@ -33,11 +33,9 @@ function Overview() {
   // computation held it to about every 35-45 s), so it is read more often than
   // the longer periods, whose snapshots move every few minutes.
   const vals = useApi<{ validators: Validator[] }>(`/v1/validators?window=${win}`, win === "24h" ? LIVE_POLL_MS : undefined);
-  const market = useApi<Market>(`/v1/market?window=${win}`);
   const newest = useApi<{ blobs: Blob[] }>("/v1/blobs?limit=1", LIVE_POLL_MS);
 
   const N = net.data;
-  const M = market.data;
   const rows = vals.data?.validators ?? [];
   const notLive = !!meta?.app_version && !meta.fibre_active;
   const o = N?.obligations;
@@ -91,10 +89,6 @@ function Overview() {
   );
   const aside = latest || observed ? <>{latest}{observed}</> : null;
   const beside = !!vals.data && !!meta?.fibre_active;
-  const none = !M || notLive;
-  // Each card names the period of its figure, in its title: the answer shown
-  // (the last one stays while another period loads), else the one selected.
-  const period = periodName(M?.window?.name ?? win);
 
   return (
     <>
@@ -105,40 +99,12 @@ function Overview() {
 
       {vals.data && <HostMap rows={rows} showReadiness={!!meta?.fibre_active} aside={aside || undefined} />}
 
-      {/* the period drives every card below it; the map, the stake and the latest blob are now */}
-      <div className="period-row"><WindowSwitch value={win} onChange={setWin} /></div>
-      <Metrics className="ov-metrics">
-        <Metric label="Blobs" period={period}
-          value={none ? "—" : int(M.blobs)}
-          tone={none || M.settlements === 0 ? "absent" : undefined}
-          title="Blobs published through Fibre in this period. A blob paid for twice counts once."
-          help={none ? " " : M.settlements === 0 ? "none" : `${int(M.settlements)} settlement${M.settlements === 1 ? "" : "s"}`} />
-        <Metric label="Blob size" period={period}
-          value={none ? "—" : bytes(M.bytes)}
-          tone={none || M.settlements === 0 ? "absent" : undefined}
-          title="Total size of the blobs paid for in this period."
-          help={none ? " " : "total blob size"} />
-        <Metric label="Fees paid" period={period}
-          value={none ? "—" : tia(M.fees_settled_utia)}
-          tone={none || M.settlements === 0 ? "absent" : undefined}
-          title="TIA paid for these blobs. It goes to validators and their delegators."
-          help={none ? " " : M.paid_per_mib_utia == null ? "none" : `${tia(M.paid_per_mib_utia)} per MiB`} />
-        <Metric label="Publishers" period={period}
-          value={none ? "—" : int(M.publishers_active)}
-          tone={none || M.publishers_active === 0 ? "absent" : undefined}
-          title="Accounts that published blobs in this period."
-          help=" " />
-        <Metric label="Payment promise timeouts" period={period}
-          value={none ? "—" : int(M.timeouts)}
-          tone={none ? "absent" : undefined}
-          title="Payment promises not settled within an hour. The account is charged anyway."
-          help={none ? " " : M.timeouts > 0 ? `${tia(M.timed_out_utia)} charged` : "none"} />
-      </Metrics>
-
       {/* Beside the map when it shows the stake panel; on its own otherwise. */}
       {aside && !beside && <section className="band" id="outcomes"><div>{aside}</div></section>}
 
-      <Validators rows={rows} window={win} notLive={notLive} loading={vals.loading} />
+      {/* the period drives the table's Endorsements; the map, the stake and the latest blob are now */}
+      <Validators rows={rows} window={win} notLive={notLive} loading={vals.loading}
+        periodSwitch={<WindowSwitch value={win} onChange={setWin} />} />
       <p className="tnote"><a href={`${API_BASE}/v1/feed.atom`} type="application/atom+xml">Network events (Atom)</a></p>
       {notLive && meta && <p className="tnote">Fibre is not live on {meta.chain_id} (app v{meta.app_version}{meta.fibre_app_version ? `, needs v${meta.fibre_app_version}` : ""}).</p>}
     </>
