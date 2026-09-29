@@ -896,10 +896,16 @@ export type Load = {
   rows_per_blob: number;
 };
 
+/** a size in the largest binary unit it reaches: "12.3 MiB", "1.35 GiB".
+ *  A value just under a unit's end rounds to 1024 of it ("1024.0 KiB"),
+ *  which is the next unit's one, so it is printed there ("1.0 MiB", "1.00
+ *  GiB"). Ties round as toFixed rounds them. */
 export function bytes(n: number): string {
   if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MiB`;
+  const kib = (n / 1024).toFixed(1);
+  if (Number(kib) < 1024) return `${kib} KiB`;
+  const mib = (n / 1024 / 1024).toFixed(1);
+  if (Number(mib) < 1024) return `${mib} MiB`;
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GiB`;
 }
 /** a transfer rate, in the unit the size fits */
