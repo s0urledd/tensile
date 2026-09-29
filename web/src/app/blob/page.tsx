@@ -173,7 +173,7 @@ function Page() {
       <section>
         <div className="vhead">
           <div><h2>Validators</h2><p className="sub">{int(rows.length)} validators assigned rows of this blob</p></div>
-          <div className="tools"><a className="dis" href={`${API_BASE}/v1/blobs/${b.promise_hash}`} title="the raw record, every reading included">Readings in the API →</a></div>
+          <div className="tools"><a className="dis" href={`${API_BASE}/v1/blobs/${b.promise_hash}?rows=1`} title="This blob as JSON: every assignment, and every reading with the rows it returned">Readings in the API →</a></div>
         </div>
         <div className="tablewrap">
           <table className="marks">
