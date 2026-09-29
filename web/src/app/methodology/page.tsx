@@ -35,7 +35,7 @@ export default function Methodology() {
         <li><strong>Unavailable</strong>, &ldquo;no shards retrieved&rdquo;: no rows came back.</li>
         <li><strong>Unavailable</strong>, &ldquo;not enough shards to reconstruct blob&rdquo;: some rows came back, fewer than 4096.</li>
       </ul>
-      <p>A validator is <strong>served</strong> on a blob when its rows came back and verified. It is <strong>not served</strong> only when it endorsed the blob, the blob was unavailable, and its rows did not come back, for whatever reason. On an available blob nothing is counted against anyone. Validators that did not endorse are asked too, but never counted. If a not-served reading was a power loss, the <a href={DISPUTE_URL} rel="noopener noreferrer" target="_blank">dispute route</a> puts it on the record.</p>
+      <p>A validator is <strong>served</strong> on a blob when its rows came back and verified. It is <strong>not served</strong> only when it endorsed the blob, the blob was unavailable, and its rows did not come back, for whatever reason. On an available blob nothing is counted against anyone. Validators that did not endorse are asked too, but never counted. While an <code>x/fibre</code> parameter change Tensile has not yet read could have moved a blob&rsquo;s retention deadline, neither is counted and the validator shows <strong>deadline unverified</strong>. If a not-served reading was a power loss, the <a href={DISPUTE_URL} rel="noopener noreferrer" target="_blank">dispute route</a> puts it on the record.</p>
       <Legend />
 
       <h2 id="signing">Endorsements</h2>
@@ -45,14 +45,14 @@ export default function Methodology() {
       <ul>
         <li><strong>Available</strong>: available blobs over available plus unavailable ones.</li>
         <li><strong>Service rate</strong>: served over served plus not served, per endorsed shard. A rate over fewer than twenty shards sorts after the others.</li>
-        <li><strong>In retention window</strong>: the window has not ended. <strong>Not read by Tensile</strong>: see below; nothing is counted against anyone.</li>
+        <li><strong>In retention window</strong>: the window has not ended. <strong>Not read by Tensile</strong>: see below; nothing counts either way.</li>
         <li><strong>Provisional</strong>: a not-served reading younger than 30 minutes, counted but still open to withdrawal.</li>
         <li><strong>Reachability</strong>: completed handshakes over attempts, every five minutes per endpoint. One failed check after a success still counts as reachable; two in a row is unreachable.</li>
         <li><strong>Throughput</strong>: median download speed over served shards of 2 MiB or more, from three readings up.</li>
       </ul>
 
       <h2 id="gaps">Not read by Tensile</h2>
-      <p>A blob is <strong>not read by Tensile</strong> when its reading did not happen: Tensile was down, restarting or late, or not a single request left Tensile because its own network was down. Then nothing is counted against any validator. Health is at <code>/api/v1/health</code>.</p>
+      <p>A blob is <strong>not read by Tensile</strong> when its reading did not happen: Tensile was down, restarting or late, or not a single connection to a validator could be opened because its own network was down. Blobs settled before 27 September 2026 that the load policy of the time did not draw were not read either. Then nothing counts for or against any validator. Health is at <code>/api/v1/health</code>.</p>
 
       <h2 id="load-on-validators">Load on validators</h2>
       <p>A reading stops once the rows are enough, so a validator is asked for some blobs, not all of them, as any client would ask it.</p>

@@ -216,8 +216,8 @@ export type Network = {
  * The Available tile: over the blobs whose reading decides them (recoverable
  * = yes over yes plus no), the newest sample_limit of them examined. The rest
  * say why a blob has no verdict: pending (its window is open), not_read (its
- * window closed without a reading: Tensile missed it, or every request
- * failed on its own side), not_yet_read (its reading is still to come),
+ * window closed without a reading: Tensile missed it, or not a single
+ * request reached a validator), not_yet_read (its reading is still to come),
  * unknown (no assignment).
  */
 export type Reconstructable = {
@@ -430,8 +430,8 @@ export function rateTone(served: number, assessed: number): RateTone | undefined
  * A blob's reading, the Fibre client's result: yes (Available: enough rows
  * came back to reconstruct it), no (Unavailable, with the client's error),
  * pending (its window is open and the reading is not in), not_read (its
- * window closed without a reading: Tensile missed it, or every request failed
- * on its own side), unknown (no assignment to judge it by).
+ * window closed without a reading: Tensile missed it, or not a single request
+ * reached a validator), unknown (no assignment to judge it by).
  */
 export type Reconstruct = {
   status: "yes" | "no" | "pending" | "not_read" | "unknown";

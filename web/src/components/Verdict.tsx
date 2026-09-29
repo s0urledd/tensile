@@ -42,7 +42,7 @@ const VERDICTS: Record<string, Def> = {
   },
   UNREACHABLE: {
     label: "unreachable", tier: "hold",
-    def: "No answer within 15 s, asked twice (the client's re-dial). Not served when the blob could not be reconstructed; otherwise counted neither way.",
+    def: "No answer within 15 s, or no route to its host, asked twice (the client's re-dial). Not served when the blob could not be reconstructed; otherwise counted neither way.",
   },
   IDENTITY_EXPIRED: {
     label: "certificate expired", tier: "hold",
@@ -102,7 +102,7 @@ const VERDICTS: Record<string, Def> = {
   },
   PROBE_ERROR: {
     label: "read failed", tier: "gap",
-    def: "Tensile's own request failed before it reached the validator. When every request of a reading did, the blob was not read by Tensile; otherwise it is this validator's rows not coming back.",
+    def: "Tensile's own request failed before it reached the validator. When no request of a reading reached a validator, the blob was not read by Tensile; otherwise it is this validator's rows not coming back.",
   },
   NOT_PROBED: {
     label: "not read by Tensile", tier: "gap",

@@ -82,7 +82,7 @@ function Page() {
     rc?.status === "yes" ? ["ok", "Available", `Enough rows came back to reconstruct the blob, from ${int(rc.served_by_validators)} of the ${int(asked)} validators asked.`]
     : rc?.status === "no" ? ["hold", "Unavailable", `${rc.error ? `${rc.error[0].toUpperCase()}${rc.error.slice(1)}: ` : ""}${rc.error === "no shards retrieved" ? "no rows came back" : `fewer than the ${int(rc.needed_rows)} rows needed came back`} from the ${int(asked)} validators asked.`]
     : !over ? ["none", "In retention window", "Read once, 10 minutes before the retention window ends."]
-    : ["none", "Not read by Tensile", "Tensile did not read this blob: it missed the reading, or every request failed on its own side. Nothing is counted against a validator."];
+    : ["none", "Not read by Tensile", "Tensile did not read this blob: it missed the reading, its own network was down, or, before 27 September 2026, the load policy of the time did not draw it. Nothing counts for or against a validator."];
 
   // The reading behind each validator's word: the end reading, or on the
   // earlier schedule the newest reading inside the window.
@@ -195,7 +195,8 @@ function Page() {
                 const quietTitle = a.attested === false ? (lent ? "Not endorsed: nothing owed. Its rows came back and counted toward the blob." : "Not endorsed: nothing owed.")
                   : !judged ? "No reading that counts."
                   : !p ? "Not asked: the reading had enough rows before it reached this validator. Counted neither way."
-                  : p.classification === "NOT_PROBED" || p.classification === "PROBE_ERROR" ? "Tensile's request failed on its own side: counted neither way."
+                  : p.classification === "NOT_PROBED" ? "Tensile did not make this request in time: counted neither way."
+                  : p.classification === "PROBE_ERROR" ? "Tensile's request failed on its own side: counted neither way."
                   : rc?.status === "yes" ? "Counted neither way: the blob was available all the same." : "Counted neither way.";
                 const detail = p ? `${p.schedule_label === "end" ? "end reading" : `reading ${p.schedule_label}`} · ${utcWord(p.started_at)} · ${int(p.rows_returned)} / ${int(p.rows_expected)} rows · ${int(p.total_duration_ms)} ms${p.raw_error ? ` · ${p.raw_error}` : ""}` : "";
                 return (

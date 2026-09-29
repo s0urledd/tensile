@@ -139,7 +139,9 @@ start lag grew to 30 s in two minutes. So the prober keeps up at three times
 today's rate with nothing queued. The limits it keeps, 16 blobs and 64
 requests at once and 512 MiB of shards in flight (`-blob-concurrency`,
 `-concurrency`, `-in-flight-mib`), only delay a request: its 15 s start once
-it is let go, and it is never dropped.
+it is let go, it is never dropped, and it carries the phase its reading
+started in, so a request held back past `must_serve_until` counts as the
+client, which asks at once, would have made it.
 
 A validator that times out holds a request for 30 s (the request and the
 client's re-dial). The other readings go on beside it, as other clients'
@@ -154,6 +156,7 @@ verified, up to about 11 MiB, beside the `-in-flight-mib` budget.
 sudo useradd --system --home /var/lib/fibre-observer --create-home fibre-observer
 sudo install -d -o fibre-observer -m 0750 /var/lib/fibre-observer/mocha
 sudo install -m 0755 fibre-sentinel/bin/* /usr/local/bin/
+sudo install -m 0755 deploy/vantage-pull.sh /usr/local/bin/fibre-vantage-pull  # when the script changed
 sudo install -m 0755 deploy/healthwatch.sh /usr/local/bin/fibre-healthwatch
 sudo install -m 0755 deploy/backup.sh /usr/local/bin/fibre-backup
 sudo install -m 0755 deploy/backup-manifest.py /usr/local/bin/fibre-backup-manifest
@@ -221,9 +224,15 @@ serve numbers from a schema it does not understand.
 
 ```bash
 sudo install -m 0755 fibre-sentinel/bin/* /usr/local/bin/
+sudo install -m 0755 deploy/vantage-pull.sh /usr/local/bin/fibre-vantage-pull   # the timer runs it next minute
 sudo systemctl restart fibre-collector@mocha       # applies migrations
 sudo systemctl restart fibre-scan@mocha fibre-probe@mocha fibre-heartbeat@mocha fibre-api@mocha
 ```
+
+The pull script is installed with the binaries because it changes with
+them: one installed from before this change also fetches each vantage's
+`measurements.jsonl` and pushes requests to it (`VANTAGE_PUSH`), neither of
+which anything uses any more.
 
 The API also refuses a database **newer** than itself, so an API left on an
 old build after the collector moved on says so rather than serving columns
@@ -432,7 +441,7 @@ mocha host on 29 September, and how to remove it once the owner approves:
 | columns `obligation_daily.end_unobserved`, `unobserved_reachable`, `unobserved_unreachable`, `unobserved_not_probed` | none yet | summed into `not_counted` | the same; one `not_counted` column would do |
 | `snapshots/` | 1.0 MB, 12 files | the API, which rewrites every file on start and on each refresh | nothing to do: none is left from an earlier model |
 | table `probe_confirmations`, columns `probes.cleared_by` and `probes.confirmed_by`, index `probes_cleared` | empty (0 rows; every value NULL) | nothing: the second location's confirmation of failed readings is gone | a migration that bumps the schema, whenever `probes` is next changed |
-| `vantages/de-1/measurements.jsonl` | 0 B | nothing | `rm` it; the pull no longer fetches it |
+| `vantages/de-1/measurements.jsonl` | 0 B | the pull script installed before this change, which still fetches it every minute | install the new one first (`sudo install -m 0755 deploy/vantage-pull.sh /usr/local/bin/fibre-vantage-pull`, as in "Upgrading a running observer"), then `rm` it |
 
 ### Archive: bounded live files
 

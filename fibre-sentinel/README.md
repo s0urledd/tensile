@@ -60,15 +60,17 @@ deadline. So the Sentinel downloads it the way a reader does, with
 celestia-app's own rules (`fibre/download.go`): the whole validator set in
 the client's order (`validator.Set.Select`), the next one asked while the
 rows still wanted outnumber the rows on their way, 15 s per request
-(connect and TLS included), one re-dial after a failed dial or a timeout,
-every row verified against the commitment, and the download done at the
-rows that reconstruct the blob (4096 of 16384 for blob version 0). It reads
-**once, 10 minutes before the deadline**, where a validator that pruned
-early or moved on shows. The result is the client's: **available**, or
+(lookup, connect and TLS included), one re-dial after a request that
+failed before a server answered or timed out, every row verified against
+the commitment, and the download done at the rows that reconstruct the
+blob (4096 of 16384 for blob version 0). It reads **once, 10 minutes
+before the deadline**, where a validator that pruned early or moved on
+shows. The result is the client's: **available**, or
 **unavailable** with the client's error, "no shards retrieved" or "not
-enough shards to reconstruct blob". A reading in which every request failed
-on this observer's side, or one the prober missed, did not happen: the blob
-was not read by Tensile.
+enough shards to reconstruct blob". A reading in which not a single request
+reached a server (this observer's own network was down), or one the prober
+missed, did not happen: the blob was not read by Tensile, and nothing
+counts on it.
 
 A validator counts as **not served** only when it endorsed the promise, the
 blob was unavailable, and its rows did not come back. On an available blob a
@@ -198,8 +200,8 @@ all (`-download-timeout`, the client's `RPCTimeout`):
 | L3 identity | `fibre-tlsverify` — the peer cert's extension must be endorsed by the validator's consensus key for this chain ID |
 | L4 retrievability | `DownloadShard`, then verify the returned rows against the commitment with the reading's shared `rsema1d` Reconstructor **and** against the recomputed `fibre-assign` assignment |
 
-A failed dial, an unreachable peer or a timeout is asked again at once, as the
-client re-dials. Hosts come from `x/valaddr` `AllBondedFibreProviders`
+A failed lookup or dial (whatever the cause), an unreachable peer or a
+timeout is asked again at once, as the client re-dials. Hosts come from `x/valaddr` `AllBondedFibreProviders`
 (latest height, cached); consensus keys from `/validators` at the promise
 height. The assignment is **recomputed** here and cross-checked against the
 row counts in the scan record — a mismatch is a hard error, not a silent
@@ -321,7 +323,8 @@ multi-vantage coverage.
 `must_serve_until` derivation, `EventUpdateFibreParams` JSON parse, the
 assignment-table builder, store dedupe/resume, the reading (against real
 Fibre servers on loopback with encoded shards: the stop at K, the three
-outcomes, the re-dial, a reading no request left, limits that only delay),
+outcomes, the re-dial, a reading that reached no server, limits that only
+delay and a request held back that keeps the reading's phase),
 `PhaseAt` boundaries, the
 full taxonomy table, and the observer's store,
 rollup, API and export packages.

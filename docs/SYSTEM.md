@@ -211,11 +211,13 @@ reader without the validator's rows; on an available one none.
 client's result: **available** when the distinct verified rows reach
 `original_rows`; **unavailable** with the client's error, `no shards
 retrieved` or `not enough shards to reconstruct blob`, when they do not. A
-reading that did not happen (the prober missed it, `NOT_PROBED`, or every
-request failed on this observer's side, `probe.OwnAnswer` for none) is
-`pending` while the window is open and `not_read` after. A reading of the
-earlier schedule is judged at the newest point every endorsing validator
-answered at.
+reading that did not happen (the prober missed it, `NOT_PROBED`, or not a
+single request reached a server, `probe.Reached` for none) is `pending`
+while the window is open and `not_read` after, and nothing counts on it. A
+reading is judged from all of its rows, whatever phase each carries. A blob
+of the earlier schedule shows the reading at the newest point in the window
+every endorsing validator was reached at; each of its points counts as a
+reading of its own.
 
 **Obligation bucket** — one per `(validator, promise)` pair, in
 `observer/verdict` and in SQL in `observer/rollup`:
@@ -252,23 +254,25 @@ Fibre client downloads it:
   outnumber the rows on their way; a validator that did not endorse is
   asked like the rest, its rows count toward the blob, and it is never
   counted (`UNATTESTED`)
-- each request, connect, TLS and `DownloadShard` together, gets 15 s (the
-  client's `RPCTimeout`; only the DNS lookup has a bound of its own), and
-  is made again at once after a failed dial, an unreachable peer or a
-  timeout
+- each request, lookup, connect, TLS and `DownloadShard` together, gets
+  15 s (the client's `RPCTimeout`), and is made again at once after it
+  failed before a server answered (a failed lookup or dial, whatever the
+  cause), an unreachable peer or a timeout
 - every row is verified against the commitment by one Reconstructor the
   reading shares; the reading stops at `original_rows` distinct rows
 - a rate limit, a `CANCELLED` the server sends, a timeout or "no route to
   host" from a validator is that validator's rows not coming back, as the
   client sees it
 - load, never dropping: 16 blobs and 64 requests at once, 512 MiB of shards
-  in flight; a request waits for room and its time starts once it is let
-  go. There is no limit per validator, as the client has none
+  in flight; a request waits for room, its time starts once it is let go,
+  and it carries the phase the reading started in, so the wait changes
+  nothing. There is no limit per validator, as the client has none
 
 The reading ends as the client's `Download` does: available, or
-unavailable with the client's error. When every request failed on this
-observer's side before it reached a validator (its resolver, no route out)
-the reading did not happen, and the blob was not read by Tensile.
+unavailable with the client's error. When not a single request reached a
+server (no connection to any validator opened, none refused: this
+observer's own network was down) the reading did not happen, and the blob
+was not read by Tensile.
 
 The rows of a reading are appended together in one write and one fsync
 (`MeasurementStore.AppendReading`), one per validator asked, with `read`
@@ -553,8 +557,8 @@ Stated here because they are properties of the machine, not of any validator.
   is recorded `unresolvable` rather than left open.
 - **Unavailable needs a reading that happened.** A blob is unavailable only
   after the whole set was asked, as the client asks it; a reading this
-  observer missed, or one in which every request failed on its own side, is
-  its gap, and no one is not served on it. While the observer is blind it
+  observer missed, or one in which not a single request reached a server,
+  is its gap, and nothing counts on it. While the observer is blind it
   can withhold credit, never manufacture an accusation.
 - **The rows a reading did not need say nothing.** A reading stops at enough
   rows, so a validator later in the order is often not asked at all, and an
