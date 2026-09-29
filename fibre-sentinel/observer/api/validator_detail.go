@@ -3,12 +3,12 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
-
-	"github.com/plsgiveup/fibre/fibre-sentinel/observer/rollup"
 )
 
 // The validator page used to be the one live route with no snapshot behind
@@ -70,23 +70,33 @@ func (c *detailCache) init() {
 }
 
 // validatorKnown is a cheap superset of "validatorDetail finds a row": one
-// indexed lookup in every table a row can be built from. Once raw rows have
-// been pruned a validator can live on in the daily rollup alone, so from then
-// on it answers true and the full path decides.
+// lookup in every table a row can be built from, the daily rollups included,
+// since a validator lives on there once its raw rows are pruned. It used to
+// answer true for every address from the first prune on and leave the full
+// path to decide, which /status cannot do: it would have told a tool polling
+// a mistyped address to come back in five seconds, forever. An identity
+// counts only while it is bonded, as it does for a row; an unbonded validator
+// with nothing measured has none.
+//
+// The lookups are a WHERE clause so evaluation stops at the first that
+// holds. The rollups come last: their key leads with the day, so a lookup by
+// validator alone walks it.
 func (s *Server) validatorKnown(ctx context.Context, addr string) (bool, error) {
-	if _, pruned := rollup.RawFrom(s.st); pruned {
-		return true, nil
-	}
 	bech, _ := consBech(addr)
-	var known bool
-	err := s.st.DB().QueryRowContext(ctx, `SELECT
+	var one int
+	err := s.st.DB().QueryRowContext(ctx, `SELECT 1 WHERE
 		   EXISTS(SELECT 1 FROM assignments  WHERE validator_address = ?)
+		OR EXISTS(SELECT 1 FROM endpoints    WHERE validator_cons_address = ?)
 		OR EXISTS(SELECT 1 FROM probes       WHERE validator_address = ?)
 		OR EXISTS(SELECT 1 FROM reachability WHERE validator_address = ?)
-		OR EXISTS(SELECT 1 FROM endpoints    WHERE validator_cons_address = ?)
-		OR EXISTS(SELECT 1 FROM validator_identities WHERE lower(cons_address) = ?)`,
-		addr, addr, addr, bech, addr).Scan(&known)
-	return known, err
+		OR EXISTS(SELECT 1 FROM validator_identities WHERE lower(cons_address) = ? AND status = 'BOND_STATUS_BONDED')
+		OR EXISTS(SELECT 1 FROM obligation_daily WHERE validator_address = ?)
+		OR EXISTS(SELECT 1 FROM probe_daily      WHERE validator_address = ?)`,
+		addr, bech, addr, addr, addr, addr, addr).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // detailFromSnapshots answers a live window from the snapshots /v1/validators

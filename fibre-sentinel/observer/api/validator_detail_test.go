@@ -18,7 +18,8 @@ func TestAReaderAfterAHoldDoesNotShareTheComputationStartedBeforeIt(t *testing.T
 	s := newSnapshotServer(t)
 	addr := strings.Repeat("a1", 20)
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := s.st.DB().Exec(`INSERT INTO validator_identities (cons_address, first_seen_at, updated_at) VALUES (?, ?, ?)`, addr, now, now); err != nil {
+	// on record as a bonded validator is, with nothing measured yet
+	if _, err := s.st.DB().Exec(`INSERT INTO validator_identities (cons_address, status, first_seen_at, updated_at) VALUES (?, 'BOND_STATUS_BONDED', ?, ?)`, addr, now, now); err != nil {
 		t.Fatal(err)
 	}
 	started, release := make(chan struct{}), make(chan struct{})

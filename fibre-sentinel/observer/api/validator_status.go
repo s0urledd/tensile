@@ -93,6 +93,18 @@ func (s *Server) handleValidatorStatus(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	// On record or not is decided before the snapshot is read, so an address
+	// nothing names is a 404 whether or not this window has a snapshot yet.
+	// Only a validator on record is told to come back for the next one.
+	known, err := s.validatorKnown(ctx, addr)
+	if err != nil {
+		s.writeInternal(w, r.URL.Path, err)
+		return
+	}
+	if !known {
+		writeErr(w, 404, validatorNotSeen)
+		return
+	}
 	snap, at, _, err := s.vals.get(ctx, s.logf(), win)
 	if err != nil {
 		s.writeSnapshotErr(w, r, win, err)
@@ -100,15 +112,6 @@ func (s *Server) handleValidatorStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	row, ok := snapshotRow(snap.Rows, addr)
 	if !ok {
-		known, err := s.validatorKnown(ctx, addr)
-		if err != nil {
-			s.writeInternal(w, r.URL.Path, err)
-			return
-		}
-		if !known {
-			writeErr(w, 404, validatorNotSeen)
-			return
-		}
 		// On record, and not in the snapshot yet: it appeared after the
 		// snapshot was taken, and the next one lists it.
 		s.writeSnapshotErr(w, r, win, errComputing)

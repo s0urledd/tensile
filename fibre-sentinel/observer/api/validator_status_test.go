@@ -12,6 +12,7 @@ import (
 
 	"github.com/cosmos/cosmos-sdk/types/bech32"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
@@ -172,5 +173,64 @@ func TestValidatorStatusRefusals(t *testing.T) {
 	}
 	if resp.StatusCode != 503 || !body.Computing || resp.Header.Get("Retry-After") == "" {
 		t.Fatalf("a validator the snapshot does not list yet: %d %+v", resp.StatusCode, body)
+	}
+}
+
+// An address on record nowhere is a 404 however far the store has got:
+// before this window has a snapshot, and after raw rows have been pruned,
+// when a validator may live on in the rollup alone. A tool polling a
+// mistyped address is never told to come back in a few seconds.
+func TestValidatorStatusUnknownIsNotComputing(t *testing.T) {
+	_, st := excludeFixtureStore(t)
+	ts := httptestServer(t, st)
+	unknown := strings.Repeat("0f", 20)
+
+	// no snapshot of any window has been taken yet
+	if code := get(t, ts, "/v1/validators/"+unknown+"/status", nil); code != 404 {
+		t.Fatalf("before any snapshot: %d, want 404", code)
+	}
+
+	// raw rows pruned up to a day
+	if err := st.SetMeta("raw_from", "2026-09-02", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		"/v1/validators/" + unknown + "/status",
+		"/v1/validators/" + unknown + "/status?window=all",
+		"/v1/validators/" + unknown,
+	} {
+		if code := get(t, ts, path, nil); code != 404 {
+			t.Errorf("%s after a prune: %d, want 404", path, code)
+		}
+	}
+
+	// A validator the chain lists but that is unbonded, with nothing
+	// measured, has no row on either route.
+	unbonded, bonded := strings.Repeat("71", 20), strings.Repeat("72", 20)
+	if _, err := st.UpsertValidatorIdentities([]scan.ValidatorIdentity{
+		{ConsAddressHex: unbonded, Moniker: "gone", Tokens: "1000000", Status: "BOND_STATUS_UNBONDED"},
+		{ConsAddressHex: bonded, Moniker: "here", Tokens: "1000000", Status: "BOND_STATUS_BONDED"},
+	}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/v1/validators/" + unbonded + "/status?window=7d", "/v1/validators/" + unbonded} {
+		if code := get(t, ts, path, nil); code != 404 {
+			t.Errorf("%s: %d, want 404", path, code)
+		}
+	}
+	// a bonded one is listed before anything is measured
+	if code := get(t, ts, "/v1/validators/"+bonded+"/status?window=7d", nil); code != 200 {
+		t.Errorf("bonded, nothing measured: %d, want 200", code)
+	}
+
+	// One on record in the daily rollup alone is still on record.
+	rolled := strings.Repeat("73", 20)
+	if _, err := st.DB().Exec(`INSERT INTO obligation_daily (day, validator_address, total, served, broken, end_unobserved,
+		unobserved_reachable, unobserved_unreachable, unobserved_not_probed, pending, computed_at)
+		VALUES ('2026-09-01', ?, 1, 1, 0, 0, 0, 0, 0, 0, ?)`, rolled, store.TS(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if code := get(t, ts, "/v1/validators/"+rolled+"/status?window=all", nil); code == 404 {
+		t.Errorf("a validator on record in the rollup alone: 404")
 	}
 }
