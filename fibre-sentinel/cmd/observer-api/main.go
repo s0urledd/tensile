@@ -60,7 +60,10 @@ func main() {
 	default:
 		*snapDir = live
 	}
-	if *warmOnly && sameDir(*snapDir, live) {
+	// The live directory is the one beside the database too: a hand-run that
+	// names the database with -db and leaves -data-dir at its default would
+	// otherwise not recognise it.
+	if *warmOnly && (sameDir(*snapDir, live) || sameDir(*snapDir, filepath.Join(filepath.Dir(*dbPath), "snapshots"))) {
 		// The running API reads that directory and rewrites its files on
 		// every refresh, under the same temporary names a warm-up writes,
 		// so the two could trip over one file; and an older API restarted

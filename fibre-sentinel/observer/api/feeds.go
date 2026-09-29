@@ -183,10 +183,27 @@ func storeFeed(key string, c cachedFeed) {
 // TTL tries again. A feed that now answers otherwise than 200 (the validator
 // is no longer on record) is dropped, so the next reader gets that answer
 // rather than the old feed.
+// feedRebuilds bounds the background rebuilds. They run off the request, so
+// the site server's caps on requests in flight no longer bound them, and a
+// feed kept under many spellings of one path could start a rebuild each. A
+// few at a time is plenty for feeds that change in minutes; a stale feed
+// whose turn has not come is served as it stands until the next reader past
+// the TTL asks again.
+var feedRebuilds = make(chan struct{}, 2)
+
 func (s *Server) refreshFeed(key string, build feedBuilder, authority string) {
+	select {
+	case feedRebuilds <- struct{}{}:
+	default:
+		feedCache.Lock()
+		delete(feedCache.refreshing, key)
+		feedCache.Unlock()
+		return
+	}
 	s.bg.Add(1)
 	go func() {
 		defer s.bg.Done()
+		defer func() { <-feedRebuilds }()
 		ctx, cancel := context.WithTimeout(context.Background(), feedBuildTimeout)
 		defer cancel()
 		c, status, err := rebuildFeed(ctx, build, authority, time.Now())
