@@ -123,6 +123,20 @@ type Server struct {
 	// stop ends the snapshot keepers; Close closes it once.
 	stop     chan struct{}
 	stopOnce sync.Once
+	// clock is the moment a computation asks "now" of, where a figure
+	// depends on it rather than on the window: when a fault stops being
+	// provisional, what is held now, whether a live window's readings have
+	// closed. nil is time.Now; the snapshot harness (snapshot_harness_test.go)
+	// fixes it so two builds compute one moment.
+	clock func() time.Time
+}
+
+// now is the server's clock (clock).
+func (s *Server) now() time.Time {
+	if s.clock != nil {
+		return s.clock()
+	}
+	return time.Now()
 }
 
 // Option configures a Server before it warms its caches.
@@ -834,7 +848,7 @@ func (s *Server) upgradeSignalSets(ctx context.Context) (missing, shared map[str
 		}
 	}
 	rows.Close()
-	u := upgradeSignalOf(meta, time.Now())
+	u := upgradeSignalOf(meta, s.now())
 	if u == nil {
 		return nil, nil, false
 	}
@@ -1559,7 +1573,7 @@ func (s *Server) computeNetwork(ctx context.Context, win Window, ex excludeSet, 
 		return nil, err
 	}
 	resp.ByObligation = resp.Obligations.Rate
-	prov, err := s.provisionalByValidator(ctx, win, time.Now(), ex.clause("pr.validator_address"), ex.addrs...)
+	prov, err := s.provisionalByValidator(ctx, win, s.now(), ex.clause("pr.validator_address"), ex.addrs...)
 	if err != nil {
 		return nil, err
 	}
@@ -1865,7 +1879,7 @@ const otherVantageSQL = `SELECT q.vantage, q.tcp_ok, q.tls_ok, q.identity_ok, q.
 // changes. This observer's own failing check stays what lastEndpointCheck
 // reports.
 func (s *Server) confirmFromOtherVantages(ctx context.Context, out map[string]reachState, asOf string) error {
-	ref := time.Now().UTC()
+	ref := s.now().UTC()
 	hi := store.TS(ref.Add(time.Minute)) // a second clock a little ahead is still recent
 	if asOf != "" {
 		t, err := time.Parse(store.TimeLayout, asOf)
@@ -2622,7 +2636,7 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	if err != nil {
 		return nil, err
 	}
-	provisional, err := s.provisionalByValidator(ctx, win, time.Now(), vfilter("pr.validator_address"), vargs()...)
+	provisional, err := s.provisionalByValidator(ctx, win, s.now(), vfilter("pr.validator_address"), vargs()...)
 	if err != nil {
 		return nil, err
 	}
@@ -2909,7 +2923,7 @@ func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, n
 		if err != nil {
 			return 0, nil, err
 		}
-		prov, err := s.provisionalByValidator(ctx, sw, time.Now(), ` AND pr.validator_address = ?`, addr)
+		prov, err := s.provisionalByValidator(ctx, sw, s.now(), ` AND pr.validator_address = ?`, addr)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -3411,7 +3425,7 @@ func readableSQL(bound string) string {
 
 func (s *Server) reconstructableCount(ctx context.Context, win Window) (reconstructSummary, error) {
 	out := reconstructSummary{SampleLimit: reconstructSample, NoByError: map[string]int64{}}
-	pin := pinFor(win)
+	pin := pinFor(win, s.now())
 	bound, pargs := pin.bound("r", nil)
 	readable := readableSQL(bound)
 	// Every publication of the window, and those without a reading: still
