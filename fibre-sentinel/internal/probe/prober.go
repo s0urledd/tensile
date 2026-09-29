@@ -87,9 +87,8 @@ type Config struct {
 	// (archivedFrom).
 	BackfillMissed time.Duration
 
-	// Order puts a reading's endorsing validators in the order it asks
-	// them in; nil is the Fibre client's own (Resolver.clientOrder). Tests
-	// only.
+	// Order puts a reading's validators in the order it asks them in; nil
+	// is the Fibre client's own (Resolver.clientOrder). Tests only.
 	Order func(ctx context.Context, pub scan.Publication, targets []Target) ([]readTarget, error)
 }
 
@@ -153,8 +152,10 @@ type Prober struct {
 	// gaps is the scanner's own record of blocks it could not read, from
 	// state.json, re-read every cycle. A reading whose verdict would rest
 	// on "no other promise owns these rows" consults it first.
-	gaps []scan.ScanGap
-	// scanned is how far the scanner has read, as the chain's clock.
+	// scanned is how far the scanner has read, as the chain's clock. The
+	// cycle loop writes both while readings read them: scanMu guards them.
+	scanMu   sync.Mutex
+	gaps     []scan.ScanGap
 	scanned  scannedMark
 	resolver *Resolver
 	// targetsFor is resolver.TargetsFor; tests put their own validators here.
@@ -334,7 +335,7 @@ func (p *Prober) Run(parent context.Context) error {
 		if added, err := p.feed.refresh(); err != nil {
 			p.log.Fatalf("load publications: %v", err)
 		} else if added > 0 {
-			p.log.Printf("publications: +%d (%d live)", added, len(p.feed.pubs))
+			p.log.Printf("publications: +%d (%d live)", added, p.feed.size())
 		}
 
 		p.liveSince = record.LiveSince(p.store.Path())
@@ -359,7 +360,7 @@ func (p *Prober) Run(parent context.Context) error {
 		if p.cycleErrs.Load() == 0 {
 			st.OK()
 		}
-		st.Set("publications_live", len(p.feed.pubs))
+		st.Set("publications_live", p.feed.size())
 		st.Set("clock_offset_ms", p.clockOffsetMS())
 		st.Set("reads", p.readStatus())
 
@@ -468,15 +469,18 @@ func (p *Prober) loadGaps() {
 		p.log.Printf("state.json: %v (keeping previous gap list)", err)
 		return
 	}
+	p.scanMu.Lock()
 	p.gaps = st.Gaps
 	p.scanned.height = st.LastScannedHeight
 	if !st.LastScannedTime.IsZero() {
 		// The scanner records the frontier's block time itself; no RPC
 		// round trip is needed to place it on the chain's clock.
 		p.scanned.timedFor, p.scanned.at = st.LastScannedHeight, st.LastScannedTime.UTC()
-		if p.status != nil {
-			p.status.Set("scanned_until", p.scanned.at.Format(time.RFC3339))
-		}
+	}
+	mark := p.scanned
+	p.scanMu.Unlock()
+	if !st.LastScannedTime.IsZero() && p.status != nil {
+		p.status.Set("scanned_until", mark.at.Format(time.RFC3339))
 	}
 }
 
@@ -494,17 +498,26 @@ func (m scannedMark) known() bool { return m.height > 0 && m.timedFor == m.heigh
 // frontier moved. A failed read keeps the previous mark, which then reads
 // as stale: the conservative direction.
 func (p *Prober) pollScanned(ctx context.Context) {
-	if p.scanned.height <= 0 || p.scanned.timedFor == p.scanned.height {
+	p.scanMu.Lock()
+	m := p.scanned
+	p.scanMu.Unlock()
+	if m.height <= 0 || m.timedFor == m.height {
 		return
 	}
-	blk, err := p.chain.Block(ctx, p.scanned.height)
+	blk, err := p.chain.Block(ctx, m.height)
 	if err != nil {
-		p.log.Printf("scanner frontier #%d: %v (keeping previous mark)", p.scanned.height, err)
+		p.log.Printf("scanner frontier #%d: %v (keeping previous mark)", m.height, err)
 		return
 	}
-	p.scanned.timedFor, p.scanned.at = p.scanned.height, blk.Time.UTC()
+	at := blk.Time.UTC()
+	p.scanMu.Lock()
+	if p.scanned.height == m.height {
+		// the frontier did not move while the block was read
+		p.scanned.timedFor, p.scanned.at = m.height, at
+	}
+	p.scanMu.Unlock()
 	if p.status != nil {
-		p.status.Set("scanned_until", p.scanned.at.Format(time.RFC3339))
+		p.status.Set("scanned_until", at.Format(time.RFC3339))
 	}
 }
 
@@ -535,10 +548,13 @@ func shadowPending(now time.Time, pub scan.Publication, m scannedMark) string {
 // because it is permanent.
 func (p *Prober) shadowBlindness(pub scan.Publication) string {
 	now := time.Now().UTC()
-	if g := shadowGapFor(p.gaps, now, shardLifetime(pub, p.schedCfg().PruneTolerance)); g != "" {
+	p.scanMu.Lock()
+	gaps, mark := p.gaps, p.scanned
+	p.scanMu.Unlock()
+	if g := shadowGapFor(gaps, now, shardLifetime(pub, p.schedCfg().PruneTolerance)); g != "" {
 		return g
 	}
-	return shadowPending(now, pub, p.scanned)
+	return shadowPending(now, pub, mark)
 }
 
 // shardLifetime is the longest a shard over a commitment can outlive the
@@ -745,15 +761,16 @@ func (p *Prober) dispatch(ctx context.Context) {
 	}
 }
 
-// lateReading records a reading that could not start in time.
+// lateReading records a reading that could not start in time. Either way
+// the popped reading is given back once: by finish, or here.
 func (p *Prober) lateReading(ctx context.Context, j *readJob) {
-	defer p.sched.done(j.pub.PromiseHash)
 	if j.second != nil {
 		// The first pass is on hand; without the second the reading is
 		// incomplete.
 		p.finish(j.second, ReadIncomplete, "the second pass could not start before its deadline (this observer's own gap)")
 		return
 	}
+	defer p.sched.done(j.pub.PromiseHash)
 	p.counters.missed.add(time.Now())
 	p.recordNotRead(ctx, j, "not read in time: the reading could not start before its deadline (this observer's own gap)")
 	if err := p.store.Sync(); err != nil {
@@ -798,7 +815,11 @@ func (p *Prober) readBlob(ctx context.Context, j *readJob, release func()) {
 	switch {
 	case b.enough():
 		p.finish(b, ReadAvailable, "")
-	case pass == 1 && b.allAsked():
+	case !b.askedIn(pass, candidates) && pass == 1:
+		p.finish(b, ReadIncomplete, "the reading could not ask every validator before its deadline (this observer's own gap)")
+	case !b.askedIn(pass, candidates):
+		p.finish(b, ReadIncomplete, "the second pass could not ask again every validator that had not served before its deadline (this observer's own gap)")
+	case pass == 1:
 		retryAt := time.Now().Add(cfg.RetryAfter)
 		if last := j.pub.MustServeUntil.Add(-cfg.RetryDeadline); !retryAt.After(last) {
 			p.sched.push(&readJob{pub: j.pub, point: j.point, start: retryAt, latest: last, second: b})
@@ -806,17 +827,16 @@ func (p *Prober) readBlob(ctx context.Context, j *readJob, release func()) {
 			return
 		}
 		p.finish(b, ReadIncomplete, "the second pass could not be made before the reading's deadline (this observer's own gap)")
-	case pass == 2 && b.allAsked() && b.shortEvenWithGaps():
+	case b.shortEvenWithGaps():
 		p.finish(b, ReadUnavailable, "")
-	case pass == 2 && b.allAsked():
-		p.finish(b, ReadIncomplete, "a validator could not be read for a reason on this observer's side, and its rows would have been enough")
 	default:
-		p.finish(b, ReadIncomplete, "the reading could not ask every endorsing validator before its deadline (this observer's own gap)")
+		p.finish(b, ReadIncomplete, "a validator could not be read for a reason on this observer's side, and its rows would have been enough")
 	}
 }
 
 // finish writes a reading's rows, all together, and queues the counted
-// not-served ones for a second vantage.
+// not-served ones for a second vantage. The caller has taken the reading
+// off the queue (popDue); finish gives it back.
 func (p *Prober) finish(b *blobReading, result, why string) {
 	defer p.sched.done(b.pub.PromiseHash)
 	ms := b.rows(result, why)
@@ -826,15 +846,15 @@ func (p *Prober) finish(b *blobReading, result, why string) {
 		}
 	}
 	p.counters.done.Add(1)
-	p.log.Printf("READ %s: %s, %d distinct rows held (%d needed), %d validators asked of %d endorsing",
-		short(b.pub.PromiseHash), result, b.have(), b.pub.Assignment.ProtocolParams.OriginalRows, len(ms), len(b.targets))
+	p.log.Printf("READ %s: %s, %d distinct rows held (%d needed), %d validators asked of %d (%d endorsing)",
+		short(b.pub.PromiseHash), result, b.have(), b.pub.Assignment.ProtocolParams.OriginalRows, len(ms), len(b.targets), b.endorsing())
 	for _, m := range ms {
 		p.logMeasurement(m)
 		if result == ReadUnavailable {
 			// After the row is on disk, so a request never names a row that
-			// is not.
+			// is not. Only an endorsing validator's row counts not served.
 			for _, t := range b.targets {
-				if t.AddressHex == m.ValidatorAddress {
+				if t.AddressHex == m.ValidatorAddress && t.endorsing {
 					p.requestConfirmation(b.pub, t.Target, m)
 				}
 			}

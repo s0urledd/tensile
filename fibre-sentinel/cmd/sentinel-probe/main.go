@@ -1,18 +1,19 @@
 // Command sentinel-probe reads the blobs the scanner found. It reads
 // <data-dir>/publications.jsonl (written by sentinel-scan) and reads each
 // blob once, -end-read-offset before its must_serve_until, the way
-// celestia-app's Fibre client downloads it: the endorsing validators in the
-// client's order, 15 s per request, rows verified against the commitment,
-// until the rows reconstruct the blob; when they do not, once more a minute
-// later. Every reading ends with one Measurement per validator asked,
-// appended together to <data-dir>/measurements.jsonl.
+// celestia-app's Fibre client downloads it: the validators the assignment
+// gives rows, in the client's order, 15 s per request, rows verified
+// against the commitment, until the rows reconstruct the blob; when they do
+// not, once more a minute later. Every reading ends with one Measurement per
+// validator asked, appended together to <data-dir>/measurements.jsonl.
 //
 // The queue of readings is never persisted: it is re-derived from the
 // publications and the existing measurements every cycle, so a restart
 // resumes exactly.
 //
-// Every FAULT of a blob that could not be read is also queued in
-// <data-dir>/vantage-requests.jsonl for a second vantage to confirm. With
+// Every not-served row of a blob that could not be read (an endorsing
+// validator whose rows did not come back, probe.Confirmable) is also queued
+// in <data-dir>/vantage-requests.jsonl for a second vantage to confirm. With
 // -confirm-requests the command is that second vantage instead: it answers
 // those requests (internal/probe/confirm.go).
 package main
@@ -60,7 +61,7 @@ func main() {
 		endOffset  = flag.Duration("end-read-offset", def.EndReadOffset, "how long before must_serve_until a blob is read")
 		endSince   = flag.String("end-read-since", "", "RFC 3339 time; publications settled before it were read on the schedule of their time and are not read again (empty = every publication)")
 		readDL     = flag.Duration("read-deadline", def.ReadDeadline, "a reading that cannot start this long before must_serve_until is not made (NOT_PROBED)")
-		retryAfter = flag.Duration("retry-after", def.RetryAfter, "when the rows are short after every endorsing validator was asked, the second pass starts this much later")
+		retryAfter = flag.Duration("retry-after", def.RetryAfter, "when the rows are short after every validator was asked, the second pass starts this much later")
 		pruneTol   = flag.Duration("prune-tolerance", def.PruneTolerance, "NOT_FOUND is normal until must_serve_until + this (devnet prune lag ~1m45s)")
 
 		maxSleep    = flag.Duration("max-sleep", 30*time.Second, "longest sleep between cycles")
@@ -72,10 +73,8 @@ func main() {
 		localHosts  = flag.Bool("allow-unroutable-hosts", false,
 			"dial registered hosts on loopback or a private range (a local devnet; never a public vantage)")
 		backfill = flag.Duration("backfill-missed", 0, "on (re)start, write NOT_PROBED rows only for readings newer than this that were not made; 0 (default) writes them for every one still on record")
-		dnsTO    = flag.Duration("dns-timeout", 5*time.Second, "bound on the DNS step, inside the request's time")
-		tcpTO    = flag.Duration("tcp-timeout", 5*time.Second, "bound on the TCP step, inside the request's time")
-		tlsTO    = flag.Duration("tls-timeout", 10*time.Second, "bound on the TLS step, inside the request's time")
-		dlTO     = flag.Duration("download-timeout", probe.ClientRPCTimeout, "one request's whole time, dial and DownloadShard: the Fibre client's RPCTimeout")
+		dnsTO    = flag.Duration("dns-timeout", 5*time.Second, "bound on the DNS lookup, inside the request's time (a lookup that times out is this observer's resolver)")
+		dlTO     = flag.Duration("download-timeout", probe.ClientRPCTimeout, "one request's whole time, connect, TLS and DownloadShard: the Fibre client's RPCTimeout")
 		logLines = flag.Int("log-ring", 400, "log lines kept in memory for the crash dump")
 
 		policyPath  = flag.String("policy", "", "policy YAML (observer/policy): only its sampling master secret is read, to reveal the day secrets of earlier draws; \"default\" puts the secret at <data-dir>/sampling-master.key; empty = no reveals")
@@ -83,7 +82,7 @@ func main() {
 
 		// Confirm mode, on a second vantage: no publications and no
 		// schedule. It answers the primary's confirmation requests (one
-		// request per FAULT) and writes <data-dir>/measurements.jsonl.
+		// request per not-served row) and writes <data-dir>/measurements.jsonl.
 		confirmReqs  = flag.String("confirm-requests", "", "confirm mode: answer the confirmation requests in this file (the primary's vantage-requests.jsonl, copied in) instead of reading blobs")
 		confirmMax   = flag.Int("confirm-max-per-hour", 60, "confirm mode: confirming requests in any hour at most; requests past it wait, and lapse at their deadline")
 		confirmEvery = flag.Duration("confirm-poll", 20*time.Second, "confirm mode: how often the requests file is read again")
@@ -95,7 +94,9 @@ func main() {
 	}
 
 	log := scan.NewLogger(*logLines)
-	timeouts := probe.StepTimeouts{DNS: *dnsTO, TCP: *tcpTO, TLS: *tlsTO, Download: *dlTO, MinDownloadBytesPerSec: -1}
+	// The connect and the TLS handshake are bounded by the request's time
+	// alone, as the client's are (probe.Input.ClientRules).
+	timeouts := probe.StepTimeouts{DNS: *dnsTO, Download: *dlTO, MinDownloadBytesPerSec: -1}
 
 	if *confirmReqs != "" {
 		chain, err := scan.NewChain(*rpc, *rpcTO, log)

@@ -5,14 +5,15 @@
 //
 // Each blob is read once, EndReadOffset (10 minutes) before its
 // must_serve_until, the way celestia-app's Fibre client downloads it
-// (blobread.go): the endorsing validators in the client's own order
-// (validator.Set.Select), the next one asked while the rows still wanted
-// outnumber the rows on their way, 15 s per request, one re-dial after a
-// failed dial or an unreachable or timed-out peer, every row verified against
-// the commitment by one Reconstructor, and the reading done at K distinct
-// verified rows. When every endorsing validator has been asked and the rows
-// are still short, the validators that did not serve are asked once more a
-// minute later; only then is the blob Unavailable.
+// (blobread.go): every validator the assignment gives rows, endorsing or
+// not, in the client's own order (validator.Set.Select), the next one asked
+// while the rows still wanted outnumber the rows on their way, 15 s per
+// request, one re-dial after a failed dial or an unreachable or timed-out
+// peer, every row verified against the commitment by one Reconstructor, and
+// the reading done at K distinct verified rows. When every validator has
+// been asked and the rows are still short, the validators that did not serve
+// are asked once more a minute later; only when that second pass has asked
+// every one of them again is the blob Unavailable.
 //
 // The queue of readings is never stored. The Prober re-derives it every cycle
 // from publications.jsonl and the existing measurements.jsonl, so a restart
@@ -40,7 +41,10 @@
 // Classify keeps the error classes apart. An assigned, attested validator
 // whose identity verified and that answers NOT_FOUND (or returns rows that do
 // not verify) before must_serve_until is a FAULT; unreachable is UNREACHABLE
-// and an identity failure is IDENTITY_MISMATCH or IDENTITY_EXPIRED, none of
-// them faults. Whether a FAULT counts against the validator is decided from
-// the whole reading (observer/verdict): only when the blob was Unavailable.
+// and an identity failure is IDENTITY_MISMATCH or IDENTITY_EXPIRED. At the
+// reading every answer without rows leaves the reader without them
+// (EndReadClass), and whether that counts against an endorsing validator is
+// decided from the whole reading (observer/verdict): only when the blob was
+// Unavailable. A validator that did not endorse is asked like the rest and
+// is never counted (UNATTESTED).
 package probe

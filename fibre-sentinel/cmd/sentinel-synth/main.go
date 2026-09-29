@@ -16,9 +16,10 @@
 // load and arithmetic fixture, never evidence about any validator.
 //
 // Each blob is read as the prober reads it: once, near the end of its window,
-// asking the endorsing validators largest stake first until the rows are
-// enough. A share of the blobs (-lost) is served by nobody, so they are
-// Unavailable and their endorsing validators are not served.
+// asking every validator with rows, endorsing or not, largest stake first
+// until the rows are enough. A share of the blobs (-lost) is served by
+// nobody, so they are Unavailable and their endorsing validators are not
+// served; a validator that did not endorse is never counted.
 //
 // Ground truth is printed at the end: how many obligations were served, not
 // served and not counted, so that the API's answers can be checked against
@@ -236,17 +237,20 @@ func main() {
 		have := map[int]bool{}
 		var ms []probe.Measurement
 		var asked []synthVal
-		for _, v := range vals { // largest stake first
+		var endorses []bool
+		for _, v := range vals { // largest stake first, endorsing or not
 			rows, _ := shards.Rows(mustAddr(v.addrHex))
-			if len(rows) == 0 || !attested[v.addrHex] {
+			if len(rows) == 0 {
 				continue
 			}
-			nObl++
-			oblTotal[v.moniker]++
+			if attested[v.addrHex] {
+				nObl++
+				oblTotal[v.moniker]++
+			}
 			if len(have) >= ap.OriginalRows {
 				continue // not asked: the rows were enough
 			}
-			m := shape(*vantage, pub, v, rows, pt, cfg, lost, rng)
+			m := shape(*vantage, pub, v, rows, pt, cfg, lost, attested[v.addrHex], rng)
 			if m.Download.CommitmentVerified {
 				for _, r := range rows {
 					have[r] = true
@@ -255,6 +259,7 @@ func main() {
 			m.Read = &probe.ReadInfo{Pass: 1, Order: len(ms), BlobHaveAfter: len(have)}
 			ms = append(ms, m)
 			asked = append(asked, v)
+			endorses = append(endorses, attested[v.addrHex])
 		}
 		result := probe.ReadAvailable
 		if len(have) < ap.OriginalRows {
@@ -265,11 +270,13 @@ func main() {
 			m.Read.BlobResult = result
 			served := m.Download.CommitmentVerified
 			switch {
-			case served:
+			case served && endorses[j]:
 				oblServed[asked[j].moniker]++
-			case result == probe.ReadUnavailable:
+			case !served && result == probe.ReadUnavailable:
 				m.Read.Pass = 2 // asked again a minute later, as the prober does
-				oblBroken[asked[j].moniker]++
+				if endorses[j] {
+					oblBroken[asked[j].moniker]++
+				}
 			}
 			writeJSON(measFile, m)
 			nRows++
@@ -365,9 +372,9 @@ func main() {
 // shape produces the measurement one (validator, point) pair yields under the
 // validator's behaviour, with the classification drawn by the real Classify so
 // the record is exactly what the prober would have written.
-func shape(vantage string, pub scan.Publication, v synthVal, rows []int, pt probe.SchedulePoint, cfg probe.ScheduleConfig, lost bool, rng *rand.Rand) probe.Measurement {
-	m := baseMeasurement(vantage, pub, v, rows, true, pt, cfg)
-	ev := probe.Evidence{Assigned: true, Attested: true, Phase: m.Phase}
+func shape(vantage string, pub scan.Publication, v synthVal, rows []int, pt probe.SchedulePoint, cfg probe.ScheduleConfig, lost, endorses bool, rng *rand.Rand) probe.Measurement {
+	m := baseMeasurement(vantage, pub, v, rows, endorses, pt, cfg)
+	ev := probe.Evidence{Assigned: true, Attested: endorses, Phase: m.Phase}
 
 	served := func() {
 		m.Download = probe.DownloadResult{

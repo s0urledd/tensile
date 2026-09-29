@@ -185,9 +185,11 @@ type Input struct {
 	// does (fibre/client_download.go), which is how every blob is read:
 	//
 	//   - the whole request, dial and DownloadShard, gets RequestTimeout
-	//     (ClientRPCTimeout), and the step timeouts are bounds inside it; a
-	//     request that runs out of it after the connection was made is the
-	//     validator's (RPC_TIMEOUT);
+	//     (ClientRPCTimeout); the connect and the TLS handshake are bounded
+	//     by it alone, as the client's are, and only the DNS lookup keeps a
+	//     step bound of its own (a lookup that times out is this observer's
+	//     resolver); a request that runs out of it after the connection was
+	//     made is the validator's (RPC_TIMEOUT);
 	//   - the receive bound is the protocol's message bound, which is the
 	//     client's, and an answer over it, or one the client cannot parse,
 	//     is the validator's (MALFORMED_SHARD);
@@ -259,6 +261,10 @@ func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measur
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, in.RequestTimeout)
 		defer cancel()
+		// The client bounds the connect and the handshake by the request's
+		// time alone (the RPCTimeout around DownloadShard covers gRPC's lazy
+		// dial), so a connect that takes 5 to 15 s is still made here.
+		to.TCP, to.TLS = in.RequestTimeout, in.RequestTimeout
 	}
 	now := time.Now().UTC()
 	phase := PhaseAtWindow(now, in.MustServeUntil, in.PruneTolerance)

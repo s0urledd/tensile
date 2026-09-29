@@ -77,9 +77,9 @@ func main() {
 			if m.ScheduleLabel != probe.EndReadLabel || m.Phase != probe.PhaseInWindow {
 				fail("%s %s: label %q phase %s, want the one in-window reading", short(h), short(m.ValidatorAddress), m.ScheduleLabel, m.Phase)
 			}
-			if !m.Attested && !m.AttestationUnknown {
-				fail("%s %s: a validator that did not endorse the blob was asked", short(h), short(m.ValidatorAddress))
-			}
+			// A validator that did not endorse is asked like the rest, as
+			// the client asks the whole set; it serves as UNATTESTED.
+			endorsing := m.Attested || m.AttestationUnknown
 			if m.Read == nil {
 				fail("%s %s: no read record on the row", short(h), short(m.ValidatorAddress))
 				continue
@@ -99,8 +99,10 @@ func main() {
 				if m.Classification == probe.ClassFault {
 					fail("%s killed %s: FAULT, want an unreachable endpoint (%s)", short(h), short(m.ValidatorAddress), m.Outcome)
 				}
-			case !isKilled && m.Classification != probe.ClassHealthy:
+			case !isKilled && endorsing && m.Classification != probe.ClassHealthy:
 				fail("%s live %s: class=%s outcome=%s (want HEALTHY)", short(h), short(m.ValidatorAddress), m.Classification, m.Outcome)
+			case !isKilled && !endorsing && (m.Classification != probe.ClassUnattested || !m.Download.CommitmentVerified):
+				fail("%s live %s, not endorsing: class=%s outcome=%s (want its rows, UNATTESTED)", short(h), short(m.ValidatorAddress), m.Classification, m.Outcome)
 			}
 			if m.Download.CommitmentVerified {
 				for _, i := range m.Download.RowIndices {

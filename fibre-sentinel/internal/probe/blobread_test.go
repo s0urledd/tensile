@@ -324,7 +324,7 @@ func TestSharedRowsCountOnce(t *testing.T) {
 	}
 }
 
-// When every endorsing validator has been asked and the rows are short, the
+// When every validator has been asked and the rows are short, the
 // reading is made again a minute later (here 100 ms) before the blob is
 // Unavailable. The second pass asks the validators again, and the rows
 // record both answers; each not-served row is sent for confirmation.

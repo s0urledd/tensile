@@ -5,8 +5,11 @@ package probe
 //
 //   - the validators are asked in the order validator.Set.Select gives,
 //     over the whole set at the promise height: shuffled by stake, higher
-//     stake first, the group whose rows do not overlap before the rest;
-//     here only the endorsing ones, since the others owe the blob nothing;
+//     stake first, the group whose rows do not overlap before the rest.
+//     That is every validator the assignment gives rows, endorsing or not,
+//     as the client asks them: a blob is Unavailable only when the whole
+//     set could not hand over enough rows. Only an endorsing validator owes
+//     the blob, so only one can be counted not served;
 //   - the next validator is asked while the rows still wanted outnumber the
 //     rows already on their way (Reconstructor.Want against the reserved
 //     ExpectedRows), so a failure hands its reservation to the next one;
@@ -24,11 +27,11 @@ package probe
 // validator is asked over one connection at a time from this observer
 // (PerValidator), and a validator already busy with another blob's request
 // is passed over and come back to, so one slow validator never holds a
-// blob up. And when every endorsing validator has been asked and the rows
-// are still short, the reading is made once more a minute later
+// blob up. And when every validator has been asked and the rows are still
+// short, the reading is made once more a minute later
 // (ScheduleConfig.RetryAfter), asking again only the ones that did not
 // serve and keeping the rows already verified: a blob is Unavailable only
-// after that second pass.
+// after that second pass has asked every one of them again.
 //
 // Nothing is written until the reading is final: then one row per
 // validator asked, together (MeasurementStore.AppendReading). A validator
@@ -54,11 +57,14 @@ const (
 	ReadIncomplete  = "incomplete"
 )
 
-// readTarget is one endorsing validator in the order the reading asks.
+// readTarget is one validator in the order the reading asks.
 type readTarget struct {
 	Target
 	order    int
 	expected int // ExpectedRows: the rows it holds
+	// endorsing: its endorsement is on the settled promise (Prober.wants),
+	// so it owes the blob and its answer can count for or against it.
+	endorsing bool
 }
 
 // answer is one validator's part in a reading.
@@ -112,22 +118,36 @@ func (p *Prober) newBlobReading(ctx context.Context, pub scan.Publication, pt Sc
 	if err != nil {
 		return nil, fmt.Errorf("resolve targets: %w", err)
 	}
-	var endorsed []Target
+	var assigned []Target
 	for _, t := range targets {
-		if p.wants(t) {
-			endorsed = append(endorsed, t)
+		if t.Assigned {
+			assigned = append(assigned, t)
 		}
 	}
 	order := p.cfg.Order
 	if order == nil {
 		order = p.resolver.clientOrder
 	}
-	ordered, err := order(ctx, pub, endorsed)
+	ordered, err := order(ctx, pub, assigned)
 	if err != nil {
 		return nil, fmt.Errorf("client order: %w", err)
 	}
+	for i := range ordered {
+		ordered[i].endorsing = p.wants(ordered[i].Target)
+	}
 	return &blobReading{p: p, pub: pub, point: pt, coder: coder, commitment: commitment, rec: rec,
 		targets: ordered, shadowGap: p.shadowBlindness(pub), answers: map[string]*answer{}}, nil
+}
+
+// endorsing is how many of the reading's validators endorsed the promise.
+func (b *blobReading) endorsing() int {
+	n := 0
+	for _, t := range b.targets {
+		if t.endorsing {
+			n++
+		}
+	}
+	return n
 }
 
 // have is how many distinct verified rows the reading holds.
@@ -258,7 +278,10 @@ func (b *blobReading) ask(ctx context.Context, v readTarget, pass int, cutoff ti
 	}
 	a.asked = true
 	m := Run(ctx, in, b.coder, p.cfg.Timeouts)
-	if redials(m.Outcome) && ctx.Err() == nil && time.Now().Before(cutoff) {
+	// The re-dial belongs to the request: RequestCutoff leaves room for it
+	// (two RPCTimeouts before the NotFoundGuard band), so it is made even
+	// once the cutoff for starting a new request has passed.
+	if redials(m.Outcome) && ctx.Err() == nil {
 		a.attempts = append(a.attempts, attemptOf(m, pass))
 		a.redialed = true
 		m = Run(ctx, in, b.coder, p.cfg.Timeouts)
@@ -285,7 +308,7 @@ func attemptOf(m Measurement, pass int) Attempt {
 	return Attempt{Pass: pass, StartedAt: m.StartedAt, Outcome: m.Outcome, RawError: m.RawError, DurationMS: m.TotalDurationMS}
 }
 
-// unserved are the endorsing validators whose rows did not come back.
+// unserved are the validators whose rows did not come back.
 func (b *blobReading) unserved() []readTarget {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -298,13 +321,16 @@ func (b *blobReading) unserved() []readTarget {
 	return out
 }
 
-// allAsked reports whether every endorsing validator was asked in the
-// latest pass it was due in.
-func (b *blobReading) allAsked() bool {
+// askedIn reports whether every validator a pass was due to ask (due: every
+// validator in the first pass, the ones unserved when it began in the
+// second) was asked in that pass. An answer from an earlier pass does not
+// do: a second pass cut short leaves the reading incomplete, never
+// Unavailable on the first pass's word.
+func (b *blobReading) askedIn(pass int, due []readTarget) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for _, t := range b.targets {
-		if a, ok := b.answers[t.AddressHex]; !ok || !a.asked {
+	for _, t := range due {
+		if a, ok := b.answers[t.AddressHex]; !ok || !a.asked || a.pass != pass {
 			return false
 		}
 	}
@@ -312,16 +338,17 @@ func (b *blobReading) allAsked() bool {
 }
 
 // shortEvenWithGaps reports whether the rows stay short of the blob even if
-// every validator whose answer was this observer's own failure (a local
-// resolver, a shard this build could not handle) had served in full: the
-// verdict's Unavailable test (verdict.Reading.Unavailable), so a reading
-// is recorded Unavailable only when the verdict will say so.
+// every validator without an answer of its own (OwnAnswer: none, or this
+// observer's own failure, a local resolver or a shard this build could not
+// handle) had served in full. It is the verdict's Unavailable test
+// (verdict.Reading.Unavailable) over the same predicate, so a reading is
+// recorded Unavailable exactly when the verdict will say so.
 func (b *blobReading) shortEvenWithGaps() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	potential := 0
 	for _, t := range b.targets {
-		if a, ok := b.answers[t.AddressHex]; !ok || a.m.Outcome == OutcomeProbeError {
+		if a, ok := b.answers[t.AddressHex]; !ok || !OwnAnswer(a.m.Phase, a.m.Classification, a.m.Download.CommitmentVerified) {
 			potential += t.RowCount
 		}
 	}
