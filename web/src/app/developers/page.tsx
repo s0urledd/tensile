@@ -177,7 +177,7 @@ const USES: Use[] = [
           ["blobs[].promise_hash", <>Each settlement&rsquo;s promise: open it with <code>{"/blobs/{promise_hash}"}</code>.</>],
           ["blobs[].settlement_height", <>The block it settled in; settlement_time is that block&rsquo;s time.</>],
           ["blobs[].reconstructable.status", <>Each one&rsquo;s result, as on the blob itself.</>],
-          ["total", <>How many settlements the commitment has.</>],
+          ["total", <>How many settlements the commitment has; with the cursor, only those below it (see the <a href="#namespace">namespace list</a>).</>],
         ],
         example: ex.commitment,
       },
@@ -187,7 +187,7 @@ const USES: Use[] = [
         lede: <>Newest first, 50 a page (<code>limit</code> up to 500). <code>namespace</code>, <code>commitment</code> and <code>publisher</code> combine.</>,
         call: "/blobs?namespace=00000000000000000000000000000000000000736f762d6e696b6f2d61&limit=2",
         fields: [
-          ["total", <>Every blob the filters select.</>],
+          ["total", <>Every blob the filters and the cursor select. Paged by <code>offset</code> it stays the same; paged by the cursor it counts only the blobs below it, so it shrinks page by page.</>],
           ["truncated", <>true when there is another page.</>],
           ["next_before_height, next_before_tx_index", <>Pass them as before_height and before_tx_index for the next page; the cursor does not shift as new blobs settle.</>],
           ["offset", <>Numbered pages instead, up to 100,000 blobs deep.</>],
