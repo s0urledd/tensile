@@ -191,7 +191,7 @@ export default function Validators({ rows, window: win, notLive, loading, period
               <th className="c-ep" title="Whether the validator's Fibre server answered our latest check.">Endpoint now</th>
               {showHosting && <th className="c-host" title="Where the validator's Fibre server is hosted.">Hosting</th>}
               <Th col="c-power" k="power" dflt={-1} label="Voting power" title="The default order. Not a performance ranking." />
-              <Th col="c-shard" k="shard" dflt={-1} label="Shard data" per info="Bytes of the shards this validator stored and endorsed, over the settled blobs of the period." />
+              <Th col="c-shard" k="shard" dflt={-1} label="Shard data" per info="Row data of the shards this validator stored and endorsed over the period's settled blobs: blob_size / 4096 per row, padding included. The row proofs stored beside them are not counted." />
               <Th col="c-end" k="signed" dflt={-1} label="Endorsements" per info="How often this validator’s signature is in the settlement, counted while it had a Fibre provider. A settlement needs signatures from ⅔ of the stake, and the first validators to respond fill it." />
               <Th col="c-last" k="last" dflt={-1} label="Last endorsement" info="The last time this validator signed a blob, in any period." />
             </tr>

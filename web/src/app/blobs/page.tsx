@@ -81,7 +81,7 @@ function Page() {
               title="Namespaces the period's settlements used." />
           </Figures>
           <div className="board-charts">
-            <Chart title={withPeriod(`Blob size per ${per}`, win)} figure={m && series.length ? bytes(m.bytes) : undefined}
+            <Chart title={withPeriod(`Blob size per ${per}`, win)} figure={m && series.length ? bytes(m.bytes) : undefined} figureTitle="Summed over settlements: a blob settled twice counts twice."
               series={[{ key: "bytes", label: "blob size", color: "var(--accent)" }]}
               rows={series.map((c) => ({ x: c.title, label: c.label, short: c.short, values: { bytes: c.bytes / (1 << 20) }, note: `${int(c.settlements)} settlement${c.settlements === 1 ? "" : "s"}` }))}
               fmt={mib} fmtAxis={axisMib} empty={m && m.window.name === win ? "nothing settled" : "loading…"} />
