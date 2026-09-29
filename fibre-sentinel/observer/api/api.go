@@ -3471,6 +3471,12 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 	// commitment: the blobs with this commitment, which a DA team holds where
 	// it does not hold the promise hash. One blob can be paid for and
 	// settled more than once, so this is a list.
+	//
+	// Nothing indexes publications.commitment yet, so the page and its count
+	// each walk every publication: 45-65 ms at 8,600 publications, and they
+	// are never pruned. The index (and the collector's lookup of a
+	// commitment's other promises, which walks the same way) wants the next
+	// schema change, and has to land before mainnet volumes.
 	commitment := strings.ToLower(q.Get("commitment"))
 	if commitment != "" {
 		if b, err := hex.DecodeString(commitment); err != nil || len(b) != 32 {
