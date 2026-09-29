@@ -63,8 +63,8 @@ function Page() {
 
       {error && <div className="note hold"><span className="label">Observer</span><p>Cannot reach the observer API: {error}. Nothing below is current.</p></div>}
 
-      {/* The escrow side: the network totals (fees paid, upload size,
-          publishers) are on the overview and are not repeated here. */}
+      {/* The escrow side, then who published and which promises timed out; the
+          period's fees paid are the total on the fees chart below. */}
       <section className="board board--stack" id="summary">
         <Figures className="row">
           <Metric label="Escrow held" value={pre || !m ? "—" : tia(m.escrow_total_utia ?? m.escrow_held_utia)} tone={pre || !m ? "absent" : undefined}
@@ -78,8 +78,16 @@ function Page() {
             title="TIA requested out of escrow in the period. What is still waiting to pay out is under Withdrawal queue." />
           <Metric label="Largest publisher" period={period} value={pre || !m || m.largest_poster?.bytes_share == null ? "—" : fmtShare(m.largest_poster.bytes_share)}
             tone={pre || !m || !m.largest_poster ? "absent" : undefined}
-            help={pre || !m ? " " : m.largest_poster ? `of upload size · ${publisherName(m.largest_poster)}` : "nothing settled"}
-            title="The publisher with the most upload size in the period, and its share." />
+            help={pre || !m ? " " : m.largest_poster ? `of blob size · ${publisherName(m.largest_poster)}` : "nothing settled"}
+            title="The publisher with the most blob size in the period, and its share." />
+          <Metric label="Publishers" period={period} value={pre || !m ? "—" : int(m.publishers_active)}
+            tone={pre || !m || m.publishers_active === 0 ? "absent" : undefined}
+            help={pre || !m || m.publishers_active > 0 ? " " : "none"}
+            title="Accounts that published blobs in this period." />
+          <Metric label="Payment promise timeouts" period={period} value={pre || !m ? "—" : int(m.timeouts)}
+            tone={pre || !m ? "absent" : undefined}
+            help={pre || !m ? " " : m.timeouts > 0 ? `${tia(m.timed_out_utia)} charged` : "none"}
+            title="Payment promises not settled within an hour. The account is charged anyway." />
         </Figures>
 
       {/* per UTC day; for 24h per UTC hour, as the Blobs charts are (the period of the answer shown decides) */}
@@ -121,7 +129,7 @@ function Page() {
           <div className="board-charts">
             <Chart title={withPeriod(`Fees paid per ${per}`, m.window.name)} figure={tia(m.fees_settled_utia)} series={[{ key: "fees", label: "fees", color: "var(--accent)" }]} rows={feeRows}
               fmt={(v) => tia(v)} fmtAxis={axisTia} height={210} />
-            <Chart title={withPeriod(`Upload size per ${per}, by publisher`, m.window.name)} figure={bytes(m.bytes)} series={series} rows={byteRows} fmt={mib} fmtAxis={axisMib} height={210} />
+            <Chart title={withPeriod(`Blob size per ${per}, by publisher`, m.window.name)} figure={bytes(m.bytes)} series={series} rows={byteRows} fmt={mib} fmtAxis={axisMib} height={210} />
           </div>
         );
       })()}
@@ -137,7 +145,7 @@ function Page() {
           <thead><tr>
             <th>publisher</th>
             <th className="right">settlements</th>
-            <th className="right">upload size</th>
+            <th className="right">blob size</th>
             <th className="right">share</th>
             <th className="right">fees paid</th>
             <th className="right">share</th>

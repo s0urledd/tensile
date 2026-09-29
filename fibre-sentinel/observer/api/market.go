@@ -199,7 +199,7 @@ type marketResponse struct {
 var marketNotes = []string{
 	"every figure here is something the chain recorded; none was measured by this observer",
 	"a settlement's fee is not in any chain event; it is recomputed from blob_size with the module's own formula (price_formula)",
-	"blob_size is the padded upload size the module charges for, not the payload",
+	"blob_size is the padded blob size the module charges for, not the payload",
 	"timeouts count only promises whose timeout somebody submitted; an abandoned promise nobody reports leaves no trace, so this is a floor",
 	"fees go to the fee collector and are distributed by stake; the chain records no per-validator share, so none is shown",
 	"escrow balances are state reads for publishers already seen in a payment; there is no list-all query",

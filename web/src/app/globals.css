@@ -228,8 +228,6 @@ button { font: inherit; color: inherit; }
 /* ----------------------------------------------------------- title block --- */
 .title { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding: 20px 0 0; }
 .title.title-end { justify-content: flex-end; }
-/* the overview's period switch, over the figures it drives */
-.period-row { display: flex; justify-content: flex-end; margin: 22px 0 -4px; }
 .lede { margin: 4px 0 0; font-size: var(--t-body); color: var(--text-2); }
 .eyebrow { margin: 0 0 4px; font-size: var(--t-small); font-weight: 500; color: var(--text-2); letter-spacing: .02em; }
 /* the one pre-activation line under a page title (components/PreLive) */
@@ -302,6 +300,9 @@ button.dis:hover, a.dis:hover { text-decoration: underline; }
 
 /* ------------------------------------------------------- validators head --- */
 .vhead { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding: 14px 0 10px; flex-wrap: wrap; }
+/* the overview's period switch, beside the heading of the table whose Endorsements it drives,
+   set a little clear of the map band's rule above it */
+.vtitle { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; margin-top: 8px; }
 .tools { display: flex; gap: 10px; flex-wrap: wrap; }
 .search { display: flex; align-items: center; gap: 8px; width: 290px; max-width: 100%; height: 34px; border: 1px solid var(--line); border-radius: 6px; padding: 0 12px; color: var(--text-3); font-size: var(--t-cell); background: var(--paper); }
 .search::before { content: ""; width: 10px; height: 10px; border: 1.5px solid currentColor; border-radius: 50%; box-shadow: 4px 4px 0 -2px currentColor; margin-right: 2px; flex: none; }
@@ -362,14 +363,24 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
 .vt { font-variant-numeric: tabular-nums; }
 .vt th:not(:first-child), .vt td:not(:first-child) { text-align: center; padding-left: 6px; padding-right: 6px; }
 @media (min-width: 900px) {
-  .vt { table-layout: fixed; }
-  .vt th:first-child { width: 22%; }
+  /* seven columns need about 1100px; narrower, the frame scrolls with the validator pinned instead of crowding the headings */
+  .vt { table-layout: fixed; min-width: 1100px; }
+  .vt th:first-child { width: 20%; }
   /* widths follow what the cells hold */
-  .vt .c-ep { width: 14%; } .vt .c-host { width: 19%; } .vt .c-power { width: 14%; }
-  .vt .c-end { width: 15%; } .vt .c-last { width: 16%; }
+  .vt .c-ep { width: 11.5%; } .vt .c-host { width: 13%; } .vt .c-power { width: 10.5%; }
+  .vt .c-com { width: 13.5%; } .vt .c-end { width: 15.5%; } .vt .c-last { width: 16%; }
   .vt td:not(:first-child) { overflow: hidden; text-overflow: ellipsis; }
   .vt .hosting { max-width: 100%; vertical-align: middle; }
   .vt .hosting > span:not(.flag):not(.flag-none):not(.cc) { overflow: hidden; text-overflow: ellipsis; }
+}
+/* the period after a heading keeps its own case: "(24h)", not "(24H)" */
+.vt th .per { text-transform: none; letter-spacing: .03em; }
+/* Below the fixed layout a column is only as wide as its heading, and the (i),
+   which hangs outside the label, would run into the next heading: the heading
+   keeps room for it on either side, so the label stays centred over its cells. */
+@media (max-width: 899px) {
+  .tablewrap .vt thead th.has-i { padding-left: 27px; padding-right: 27px; }
+  .tablewrap .vt thead th.has-i:last-child { padding-right: 39px; }
 }
 .pair { display: inline-grid; grid-template-columns: 5ch minmax(7ch, auto); column-gap: 6px; align-items: baseline; }
 .pair > .rate { text-align: right; }
@@ -1112,7 +1123,13 @@ body { background: var(--canvas); }
 .rail { display: grid; align-content: start; gap: 36px; padding-top: 2px; }
 /* a long count runs into the gutter rather than losing its last digits */
 .rail .metric .value { overflow: visible; text-overflow: clip; }
-.figs.row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px 32px; }
+/* six figures, three to a row (two below 1000px). The figures of a row share its rows
+   (eyebrow, figure, help line), so an eyebrow that runs to two lines ("Payment promise
+   timeouts (24h)") keeps the figures of its row level; a one-line eyebrow sits just above
+   its figure. */
+.figs.row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px 32px; }
+.figs.row > .metric { display: grid; grid-row: span 3; grid-template-rows: subgrid; row-gap: 0; }
+.figs.row > .metric > .label { align-self: end; }
 .figs.row .metric .value { font-size: 34px; }
 .figs.row .metric .help { font-size: var(--t-small); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
@@ -1192,11 +1209,6 @@ body { background: var(--canvas); }
 .metric .value, .cell .value { font-weight: 600; letter-spacing: -.03em; }
 .metric .value .den { font-weight: 400; }
 .metrics, .cells { gap: 12px; }
-/* the overview's cards share their rows (title, figure, help line), so a title that runs to
-   two lines ("Payment promise timeouts (24h)") keeps the figures of a row on one line; a
-   one-line title sits just above its figure */
-.ov-metrics > .metric { display: grid; grid-row: span 3; grid-template-rows: subgrid; row-gap: 0; }
-.ov-metrics > .metric > .label { align-self: end; }
 .chips > span { background: var(--paper); border-color: var(--border); box-shadow: var(--shadow-sm); }
 .panel-head { border-bottom: 0; padding-bottom: 2px; }
 
