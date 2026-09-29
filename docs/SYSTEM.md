@@ -59,11 +59,11 @@ chain block
   prober: re-derives the queue of readings every cycle from publications.jsonl
           + measurements.jsonl (never stored)
        ├─ ReadPoint(publication)  → must_serve_until - 10 min
-       ├─ ClientOrder  → the endorsing validators in validator.Set.Select order
+       ├─ ClientOrder  → every validator with rows, in validator.Set.Select order
        ├─ per request, probe.Run  → DNS · TCP · TLS 1.3 · consensus-key identity
        │                            · DownloadShard, 15 s in all, one re-dial
        ├─ rows verified by the blob's shared Reconstructor; stop at K distinct rows
-       ├─ short after every endorser: the rest asked again a minute later
+       ├─ short after the whole set: the rest asked again a minute later
        ├─ Classify(Evidence) → one classification + a reason per validator asked
        └─→ measurements.jsonl (a reading's rows together)
 
@@ -209,9 +209,11 @@ reader without the validator's rows; on an available one none.
 
 **Blob reading** — `verdict.BlobReading`, one per publication: **available**
 when the distinct verified rows reach `original_rows`; **unavailable** when
-the verified rows plus the rows of endorsing validators with no answer of
-their own still fall short; `pending` while the window is open; `not_read`
-after. A reading of the earlier schedule is judged at the newest point every
+the verified rows plus the rows of every validator with no answer of its own
+(`probe.OwnAnswer`: not asked, or this observer's own failure; a validator
+whose verified rows are in hand has answered) still fall short, over the
+whole set the client asks, endorsing or not; `pending` while the window is
+open; `not_read` after. A reading of the earlier schedule is judged at the newest point every
 endorsing validator answered at.
 
 **Obligation bucket** — one per `(validator, promise)` pair, in
@@ -223,8 +225,8 @@ served       its rows came back verified at the blob's reading
 broken       not served: the blob was unavailable and its rows did not
              come back
 not_counted  the rest: not asked (the rows were enough before its turn), a
-             failure on a blob that was available, a rate limit, a reading
-             the guard set aside, or no reading that decides the blob
+             failure on a blob that was available, a reading the guard set
+             aside, or no reading that decides the blob
 ```
 
 Rate is `served / (served + broken)`. Everything else is printed beside it.
@@ -245,19 +247,25 @@ Fibre client downloads it:
 - at `must_serve_until - 10 min` (`ReadPoint`; half way through a shorter
   window); a reading that cannot start by `must_serve_until - 3 min` is not
   made, and its endorsing validators get a `NOT_PROBED` row
-- the endorsing validators in `validator.Set.Select` order (`ClientOrder`,
-  celestia-app's own code), the next one asked while the rows still wanted
-  outnumber the rows on their way
-- each request, dial and `DownloadShard` together, gets 15 s (the client's
-  `RPCTimeout`), and is made again at once after a failed dial, an
-  unreachable peer or a timeout; no request starts after
+- every validator the assignment gives rows, endorsing or not, in
+  `validator.Set.Select` order (`ClientOrder`, celestia-app's own code),
+  the next one asked while the rows still wanted outnumber the rows on their
+  way; a validator that did not endorse is asked like the rest, its rows
+  count toward the blob, and it is never counted (`UNATTESTED`)
+- each request, connect, TLS and `DownloadShard` together, gets 15 s (the
+  client's `RPCTimeout`; only the DNS lookup has a bound of its own), and
+  is made again at once after a failed dial, an unreachable peer or a
+  timeout, even past the cutoff; no request starts after
   `must_serve_until - 60 s`
 - every row is verified against the commitment by one Reconstructor the
   reading shares; the reading stops at `original_rows` distinct rows
-- short after every endorsing validator was asked: the ones that did not
-  serve are asked again 60 s later, if that pass can start by
-  `must_serve_until - 90 s`; otherwise the reading is incomplete and its
+- short after every validator was asked: the ones that did not serve are
+  asked again 60 s later, if that pass can start by
+  `must_serve_until - 90 s`; otherwise, or when that pass cannot ask every
+  one of them again before the cutoff, the reading is incomplete and its
   failures are `PROBE_ERROR`, this observer's gap
+- a rate limit (`RPC_THROTTLED`) is the validator's answer, as the client
+  takes it: no rows, never re-asked in the same pass
 - pacing, never dropping: 16 blobs and 64 requests at once, 512 MiB of shards
   in flight, one request per validator from this observer at a time (a busy
   validator is passed over and come back to)
@@ -291,7 +299,9 @@ policy keeps only the master secret (`<data-dir>/sampling-master.key`), so
 the prober can keep publishing each day's secret seven days after it ends
 (`sampling-secrets.jsonl`, `/v1/sampling`) and the draws already made stay
 auditable (`sentinel-recompute -sampling`). Once the last day with a draw is
-revealed, the key and `probe-budget.json` can be deleted.
+revealed (2026-10-04), the key can be deleted; `probe-budget.json` is not
+read any more. deploy/README.md lists every stored file and table only the
+earlier model needed, with its size and how to remove it.
 
 ---
 
@@ -337,15 +347,25 @@ Both are `Cache-Control: no-store`. The cache is keyed by window alone, so
 writing either into it would publish one reader's view as everyone's
 headline. Tests hold both paths off the cache.
 
-**The correlated-failure guard.** A reading of a blob that could not be
-reconstructed, where ≥3 validators were asked and ≥50% were unreachable, or
-≥50% failed, is *suspect* — the likeliest explanation is this observer's own
-network, a stale pin or a broken coder, not that many independent operators
-at one minute. Every count leaves those rows out and the blob reads
-`not_read`; the readings are published at `vantage_health.suspect`. A
-reading whose blob was available is never set aside: nothing in it counts
+**The correlated-failure guard** (the owner's decision until a control read
+exists). A reading of a blob that could not be reconstructed, where ≥3
+validators were asked and ≥50% were unreachable, or ≥50% failed (any answer
+without rows), is *suspect* — the likeliest explanation is this observer's
+own network, a stale pin or a broken coder, not that many independent
+operators at one minute. Every count leaves those rows out and the blob
+reads `not_read`; the readings are published at `vantage_health.suspect`.
+A reading whose blob was available is never set aside: nothing in it counts
 against anyone. `rollup.Point.Available` is where a control reading of a
 blob this observer uploaded itself would plug in; none is made yet.
+
+Its limit, stated plainly: the shares count validators, not the rows they
+hold. When the validators that did not endorse have no rows to give, a mocha
+blob is unavailable once the endorsers holding the most rows fail: 36 % to
+55 % of them (median 48 %; 161 of the newest 400 publications of 28
+September need half or more). Where it takes at least half of those asked,
+the guard sets the reading aside and nobody is counted not served; where it
+takes fewer, the failures count. Until a control read can tell this
+observer's side apart, a mass failure counts neither way.
 
 "Asked" is the denominator, and it holds only the rows that carry a
 reachability verdict — the rows that could themselves have been in a
@@ -559,8 +579,8 @@ Stated here because they are properties of the machine, not of any validator.
   closes a range in the pass that opens it, and why a range it cannot read
   is recorded `unresolvable` rather than left open.
 - **Unavailable needs a finished reading.** A blob is unavailable only after
-  every endorsing validator was asked, twice; a reading this observer could
-  not finish is its own gap, and nothing in it counts. While the observer is
+  every validator the assignment gives rows was asked, twice; a reading this
+  observer could not finish is its own gap, and nothing in it counts. While the observer is
   blind it can withhold credit, never manufacture an accusation.
 - **The rows a reading did not need say nothing.** A reading stops at enough
   rows, so a validator later in the order is often not asked at all, and an

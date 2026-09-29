@@ -98,8 +98,9 @@ ends (`-reveal-after`, to `<DATA_DIR>/sampling-secrets.jsonl`, served at
 auditable. A new vantage, which never sampled, can run without `-policy`.
 Only the day secrets are ever revealed, never the master: keep it off
 anything the publishers can read and out of any backup that leaves the host.
-Once the last day that had a draw is revealed, the key (and the old
-`probe-budget.json`) can be deleted and `-policy` dropped.
+Once the last day that had a draw is revealed, the key can be deleted and
+`-policy` dropped; the old `probe-budget.json` can go as soon as this
+prober runs (see "Stored data the reading no longer needs").
 
 `host_at_settlement` on every assignment comes from the chain's
 `set_fibre_provider_info` events, read in the same `block_results` pass
@@ -113,12 +114,31 @@ the tip, which the scan needs anyway (a block the node cannot serve is a
 recorded gap, and a registration inside a gap makes the hosts of later
 settlements unknown until the gap is re-scanned).
 
-The prober asks a validator only for rows it endorsed, in window, one
-request at a time from this observer, and stops once a blob's rows are
-enough. The read-path rate limiting Celestia is designing (forum topic 2295)
-treats requests for shards a validator was never assigned as illegitimate;
-reading only real, in-window, endorsed commitments keeps the observer's
-traffic on the right side of it.
+The prober asks a validator only for a blob it was assigned rows of, in
+window, one request at a time from this observer, and stops once a blob's
+rows are enough. The read-path rate limiting Celestia is designing (forum
+topic 2295) treats requests for shards a validator was never assigned as
+illegitimate; reading only real, in-window, assigned commitments keeps the
+observer's traffic on the right side of it.
+
+**What the prober sustains.** On 28 September mocha settled about 20 blobs
+a minute (1,200 an hour from 14:00 to 20:00 UTC, 22 in the busiest minute),
+nearly all of 16 MiB. A reading asks 12 to 20 validators (12 when every
+validator holds its rows, 20 when the third that did not endorse holds
+nothing) and moves about 19 MiB, the rows needed plus the requests already
+on their way: at 20 blobs a minute that is 240 to 400 requests and about
+380 MiB a minute, about 50 Mbit/s. The validator with the most stake is
+asked for nearly every blob, one request at a time, and is busy about 60 %
+of the time at that rate; past about 30 blobs a minute it is passed over and
+the readings go on with the others. A scheduler run on the observer (82
+shared fake validators with mocha's row shape scaled to 1/16, 1.0 to 1.8 s
+per shard, production timeouts and pacing, loopback) read 60 of 60 blobs at
+20 a minute (reading p50 1.9 s, max 3.0 s, no start lag) and 180 of 180 at
+60 a minute (p50 2.5 s, max 4.3 s, no start lag); at 120 a minute every blob
+was still read but the start lag grew to 30 s in two minutes. So the prober
+keeps up at three times today's rate with nothing queued; at 16 blobs and 64
+requests at once (`-blob-concurrency`, `-concurrency`) the limits are the
+validators' own single connections and the link, not the reading.
 
 ## 4. systemd
 
@@ -267,11 +287,11 @@ project (it binds 80 and 443); for two networks on one host use systemd.
 ## 7. Backups, retention, rebuild
 
 Budget for disk: one measurement is about 1.5 KB in `measurements.jsonl`
-and about twice that again in the database, one per validator a reading
-asks. At mocha's current rate (about 350 publications an hour, 11 to 27
-validators asked each) that is about 0.25 GB a day of JSONL plus the
-database; the earlier schedule, six readings of every endorsing validator,
-wrote several times that. The JSONL files are the record; the three biggest are kept bounded
+(about 3 KB when it carries the verified row indices) and about twice that
+again in the database, one per validator a reading asks. At mocha's rate on
+28 September (about 20 blobs a minute, 12 to 20 validators asked each) that
+is about 1.2 to 1.8 GB a day of JSONL plus the database, until `raw_json`
+is dropped after 30 days. The JSONL files are the record; the three biggest are kept bounded
 by moving their older lines into compressed segments under `archive/`
 (below), never by deleting a line. `/v1/health` fails the `disk` check
 under 5% free so the alert arrives before a write does. When a disk fills,
@@ -383,6 +403,26 @@ delete any `observer.db-wal` / `-shm` left beside it, start both.
 Test a restore and a rebuild before you need one: stop the collector, move
 the database aside, restore or delete it, start the collector, and check
 `/v1/meta` counts match.
+
+### Stored data the reading no longer needs
+
+Nothing below is deleted by this change, and nothing is rewritten: the
+earlier schedule's rows (`w1` to `w4`, `grace`, `post`, 8,000 each) and
+the `NOT_PROBED` end rows of readings the old prober could not make are the
+record, and stay. What only served the earlier model, with its size on the
+mocha host on 29 September, and how to remove it once the owner approves:
+
+| data | size | still read by | how to remove |
+|---|---|---|---|
+| `probe-budget.json` | 1.3 MB | the prober before this change; the new prober never reads or writes it | after the new prober is running: `rm <DATA_DIR>/probe-budget.json` |
+| `sampling-master.key` | 32 B | the prober's reveal of the earlier draws' day secrets (`-policy`) | after the last draw day (2026-09-26) is revealed, on 2026-10-04 with `-reveal-after 7d`: `rm <DATA_DIR>/sampling-master.key` and drop `-policy` from the unit |
+| `sampling-secrets.jsonl` | 5.8 KB | `/v1/sampling`, the daily export, `sentinel-recompute -sampling` | only with the sampling audit itself: then `rm`, and remove `/v1/sampling` in the same change |
+| `sampling_decisions.jsonl` | 8.3 KB | the collector (`sampling_decisions` table), the daily export | the same: with the sampling audit |
+| table `sampling_decisions` (53 rows) and `sampling_decision_points` (318 rows, with its key index) | 0.2 MB | `/v1/sampling`, the obligation rows of sampled-out publications (`obligation_rows`) | with the sampling audit, in a migration that bumps the schema: `DROP TABLE sampling_decision_points; DROP TABLE sampling_decisions;` and the views over them |
+| index `probes_sampling_started` | 68 MB | `/v1/sampling` only | with the sampling audit, in the same migration: `DROP INDEX probes_sampling_started;` then `VACUUM` (hours on a 5 GB store; run it with the collector stopped) |
+| columns `probe_daily.faults`, `attested`, `unattested`, `unknown_att` | none yet (no day rolled) | nothing: written as 0 | a migration that bumps the schema, whenever the table is next changed |
+| columns `obligation_daily.end_unobserved`, `unobserved_reachable`, `unobserved_unreachable`, `unobserved_not_probed` | none yet | summed into `not_counted` | the same; one `not_counted` column would do |
+| `snapshots/` | 1.0 MB, 12 files | the API, which rewrites every file on start and on each refresh | nothing to do: none is left from an earlier model |
 
 ### Archive: bounded live files
 
@@ -681,14 +721,16 @@ systemctl daemon-reload && systemctl enable --now fibre-vantage-pull@mocha.timer
 
 ### Second vantage: fault confirmation
 
-Every retention `FAULT` is asked once more from the second vantage before it
-counts (docs/verdicts.md, "Faults re-checked from a second location"). Only
-failures are re-checked, never routine probes, so the load is one request per
-fault, capped at 60 an hour on the vantage.
+Every not-served row (an endorsing validator whose rows did not come back
+from a blob that could not be reconstructed: not found, bad rows, no answer,
+a rejected certificate, an error, a rate limit) is asked once more from the
+second vantage before it counts (docs/verdicts.md, "Faults re-checked from a
+second location"). Only those are re-checked, never routine readings, so the
+load is one request per not-served row, capped at 60 an hour on the vantage.
 
 The exchange rides the same timer and sftp account as the pull:
 
-- the prober appends one request per `FAULT` to
+- the prober appends one request per not-served row to
   `<data-dir>/vantage-requests.jsonl` (built in, nothing to configure);
 - `fibre-vantage-pull` pushes the new lines to
   `vantage/<name>/inbox/requests.jsonl` (sftp `reput`, mode 0640) and pulls
@@ -699,7 +741,7 @@ The exchange rides the same timer and sftp account as the pull:
   set from its own Mocha RPC, and appends its answers to `measurements.jsonl`
   in its data dir;
 - the collector ingests `<data-dir>/vantages/*/measurements.jsonl` and clears
-  or confirms each fault; a cleared fault is logged in `amendments.jsonl`.
+  or confirms each not-served row; a cleared one is logged in `amendments.jsonl`.
 
 On the vantage host, the inbox is a directory the sftp account writes through
 the group and the confirm service only reads (the unit mounts it read-only):
@@ -723,7 +765,7 @@ On the observer, install the new `deploy/vantage-pull.sh` over
 are. To check the channel end to end:
 
 ```
-ls -l /var/lib/fibre-observer/mocha/vantage-requests.jsonl       # appears with the first FAULT
+ls -l /var/lib/fibre-observer/mocha/vantage-requests.jsonl       # appears with the first not-served row
 cat /var/lib/fibre-observer/mocha/vantages/de-1/requests.pushed   # bytes the vantage has
 journalctl -u tensile-vantage-confirm@de-1 | grep CONFIRM          # on the vantage host
 sqlite3 /var/lib/fibre-observer/mocha/observer.db \

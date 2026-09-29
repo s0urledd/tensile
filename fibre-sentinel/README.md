@@ -57,21 +57,24 @@ reads from the chain and recomputes itself (`fibre-assign`, `fibre-tlsverify`).
 
 What a Fibre blob promises its reader is that it can be downloaded until its
 deadline. So the Sentinel downloads it the way a reader does, with
-celestia-app's own rules (`fibre/download.go`): the validators that endorsed
-the promise, in the client's order (`validator.Set.Select`), the next one
-asked while the rows still wanted outnumber the rows on their way, 15 s per
-request, one re-dial after a failed dial or a timeout, every row verified
+celestia-app's own rules (`fibre/download.go`): every validator the
+assignment gives rows, endorsing or not, in the client's order
+(`validator.Set.Select`), the next one asked while the rows still wanted
+outnumber the rows on their way, 15 s per request (connect and TLS
+included), one re-dial after a failed dial or a timeout, every row verified
 against the commitment, and the download done at the rows that reconstruct
 the blob (4096 of 16384 for blob version 0). It reads **once, 10 minutes
 before the deadline**, where a validator that pruned early or moved on shows.
-When every endorsing validator has been asked and the rows are still short,
-it asks those that did not serve once more a minute later; only then is the
-blob **unavailable**.
+When every validator has been asked and the rows are still short, it asks
+those that did not serve once more a minute later; only when that second
+pass has asked every one of them again is the blob **unavailable** (the
+client's "not enough shards to reconstruct blob").
 
-A validator counts as **not served** only on an unavailable blob, when its
-rows did not come back. On an available blob a validator that failed, or one
-the reading did not need to ask, counts neither way: the blob was there for
-any reader.
+A validator counts as **not served** only when it endorsed the promise, the
+blob was unavailable, and its rows did not come back. On an available blob a
+validator that failed, or one the reading did not need to ask, counts
+neither way: the blob was there for any reader. A validator that did not
+endorse owes nothing and is never counted.
 
 ### Why the tolerance is set from the *measured* prune lag
 
@@ -203,10 +206,11 @@ row counts in the scan record — a mismatch is a hard error, not a silent
 divergence.
 
 **4. Enough.** The reading stops at `original_rows` distinct verified rows.
-Short after every endorsing validator was asked, those that did not serve are
-asked again `-retry-after` (60 s) later, if that pass can start by
-`must_serve_until - 90 s`; otherwise the reading is incomplete and its
-failures are `PROBE_ERROR`.
+Short after every validator was asked, those that did not serve are asked
+again `-retry-after` (60 s) later, if that pass can start by
+`must_serve_until - 90 s`; otherwise, or when that pass cannot ask every one
+of them again before `must_serve_until - 60 s`, the reading is incomplete
+and its failures are `PROBE_ERROR`.
 
 **5. The record.** One raw `Measurement` per validator asked, all of a
 reading's rows in one write: vantage, scheduled/started/finished times, each
@@ -215,7 +219,8 @@ verification results, the raw error text, and `read` (the pass, the place in
 the order, the rows this answer added, what the reading came to). **No
 scores** — the observer derives the blob's status and the obligation verdicts
 from these records (`observer/verdict`, `observer/rollup`). When the reading
-ends unavailable, each `FAULT` is queued for the second vantage to confirm.
+ends unavailable, every endorsing validator's not-served row is queued for the
+second vantage to confirm (`probe.Confirmable`).
 
 ### Error-class taxonomy
 
@@ -231,7 +236,7 @@ earlier schedule only:
 | yes | no | any | any | **UNATTESTED** (no proof this validator ever stored the shard; outside every rate, in both directions) |
 | yes | yes | in-window (`t < must_serve_until`) | `NOT_FOUND` / `INVALID_ROWS` | **FAULT** (identity verified, and it did not serve what the chain proves it holds; a `NOT_FOUND` within 30 s of the deadline is `TOLERATED`) |
 | yes | yes | in-window | `SERVER_ERROR` | **SERVER_ERROR** (reached, answered with an error or an answer no client accepts) |
-| yes | yes | in-window | `RPC_THROTTLED` | **THROTTLED** (reached, refused with a rate limit; says nothing about the shard) |
+| yes | yes | in-window | `RPC_THROTTLED` | **THROTTLED** (reached, refused with a rate limit: at the reading, no rows, as the client meets it) |
 | any | any | any | certificate not endorsed by this validator's consensus key | **IDENTITY_MISMATCH** (an unusable endpoint, shown as its status; not a fault) |
 | yes | yes | in-window | `DNS_FAIL` / `TCP_*` / `TLS_HANDSHAKE_FAIL` / `RPC_UNAVAILABLE` / `RPC_TIMEOUT` / `RPC_ERROR` | **UNREACHABLE** (from one vantage this is our path too) |
 | yes | yes | any | `NO_REGISTERED_HOST` | **NOT_REGISTERED** (jailing and unbonding drop the bonded entry) |
@@ -250,10 +255,9 @@ earlier schedule only:
 **Not served** is the only thing said against a validator: the chain *proves*
 it stored rows of a blob, the blob could *not be reconstructed* from what the
 reading brought back, and its rows did not come back — not found, bad rows,
-no answer, a rejected certificate, an error or no registered host, as a
-reader using the client meets them. On an available blob none of those counts
-either way, and a rate limit never does. Only served and not served enter the
-service rate.
+no answer, a rejected certificate, an error, a rate limit or no registered
+host, as a reader using the client meets them. On an available blob none of
+those counts either way. Only served and not served enter the service rate.
 
 "Attested" means the observer verified a signature from that validator over the
 settled promise against its consensus key. A Fibre server writes the shard to
