@@ -192,7 +192,8 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 	// it over this blob's rows.
 	pb, pargs := pin.bound("p", args)
 	cls := rollup.EffectiveClass("p")
-	failed := `(` + rollup.ObligationClass("p") + ` = 'FAULT' AND p.classification <> 'NOT_REGISTERED')`
+	passed := rollup.PassedOverSQL("p")
+	failed := `((` + rollup.ObligationClass("p") + ` = 'FAULT' AND p.classification <> 'NOT_REGISTERED') OR ` + passed + `)`
 	answered := rollup.Answered("p")
 	points := map[string][]readingAgg{}
 	rows, err = db.QueryContext(ctx, sel+`
@@ -203,7 +204,7 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 		       COALESCE(SUM(CASE WHEN p.commitment_verified = 1 THEN p.rows_returned END), 0),
 		       COUNT(DISTINCT CASE WHEN p.assigned = 1 AND `+cls+` = 'UNREACHABLE' THEN p.validator_address END),
 		       COUNT(DISTINCT CASE WHEN p.assigned = 1 AND `+failed+` THEN p.validator_address END),
-		       COUNT(DISTINCT CASE WHEN p.assigned = 1 AND `+cls+` NOT IN `+rollup.GuardSilentSQL+` THEN p.validator_address END)
+		       COUNT(DISTINCT CASE WHEN p.assigned = 1 AND (`+cls+` NOT IN `+rollup.GuardSilentSQL+` OR `+passed+`) THEN p.validator_address END)
 		FROM probes p JOIN sel ON sel.promise_hash = p.promise_hash
 		WHERE p.phase = 'in_window'`+pb+`
 		GROUP BY p.promise_hash, p.scheduled_at`, pargs...)

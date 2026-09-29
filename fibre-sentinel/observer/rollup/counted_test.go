@@ -47,6 +47,7 @@ type validator struct {
 	unasked    bool     // the reading never got to it
 	gap        bool     // this observer could not read it (PROBE_ERROR)
 	unendorsed bool     // rows assigned, no endorsement on the promise
+	passedOver bool     // the deciding pass did not ask it (PASSED_OVER)
 	// unconfirmed: a failure the second location did not confirm; every
 	// other failure it did
 	unconfirmed bool
@@ -114,7 +115,10 @@ func (r *readings) blob(needed, total int, vals ...validator) string {
 		if v.gap {
 			m.Outcome, m.Classification = probe.OutcomeProbeError, probe.ClassProbeError
 		}
-		m.TLS.OK = m.Outcome != probe.OutcomeTLSFail && !v.gap
+		if v.passedOver {
+			m.Outcome, m.Classification = probe.OutcomePassedOver, probe.ClassProbeError
+		}
+		m.TLS.OK = m.Outcome != probe.OutcomeTLSFail && !v.gap && !v.passedOver
 		m.Download.RowsExpected = len(v.holds)
 		if len(v.got) > 0 {
 			m.Download.RowIndices, m.Download.RowsReturned, m.Download.CommitmentVerified = v.got, len(v.got), true
@@ -124,7 +128,7 @@ func (r *readings) blob(needed, total int, vals ...validator) string {
 			r.t.Fatal(err)
 		}
 		r.ms = append(r.ms, m)
-		if !v.unconfirmed && !v.gap && len(v.got) < len(v.holds) {
+		if !v.unconfirmed && !v.gap && !v.passedOver && len(v.got) < len(v.holds) {
 			if _, err := r.st.DB().Exec(`UPDATE probes SET confirmed_by = 'de-1' WHERE promise_hash = ? AND validator_address = ?`, hash, v.name); err != nil {
 				r.t.Fatal(err)
 			}
@@ -202,6 +206,18 @@ func fixture(t *testing.T) (*readings, map[string]string) {
 	uc := failed("uc", rowsFrom(0, 8), probe.ClassUnreachable, probe.OutcomeRPCTimeout)
 	uc.unconfirmed = true
 	hashes["unconfirmed"] = r.blob(8, 32, uc, served("s1", rowsFrom(8, 1)), served("s2", rowsFrom(9, 1)))
+	// An endorser the deciding pass passed over, busy with this observer's
+	// other readings, beside four not found and five served one row each:
+	// it counts as failed to the guard, half of the ten, and the reading is
+	// set aside as it would have been had the pass asked it.
+	passed := []validator{{name: "po", holds: rowsFrom(0, 2), passedOver: true}}
+	for i := 1; i <= 4; i++ {
+		passed = append(passed, failed(fmt.Sprintf("pn%d", i), rowsFrom(2*i, 2), probe.ClassFault, probe.OutcomeNotFound))
+	}
+	for i := 0; i < 5; i++ {
+		passed = append(passed, served(fmt.Sprintf("ps%d", i), rowsFrom(10+i, 1)))
+	}
+	hashes["passedover"] = r.blob(8, 32, passed...)
 	// Two blobs at one scheduled time (the publisher chose one
 	// creation_timestamp for both): every validator of the first failed, two
 	// of the second's eight did. The guard is per reading, so the first is
@@ -301,12 +317,12 @@ func TestTheSQLAndTheGoTwinAgreeOnTheGuardAndTheObligations(t *testing.T) {
 	}
 	want := map[string]bool{}
 	for _, m := range r.ms {
-		if m.PromiseHash == hashes["allfail"] || m.PromiseHash == hashes["pair-sacrifice"] {
+		if m.PromiseHash == hashes["allfail"] || m.PromiseHash == hashes["pair-sacrifice"] || m.PromiseHash == hashes["passedover"] {
 			want[m.PromiseHash+"@"+store.TS(m.ScheduledAt)] = true
 		}
 	}
-	if len(sqlSuspect) != 2 || !want[sqlSuspect[0]] || !want[sqlSuspect[1]] {
-		t.Fatalf("suspect %v, want only the readings where every validator failed (%v)", sqlSuspect, want)
+	if len(sqlSuspect) != 3 || !want[sqlSuspect[0]] || !want[sqlSuspect[1]] || !want[sqlSuspect[2]] {
+		t.Fatalf("suspect %v, want only the readings where every validator failed, and the one where half did with one passed over (%v)", sqlSuspect, want)
 	}
 
 	// The daily rollup, read back, against the Go twin.

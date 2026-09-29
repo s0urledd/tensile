@@ -9,7 +9,7 @@ package probe
 // prober appends a ConfirmRequest for every row that can count not served
 // (ConfirmationDue: an endorsing validator whose rows did not come back
 // from a blob that could not be reconstructed, at a reading the
-// correlated-failure guard does not set aside) to
+// correlated-failure guard does not set aside for good) to
 // <data-dir>/vantage-requests.jsonl; deploy/vantage-pull.sh copies new
 // lines to each second vantage, where sentinel-probe -confirm-requests
 // (Confirmer) fetches exactly those rows from that validator once, with the

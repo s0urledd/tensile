@@ -153,25 +153,36 @@ func TestANotServedRowCountsOnlyOnceConfirmed(t *testing.T) {
 }
 
 // The prober's guard at the end of a reading is the verdict's over the same
-// rows, so a reading it sends no request for is one the figures set aside.
+// rows, validators passed over included (an endorser's counts as failed, a
+// non-endorser's not at all), so a reading it sends no request for is one
+// the figures set aside.
 func TestTheProbersGuardIsTheVerdicts(t *testing.T) {
 	at := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
-	classes := []probe.Classification{probe.ClassUnreachable, probe.ClassFault, probe.ClassThrottled, probe.ClassHealthy,
-		probe.ClassProbeError, probe.ClassUnattested, probe.ClassServerError, probe.ClassNotRegistered}
+	type kind struct {
+		cls      probe.Classification
+		out      probe.Outcome
+		attested bool
+	}
+	kinds := []kind{{probe.ClassUnreachable, probe.OutcomeRPCTimeout, true}, {probe.ClassFault, probe.OutcomeNotFound, true},
+		{probe.ClassThrottled, probe.OutcomeThrottled, true}, {probe.ClassHealthy, probe.OutcomeServedOK, true},
+		{probe.ClassProbeError, probe.OutcomeProbeError, true}, {probe.ClassUnattested, probe.OutcomeNotFound, false},
+		{probe.ClassServerError, probe.OutcomeServerError, true}, {probe.ClassNotRegistered, probe.OutcomeNoHost, true},
+		{probe.ClassProbeError, probe.OutcomePassedOver, true}, {probe.ClassProbeError, probe.OutcomePassedOver, false}}
 	blobs := Blobs{"p": {Needed: 1000, Endorsed: map[string]int{}, Assigned: map[string]int{}}}
-	for n := 0; n < 4096; n++ {
+	for n := 0; n < 10000; n++ {
 		var ms []probe.Measurement
 		var rows []Row
 		x := n
 		for v := 0; v < 6; v++ {
-			cls := classes[x%len(classes)]
-			x /= len(classes)
+			k := kinds[x%len(kinds)]
+			x /= len(kinds)
 			if v >= 4 {
-				cls = classes[(n+v)%len(classes)]
+				k = kinds[(n+v)%len(kinds)]
 			}
 			addr := string(rune('a' + v))
-			m := probe.Measurement{PromiseHash: "p", ValidatorAddress: addr, ScheduleLabel: probe.EndReadLabel, ScheduledAt: at,
-				StartedAt: at, Assigned: true, Attested: true, Phase: probe.PhaseInWindow, Classification: cls, AssignedRowCount: 10}
+			m := probe.Measurement{SchemaVersion: probe.MeasurementSchemaVersion, PromiseHash: "p", ValidatorAddress: addr,
+				ScheduleLabel: probe.EndReadLabel, ScheduledAt: at, StartedAt: at, Assigned: true, Attested: k.attested,
+				Phase: probe.PhaseInWindow, Outcome: k.out, Classification: k.cls, AssignedRowCount: 10}
 			ms = append(ms, m)
 			rows = append(rows, FromMeasurement(m))
 			blobs["p"].Endorsed[addr], blobs["p"].Assigned[addr] = 10, 10
@@ -184,5 +195,20 @@ func TestTheProbersGuardIsTheVerdicts(t *testing.T) {
 	}
 	if UnreachableThreshold != probe.GuardShare || FaultThreshold != probe.GuardShare || MinValidators != probe.GuardMinValidators {
 		t.Fatal("the verdict's guard constants are not the prober's")
+	}
+	// Two not found, one endorser passed over, three served: half of the
+	// six failed, as it would have been had the pass asked it.
+	var ms []probe.Measurement
+	for i, k := range []kind{kinds[1], kinds[1], kinds[8], kinds[3], kinds[3], kinds[3]} {
+		ms = append(ms, probe.Measurement{SchemaVersion: probe.MeasurementSchemaVersion, PromiseHash: "p", ValidatorAddress: string(rune('a' + i)),
+			ScheduleLabel: probe.EndReadLabel, ScheduledAt: at, StartedAt: at, Assigned: true, Attested: k.attested,
+			Phase: probe.PhaseInWindow, Outcome: k.out, Classification: k.cls, AssignedRowCount: 10})
+	}
+	if !probe.GuardSetsAside(ms) {
+		t.Error("an endorser passed over is not counted as failed")
+	}
+	ms[2].Attested = false
+	if probe.GuardSetsAside(ms) {
+		t.Error("a validator passed over that did not endorse is counted")
 	}
 }

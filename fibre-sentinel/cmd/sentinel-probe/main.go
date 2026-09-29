@@ -5,7 +5,9 @@
 // gives rows, in the client's order, 15 s per request, rows verified
 // against the commitment, until the rows reconstruct the blob; when they do
 // not, once more a minute later. Every reading ends with one Measurement per
-// validator asked, appended together to <data-dir>/measurements.jsonl.
+// validator asked, and on an Unavailable reading one per validator the
+// deciding pass passed over (PASSED_OVER), appended together to
+// <data-dir>/measurements.jsonl.
 //
 // The queue of readings is never persisted: it is re-derived from the
 // publications and the existing measurements every cycle, so a restart
@@ -14,7 +16,9 @@
 // Every not-served row of a blob that could not be read (an endorsing
 // validator whose rows did not come back, probe.ConfirmationDue) is also
 // queued in <data-dir>/vantage-requests.jsonl for a second vantage to
-// confirm; it counts only once confirmed. With -confirm-requests the
+// confirm, unless the correlated-failure guard sets the reading aside for
+// good (probe.GuardSetsAsideForGood); it counts only once confirmed. With
+// -confirm-requests the
 // command is that second vantage instead: it answers those requests
 // (internal/probe/confirm.go).
 package main

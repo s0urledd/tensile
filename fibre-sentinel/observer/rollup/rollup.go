@@ -216,6 +216,18 @@ type Querier interface {
 // lists to each other.
 const GuardSilentSQL = `('NOT_PROBED','PROBE_ERROR','NOT_REGISTERED','UNATTESTED','RETENTION_UNVERIFIED')`
 
+// PassedOverSQL is probe.GuardPassedOver over the row under the alias ("",
+// a bare table): a validator the reading passed over, with its endorsement
+// on the promise, which the guard counts as asked and failed though its
+// class is PROBE_ERROR.
+func PassedOverSQL(alias string) string {
+	p := ""
+	if alias != "" {
+		p = alias + "."
+	}
+	return `(` + p + `outcome = '` + string(probe.OutcomePassedOver) + `' AND ` + EffectiveClass(alias) + ` = 'PROBE_ERROR' AND ` + p + `attested = 1)`
+}
+
 // EffectiveClass is the classification every published figure must be
 // built from: the row's own, except that a row of a publication whose
 // retention deadline this observer cannot vouch for publishes no serve
@@ -408,7 +420,8 @@ var pointAvailableSQL = `SELECT ` + AvailableSQL("pt.promise_hash", "pt.schedule
 // could not be in the numerator whatever happened must not dilute the
 // share (see GuardSilentSQL). Faulted counts the validators that left the
 // reader without rows (at the end reading every such class, NOT_REGISTERED
-// aside). Rows counts every row at the point, because the exclusion removes
+// aside). A validator the reading passed over is in both (PassedOverSQL).
+// Rows counts every row at the point, because the exclusion removes
 // them all. A point where the guard would fire and every blob read there
 // was Available is marked so, and Reason leaves it alone. The Go twin is
 // verdict.SuspectPoints.
@@ -420,14 +433,16 @@ var pointAvailableSQL = `SELECT ` + AvailableSQL("pt.promise_hash", "pt.schedule
 // them as it did when they were stored.
 func SuspectPoints(ctx context.Context, db Querier, where string, args ...any) ([]Point, error) {
 	cls := EffectiveClass("")
-	failed := `(` + ObligationClass("") + ` = 'FAULT' AND classification <> 'NOT_REGISTERED')`
+	passed := PassedOverSQL("")
+	failed := `((` + ObligationClass("") + ` = 'FAULT' AND classification <> 'NOT_REGISTERED') OR ` + passed + `)`
+	asked := `(` + cls + ` NOT IN ` + GuardSilentSQL + ` OR ` + passed + `)`
 	rows, err := db.QueryContext(ctx, `SELECT promise_hash, scheduled_at, MIN(schedule_label),
 			COUNT(DISTINCT CASE WHEN `+cls+` = 'UNREACHABLE' THEN validator_address END),
 			COUNT(DISTINCT CASE WHEN `+failed+` THEN validator_address END),
-			COUNT(DISTINCT CASE WHEN `+cls+` NOT IN `+GuardSilentSQL+` THEN validator_address END), COUNT(*)
+			COUNT(DISTINCT CASE WHEN `+asked+` THEN validator_address END), COUNT(*)
 		FROM probe_rows probes
 		WHERE `+where+` AND assigned = 1 AND phase = 'in_window'
-		GROUP BY promise_hash, scheduled_at HAVING COUNT(DISTINCT CASE WHEN `+cls+` NOT IN `+GuardSilentSQL+` THEN validator_address END) > 1
+		GROUP BY promise_hash, scheduled_at HAVING COUNT(DISTINCT CASE WHEN `+asked+` THEN validator_address END) > 1
 		ORDER BY scheduled_at, promise_hash`, args...)
 	if err != nil {
 		return nil, err

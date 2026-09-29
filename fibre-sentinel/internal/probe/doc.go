@@ -35,7 +35,10 @@
 // together to measurements.jsonl: the vantage, the time, every layer's
 // duration and result, the identity verdict, the rows returned and their
 // verification, the raw error text, and where the answer sat in the reading
-// (ReadInfo). A validator the reading did not need to ask has no row.
+// (ReadInfo). On an Unavailable reading a validator the deciding pass was
+// due to ask and did not, busy with this observer's other readings, has a
+// row too (OutcomePassedOver), which the correlated-failure guard counts as
+// failed. A validator the reading did not need to ask has no row.
 //
 // # Taxonomy
 //

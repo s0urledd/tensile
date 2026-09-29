@@ -58,6 +58,16 @@ const (
 	OutcomeProbeError Outcome = "PROBE_ERROR" // the probe itself failed (bug / config), not the target
 	OutcomeMissed     Outcome = "MISSED"      // scheduled point elapsed before the prober could run it
 	OutcomeReachable  Outcome = "REACHABLE"   // DNS/TCP/TLS/identity all fine; download deliberately skipped (heartbeat or policy backoff)
+	// OutcomePassedOver: on a reading that ended Unavailable, a validator the
+	// pass that decided it was due to ask and did not ask: busy with another
+	// of this observer's readings until the pass ended, or the reading's time
+	// ran out first (blobread.go). Its earlier answer, if it gave one, is on
+	// the row as the first attempt. No request was made in that pass, so it
+	// is this observer's gap (PROBE_ERROR) and never counts; the
+	// correlated-failure guard counts it as a validator that failed
+	// (GuardPassedOver), because the validators a pass passes over are the
+	// ones this observer's own requests to are still waiting on.
+	OutcomePassedOver Outcome = "PASSED_OVER"
 )
 
 // AllOutcomes is every outcome the prober can record. The taxonomy test walks
@@ -68,6 +78,7 @@ var AllOutcomes = []Outcome{
 	OutcomeIdentityFail, OutcomeRPCUnavailable, OutcomeServerError, OutcomeThrottled, OutcomeRPCDeadline,
 	OutcomeRPCTimeout, OutcomeMalformedShard,
 	OutcomeNoHost, OutcomeBadHost, OutcomeRPCError, OutcomeProbeError, OutcomeMissed, OutcomeReachable,
+	OutcomePassedOver,
 }
 
 // Classification is the Sentinel's verdict on one measurement, given the probe
@@ -322,6 +333,21 @@ func GuardSilent(c Classification) bool {
 	return false
 }
 
+// GuardPassedOver reports whether a row is a validator the reading passed
+// over (OutcomePassedOver) that the correlated-failure guard counts, in its
+// denominator and as failed: one whose endorsement is on the promise. The
+// guard would have seen its answer had the pass asked it, and the
+// validators a pass passes over are the ones this observer's own earlier
+// requests to still hold (a hanging validator keeps its one slot for two
+// RPC timeouts), which at a slower pace come back UNREACHABLE. Leaving them
+// out, as a PROBE_ERROR otherwise is, made whether a reading was set aside
+// depend on how busy this observer was. A validator without an endorsement
+// is UNATTESTED whatever it answers, which the guard leaves out, so it is
+// left out here too. rollup.PassedOverSQL is the SQL twin.
+func GuardPassedOver(o Outcome, c Classification, attested bool) bool {
+	return o == OutcomePassedOver && c == ClassProbeError && attested
+}
+
 // GuardSetsAside reports whether the correlated-failure guard sets one
 // reading aside, from its rows as the prober writes them: the verdict's
 // guard (verdict.SuspectPoints) over one reading, drawn from this
@@ -330,7 +356,14 @@ func GuardSilent(c Classification) bool {
 func GuardSetsAside(rows []Measurement) bool {
 	vals, unreach, failed := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, m := range rows {
-		if !m.Assigned || m.Phase != PhaseInWindow || GuardSilent(m.Classification) {
+		if !m.Assigned || m.Phase != PhaseInWindow {
+			continue
+		}
+		if GuardPassedOver(m.Outcome, m.Classification, m.Attested && m.HasAttestation()) {
+			vals[m.ValidatorAddress], failed[m.ValidatorAddress] = true, true
+			continue
+		}
+		if GuardSilent(m.Classification) {
 			continue
 		}
 		vals[m.ValidatorAddress] = true
@@ -351,6 +384,36 @@ func GuardSetsAside(rows []Measurement) bool {
 	}
 	share := func(k int) bool { return float64(k)/float64(n) >= GuardShare && k >= GuardMinValidators }
 	return share(len(unreach)) || share(len(failed))
+}
+
+// VerdictDeferred reports whether a row's verdict is still to be drawn by
+// the collector (verdict.LateShadow): rows that verified against the
+// commitment and are not this promise's assignment, written PROBE_ERROR
+// with a shadow gap until the scanner has read far enough to say which
+// promise, if any, they belong to.
+func VerdictDeferred(m Measurement) bool {
+	return m.Classification == ClassProbeError && m.Download.ShadowGap != "" && m.Download.CommitmentVerified &&
+		(m.Outcome == OutcomeWrongRows || m.Outcome == OutcomePartial)
+}
+
+// GuardSetsAsideForGood reports whether the guard sets a reading aside
+// whatever the verdicts still to be drawn on its rows come to. A deferred
+// row is guard-silent as written and an answer with rows once drawn
+// (SHADOWED_SHARD or UNMATCHED_GENUINE), which joins the denominator and
+// only ever lowers the shares, so the verdict's guard can lift after the
+// prober's: the reading is taken here with every deferred row drawn that
+// way. The prober sends no confirmation request for a reading set aside for
+// good; one set aside only until its verdicts are drawn gets its requests,
+// so a guard lifted later finds its rows asked.
+func GuardSetsAsideForGood(rows []Measurement) bool {
+	drawn := make([]Measurement, len(rows))
+	copy(drawn, rows)
+	for i := range drawn {
+		if VerdictDeferred(drawn[i]) {
+			drawn[i].Classification = ClassUnmatchedGenuine
+		}
+	}
+	return GuardSetsAside(drawn)
 }
 
 // EndGenuineRowsClasses are the end-reading outcomes where rows that verify
@@ -512,6 +575,9 @@ func Classify(in Evidence) (Classification, string) {
 	// Observer-side first: none of these say anything about the validator.
 	if o == OutcomeProbeError {
 		return ClassProbeError, "probe could not be carried out"
+	}
+	if o == OutcomePassedOver {
+		return ClassProbeError, "not asked in the pass that decided the reading (this observer's own gap)"
 	}
 	if o == OutcomeMissed {
 		return ClassNotProbed, "scheduled point elapsed before the prober ran it"

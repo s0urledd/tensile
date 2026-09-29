@@ -36,9 +36,18 @@ package probe
 // after that second pass has asked every one of them again whose rows
 // could have made it whole.
 //
+// A validator the pass that decides an Unavailable reading was due to ask
+// and did not is passed over (OutcomePassedOver): never counted, and
+// counted by the correlated-failure guard as a validator that failed
+// (GuardPassedOver), since at a slower pace it would have been asked and
+// the ones passed over are the ones this observer's requests still wait on.
+// Without that, whether a reading was set aside would depend on how busy
+// this observer was.
+//
 // Nothing is written until the reading is final: then one row per
-// validator asked, together (MeasurementStore.AppendReading). A validator
-// the reading never asked has no row.
+// validator asked, and on an Unavailable reading one per validator passed
+// over, together (MeasurementStore.AppendReading). A validator the reading
+// did not need to ask has no row.
 
 import (
 	"context"
@@ -358,9 +367,9 @@ func (b *blobReading) askedIn(pass int, due []readTarget) bool {
 // ask (due) and did not ask in it (busy with another of this observer's
 // readings until the pass ended). It is the verdict's Unavailable test
 // (verdict.Reading.Unavailable) over the same predicate: a validator not
-// asked in the pass that decides is recorded as this observer's own gap
-// (rows), so a reading is recorded Unavailable exactly when the verdict
-// will say so.
+// asked in the pass that decides is recorded passed over, this observer's
+// own gap (rows), so a reading is recorded Unavailable exactly when the
+// verdict will say so.
 func (b *blobReading) shortEvenWithGaps(pass int, due []readTarget) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -395,25 +404,36 @@ func (b *blobReading) settle(pass int, due []readTarget) {
 	b.mu.Unlock()
 }
 
-// rows is the reading's final record: one row per validator asked, with
-// where it sat in the reading. result is ReadAvailable, ReadUnavailable or
+// rows is the reading's final record: one row per validator asked, and on
+// an Unavailable reading one per validator passed over, with where it sat
+// in the reading. result is ReadAvailable, ReadUnavailable or
 // ReadIncomplete. On an incomplete reading a validator whose rows did not
 // come back is this observer's gap, not the validator's answer: the reading
 // that would have decided it was not made.
 func (b *blobReading) rows(result, why string) []Measurement {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	// On an Unavailable reading, a validator the deciding pass did not ask
-	// again answered once only: its earlier answer is this observer's gap,
-	// as the Unavailable test took it (shortEvenWithGaps).
+	// On an Unavailable reading, a validator the deciding pass was due to
+	// ask and did not answered once only, or never: it is passed over
+	// (OutcomePassedOver), this observer's gap as the Unavailable test took
+	// it (shortEvenWithGaps), with a row either way, so the
+	// correlated-failure guard meets it (GuardPassedOver).
 	var skipped map[string]bool
 	if result == ReadUnavailable {
 		skipped = b.notAskedInLocked(b.finalPass, b.finalDue)
+		for _, t := range b.finalDue {
+			if _, ok := b.answers[t.AddressHex]; !ok {
+				skipped[t.AddressHex] = true
+			}
+		}
 	}
 	var out []Measurement
 	for _, t := range b.targets {
 		a, ok := b.answers[t.AddressHex]
 		if !ok {
+			if skipped[t.AddressHex] {
+				out = append(out, b.passedOverLocked(t, result))
+			}
 			continue
 		}
 		m := a.m
@@ -423,12 +443,31 @@ func (b *blobReading) rows(result, why string) []Measurement {
 			m.Retry = &RetryInfo{Attempts: len(a.attempts) + 1, DelayMS: m.StartedAt.Sub(first.StartedAt).Milliseconds(),
 				FirstStartedAt: first.StartedAt, FirstOutcome: first.Outcome, FirstError: first.RawError, FirstDurationMS: first.DurationMS}
 		}
+		if skipped[t.AddressHex] {
+			reason := passedOverBusy
+			if a.pass == b.finalPass && !a.asked {
+				reason = passedOverLate
+			}
+			if a.asked {
+				if m.Retry == nil {
+					m.Retry = &RetryInfo{Attempts: 1, FirstStartedAt: m.StartedAt, FirstOutcome: m.Outcome, FirstError: m.RawError, FirstDurationMS: m.TotalDurationMS}
+				}
+				m.RawError = fmt.Sprintf("%s (answered %s in pass %d: %s)", reason, m.Outcome, a.pass, m.RawError)
+			} else {
+				m.RawError = reason
+			}
+			m.Outcome = OutcomePassedOver
+			m.Classification, m.ClassificationReason = Classify(Evidence{Assigned: m.Assigned, Attested: m.Attested,
+				AttestationUnknown: m.AttestationUnknown, Phase: m.Phase, Outcome: m.Outcome})
+			m.ClassificationReason += "; " + reason
+			m.Read = &ReadInfo{Pass: a.pass, Order: t.order, Redialed: a.redialed, NovelRows: a.m.novel,
+				BlobHaveAfter: a.haveAt, BlobResult: result, Attempts: a.attempts}
+			out = append(out, m)
+			continue
+		}
 		gap := ""
-		switch {
-		case result == ReadIncomplete && !a.served:
+		if result == ReadIncomplete && !a.served {
 			gap = why
-		case skipped[t.AddressHex]:
-			gap = "not asked again in the second pass: busy with another of this observer's readings when the pass ended, and its rows could not have made the blob whole either way (this observer's own gap)"
 		}
 		if gap != "" && m.Outcome != OutcomeProbeError {
 			if m.Retry == nil {
@@ -445,6 +484,26 @@ func (b *blobReading) rows(result, why string) []Measurement {
 		out = append(out, m)
 	}
 	return out
+}
+
+// Why a validator was passed over, on its row (OutcomePassedOver).
+const (
+	passedOverBusy  = "passed over: not asked again in the second pass, busy with another of this observer's readings when the pass ended, and its rows could not have made the blob whole either way (this observer's own gap)"
+	passedOverLate  = "passed over: not asked again in the second pass, whose time ran out before this request could start (this observer's own backlog), and its rows could not have made the blob whole either way"
+	passedOverNever = "passed over: not asked in either pass (busy with another of this observer's readings, or out of time), and its rows could not have made the blob whole either way (this observer's own gap)"
+)
+
+// passedOverLocked is the row of a validator an Unavailable reading never
+// asked. b.mu is held.
+func (b *blobReading) passedOverLocked(t readTarget, result string) Measurement {
+	m := b.p.notProbedRow(b.pub, b.point, t.Target, passedOverNever)
+	m.HostAtSettlement = t.HostAtSettlement
+	m.Outcome, m.RawError = OutcomePassedOver, passedOverNever
+	m.Classification, m.ClassificationReason = Classify(Evidence{Assigned: m.Assigned, Attested: m.Attested,
+		AttestationUnknown: m.AttestationUnknown, Phase: m.Phase, Outcome: m.Outcome})
+	m.ClassificationReason += "; " + passedOverNever
+	m.Read = &ReadInfo{Pass: b.finalPass, Order: t.order, BlobHaveAfter: b.rec.Have(), BlobResult: result}
+	return m
 }
 
 // clientOrder is Resolver's ordering of a reading's targets: the client's

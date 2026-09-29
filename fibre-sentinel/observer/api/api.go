@@ -1968,7 +1968,7 @@ func (s *Server) reachabilityNow(ctx context.Context, only, asOf string) (map[st
 	// never set the state, they only confirm or contradict a failure below.
 	for _, t := range []struct{ table, ok, source, vantage string }{
 		{"reachability", `outcome <> 'PROBE_ERROR'`, "heartbeat", s.vantage},
-		{"probes", `outcome NOT IN ('MISSED','PROBE_ERROR')`, "probe", ""},
+		{"probes", probeAnswerSQL, "probe", ""},
 	} {
 		q, args := latestAnswerSQL(t.table, t.ok, t.source, t.vantage, only, asOf)
 		rows, err := s.st.DB().QueryContext(ctx, q, args...)
@@ -2079,10 +2079,17 @@ func (s *Server) confirmFromOtherVantages(ctx context.Context, out map[string]re
 	return nil
 }
 
+// probeAnswerSQL is a probe row that carries an answer of the endpoint's.
+// Its first term is spelled exactly as probes_latest_answer's WHERE, so
+// SQLite can use that index; the second leaves out a validator a reading
+// passed over (probe.OutcomePassedOver), which was not asked at all and may
+// carry no connection, a term on the table the walk checks as it goes.
+var probeAnswerSQL = `outcome NOT IN ('MISSED','PROBE_ERROR') AND +outcome <> '` + string(probe.OutcomePassedOver) + `'`
+
 // latestAnswerSQL is the query reachabilityNow runs against one table: the
 // newest row per validator (or for only) among those whose outcome passes
-// ok, started no later than asOf when it is set. ok must be spelled exactly
-// as the partial index's WHERE is (probes_latest_answer,
+// ok, started no later than asOf when it is set. ok must start with the
+// partial index's WHERE spelled exactly as it is (probes_latest_answer,
 // reachability_latest_answer), or SQLite cannot use it.
 func latestAnswerSQL(table, ok, source, vantage, only, asOf string) (string, []any) {
 	var args []any

@@ -27,9 +27,11 @@ import (
 // (verified rows are not the observer's trouble). MinValidators is the
 // floor under which a share is not a signal. The shares are drawn from this
 // observer's own rows alone, so a second location's answer never moves
-// them. The prober applies the same guard at the end of a reading
-// (probe.GuardSetsAside), and sends no confirmation request for a reading
-// it sets aside.
+// them; a validator the reading passed over counts as failed
+// (probe.GuardPassedOver). The prober applies the same guard at the end of
+// a reading (probe.GuardSetsAside), and sends no confirmation request for a
+// reading it sets aside for good (probe.GuardSetsAsideForGood: whatever
+// its deferred verdicts come to).
 //
 // The shares count validators, not the rows they hold. On a stake-weighted
 // assignment the largest holders failing can leave a blob Unavailable with
@@ -41,7 +43,8 @@ import (
 // This is where a control read would lift the guard: a blob of this
 // observer's own, read from the same validators at the same time, that
 // comes back whole would show the observer's side was fine. The seam is
-// Point.Available in the SQL twin and pointAvailable here.
+// Point.Available in the SQL twin and Reading.Available here (the
+// rd.at(...).Available() test in SuspectPoints).
 const (
 	UnreachableThreshold = probe.GuardShare
 	FaultThreshold       = probe.GuardShare
@@ -263,6 +266,11 @@ func failedClass(r Row) bool {
 // happened at the reading must not sit in the denominator either, or it
 // drags the share down by its mere presence. Rows counts every row at the
 // reading, excluded ones included, because the exclusion removes them all.
+// A validator the reading passed over (probe.GuardPassedOver: an endorser
+// the deciding pass was due to ask and did not, busy with this observer's
+// other readings) is asked and failed here, as it would have been had the
+// pass asked it, so the guard does not depend on how busy this observer
+// was.
 //
 // A reading whose blob was Available is never suspect: the rows that came
 // back verified, and the failures beside them count for nothing anyway.
@@ -287,14 +295,15 @@ func SuspectPoints(rows []Row, w Window, blobs Blobs) []SuspectPoint {
 		}
 		g.n++
 		cls := r.EffectiveClass()
-		if noReachVerdict(cls) {
+		passed := probe.GuardPassedOver(r.Outcome, cls, r.Attested)
+		if noReachVerdict(cls) && !passed {
 			continue
 		}
 		g.vals[r.Validator] = true
 		if cls == probe.ClassUnreachable {
 			g.unreach[r.Validator] = true
 		}
-		if failedClass(r) {
+		if failedClass(r) || passed {
 			g.faulted[r.Validator] = true
 		}
 	}

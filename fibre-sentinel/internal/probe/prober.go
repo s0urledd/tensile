@@ -863,14 +863,30 @@ func (p *Prober) finish(b *blobReading, result, why string) {
 	p.counters.done.Add(1)
 	// A reading the correlated-failure guard sets aside counts neither way,
 	// whatever a second location says, so its rows are not sent there: the
-	// second location's time goes to the rows that can count.
-	confirm := result == ReadUnavailable && !GuardSetsAside(ms)
+	// second location's time goes to the rows that can count. The guard is
+	// the verdict's over these rows, validators passed over included
+	// (GuardPassedOver). A reading it sets aside only until a deferred
+	// verdict on one of its rows is drawn (which can lift it) is sent all the
+	// same (GuardSetsAsideForGood), so its rows are asked if the guard lifts.
+	setAside := result == ReadUnavailable && GuardSetsAside(ms)
+	confirm := result == ReadUnavailable && !GuardSetsAsideForGood(ms)
 	note := ""
-	if result == ReadUnavailable && !confirm {
+	switch {
+	case setAside && confirm:
+		note = "; set aside by the correlated-failure guard until its deferred verdicts are drawn"
+	case setAside:
 		note = "; set aside by the correlated-failure guard"
 	}
-	p.log.Printf("READ %s: %s, %d distinct rows held (%d needed), %d validators asked of %d (%d endorsing)%s",
-		short(b.pub.PromiseHash), result, b.have(), b.pub.Assignment.ProtocolParams.OriginalRows, len(ms), len(b.targets), b.endorsing(), note)
+	asked, passed := 0, 0
+	for _, m := range ms {
+		if m.Outcome == OutcomePassedOver {
+			passed++
+		} else {
+			asked++
+		}
+	}
+	p.log.Printf("READ %s: %s, %d distinct rows held (%d needed), %d validators asked of %d (%d endorsing), %d passed over%s",
+		short(b.pub.PromiseHash), result, b.have(), b.pub.Assignment.ProtocolParams.OriginalRows, asked, len(b.targets), b.endorsing(), passed, note)
 	for _, m := range ms {
 		p.logMeasurement(m)
 		if confirm {

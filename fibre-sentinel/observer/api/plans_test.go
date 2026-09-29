@@ -43,7 +43,7 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 	scans := map[string][]string{}
 	for _, tb := range []struct{ table, ok, vantage, idx string }{
 		{"reachability", `outcome <> 'PROBE_ERROR'`, "ut-1", "reachability_latest_answer"},
-		{"probes", `outcome NOT IN ('MISSED','PROBE_ERROR')`, "", "probes_latest_answer"},
+		{"probes", probeAnswerSQL, "", "probes_latest_answer"},
 	} {
 		for _, v := range []struct{ only, asOf string }{{"", ""}, {"ab", ""}, {"", hi}, {"ab", hi}} {
 			q, args := latestAnswerSQL(tb.table, tb.ok, "x", tb.vantage, v.only, v.asOf)
