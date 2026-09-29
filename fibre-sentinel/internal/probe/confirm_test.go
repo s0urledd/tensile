@@ -252,7 +252,7 @@ func TestConfirmer_FetchesTheFailedRowsOnceAndStampsItsVantage(t *testing.T) {
 	if m.AssignedRowCount != len(fx.rows) || m.Download.RowsExpected != len(fx.rows) {
 		t.Errorf("rows expected %d / %d, want %d", m.AssignedRowCount, m.Download.RowsExpected, len(fx.rows))
 	}
-	if !strings.Contains(m.ClassificationReason, "confirmation from de-1 of the NOT_FOUND FAULT recorded by ut-1") {
+	if !strings.Contains(m.ClassificationReason, "confirmation from de-1 of the NOT_FOUND not-served reading recorded by ut-1") {
 		t.Errorf("reason = %q", m.ClassificationReason)
 	}
 	if len(fx.chain.heights) != 1 || fx.chain.heights[0] != 42 {

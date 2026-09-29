@@ -1,10 +1,13 @@
 package probe
 
-// Retention faults confirmed from a second vantage.
+// Not-served readings confirmed from a second vantage.
 //
-// A FAULT is the one class held against a validator, and it rests on one
-// reading from one place. The primary prober appends a ConfirmRequest for
-// every row it classifies FAULT to <data-dir>/vantage-requests.jsonl;
+// A not-served reading is the one thing held against a validator, and it
+// rests on one reading from one place: a timeout or a refused connection
+// there may be this observer's own path. The primary prober appends a
+// ConfirmRequest for every row that counts not served (Confirmable: an
+// endorsing validator whose rows did not come back from a blob that could
+// not be reconstructed) to <data-dir>/vantage-requests.jsonl;
 // deploy/vantage-pull.sh copies new lines to each second vantage, where
 // sentinel-probe -confirm-requests (Confirmer) fetches exactly those rows
 // from that validator once, with the same probe (Run: DNS, TCP, TLS, the
@@ -14,7 +17,7 @@ package probe
 // that file back and applies the rule in observer/verdict (ConfirmFault).
 //
 // Only failures are re-checked, never routine probes, so the load a second
-// vantage adds is one request per fault.
+// vantage adds is one request per not-served row.
 //
 // The vantage keeps no state of the primary's: the request names the
 // promise, the blob, the validator and the host, and everything a verdict
@@ -130,7 +133,7 @@ func (r ConfirmRequest) validate() error {
 	return nil
 }
 
-// NewConfirmRequest builds the request for a FAULT row.
+// NewConfirmRequest builds the request for a not-served row.
 func NewConfirmRequest(pub scan.Publication, t Target, m Measurement, chainID string, pruneTolerance time.Duration, now time.Time) ConfirmRequest {
 	deadline := m.StartedAt.Add(ConfirmWindow)
 	if end := pub.MustServeUntil.Add(pruneTolerance); end.Before(deadline) {
@@ -187,11 +190,12 @@ func (l *requestLog) close() {
 	}
 }
 
-// requestConfirmation queues a FAULT for a second vantage. A failure to
-// write it is logged and nothing more: without a request the fault stands
-// as recorded, which is what it did before there was a second vantage.
+// requestConfirmation queues a not-served row for a second vantage. A
+// failure to write it is logged and nothing more: without a request the row
+// stands as recorded, which is what it did before there was a second
+// vantage.
 func (p *Prober) requestConfirmation(pub scan.Publication, t Target, m Measurement) {
-	if m.Classification != ClassFault || p.requests == nil {
+	if !Confirmable(m.ScheduleLabel, m.Classification) || p.requests == nil {
 		return
 	}
 	now := time.Now()
@@ -382,7 +386,7 @@ func (c *Confirmer) pass(ctx context.Context) error {
 			if ctx.Err() != nil && m.Classification == ClassProbeError {
 				return nil // abandoned by shutdown: asked again on the next start
 			}
-			m.ClassificationReason = fmt.Sprintf("confirmation from %s of the %s FAULT recorded by %s at %s: %s",
+			m.ClassificationReason = fmt.Sprintf("confirmation from %s of the %s not-served reading recorded by %s at %s: %s",
 				c.cfg.Vantage, r.Outcome, r.FromVantage, r.StartedAt.UTC().Format(time.RFC3339), m.ClassificationReason)
 		}
 		if err := c.store.Append(m); err != nil {

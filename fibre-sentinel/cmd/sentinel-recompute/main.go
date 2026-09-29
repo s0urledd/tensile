@@ -308,7 +308,7 @@ func main() {
 	fmt.Printf("params| %d x/fibre params range(s) on record, %d closed by a correction pass, %d still withholding verdicts; %d row(s) corrected, %d differ from corrections.jsonl\n",
 		len(ranges), len(correctedRanges), holding, corrected, corrDiffs)
 
-	// ---- faults confirmed or cleared from a second vantage ----
+	// ---- not-served rows confirmed or cleared from a second vantage ----
 	//
 	// Redrawn from the other vantages' rows when the record carries them
 	// (vantages/<name>/measurements.jsonl), and compared with the
@@ -319,7 +319,7 @@ func main() {
 	var clearedN, confirmedN, clearDiffs, clearUnchecked int
 	for i := range ms {
 		m := ms[i]
-		if m.Classification != probe.ClassFault {
+		if !probe.Confirmable(m.ScheduleLabel, m.Classification) {
 			continue
 		}
 		a, amended := amendments[m.DedupeKey()]
@@ -352,7 +352,7 @@ func main() {
 	if clearDiffs > 0 {
 		differs = true
 	}
-	fmt.Printf("confirm| %d fault(s) cleared and %d confirmed from another vantage, %d differ from amendments.jsonl, %d clearing(s) applied as recorded without the vantage's rows\n",
+	fmt.Printf("confirm| %d not-served row(s) cleared and %d confirmed from another vantage, %d differ from amendments.jsonl, %d clearing(s) applied as recorded without the vantage's rows\n",
 		clearedN, confirmedN, clearDiffs, clearUnchecked)
 
 	// ---- obligations ----

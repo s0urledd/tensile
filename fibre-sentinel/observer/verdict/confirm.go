@@ -7,18 +7,19 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 )
 
-// Retention faults re-checked from a second vantage.
+// Not-served readings re-checked from a second vantage.
 //
-// Every FAULT the observer records is asked once more from another location
-// (internal/probe/confirm.go): the same rows, from the same validator, with
-// the same verification. The rule applied to the answer is this file, and it
+// Every row the observer records as not served (probe.Confirmable: a FAULT,
+// or at the end reading any answer that left the reader without rows) is
+// asked once more from another location (internal/probe/confirm.go): the
+// same rows, from the same validator, with the same verification. The rule applied to the answer is this file, and it
 // is the only implementation: the collector draws it over the stored rows
 // and sentinel-recompute over the JSONL record.
 //
 //   - Cleared: the other vantage started within probe.ConfirmWindow of the
 //     fault and got the exact rows back, verified against the commitment and
 //     the assignment (HEALTHY). The shard was there; what failed was this
-//     observer's reading of it. The fault is withdrawn and the row is filed
+//     observer's reading of it. The row is withdrawn and filed
 //     PROBE_ERROR, the class of an observer-side failure: outside the rate,
 //     neither for nor against the validator. It is never credited as served,
 //     because the rates are this observer's own readings and a second

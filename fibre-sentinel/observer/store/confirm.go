@@ -9,10 +9,11 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/verdict"
 )
 
-// Other vantages' answers to this observer's faults.
+// Other vantages' answers to this observer's not-served readings.
 //
-// A second vantage fetches the rows of every FAULT once more
-// (internal/probe/confirm.go) and writes the result to its own
+// A second vantage fetches the rows of every row that counts not served
+// once more (probe.Confirmable: a FAULT, or at the end reading any answer
+// that left the reader without rows; internal/probe/confirm.go) and writes the result to its own
 // measurements.jsonl, which is copied in beside this observer's record and
 // ingested here, into probe_confirmations: never into probes. Every
 // published figure is counted over probes, so a confirming row cannot add
@@ -105,8 +106,8 @@ type ConfirmDecision struct {
 // JudgeConfirmations applies verdict.ConfirmFault to every answer not yet
 // judged whose fault row is in the store. Nothing is written: the caller
 // logs and applies each amendment, then SettleConfirmation. An answer to a
-// row that is not a FAULT, or whose verdict was already amended, is judged
-// with no effect.
+// row that does not count not served (probe.Confirmable), or whose verdict
+// was already amended, is judged with no effect.
 func (s *Store) JudgeConfirmations(ctx context.Context, now time.Time) ([]ConfirmDecision, error) {
 	rows, err := s.db.QueryContext(ctx, judgeConfirmationsSQL)
 	if err != nil {
@@ -116,12 +117,12 @@ func (s *Store) JudgeConfirmations(ctx context.Context, now time.Time) ([]Confir
 	var out []ConfirmDecision
 	for rows.Next() {
 		var d ConfirmDecision
-		var cStarted, cCls, pStarted, pCls, hash, addr, sched, outcome string
+		var cStarted, cCls, pStarted, pCls, hash, addr, sched, outcome, label string
 		var amended bool
-		if err := rows.Scan(&d.ConfirmKey, &d.ProbeKey, &d.Vantage, &cStarted, &cCls, &pStarted, &pCls, &amended, &hash, &addr, &sched, &outcome); err != nil {
+		if err := rows.Scan(&d.ConfirmKey, &d.ProbeKey, &d.Vantage, &cStarted, &cCls, &pStarted, &pCls, &amended, &hash, &addr, &sched, &outcome, &label); err != nil {
 			return nil, err
 		}
-		if pCls == string(probe.ClassFault) && !amended {
+		if probe.Confirmable(label, probe.Classification(pCls)) && !amended {
 			ps, err1 := time.Parse(TimeLayout, pStarted)
 			cs, err2 := time.Parse(TimeLayout, cStarted)
 			if err1 == nil && err2 == nil {
@@ -166,7 +167,8 @@ func (s *Store) SettleConfirmation(d ConfirmDecision) error {
 // answers not yet judged (a partial index: nearly none) and reaches each
 // fault by its primary key, so it costs what is new, not what is stored.
 const judgeConfirmationsSQL = `SELECT c.dedupe_key, c.probe_key, c.vantage, c.started_at, c.classification,
-		pr.started_at, pr.classification, pr.amended_at IS NOT NULL, pr.promise_hash, pr.validator_address, pr.scheduled_at, pr.outcome
+		pr.started_at, pr.classification, pr.amended_at IS NOT NULL, pr.promise_hash, pr.validator_address, pr.scheduled_at, pr.outcome,
+		pr.schedule_label
 	FROM probe_confirmations c JOIN probes pr ON pr.dedupe_key = c.probe_key
 	WHERE c.judged = 0
 	ORDER BY c.probe_key, c.vantage`
