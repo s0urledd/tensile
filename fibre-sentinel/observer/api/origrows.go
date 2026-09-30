@@ -307,6 +307,7 @@ func (m *originalRowsMemo) open(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
 	t0 := time.Now()
+	sweepDerivedTemps(m.file, t0)
 	f, vals, why, err := m.load(ctx, db)
 	if err != nil {
 		return err

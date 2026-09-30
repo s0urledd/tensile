@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 // Derived state kept across restarts.
@@ -231,6 +233,34 @@ func writeDerived(path string, v any) error {
 		_ = os.Remove(tmp.Name())
 	}
 	return err
+}
+
+// staleDerivedTemp is how old a temporary file beside a derived file must
+// be before it is taken for a write that never reached its rename. A write
+// takes seconds, so an hour leaves every write still in flight alone.
+const staleDerivedTemp = time.Hour
+
+// sweepDerivedTemps removes what writes to path left behind when they never
+// reached their rename. Each write has a temporary file of its own, so a
+// process stopped or killed mid-write (observer-api does not wait for its
+// background writes on SIGTERM) leaves one the size of the whole file, and
+// no later write replaces it. Only files older than staleDerivedTemp go:
+// another process's write in flight is never touched.
+func sweepDerivedTemps(path string, now time.Time) {
+	dir, base := filepath.Dir(path), filepath.Base(path)+"."
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasPrefix(name, base) || !strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+		if fi, err := e.Info(); err == nil && now.Sub(fi.ModTime()) > staleDerivedTemp {
+			_ = os.Remove(filepath.Join(dir, name))
+		}
+	}
 }
 
 // A file's digest covers every byte of it but the digest's own. The load

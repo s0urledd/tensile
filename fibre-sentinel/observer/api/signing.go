@@ -343,6 +343,7 @@ func (l *endorsementLedger) open(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
 	t0 := time.Now()
+	sweepDerivedTemps(l.file, t0)
 	f, vals, why, err := l.load(ctx, db)
 	if err != nil {
 		return err

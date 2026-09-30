@@ -774,3 +774,36 @@ func TestAComputationDoesNotWaitForTheMemosFile(t *testing.T) {
 		t.Errorf("the file holds %d entries, the memo %d: the write asked for while the file was held was not made", n, s.origRows.size())
 	}
 }
+
+// A write stopped before its rename leaves a temporary file of its own that
+// no later write replaces; the next open removes the ones old enough that no
+// write can still be making them, and leaves a fresh one, which may be
+// another process's write in flight.
+func TestAnOldTemporaryFileOfADerivedWriteIsSwept(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "original-rows.json")
+	now := time.Now()
+	old := filepath.Join(dir, "original-rows.json.111.tmp")
+	fresh := filepath.Join(dir, "original-rows.json.222.tmp")
+	other := filepath.Join(dir, "endorsement-ledger.json.333.tmp")
+	for _, p := range []string{old, fresh, other} {
+		if err := os.WriteFile(p, []byte("{"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, p := range []string{old, other} {
+		if err := os.Chtimes(p, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sweepDerivedTemps(path, now)
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("an abandoned temporary file of this path is still there: %v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("a fresh temporary file, possibly a write in flight, was removed: %v", err)
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Errorf("another file's temporary file was removed: %v", err)
+	}
+}
