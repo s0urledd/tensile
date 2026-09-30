@@ -466,7 +466,7 @@ export const GROUPS: Group[] = [
         id: "validator",
         path: "/v1/validators/{addr}",
         summary: "One validator's service, endorsements, load and newest readings.",
-        desc: "`windows` repeats the service counts for 24h, 7d, 30d and all; `recent_probes` holds the newest 50 readings.",
+        desc: "`windows` repeats the service counts for 24h, 7d, 30d and all; `recent_probes` holds the newest 50 readings, not-probed ones left out.",
         params: [validatorAddr, windowParam, asOf],
         errors: "404 when no validator is on record at the address.",
         example: EX_VALIDATOR,
