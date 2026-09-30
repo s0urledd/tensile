@@ -345,10 +345,6 @@ func equivRun(t *testing.T, cfg simConfig, sample int, restart bool, step [2]int
 			s.healCorrector()
 			failed = true
 		}
-		if !weird && !at.Before(sc.weirdAt) {
-			s.weirdRow(s.t0.Add(5 * 24 * time.Hour))
-			weird = true
-		}
 		if !reapplied && !at.Before(sc.reapplyAt) {
 			s.reapply()
 			reapplied = true
@@ -369,6 +365,14 @@ func equivRun(t *testing.T, cfg simConfig, sample int, restart bool, step [2]int
 			if _, err := srv.sealDue(ctx, math.MaxInt); err != nil {
 				t.Fatal(err)
 			}
+		}
+		if !weird && !at.Before(sc.weirdAt) {
+			// After the sealer's turn, so that the comparison below is the
+			// first to meet them, before a seal of the day beside them would
+			// find them itself.
+			s.weirdRow(s.t0.Add(5*24*time.Hour), false)
+			s.weirdRow(s.t0.Add(3*24*time.Hour), true)
+			weird = true
 		}
 		if restart {
 			// The API stops and starts again from what it kept.
@@ -493,6 +497,7 @@ var simWitnesses = []struct {
 	{"a deferred shadow verdict", `SELECT COUNT(*) FROM probes WHERE shadow_gap IS NOT NULL`},
 	{"a row long before its settlement", `SELECT COUNT(*) FROM probes r JOIN publications p ON p.promise_hash = r.promise_hash WHERE r.started_at < strftime('%Y-%m-%dT%H:%M:%f', p.settlement_time, '-2 hours')`},
 	{"a row start that is not a store timestamp", `SELECT COUNT(*) FROM probes WHERE length(started_at) <> 30`},
+	{"a row start of the right shape that is no time", `SELECT COUNT(*) FROM probes WHERE started_at GLOB '*:60.*'`},
 	{"a publication recorded after its deadline", `SELECT COUNT(*) FROM publications WHERE recorded_at > must_serve_until`},
 	{"original_rows not a power of two", `SELECT COUNT(*) FROM publications WHERE json_extract(raw_json, '$.assignment.protocol_params.original_rows') = 4000`},
 }

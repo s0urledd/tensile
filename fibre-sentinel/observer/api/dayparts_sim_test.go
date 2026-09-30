@@ -951,15 +951,20 @@ func (s *sim) healCorrector() {
 
 // weirdRow writes, straight into the store as a foreign writer would, a
 // copy of a reading whose start is not a store timestamp and sorts between
-// two days: no day's bounds hold it.
-func (s *sim) weirdRow(between time.Time) {
+// two days: no day's bounds hold it. leap makes it one of the right shape
+// that is no time at all, the last minute's sixtieth second, which only
+// strftime tells from a store timestamp.
+func (s *sim) weirdRow(between time.Time, leap bool) {
 	s.t.Helper()
 	db := s.st.DB()
-	v := store.TS(between.Add(-time.Nanosecond)) + "9"
+	v, tag := store.TS(between.Add(-time.Nanosecond))+"9", "weird|"
+	if leap {
+		v, tag = between.Add(-time.Nanosecond).Format("2006-01-02T15:04:")+"60.000000000Z", "leap|"
+	}
 	for _, q := range []string{
 		`DROP TABLE IF EXISTS temp.sim_weird`,
 		`CREATE TEMP TABLE sim_weird AS SELECT * FROM probes WHERE started_at < '` + store.TS(between) + `' ORDER BY rowid DESC LIMIT 1`,
-		`UPDATE temp.sim_weird SET dedupe_key = 'weird|' || dedupe_key, started_at = '` + v + `'`,
+		`UPDATE temp.sim_weird SET dedupe_key = '` + tag + `' || dedupe_key, started_at = '` + v + `'`,
 		`INSERT INTO probes SELECT * FROM temp.sim_weird`,
 		`DROP TABLE temp.sim_weird`,
 	} {

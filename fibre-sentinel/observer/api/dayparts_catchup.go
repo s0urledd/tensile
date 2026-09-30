@@ -84,10 +84,13 @@ type ladderTable struct {
 }
 
 // weirdSQL is 1 when a timestamp column holds something other than a
-// store timestamp: it then sorts between days.
+// store timestamp: it then sorts between days. A value of the right shape
+// that is no time at all (a minute or a second of 60, a thirteenth month)
+// makes strftime NULL, and the test with it; that is weird too, not the 0
+// MAX would read a NULL as or the false a WHERE would.
 func weirdSQL(col string) string {
-	return `(NOT (` + col + ` GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]Z'
-		AND strftime('%Y-%m-%dT%H:%M:%S', substr(` + col + `, 1, 19)) = substr(` + col + `, 1, 19)))`
+	return `COALESCE(NOT (` + col + ` GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]Z'
+		AND strftime('%Y-%m-%dT%H:%M:%S', substr(` + col + `, 1, 19)) = substr(` + col + `, 1, 19)), 1)`
 }
 
 var ladderTables = []ladderTable{
