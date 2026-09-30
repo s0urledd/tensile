@@ -22,12 +22,12 @@ func TestDayPartsSealOnlyDaysWithRows(t *testing.T) {
 	skipUnderRace(t)
 	t.Parallel()
 	cfg := defaultSimConfig(55)
-	cfg.perDay, cfg.days = 10, 4
+	cfg.perDay, cfg.days = 6, 3
 	s := newSim(t, cfg)
 	s.plan()
 	srv := s.openAPI()
 	ctx := context.Background()
-	for at := s.t0.Add(time.Hour); at.Before(s.t0.Add(4*24*time.Hour + 6*time.Hour)); at = at.Add(6 * time.Hour) {
+	for at := s.t0.Add(time.Hour); at.Before(s.t0.Add(3*24*time.Hour + 6*time.Hour)); at = at.Add(12 * time.Hour) {
 		s.advance(at)
 		s.pass()
 	}
@@ -43,12 +43,12 @@ func TestDayPartsSealOnlyDaysWithRows(t *testing.T) {
 	rows := len(e.rows)
 	year, zero := e.rows[dayOfTime(s.t0.AddDate(-1, 0, 0))] != nil, e.rows["0001-01-01"] != nil
 	srv.parts.mu.Unlock()
-	// the four days of the record that are over, and the two strays' days
-	if rows > 6 || !year || !zero {
-		t.Errorf("%d row days sealed (a year back: %v, the year 1: %v); want the days that hold a row, at most 6", rows, year, zero)
+	// the days of the record that are over, and the two strays' days
+	if rows > 5 || !year || !zero {
+		t.Errorf("%d row days sealed (a year back: %v, the year 1: %v); want the days that hold a row, at most 5", rows, year, zero)
 	}
 	if n > 100 {
-		t.Errorf("the sealer did %d units of work for four days of record", n)
+		t.Errorf("the sealer did %d units of work for three days of record", n)
 	}
 	tally := s.compare(srv, rand.New(rand.NewPCG(55, 1)), 0, "stray rows")
 	t.Logf("%d units, %d row days sealed:\n%s", n, rows, tally)

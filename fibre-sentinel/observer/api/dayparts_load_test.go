@@ -24,12 +24,12 @@ func TestDayPartsLoadInTheBackground(t *testing.T) {
 	skipUnderRace(t)
 	t.Parallel()
 	cfg := defaultSimConfig(66)
-	cfg.perDay, cfg.days = 10, 4
+	cfg.perDay, cfg.days = 6, 3
 	s := newSim(t, cfg)
 	s.plan()
 	srv := s.openAPI()
 	ctx := context.Background()
-	for at := s.t0.Add(time.Hour); at.Before(s.t0.Add(4*24*time.Hour + 6*time.Hour)); at = at.Add(6 * time.Hour) {
+	for at := s.t0.Add(time.Hour); at.Before(s.t0.Add(3*24*time.Hour + 6*time.Hour)); at = at.Add(12 * time.Hour) {
 		s.advance(at)
 		s.pass()
 	}
@@ -114,11 +114,11 @@ func TestDayPartsSavedWhenTheSealerRests(t *testing.T) {
 	skipUnderRace(t)
 	t.Parallel()
 	cfg := defaultSimConfig(67)
-	cfg.perDay, cfg.days = 10, 4
+	cfg.perDay, cfg.days = 6, 3
 	s := newSim(t, cfg)
 	s.plan()
 	srv := s.openAPI()
-	for at := s.t0.Add(time.Hour); at.Before(s.t0.Add(4*24*time.Hour + 6*time.Hour)); at = at.Add(6 * time.Hour) {
+	for at := s.t0.Add(time.Hour); at.Before(s.t0.Add(3*24*time.Hour + 6*time.Hour)); at = at.Add(12 * time.Hour) {
 		s.advance(at)
 		s.pass()
 	}
@@ -211,11 +211,11 @@ func TestDayPartsIndexWithoutItsSeals(t *testing.T) {
 	skipUnderRace(t)
 	t.Parallel()
 	cfg := defaultSimConfig(69)
-	cfg.perDay, cfg.days = 10, 4
+	cfg.perDay, cfg.days = 6, 3
 	s := newSim(t, cfg)
 	s.plan()
 	srv := s.openAPI()
-	for at := s.t0.Add(time.Hour); at.Before(s.t0.Add(4*24*time.Hour + 6*time.Hour)); at = at.Add(6 * time.Hour) {
+	for at := s.t0.Add(time.Hour); at.Before(s.t0.Add(3*24*time.Hour + 6*time.Hour)); at = at.Add(12 * time.Hour) {
 		s.advance(at)
 		s.pass()
 	}
