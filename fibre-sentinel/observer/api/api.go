@@ -1459,20 +1459,30 @@ func (e excludeSet) args(base ...any) []any {
 const ExcludeNote = "Figures exclude the validators named in `excluded`. Reconstructability is computed over the whole set, because excluding a validator from it would answer a different question."
 
 // parseExclude reads `?exclude=`, which may be repeated or comma-separated,
-// and takes either form of address the rest of the API takes.
-func parseExclude(r *http.Request) (excludeSet, []string, error) {
+// and takes every spelling of a validator the rest of the API takes
+// (resolveAddr): the consensus address in hex or celestiavalcons1…, the
+// operator's celestiavaloper1… the site shows, or its account address. The
+// answer names each excluded validator by its consensus address, the key
+// every figure is filtered on. A refusal is an *addrError, answered by
+// writeAddrErr as on every route that takes a validator.
+func (s *Server) parseExclude(r *http.Request) (excludeSet, []string, error) {
 	var ex excludeSet
 	var names []string
-	seen := map[string]bool{}
+	seen, asked := map[string]bool{}, map[string]bool{}
 	for _, raw := range r.URL.Query()["exclude"] {
 		for _, part := range strings.Split(raw, ",") {
-			part = strings.TrimSpace(part)
-			if part == "" {
+			part = strings.ToLower(strings.TrimSpace(part))
+			if part == "" || asked[part] {
 				continue
 			}
-			addr, err := parseAddr(part)
+			asked[part] = true
+			addr, err := s.resolveAddr(r.Context(), part)
 			if err != nil {
-				return excludeSet{}, nil, fmt.Errorf("exclude %q: address must be 40 hex chars or celestiavalcons1...", part)
+				var ae *addrError
+				if errors.As(err, &ae) {
+					return excludeSet{}, nil, &addrError{ae.status, fmt.Sprintf("exclude %q: %s", part, ae.msg)}
+				}
+				return excludeSet{}, nil, err
 			}
 			if seen[addr] {
 				continue
@@ -1480,10 +1490,12 @@ func parseExclude(r *http.Request) (excludeSet, []string, error) {
 			seen[addr] = true
 			ex.addrs = append(ex.addrs, addr)
 			names = append(names, addr)
+			// Refused as soon as the bound is passed, so a long list is
+			// never looked up to its end.
+			if len(ex.addrs) > maxExclude {
+				return excludeSet{}, nil, &addrError{400, fmt.Sprintf("exclude takes at most %d validators", maxExclude)}
+			}
 		}
-	}
-	if len(ex.addrs) > maxExclude {
-		return excludeSet{}, nil, fmt.Errorf("exclude takes at most %d validators", maxExclude)
 	}
 	return ex, names, nil
 }
@@ -1521,9 +1533,9 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	ex, excluded, err := parseExclude(r)
+	ex, excluded, err := s.parseExclude(r)
 	if err != nil {
-		writeErr(w, 400, err.Error())
+		s.writeAddrErr(w, r.URL.Path, err)
 		return
 	}
 	if win.AsOf || ex.on() {
@@ -1551,8 +1563,24 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.RecordThrough = s.recordThrough(r.Context())
 		resp.ComputedAt, resp.ComputeMs = t0.UTC().Format(time.RFC3339Nano), time.Since(t0).Milliseconds()
+		out := networkOutOf(resp)
+		if len(excluded) > 0 {
+			ops, err := s.operatorAddrs(r.Context())
+			if err != nil {
+				s.writeInternal(w, r.URL.Path, err)
+				return
+			}
+			for _, a := range excluded {
+				if op := ops[a]; op != "" {
+					if out.ExcludedOperators == nil {
+						out.ExcludedOperators = map[string]string{}
+					}
+					out.ExcludedOperators[a] = op
+				}
+			}
+		}
 		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, 200, networkOutOf(resp))
+		writeJSON(w, 200, out)
 		return
 	}
 	resp, at, ms, err := s.net.get(r.Context(), s.logf(), win)
@@ -2046,7 +2074,9 @@ type validatorRow struct {
 	// consensus address, or before identities have been polled once. A reader
 	// recognises a validator by this, not by twenty hex characters.
 	Moniker string `json:"moniker,omitempty"`
-	// Operator is the celestiavaloper... address, for linking out.
+	// Operator is the celestiavaloper... address, for linking out and for
+	// the site's links to this row's page; absent for an older consensus
+	// key of an operator that holds a newer one (operatorAddrs).
 	Operator string `json:"operator_address,omitempty"`
 	// KeybaseIdentity is the operator's Keybase key suffix when it set one,
 	// which is how an avatar could be resolved later. Deliberately NOT called
@@ -2642,6 +2672,16 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	// rows are a subset of what the assignment table produces anyway. Before
 	// it, they are the whole answer to "am I in your list", with every measured
 	// column honestly empty.
+	//
+	// The operator address a row publishes comes from operatorAddrs: an
+	// older consensus key of an operator that holds a newer one publishes
+	// none, so its page stays linked by the consensus address. The row's own
+	// operator account still keys its timeouts below, so no count moves.
+	ops, err := s.operatorAddrs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	account := map[string]string{}
 	irows, err := db.QueryContext(ctx, `SELECT vi.cons_address, vi.operator_address, vi.moniker, vi.identity, vi.website, vi.jailed, vi.status, vi.tokens,
 			EXISTS (SELECT 1 FROM validator_avatars a WHERE UPPER(a.identity) = UPPER(vi.identity) AND a.status = 'ok')
 		FROM validator_identities vi`)
@@ -2666,7 +2706,8 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 			}
 			v = get(hexAddr)
 		}
-		v.Moniker, v.Operator, v.KeybaseIdentity, v.Website = moniker, op, identity, website
+		v.Moniker, v.Operator, v.KeybaseIdentity, v.Website = moniker, ops[hexAddr], identity, website
+		account[hexAddr] = op
 		if hasAvatar == 1 {
 			v.AvatarURL = "/v1/avatars/" + strings.ToUpper(identity)
 		}
@@ -2752,8 +2793,8 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 		v.Obligations = byObligation[addr]
 		v.ByObligation = v.Obligations.Rate
 		v.ProvisionalFaults = provisional[addr]
-		if v.Operator != "" {
-			v.TimeoutsEnforced = timeouts[accountKey(v.Operator)]
+		if op := account[addr]; op != "" {
+			v.TimeoutsEnforced = timeouts[accountKey(op)]
 		}
 		// The registry supplies the bech32 form only for validators that
 		// registered an endpoint; before Fibre is live that is nobody, and
@@ -3657,6 +3698,11 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 
 type assignmentRow struct {
 	ValidatorAddress string `json:"validator_address"`
+	// OperatorAddress is the validator's celestiavaloper1… from the staking
+	// module, the address the blob page links the validator by. Absent when
+	// the chain has no validator at this consensus address, or when its
+	// operator has since moved to a newer consensus key (operatorAddrs).
+	OperatorAddress string `json:"operator_address,omitempty"`
 	// Moniker is the name from the staking module, so this table reads like
 	// a list of validators rather than a list of hashes. Empty when the chain
 	// has no validator at this consensus address.
@@ -3716,6 +3762,15 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "no publication with this promise hash")
 		return
 	}
+	// The operator addresses, for the assignments and the readings alike: a
+	// reading can name a validator the assignment does not (one asked
+	// without rows), and a superseded consensus key gets none
+	// (operatorAddrs), which a join on the identities would not know.
+	ops, err := s.operatorAddrs(ctx)
+	if err != nil {
+		s.writeInternal(w, r.URL.Path, err)
+		return
+	}
 	rows, err := s.st.DB().QueryContext(ctx, `SELECT a.validator_address, a.voting_power, a.row_count, a.attested,
 			COALESCE(i.moniker, ''), a.host_at_settlement
 		FROM assignments a
@@ -3738,6 +3793,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 			b := att.Int64 == 1
 			a.Attested = &b
 		}
+		a.OperatorAddress = ops[strings.ToLower(a.ValidatorAddress)]
 		assigns = append(assigns, a)
 	}
 	rows.Close()
@@ -3747,6 +3803,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	probes, moreProbes := trim(probes, 1000)
+	withOperators(probes, ops)
 	if err := s.blobService(ctx, hash, assigns); err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
@@ -3917,8 +3974,12 @@ type probeRow struct {
 	Vantage          string `json:"-"`
 	PromiseHash      string `json:"promise_hash"`
 	ValidatorAddress string `json:"validator_address"`
-	ValidatorHost    string `json:"validator_host"`
-	Assigned         bool   `json:"assigned"`
+	// OperatorAddress is the validator's celestiavaloper1…, from the staking
+	// set (operatorAddrs); absent when the collector has not read one, or
+	// for an older consensus key of an operator that holds a newer one.
+	OperatorAddress string `json:"operator_address,omitempty"`
+	ValidatorHost   string `json:"validator_host"`
+	Assigned        bool   `json:"assigned"`
 	// Attested: the settled promise proves this validator stored the blob.
 	// false means unproven (so this probe is UNATTESTED and outside the serve
 	// rate), null means the measurement predates signature verification.
@@ -4203,6 +4264,14 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, truncated := trim(rows, limit)
+	if len(rows) > 0 {
+		ops, err := s.operatorAddrs(r.Context())
+		if err != nil {
+			s.writeInternal(w, r.URL.Path, err)
+			return
+		}
+		withOperators(rows, ops)
+	}
 	out := map[string]any{"probes": rows, "limit": limit, "truncated": truncated, "rows_included": withRows}
 	if truncated && len(rows) > 0 {
 		// Where to continue from: everything strictly older than the last row

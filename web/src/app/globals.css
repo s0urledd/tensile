@@ -425,6 +425,18 @@ tr.warn .col-pin { background: color-mix(in srgb, var(--paper) 93%, var(--hold))
 .facts dt { font-size: var(--t-tiny); color: var(--text-3); margin: 0 0 3px; }
 .facts dd { margin: 0; font-size: var(--t-cell); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .facts dd .soft { color: var(--text-3); }
+/* a second address under the first, e.g. the consensus address under the operator address */
+.facts dd.second { margin-top: 2px; font-size: var(--t-tiny); color: var(--text-3); }
+/* what the second address is, before it */
+.facts dd .addr-k { flex: none; margin-right: 6px; font-family: var(--sans); text-transform: lowercase; letter-spacing: .02em; }
+/* an address and its copy button on one line: a narrow card shortens the address, never the button */
+.facts dd.addr { display: flex; align-items: baseline; min-width: 0; }
+.facts dd.addr .mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.facts dd.addr .copy { flex: none; }
+/* shortened in the middle: the head is cut first, the tail stays */
+.facts dd.addr .mid { display: flex; }
+.facts dd.addr .mid > :first-child { min-width: 0; overflow: hidden; }
+.facts dd.addr .mid > :last-child { flex: none; }
 .copy { font: 500 11px/1.4 var(--sans); color: var(--text-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; margin-left: 6px; vertical-align: 1px; background: var(--wash); cursor: pointer; }
 .copy:hover { color: var(--text); }
 .periods { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: var(--t-cell); }

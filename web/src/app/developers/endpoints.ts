@@ -155,6 +155,7 @@ const EX_PROBES = `{
     {
       "promise_hash": "8a4aa311920cc5694ff88eee3e3928919ef97c4d4d057a946ee738ba9debe9e0",
       "validator_address": "e4401aea8b1f8359fe58216d70d78a402689a2a4",
+      "operator_address": "celestiavaloper1d2ktc37cme7ydk30ylzhamutcynhdvyet7nt3x",
       "started_at": "2026-09-29T00:48:20.592635297Z",
       "outcome": "SERVED_OK",
       "classification": "HEALTHY",
@@ -207,6 +208,7 @@ const EX_BLOB = `{
   "assignments": [
     {
       "validator_address": "f345f91cd3c36238f550a024800c0a2cd0d7d49c",
+      "operator_address": "celestiavaloper19jz75rcp26a6tkch208qm2wmt2ekk4a272cvlx",
       "row_count": 1451,
       "attested": true,
       "service": "served"
@@ -215,6 +217,7 @@ const EX_BLOB = `{
   "probes": [
     {
       "validator_address": "f345f91cd3c36238f550a024800c0a2cd0d7d49c",
+      "operator_address": "celestiavaloper19jz75rcp26a6tkch208qm2wmt2ekk4a272cvlx",
       "outcome": "SERVED_OK",
       "classification": "HEALTHY",
       "rows_returned": 1451,
@@ -594,7 +597,7 @@ export const GROUPS: Group[] = [
         desc: "`exclude` recomputes the figures without the named validators; availability still counts every validator.",
         params: [
           windowParam, asOf,
-          { name: "exclude", in: "query", type: "string", desc: "Up to 8 consensus addresses, comma-separated or repeated." },
+          { name: "exclude", in: "query", type: "string", desc: "Up to 8 validators in any address form, comma-separated or repeated." },
         ],
         example: EX_NETWORK,
       },

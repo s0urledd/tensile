@@ -33,13 +33,16 @@ type networkOut struct {
 	ComputeMs            int64                 `json:"compute_ms,omitempty"`
 	RecordThrough        *recordThrough        `json:"record_through,omitempty"`
 	Excluded             []string              `json:"excluded,omitempty"`
-	ExcludeNote          string                `json:"exclude_note,omitempty"`
-	RegisteredEndpoints  int64                 `json:"registered_endpoints"`
-	Reachability         Rate                  `json:"reachability"`
-	ReachabilityWindow   Rate                  `json:"reachability_window"`
-	Obligations          obligationStats       `json:"obligations"`
-	Reconstructable      reconstructSummary    `json:"reconstructable"`
-	ProvisionalFaults    *provisionalFaults    `json:"provisional_faults,omitempty"`
+	// ExcludedOperators is the operator address of each validator in
+	// Excluded the staking set names, keyed by the address in Excluded.
+	ExcludedOperators   map[string]string  `json:"excluded_operator_addresses,omitempty"`
+	ExcludeNote         string             `json:"exclude_note,omitempty"`
+	RegisteredEndpoints int64              `json:"registered_endpoints"`
+	Reachability        Rate               `json:"reachability"`
+	ReachabilityWindow  Rate               `json:"reachability_window"`
+	Obligations         obligationStats    `json:"obligations"`
+	Reconstructable     reconstructSummary `json:"reconstructable"`
+	ProvisionalFaults   *provisionalFaults `json:"provisional_faults,omitempty"`
 }
 
 func networkOutOf(r *networkResponse) networkOut {
@@ -368,6 +371,7 @@ func validatorReadings(rows []probeRow) []validatorReading {
 // digest come with ?rows=1.
 type blobReading struct {
 	ValidatorAddress string   `json:"validator_address"`
+	OperatorAddress  string   `json:"operator_address,omitempty"`
 	ScheduleLabel    string   `json:"schedule_label"`
 	StartedAt        string   `json:"started_at"`
 	Phase            string   `json:"phase"`
@@ -387,7 +391,7 @@ func blobReadings(rows []probeRow) []blobReading {
 	out := make([]blobReading, len(rows))
 	for i, p := range rows {
 		out[i] = blobReading{
-			ValidatorAddress: p.ValidatorAddress, ScheduleLabel: p.ScheduleLabel, StartedAt: p.StartedAt, Phase: p.Phase,
+			ValidatorAddress: p.ValidatorAddress, OperatorAddress: p.OperatorAddress, ScheduleLabel: p.ScheduleLabel, StartedAt: p.StartedAt, Phase: p.Phase,
 			Outcome: p.Outcome, Classification: p.Classification, RowsReturned: p.RowsReturned, RowsExpected: p.RowsExpected,
 			TotalDurationMS: p.TotalDurationMS, RawError: p.RawError, RowIndices: p.RowIndices, RowsSHA256: p.RowsSHA256,
 			RPCCode: p.RPCCode, Service: p.Service,

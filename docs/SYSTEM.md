@@ -351,6 +351,29 @@ GET /v1/signing               endorsements per settled promise against the ⅔ q
 GET /v1/hosting               where the registered endpoints are hosted, and how concentrated
 ```
 
+**Validator addresses.** Every row is keyed by the consensus address in
+lower-case hex, and the answers keep naming validators by it (`address`,
+`validator_address`), which is what the site keys on. A reader knows a
+validator by its operator address, so every answer that names one also
+carries `operator_address` (`celestiavaloper1…`) beside it: the validator
+list, page and status, the rows of `/v1/probes`, a blob's `assignments` and
+`probes`, and `/v1/network?exclude=` (`excluded_operator_addresses`, keyed by
+the address in `excluded`). It comes from `validator_identities`, read once
+per answer (`operatorAddrs`), and is absent for a validator the staking set
+this observer read does not name. The table is only ever upserted, so a
+validator removed and created again under the same operator with a new
+consensus key leaves two rows with one operator address; the operator
+address then goes only to the newest row, the one it resolves to, and the
+older consensus key carries none, so its page stays linked by the
+consensus address. Every route that takes a validator takes
+any of its spellings: the consensus address in hex or `celestiavalcons1…`,
+the operator address, or the operator's account address (`resolveAddr`).
+The feeds link each validator's page by its operator address too, falling
+back to the consensus address, and a validator with no moniker is named in
+their titles by its shortened operator address, as the site names it
+(`feedName`); an entry's ID keeps the consensus address it was minted
+with, so a feed reader never sees an entry twice.
+
 The public documentation is the site's API page (`web/src/app/developers`):
 every documented route in order, with its parameters, a Try it and an
 example answer (`endpoints.ts`), then what every route shares. `/v1/meta`
@@ -413,7 +436,8 @@ refuses the live directory) so a switch does not start cold
 429 with `Retry-After`):
 
 - `?as_of=<RFC3339>` — what the observer would have published at that moment
-- `?exclude=<addr>` — the summary without named validators
+- `?exclude=<addr>` — the summary without named validators (any spelling of
+  each; `excluded` echoes their consensus addresses)
 
 Both are `Cache-Control: no-store`. The cache is keyed by window alone, so
 writing either into it would publish one reader's view as everyone's
@@ -438,6 +462,14 @@ Every page's header and footer read `/v1/meta` and `/v1/tip`.
 | `/publisher/?addr=` | `/v1/publishers/{addr}` |
 | `/methodology/` | `/v1/params` (the protocol-parameters section; the rest is static) |
 | `/developers/` | `/v1/health` for its status dot, and each route when its Try it is sent; its example answers are fixed text (`endpoints.ts`) |
+
+Every link to a validator's page — the overview's table and map, the map's
+line of events from `/v1/feed.atom`, a blob's assignments — carries the
+operator address (`/validator/?addr=celestiavaloper1…`, `validatorHref` in
+`lib/addr.ts`), and the consensus address only for a validator with none on
+record. The page names the validator by its operator address and shows the
+consensus address under it; a link with the hex or `celestiavalcons1…`
+address opens the same page, as the API resolves every spelling.
 
 `MIN_RATED` (20) gates every *ranked rate* — service, reachability, throughput:
 below it the figure prints without a gauge and does not sort in either

@@ -333,7 +333,33 @@ func parseTS(s string) time.Time {
 // idTime is the time component of an entry ID: whole seconds, UTC, fixed.
 func idTime(t time.Time) string { return t.UTC().Format("20060102T150405Z") }
 
-func validatorLink(hexAddr string) string { return "/validator/?addr=" + hexAddr }
+// validatorLink is the site's page for a validator, by its operator address
+// (celestiavaloper1…) when the staking set names one, as every link on the
+// site is, else by the consensus address the rows carry. The page takes
+// either. Only the link: an entry's ID keeps the consensus address it was
+// minted with, so a reader never sees an entry twice.
+func validatorLink(hexAddr, operator string) string {
+	if operator != "" {
+		return "/validator/?addr=" + operator
+	}
+	return "/validator/?addr=" + hexAddr
+}
+
+// feedName is how a feed's titles name a validator: its moniker, else its
+// operator address shortened as the site shows it (shortMid, 18 and 4), so
+// a feed reader and a site reader see one name for it, else a prefix of
+// the consensus address. Only titles: an entry's ID never carries a name.
+func feedName(moniker, hexAddr, operator string) string {
+	switch {
+	case moniker != "":
+		return moniker
+	case len(operator) > 18+4+1:
+		return operator[:18] + "…" + operator[len(operator)-4:]
+	case operator != "":
+		return operator
+	}
+	return hexAddr[:12] + "…"
+}
 
 // validatorFeed builds one validator's feed. status is 404 when nothing
 // about the address is on record at all.
@@ -354,29 +380,33 @@ func (s *Server) validatorFeed(ctx context.Context, addr, authority string, now 
 	if known == 0 {
 		return nil, http.StatusNotFound, nil
 	}
+	// The operator address from operatorAddrs, so an older consensus key of
+	// an operator that holds a newer one links its own page by the consensus
+	// address rather than the newer validator's by the operator address.
+	ops, err := s.operatorAddrs(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
 	fm, err := s.readFeedMeta(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
-	name := moniker
-	if name == "" {
-		name = addr[:12] + "…"
-	}
+	name := feedName(moniker, addr, ops[addr])
 	id := func(parts ...string) string {
 		return feed.TagID(authority, feedTagDate, append([]string{"tensile", fm.chainID, addr}, parts...)...)
 	}
-	link := validatorLink(addr)
+	link := validatorLink(addr, ops[addr])
 	var es []feed.Entry
 
 	// Registrations and host changes, from the chain's own events.
-	regs, err := s.registrationEntries(ctx, addr, fm, authority, map[string]string{addr: name})
+	regs, err := s.registrationEntries(ctx, addr, fm, authority, map[string]string{addr: name}, ops)
 	if err != nil {
 		return nil, 0, err
 	}
 	es = append(es, regs...)
 
 	// Bonded provider list, as this observer's poll saw it.
-	bl, err := s.bondedListEntries(ctx, bech, addr, name, fm, authority, false)
+	bl, err := s.bondedListEntries(ctx, bech, addr, name, fm, authority, false, ops)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -498,8 +528,9 @@ func feedUpdated(es []feed.Entry, now time.Time) time.Time {
 // "changed host" entries. Only rows the scanner read from a transaction
 // (source "event") are events; seed rows set the previous host without an
 // entry, because a seed is the registry as it already stood, not a change.
-// only limits to one validator (hex); empty means all.
-func (s *Server) registrationEntries(ctx context.Context, only string, fm feedMeta, authority string, names map[string]string) ([]feed.Entry, error) {
+// only limits to one validator (hex); empty means all. ops holds each
+// validator's operator address for its link (operatorAddrs).
+func (s *Server) registrationEntries(ctx context.Context, only string, fm feedMeta, authority string, names, ops map[string]string) ([]feed.Entry, error) {
 	q := `SELECT cons_address, host, source, time, from_height, from_tx_index FROM host_events`
 	var args []any
 	if only != "" {
@@ -525,11 +556,8 @@ func (s *Server) registrationEntries(ctx context.Context, only string, fm feedMe
 		if source != "event" || (had && before == host) {
 			continue
 		}
-		name := names[addr]
-		if name == "" {
-			name = addr[:12] + "…"
-		}
-		e := feed.Entry{At: parseTS(at), Link: validatorLink(addr),
+		name := feedName(names[addr], addr, ops[addr])
+		e := feed.Entry{At: parseTS(at), Link: validatorLink(addr, ops[addr]),
 			ID: feed.TagID(authority, feedTagDate, "tensile", fm.chainID, addr, "registration", fmt.Sprintf("%d-%d", h, tx))}
 		if !had || before == "" {
 			e.Kind = "registered"
@@ -549,8 +577,9 @@ func (s *Server) registrationEntries(ctx context.Context, only string, fm feedMe
 // limits to one validator; empty means all (then names comes from the
 // identities table). skipFirstPoll leaves out the rows opened by the
 // observer's first poll entirely (the network feed); otherwise they are
-// published once, worded as what they are.
-func (s *Server) bondedListEntries(ctx context.Context, bech, hexAddr, name string, fm feedMeta, authority string, skipFirstPoll bool) ([]feed.Entry, error) {
+// published once, worded as what they are. ops holds each validator's
+// operator address for its link.
+func (s *Server) bondedListEntries(ctx context.Context, bech, hexAddr, name string, fm feedMeta, authority string, skipFirstPoll bool, ops map[string]string) ([]feed.Entry, error) {
 	q := `SELECT e.validator_cons_address, e.host, e.first_seen_at, e.first_seen_height, e.closed_at, e.closed_height,
 		COALESCE(e.closed_reason, ''), COALESCE(i.moniker, '')
 		FROM endpoints e LEFT JOIN validator_identities i ON i.cons_address = ?`
@@ -608,16 +637,13 @@ func (s *Server) bondedListEntries(ctx context.Context, bech, hexAddr, name stri
 		}
 		nm := name
 		if bech == "" {
-			nm = names[addr]
-			if nm == "" {
-				nm = addr[:12] + "…"
-			}
+			nm = feedName(names[addr], addr, ops[addr])
 		}
 		base := []string{"tensile", fm.chainID, addr}
 		atStart := e.first == fm.firstPoll
 		if !(atStart && skipFirstPoll) {
 			at := parseTS(e.first)
-			en := feed.Entry{Kind: "bonded-joined", At: at, Link: validatorLink(addr),
+			en := feed.Entry{Kind: "bonded-joined", At: at, Link: validatorLink(addr, ops[addr]),
 				ID: feed.TagID(authority, feedTagDate, append(base, "bonded-joined", idTime(at))...)}
 			if atStart {
 				en.Title = nm + ": listed as a bonded Fibre provider (" + e.host + ")"
@@ -630,7 +656,7 @@ func (s *Server) bondedListEntries(ctx context.Context, bech, hexAddr, name stri
 		}
 		if e.closed.Valid {
 			at := parseTS(e.closed.String)
-			en := feed.Entry{Kind: "bonded-left", At: at, Link: validatorLink(addr),
+			en := feed.Entry{Kind: "bonded-left", At: at, Link: validatorLink(addr, ops[addr]),
 				ID:    feed.TagID(authority, feedTagDate, append(base, "bonded-left", idTime(at))...),
 				Title: nm + ": left the bonded Fibre provider list"}
 			en.Summary = fmt.Sprintf("%s stopped appearing in AllBondedFibreProviders at height %d", e.host, e.ch.Int64)
@@ -745,13 +771,17 @@ func (s *Server) networkFeed(ctx context.Context, authority string, now time.Tim
 	if err != nil {
 		return nil, err
 	}
+	ops, err := s.operatorAddrs(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var es []feed.Entry
-	regs, err := s.registrationEntries(ctx, "", fm, authority, names)
+	regs, err := s.registrationEntries(ctx, "", fm, authority, names, ops)
 	if err != nil {
 		return nil, err
 	}
 	es = append(es, regs...)
-	bl, err := s.bondedListEntries(ctx, "", "", "", fm, authority, true)
+	bl, err := s.bondedListEntries(ctx, "", "", "", fm, authority, true, ops)
 	if err != nil {
 		return nil, err
 	}
@@ -768,10 +798,7 @@ func (s *Server) networkFeed(ctx context.Context, authority string, now time.Tim
 		if store.TS(fe.At) < cut {
 			continue
 		}
-		nm := names[a]
-		if nm == "" {
-			nm = a[:12] + "…"
-		}
+		nm := feedName(names[a], a, ops[a])
 		fe.ID = feed.TagID(authority, feedTagDate, "tensile", fm.chainID, a, "first-fault")
 		fe.Link, fe.Title = "/blob/?hash="+fe.Link, nm+": "+fe.Title
 		es = append(es, fe)

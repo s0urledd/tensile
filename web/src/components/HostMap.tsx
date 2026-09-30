@@ -2,6 +2,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { type Validator, API_BASE, ago, utcWord, int } from "@/lib/api";
+import { validatorHref } from "@/lib/addr";
 import type { Hosting } from "@/lib/hosting";
 import { FRAME, COUNTRIES, project, countryPoint } from "@/lib/map/project";
 import { countryName } from "@/components/Flag";
@@ -123,7 +124,7 @@ function providerOf(h?: Hosting): string {
   return org === org.toUpperCase() && org.length > 3 ? org.charAt(0) + org.slice(1).toLowerCase() : org;
 }
 
-const valLink = (v: Validator) => `/validator/?addr=${encodeURIComponent(v.cons_address || v.address)}`;
+const valLink = (v: Validator) => validatorHref(v.operator_address, v.cons_address || v.address);
 const name = (v: Validator) => v.moniker || v.operator_address || v.address;
 const fmtShare = (s: number) => { const p = s * 100; return p >= 0.1 ? `${p.toFixed(1)}%` : p > 0 ? "<0.1%" : "0%"; };
 
@@ -438,12 +439,18 @@ export default function HostMap({ rows, showReadiness, aside }: { rows: Validato
   const feed = useFeedEvents(served.length === 0);
   const live: Live[] = useMemo(() => {
     if (served.length) return served;
-    const byAddr = new Map(rows.map((v) => [v.address.toLowerCase(), v]));
-    const hostOf = new Map(hosts.map((h) => [h.v.address.toLowerCase(), h]));
+    // A feed entry links its validator by the operator address, or by the
+    // consensus address when the staking set names none; either finds the row.
+    const byAddr = new Map<string, Validator>();
+    for (const v of rows) {
+      byAddr.set(v.address.toLowerCase(), v);
+      if (v.operator_address) byAddr.set(v.operator_address.toLowerCase(), v);
+    }
+    const hostOf = new Map(hosts.map((h) => [h.v.address, h]));
     const ev: Live[] = [];
     for (const e of feed) {
       const v = byAddr.get(e.addr);
-      if (v && EVENT_WORD[e.term]) ev.push({ v, host: hostOf.get(e.addr), event: EVENT_WORD[e.term], at: e.at });
+      if (v && EVENT_WORD[e.term]) ev.push({ v, host: hostOf.get(v.address), event: EVENT_WORD[e.term], at: e.at });
     }
     // A registered host that stopped answering, dated by its last successful check.
     for (const h of hosts) {
