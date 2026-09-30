@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -331,9 +330,10 @@ type ledgerFileEntry struct {
 
 // open reads the ledger's file the first time the ledger is used, and keeps
 // it if the store is still the one it was computed from (derived.go):
-// otherwise the file is removed and the ledger is built from every
-// assignment, as it was before there were files. An error is a query that
-// failed, and the next computation tries again. The caller holds l.mu.
+// otherwise the ledger is built from every assignment, as it was before
+// there were files, and the file is left for its first write to replace.
+// An error is a query that failed, and the next computation tries again.
+// The caller holds l.mu.
 func (l *endorsementLedger) open(ctx context.Context, db *sql.DB) error {
 	if l.opened {
 		return nil
@@ -355,7 +355,6 @@ func (l *endorsementLedger) open(ctx context.Context, db *sql.DB) error {
 	}()
 	switch {
 	case why != "":
-		_ = os.Remove(l.file)
 		l.origin = "built from the store: " + l.file + " refused: " + string(why)
 		return nil
 	case vals == nil:

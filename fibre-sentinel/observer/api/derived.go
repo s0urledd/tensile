@@ -52,10 +52,12 @@ import (
 // is a rebuild: a file whose digest is not its body's, that does not parse,
 // is of another format or definition, names another store or another
 // schema, or whose mark or entries do not match what the store holds now is
-// removed, and the memo or ledger is built from the store as it was before
-// there were files. A query that fails while a file is checked is an error
-// of the computation, which the next one retries; it proves nothing about
-// the file.
+// refused, and the memo or ledger is built from the store as it was before
+// there were files. The file is left for the next write to replace, not
+// removed: another process may have written a good one in its place since
+// it was read. A query that fails while a file is checked is an error of
+// the computation, which the next one retries; it proves nothing about the
+// file.
 //
 // An older build does not know the files and never reads them, so going
 // back costs nothing. Coming forward again, a file written before the
@@ -190,8 +192,12 @@ func readDerived(path string, v any) (ok bool, why refusal) {
 }
 
 // writeDerived writes v, whose digest must be empty, to path sealed
-// (sealDerived), and whole or not at all: a temporary file renamed over
-// it, so a reader never meets half a file.
+// (sealDerived), and whole or not at all: a temporary file of this write's
+// own, synced and then renamed over path, so a reader never meets half a
+// file. Two writers of one path, two processes over one directory, say,
+// never write into each other's temporary file or rename it away: with one
+// name for every writer, one truncated the other's while it was being
+// renamed, and published half a file or failed.
 func writeDerived(path string, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -200,14 +206,31 @@ func writeDerived(path string, v any) error {
 	if b, err = sealDerived(b); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	_, err = tmp.Write(b)
+	if err == nil {
+		err = tmp.Chmod(0o644)
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp.Name())
+	}
+	return err
 }
 
 // A file's digest covers every byte of it but the digest's own. The load

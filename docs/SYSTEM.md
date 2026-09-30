@@ -395,8 +395,11 @@ the collector migrates writes neither under the new schema, but drops both
 and builds them again from the migrated store.
 Each also carries a sha256 of its own body, so an edit or damage below the
 entries read again is caught too. Anything else, a file whose digest is not
-its body's, or one that does not parse, is removed and rebuilt from the
-store. An older build does not read them.
+its body's, or one that does not parse, is refused and rebuilt from the
+store, and left for the next write to replace rather than removed, since
+another process may have written a good one in its place meanwhile. Each
+write goes to a temporary file of its own, synced and renamed into place.
+An older build does not read them.
 A file is served only under the revision it was computed under (holds,
 activation, `verdict.MethodologyVersion`) and for the vantage it was computed
 for. A window with nothing to serve makes a reader wait at most 8 s, then

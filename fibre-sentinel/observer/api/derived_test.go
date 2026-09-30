@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -505,6 +507,140 @@ func TestAMemoAndALedgerReadBeforeAMigrationAreNotWrittenUnderIt(t *testing.T) {
 	}
 	if !strings.HasPrefix(again.origRows.origin, "loaded ") || !strings.HasPrefix(again.recent.origin, "loaded ") {
 		t.Errorf("a start after it wrote again: memo %q, ledger %q", again.origRows.origin, again.recent.origin)
+	}
+}
+
+// Writers of one derived file do not share a temporary file. With one name
+// for every writer, one truncated the temporary file another was renaming,
+// or renamed it away under it, so a reader met half a file or a write
+// failed. Here every write succeeds, every read finds a whole file, and
+// nothing is left beside it.
+func TestConcurrentWritesOfADerivedFileLeaveItWhole(t *testing.T) {
+	type body struct {
+		derivedHeader
+		Writer int    `json:"writer"`
+		Pad    string `json:"pad"`
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, originalRowsFile)
+	const writers, writes = 8, 40
+	errs := make(chan error, writers*writes)
+	var wg sync.WaitGroup
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			v := body{derivedHeader: derivedHeader{Kind: "test"}, Writer: w, Pad: strings.Repeat(string(rune('a'+w)), 256<<10)}
+			for i := 0; i < writes; i++ {
+				if err := writeDerived(path, v); err != nil {
+					errs <- fmt.Errorf("writer %d, write %d: %w", w, i, err)
+				}
+			}
+		}(w)
+	}
+	stop := make(chan struct{})
+	var reads int
+	var torn []refusal
+	read := make(chan struct{})
+	go func() {
+		defer close(read)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			var v body
+			if ok, why := readDerived(path, &v); !ok && why != "" {
+				torn = append(torn, why)
+			}
+			reads++
+		}
+	}()
+	wg.Wait()
+	close(stop)
+	<-read
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if len(torn) > 0 {
+		t.Errorf("%d of %d reads met a file that was not whole, the first: %s", len(torn), reads, torn[0])
+	}
+	var v body
+	if ok, why := readDerived(path, &v); !ok {
+		t.Errorf("the file as the writers left it: %q", why)
+	}
+	names, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range names {
+		if e.Name() != originalRowsFile {
+			t.Errorf("left beside the file: %s", e.Name())
+		}
+	}
+}
+
+// A refused file is left where it is, for the next write to replace. The
+// start that refused it read it some time before it would remove it, and
+// another process may have written a good file in its place meanwhile.
+func TestARefusedDerivedFileIsLeftForTheNextWrite(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	other := newDerivedFixture(t, 13)
+	o := other.server(dir)
+	other.figures(o)
+	if err := o.keepDerived(ctx); err != nil {
+		t.Fatal(err)
+	}
+	theirs := map[string][]byte{}
+	for _, name := range []string{originalRowsFile, endorsementLedgerFile} {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		theirs[name] = b
+	}
+
+	f := newDerivedFixture(t, 13)
+	db := f.st.DB()
+	s := f.server(dir)
+	if err := s.origRows.open(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	s.recent.mu.Lock()
+	err := s.recent.open(ctx, db)
+	s.recent.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for what, origin := range map[string]string{"the memo": s.origRows.origin, "the ledger": s.recent.origin} {
+		if !strings.Contains(origin, " refused: computed from another store") {
+			t.Errorf("%s over another store's file: %q, want it refused", what, origin)
+		}
+	}
+	for name, b := range theirs {
+		got, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || !bytes.Equal(got, b) {
+			t.Errorf("%s once refused: %v, want it left as it was", name, err)
+		}
+	}
+
+	// Its own writes replace them, and the next start keeps those.
+	want := f.figures(f.server(""))
+	if got := f.figures(s); got != want {
+		t.Fatalf("over a refused file:\n got %s\nwant %s", got, want)
+	}
+	if err := s.keepDerived(ctx); err != nil {
+		t.Fatal(err)
+	}
+	next := f.server(dir)
+	if got := f.figures(next); got != want {
+		t.Fatalf("a start after it wrote:\n got %s\nwant %s", got, want)
+	}
+	if !strings.HasPrefix(next.origRows.origin, "loaded ") || !strings.HasPrefix(next.recent.origin, "loaded ") {
+		t.Errorf("a start after it wrote: memo %q, ledger %q", next.origRows.origin, next.recent.origin)
 	}
 }
 

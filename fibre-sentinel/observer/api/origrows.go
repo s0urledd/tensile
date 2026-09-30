@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -289,10 +288,10 @@ func (m *originalRowsMemo) learn(ctx context.Context, db *sql.DB, hashes []strin
 
 // open reads the memo's file the first time the memo is used, and keeps its
 // entries if the store is still the one they were computed from (derived.go);
-// otherwise the file is removed and the memo starts empty, as it did before
-// there were files. An error is a query that failed, and the next
-// computation tries again. Once the file has been read, open takes no lock,
-// so a computation never waits for a write.
+// otherwise the memo starts empty, as it did before there were files, and
+// the file is left for its first write to replace. An error is a query that
+// failed, and the next computation tries again. Once the file has been read,
+// open takes no lock, so a computation never waits for a write.
 func (m *originalRowsMemo) open(ctx context.Context, db *sql.DB) error {
 	if m.opened.Load() {
 		return nil
@@ -321,7 +320,6 @@ func (m *originalRowsMemo) open(ctx context.Context, db *sql.DB) error {
 	}
 	switch {
 	case why != "":
-		_ = os.Remove(m.file)
 		m.origin = "built from the store: " + m.file + " refused: " + string(why)
 	case vals == nil:
 		m.origin = "built from the store: no " + m.file
