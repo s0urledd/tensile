@@ -27,8 +27,9 @@ import { type EndpointState, endpointState, readiness } from "@/components/Readi
  * zoomed) move the view, each in one eased flight.
  *
  * Under the map, one floating bar: the newest event on the left, the three
- * counts on the right. The land and the bar are drawn before the list
- * arrives, so nothing moves when it does.
+ * counts on the right. The box (its shape set in the stylesheet) and the bar
+ * are in the prerendered page and the land is drawn as soon as the box is
+ * measured, all before the list arrives, so nothing moves when it does.
  */
 
 type Host = { v: Validator; state: EndpointState; share: number; cc: string; city: string; loc: string; lon: number; lat: number; ux: number; uy: number; provider: string };
