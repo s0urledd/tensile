@@ -1210,7 +1210,7 @@ body { background: var(--canvas); }
 
 /* a place's hosts: the charts' tooltip surface */
 .cm-pop {
-  position: absolute; padding: 12px 14px 10px; border-radius: 12px; text-align: left; font-size: var(--t-cell); cursor: auto;
+  position: absolute; display: flex; flex-direction: column; padding: 12px 14px 10px; border-radius: 12px; text-align: left; font-size: var(--t-cell); cursor: auto;
   background: color-mix(in srgb, var(--paper) 94%, transparent); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
   border: 1px solid var(--border); box-shadow: var(--shadow-pop); animation: cm-in var(--dur) ease-out;
 }
@@ -1221,7 +1221,8 @@ body { background: var(--canvas); }
 .cm-pop-cities > span { position: relative; padding-left: 15px; white-space: nowrap; }
 .cm-pop-cities > span::before { content: "·"; position: absolute; left: 5px; color: var(--text-3); }
 .cm-pop-cities i { font-style: normal; color: var(--text-3); font-variant-numeric: tabular-nums; }
-.cm-pop ul { list-style: none; margin: 0; padding: 0; max-height: 196px; overflow-y: auto; overscroll-behavior: contain; }
+.cm-pop ul { flex: 0 1 auto; min-height: 60px; list-style: none; margin: 0; padding: 0; max-height: 196px; overflow-y: auto; overscroll-behavior: contain; }
+.cm-pop > p, .cm-pop > .cm-zoomin { flex: none; }
 .cm-pop ul[data-more="bottom"] { -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 30px), transparent); mask-image: linear-gradient(180deg, #000 calc(100% - 30px), transparent); }
 .cm-pop ul[data-more="top"] { -webkit-mask-image: linear-gradient(0deg, #000 calc(100% - 30px), transparent); mask-image: linear-gradient(0deg, #000 calc(100% - 30px), transparent); }
 .cm-pop ul[data-more="top bottom"] { -webkit-mask-image: linear-gradient(180deg, transparent, #000 30px, #000 calc(100% - 30px), transparent); mask-image: linear-gradient(180deg, transparent, #000 30px, #000 calc(100% - 30px), transparent); }

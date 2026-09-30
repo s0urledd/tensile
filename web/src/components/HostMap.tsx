@@ -514,9 +514,11 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
             const multi = c.ccs.length > 1;
             const one = n === 1;
             const cities = c.locs > 1 ? cityCounts(c) : [];
+            // beside the badge, on the side with room, and ending above the bar, so it never covers the counts: its list scrolls instead
+            const below = y <= height * 0.5, edge = Math.max(bh, 24) / 2, floor = barAt ? Math.min(height, barAt[1]) : height;
             const pop: React.CSSProperties = narrow
               ? { left: -x + 8, top: height - y + 14, width: width - 16 }
-              : { [x > width * 0.6 ? "right" : "left"]: bw / 2 + 12, [y > height * 0.5 ? "bottom" : "top"]: -Math.max(bh, 24) / 2, width: 300 };
+              : { [x > width * 0.6 ? "right" : "left"]: bw / 2 + 12, [below ? "top" : "bottom"]: -edge, width: 300, maxHeight: Math.max(220, below ? floor - (y - edge) - 8 : y + edge - 10) };
             return (
               <li key={c.id} className={`cm-pin${one ? " one" : ""}${isOpen ? " open" : ""}${liveCluster === c.id ? " live" : ""}`}
                 style={{ transform: `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`, zIndex: isOpen ? 30 : undefined }}
