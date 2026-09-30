@@ -206,7 +206,6 @@ const EX_BLOB = `{
   "assignments": [
     {
       "validator_address": "f345f91cd3c36238f550a024800c0a2cd0d7d49c",
-      "moniker": "devops",
       "row_count": 1451,
       "attested": true,
       "service": "served"
