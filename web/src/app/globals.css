@@ -1097,9 +1097,12 @@ body { background: var(--canvas); }
   --rb-window: color-mix(in srgb, var(--accent) 70%, var(--paper));
   --rb-window-fill: color-mix(in srgb, var(--accent) 14%, var(--paper));
   --rb-head-glow: 30%;
-  position: relative; margin: 16px 0 18px; border-radius: var(--r-panel);
+  --rb-fade: .5;
+  position: relative; isolation: isolate; margin: 16px 0 18px; border-radius: var(--r-panel);
   background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow);
 }
+/* lit from its top corners as the other pages' chain panels are, the map's sea included */
+.deck::before { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: var(--stage-glow); pointer-events: none; }
 :root[data-theme="dark"] .deck {
   --cm-land: #1b2226;
   --cm-land-on: #1b3035;
@@ -1113,11 +1116,13 @@ body { background: var(--canvas); }
   --rb-window: color-mix(in srgb, var(--accent) 80%, var(--paper));
   --rb-window-fill: color-mix(in srgb, var(--accent) 24%, var(--paper));
   --rb-head-glow: 55%;
+  --rb-fade: .6;
   background: var(--paper);
 }
 
 /* ---- the map ---- */
-.cm { position: relative; min-width: 0; container-type: inline-size; }
+/* above the row of instruments: the container query makes it a stacking context, and a popover may reach below the map */
+.cm { position: relative; z-index: 2; min-width: 0; container-type: inline-size; }
 /* the box's two shapes, as HostMap.tsx draws them (WIDE, TALL): set here so it has its size before any script */
 .cm-atlas { position: relative; width: 100%; aspect-ratio: 1 / .406; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
 @container (max-width: 559px) { .cm-atlas { aspect-ratio: 1 / .56; } }
@@ -1237,7 +1242,7 @@ body { background: var(--canvas); }
 .deck-row {
   display: grid; grid-template-columns: minmax(0, .92fr) minmax(0, 1.12fr) minmax(0, 1fr); grid-template-rows: auto 1fr;
   grid-template-areas: "cp rb rd" "ob rb rd";
-  padding: 48px 0 22px;
+  padding: 48px 0 18px;
 }
 .deck-row.no-cp { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); grid-template-areas: "rb rd" "rb ob"; }
 .deck-row > * { min-width: 0; padding: 0 26px; }
@@ -1307,21 +1312,25 @@ body { background: var(--canvas); }
 .rb-pause[aria-pressed="true"] { color: var(--accent-ink); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 .rb-count { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; margin: 12px 0 0; font-size: var(--t-small); color: var(--text-3); }
 .rb-total { font-size: 26px; font-weight: 600; letter-spacing: -.025em; line-height: 1.1; color: var(--text); }
-.rb-grid { list-style: none; margin: 14px 0 0; padding: 0; display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 4px; }
+.rb-grid { list-style: none; margin: 14px 0 0; padding: 0; display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 4px; }
 .rb-slot { display: block; min-width: 0; }
-.rb-c { position: relative; display: block; aspect-ratio: 1; border-radius: 4px; background: var(--rb-c, transparent); opacity: var(--o, 1); transition: background-color .4s ease-out, opacity .4s ease-out, transform 160ms ease-out; }
-.rb-c[data-s="kept"] { --rb-c: var(--accent); }
-.rb-c[data-s="window"] { --rb-c: var(--rb-window-fill); box-shadow: inset 0 0 0 1.5px var(--rb-window); }
-.rb-c[data-s="hold"] { --rb-c: var(--hold); }
-.rb-c[data-s="gap"] { --rb-c: var(--neutral); }
+/* a square is the link (it keeps its place and focus); its fill is the blob's */
+.rb-c { position: relative; display: block; aspect-ratio: 1; border-radius: 5px; transition: transform 160ms ease-out; }
+/* the older, the fainter: down to 1 - --rb-fade for the oldest square */
+.rb-f { --o: calc(1 - var(--age, 0) * var(--rb-fade)); position: absolute; inset: 0; border-radius: inherit; background: var(--rb-c, transparent); opacity: var(--o); transition: background-color .4s ease-out, opacity .4s ease-out; }
+.rb-f[data-s="kept"] { --rb-c: var(--accent); }
+.rb-f[data-s="window"] { --rb-c: var(--rb-window-fill); box-shadow: inset 0 0 0 1.5px var(--rb-window); }
+.rb-f[data-s="hold"] { --rb-c: var(--hold); }
+.rb-f[data-s="gap"] { --rb-c: var(--neutral); }
 .rb-c.rb-empty { box-shadow: inset 0 0 0 1px var(--line-soft); }
 /* the head: the newest square, ringed */
-.rb-c.head { opacity: 1; box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--accent), 0 0 16px 1px color-mix(in srgb, var(--accent) var(--rb-head-glow), transparent); }
-.rb-c:hover, .rb-c.on { opacity: 1; transform: scale(1.18); z-index: 1; text-decoration: none; box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--text-2); }
-.rb-c:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: 2px; z-index: 1; }
+.rb-c.head { box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--accent), 0 0 16px 1px color-mix(in srgb, var(--accent) var(--rb-head-glow), transparent); }
+.rb-c.head .rb-f, .rb-c:hover .rb-f, .rb-c.on .rb-f, .rb-c:focus-visible .rb-f { opacity: 1; }
+.rb-c:hover, .rb-c.on { transform: scale(1.18); z-index: 1; text-decoration: none; box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--text-2); }
+.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-index: 1; }
 /* an arrival: the square grows in and lights, then cools to its colour; one sweep per read */
-.rb-c.fresh { animation: rb-in .52s cubic-bezier(.2, .8, .2, 1) var(--d, 0ms) backwards; }
-.rb-c.fresh::after { content: ""; position: absolute; inset: -3px; border-radius: 7px; background: var(--accent); filter: blur(5px); opacity: 0; pointer-events: none; animation: rb-glow 2.6s ease-out var(--d, 0ms) both; }
+.rb-f.fresh { animation: rb-in .52s cubic-bezier(.2, .8, .2, 1) var(--d, 0ms) backwards; }
+.rb-f.fresh::after { content: ""; position: absolute; inset: -3px; border-radius: 8px; background: var(--accent); filter: blur(5px); opacity: 0; pointer-events: none; animation: rb-glow 2.6s ease-out var(--d, 0ms) both; }
 @keyframes rb-in { 0% { transform: scale(.3); opacity: 0; } 55% { transform: scale(1.14); opacity: 1; } 100% { transform: scale(1); opacity: var(--o, 1); } }
 @keyframes rb-glow { 0% { opacity: 0; } 14% { opacity: .8; } 100% { opacity: 0; } }
 .rb-key { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 12px 0 0; font-size: var(--t-tiny); color: var(--text-3); }
@@ -1330,6 +1339,7 @@ body { background: var(--canvas); }
 .rb-key i[data-s="window"] { background: var(--rb-window-fill); box-shadow: inset 0 0 0 1.5px var(--rb-window); }
 .rb-key i[data-s="head"] { width: 9px; height: 9px; background: var(--accent); box-shadow: 0 0 0 1.5px var(--paper), 0 0 0 2.75px var(--accent); margin-right: 7px; }
 .rb-key i[data-s="hold"] { background: var(--hold); }
+.rb-key i[data-s="gap"] { background: var(--neutral); }
 .rb-key-n { margin-left: auto; }
 
 /* the readout: one blob's facts, the latest by default, the pointed one while a square is pointed at */
@@ -1348,7 +1358,9 @@ body { background: var(--canvas); }
 .rb-st .verdict--hold .w { color: var(--hold-ink); font-weight: 500; }
 .rb-st .verdict--gap { padding-left: 0; padding-right: 0; }
 .rb-st .verdict--gap .w { color: var(--text-2); font-weight: 500; }
-.rb-read .ov-links { margin-top: 14px; }
+/* the readout's links sit at the row's foot, level with the availability card beside them */
+.rb-read { display: flex; flex-direction: column; }
+.rb-read .ov-links { margin-top: auto; padding-top: 14px; }
 .rb-obs { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 16px; padding: 10px 12px; border-radius: var(--r-card); background: var(--obs-bg); box-shadow: var(--obs-edge); }
 .rb-obs .obs-tag { height: 24px; }
 .rb-obs p { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin: 0; font-size: var(--t-small); color: var(--text-3); }
@@ -1426,13 +1438,13 @@ body { background: var(--canvas); }
 }
 @media (max-width: 480px) {
   .blocktick .bt-l { display: none; }
-  .rb-grid { gap: 3px; }
-  .rb-c { border-radius: 3px; }
+  .rb-grid { gap: 4px; }
+  .rb-c { border-radius: 4px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .cm-land path, .cm-badge, .cm-pin, .cm-tools button, .rb-c, .ov-links a span { transition: none; }
+  .cm-land path, .cm-badge, .cm-pin, .cm-tools button, .rb-c, .rb-f, .ov-links a span { transition: none; }
   .cm-pop, .cm-ev { animation: none; }
   .cm-pin.live .cm-badge::after { animation: none; opacity: .7; transform: scale(1.35); }
-  .cp-track i, .rb-c.fresh, .rb-c.fresh::after, .rb-ring-f, .bt-dot.beat, .rn-roll .rn-in, .rn-roll .rn-out { animation: none; }
+  .cp-track i, .rb-f.fresh, .rb-f.fresh::after, .rb-ring-f, .bt-dot.beat, .rn-roll .rn-in, .rn-roll .rn-out { animation: none; }
   .rn-roll .rn-out { display: none; }
 }

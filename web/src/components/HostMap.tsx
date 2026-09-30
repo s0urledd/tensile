@@ -223,8 +223,10 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
   useLayoutEffect(() => {
     const el = box.current;
     if (!el) return;
-    setWidth(el.clientWidth);
-    const ro = new ResizeObserver(() => setWidth(el.clientWidth));
+    // the exact width, as the stylesheet's container query sees it
+    const measure = () => setWidth(el.getBoundingClientRect().width);
+    measure();
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
   }, []);

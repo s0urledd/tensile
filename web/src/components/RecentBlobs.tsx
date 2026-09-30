@@ -13,7 +13,7 @@ import RollNumber, { reducedMotion } from "@/components/RollNumber";
  *
  * The grid is a ring. Each blob takes the next square in reading order as it
  * arrives, wrapping from the last square to the first, so a square keeps its
- * place for as long as its blob is among the newest 48 and nothing on the
+ * place for as long as its blob is among the newest 50 and nothing on the
  * grid ever moves; only the head advances. A new blob lights its square and
  * cools off; the older a blob, the fainter its square, so the trail shows
  * which way the grid is filling. A square's colour is the blob's status as the
@@ -33,8 +33,8 @@ import RollNumber, { reducedMotion } from "@/components/RollNumber";
  * inside the interval, so arrivals never queue.
  */
 
-/** the grid: 12 columns by 4 rows */
-const CELLS = 48, COLS = 12;
+/** the grid: 10 columns by 5 rows */
+const CELLS = 50, COLS = 10;
 const FAST_MS = 5000, SLOW_MS = 15000;
 /** no new blob for this long reads at the slow pace */
 const IDLE_AFTER_MS = 120000;
@@ -303,17 +303,21 @@ export default function RecentBlobs() {
             const o = arrival?.order.get(b.promise_hash);
             const fresh = o != null && motion;
             const style = {
-              "--o": (1 - 0.6 * (rank / (CELLS - 1))).toFixed(3),
+              "--age": (rank / (CELLS - 1)).toFixed(3),
               ...(fresh ? { "--d": `${Math.round(o * step)}ms` } : {}),
             } as React.CSSProperties;
+            // The link keeps its square (and keyboard focus) whoever's blob is in it; the fill inside is
+            // the blob's, and a new blob's fill is a new element, so its arrival plays once.
             return (
               <li key={`s${i}`} className="rb-slot">
-                <Link key={b.promise_hash} href={`/blob/?hash=${b.promise_hash}`} prefetch={false} data-slot={i}
-                  className={`rb-c${fresh ? " fresh" : ""}${rank === 0 ? " head" : ""}${sel === b.promise_hash ? " on" : ""}`}
-                  data-s={s.key} style={style} tabIndex={i === tabSlot ? 0 : -1}
+                <Link href={`/blob/?hash=${b.promise_hash}`} prefetch={false} data-slot={i}
+                  className={`rb-c${rank === 0 ? " head" : ""}${sel === b.promise_hash ? " on" : ""}`}
+                  tabIndex={i === tabSlot ? 0 : -1}
                   aria-label={`${rank === 0 ? "Newest blob" : `${nth(rank + 1)} newest blob`}: height ${int(b.settlement_height)}, settled ${utcWord(b.settlement_time)}, ${bytes(b.blob_size)}, ${s.word}`}
                   onMouseEnter={() => setSel(b.promise_hash)} onFocus={() => { setSel(b.promise_hash); setFocusAt(i); }}
-                  onKeyDown={(e) => walk(e, i)} />
+                  onKeyDown={(e) => walk(e, i)}>
+                  <span key={b.promise_hash} className={`rb-f${fresh ? " fresh" : ""}`} data-s={s.key} style={style} />
+                </Link>
               </li>
             );
           })}
@@ -322,6 +326,7 @@ export default function RecentBlobs() {
           <span><i data-s="window" />in retention window</span>
           <span><i data-s="kept" />available</span>
           <span><i data-s="hold" />unavailable</span>
+          {cells.some((c) => statusOf(c.b).key === "gap") && <span><i data-s="gap" />not read by Tensile</span>}
           <span className="rb-key-n"><i data-s="head" />newest</span>
         </p>
       </div>
