@@ -400,7 +400,7 @@ export default function RecentBlobs() {
             {statusKeys.has("gap") && <span><i data-s="gap" />not read by Tensile</span>}
             <span><i data-s="head" />newest</span>
           </p>
-          <p className="rb-key-size"><i className="rb-key-sq"><b /></i>The inner square's area is the blob size; a full one is 128 MiB</p>
+          <p className="rb-key-size"><i className="rb-key-sq"><b /></i>Inner square area = blob size (full = 128 MiB)</p>
         </div>
       </div>
 
