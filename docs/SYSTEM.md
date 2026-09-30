@@ -353,8 +353,9 @@ GET /v1/hosting               where the registered endpoints are hosted, and how
 
 The public documentation is the site's API page (`web/src/app/developers`):
 every documented route in order, with its parameters, a Try it and an
-example answer (`endpoints.ts`), then what every route shares. `/v1/meta`,
-`/v1/sampling` and `/v1/avatars` are the site's own and not on it. A
+example answer (`endpoints.ts`), then what every route shares. `/v1/meta`
+and `/v1/avatars` are the site's own, and `/v1/sampling` serves the earlier
+sampling's audit; none is on it. A
 response carries what some reader uses: a field nothing reads is dropped
 from the answer, never from the store (the snapshot rows keep their
 internal figures; `shapes.go` projects them).
