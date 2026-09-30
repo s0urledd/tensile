@@ -1079,7 +1079,7 @@ body { background: var(--canvas); }
    Colour is spent as elsewhere: the accent for the chain's facts and the
    instruments, amber only for an unreachable host or an unavailable blob, red
    only for a broken obligation's pip. Motion is spent on arrivals only (a
-   blob's square, a rolled digit, the header's block) and every bit of it
+   blob's square, a rolled digit, the header's block dot) and every bit of it
    stops under prefers-reduced-motion.
    ========================================================================== */
 .deck {
@@ -1385,11 +1385,10 @@ body { background: var(--canvas); }
 @keyframes rn-in-down { from { transform: translateY(-75%); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes rn-out-down { from { transform: none; opacity: 1; } to { transform: translateY(75%); opacity: 0; } }
 
-/* ---- the header's block: quiet, in the muted greys, a small dot that breathes once per block ---- */
+/* ---- the header's block: quiet, in the muted greys; only the small dot moves, breathing once per block ---- */
 .blocktick { display: flex; align-items: center; gap: 6px; font-size: var(--t-small); color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .blocktick .bt-l { letter-spacing: .01em; }
 .blocktick .bt-n { color: var(--text-2); font-weight: 500; letter-spacing: .01em; }
-.blocktick .bt-n .rn-roll .rn-in, .blocktick .bt-n .rn-roll .rn-out { animation-duration: .36s; }
 .bt-dot { flex: none; width: 6px; height: 6px; margin-right: 1px; border-radius: 50%; background: var(--neutral); opacity: .8; }
 .bt-dot.ok { background: var(--ok); } .bt-dot.hold { background: var(--hold); } .bt-dot.none { background: var(--neutral); }
 .bt-dot.beat { animation: bt-breathe 1.8s ease-in-out 1; }

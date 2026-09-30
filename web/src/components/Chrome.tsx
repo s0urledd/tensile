@@ -4,7 +4,6 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useApi, type Meta, type Tip, int, ago, since, span, utcWord } from "@/lib/api";
 import { SOURCE_URL, DISPUTE_URL } from "@/lib/site";
-import RollNumber from "./RollNumber";
 
 /**
  * Sibling deployments of this observer on other networks, from
@@ -130,10 +129,10 @@ function NetworkChip({ meta, error }: { meta: Meta | null; error: string | null 
 
 /**
  * The newest block this observer has read, set quietly: a small dot that
- * breathes once on each new block, the word "Block" and the height in the
- * muted greys, its changed digits rolling in. It is there for the reader who
+ * breathes once on each new block, then the word "Block" and the height in
+ * the muted greys, the figure simply replaced. It is there for the reader who
  * looks for it, that the observer is following the chain, without pulling the
- * eye on every block. No age is printed:
+ * eye on every block: the dot is the only thing that moves. No age is printed:
  * a block's header time is set when it is proposed, so even the newest block
  * is already about one block time old when it commits and a counter would
  * never start at zero. The age is in the tooltip. The dot turns amber when
@@ -171,7 +170,7 @@ function BlockTicker({ meta }: { meta: Meta | null }) {
     <span className="blocktick" title={title}>
       <i key={tip.height} className={"bt-dot " + dot + (dot === "ok" ? " beat" : "")} aria-hidden="true" />
       <span className="bt-l">Block</span>
-      <RollNumber value={tip.height} format={int} className="bt-n" />
+      <span className="bt-n">{int(tip.height)}</span>
       {countdown && <span className="soon">Fibre in {countdown}</span>}
     </span>
   );
