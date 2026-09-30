@@ -1,6 +1,7 @@
 "use client";
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { API_BASE, useApi, type Blob, type Rate, type Tip, int, pctOf, bytes, whenUTC, utcWord } from "@/lib/api";
 import { recon } from "@/lib/status";
 import { Mark, type Tier } from "@/components/Verdict";
@@ -247,23 +248,35 @@ export function Availability({ observed }: { observed: Observed }) {
 /** what the grid shows: a snapshot of the feed, and the last move into it */
 type Shown = { cells: Cell[]; total: number | null; move: { id: number; n: number; fresh: Set<string> } | null };
 
-type PlaceProps = { c: Cell; i: number; fresh: boolean; on: boolean; tab: boolean; ghost: boolean; onShow: (h: string) => void; onKey: (e: React.KeyboardEvent, i: number) => void; onFocusAt: (i: number) => void };
-/** one place on the tape: a real one is the blob's link; a ghost is its copy past a row's end, there only to slide out of view */
-const Place = memo(function Place({ c, i, fresh, on, tab, ghost, onShow, onKey, onFocusAt }: PlaceProps) {
+type PlaceProps = { c: Cell; i: number; fresh: boolean; on: boolean; tab: boolean; ghost: boolean; onShow: (h: string) => void; onKey: (e: React.KeyboardEvent, i: number) => void; onFocusAt: (i: number) => void; onOpen: (e: React.MouseEvent, href: string) => void };
+/**
+ * one place on the tape: a real one is the blob's link; a ghost is its copy past a row's end, there
+ * only to slide out of view. A place keeps its element from one move to the next and only takes the
+ * next blob's attributes; the square (and an arrival's glow) is the blob's own element, so it is
+ * new, and plays its arrival once, whenever the blob in the place changes. A plain link, with the
+ * app's router on a plain click: fifty of Next's links re-rendering on every read were the cost of a
+ * move.
+ */
+const Place = memo(function Place({ c, i, fresh, on, tab, ghost, onShow, onKey, onFocusAt, onOpen }: PlaceProps) {
   const b = c.b;
   const s = statusOf(b);
   const k = sideOf(b);
   const cls = `rb-c${i === 0 ? " rb-newest" : ""}${fresh ? " rb-new" : ""}${on ? " rb-on" : ""}${ghost ? " rb-ghost" : ""}`;
-  const sq = <i className={`rb-sq${k * 20 < 4 ? " rb-dot" : ""}`} style={{ "--k": k.toFixed(4) } as React.CSSProperties} />;
-  if (ghost) return <span className={cls} data-s={s.key} aria-hidden="true">{sq}</span>;
+  const inner = <>
+    <i key={b.promise_hash} className={`rb-sq${k * 20 < 4 ? " rb-dot" : ""}`} style={{ "--k": k.toFixed(4) } as React.CSSProperties} />
+    {fresh && <b key={`g${b.promise_hash}`} className="rb-glow" aria-hidden="true" />}
+  </>;
+  if (ghost) return <span className={cls} data-s={s.key} aria-hidden="true">{inner}</span>;
+  const href = `/blob/?hash=${b.promise_hash}`;
   return (
-    <Link href={`/blob/?hash=${b.promise_hash}`} prefetch={false} data-i={i} className={cls} data-s={s.key} role="listitem"
+    <a href={href} data-i={i} className={cls} data-s={s.key} role="listitem"
       tabIndex={tab ? 0 : -1}
       aria-label={`${i === 0 ? "Newest blob" : `${nth(i + 1)} newest blob`}: height ${int(b.settlement_height)}, settled ${utcWord(b.settlement_time)}, ${bytes(b.blob_size)}, ${s.word}`}
+      onClick={(e) => onOpen(e, href)}
       onMouseEnter={() => onShow(b.promise_hash)} onFocus={() => { onShow(b.promise_hash); onFocusAt(i); }}
       onKeyDown={(e) => onKey(e, i)}>
-      {sq}
-    </Link>
+      {inner}
+    </a>
   );
 });
 
@@ -331,6 +344,13 @@ export default function RecentBlobs() {
     gridRef.current?.querySelector<HTMLElement>(`[data-i="${j}"]`)?.focus();
   }, []);
   const onShow = useCallback((h: string) => setSel(h), []);
+  const router = useRouter();
+  const onOpen = useCallback((e: React.MouseEvent, href: string) => {
+    // a plain click stays in the app; a modified or middle click is the browser's
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    router.push(href);
+  }, [router]);
 
   // ---- the readout: the blob under the pointer or focus, else the newest by settlement ----
   const latest = cells.reduce<Blob | null>((m, c) => (!m || c.b.settlement_height > m.settlement_height || (c.b.settlement_height === m.settlement_height && c.b.settlement_tx_index > m.settlement_tx_index) ? c.b : m), null);
@@ -381,9 +401,9 @@ export default function RecentBlobs() {
                 {Array.from({ length: COLS * 2 }, (_, k) => {
                   const i = r * COLS + k, c = cells[i];
                   const ghost = k >= COLS;
-                  if (!c) return ghost ? null : <span key={`e${i}`} className="rb-c rb-empty" aria-hidden="true" />;
+                  if (!c) return ghost ? null : <span key={`p${k}`} className="rb-c rb-empty" aria-hidden="true" />;
                   return (
-                    <Place key={c.b.promise_hash} c={c} i={i} ghost={ghost}
+                    <Place key={`p${k}`} c={c} i={i} ghost={ghost} onOpen={onOpen}
                       fresh={!!mv && motion && mv.fresh.has(c.b.promise_hash)} on={sel === c.b.promise_hash}
                       tab={!ghost && i === Math.min(focusAt, cells.length - 1)} onShow={onShow} onKey={walk} onFocusAt={setFocusAt} />
                   );

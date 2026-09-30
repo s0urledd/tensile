@@ -1354,7 +1354,7 @@ a.rb-c:hover, .rb-c.rb-on { transform: scale(1.12); z-index: 1; text-decoration:
 a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-index: 1; }
 /* an arrival: its square fills in and its place glows, then cools to its colour over 1.2 s; once per read */
 .rb-c.rb-new .rb-sq { animation: rb-fill .5s cubic-bezier(.2, .8, .2, 1) both; }
-.rb-c.rb-new::after { content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--rb-kept-core); box-shadow: 0 0 12px 1px var(--rb-glow); opacity: 0; pointer-events: none; animation: rb-glow 1.2s ease-out both; }
+.rb-glow { position: absolute; inset: 0; border-radius: inherit; background: var(--rb-kept-core); box-shadow: 0 0 12px 1px var(--rb-glow); opacity: 0; pointer-events: none; animation: rb-glow 1.2s ease-out both; }
 @keyframes rb-fill { from { transform: scale(.2); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes rb-glow { 0% { opacity: .6; } 30% { opacity: .38; } 100% { opacity: 0; } }
 
@@ -1477,6 +1477,6 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .cm-land path, .cm-badge, .cm-pin, .cm-tools button, .rb-c, .ov-links a span { transition: none; }
   .cm-pop, .cm-ev { animation: none; }
   .cm-pin.live .cm-badge::after { animation: none; opacity: .7; transform: scale(1.35); }
-  .cp-strip svg, .rb-c.rb-new .rb-sq, .rb-c.rb-new::after, .bt-dot.beat, .rn-roll .rn-in, .rn-roll .rn-out { animation: none; }
+  .cp-strip svg, .rb-c.rb-new .rb-sq, .rb-glow, .bt-dot.beat, .rn-roll .rn-in, .rn-roll .rn-out { animation: none; }
   .rn-roll .rn-out { display: none; }
 }
