@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"encoding/xml"
 	"io"
 	"net/http"
@@ -32,6 +33,30 @@ func valoperOf(t *testing.T, b byte) string {
 	return s
 }
 
+// insertUnassignedReading writes one reading of hash (written before by
+// insertReading) from a validator that holds none of its rows, as the
+// reading of a validator asked without rows would be.
+func insertUnassignedReading(t *testing.T, st *store.Store, hash string, msu, at time.Time, addr string) {
+	t.Helper()
+	class, reason := probe.Classify(probe.Evidence{Phase: probe.PhaseInWindow, Outcome: probe.OutcomeNotFound})
+	m := probe.Measurement{
+		SchemaVersion: probe.AttestationSchemaVersion, Vantage: "test",
+		PromiseHash: hash, Commitment: "cc" + hash, MustServeUntil: msu, ValidatorSetHeight: 299,
+		ValidatorAddress: addr, ValidatorHost: addr + ":443",
+		ScheduleLabel: probe.EndReadLabel, ScheduledAt: at, StartedAt: at, FinishedAt: at,
+		Phase: probe.PhaseInWindow, Outcome: probe.OutcomeNotFound,
+		Classification: class, ClassificationReason: reason, TotalDurationMS: 10,
+	}
+	m.TCP.OK, m.TLS.OK, m.Identity.OK = true, true, true
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.InsertProbe(m, raw); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Every answer that names a validator by the consensus address its rows are
 // keyed by also names it by the operator address a reader knows, from the
 // staking set, and names none for a validator the staking set does not name.
@@ -53,16 +78,22 @@ func TestAnswersNameValidatorsByOperatorAddress(t *testing.T) {
 	insertReading(t, st, "op2", created, msu, 2, probe.EndReadLabel, at, []endVal{
 		{addr: selfAddrs["broke"], rows: 2, w: gone},
 	})
+	// asked is a validator the staking set names that holds no rows of op1
+	// but was read on it all the same: a reading the assignments' join
+	// cannot name, so its operator address must come from elsewhere.
+	asked := strings.Repeat("e5", 20)
+	insertUnassignedReading(t, st, "op1", msu, at.Add(time.Minute), asked)
 	// earlyonly is not in the staking set this observer read.
 	want := map[string]string{
 		selfAddrs["kept"]:      valoperOf(t, 0xe1),
 		selfAddrs["broke"]:     valoperOf(t, 0xe2),
 		selfAddrs["silent"]:    valoperOf(t, 0xe3),
 		selfAddrs["earlyonly"]: "",
+		asked:                  valoperOf(t, 0xe5),
 	}
 	var ids []scan.ValidatorIdentity
-	for _, k := range []string{"kept", "broke", "silent"} {
-		ids = append(ids, scan.ValidatorIdentity{ConsAddressHex: selfAddrs[k], OperatorAddress: want[selfAddrs[k]], Moniker: k,
+	for _, a := range []string{selfAddrs["kept"], selfAddrs["broke"], selfAddrs["silent"], asked} {
+		ids = append(ids, scan.ValidatorIdentity{ConsAddressHex: a, OperatorAddress: want[a], Moniker: "m" + a[:4],
 			Tokens: "1000000", Status: "BOND_STATUS_BONDED"})
 	}
 	if _, err := st.UpsertValidatorIdentities(ids, now); err != nil {
@@ -97,7 +128,7 @@ func TestAnswersNameValidatorsByOperatorAddress(t *testing.T) {
 	if code := get(t, ts, "/v1/probes?blob=op1", &probes); code != 200 {
 		t.Fatalf("probes: %d", code)
 	}
-	check("/v1/probes?blob=", probes.Probes, 3)
+	check("/v1/probes?blob=", probes.Probes, 4)
 	probes.Probes = nil
 	if code := get(t, ts, "/v1/probes?validator="+want[selfAddrs["kept"]], &probes); code != 200 {
 		t.Fatalf("probes by operator: %d", code)
@@ -113,7 +144,21 @@ func TestAnswersNameValidatorsByOperatorAddress(t *testing.T) {
 		t.Fatalf("blob: %d", code)
 	}
 	check("assignments", blob.Assignments, 3)
-	check("blob readings", blob.Probes, 3)
+	check("blob readings", blob.Probes, 4)
+	// the reading of a validator with no assignment on the blob names its
+	// operator address too
+	for _, a := range blob.Assignments {
+		if a.Validator == asked {
+			t.Fatalf("assignments: %s holds no rows of op1 but is listed", asked)
+		}
+	}
+	found := false
+	for _, p := range blob.Probes {
+		found = found || (p.Validator == asked && p.Operator == want[asked])
+	}
+	if !found {
+		t.Errorf("blob readings: no reading of %s with operator_address %s: %+v", asked, want[asked], blob.Probes)
+	}
 
 	// a validator's status, asked for by its operator address
 	var status struct {
