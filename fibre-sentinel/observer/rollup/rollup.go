@@ -369,6 +369,20 @@ func RawFrom(st *store.Store) (time.Time, bool) {
 	if err != nil || v == "" {
 		return time.Time{}, false
 	}
+	return rawFromValue(v)
+}
+
+// RawFromIn is RawFrom read through q, so a computation that reads the
+// store in one transaction reads raw_from in the same one.
+func RawFromIn(ctx context.Context, q store.Querier) (time.Time, bool) {
+	var v string
+	if err := q.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, metaRawFrom).Scan(&v); err != nil || v == "" {
+		return time.Time{}, false
+	}
+	return rawFromValue(v)
+}
+
+func rawFromValue(v string) (time.Time, bool) {
 	d, err := time.Parse(dayLayout, v)
 	if err != nil {
 		return time.Time{}, false
@@ -781,7 +795,7 @@ func (r *Rolled) Without(addrs []string) *Rolled {
 
 // Load reads the rollups for days before `before` (a UTC day). only, when
 // set, restricts to one validator.
-func Load(ctx context.Context, db *sql.DB, before time.Time, only string) (*Rolled, error) {
+func Load(ctx context.Context, db store.Querier, before time.Time, only string) (*Rolled, error) {
 	out := &Rolled{ObligationsByVal: map[string]Obligations{}, ProbesByVal: map[string]*RolledProbes{}, Classes: map[string]int64{}}
 	b := before.UTC().Format(dayLayout)
 	filter, args := "", []any{b}

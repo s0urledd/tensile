@@ -821,6 +821,14 @@ func OpenReadOnly(path string) (*Store, error) {
 // DB exposes the underlying handle for read-only queries (the API).
 func (s *Store) DB() *sql.DB { return s.db }
 
+// Querier is what a read needs: the database itself, or one transaction on
+// it, so that every read of one computation can see the same snapshot of the
+// store (the API computes a whole window in one read transaction).
+type Querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
@@ -1848,7 +1856,12 @@ func (s *Store) CheckpointWAL(ctx context.Context) (busy bool, inLog, checkpoint
 
 // CurrentEndpoints lists open endpoint rows.
 func (s *Store) CurrentEndpoints(ctx context.Context) ([]Endpoint, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, validator_cons_address, host, first_seen_at, first_seen_height, last_seen_at, last_seen_height, closed_at
+	return CurrentEndpointsIn(ctx, s.db)
+}
+
+// CurrentEndpointsIn is CurrentEndpoints read through q.
+func CurrentEndpointsIn(ctx context.Context, q Querier) ([]Endpoint, error) {
+	rows, err := q.QueryContext(ctx, `SELECT id, validator_cons_address, host, first_seen_at, first_seen_height, last_seen_at, last_seen_height, closed_at
 		FROM endpoints WHERE closed_at IS NULL ORDER BY validator_cons_address`)
 	if err != nil {
 		return nil, err

@@ -433,10 +433,15 @@ func (s *Store) StaleDeadlineRows(ctx context.Context, limit int) ([]StaleRow, e
 
 // HeldCounts is how much is currently withheld, for the disclosure.
 func (s *Store) HeldCounts(ctx context.Context) (publications, probes, ranges int64, err error) {
+	return HeldCountsIn(ctx, s.db)
+}
+
+// HeldCountsIn is HeldCounts read through q.
+func HeldCountsIn(ctx context.Context, q Querier) (publications, probes, ranges int64, err error) {
 	// A held publication that was sampled out has no stored rows to carry
 	// the flag; the rows its decision stands for are counted in with it,
 	// as they were when the prober wrote them.
-	err = s.db.QueryRowContext(ctx, `SELECT
+	err = q.QueryRowContext(ctx, `SELECT
 		(SELECT COUNT(*) FROM publications WHERE retention_unverified = 1),
 		(SELECT COUNT(*) FROM probes       WHERE retention_unverified = 1)
 		+ (SELECT COUNT(*) FROM sampled_out_rows WHERE promise_hash IN
