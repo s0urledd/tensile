@@ -29,9 +29,9 @@ const NAV: [string, string][] = [
  * gauge section marked. Tensile holds a validator to what it signed for
  * across the whole retention window and records whether it held.
  */
-function Mark() {
+export function Mark({ size = 22 }: { size?: number }) {
   return (
-    <svg className="mark-logo" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <svg className="mark-logo" width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
       <rect x="3.5" y="1.5" width="17" height="4.5" rx="1.3" />
       <rect x="3.5" y="18" width="17" height="4.5" rx="1.3" />
       <path opacity=".5" d="M7.4 6H16.6C16.6 8.3 13.5 8.4 13.5 10.1V13.9C13.5 15.6 16.6 15.7 16.6 18H7.4C7.4 15.7 10.5 15.6 10.5 13.9V10.1C10.5 8.4 7.4 8.3 7.4 6Z" />

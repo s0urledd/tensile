@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { Mark } from "@/components/Chrome";
 import { BaseUrl, Health, Reference } from "./reference";
 
 export const metadata: Metadata = {
@@ -29,7 +30,7 @@ export default function Developers() {
     <div className="api">
       <header className="api-hero">
         <div className="api-hero-top">
-          <h1>Tensile API</h1>
+          <h1 className="api-title"><Mark size={34} />Tensile API</h1>
           <Health />
         </div>
         <p className="lede">The API serves Tensile&rsquo;s figures on Fibre validators, blobs, publishers and the network: read-only, with no key.</p>
