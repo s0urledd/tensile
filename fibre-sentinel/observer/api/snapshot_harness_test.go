@@ -325,11 +325,6 @@ func harnessJSON(snapshot, published any) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-// computedFields are the two fields that say when and how fast, not what.
-var computedFields = regexp.MustCompile(`"(computed_at|compute_ms)":("[^"]*"|[0-9]+),?`)
-
-func scrubComputed(b []byte) []byte { return computedFields.ReplaceAll(b, nil) }
-
 // firstDifference locates the first byte where a and b part, with some of
 // each around it.
 func firstDifference(a, b []byte) string {

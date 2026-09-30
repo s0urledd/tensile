@@ -8,7 +8,6 @@ import (
 	"math"
 	"math/rand/v2"
 	"os"
-	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -285,58 +284,6 @@ func (s *sim) compare(srv *Server, rng *rand.Rand, sample int, label string) *eq
 		s.t.Fatalf("%s at %s: %v", label, s.now.Format(time.RFC3339), err)
 	}
 	return tally
-}
-
-// jsonDiff names up to n paths where two JSON documents differ.
-func jsonDiff(a, b []byte, n int) string {
-	var x, y any
-	_ = json.Unmarshal(a, &x)
-	_ = json.Unmarshal(b, &y)
-	var out []string
-	var walk func(path string, x, y any)
-	walk = func(path string, x, y any) {
-		if len(out) >= n {
-			return
-		}
-		switch xv := x.(type) {
-		case map[string]any:
-			yv, ok := y.(map[string]any)
-			if !ok {
-				out = append(out, fmt.Sprintf("  %s: shipped %v, partials %v", path, x, y))
-				return
-			}
-			keys := map[string]bool{}
-			for k := range xv {
-				keys[k] = true
-			}
-			for k := range yv {
-				keys[k] = true
-			}
-			var ks []string
-			for k := range keys {
-				ks = append(ks, k)
-			}
-			sort.Strings(ks)
-			for _, k := range ks {
-				walk(path+"."+k, xv[k], yv[k])
-			}
-		case []any:
-			yv, ok := y.([]any)
-			if !ok || len(xv) != len(yv) {
-				out = append(out, fmt.Sprintf("  %s: shipped %d items, partials %v", path, len(xv), y))
-				return
-			}
-			for i := range xv {
-				walk(path+"["+strconv.Itoa(i)+"]", xv[i], yv[i])
-			}
-		default:
-			if !reflect.DeepEqual(x, y) {
-				out = append(out, fmt.Sprintf("  %s: shipped %v, partials %v", path, x, y))
-			}
-		}
-	}
-	walk("", x, y)
-	return strings.Join(out, "\n")
 }
 
 // equivSeeds is how many seeds the harness runs (TENSILE_DAYPARTS_SEEDS

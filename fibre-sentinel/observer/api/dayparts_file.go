@@ -3,13 +3,10 @@ package api
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"math/big"
-	"math/rand/v2"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -397,83 +394,4 @@ func (dp *dayParts) load(ctx context.Context, s *Server, q store.Querier) (*epoc
 	}
 	dp.sealFiles = files
 	return e, "", nil
-}
-
-// verifyLoaded recomputes, after the first catch-up of a loaded epoch, the
-// newest sealed day of each kind and one other of each at random, and
-// compares them with what the file held. A difference refuses the file.
-func (s *Server) verifyLoaded(ctx context.Context, q store.Querier, e *epoch) (refusal, error) {
-	pick := func(days []string) []string {
-		if len(days) == 0 {
-			return nil
-		}
-		sort.Strings(days)
-		out := []string{days[len(days)-1]}
-		if len(days) > 1 {
-			out = append(out, days[rand.IntN(len(days)-1)])
-		}
-		return out
-	}
-	var rowDays, settleDays []string
-	for d := range e.rows {
-		rowDays = append(rowDays, d)
-	}
-	for d, sd := range e.settle {
-		if sd.Seal != nil {
-			settleDays = append(settleDays, d)
-		}
-	}
-	for _, d := range pick(rowDays) {
-		got, err := s.rowSpanParts(ctx, q, dayLo(d), dayHi(d), "")
-		if err != nil {
-			return "", err
-		}
-		if !sameJSON(got, e.rows[d].Vals) {
-			return refusal("row day " + d + " is not what the store holds"), nil
-		}
-	}
-	for _, d := range pick(settleDays) {
-		sd := e.settle[d]
-		seal := sd.Seal
-		var readable int64
-		if err := q.QueryRowContext(ctx, dayReadableSQL, dayLo(d), dayHi(d), sd.HLo, sd.HHi).Scan(&readable); err != nil {
-			return "", err
-		}
-		if readable != seal.Readable {
-			return refusal("settlement day " + d + "'s readable count is not what the store holds"), nil
-		}
-		if seal.Obl == nil || seal.MinStart == "" {
-			continue
-		}
-		rows, err := q.QueryContext(ctx, obligationPassSQL(""), "", "", seal.SealedAt, dayLo(d), dayHi(d), seal.MaxStart, seal.MinStart)
-		if err != nil {
-			return "", err
-		}
-		got := map[string]rollup.Obligations{}
-		for rows.Next() {
-			var addr string
-			var r rollup.Obligations
-			var n int64
-			var young sql.NullString
-			if err := rows.Scan(append(append([]any{&addr}, scanObligations(&r)...), &n, &young)...); err != nil {
-				rows.Close()
-				return "", err
-			}
-			got[addr] = r
-		}
-		if err := rows.Close(); err != nil {
-			return "", err
-		}
-		if !reflect.DeepEqual(got, seal.Obl) {
-			return refusal("settlement day " + d + "'s obligations are not what the store holds"), nil
-		}
-	}
-	return "", nil
-}
-
-// sameJSON reports whether two values encode alike.
-func sameJSON(a, b any) bool {
-	x, err1 := json.Marshal(a)
-	y, err2 := json.Marshal(b)
-	return err1 == nil && err2 == nil && string(x) == string(y)
 }

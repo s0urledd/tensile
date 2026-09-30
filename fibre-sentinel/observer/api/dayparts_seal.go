@@ -544,6 +544,7 @@ const (
 // unit at a time.
 func (s *Server) sealer() {
 	wait := sealEvery
+	started, audited := s.now(), s.now()
 	for {
 		select {
 		case <-s.stop:
@@ -564,6 +565,14 @@ func (s *Server) sealer() {
 		default:
 			wait = sealEvery
 			s.parts.saveLater(s)
+		}
+		if s.now().Sub(audited) >= auditEvery {
+			audited = s.now()
+			ctx, cancel := context.WithTimeout(context.Background(), snapshotTimeoutAll)
+			if err := s.auditOnce(ctx, started); err != nil && s.log != nil {
+				s.log.Printf("day partials: audit: %v", err)
+			}
+			cancel()
 		}
 	}
 }
