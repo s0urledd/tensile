@@ -43,19 +43,26 @@ const STATE_WORD: Record<EndpointState, string> = { reachable: "reachable", unre
 const STATE_VAR: Record<EndpointState, string> = { reachable: "var(--accent)", unreachable: "var(--hold)", none: "var(--pending)" };
 const ORDER: EndpointState[] = ["reachable", "unreachable", "none"];
 
-/** the home crop: from 72°N, above every city anyone hosts in, to 50°S, a band of open sea under the southern capes for the bar to float over */
+/** the home view's top is 72°N, above every city anyone hosts in; a phone's crop runs from there to 50°S */
 const TOP = project(0, 72)[1], BOTTOM = project(0, -50)[1];
 /**
- * a wide box shows the whole width of the world, (BOTTOM - TOP) / FRAME.w; a box under 560 px a
- * taller crop of it, centred on the hosts. The stylesheet sets the same two shapes (.cm-atlas, by a
- * container query on .cm), so the box has its size before any script runs.
+ * the box's two shapes: a wide box is a low band (about 380 px tall at 1120 px wide), a box under
+ * 560 px a taller crop. The stylesheet sets the same two shapes (.cm-atlas, by a container query on
+ * .cm), so the box has its size before any script runs.
  */
-const WIDE = 0.406, TALL = 0.56;
+const WIDE = 0.34, TALL = 0.56;
 const MAX_ZOOM = 12;
+/** the home view may step back until the world is this much narrower than the box, to keep every badge inside it */
+const MAX_BACK = 1.4;
+/** the room every badge of the home view keeps from the box's edges, in px: above, beside, and below (or above the bar) */
+const ROOM_TOP = 28, ROOM_SIDE = 12, ROOM_FOOT = 8;
+const ROOM_TOP_NARROW = 14;
 
-function clampView(v: View, a: number): View {
-  const w = Math.min(FRAME.w, FRAME.h / a, Math.max(FRAME.w / MAX_ZOOM, v.w)), h = w * a;
-  return { w, x: Math.min(FRAME.w - w, Math.max(0, v.x)), y: Math.min(FRAME.h - h, Math.max(0, v.y)) };
+/** a view inside the world; one at least as wide as the world (the home view, stepped back) is centred on it */
+function clampView(v: View, a: number, maxW = FRAME.w): View {
+  const w = Math.min(maxW, FRAME.h / a, Math.max(FRAME.w / MAX_ZOOM, v.w)), h = w * a;
+  const x = w >= FRAME.w ? (FRAME.w - w) / 2 : Math.min(FRAME.w - w, Math.max(0, v.x));
+  return { w, x, y: Math.min(FRAME.h - h, Math.max(0, v.y)) };
 }
 /** the view that shows every point, with room around them */
 function fitView(pts: [number, number][], a: number, pad = 0.35, minW = FRAME.w / MAX_ZOOM): View {
@@ -64,17 +71,42 @@ function fitView(pts: [number, number][], a: number, pad = 0.35, minW = FRAME.w 
   const w = Math.max(minW, (x1 - x0) * (1 + 2 * pad), ((y1 - y0) * (1 + 2 * pad)) / a);
   return clampView({ w, x: (x0 + x1) / 2 - w / 2, y: (y0 + y1) / 2 - (w * a) / 2 }, a);
 }
+
 /**
- * the home crop, centred on the hosts where it is narrower than the world. It starts at 72°N,
- * or higher where the northernmost badge would otherwise touch the top edge (room: the px a badge
- * needs above its place); a phone's larger scale needs that more often.
+ * The home view and its badges. It starts from the whole width of the world (a phone: a crop from
+ * 72°N to 50°S, centred on the hosts) with its top at 72°N, and keeps every badge inside the box:
+ * ROOM_TOP below the top edge, ROOM_SIDE from either side, and clear of the floating bar (bar: its
+ * left, top and width in px, where it lies over the box) or ROOM_FOOT above the bottom. Where the
+ * top at 72°N leaves a badge outside, the view moves north or south as far as the others allow;
+ * where no position does, it steps back a little and tries again, until the world is MAX_BACK times
+ * narrower than the box.
  */
-function homeView(pts: [number, number][], a: number, width: number, room: number): View {
-  const w = Math.min(FRAME.w, (BOTTOM - TOP) / a);
-  const xs = pts.map(([x]) => x), cx = xs.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : FRAME.w / 2;
-  const north = pts.length ? Math.min(...pts.map(([, y]) => y)) : Infinity;
-  const y = width > 0 ? Math.min(TOP, north - (room * w) / width) : TOP;
-  return clampView({ w, x: cx - w / 2, y }, a);
+function fitHome(hosts: Host[], a: number, width: number, bar: [number, number, number, number] | null, narrow: boolean): [View, Cluster[]] {
+  const height = width * a;
+  const w0 = Math.min(FRAME.w, (BOTTOM - TOP) / a);
+  const xs = hosts.map((h) => h.ux), cx = xs.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : FRAME.w / 2;
+  const top = narrow ? ROOM_TOP_NARROW : ROOM_TOP;
+  let last: [View, Cluster[]] | null = null;
+  for (let i = 0; i <= 12; i++) {
+    const w = Math.min(w0 * MAX_BACK, w0 / (1 - 0.03 * i));
+    const s = width / w;
+    const x = w >= FRAME.w ? (FRAME.w - w) / 2 : Math.min(FRAME.w - w, Math.max(0, cx - w / 2));
+    const cs = cluster(hosts, s, narrow);
+    // the band of view tops that keeps every badge in: lo from the badges that must stay above the foot, hi from those below the top
+    let lo = -Infinity, hi = Infinity, fits = true;
+    for (const c of cs) {
+      const px = (c.ux - x) * s, rr = drawn(c.hosts.length, narrow) / 2;
+      if (px - rr < ROOM_SIDE || px + rr > width - ROOM_SIDE) fits = false;
+      const under = !!bar && px + rr > bar[0] - 6 && px - rr < bar[0] + bar[2] + 6;
+      const foot = under ? bar![1] - 6 : height - ROOM_FOOT;
+      hi = Math.min(hi, c.uy - (top + rr) / s);
+      lo = Math.max(lo, c.uy - (foot - rr) / s);
+    }
+    const y = Math.min(hi, Math.max(lo, TOP));
+    last = [clampView({ w, x, y: lo <= hi ? y : (lo + hi) / 2 }, a, w0 * MAX_BACK), cs];
+    if (fits && lo <= hi) break;
+  }
+  return last!;
 }
 
 function providerOf(h?: Hosting): string {
@@ -247,31 +279,13 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
     if (JSON.stringify(at) !== JSON.stringify(barAt)) setBarAt(at);
   });
 
-  const base = useMemo(() => homeView(hosts.map((h) => [h.ux, h.uy]), aspect, width, narrow ? 22 : 26), [hosts, aspect, width, narrow]);
-  // A badge of the home view that would fall under the bar lifts the whole map clear of it, as far
-  // as the northernmost badge allows; where that is not far enough the map steps back a little.
+  // the home view keeps every badge inside the box and clear of the bar (see fitHome)
   const [home, homeClusters] = useMemo((): [View, Cluster[]] => {
-    const s0 = width > 0 ? width / base.w : 0.2;
-    const first = cluster(hosts, s0, narrow);
-    if (!barAt || !width) return [base, first];
-    const [tx, ty, tw] = barAt, mid = base.x + base.w / 2;
-    let last: [View, Cluster[]] = [base, first];
-    for (let i = 0; i <= 5; i++) {
-      const w = Math.min(FRAME.w, base.w / (1 - 0.04 * i)), s = width / w, x = Math.min(FRAME.w - w, Math.max(0, mid - w / 2));
-      const cs = i === 0 ? first : cluster(hosts, s, narrow);
-      let lo = base.y, hi = Infinity;
-      for (const c of cs) {
-        const px = (c.ux - x) * s, rr = drawn(c.hosts.length, narrow) / 2 + 3;
-        if (px < -rr || px > width + rr) continue;
-        hi = Math.min(hi, c.uy - rr / s);
-        if (px + rr > tx - 4 && px - rr < tx + tw + 4) lo = Math.max(lo, c.uy + (rr + 4 - ty) / s);
-      }
-      if (i === 0 && lo <= base.y) return last;
-      last = [clampView({ x, y: Math.min(lo, Math.max(hi, base.y)), w }, aspect), cs];
-      if (lo <= Math.max(hi, base.y)) break;
-    }
-    return last;
-  }, [base, hosts, barAt, width, narrow, aspect]);
+    if (!width) { const w = Math.min(FRAME.w, (BOTTOM - TOP) / aspect); return [clampView({ w, x: (FRAME.w - w) / 2, y: TOP }, aspect), []]; }
+    return fitHome(hosts, aspect, width, barAt, narrow);
+  }, [hosts, barAt, width, narrow, aspect]);
+  /** a view at least as wide as home's, or as the world: the home view itself */
+  const isHome = (w: number) => w >= Math.min(home.w, FRAME.w) - 1;
 
   // ---- view: where the map is looking, flown toward a target ----
   const [view, setView] = useState<View>(home);
@@ -284,7 +298,7 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
   const homeKey = `${aspect}|${Math.round(home.x)}|${Math.round(home.y)}|${Math.round(home.w)}`;
   useLayoutEffect(() => { cancelAnimationFrame(raf.current); setView(home); setTarget(home); }, [homeKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const go = (to: View) => {
-    const t = to.w >= home.w - 1 ? home : clampView(to, aspect), from = viewRef.current;
+    const t = isHome(to.w) ? home : clampView(to, aspect), from = viewRef.current;
     setTarget(t);
     cancelAnimationFrame(raf.current);
     if (reducedMotion()) { setView(t); return; }
@@ -348,7 +362,7 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
       const b = el.getBoundingClientRect(), px = e.clientX - b.left, py = e.clientY - b.top;
       const t = viewRef.current, s = b.width / t.w, ux = t.x + px / s, uy = t.y + py / s;
       const w0 = Math.min(home.w, t.w * Math.exp(e.deltaY * 0.01));
-      const nv = w0 >= home.w - 1 ? home : clampView({ w: w0, x: ux - (px / b.width) * w0, y: uy - (py / b.width) * w0 }, aspect);
+      const nv = isHome(w0) ? home : clampView({ w: w0, x: ux - (px / b.width) * w0, y: uy - (py / b.width) * w0 }, aspect);
       cancelAnimationFrame(raf.current);
       setView(nv); setTarget(nv);
     };

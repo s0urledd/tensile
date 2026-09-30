@@ -1128,7 +1128,7 @@ body { background: var(--canvas); }
 /* above the row of instruments: the container query makes it a stacking context, and a popover may reach below the map */
 .cm { position: relative; z-index: 2; min-width: 0; container-type: inline-size; }
 /* the box's two shapes, as HostMap.tsx draws them (WIDE, TALL): set here so it has its size before any script */
-.cm-atlas { position: relative; width: 100%; aspect-ratio: 1 / .406; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
+.cm-atlas { position: relative; width: 100%; aspect-ratio: 1 / .34; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
 @container (max-width: 559px) { .cm-atlas { aspect-ratio: 1 / .56; } }
 .cm-atlas.zoomed { touch-action: none; cursor: grab; }
 .cm-atlas.zoomed:active { cursor: grabbing; }
@@ -1420,7 +1420,9 @@ body { background: var(--canvas); }
     position: relative; left: auto; bottom: auto; transform: none; width: auto; max-width: none; height: auto;
     flex-direction: column-reverse; align-items: stretch; margin: -6px 12px 0; padding: 0; border-radius: 14px;
   }
-  .cm-ev { display: flex; width: auto; height: auto; padding: 9px 12px; border-right: 0; border-top: 1px solid var(--border); font-size: var(--t-small); }
+  /* the event wraps to two lines rather than stopping mid-word, in a line that keeps room for two, so the rotation never moves the page */
+  .cm-ev { display: flex; align-items: center; width: auto; height: 56px; padding: 0 12px; border-right: 0; border-top: 1px solid var(--border); font-size: var(--t-small); }
+  .cm-ev-t { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; white-space: normal; line-height: 18px; }
   .cm-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 10px 0; }
   .cm-counts li { flex-direction: column; align-items: center; gap: 4px; padding: 0 6px; font-size: var(--t-tiny); text-align: center; white-space: normal; line-height: 1.25; }
   .cm-counts b { font-size: 20px; }
