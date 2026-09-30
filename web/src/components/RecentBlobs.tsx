@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { API_BASE, type Blob, type Rate, int, pctOf, bytes, ago, whenUTC, utcWord } from "@/lib/api";
+import { API_BASE, useApi, type Blob, type Rate, type Tip, int, pctOf, bytes, whenUTC, utcWord } from "@/lib/api";
 import { recon } from "@/lib/status";
 import { Mark, type Tier } from "@/components/Verdict";
 import { Eye } from "@/components/Metrics";
@@ -24,18 +24,21 @@ import RollNumber, { reducedMotion } from "@/components/RollNumber";
  * The readout shows the newest blob by settlement, as the chain orders them,
  * or the blob under the pointer or keyboard focus.
  *
- * Reading the list: GET /v1/blobs, the page the Blobs list reads, every 5 s
- * while blobs arrive and every 15 s once none has for two minutes, only while
- * the page is visible and not paused. Each read asks for about as many rows as
- * the last one brought, and the API's total says whether more arrived than
- * the page returned, in which case one more read fills the gap. However many
- * arrive in one read, they light up in one sweep of at most 0.65 s, well
- * inside the interval, so arrivals never queue.
+ * Reading the list: GET /v1/blobs, the page the Blobs list reads, when the
+ * chain moves (the header's /v1/tip stream, shared, so no request of its own),
+ * at most every 5 s while blobs arrive and every 15 s once none has for two
+ * minutes, every 30 s if the chain stops moving, only while the page is
+ * visible and not paused. Each read asks for about as many rows as the last
+ * one brought, and the API's total says whether more arrived than the page
+ * returned, in which case one more read fills the gap. However many arrive in
+ * one read, they light up in one sweep of at most 0.65 s, well inside the
+ * interval, so arrivals never queue. Ages are on the observer's clock, from
+ * the same stream.
  */
 
 /** the grid: 10 columns by 5 rows */
 const CELLS = 50, COLS = 10;
-const FAST_MS = 5000, SLOW_MS = 15000;
+const FAST_MS = 5000, SLOW_MS = 15000, FALLBACK_MS = 30000;
 /** no new blob for this long reads at the slow pace */
 const IDLE_AFTER_MS = 120000;
 /** a sweep, however many squares it lights, takes at most this long to start them all */
@@ -54,7 +57,7 @@ type Feed = {
   arrival: Arrival | null;
   loaded: boolean;
   error: string | null;
-  /** when the newest blob arrived, on this reader's clock (or when it settled, on the first read) */
+  /** when the newest blob arrived, on the observer's clock (or when it settled, on the first read) */
   lastNewAt: number;
 };
 const EMPTY: Feed = { cells: [], next: 0, total: null, latest: null, arrival: null, loaded: false, error: null, lastNewAt: 0 };
@@ -75,7 +78,7 @@ async function readPage(limit: number): Promise<Page> {
 }
 
 /** a page of the newest blobs into the feed: new ones take the next squares, known ones take any newer reading */
-function merge(s: Feed, p: Page): { feed: Feed; fresh: number } {
+function merge(s: Feed, p: Page, now: number): { feed: Feed; fresh: number } {
   const byHash = new Map(p.blobs.map((b) => [b.promise_hash, b]));
   const known = new Set(s.cells.map((c) => c.b.promise_hash));
   let cells = s.cells.map((c) => {
@@ -97,35 +100,47 @@ function merge(s: Feed, p: Page): { feed: Feed; fresh: number } {
   }
   cells = [...add, ...cells].slice(0, CELLS);
   const arrival: Arrival = { id: (s.arrival?.id ?? 0) + 1, order, count: fresh.length };
-  const lastNewAt = first ? (latest ? Date.parse(latest.settlement_time) : 0) : Date.now();
+  const lastNewAt = first ? (latest ? Date.parse(latest.settlement_time) : 0) : now;
   return { feed: { cells, next, total, latest, arrival, loaded: true, error: null, lastNewAt }, fresh: fresh.length };
 }
 
-function useBlobFeed(paused: boolean) {
+/**
+ * The feed, read when the chain moves (height: the tip's, from the shared
+ * stream), paced as the comment at the top says. skew: the observer's clock
+ * minus the reader's.
+ */
+function useBlobFeed(paused: boolean, height: number | undefined, skew: number) {
   const [feed, setFeed] = useState<Feed>(EMPTY);
   const cur = useRef(feed);
   const limit = useRef(CELLS);
   const busy = useRef(false);
-  const timer = useRef<number | undefined>(undefined);
-  // the next read: when, and at what interval, for the countdown ring
-  const [next, setNext] = useState<{ at: number; every: number } | null>(null);
+  const last = useRef(0);
+  const later = useRef<number | undefined>(undefined);
+  const skewRef = useRef(skew);
+  skewRef.current = skew;
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
 
   const apply = useCallback((f: Feed) => { cur.current = f; setFeed(f); }, []);
+  const gap = () => {
+    const f = cur.current;
+    return f.error || (f.loaded && Date.now() + skewRef.current - f.lastNewAt > IDLE_AFTER_MS) ? SLOW_MS : FAST_MS;
+  };
 
-  const tick = useCallback(async () => {
-    if (busy.current) return;
+  const read = useCallback(async () => {
+    if (busy.current || pausedRef.current || document.hidden) return;
     busy.current = true;
-    window.clearTimeout(timer.current);
-    setNext(null);
+    last.current = Date.now();
     try {
       const before = cur.current;
+      const now = () => Date.now() + skewRef.current;
       const page = await readPage(limit.current);
-      let { feed: f, fresh } = merge(before, page);
+      let { feed: f, fresh } = merge(before, page, now());
       // More arrived than the page returned, all of it new: one more read fills the squares.
       const delta = before.total != null && f.total != null && Number.isFinite(f.total - before.total) ? f.total - before.total : 0;
       if (before.loaded && fresh === page.blobs.length && delta > page.blobs.length && page.blobs.length < CELLS) {
         const more = await readPage(Math.min(CELLS, delta));
-        const m = merge(f, more);
+        const m = merge(f, more, now());
         // one sweep for both reads
         if (m.fresh && f.arrival && fresh) {
           const order = new Map<string, number>();
@@ -138,7 +153,7 @@ function useBlobFeed(paused: boolean) {
       }
       apply(f);
       // ask next time for about as many as this time brought
-      const came = Number.isFinite(delta) ? Math.max(fresh, delta) : fresh;
+      const came = before.loaded ? Math.max(fresh, delta) : 0;
       limit.current = Math.min(CELLS, Math.max(2, Math.ceil(came * 1.5) + 2));
     } catch (e) {
       apply({ ...cur.current, error: e instanceof Error ? e.message : String(e) });
@@ -147,32 +162,26 @@ function useBlobFeed(paused: boolean) {
     }
   }, [apply]);
 
-  useEffect(() => {
-    if (paused) { window.clearTimeout(timer.current); setNext(null); return; }
-    let dead = false;
-    const schedule = () => {
-      // A read from before a pause (a closed effect) schedules nothing and clears nothing. Within one
-      // effect there is one timer at most: a read already under way when the page came back schedules too.
-      if (dead) return;
-      window.clearTimeout(timer.current);
-      if (document.hidden) return;
-      const idle = Date.now() - cur.current.lastNewAt > IDLE_AFTER_MS;
-      const every = cur.current.error ? SLOW_MS : idle ? SLOW_MS : FAST_MS;
-      setNext({ at: Date.now() + every, every });
-      timer.current = window.setTimeout(async () => { await tick(); schedule(); }, every);
-    };
-    const run = async () => { await tick(); schedule(); };
-    const onVis = () => {
-      window.clearTimeout(timer.current);
-      if (document.hidden) setNext(null);
-      else run();
-    };
-    run();
-    document.addEventListener("visibilitychange", onVis);
-    return () => { dead = true; window.clearTimeout(timer.current); document.removeEventListener("visibilitychange", onVis); };
-  }, [paused, tick]);
+  /** a read now, or at the end of the current gap if the last one was sooner */
+  const request = useCallback(() => {
+    window.clearTimeout(later.current);
+    if (document.hidden || pausedRef.current) return;
+    const wait = gap() - (Date.now() - last.current);
+    if (wait <= 0) read();
+    else later.current = window.setTimeout(read, wait);
+  }, [read]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { feed, next };
+  // the first read, one each time the chain moves, and one on resuming
+  useEffect(() => { request(); }, [height, paused, request]);
+  // a read when the page comes back into view, and a slow one when the chain stops moving
+  useEffect(() => {
+    const t = window.setInterval(() => { if (!document.hidden && !pausedRef.current && Date.now() - last.current >= FALLBACK_MS) read(); }, 5000);
+    const onVis = () => { if (document.hidden) window.clearTimeout(later.current); else request(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { window.clearInterval(t); window.clearTimeout(later.current); document.removeEventListener("visibilitychange", onVis); };
+  }, [read, request]);
+
+  return feed;
 }
 
 // ---- words ----
@@ -183,6 +192,36 @@ function statusOf(b: Blob): Status {
   const key = s.tier === "kept" ? "kept" : s.tier === "hold" ? "hold" : s.word === "in retention window" ? "window" : "gap";
   return { key, word: s.word, tier: s.tier, title: s.title };
 }
+/** "8 s ago", "4 min ago", "3 h 5 min ago", "2 d ago", by the given clock */
+function liveAgo(t: string, now: number): string {
+  const s = Math.floor((now - Date.parse(t)) / 1000);
+  if (!Number.isFinite(s)) return "";
+  if (s < 1) return "just now";
+  if (s < 60) return `${s} s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60), rm = m % 60;
+  if (h < 24) return rm ? `${h} h ${rm} min ago` : `${h} h ago`;
+  return `${Math.floor(h / 24)} d ago`;
+}
+
+/** a blob's age on the observer's clock, every second while it is under a minute old, then every 15 s */
+function Age({ at, skew }: { at: string; skew: number }) {
+  const [now, setNow] = useState(0);
+  useEffect(() => {
+    let t: number | undefined;
+    const tick = () => {
+      const n = Date.now() + skew;
+      setNow(n);
+      const age = n - Date.parse(at);
+      t = window.setTimeout(tick, age < 60000 ? 1000 - (Math.max(0, age) % 1000) : 15000);
+    };
+    tick();
+    return () => window.clearTimeout(t);
+  }, [at, skew]);
+  return now ? <span className="ov-when" title={utcWord(at)}>settled {liveAgo(at, now)}</span> : null;
+}
+
 function nth(n: number): string {
   const r10 = n % 10, r100 = n % 100;
   return n + (r10 === 1 && r100 !== 11 ? "st" : r10 === 2 && r100 !== 12 ? "nd" : r10 === 3 && r100 !== 13 ? "rd" : "th");
@@ -220,13 +259,12 @@ export function Availability({ observed }: { observed: Observed }) {
  */
 export default function RecentBlobs() {
   const [paused, setPaused] = useState(false);
-  const { feed, next } = useBlobFeed(paused);
+  const tip = useApi<Tip>("/v1/tip", 4000); // the header's stream: no request of its own
+  const skew = tip.data?.server_time && tip.fetchedAt ? Date.parse(tip.data.server_time) - Date.parse(tip.fetchedAt) : 0;
+  const feed = useBlobFeed(paused, tip.data?.height, skew);
   const [sel, setSel] = useState<string | null>(null);
   const [focusAt, setFocusAt] = useState<number | null>(null);
   const grid = useRef<HTMLOListElement>(null);
-  // ages move on their own between reads
-  const [, setNow] = useState(0);
-  useEffect(() => { const t = window.setInterval(() => setNow((n) => n + 1), 15000); return () => window.clearInterval(t); }, []);
   const [motion, setMotion] = useState(true);
   useEffect(() => { setMotion(!reducedMotion()); }, []);
 
@@ -239,14 +277,14 @@ export default function RecentBlobs() {
   const shownCell = shown && !isLatest ? cells.find((c) => c.b.promise_hash === shown.promise_hash) : undefined;
   const shownRank = shownCell ? feed.next - 1 - shownCell.seq : null;
   const step = arrival ? Math.min(55, SWEEP_MS / Math.max(1, arrival.count)) : 0;
-  const idle = feed.loaded && Date.now() - feed.lastNewAt > IDLE_AFTER_MS;
+  const idle = feed.loaded && Date.now() + skew - feed.lastNewAt > IDLE_AFTER_MS;
   const state = paused ? "paused" : feed.error ? "down" : !feed.loaded ? "wait" : "live";
   const liveWord = paused ? "Paused" : feed.error ? "Not answering" : feed.loaded ? "Live" : "Connecting";
   const liveTitle = paused
     ? "Paused: the grid is not reading new blobs."
     : feed.error
       ? `The observer API did not answer (${feed.error}); the grid shows the last read.`
-      : `Reads the newest blobs every ${idle ? 15 : 5} s while this page is open${idle && feed.latest ? `; the newest settled ${ago(feed.latest.settlement_time)}` : ""}.`;
+      : `Reads the newest blobs as the chain moves, at most every ${idle ? 15 : 5} s, while this page is open.`;
 
   // the grid is one stop in the tab order: arrows walk it as it is drawn, Home is the newest, End the oldest
   const filled = slots.map((c, i) => (c ? i : -1)).filter((i) => i >= 0);
@@ -277,9 +315,6 @@ export default function RecentBlobs() {
           <span className="rb-live" title={liveTitle}>
             <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" className="rb-ring">
               <circle cx="8" cy="8" r="6" className="rb-ring-t" />
-              {next && state === "live" && motion && (
-                <circle key={next.at} cx="8" cy="8" r="6" className="rb-ring-f" pathLength={100} style={{ animationDuration: `${next.every}ms` }} />
-              )}
               <circle cx="8" cy="8" r="2.2" className="rb-ring-d" />
             </svg>
             <span>{liveWord}</span>
@@ -338,7 +373,7 @@ export default function RecentBlobs() {
       <div className="rb-read">
         <h3 className="rb-read-h">
           <span className="ov-eyebrow">{isLatest || !shown ? "Latest blob" : shownRank != null ? `Blob · ${shownRank === 0 ? "newest" : `${nth(shownRank + 1)} newest`}` : "Blob"}</span>
-          {shown && <span className="ov-when" title={utcWord(shown.settlement_time)}>settled {ago(shown.settlement_time)}</span>}
+          {shown && <Age at={shown.settlement_time} skew={skew} />}
         </h3>
         <dl className="rb-spec" aria-busy={!shown || undefined}>
           <div><dt>Height</dt><dd>{shown ? (isLatest ? <RollNumber value={shown.settlement_height} format={int} /> : int(shown.settlement_height)) : <span className="wait">0,000,000</span>}</dd></div>
