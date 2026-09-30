@@ -608,8 +608,8 @@ export const GROUPS: Group[] = [
       {
         id: "hosting",
         path: "/v1/hosting",
-        summary: "Where registered Fibre hosts run: by provider, country and AS.",
-        desc: "`nakamoto_third` is the fewest providers, AS numbers or countries that together hold more than a third of the hosts' stake.",
+        summary: "Where registered Fibre hosts run: by hosting provider, country and AS.",
+        desc: "`nakamoto_third` is the fewest hosting providers, AS numbers or countries that together hold more than a third of the hosts' stake.",
         params: [],
         errors: "400 when `as_of` is given.",
         example: EX_HOSTING,
