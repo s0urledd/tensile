@@ -1657,8 +1657,20 @@ func (s *Server) previousWindow(ctx context.Context, win Window, ex excludeSet) 
 	prev := Window{Name: win.Name, Span: win.Span, Start: win.Start.Add(-win.Span), End: win.Start}
 	p := &previousWindow{Window: prev}
 	var err error
-	if p.Obligations, err = s.obligationsWhere(ctx, prev, ex.clause("pr.validator_address"), ex.addrs...); err != nil {
+	if p.Obligations, err = s.obligationTotals(ctx, prev, oblSelect{ex: ex}); err != nil {
 		return nil, err
+	}
+	// Reachability and the median service time are over every validator
+	// here, whatever ex says: the shipped statements take no exclusion.
+	if e := epochOf(ctx); e != nil && partsFor(prev) {
+		rw, err := s.rowWindow(ctx, e, prev.startArg(), prev.endArg(), "")
+		if err != nil {
+			return nil, err
+		}
+		n := netRowsOf(rw, excludeSet{})
+		p.Reachability = rate(n.up, n.beats)
+		p.LatencyP50, _ = n.lat.percentiles()
+		return p, nil
 	}
 	db := s.q(ctx)
 	var beats, beatsUp int64
@@ -1673,6 +1685,36 @@ func (s *Server) previousWindow(ctx context.Context, win Window, ex excludeSet) 
 		return nil, err
 	}
 	return p, nil
+}
+
+// obligationPassFor is readObligations over win for sel: from the day
+// partials when the computation has them and the window is one they serve,
+// and with the shipped statement over the whole window otherwise.
+func (s *Server) obligationPassFor(ctx context.Context, win Window, now time.Time, sel oblSelect) (obligationPass, error) {
+	if e := epochOf(ctx); e != nil && partsFor(win) {
+		p, err := s.oblWindow(ctx, e, win, win.endArg(), provisionalCutoff(now), sel)
+		if !errors.Is(err, errNoParts) {
+			return p, err
+		}
+	}
+	extra, args := sel.clause()
+	return s.readObligations(ctx, win, now, extra, args...)
+}
+
+// obligationTotals is obligationsWhere over win for sel: the counts alone,
+// with no provisional part.
+func (s *Server) obligationTotals(ctx context.Context, win Window, sel oblSelect) (obligationStats, error) {
+	if e := epochOf(ctx); e != nil && partsFor(win) {
+		p, err := s.oblWindow(ctx, e, win, win.endArg(), "", sel)
+		if err == nil {
+			return p.total(), nil
+		}
+		if !errors.Is(err, errNoParts) {
+			return obligationStats{}, err
+		}
+	}
+	extra, args := sel.clause()
+	return s.obligationsWhere(ctx, win, extra, args...)
 }
 
 func (s *Server) computeNetwork(ctx context.Context, win Window, ex excludeSet, excluded []string) (*networkResponse, error) {
@@ -1692,19 +1734,40 @@ func (s *Server) computeNetwork(ctx context.Context, win Window, ex excludeSet, 
 	} else {
 		_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM endpoints WHERE closed_at IS NULL`).Scan(&resp.RegisteredEndpoints)
 	}
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT validator_address) FROM probe_rows WHERE started_at >= ? AND started_at <= ?`+exv,
-		ex.args(win.startArg(), win.endArg())...).Scan(&resp.ValidatorsProbed)
+	// The row figures: every validator's, summed, from the day partials
+	// when there are some, and with the shipped statements over the whole
+	// window otherwise.
+	var rn *netRows
+	e := epochOf(ctx)
+	if e != nil && partsFor(win) {
+		rw, err := s.rowWindow(ctx, e, win.startArg(), win.endArg(), "")
+		if err != nil {
+			return nil, err
+		}
+		n := netRowsOf(rw, ex)
+		rn = &n
+	}
+	if rn != nil {
+		resp.ValidatorsProbed = rn.probed
+	} else {
+		_ = db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT validator_address) FROM probe_rows WHERE started_at >= ? AND started_at <= ?`+exv,
+			ex.args(win.startArg(), win.endArg())...).Scan(&resp.ValidatorsProbed)
+	}
 
 	pop := `started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'` + exv
 	popArgs := ex.args(win.startArg(), win.endArg())
 
-	classes, _, err := s.classCountsWhere(ctx, pop, popArgs...)
-	if err != nil {
-		return nil, err
+	if rn != nil {
+		resp.Classes = rn.classes
+	} else {
+		classes, _, err := s.classCountsWhere(ctx, pop, popArgs...)
+		if err != nil {
+			return nil, err
+		}
+		resp.Classes = classes
 	}
-	resp.Classes = classes
 	resp.RetentionUncertainty = s.retentionUncertaintyNow(ctx)
-	pass, err := s.readObligations(ctx, win, s.now(), ex.clause("pr.validator_address"), ex.addrs...)
+	pass, err := s.obligationPassFor(ctx, win, s.now(), oblSelect{ex: ex})
 	if err != nil {
 		return nil, err
 	}
@@ -1715,25 +1778,31 @@ func (s *Server) computeNetwork(ctx context.Context, win Window, ex excludeSet, 
 	if resp.Attestation, err = s.attestationWhere(ctx, pop, popArgs...); err != nil {
 		return nil, err
 	}
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM probe_rows WHERE started_at >= ? AND started_at <= ?`+exv, ex.args(win.startArg(), win.endArg())...).Scan(&resp.ProbeCount)
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM probe_rows WHERE started_at >= ? AND started_at <= ? AND classification IN ('NOT_PROBED','PROBE_ERROR')`+exv, ex.args(win.startArg(), win.endArg())...).Scan(&resp.Gaps)
-	resp.GapsByOutcome = map[string]int64{}
-	if grows, gerr := db.QueryContext(ctx,
-		`SELECT outcome, COUNT(*) FROM probe_rows WHERE started_at >= ? AND started_at <= ? AND classification IN ('NOT_PROBED','PROBE_ERROR')`+exv+` GROUP BY outcome`,
-		ex.args(win.startArg(), win.endArg())...); gerr == nil {
-		for grows.Next() {
-			var o string
-			var n int64
-			if err := grows.Scan(&o, &n); err == nil {
-				resp.GapsByOutcome[o] = n
+	if rn != nil {
+		resp.ProbeCount, resp.Gaps, resp.GapsByOutcome = rn.probes, rn.gaps, rn.byOutcome
+		resp.LatencyP50, resp.LatencyP95 = rn.lat.percentiles()
+		resp.LatencySample = rn.lat.n
+	} else {
+		_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM probe_rows WHERE started_at >= ? AND started_at <= ?`+exv, ex.args(win.startArg(), win.endArg())...).Scan(&resp.ProbeCount)
+		_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM probe_rows WHERE started_at >= ? AND started_at <= ? AND classification IN ('NOT_PROBED','PROBE_ERROR')`+exv, ex.args(win.startArg(), win.endArg())...).Scan(&resp.Gaps)
+		resp.GapsByOutcome = map[string]int64{}
+		if grows, gerr := db.QueryContext(ctx,
+			`SELECT outcome, COUNT(*) FROM probe_rows WHERE started_at >= ? AND started_at <= ? AND classification IN ('NOT_PROBED','PROBE_ERROR')`+exv+` GROUP BY outcome`,
+			ex.args(win.startArg(), win.endArg())...); gerr == nil {
+			for grows.Next() {
+				var o string
+				var n int64
+				if err := grows.Scan(&o, &n); err == nil {
+					resp.GapsByOutcome[o] = n
+				}
 			}
+			grows.Close()
 		}
-		grows.Close()
-	}
 
-	if resp.LatencyP50, resp.LatencyP95, resp.LatencySample, err = s.latencyWhere(ctx,
-		`started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`+exv, ex.args(win.startArg(), win.endArg())...); err != nil {
-		return nil, err
+		if resp.LatencyP50, resp.LatencyP95, resp.LatencySample, err = s.latencyWhere(ctx,
+			`started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`+exv, ex.args(win.startArg(), win.endArg())...); err != nil {
+			return nil, err
+		}
 	}
 
 	reach, err := s.reachabilityNow(ctx, "", win.asOfArg())
@@ -1772,7 +1841,9 @@ func (s *Server) computeNetwork(ctx context.Context, win Window, ex excludeSet, 
 	// otherwise be chosen for the equality and walk every row this observer
 	// ever wrote instead of the window's span of reachability_started.
 	var beats, beatsUp int64
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*),
+	if rn != nil {
+		beats, beatsUp = rn.beats, rn.up
+	} else if err := db.QueryRowContext(ctx, `SELECT COUNT(*),
 			COALESCE(SUM(CASE WHEN tcp_ok = 1 AND tls_ok = 1 THEN 1 ELSE 0 END), 0)
 		FROM reachability WHERE started_at >= ? AND started_at <= ? AND outcome <> 'PROBE_ERROR' AND +vantage = ?`+exv,
 		ex.args(win.startArg(), win.endArg(), s.vantage)...).Scan(&beats, &beatsUp); err != nil {
@@ -1780,7 +1851,19 @@ func (s *Server) computeNetwork(ctx context.Context, win Window, ex excludeSet, 
 	}
 	resp.ReachabilityWindow = rate(beatsUp, beats)
 
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(blob_size),0) FROM publications WHERE settlement_time >= ? AND settlement_time <= ?`, win.startArg(), win.endArg()).Scan(&resp.Publications, &resp.PublicationBytes)
+	pubsDone := false
+	if e != nil && partsFor(win) {
+		n, b, err := s.pubCounts(ctx, e, win)
+		switch {
+		case err == nil:
+			resp.Publications, resp.PublicationBytes, pubsDone = n, b, true
+		case !errors.Is(err, errNoParts):
+			return nil, err
+		}
+	}
+	if !pubsDone {
+		_ = db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(blob_size),0) FROM publications WHERE settlement_time >= ? AND settlement_time <= ?`, win.startArg(), win.endArg()).Scan(&resp.Publications, &resp.PublicationBytes)
+	}
 
 	recon, err := s.reconstructableCount(ctx, win)
 	if err != nil {
@@ -1810,7 +1893,11 @@ func (s *Server) computeNetwork(ctx context.Context, win Window, ex excludeSet, 
 		for a := range rolled.ProbesByVal {
 			seen[a] = true
 		}
-		if vrows, err := db.QueryContext(ctx, `SELECT DISTINCT validator_address FROM probe_rows WHERE started_at >= ? AND started_at <= ?`+exv, ex.args(win.startArg(), win.endArg())...); err == nil {
+		if rn != nil {
+			for a := range rn.validators {
+				seen[a] = true
+			}
+		} else if vrows, err := db.QueryContext(ctx, `SELECT DISTINCT validator_address FROM probe_rows WHERE started_at >= ? AND started_at <= ?`+exv, ex.args(win.startArg(), win.endArg())...); err == nil {
 			for vrows.Next() {
 				var a string
 				if vrows.Scan(&a) == nil {
@@ -2472,24 +2559,39 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	// The effective class throughout, as the network figures use: a held
 	// row publishes no verdict for one validator either, and the
 	// per-validator figures must add up to the network's.
-	// classes per validator in window
-	rows, err = db.QueryContext(ctx, valClassesSQL(vfilter("validator_address")), vargs(win.startArg(), win.endArg())...)
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-		var addr, c string
-		var n int64
-		if err := rows.Scan(&addr, &c, &n); err != nil {
-			rows.Close()
+	//
+	// With the day partials the row figures below are summed from them
+	// (rowWindow) and the statements are skipped; attestation, which is
+	// not a sum over days, is read whole either way.
+	var rw map[string]*rowAcc
+	if e := epochOf(ctx); e != nil && partsFor(win) {
+		if rw, err = s.rowWindow(ctx, e, win.startArg(), win.endArg(), only); err != nil {
 			return nil, err
 		}
-		v := get(addr)
-		v.Classes[c] = n
+		for addr, a := range rw {
+			a.fill(get(addr))
+		}
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
+	// classes per validator in window
+	if rw == nil {
+		rows, err = db.QueryContext(ctx, valClassesSQL(vfilter("validator_address")), vargs(win.startArg(), win.endArg())...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var addr, c string
+			var n int64
+			if err := rows.Scan(&addr, &c, &n); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			v := get(addr)
+			v.Classes[c] = n
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
 	}
 	// How long a served shard took, per validator. Percentiles rather than a
 	// mean: a mean over a few hundred probes is moved by one timeout, and the
@@ -2509,37 +2611,39 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	// blobs a validator happened to be probed on (the same server read
 	// 110 KB/s on 130 KB shards and 8.7 MB/s on 27 MB ones). Smaller or
 	// uncounted records sort last and are outside the sample.
-	rows, err = db.QueryContext(ctx, valLatencySQL(vfilter("validator_address")), vargs(throughputMinBytes, throughputMinBytes, throughputMinBytes, win.startArg(), win.endArg())...)
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-		var addr string
-		var p50, p95, bps sql.NullInt64
-		var n, nb int64
-		if err := rows.Scan(&addr, &p50, &p95, &n, &bps, &nb); err != nil {
-			rows.Close()
+	if rw == nil {
+		rows, err = db.QueryContext(ctx, valLatencySQL(vfilter("validator_address")), vargs(throughputMinBytes, throughputMinBytes, throughputMinBytes, win.startArg(), win.endArg())...)
+		if err != nil {
 			return nil, err
 		}
-		v := get(addr)
-		v.LatencySample = n
-		if p50.Valid {
-			x := p50.Int64
-			v.LatencyP50 = &x
+		for rows.Next() {
+			var addr string
+			var p50, p95, bps sql.NullInt64
+			var n, nb int64
+			if err := rows.Scan(&addr, &p50, &p95, &n, &bps, &nb); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			v := get(addr)
+			v.LatencySample = n
+			if p50.Valid {
+				x := p50.Int64
+				v.LatencyP50 = &x
+			}
+			if p95.Valid {
+				x := p95.Int64
+				v.LatencyP95 = &x
+			}
+			v.ThroughputSample = nb
+			if bps.Valid && nb >= throughputMinSample {
+				x := bps.Int64
+				v.BytesPerSecond = &x
+			}
 		}
-		if p95.Valid {
-			x := p95.Int64
-			v.LatencyP95 = &x
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
 		}
-		v.ThroughputSample = nb
-		if bps.Valid && nb >= throughputMinSample {
-			x := bps.Int64
-			v.BytesPerSecond = &x
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 	// proven / unproven / unknown per (validator, blob) obligation.
 	rows, err = db.QueryContext(ctx, valAttestationSQL(vfilter("validator_address")), vargs(win.startArg(), win.endArg())...)
@@ -2565,28 +2669,30 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	// rows came back verified (the effective class, so a held row is not
 	// one), which the overview's map names as the validators that served
 	// last.
-	rows, err = db.QueryContext(ctx, valSeenSQL(vfilter("validator_address")), vargs(win.startArg(), win.endArg())...)
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-		var addr, last string
-		var served sql.NullString
-		var n int64
-		if err := rows.Scan(&addr, &n, &last, &served); err != nil {
-			rows.Close()
+	if rw == nil {
+		rows, err = db.QueryContext(ctx, valSeenSQL(vfilter("validator_address")), vargs(win.startArg(), win.endArg())...)
+		if err != nil {
 			return nil, err
 		}
-		v := get(addr)
-		v.ProbeCount = n
-		l := last
-		v.LastSeenAt = &l
-		if served.Valid {
-			s := served.String
-			v.LastServedAt = &s
+		for rows.Next() {
+			var addr, last string
+			var served sql.NullString
+			var n int64
+			if err := rows.Scan(&addr, &n, &last, &served); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			v := get(addr)
+			v.ProbeCount = n
+			l := last
+			v.LastSeenAt = &l
+			if served.Valid {
+				s := served.String
+				v.LastServedAt = &s
+			}
 		}
+		rows.Close()
 	}
-	rows.Close()
 	// The heartbeat history, which until now was written every five minutes for
 	// every registered validator and read only for its newest row. It is the
 	// one stability signal here whose coverage does not depend on being
@@ -2595,36 +2701,38 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	// A PROBE_ERROR heartbeat is the observer's own failure (a host it could
 	// not parse, an identity check it starved of CPU) and is left out of
 	// every count, as its probe-side twin is.
-	hrows, err := db.QueryContext(ctx, valBeatsSQL(vfilter("validator_address")), vargs(win.startArg(), win.endArg(), s.vantage)...)
-	if err != nil {
-		return nil, err
-	}
-	for hrows.Next() {
-		var addr string
-		var seen, up, ident int64
-		var lastDown, lastUp sql.NullString
-		if err := hrows.Scan(&addr, &seen, &up, &ident, &lastDown, &lastUp); err != nil {
-			hrows.Close()
+	if rw == nil {
+		hrows, err := db.QueryContext(ctx, valBeatsSQL(vfilter("validator_address")), vargs(win.startArg(), win.endArg(), s.vantage)...)
+		if err != nil {
 			return nil, err
 		}
-		v := get(addr)
-		v.Reachability = rate(up, seen)
-		// Denominator is the heartbeats that reached TLS, not all of them: an
-		// unreachable endpoint presented no certificate, and counting that as
-		// an identity failure would report the same outage twice.
-		v.IdentityValid = rate(ident, up)
-		if lastDown.Valid {
-			at := lastDown.String
-			v.LastUnreachableAt = &at
+		for hrows.Next() {
+			var addr string
+			var seen, up, ident int64
+			var lastDown, lastUp sql.NullString
+			if err := hrows.Scan(&addr, &seen, &up, &ident, &lastDown, &lastUp); err != nil {
+				hrows.Close()
+				return nil, err
+			}
+			v := get(addr)
+			v.Reachability = rate(up, seen)
+			// Denominator is the heartbeats that reached TLS, not all of them: an
+			// unreachable endpoint presented no certificate, and counting that as
+			// an identity failure would report the same outage twice.
+			v.IdentityValid = rate(ident, up)
+			if lastDown.Valid {
+				at := lastDown.String
+				v.LastUnreachableAt = &at
+			}
+			if lastUp.Valid {
+				at := lastUp.String
+				v.LastReachableAt = &at
+			}
 		}
-		if lastUp.Valid {
-			at := lastUp.String
-			v.LastReachableAt = &at
+		hrows.Close()
+		if err := hrows.Err(); err != nil {
+			return nil, err
 		}
-	}
-	hrows.Close()
-	if err := hrows.Err(); err != nil {
-		return nil, err
 	}
 	reach, err := s.reachabilityNow(ctx, only, win.asOfArg())
 	if err != nil {
@@ -2726,7 +2834,7 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	}
 
 	// one observation per (validator, blob): see obligationStats.
-	pass, err := s.readObligations(ctx, win, s.now(), vfilter("pr.validator_address"), vargs()...)
+	pass, err := s.obligationPassFor(ctx, win, s.now(), oblSelect{only: only})
 	if err != nil {
 		return nil, err
 	}
@@ -3022,7 +3130,7 @@ func (s *Server) validatorDetailIn(ctx context.Context, addr string, win Window,
 		if sw.Span > 0 {
 			sw.Start = spanEnd.Add(-sw.Span)
 		}
-		pass, err := s.readObligations(ctx, sw, s.now(), ` AND pr.validator_address = ?`, addr)
+		pass, err := s.obligationPassFor(ctx, sw, s.now(), oblSelect{only: addr})
 		if err != nil {
 			return 0, nil, err
 		}
@@ -3532,13 +3640,27 @@ func (s *Server) reconstructableCount(ctx context.Context, win Window) (reconstr
 	// waiting (the window open at the moment asked about) or closed without
 	// one. Counted, not examined.
 	var closedUnread int64
-	if err := s.q(ctx).QueryRowContext(ctx, `SELECT COUNT(*),
-			COALESCE(SUM(NOT `+readable+` AND must_serve_until >= ?), 0),
-			COALESCE(SUM(NOT `+readable+` AND must_serve_until < ?), 0)
-		FROM publications WHERE settlement_time >= ? AND settlement_time <= ?`,
-		append(append(append(append([]any{}, pargs...), store.TS(pin.now)), pargs...), store.TS(pin.now), win.startArg(), win.endArg())...).
-		Scan(&out.PublicationsInWindow, &out.NotYetRead, &closedUnread); err != nil {
-		return out, err
+	counted := false
+	if e := epochOf(ctx); e != nil && partsFor(win) {
+		// The ledger's days, each counted whole once every deadline of it
+		// has passed, and the rest read raw (readableCounts).
+		n, w, c, err := s.readableCounts(ctx, e, win, pin)
+		switch {
+		case err == nil:
+			out.PublicationsInWindow, out.NotYetRead, closedUnread, counted = n, w, c, true
+		case !errors.Is(err, errNoParts):
+			return out, err
+		}
+	}
+	if !counted {
+		if err := s.q(ctx).QueryRowContext(ctx, `SELECT COUNT(*),
+				COALESCE(SUM(NOT `+readable+` AND must_serve_until >= ?), 0),
+				COALESCE(SUM(NOT `+readable+` AND must_serve_until < ?), 0)
+			FROM publications WHERE settlement_time >= ? AND settlement_time <= ?`,
+			append(append(append(append([]any{}, pargs...), store.TS(pin.now)), pargs...), store.TS(pin.now), win.startArg(), win.endArg())...).
+			Scan(&out.PublicationsInWindow, &out.NotYetRead, &closedUnread); err != nil {
+			return out, err
+		}
 	}
 	out.NotRead = closedUnread
 	// Statuses only: the summary publishes no row count, so the bounds settle

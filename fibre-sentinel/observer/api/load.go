@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
@@ -113,6 +114,15 @@ func heldAt(win Window, now time.Time) time.Time {
 
 // loadByValidatorAt is loadByValidator with "held now" asked at now.
 func (s *Server) loadByValidatorAt(ctx context.Context, win Window, only string, now time.Time) (map[string]loadStats, error) {
+	if e := epochOf(ctx); e != nil && partsFor(win) {
+		out, err := s.loadFromParts(ctx, e, win, only, now)
+		if err == nil {
+			return out, nil
+		}
+		if !errors.Is(err, errNoParts) {
+			return nil, err
+		}
+	}
 	db := s.q(ctx)
 	// held now: settled by now and retention not over at now, whatever the
 	// window
@@ -146,13 +156,83 @@ func (s *Server) loadByValidatorAt(ctx context.Context, win Window, only string,
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	return out, s.rowsPerBlob(ctx, only, nowArg, out)
+}
 
+// loadFromParts is loadByValidatorAt from the day partials: the in-window
+// promises, rows and row data from the ledger and the partial days
+// (loadWindow), what is held at now read raw over the held publications
+// (heldLoad), and the row data read with the shipped statement instead
+// when a term is outside the class whose sum is exact (loadBytes).
+func (s *Server) loadFromParts(ctx context.Context, e *epoch, win Window, only string, now time.Time) (map[string]loadStats, error) {
+	parts, err := s.loadWindow(ctx, e, win, only)
+	if err != nil {
+		return nil, err
+	}
+	held, err := s.heldLoad(ctx, now, only)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]loadStats{}
+	exact := true
+	for addr, p := range parts {
+		b, ok := p.loadBytes()
+		exact = exact && ok
+		out[addr] = loadStats{Promises: p.Promises, Rows: p.Rows, Bytes: b}
+	}
+	for addr, n := range held {
+		l := out[addr]
+		l.StoredBytes = n
+		out[addr] = l
+	}
+	if !exact {
+		// A term the exact sum cannot vouch for: the bytes as the shipped
+		// statement sums them, over the whole window.
+		nowArg := store.TS(now.UTC())
+		doc, err := s.origRows.doc(ctx, s.st.DB(), win.startArg(), win.endArg(), nowArg)
+		if err != nil {
+			return nil, err
+		}
+		filter, args := "", []any{win.startArg(), win.endArg(), nowArg, doc}
+		if only != "" {
+			filter = ` AND a.validator_address = ?5`
+			args = append(args, only)
+		}
+		rows, err := s.q(ctx).QueryContext(ctx, loadSQL(filter), args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var addr string
+			var x loadStats
+			if err := rows.Scan(&addr, &x.Promises, &x.Rows, &x.Bytes, &x.StoredBytes); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			l := out[addr]
+			l.Bytes = x.Bytes
+			out[addr] = l
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return out, s.rowsPerBlob(ctx, only, store.TS(now.UTC()), out)
+}
+
+// rowsPerBlob sets RowsPerBlob on out: each validator's rows on the newest
+// promise settled by now, adding the validators it names.
+func (s *Server) rowsPerBlob(ctx context.Context, only, nowArg string, out map[string]loadStats) error {
+	db := s.q(ctx)
 	// rows on the newest promise settled by now
 	var newest string
 	if err := db.QueryRowContext(ctx, `SELECT promise_hash FROM publications
 		WHERE settlement_tx_code = 0 AND assignment_error = '' AND settlement_time <= ?
 		ORDER BY settlement_height DESC, settlement_tx_index DESC LIMIT 1`, nowArg).Scan(&newest); err != nil {
-		return out, nil // nothing settled yet
+		return nil // nothing settled yet
 	}
 	lastArgs := []any{newest}
 	lastFilter := ""
@@ -160,23 +240,23 @@ func (s *Server) loadByValidatorAt(ctx context.Context, win Window, only string,
 		lastFilter = ` AND a.validator_address = ?`
 		lastArgs = append(lastArgs, only)
 	}
-	rows, err = db.QueryContext(ctx, `SELECT a.validator_address, a.row_count FROM assignments a
+	rows, err := db.QueryContext(ctx, `SELECT a.validator_address, a.row_count FROM assignments a
 		WHERE a.promise_hash = ? AND a.row_count > 0`+lastFilter, lastArgs...)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var addr string
 		var n int64
 		if err := rows.Scan(&addr, &n); err != nil {
-			return nil, err
+			return err
 		}
 		l := out[addr]
 		l.RowsPerBlob = n
 		out[addr] = l
 	}
-	return out, rows.Err()
+	return rows.Err()
 }
 
 // fillLoad sets Load on every row validatorRows built.
