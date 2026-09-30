@@ -221,7 +221,8 @@ export default function Validators({ rows, window: win, notLive, loading, period
                         {notLive && v.signaled_upgrade === true && <span className="ours" title="Signalled for the app version that brings Fibre (x/signal, a chain record).">signalled</span>}
                         {notLive && v.signaled_upgrade === false && <span className="ours" title="Has not signalled for the app version that brings Fibre (x/signal, a chain record).">not signalled</span>}
                         {/* The operator address is the one operators and delegators know (explorers list it); the consensus address stays in the tooltip and on the validator page. */}
-                        <span className="addr mono" title={[v.operator_address, v.cons_address || v.address].filter(Boolean).join(" · ")}>{shortMid(v.operator_address || v.cons_address || v.address, 18, 4)}</span>
+                        {/* Without a moniker the name above already is the operator address; the line then gives the consensus address rather than the same one twice. */}
+                        {(v.moniker || v.operator_address) && <span className="addr mono" title={[v.operator_address, v.cons_address || v.address].filter(Boolean).join(" · ")}>{shortMid(v.moniker ? (v.operator_address || v.cons_address || v.address) : (v.cons_address || v.address), 18, 4)}</span>}
                       </span>
                     </span>
                   </td>

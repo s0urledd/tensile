@@ -215,7 +215,7 @@ function Page() {
         {/* One fact: the operator address, and the consensus address under it as the second. Each is an .addr line, so a narrow card shortens the address and never hides its copy button. */}
         <div><dt>{v.operator_address ? "Operator address" : "Consensus address"}</dt>
           {v.operator_address && <dd className="addr" title={v.operator_address}><MidAddr s={v.operator_address} /><Copy text={v.operator_address} label="operator address" /></dd>}
-          <dd className={v.operator_address ? "addr second" : "addr"} title={[v.cons_address && `consensus ${v.cons_address}`, `hex ${v.address}`].filter(Boolean).join(" · ")}><MidAddr s={cons} /><Copy text={cons} label="consensus address" /></dd>
+          <dd className={v.operator_address ? "addr second" : "addr"} title={[v.cons_address && `consensus ${v.cons_address}`, `hex ${v.address}`].filter(Boolean).join(" · ")}>{v.operator_address && <span className="addr-k">consensus</span>}<MidAddr s={cons} /><Copy text={cons} label="consensus address" /></dd>
         </div>
         <div><dt>Links</dt><dd>
           {site && <><a href={site} rel="nofollow noopener noreferrer" target="_blank">{site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</a><span className="soft"> · </span></>}
