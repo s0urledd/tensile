@@ -230,4 +230,5 @@ func TestTheExportRedrawsTheAPIsCounts(t *testing.T) {
 			t.Errorf("blob %s: the export %v, the API %v", p.PromiseHash[60:], got, apiBlob[p.PromiseHash])
 		}
 	}
+	partsAfter(t, st, "test", now)
 }

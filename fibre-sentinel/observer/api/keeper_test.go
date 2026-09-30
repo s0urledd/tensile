@@ -103,6 +103,7 @@ func TestSnapshotRevisionCarriesHoldsAndActivation(t *testing.T) {
 	if s.snapshotRevision() == before {
 		t.Error("activation did not change the revision the network and validator snapshots are served under")
 	}
+	PartsAfter(t, s.st, "test", time.Time{})
 }
 
 // refreshDue with windows named refreshes those and nothing else.

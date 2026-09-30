@@ -346,6 +346,7 @@ func TestLoadOnePassMatchesTheShippedStatements(t *testing.T) {
 		t.Logf("index set unchanged on reopen: %s", reopened)
 	}
 	check(st, "reopened store ("+reopened+")")
+	PartsAfter(t, st, "test", now)
 }
 
 // The memo keeps integers and NULLs, nothing else, learns only what it did
@@ -523,4 +524,5 @@ func TestEndorsementLedgerMatchesTheShippedStatement(t *testing.T) {
 	if l.upTo == 0 {
 		t.Fatal("the ledger never advanced")
 	}
+	PartsAfter(t, st, "test", now)
 }
