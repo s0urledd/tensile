@@ -162,7 +162,7 @@ function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
  * country narrower than SPOT_MIN px on screen (Singapore, Hong Kong) is drawn as a soft spot of its
  * tint as well, SPOT_R px across its middle, so it reads as hosted as the larger ones do
  */
-const SPOT_MIN = 8, SPOT_R = 20;
+const SPOT_MIN = 8, SPOT_R = 28;
 const BOXES: Map<string, { x: number; y: number; e: number }> = (() => {
   const out = new Map<string, { x: number; y: number; e: number }>();
   for (const [cc, d] of COUNTRIES) {
