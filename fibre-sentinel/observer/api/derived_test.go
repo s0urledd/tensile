@@ -399,6 +399,115 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 	}
 }
 
+// A file names the store as it was when what the file holds was read, not as
+// it is when the file is written. A process that runs across a migration
+// holds rows it read before, and the migration may have rewritten rows below
+// both marks (here it backfills the endorsements recorded before signatures
+// were verified, and the original_rows of records that had none), which
+// neither the memo nor the ledger reads again. Such a process writes nothing
+// under the new schema: it drops both and builds them again, so its figures,
+// and those of every start after it, are a cold build's.
+func TestAMemoAndALedgerReadBeforeAMigrationAreNotWrittenUnderIt(t *testing.T) {
+	f := newDerivedFixture(t, 11)
+	ctx := context.Background()
+	db := f.st.DB()
+	s := f.server(f.dir)
+	f.figures(s)
+	if err := s.keepDerived(ctx); err != nil {
+		t.Fatal(err)
+	}
+	built, err := readStoreIdentity(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The collector migrates while s runs, and each backfill moves what one
+	// of the two feeds. The records it fills in are older than the ones the
+	// memo's load reads again.
+	split := func(fig string) (load, recent string) {
+		i := strings.Index(fig, "recent ")
+		return fig[:i], fig[i:]
+	}
+	_, recent0 := split(f.figures(f.server("")))
+	if _, err := db.Exec(`INSERT INTO schema_migrations (version, applied_at)
+		SELECT MAX(version) + 1, ? FROM schema_migrations`, store.TS(f.now)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE assignments SET attested = 1 WHERE attested IS NULL`); err != nil {
+		t.Fatal(err)
+	}
+	load1, recent1 := split(f.figures(f.server("")))
+	if recent1 == recent0 {
+		t.Fatal("fixture: the endorsements backfilled move no recent endorsement")
+	}
+	if _, err := db.Exec(`UPDATE publications
+		SET raw_json = json_set(raw_json, '$.assignment.protocol_params.original_rows', 4096)
+		WHERE json_type(raw_json, '$.assignment.protocol_params.original_rows') IS NULL
+			AND rowid <= (SELECT MAX(rowid) FROM publications) - ?`, memoChecked); err != nil {
+		t.Fatal(err)
+	}
+	if load2, _ := split(f.figures(f.server(""))); load2 == load1 {
+		t.Fatal("fixture: the original_rows backfilled move no load figure")
+	}
+	// The store goes on growing, and s folds the new rows in over what it
+	// read before, so both have grown when it writes them.
+	f.grow(30)
+	want := f.figures(f.server(""))
+	f.figures(s)
+	if err := s.keepDerived(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for what, origin := range map[string]string{"the memo": s.origRows.origin, "the ledger": s.recent.origin} {
+		if !strings.HasPrefix(origin, "built from the store again: the store moved from schema version") {
+			t.Errorf("%s after the migration: %q, want it dropped", what, origin)
+		}
+	}
+
+	// Nothing was written under the new identity: the files are still the
+	// ones from before, and a start that reads them refuses them.
+	moved := t.TempDir()
+	for _, name := range []string{originalRowsFile, endorsementLedgerFile} {
+		p := filepath.Join(f.dir, name)
+		var h derivedHeader
+		if ok, why := readDerived(p, &h); !ok {
+			t.Fatalf("%s: %s", name, why)
+		} else if h.Store != built {
+			t.Errorf("%s written under %+v, what it holds was read from %+v", name, h.Store, built)
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(moved, name), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	next := f.server(moved)
+	got := f.figures(next)
+	for what, origin := range map[string]string{"the memo": next.origRows.origin, "the ledger": next.recent.origin} {
+		if !strings.Contains(origin, " refused: computed under schema version") {
+			t.Errorf("%s at a start after the migration: %q, want it refused", what, origin)
+		}
+	}
+	if got != want {
+		t.Fatalf("a start after the migration:\n got %s\nwant %s", got, want)
+	}
+
+	// And s answers from what it built again, and writes that.
+	if got := f.figures(s); got != want {
+		t.Fatalf("the process that ran across the migration:\n got %s\nwant %s", got, want)
+	}
+	if err := s.keepDerived(ctx); err != nil {
+		t.Fatal(err)
+	}
+	again := f.server(f.dir)
+	if got := f.figures(again); got != want {
+		t.Fatalf("a start after it wrote again:\n got %s\nwant %s", got, want)
+	}
+	if !strings.HasPrefix(again.origRows.origin, "loaded ") || !strings.HasPrefix(again.recent.origin, "loaded ") {
+		t.Errorf("a start after it wrote again: memo %q, ledger %q", again.origRows.origin, again.recent.origin)
+	}
+}
+
 // A file as written is read back, and one with any single byte of it
 // changed, its digest's own included, is refused.
 func TestADerivedFileWithAnyByteChangedIsRefused(t *testing.T) {

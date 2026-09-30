@@ -196,12 +196,24 @@ const recentPopulationSQL = `p.settlement_tx_code = 0 AND p.assignment_error = '
 // ledgerSaveEvery. A restart then folds in the assignments stored since the
 // last write, as a refresh does.
 //
+// The file names the store the ledger was built from (store), not the store
+// as it is when the file is written: a migration between the two may have
+// rewritten rows at or below upTo, which the ledger never reads again. A
+// write that finds the store at another identity writes nothing and drops
+// the ledger, which the next refresh builds again from the store as it is
+// now.
+//
 // The zero value is ready to use.
 type endorsementLedger struct {
 	mu sync.Mutex
 	// upTo is the highest assignments rowid folded in.
 	upTo int64
 	vals map[string]*ledgerEntry
+	// store is the identity of the store the ledger was built from, and the
+	// one the file is written under: the file's, when open kept it, or the
+	// store's, read before the first row was, when refresh built it from
+	// nothing. Only kept with file set.
+	store storeIdentity
 
 	// file is where the ledger is kept, or "" for nowhere; opened says it
 	// has been read (or found missing, or refused) by this process,
@@ -350,7 +362,7 @@ func (l *endorsementLedger) open(ctx context.Context, db *sql.DB) error {
 		l.origin = "built from the store: no " + l.file
 		return nil
 	}
-	l.upTo, l.vals = f.UpTo, vals
+	l.upTo, l.vals, l.store = f.UpTo, vals, f.Store
 	l.savedUpTo, l.savedAt = f.UpTo, time.Now()
 	l.origin = fmt.Sprintf("loaded %d validators from %s (assignments through rowid %d)", len(vals), l.file, f.UpTo)
 	return nil
@@ -472,8 +484,9 @@ func (l *endorsementLedger) load(ctx context.Context, db *sql.DB) (ledgerFile, m
 }
 
 // save writes the ledger out when it has moved since the last write and
-// ledgerSaveEvery has passed; force writes whenever it has moved. The
-// caller holds l.mu.
+// ledgerSaveEvery has passed; force writes whenever it has moved. For a
+// store no longer at the identity the ledger was built from nothing is
+// written, and the ledger is dropped (drop). The caller holds l.mu.
 func (l *endorsementLedger) save(ctx context.Context, db *sql.DB, force bool) error {
 	if l.file == "" || !l.opened || l.vals == nil || l.upTo == l.savedUpTo {
 		return nil
@@ -485,8 +498,12 @@ func (l *endorsementLedger) save(ctx context.Context, db *sql.DB, force bool) er
 	if err != nil {
 		return err
 	}
+	if id != l.store {
+		l.drop(id)
+		return nil
+	}
 	f := ledgerFile{UpTo: l.upTo, Validators: make(map[string]ledgerFileEntry, len(l.vals))}
-	f.derivedHeader = derivedHeader{Kind: "endorsement-ledger", Format: derivedFormat, Definition: ledgerDefinition, Store: id}
+	f.derivedHeader = derivedHeader{Kind: "endorsement-ledger", Format: derivedFormat, Definition: ledgerDefinition, Store: l.store}
 	if l.upTo > 0 {
 		if err := db.QueryRowContext(ctx, `SELECT promise_hash, validator_address FROM assignments WHERE rowid = ?`, l.upTo).
 			Scan(&f.UpToRow.PromiseHash, &f.UpToRow.Validator); err != nil {
@@ -511,6 +528,21 @@ func (l *endorsementLedger) save(ctx context.Context, db *sql.DB, force bool) er
 	return nil
 }
 
+// drop forgets the ledger, for a store no longer at the identity it was
+// built from (save), which is now id: a migration since may have rewritten
+// rows at or below upTo, which refresh never reads again, and a file of it
+// would be believed under the identity the store has now. The next refresh
+// builds it again from the store, and the next save writes that. The caller
+// holds l.mu.
+func (l *endorsementLedger) drop(id storeIdentity) {
+	l.origin = "built from the store again: " + storeChange(l.store, id)
+	l.upTo, l.vals, l.store = 0, nil, storeIdentity{}
+	l.savedUpTo, l.savedAt = 0, time.Time{}
+	if l.log != nil {
+		l.log("endorsement ledger: %s", l.origin)
+	}
+}
+
 // refresh folds in every assignment stored since the last refresh. The
 // caller holds l.mu.
 func (l *endorsementLedger) refresh(ctx context.Context, db *sql.DB) error {
@@ -519,9 +551,17 @@ func (l *endorsementLedger) refresh(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	if hi < l.upTo || l.vals == nil {
-		// Fewer rows than already read: the table is not the one this
-		// ledger was built from. Start again.
-		l.upTo, l.vals = 0, map[string]*ledgerEntry{}
+		// Nothing built yet, or fewer rows than already read: the table is
+		// not the one this ledger was built from. Start again, under the
+		// identity the store has before the first row is read.
+		var id storeIdentity
+		if l.file != "" {
+			var err error
+			if id, err = readStoreIdentity(ctx, db); err != nil {
+				return err
+			}
+		}
+		l.upTo, l.vals, l.store = 0, map[string]*ledgerEntry{}, id
 	}
 	if hi == l.upTo {
 		return nil
@@ -565,6 +605,13 @@ func (l *endorsementLedger) fill(ctx context.Context, db *sql.DB, only string, o
 	// Not being able to write the file costs the next start a longer
 	// catch-up, not this computation its answer.
 	_ = l.save(ctx, db, false)
+	if l.vals == nil {
+		// save dropped it: the store is not the one it was built from.
+		// Built again before it answers.
+		if err := l.refresh(ctx, db); err != nil {
+			return err
+		}
+	}
 	for addr, e := range l.vals {
 		if only != "" && addr != only {
 			continue

@@ -389,6 +389,10 @@ for the store it was computed from while that store still holds everything
 it was computed from: the store's creation time (`schema_migrations` version
 1), chain id and schema version (so a migration costs one rebuild), the
 newest row it read and that row's key, and its newest entries read again.
+The identity a file names is the one the store had when the memo or ledger
+began to be read, not when the file is written: an API still running when
+the collector migrates writes neither under the new schema, but drops both
+and builds them again from the migrated store.
 Each also carries a sha256 of its own body, so an edit or damage below the
 entries read again is caught too. Anything else, a file whose digest is not
 its body's, or one that does not parse, is removed and rebuilt from the

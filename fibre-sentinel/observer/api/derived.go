@@ -78,6 +78,17 @@ const (
 // migration brought into the population below the file's mark would never
 // be folded in. A file from before a migration is refused, and the memo or
 // ledger rebuilt once.
+//
+// For that, a file names the identity the store had when what it holds
+// began to be read, not the one the store has when the file is written. A
+// process that is running when the collector migrates (the warm-up keeps
+// the old API serving for minutes after) holds rows read before the
+// migration, and a file it wrote after under the new schema would be
+// believed. So the memo and the ledger keep the identity they were built
+// under: the file's, when open kept one, or the store's, read before the
+// first row, when they were built from nothing. A write that finds the
+// store at another identity writes nothing, and they are built again from
+// the store as it is now.
 type storeIdentity struct {
 	Created string `json:"created"`
 	ChainID string `json:"chain_id"`
@@ -95,6 +106,15 @@ func readStoreIdentity(ctx context.Context, db *sql.DB) (storeIdentity, error) {
 		return id, err
 	}
 	return id, nil
+}
+
+// storeChange says how a store's identity moved from was to now.
+func storeChange(was, now storeIdentity) string {
+	if was.Created != now.Created || was.ChainID != now.ChainID {
+		return fmt.Sprintf("the store is another one (created %s, chain %s), not the one it was built from (created %s, chain %s)",
+			now.Created, now.ChainID, was.Created, was.ChainID)
+	}
+	return fmt.Sprintf("the store moved from schema version %d to %d", was.Schema, now.Schema)
 }
 
 // derivedHeader opens every derived file.

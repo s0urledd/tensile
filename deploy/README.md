@@ -254,7 +254,10 @@ waits for it. The same directory keeps `original-rows.json` and
 record, so a restart does not rebuild them; the API checks that each belongs
 to this database as it now stands, at its schema version, and was computed
 the way this build computes it, and rebuilds it when it does not (once after
-a migration), and an older build ignores both. `-warm-only` writes them too, and the copy below
+a migration), and an older build ignores both. An API still serving when the
+collector migrates does not write what it read before the migration under
+the new schema: it drops both and builds them again from the migrated
+database. `-warm-only` writes them too, and the copy below
 carries them over with the snapshots.
 
 That holds only while the copies are still valid. Each file carries the
