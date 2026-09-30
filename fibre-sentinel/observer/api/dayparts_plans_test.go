@@ -52,8 +52,11 @@ func dayPartsPlans() []dayPartsPlan {
 		{"parts: boundary guard, points", boundaryGapSQL("sampling_decision_points"), []any{hi, now}, []string{"sampling_decision_points_started (started_at>? AND started_at<?)"}, nil},
 		{"parts: boundary guard, heartbeats", boundaryGapSQL("reachability"), []any{hi, now}, []string{"reachability_started (started_at>? AND started_at<?)"}, nil},
 		// the catch-up
-		{"parts: held rows", `SELECT rowid, promise_hash FROM probes WHERE retention_unverified = 1`, nil, []string{"probes_held"}, nil},
-		{"parts: held publications", `SELECT promise_hash FROM publications WHERE retention_unverified = 1`, nil, []string{"publications_held"}, nil},
+		{"parts: held rows, the gate", heldGateSQL, nil, []string{"COVERING INDEX probes_held"}, nil},
+		{"parts: held rows by promise", heldByPromiseSQL, nil, []string{"COVERING INDEX probes_held"}, nil},
+		{"parts: held publications, the gate", heldPubGateSQL, nil, []string{"COVERING INDEX publications_held"}, nil},
+		{"parts: held publications", heldPubsSQL, nil, []string{"publications_held"}, nil},
+		{"parts: the days of some promises' rows", promiseRowDaysSQL, []any{"[]"}, []string{"probes_promise (promise_hash=?)"}, []string{"j"}},
 		{"parts: corrected publications", correctedPubsSQL, nil, []string{"publications_corrected"}, nil},
 		{"parts: rows of corrected publications", correctedRowsSQL, []any{"[]"},
 			[]string{"sqlite_autoindex_publications_1 (promise_hash=?)", "probes_promise (promise_hash=?)"}, []string{"j"}},

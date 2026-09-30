@@ -184,6 +184,32 @@ const nextRowSQL = `SELECT MIN(t) FROM (
 
 // ---- what the catch-up reads that no log records ----
 
+// heldMix mixes a rowid into a second sum (heldAgg): the multiplier and
+// the prime are small enough that neither a product nor a sum of them
+// overflows an integer.
+const heldMix = `(rowid * 48271) % 2147483647`
+
+// heldGateSQL is the aggregate of the held probe rows, a walk of
+// probes_held alone; heldByPromiseSQL the same per promise.
+const (
+	heldGateSQL = `SELECT COUNT(*), COALESCE(SUM(rowid), 0), COALESCE(SUM(` + heldMix + `), 0)
+		FROM probes WHERE retention_unverified = 1`
+	heldByPromiseSQL = `SELECT promise_hash, COUNT(*), SUM(rowid), SUM(` + heldMix + `)
+		FROM probes WHERE retention_unverified = 1 GROUP BY promise_hash`
+)
+
+// heldPubGateSQL is the aggregate of the held publications, a walk of
+// publications_held alone; heldPubsSQL those publications.
+const (
+	heldPubGateSQL = `SELECT COUNT(*), COALESCE(SUM(rowid), 0), COALESCE(SUM(` + heldMix + `), 0)
+		FROM publications WHERE retention_unverified = 1`
+	heldPubsSQL = `SELECT promise_hash FROM publications WHERE retention_unverified = 1`
+)
+
+// promiseRowDaysSQL is the days the probe rows of the promises in ?1 (a
+// JSON array) started on.
+const promiseRowDaysSQL = `SELECT DISTINCT substr(r.started_at, 1, 10) FROM json_each(?) j CROSS JOIN probes r ON r.promise_hash = j.value`
+
 // correctedPubsSQL is every corrected publication (publications_corrected):
 // its deadline, when a correction last wrote it, and its settlement day.
 const correctedPubsSQL = `SELECT promise_hash, must_serve_until, corrected_at, COALESCE(substr(settlement_time, 1, 10), '')

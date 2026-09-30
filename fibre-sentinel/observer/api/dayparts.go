@@ -282,11 +282,10 @@ type dayAnchors struct {
 	Beat  *anchor `json:"beat,omitempty"`
 }
 
-// heldRow is a held probe row as the last catch-up saw it.
-type heldRow struct {
-	Promise string `json:"promise"`
-	Day     string `json:"day"`
-}
+// heldAgg is an aggregate of held rows: how many, the sum of their rowids
+// and the sum of a mix of them (heldGateSQL). A hold raised on some rows and
+// lifted on as many others leaves all three alike only by chance.
+type heldAgg [3]int64
 
 // corrFP is a corrected publication as the last catch-up saw it: its
 // deadline and when a correction last wrote it, and a digest of its rows
@@ -308,10 +307,14 @@ type epoch struct {
 	// rawFrom is the first day whose raw rows are all still present
 	// (rollup.RawFrom), "" before the first prune.
 	rawFrom string
-	// held are the held probe rows by rowid, heldPubs the held
-	// publications.
-	held     map[int64]heldRow
-	heldPubs map[string]bool
+	// heldGate is the aggregate of every held probe row, heldProm the same
+	// per promise, heldPubGate of the held publications and heldPubs
+	// those publications (readHolds). The maps are replaced whole, never
+	// changed.
+	heldGate    heldAgg
+	heldProm    map[string]heldAgg
+	heldPubGate heldAgg
+	heldPubs    map[string]bool
 	// fps is the fingerprint of every decision of a publication a
 	// correction can reach (dayparts_catchup.go), by promise hash; covered
 	// the publications a verified params range covers, and verified the
@@ -349,7 +352,7 @@ type epoch struct {
 
 func newEpoch() *epoch {
 	return &epoch{
-		marks: map[string][]mark{}, held: map[int64]heldRow{}, heldPubs: map[string]bool{},
+		marks: map[string][]mark{}, heldProm: map[string]heldAgg{}, heldPubs: map[string]bool{},
 		fps: map[string]string{}, covered: map[string]bool{}, verified: map[string]bool{},
 		corr: map[string]corrFP{}, corrStale: map[string]bool{},
 		rows: map[string]*rowDay{}, settle: map[string]*settleDay{}, anchors: map[string]*dayAnchors{},
@@ -364,11 +367,6 @@ func (e *epoch) clone() *epoch {
 	for k, v := range e.marks {
 		c.marks[k] = append([]mark(nil), v...)
 	}
-	c.held = make(map[int64]heldRow, len(e.held))
-	for k, v := range e.held {
-		c.held[k] = v
-	}
-	c.heldPubs = copySet(e.heldPubs)
 	c.fps = make(map[string]string, len(e.fps))
 	for k, v := range e.fps {
 		c.fps[k] = v

@@ -46,9 +46,10 @@ import (
 //	ApplySampledOutCorrection (no log)         a fingerprint of every    the points' row days and the
 //	                                           decision a correction     settlement day
 //	                                           can reach
-//	SyncParamHolds, a range's own raise,       the held rows (rowid,     the row's row day and settlement day;
-//	  a row born held                          promise) and held         the publication's settlement day
-//	                                           publications, diffed
+//	SyncParamHolds, a range's own raise,       an aggregate of the held  the rows' row days and settlement day
+//	  a row born held                          rows and of the held      of a promise whose held rows moved;
+//	                                           publications; per promise the publication's settlement day
+//	                                           once it moves
 //	the prune (probes, heartbeats,             raw_from moving; one      the row days before raw_from; the
 //	  decisions; not one transaction)          anchor row per table      settlement days whose span reaches a
 //	                                           per row day               pruned day or an anchor that went
@@ -842,97 +843,117 @@ func (c *catchUp) foldPublications(from, hi int64) error {
 
 // ---- holds and fingerprints ----
 
-// readHolds reads the held rows and held publications, and with diff drops
-// what moved since the last catch-up: a row held or released changes the
-// class it counts as.
+// The holds. A row held or released changes the class it counts as, and a
+// publication held or released its settlement day's figures, so every
+// catch-up asks whether either moved. What SyncParamHolds changes it
+// changes in place, with no log and a revision it bumps only after it has
+// committed, so the question is asked of the flags themselves: an aggregate
+// of the held rows (heldGateSQL, a covering walk of probes_held) and of the
+// held publications (publications_held), which costs what is held and
+// holds nothing in memory. Only when one moved are the held rows read again
+// per promise (heldByPromiseSQL, the same walk), and the promises whose
+// aggregate moved drop their rows' days and their settlement days. A hold
+// that outlasts a whole busy day is then a walk of an index on every
+// catch-up, not a map of every held row built, compared, copied into every
+// epoch and written into every save.
+
+// readHolds reads the holds, and with diff drops what moved.
 func (c *catchUp) readHolds(diff bool) error {
-	held := map[int64]string{}
-	rows, err := c.q.QueryContext(c.ctx, `SELECT rowid, promise_hash FROM probes WHERE retention_unverified = 1`)
-	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var id int64
-		var h string
-		if err := rows.Scan(&id, &h); err != nil {
-			rows.Close()
-			return err
-		}
-		held[id] = h
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	var added []int64
-	for id, h := range held {
-		if old, ok := c.e.held[id]; !ok || old.Promise != h {
-			added = append(added, id)
-		}
-	}
 	promises := map[string]bool{}
-	for id, old := range c.e.held {
-		if h, ok := held[id]; !ok || h != old.Promise {
-			if diff {
-				c.touchRow(old.Day)
-			}
-			promises[old.Promise] = true
-			delete(c.e.held, id)
-		}
+	var g heldAgg
+	if err := c.q.QueryRowContext(c.ctx, heldGateSQL).Scan(&g[0], &g[1], &g[2]); err != nil {
+		return err
 	}
-	if len(added) > 0 {
-		list, _ := json.Marshal(added)
-		ar, err := c.q.QueryContext(c.ctx, `SELECT r.rowid, r.started_at, r.promise_hash FROM json_each(?) j CROSS JOIN probes r ON r.rowid = j.value`, string(list))
+	if !diff || g != c.e.heldGate {
+		per := map[string]heldAgg{}
+		rows, err := c.q.QueryContext(c.ctx, heldByPromiseSQL)
 		if err != nil {
 			return err
 		}
-		for ar.Next() {
-			var id int64
-			var st, h string
-			if err := ar.Scan(&id, &st, &h); err != nil {
-				ar.Close()
+		for rows.Next() {
+			var h string
+			var a heldAgg
+			if err := rows.Scan(&h, &a[0], &a[1], &a[2]); err != nil {
+				rows.Close()
 				return err
 			}
-			d := st
-			if len(d) >= 10 {
-				d = d[:10]
+			per[h] = a
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		var moved []string
+		for h, a := range per {
+			if old, ok := c.e.heldProm[h]; !ok || old != a {
+				moved = append(moved, h)
 			}
-			c.e.held[id] = heldRow{Promise: h, Day: d}
-			if diff {
+		}
+		for h := range c.e.heldProm {
+			if _, ok := per[h]; !ok {
+				moved = append(moved, h)
+			}
+		}
+		c.e.heldGate, c.e.heldProm = g, per
+		if diff && len(moved) > 0 {
+			sort.Strings(moved)
+			b, _ := json.Marshal(moved)
+			dr, err := c.q.QueryContext(c.ctx, promiseRowDaysSQL, string(b))
+			if err != nil {
+				return err
+			}
+			var days []string
+			for dr.Next() {
+				var d string
+				if err := dr.Scan(&d); err != nil {
+					dr.Close()
+					return err
+				}
+				days = append(days, d)
+			}
+			if err := dr.Close(); err != nil {
+				return err
+			}
+			for _, d := range days {
 				c.touchRow(d)
 			}
-			promises[h] = true
-		}
-		if err := ar.Close(); err != nil {
-			return err
+			for _, h := range moved {
+				promises[h] = true
+			}
 		}
 	}
-	pubs := map[string]bool{}
-	pr, err := c.q.QueryContext(c.ctx, `SELECT promise_hash FROM publications WHERE retention_unverified = 1`)
-	if err != nil {
+	var pg heldAgg
+	if err := c.q.QueryRowContext(c.ctx, heldPubGateSQL).Scan(&pg[0], &pg[1], &pg[2]); err != nil {
 		return err
 	}
-	for pr.Next() {
-		var h string
-		if err := pr.Scan(&h); err != nil {
-			pr.Close()
+	if !diff || pg != c.e.heldPubGate {
+		pubs := map[string]bool{}
+		pr, err := c.q.QueryContext(c.ctx, heldPubsSQL)
+		if err != nil {
 			return err
 		}
-		pubs[h] = true
-	}
-	if err := pr.Close(); err != nil {
-		return err
-	}
-	for h := range pubs {
-		if !c.e.heldPubs[h] {
-			promises[h] = true
+		for pr.Next() {
+			var h string
+			if err := pr.Scan(&h); err != nil {
+				pr.Close()
+				return err
+			}
+			pubs[h] = true
 		}
-	}
-	for h := range c.e.heldPubs {
-		if !pubs[h] {
-			promises[h] = true
+		if err := pr.Close(); err != nil {
+			return err
 		}
+		for h := range pubs {
+			if !c.e.heldPubs[h] {
+				promises[h] = true
+			}
+		}
+		for h := range c.e.heldPubs {
+			if !pubs[h] {
+				promises[h] = true
+			}
+		}
+		c.e.heldPubGate, c.e.heldPubs = pg, pubs
 	}
-	c.e.heldPubs = pubs
 	if !diff {
 		return nil
 	}

@@ -27,10 +27,10 @@ import (
 // from.
 //
 //   - day-partials.json holds the epoch: every table's marks ladder, raw_from,
-//     the vantage, every settlement day's ledger and span, the held rows
-//     and publications, the fingerprints and the corrected publications
-//     (a file without them has every correction read again), the anchors,
-//     and an index of the sealed days naming each one's file and digest;
+//     the vantage, every settlement day's ledger and span, the holds (an
+//     aggregate of the held rows per promise, and the held publications),
+//     the fingerprints and the corrected publications, the anchors, and an
+//     index of the sealed days naming each one's file and digest;
 //   - day-partials/row-<day>.g<n>.json and settle-<day>.g<n>.json hold one
 //     sealed day each, written once and never changed; a day sealed again
 //     is another file.
@@ -53,7 +53,7 @@ const (
 	dayPartsDir  = "day-partials"
 	// partsVersion names how the partials are folded and assembled; bump it
 	// whenever that changes.
-	partsVersion = 1
+	partsVersion = 2
 )
 
 // partsFile is day-partials.json.
@@ -62,7 +62,9 @@ type partsFile struct {
 	Vantage     string                 `json:"vantage"`
 	Marks       map[string][]mark      `json:"marks"`
 	RawFrom     string                 `json:"raw_from,omitempty"`
-	Held        map[string]heldRow     `json:"held,omitempty"`
+	HeldGate    heldAgg                `json:"held_gate"`
+	HeldProm    map[string]heldAgg     `json:"held_promises,omitempty"`
+	HeldPubGate heldAgg                `json:"held_pub_gate"`
 	HeldPubs    []string               `json:"held_pubs,omitempty"`
 	FPs         map[string]string      `json:"fingerprints,omitempty"`
 	Corrected   map[string]corrFP      `json:"corrected,omitempty"`
@@ -132,12 +134,9 @@ func sealName(kind, day string, gen int) string {
 // fileOf is the epoch as day-partials.json keeps it.
 func (e *epoch) fileOf(vantage string) partsFile {
 	f := partsFile{
-		Vantage: vantage, Marks: e.marks, RawFrom: e.rawFrom, Held: map[string]heldRow{}, FPs: e.fps, Corrected: e.corr,
+		Vantage: vantage, Marks: e.marks, RawFrom: e.rawFrom, HeldGate: e.heldGate, HeldProm: e.heldProm, HeldPubGate: e.heldPubGate, FPs: e.fps, Corrected: e.corr,
 		Weird: e.weird, FirstRow: e.firstRow, LedgerBuilt: e.ledgerBuilt, LedgerTo: e.ledgerTo, LedgerHi: e.ledgerHi,
 		PubsOdd: e.pubsOdd, Settle: e.settle, Anchors: e.anchors, Seals: map[string]sealRef{},
-	}
-	for id, h := range e.held {
-		f.Held[strconv.FormatInt(id, 10)] = h
 	}
 	for _, m := range []struct {
 		set map[string]bool
@@ -334,12 +333,9 @@ func (dp *dayParts) load(ctx context.Context, s *Server, q store.Querier) (*epoc
 	if f.Corrected != nil {
 		e.corr = f.Corrected
 	}
-	for k, h := range f.Held {
-		id, err := strconv.ParseInt(k, 10, 64)
-		if err != nil {
-			return nil, kept, refusal("a held row keyed " + strconv.Quote(k)), nil
-		}
-		e.held[id] = h
+	e.heldGate, e.heldPubGate = f.HeldGate, f.HeldPubGate
+	if f.HeldProm != nil {
+		e.heldProm = f.HeldProm
 	}
 	for _, m := range []struct {
 		list []string

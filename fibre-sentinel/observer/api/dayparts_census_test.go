@@ -39,7 +39,7 @@ var writeCensus = map[string]writeMechanism{
 	"INSERT probes": {"probes past the mark: the row's day, its promise's settlement day (span widened)", "a restarted prober's row"},
 	"UPDATE probes SET amended_at,classification,classification_at_probe,classification_reason,shadowed_by":                                                       {"probe_amendments past the mark (written in the same transaction)", "an amendment"},
 	"UPDATE probes SET classification,classification_at_probe,classification_reason,corrected_at,must_serve_until,must_serve_until_at_probe,phase,phase_at_probe": {"probe_corrections past the mark (written in the same transaction); applied again under its range, which adds no line: the corrected publications' rows fingerprinted", "a row correction applied again under its range"},
-	"UPDATE probes SET retention_unverified":         {"the held rows, (rowid, promise) diffed every catch-up", "a held publication"},
+	"UPDATE probes SET retention_unverified":         {"an aggregate of the held rows every catch-up, per promise once it moves", "a held publication"},
 	"UPDATE ? SET raw_json":                          {notRead + " (raw_json, stripped by the retention pass)", ""},
 	"DELETE probes":                                  {"the collapse: its decision past the mark (collapsible sets); the prune: raw_from and the anchors", "a collapse"},
 	"DELETE ?":                                       {"the prune (probes, reachability, probe_confirmations): raw_from and the anchors", "a prune"},
@@ -54,7 +54,7 @@ var writeCensus = map[string]writeMechanism{
 	// the ledger, and the settlement days' latest deadlines
 	"INSERT publications":                          {"publications past the mark: the ledger, the settlement day's span from its rows, its points' row days", "a publication recorded after its deadline"},
 	"INSERT assignments":                           {"written with its publication in one transaction: folded with it", "a publication recorded after its deadline"},
-	"UPDATE publications SET retention_unverified": {"the held publications, diffed every catch-up", "a held publication"},
+	"UPDATE publications SET retention_unverified": {"an aggregate of the held publications every catch-up, the set once it moves", "a held publication"},
 	"UPDATE publications SET corrected_at,must_serve_until,must_serve_until_at_scan,must_serve_until_basis,must_serve_until_basis_at_scan": {"publication_corrections past the mark: the day's latest deadline read again; applied again under its range, which adds no line: the corrected publications fingerprinted", "a publication correction applied again under its range"},
 	"INSERT publication_corrections": {"publication_corrections past the mark", "a publication deadline corrected"},
 	// the ranges: they move the holds and the fingerprints' reach
