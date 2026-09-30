@@ -202,10 +202,10 @@ function Page() {
           ? <div><dt>Endpoint</dt><dd><span className="mono">{v.host}</span>{v.endpoint_since && <span className="soft"> · since {shortDate(v.endpoint_since)}</span>}</dd></div>
           : v.last_host && <div title="The registration stays on chain; the validator left the bonded provider list."><dt>Last endpoint</dt><dd><span className="mono">{v.last_host}</span>{v.endpoint_closed_at && <span className="soft"> · left {dateUTC(v.endpoint_closed_at)}</span>}</dd></div>}
         {v.host && v.hosting && <div><dt>Hosting</dt><dd><HostingFact h={v.hosting} /></dd></div>}
-        {/* One fact, so it keeps the width the operator address and its copy button need: the operator address, and the consensus address under it as the second. */}
+        {/* One fact: the operator address, and the consensus address under it as the second. Each is an .addr line, so a narrow card shortens the address and never hides its copy button. */}
         <div><dt>{v.operator_address ? "Operator address" : "Consensus address"}</dt>
-          {v.operator_address && <dd title={v.operator_address}><span className="mono">{shortMid(v.operator_address, 18, 6)}</span><Copy text={v.operator_address} label="operator address" /></dd>}
-          <dd className={v.operator_address ? "second" : undefined} title={[v.cons_address && `consensus ${v.cons_address}`, `hex ${v.address}`].filter(Boolean).join(" · ")}><span className="mono">{shortMid(cons, 18, 6)}</span><Copy text={cons} label="consensus address" /></dd>
+          {v.operator_address && <dd className="addr" title={v.operator_address}><span className="mono">{shortMid(v.operator_address, 18, 6)}</span><Copy text={v.operator_address} label="operator address" /></dd>}
+          <dd className={v.operator_address ? "addr second" : "addr"} title={[v.cons_address && `consensus ${v.cons_address}`, `hex ${v.address}`].filter(Boolean).join(" · ")}><span className="mono">{shortMid(cons, 18, 6)}</span><Copy text={cons} label="consensus address" /></dd>
         </div>
         <div><dt>Links</dt><dd>
           {site && <><a href={site} rel="nofollow noopener noreferrer" target="_blank">{site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</a><span className="soft"> · </span></>}
