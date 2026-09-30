@@ -6,8 +6,9 @@ import type { Tier } from "@/components/Verdict";
  * channel the verdicts use. It is celestia-app's client's own result:
  * Available, enough rows came back to reconstruct the blob; Unavailable,
  * with the client's error ("no shards retrieved", "not enough shards to
- * reconstruct blob"). One function, so the Blobs list and the overview's
- * latest blob cannot disagree.
+ * reconstruct blob"). The Blobs list words each blob's status with it; the
+ * overview's recent blobs carry no status, since every blob there is still
+ * in its retention window.
  */
 export function recon(b: Blob): { word: string; tier: Tier; title: string } {
   const r = b.reconstructable;

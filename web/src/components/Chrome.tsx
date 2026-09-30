@@ -128,9 +128,11 @@ function NetworkChip({ meta, error }: { meta: Meta | null; error: string | null 
 }
 
 /**
- * The newest block this observer has read, with a dot that beats on each new
- * one: the one thing on the page that moves on its own, so a reader can see
- * at a glance that the observer is following the chain. No age is printed:
+ * The newest block this observer has read, set quietly: a small dot that
+ * breathes once on each new block, then the word "Block" and the height in
+ * the muted greys, the figure simply replaced. It is there for the reader who
+ * looks for it, that the observer is following the chain, without pulling the
+ * eye on every block: the dot is the only thing that moves. No age is printed:
  * a block's header time is set when it is proposed, so even the newest block
  * is already about one block time old when it commits and a counter would
  * never start at zero. The age is in the tooltip. The dot turns amber when
@@ -147,7 +149,10 @@ function BlockTicker({ meta }: { meta: Meta | null }) {
     return () => clearInterval(t);
   }, []);
   if (!tip || !tip.height) {
-    return error ? <span className="blocktick" title={`Observer API unreachable: ${error}`}><i className="dot none" />—</span> : null;
+    // until the first answer the ticker keeps its place, so the chips beside it do not move when it arrives
+    return error
+      ? <span className="blocktick" title={`Observer API unreachable: ${error}`}><i className="bt-dot none" aria-hidden="true" /><span className="bt-l">Block</span><span className="bt-n">—</span></span>
+      : <span className="blocktick" aria-hidden="true"><i className="bt-dot none" /><span className="bt-l">Block</span><span className="bt-n wait">0,000,000</span></span>;
   }
   // The server's clock, not the reader's: a laptop a minute fast would
   // otherwise call every block a minute old.
@@ -163,8 +168,9 @@ function BlockTicker({ meta }: { meta: Meta | null }) {
   ].filter(Boolean).join(" · ");
   return (
     <span className="blocktick" title={title}>
-      <i key={tip.height} className={"dot " + dot + (dot === "ok" ? " beat" : "")} />
-      <span className="num">#{int(tip.height)}</span>
+      <i key={tip.height} className={"bt-dot " + dot + (dot === "ok" ? " beat" : "")} aria-hidden="true" />
+      <span className="bt-l">Block</span>
+      <span className="bt-n">{int(tip.height)}</span>
       {countdown && <span className="soon">Fibre in {countdown}</span>}
     </span>
   );

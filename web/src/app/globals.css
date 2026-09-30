@@ -215,14 +215,6 @@ button { font: inherit; color: inherit; }
 .tag { font-size: var(--t-tiny); font-weight: 500; letter-spacing: .04em; text-transform: uppercase; color: var(--text-2); background: var(--tag-bg); padding: 4px 8px; border-radius: 4px; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: 0; margin-right: 7px; background: var(--neutral); flex: none; }
 .dot.ok { background: var(--ok); } .dot.hold { background: var(--hold); } .dot.none { background: var(--neutral); } .dot.fault { background: var(--fault); }
-/* the header's block ticker: the one figure that moves by itself */
-.blocktick { display: flex; align-items: center; gap: 7px; font-size: var(--t-cell); color: var(--text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.blocktick .dot { margin-right: 0; }
-.blocktick .num { color: var(--text); font-family: var(--mono, ui-monospace, monospace); font-size: 12.5px; }
-.blocktick .soon { color: var(--text-3); border-left: 1px solid var(--line); padding-left: 8px; }
-.dot.beat { animation: beat 1.2s ease-out 1; }
-@keyframes beat { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); } 100% { box-shadow: 0 0 0 7px transparent; } }
-@media (prefers-reduced-motion: reduce) { .dot.beat { animation: none; } }
 .endpoint-check .stage.ok { color: var(--text-2); } .endpoint-check .stage.bad { color: var(--fault); font-weight: 500; } .endpoint-check .stage.skip { color: var(--text-3); }
 
 /* ----------------------------------------------------------- title block --- */
@@ -729,298 +721,6 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
   #evidence .seg button { padding: 6px 10px; }
 }
 
-/* ------------------------------------------------ Fibre readiness band --- */
-/* The overview's first question after activation: is enough stake reachable
-   for a blob to settle at all? Reachable is the accent, registered but not
-   answering a lighter accent, no host the pending grey; the ⅔ quorum is the
-   meter's tick. */
-.readiness { grid-template-columns: 3fr 2fr; }
-@media (max-width: 720px) {
-  .readiness { grid-template-columns: 1fr; }
-  .readiness > div + div { border-left: 0; padding: 14px 0 0; }
-}
-
-/* ======================================================== host map ====== */
-/* The overview's map of registered Fibre hosts (components/HostMap.tsx).
-   The land is one dot field in both themes: ink dots at low opacity, a
-   country with a host lit in accent dots over a faint wash, the open disc's
-   countries brighter; the country hairlines stay as gaps. Every place is a
-   disc carrying its count, sized by it, its ring split by endpoint state
-   (accent reachable, amber unreachable, grey not checked yet); in the dark
-   theme a crowd glows in proportion to its count. Red appears only as the
-   small pip on a disc whose hosts have a broken obligation. Names and discs
-   carry a halo in the page's own colour, so they read over the dots. The
-   tokens sit on the map itself, where the halo is resolved. */
-.ov-map {
-  --ov-dot: rgb(var(--ink) / .19);
-  --ov-dot-on: rgb(0 128 140 / .78);
-  --ov-dot-hi: #00808c;
-  --ov-wash-on: rgb(0 106 116 / .045);
-  --ov-wash-hi: rgb(0 106 116 / .10);
-  --ov-halo: var(--canvas);
-  --ov-disc: #ffffff;
-  --ov-pin-shadow: 0 0 0 2px var(--ov-halo), 0 1px 3px 2px rgb(16 24 32 / .10);
-  --ov-dot-shadow: 0 0 0 1.5px var(--ov-halo), 0 1px 2px 1px rgb(16 24 32 / .10);
-  --ov-glow: rgb(0 106 116 / .24);
-}
-:root[data-theme="dark"] .ov-map {
-  --ov-dot: rgb(255 255 255 / .15);
-  --ov-dot-on: rgb(51 179 191 / .92);
-  --ov-dot-hi: #9be6ec;
-  --ov-wash-on: rgb(51 179 191 / .075);
-  --ov-wash-hi: rgb(51 179 191 / .16);
-  --ov-disc: #10171b;
-  --ov-pin-shadow: 0 0 0 2px var(--ov-halo), 0 0 16px -2px rgb(51 179 191 / .55);
-  --ov-dot-shadow: 0 0 0 1.5px var(--ov-halo), 0 0 10px -1px rgb(51 179 191 / .45);
-  --ov-glow: rgb(51 179 191 / .40);
-}
-
-.hostmap { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); padding: 16px 0 18px; }
-.hostmap.solo { grid-template-columns: 1fr; }
-/* the map's column: its name and counts, the map, the newest event at the foot */
-.hostmap > .ov-map { position: relative; min-width: 0; display: flex; flex-direction: column; }
-/* beside the taller stake and latest-blob panel the map grows to the panel's
-   height, up to what the hosts allow (HostMap's maxHeight), and closes in on
-   them; any height still left over is shared above and below it, so the map
-   sits in the middle of its column and the newest event at its foot */
-@media (min-width: 961px) {
-  .hostmap > .ov-map > .ov-map-head { padding-bottom: 18px; }
-  .hostmap > .ov-map > .ov-atlas { flex: 1 1 auto; margin: auto 0; }
-  .hostmap > .ov-map > .ov-map-foot { margin-top: 0; }
-}
-
-/* ---- beside the map: the stake gauge, the latest blob, and Tensile's readings under it ----
-   Every rule here is on a class only this panel carries (ov-*, fm-aside), so it
-   restyles nothing else. */
-.fm-side { min-width: 0; }
-.ov-solo { max-width: 420px; }
-.ov-eyebrow { display: flex; align-items: center; margin: 0; font-size: var(--t-tiny); font-weight: 600; line-height: 16px; letter-spacing: .09em; text-transform: uppercase; color: var(--text-2); }
-/* the stake gauge: the share as the panel's lead figure, one bar on a ruler of tenths, the ⅔ needle through it */
-.ov-stake { --ov-halo: var(--canvas); --ov-hatch: rgb(var(--ink) / .56); --ov-rest: rgb(var(--ink) / .05); min-width: 0; }
-:root[data-theme="dark"] .ov-stake { --ov-hatch: rgb(255 255 255 / .42); --ov-rest: rgb(255 255 255 / .035); }
-.ov-hero { display: grid; gap: 8px; margin: 10px 0 0; }
-/* the panel's lead figure, about half the page hero: it leads the panel without outweighing the map beside it */
-.ov-fig { font-size: 32px; font-weight: 600; letter-spacing: -.045em; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
-:root[data-theme="dark"] .ov-fig { background: linear-gradient(180deg, #ffffff 35%, #b4e9ee); -webkit-background-clip: text; background-clip: text; color: transparent; }
-.ov-hero-help { font-size: var(--t-cell); color: var(--text-2); }
-/* the bar fades toward its baseline like the charts' bars; the part without a provider is hatched */
-.ov-gauge { position: relative; display: block; margin: 16px 0 0; padding-top: 30px; }
-.ov-track { position: relative; display: block; height: 10px; border-radius: 999px; background: repeating-linear-gradient(-45deg, var(--ov-hatch) 0 1.5px, transparent 1.5px 5px), var(--ov-rest); }
-.ov-track i {
-  position: absolute; left: 0; top: 0; bottom: 0; width: var(--v); border-radius: inherit; transform-origin: left center;
-  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) calc(var(--bar-fade) * 100%), var(--ov-halo)), var(--accent));
-  box-shadow: 0 0 18px -4px color-mix(in srgb, var(--accent) var(--glow-op), transparent);
-  animation: ov-grow .9s cubic-bezier(.2, .7, .2, 1) both;
-}
-.ov-ruler { display: flex; justify-content: space-between; height: 6px; margin-top: 5px; }
-.ov-ruler i { width: 1px; height: 3px; background: var(--line); }
-.ov-ruler i:first-child, .ov-ruler i:nth-child(6), .ov-ruler i:last-child { height: 6px; background: var(--baseline); }
-.ov-needle { position: absolute; left: var(--q); top: 0; bottom: 0; width: 0; z-index: 1; pointer-events: none; }
-.ov-needle::before { content: ""; position: absolute; left: -1px; top: 23px; bottom: 0; width: 2px; border-radius: 1px; background: var(--text); box-shadow: 0 0 0 2px var(--ov-halo); }
-.ov-needle::after { content: ""; position: absolute; left: -4px; top: 19px; border: 4px solid transparent; border-top: 5px solid var(--text); border-bottom: 0; }
-.ov-needle > span { position: absolute; left: 0; top: -2px; transform: translateX(-50%); display: inline-flex; align-items: baseline; gap: 3px; font-size: var(--t-tiny); font-weight: 600; line-height: 18px; letter-spacing: .02em; color: var(--text); white-space: nowrap; }
-.ov-frac { display: inline-flex; align-items: baseline; font-size: 15px; font-weight: 600; line-height: 18px; letter-spacing: 0; font-variant-numeric: lining-nums proportional-nums; }
-.ov-frac-n { position: relative; top: -.38em; font-size: .74em; }
-.ov-frac-s { margin: 0 .03em; font-weight: 400; color: var(--text-2); }
-.ov-frac-d { font-size: .74em; }
-.ov-rest { display: flex; justify-content: flex-end; margin: 8px 0 0; font-size: var(--t-small); color: var(--text-3); }
-.ov-sw { display: inline-block; width: 12px; height: 8px; margin-right: 6px; border-radius: 3px; vertical-align: 0; background: repeating-linear-gradient(-45deg, var(--ov-hatch) 0 1.5px, transparent 1.5px 4px), var(--ov-rest); box-shadow: inset 0 0 0 1px var(--line-soft); }
-@keyframes ov-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
-@media (prefers-reduced-motion: reduce) { .ov-track i { animation: none; } .ov-links a span { transition: none; } }
-
-/* the latest blob: a spec sheet in two columns, under a hairline that fades out */
-.fm-aside { position: relative; margin-top: 24px; padding-top: 22px; }
-.fm-aside::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, var(--border), var(--border) 60%, transparent); }
-.ov-latest { min-width: 0; }
-.ov-latest-h { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0; font-size: var(--t-small); line-height: 16px; }
-.ov-latest-h .ov-eyebrow { display: inline; }
-.ov-when { font-size: var(--t-small); font-weight: 500; letter-spacing: 0; color: var(--text-3); }
-.ov-when > span { display: none; }
-.ov-spec { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px 20px; margin: 14px 0 0; }
-.ov-spec > div { min-width: 0; }
-.ov-spec dt { margin: 0 0 3px; font-size: var(--t-small); color: var(--text-3); }
-.ov-spec dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; font-weight: 600; letter-spacing: -.012em; line-height: 21px; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
-.ov-of { font-size: var(--t-cell); font-weight: 400; letter-spacing: 0; color: var(--text-2); }
-.ov-wide { grid-column: 1 / -1; }
-.ov-links { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 16px 0 0; font-size: var(--t-cell); font-weight: 500; }
-.ov-links a span { display: inline-block; transition: transform var(--dur) ease-out; }
-.ov-links a:hover { text-decoration: none; }
-.ov-links a:hover span { transform: translateX(3px); }
-
-/* Tensile's own readings under the latest blob: recessed, badged, a step smaller than the chain's figures */
-.ov-obs { margin-top: 20px; padding: 12px 14px 14px; border-radius: var(--r-card); background: var(--obs-bg); box-shadow: var(--obs-edge); }
-.ov-obs-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 20px; margin: 12px 0 0; }
-.ov-obs-grid > div { min-width: 0; }
-.ov-obs-grid dt { margin: 0 0 3px; font-size: var(--t-small); color: var(--text-3); }
-.ov-obs-grid dd { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin: 0; }
-.ov-obs-v { font-size: 14px; font-weight: 600; line-height: 20px; color: var(--text-2); }
-.ov-obs-v.absent { color: var(--text-3); }
-.ov-obs-h { font-size: var(--t-small); line-height: 16px; color: var(--text-3); }
-/* the latest blob's result as the Blobs list sets it; in the narrow side column (961-1100px) the words wrap rather than run out of the box */
-.ov-obs .verdict { gap: 6px; padding: 2px 10px 2px 9px; border-radius: 999px; line-height: 16px; white-space: normal; }
-.ov-obs .verdict .w { font-size: var(--t-small); }
-/* when the words wrap, the mark stays on their first line */
-.ov-obs .verdict .mark { align-self: flex-start; margin-top: 3px; }
-.ov-obs .verdict--kept { background: var(--accent-tint); }
-.ov-obs .verdict--kept .w { color: var(--accent-ink); font-weight: 500; }
-.ov-obs .verdict--hold { background: color-mix(in srgb, var(--hold) 13%, transparent); }
-.ov-obs .verdict--hold .w { color: var(--hold-ink); font-weight: 500; }
-.ov-obs .verdict--gap { padding-left: 0; padding-right: 0; }
-.ov-obs .verdict--gap .w { color: var(--text-3); }
-/* under the map on a narrower screen: the stake beside the latest blob */
-@media (min-width: 721px) and (max-width: 960px) {
-  .hostmap .fm-side { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 40px; align-items: start; }
-  .hostmap .fm-side > .fm-aside { margin-top: 0; padding-top: 0; }
-  .hostmap .fm-side > .fm-aside::before { content: none; }
-}
-@media (max-width: 720px) {
-  .ov-fig { font-size: 28px; }
-}
-
-/* ---- the map: its counts, the dot field, the discs and their names ---- */
-.ov-counts { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 28px; margin: 10px 0 0; font-size: var(--t-cell); color: var(--text-2); }
-.ov-counts b { margin-right: 6px; font-size: var(--t-total); font-weight: 600; letter-spacing: -.025em; line-height: 1.15; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
-:root[data-theme="dark"] .ov-counts b { background: linear-gradient(180deg, #ffffff 35%, #b4e9ee); -webkit-background-clip: text; background-clip: text; color: transparent; }
-
-.ov-atlas { position: relative; width: 100%; margin-top: 18px; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
-.ov-atlas.zoomed { touch-action: none; cursor: grab; }
-.ov-atlas.zoomed:active { cursor: grabbing; }
-.ov-vp { position: absolute; inset: 0; overflow: hidden; border-radius: 12px; }
-/* the whole world fades out where the frame cuts the far south and the open Pacific; a zoomed view fades at all four edges, no frame */
-.ov-atlas:not(.zoomed) .ov-vp {
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent), linear-gradient(180deg, transparent, #000 9%, #000 84%, transparent);
-  -webkit-mask-composite: source-in;
-  mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent), linear-gradient(180deg, transparent, #000 9%, #000 84%, transparent);
-  mask-composite: intersect;
-}
-.ov-atlas.zoomed .ov-vp {
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent), linear-gradient(180deg, transparent, #000 6%, #000 94%, transparent);
-  -webkit-mask-composite: source-in;
-  mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent), linear-gradient(180deg, transparent, #000 6%, #000 94%, transparent);
-  mask-composite: intersect;
-}
-.ov-land { width: 100%; height: 100%; display: block; }
-.ov-land path {
-  stroke: var(--ov-halo); stroke-width: .7; stroke-linejoin: round;
-  vector-effect: non-scaling-stroke; transition: fill var(--dur) ease-out;
-}
-.ov-dot-d { fill: var(--ov-dot); } .ov-dot-on { fill: var(--ov-dot-on); } .ov-dot-hi { fill: var(--ov-dot-hi); }
-.ov-land .ov-wash { fill: var(--ov-wash-on); }
-.ov-land .ov-wash.hi { fill: var(--ov-wash-hi); }
-.ov-land path:not([class]) { fill: url(#ov-dots-d); }
-.ov-land path.on { fill: url(#ov-dots-on); }
-.ov-land path.hi { fill: url(#ov-dots-hi); }
-
-.ov-pins { list-style: none; margin: 0; padding: 0; position: absolute; inset: 0; pointer-events: none; }
-.ov-pin { position: absolute; width: 0; height: 0; z-index: 1; pointer-events: auto; }
-.ov-pin:not(.one) { z-index: 2; }
-.ov-pin.open, .ov-pin:focus-within { z-index: 20; }
-/* a crowd's light: wider and stronger with its count; none on the light canvas, where it read as a smudge */
-.ov-glow { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%); border-radius: 50%; background: radial-gradient(closest-side, var(--ov-glow), transparent); pointer-events: none; }
-:root:not([data-theme="dark"]) .ov-glow { display: none; }
-/* the button is the hit target; the disc inside it is what is drawn */
-.ov-b {
-  position: absolute; left: 0; top: 0; transform: translate(-50%, -50%);
-  display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: none; cursor: pointer;
-}
-.ov-b:focus-visible { outline: none; }
-.ov-disc {
-  display: grid; place-items: center; width: var(--s); height: var(--s); padding: 2px; border-radius: 50%;
-  background: var(--ring); box-shadow: var(--ov-pin-shadow); transition: transform var(--dur) ease-out;
-}
-.ov-disc > span {
-  display: grid; place-items: center; width: 100%; height: 100%; border-radius: 50%; background: var(--ov-disc);
-  color: var(--text); font-size: clamp(10px, calc(var(--s) * .34), 12.5px); font-weight: 600; line-height: 1; letter-spacing: -.01em; font-variant-numeric: tabular-nums lining-nums;
-}
-/* a lone host: the smallest disc, its ring thinner and its figure quieter */
-.ov-pin.one .ov-disc { padding: 1.5px; box-shadow: var(--ov-dot-shadow); }
-.ov-pin.one .ov-disc > span { font-size: 9.5px; color: var(--text-2); }
-.ov-b:hover .ov-disc, .ov-pin.open .ov-disc { transform: scale(1.12); }
-.ov-b:focus-visible .ov-disc { outline: 2px solid var(--accent); outline-offset: 3px; }
-.ov-fault { position: absolute; top: 50%; left: 50%; width: 8px; height: 8px; margin: calc(var(--s) / -2 - 1px) 0 0 calc(var(--s) / 2 - 7px); border-radius: 50%; background: var(--fault); box-shadow: 0 0 0 2px var(--ov-halo); }
-/* the line's validator: one soft ring outwards, then still */
-.ov-pin.live .ov-disc { position: relative; }
-.ov-pin.live .ov-disc::after {
-  content: ""; position: absolute; inset: -3px; border-radius: 50%; border: 2px solid var(--accent);
-  animation: ov-pulse 1.6s ease-out 2; opacity: 0; pointer-events: none;
-}
-@keyframes ov-pulse { 0% { transform: scale(1); opacity: .7; } 100% { transform: scale(2); opacity: 0; } }
-
-/* a city's name beside its disc, set like an atlas label: no box, a halo in the page's colour */
-.ov-tag {
-  position: absolute; display: flex; align-items: center; justify-content: center; height: 18px; padding: 0 5px; white-space: nowrap; pointer-events: none;
-  font-size: 12px; font-weight: 500; line-height: 1; letter-spacing: .005em; color: var(--text-2);
-  border-radius: 6px; background: color-mix(in srgb, var(--ov-halo) 88%, transparent);
-  box-shadow: 0 0 6px 3px color-mix(in srgb, var(--ov-halo) 75%, transparent);
-  animation: ov-in .25s ease-out;
-}
-.ov-tag i { margin-left: 3px; font-style: normal; font-weight: 500; color: var(--text-3); font-variant-numeric: tabular-nums; }
-/* a name set a step out from its disc, tied to it */
-.ov-lead { position: absolute; height: 1px; transform-origin: 0 50%; background: var(--text-3); opacity: .65; pointer-events: none; animation: ov-in .25s ease-out; }
-
-/* a disc's places and hosts: the charts' tooltip surface */
-.ov-pop {
-  position: absolute; padding: 12px 14px 10px; border-radius: 12px; text-align: left; font-size: var(--t-cell);
-  background: color-mix(in srgb, var(--paper) 94%, transparent); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
-  border: 1px solid var(--border); box-shadow: var(--shadow-pop); animation: ov-in var(--dur) ease-out;
-}
-.ov-pop-h { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 0 0 8px; }
-.ov-pop-h b { font-weight: 600; color: var(--text); }
-.ov-pop-h span { flex: none; font-size: var(--t-small); font-weight: 500; color: var(--text-3); font-variant-numeric: tabular-nums; }
-/* a merged disc names its places here, not on the map. Each name brings its dot on its left; the
-   list is set 15px left and clipped there, so the first name of every line loses its dot */
-.ov-pop-cities { display: flex; flex-wrap: wrap; gap: 2px 0; margin: -2px 0 10px -15px; clip-path: inset(-4px -4px -4px 15px); font-size: var(--t-small); line-height: 18px; color: var(--text-2); }
-.ov-pop-cities > span { position: relative; padding-left: 15px; white-space: nowrap; }
-.ov-pop-cities > span::before { content: "·"; position: absolute; left: 5px; color: var(--text-3); }
-.ov-pop-cities i { font-style: normal; color: var(--text-3); font-variant-numeric: tabular-nums; }
-/* whole rows, four of 49px (7 + 18 + 16 + 7, and the rule above each), the list fading at an edge that has more */
-.ov-pop ul { list-style: none; margin: 0; padding: 0; max-height: 196px; overflow-y: auto; overscroll-behavior: contain; }
-.ov-pop ul[data-more="bottom"] { -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 30px), transparent); mask-image: linear-gradient(180deg, #000 calc(100% - 30px), transparent); }
-.ov-pop ul[data-more="top"] { -webkit-mask-image: linear-gradient(0deg, #000 calc(100% - 30px), transparent); mask-image: linear-gradient(0deg, #000 calc(100% - 30px), transparent); }
-.ov-pop ul[data-more="top bottom"] { -webkit-mask-image: linear-gradient(180deg, transparent, #000 30px, #000 calc(100% - 30px), transparent); mask-image: linear-gradient(180deg, transparent, #000 30px, #000 calc(100% - 30px), transparent); }
-.ov-pop li { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; column-gap: 8px; align-items: baseline; padding: 7px 0; line-height: 18px; border-top: 1px solid var(--line-soft); }
-.ov-pop .ov-dot { align-self: center; }
-.ov-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ov-share { color: var(--text-2); font-variant-numeric: tabular-nums; }
-.ov-meta { grid-column: 2 / 4; color: var(--text-3); font-size: var(--t-small); }
-.ov-pop .ov-meta { line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ov-broken { color: var(--fault); }
-.ov-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; }
-.ov-zoomin {
-  display: block; width: 100%; margin-top: 8px; height: 30px; border: 0; border-radius: 999px;
-  background: var(--accent-tint); color: var(--accent-ink); font: inherit; font-size: var(--t-small); font-weight: 600; cursor: pointer;
-}
-.ov-zoomin:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
-
-/* the map's corner: the quiet key of Tensile's check and the zoom, over the map */
-.ov-atlas > .ov-map-tools {
-  position: absolute; right: 8px; bottom: 8px; z-index: 3; margin: 0;
-  display: inline-flex; align-items: center; gap: 12px; padding: 3px 3px 3px 12px; border-radius: 999px;
-  background: color-mix(in srgb, var(--paper) 84%, transparent); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
-  box-shadow: var(--shadow-sm), 0 0 0 1px var(--border);
-}
-.ov-key { display: inline-flex; align-items: center; gap: 10px; margin: 0; white-space: nowrap; font-size: var(--t-tiny); color: var(--text-3); }
-.ov-key svg { flex: none; margin-right: -4px; opacity: .8; }
-.ov-key i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
-.ov-zoom { display: inline-flex; gap: 2px; }
-.ov-zoom button { display: grid; place-items: center; width: 28px; height: 24px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--text-2); cursor: pointer; transition: background var(--dur), color var(--dur), box-shadow var(--dur); }
-.ov-zoom button:hover:not(:disabled) { background: var(--seg-on); color: var(--seg-on-ink); box-shadow: var(--seg-on-shadow); }
-.ov-zoom button:disabled { opacity: .38; cursor: default; }
-.ov-zoom button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-
-/* under the map, on a line of its own: the newest event, its line kept while it loads so nothing moves when it arrives */
-.ov-map-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px; min-height: 30px; margin-top: auto; padding-top: 12px; font-size: var(--t-small); }
-.ov-live { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 0 8px; min-width: 0; margin: 0; color: var(--text-2); animation: ov-in .35s ease-out; }
-.ov-live > .ov-dot { width: 7px; height: 7px; margin-right: 2px; box-shadow: 0 0 0 3px var(--accent-tint); }
-.ov-live > span:not(:last-child)::after { content: "·"; margin-left: 8px; color: var(--text-3); }
-.ov-live a { color: var(--text); font-weight: 500; }
-.ov-live .ov-ago { color: var(--text-3); }
-@keyframes ov-in { from { opacity: 0; } to { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) {
-  .ov-disc, .ov-land path, .ov-zoom button { transition: none; }
-  .ov-tag, .ov-lead, .ov-live, .ov-pop { animation: none; }
-  .ov-pin.live .ov-disc::after { animation: none; opacity: .8; transform: scale(1.3); }
-}
 /* a table that stands on its own: one frame, a tinted head, a line between rows */
 .tablewrap.framed { border: 1px solid var(--line); border-radius: 8px; margin-top: 12px; }
 .tablewrap.framed table { border-collapse: separate; border-spacing: 0; }
@@ -1046,19 +746,6 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
   .bt.nss th:nth-child(1) { width: 20%; } .bt.nss th:nth-child(2) { width: 12%; } .bt.nss th:nth-child(3) { width: 9%; }
   .bt.nss th:nth-child(4) { width: 16%; } .bt.nss th:nth-child(5) { width: 9%; } .bt.nss th:nth-child(6) { width: 17%; } .bt.nss th:nth-child(7) { width: 17%; }
   .bt.blist th:nth-child(1) { width: 12%; } .bt.blist th:nth-child(2) { width: 10%; } .bt.blist th:nth-child(3) { width: 12%; } .bt.blist th:nth-child(4) { width: 11%; } .bt.blist th:nth-child(5) { width: 15%; } .bt.blist th:nth-child(6) { width: 8%; } .bt.blist th:nth-child(7) { width: 9%; } .bt.blist th:nth-child(8) { width: 8%; } .bt.blist th:nth-child(9) { width: 15%; }
-}
-
-@media (max-width: 960px) {
-  .hostmap { grid-template-columns: 1fr; }
-  .hostmap > div + div { padding: 18px 0 0; margin-top: 18px; border-left: 0; border-top: 1px solid var(--line-soft); }
-  .hostmap > div { padding: 0; }
-}
-@media (max-width: 720px) {
-  .ov-counts { gap: 2px 20px; }
-  .ov-counts b { font-size: 22px; }
-  .ov-map-foot { min-height: 28px; padding-top: 10px; }
-  .ov-atlas > .ov-map-tools { right: 6px; bottom: 6px; gap: 8px; padding-left: 10px; }
-  .ov-key { gap: 8px; }
 }
 
 /* the validator page: its avatar beside the name */
@@ -1375,4 +1062,396 @@ body { background: var(--canvas); }
   .api-send { margin-left: auto; }
   .api-code { padding: 10px 12px; font-size: 11.5px; }
   .api-conv dl > div { grid-template-columns: minmax(0, 1fr); padding: 12px 14px; }
+}
+
+/* =============================================================================
+   The overview's top: one instrument panel (page.tsx, .deck).
+
+   The map of Fibre providers sits full-bleed at the top of the panel, its sea
+   the panel itself, the land one calm solid shade (a country with a host a
+   shade warmer), a faint graticule under it. Places are rounded squares in the
+   accent with their count; a lone host is a small square with none. Names
+   only on hover, focus or tap. One floating bar straddles the map's foot: the
+   newest event, then the three counts. Under it a row of instruments divided
+   by hairlines: the current Fibre providers' share of voting power over a
+   strip of the validators themselves, the recent blobs (newest first, a tape
+   that moves once per read), the latest blob's readout.
+
+   Colour is spent as elsewhere: the accent for the chain's facts and the
+   instruments, amber only for an unreachable host or an unavailable blob, red
+   only for a broken obligation's pip. Motion is spent on arrivals only (the
+   blobs' tape and glow, a rolled digit, the header's block dot) and every bit
+   of it stops under prefers-reduced-motion.
+   ========================================================================== */
+.deck {
+  /* the sea is the panel; land and badges are tokens so the two themes are a handful of lines */
+  --cm-land: #e7eaeb;
+  --cm-land-on: #d6e6e7;
+  --cm-land-hi: #b5d7da;
+  --cm-grat: rgb(var(--ink) / .02);
+  /* borders between countries sit a little lighter than the land, not cut down to the sea */
+  --cm-edge: color-mix(in srgb, var(--paper) 55%, var(--cm-land));
+  --cm-halo: var(--paper);
+  --cm-badge: var(--accent);
+  --cm-badge-ink: #ffffff;
+  --cm-badge-hold-ink: #ffffff;
+  --cm-badge-glow: 0 1px 2px rgb(16 24 32 / .22), 0 4px 12px -4px rgb(0 106 116 / .45);
+  --cp-rest: rgb(var(--ink) / .13);
+  --cp-on: var(--accent);
+  --cp-on-hover: #008b97;
+  /* a recent blob's square: one fill for every settled blob, and a lighter core that holds its size */
+  --rb-fill: color-mix(in srgb, var(--accent) 88%, #ffffff);
+  --rb-core: color-mix(in srgb, var(--accent) 40%, #ffffff);
+  --rb-glow: rgb(0 106 116 / .4);
+  position: relative; isolation: isolate; margin: 16px 0 18px; border-radius: var(--r-panel);
+  background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow);
+}
+/* lit from its top corners as the other pages' chain panels are, the map's sea included */
+.deck::before { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: var(--stage-glow); pointer-events: none; }
+:root[data-theme="dark"] .deck {
+  --cm-land: #1b2226;
+  --cm-land-on: #1b3035;
+  --cm-land-hi: #1f4a51;
+  --cm-grat: rgb(255 255 255 / .012);
+  --cm-edge: color-mix(in srgb, var(--paper) 38%, var(--cm-land));
+  --cm-badge: #33b3bf;
+  --cm-badge-ink: #04171a;
+  --cm-badge-hold-ink: #1f1500;
+  --cm-badge-glow: 0 0 16px -3px rgb(51 179 191 / .7);
+  --cp-rest: rgb(255 255 255 / .11);
+  --cp-on: #2ea4af;
+  --cp-on-hover: #5fd0da;
+  --rb-fill: #2a9fab;
+  --rb-core: #a3e4ea;
+  --rb-glow: rgb(51 179 191 / .6);
+  background: var(--paper);
+}
+
+/* ---- the map ---- */
+/* above the row of instruments: the container query makes it a stacking context, and a popover may reach below the map */
+.cm { position: relative; z-index: 2; min-width: 0; container-type: inline-size; }
+/* the box's two shapes, as HostMap.tsx draws them (WIDE, TALL): set here so it has its size before any script */
+.cm-atlas { position: relative; width: 100%; aspect-ratio: 1 / .34; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
+@container (max-width: 559px) { .cm-atlas { aspect-ratio: 1 / .56; } }
+.cm-atlas.zoomed { touch-action: none; cursor: grab; }
+.cm-atlas.zoomed:active { cursor: grabbing; }
+.cm-vp {
+  position: absolute; inset: 0; overflow: hidden; border-radius: var(--r-panel) var(--r-panel) 0 0;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent), linear-gradient(180deg, transparent, #000 9%, #000 80%, transparent);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent), linear-gradient(180deg, transparent, #000 9%, #000 80%, transparent);
+  mask-composite: intersect;
+}
+.cm-land { display: block; width: 100%; height: 100%; }
+.cm-land path { fill: var(--cm-land); stroke: var(--cm-edge); stroke-width: .5; stroke-linejoin: round; vector-effect: non-scaling-stroke; transition: fill 220ms ease-out; }
+.cm-land path.on { fill: var(--cm-land-on); }
+.cm-land path.hi { fill: var(--cm-land-hi); }
+.cm-land path.cm-grat { fill: none; stroke: var(--cm-grat); stroke-width: 1; }
+
+/* the map's name and the key of Tensile's check, in its top-left corner; the view buttons in the other */
+.cm-title { position: absolute; left: 24px; top: 18px; z-index: 6; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px; pointer-events: none; }
+.cm-key { display: inline-flex; align-items: center; gap: 12px; margin: 0; font-size: var(--t-tiny); color: var(--text-3); pointer-events: auto; white-space: nowrap; }
+.cm-key svg { flex: none; margin-right: -5px; color: var(--accent-ink); }
+.cm-key i { display: inline-block; margin-right: 5px; vertical-align: 0; }
+.cm-key .k-ok { width: 8px; height: 8px; border-radius: 2px; background: var(--cm-badge); }
+.cm-key .k-hold { width: 7px; height: 7px; border-radius: 50%; background: var(--hold); vertical-align: .5px; }
+.cm-key .k-none { width: 8px; height: 8px; border-radius: 2px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.cm-tools {
+  position: absolute; right: 16px; top: 14px; z-index: 6; display: inline-flex; gap: 2px; padding: 3px; border-radius: 999px;
+  background: color-mix(in srgb, var(--paper) 84%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-sm), 0 0 0 1px var(--border);
+}
+.cm-tools button { display: grid; place-items: center; width: 28px; height: 26px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--text-2); cursor: pointer; transition: background var(--dur), color var(--dur), box-shadow var(--dur); }
+.cm-tools button:hover:not(:disabled) { background: var(--seg-on); color: var(--seg-on-ink); box-shadow: var(--seg-on-shadow); }
+.cm-tools button:disabled { opacity: .38; cursor: default; }
+.cm-tools button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* the badges: rounded squares in the accent; the open one ringed and the others stepping back */
+.cm-pins { list-style: none; margin: 0; padding: 0; position: absolute; inset: 0; z-index: 5; pointer-events: none; }
+.cm-pin { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 1; pointer-events: auto; transition: opacity 180ms ease-out; }
+.cm-pin:not(.one) { z-index: 2; }
+.cm-pin.open, .cm-pin:focus-within { z-index: 20; }
+.cm-atlas.has-open .cm-pin:not(.open) { opacity: .42; }
+.cm-b { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%); display: grid; place-items: center; padding: 0; border: 0; border-radius: 8px; background: none; cursor: pointer; }
+.cm-b:focus-visible { outline: none; }
+.cm-badge {
+  position: relative; display: grid; place-items: center; border-radius: 7px; background: var(--cm-badge); color: var(--cm-badge-ink);
+  font-size: 12px; font-weight: 600; line-height: 1; letter-spacing: -.01em; font-variant-numeric: tabular-nums lining-nums;
+  box-shadow: 0 0 0 2px var(--cm-halo), var(--cm-badge-glow); transition: transform 180ms ease-out, outline-color 180ms;
+  outline: 2px solid transparent; outline-offset: 3px;
+}
+.cm-pin.one .cm-badge { border-radius: 3px; box-shadow: 0 0 0 2px var(--cm-halo); }
+.cm-badge[data-tone="hold"] { background: var(--hold); color: var(--cm-badge-hold-ink); box-shadow: 0 0 0 2px var(--cm-halo); }
+.cm-badge[data-tone="none"] { background: var(--surface-2); color: var(--text-2); box-shadow: inset 0 0 0 1px var(--line), 0 0 0 2px var(--cm-halo); }
+.cm-b:hover .cm-badge, .cm-pin.open .cm-badge { transform: scale(1.1); }
+.cm-pin.open .cm-badge, .cm-b:focus-visible .cm-badge { outline-color: var(--accent); }
+.cm-pin.one.open .cm-badge, .cm-pin.one .cm-b:focus-visible .cm-badge { outline-offset: 4px; transform: scale(1.3); }
+.cm-pip { position: absolute; width: 7px; height: 7px; border-radius: 50%; box-shadow: 0 0 0 2px var(--cm-halo); pointer-events: none; }
+.cm-pip.hold { background: var(--hold); }
+.cm-pip.fault { background: var(--fault); }
+/* the bar's validator: one soft ring outwards from its place, twice, then still */
+.cm-pin.live .cm-badge::after {
+  content: ""; position: absolute; inset: -3px; border-radius: 9px; border: 1.5px solid var(--accent);
+  animation: cm-pulse 1.6s ease-out 1; opacity: 0; pointer-events: none;
+}
+.cm-pin.one.live .cm-badge::after { border-radius: 5px; }
+@keyframes cm-pulse { 0% { transform: scale(1); opacity: .55; } 100% { transform: scale(2); opacity: 0; } }
+
+/* a place's hosts: the charts' tooltip surface */
+.cm-pop {
+  position: absolute; display: flex; flex-direction: column; padding: 12px 14px 10px; border-radius: 12px; text-align: left; font-size: var(--t-cell); cursor: auto;
+  background: color-mix(in srgb, var(--paper) 94%, transparent); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  border: 1px solid var(--border); box-shadow: var(--shadow-pop); animation: cm-in var(--dur) ease-out;
+}
+.cm-pop-h { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 0 0 8px; }
+.cm-pop-h b { font-weight: 600; color: var(--text); }
+.cm-pop-h span { flex: none; font-size: var(--t-small); font-weight: 500; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.cm-pop-cities { display: flex; flex-wrap: wrap; gap: 2px 0; margin: -2px 0 10px -15px; clip-path: inset(-4px -4px -4px 15px); font-size: var(--t-small); line-height: 18px; color: var(--text-2); }
+.cm-pop-cities > span { position: relative; padding-left: 15px; white-space: nowrap; }
+.cm-pop-cities > span::before { content: "·"; position: absolute; left: 5px; color: var(--text-3); }
+.cm-pop-cities i { font-style: normal; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.cm-pop ul { flex: 0 1 auto; min-height: 60px; list-style: none; margin: 0; padding: 0; max-height: 196px; overflow-y: auto; overscroll-behavior: contain; }
+.cm-pop > p, .cm-pop > .cm-zoomin { flex: none; }
+.cm-pop ul[data-more="bottom"] { -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 30px), transparent); mask-image: linear-gradient(180deg, #000 calc(100% - 30px), transparent); }
+.cm-pop ul[data-more="top"] { -webkit-mask-image: linear-gradient(0deg, #000 calc(100% - 30px), transparent); mask-image: linear-gradient(0deg, #000 calc(100% - 30px), transparent); }
+.cm-pop ul[data-more="top bottom"] { -webkit-mask-image: linear-gradient(180deg, transparent, #000 30px, #000 calc(100% - 30px), transparent); mask-image: linear-gradient(180deg, transparent, #000 30px, #000 calc(100% - 30px), transparent); }
+.cm-pop li { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; column-gap: 8px; align-items: baseline; padding: 7px 0; line-height: 18px; border-top: 1px solid var(--line-soft); }
+.cm-dot { display: inline-block; align-self: center; width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.cm-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cm-share { color: var(--text-2); font-variant-numeric: tabular-nums; }
+.cm-meta { grid-column: 2 / 4; color: var(--text-3); font-size: var(--t-small); line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cm-broken { color: var(--fault); }
+.cm-zoomin { display: block; width: 100%; margin-top: 8px; height: 30px; border: 0; border-radius: 999px; background: var(--accent-tint); color: var(--accent-ink); font: inherit; font-size: var(--t-small); font-weight: 600; cursor: pointer; }
+.cm-zoomin:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+
+/* the one floating bar, straddling the map's foot: the newest event, then the counts */
+.cm-bar {
+  position: absolute; left: 50%; bottom: 0; z-index: 4; transform: translate(-50%, 50%);
+  display: flex; align-items: center; width: max-content; max-width: calc(100% - 48px); height: 58px; padding: 0 6px 0 18px;
+  border-radius: 16px; background: color-mix(in srgb, var(--paper) 84%, transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3); backdrop-filter: blur(14px) saturate(1.3);
+  border: 1px solid var(--border); box-shadow: var(--shadow-pop);
+}
+.cm-ev { display: flex; align-items: center; gap: 8px; flex: 0 1 auto; min-width: 0; width: 420px; height: 30px; margin: 0; padding-right: 18px; border-right: 1px solid var(--border); font-size: var(--t-cell); color: var(--text-2); animation: cm-in .35s ease-out; }
+.cm-ev-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-tint); }
+.cm-ev-dot[data-tone="hold"] { background: var(--hold); box-shadow: 0 0 0 3px var(--hold-tint); }
+.cm-ev-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cm-ev-t a { color: var(--text); font-weight: 600; }
+.cm-ev-s { color: var(--text-3); }
+.cm-ev-ago { flex: none; color: var(--text-3); }
+.cm-counts { display: flex; flex: none; align-items: baseline; margin: 0; padding: 0 4px; list-style: none; }
+.cm-counts li { display: flex; align-items: baseline; gap: 7px; padding: 0 14px; font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
+.cm-counts li + li { border-left: 1px solid var(--border); }
+.cm-counts b { font-size: 21px; font-weight: 600; letter-spacing: -.025em; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
+:root[data-theme="dark"] .cm-counts b:not(.wait) { background: linear-gradient(180deg, #ffffff 35%, #b4e9ee); -webkit-background-clip: text; background-clip: text; color: transparent; }
+@keyframes cm-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ---- the row of instruments under the map ---- */
+.deck-row {
+  display: grid; grid-template-columns: minmax(0, .92fr) minmax(0, 1.12fr) minmax(0, 1fr); grid-template-rows: auto 1fr;
+  grid-template-areas: "cp rb rd" "ob rb rd";
+  padding: 48px 0 18px;
+}
+.deck-row.no-cp { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); grid-template-areas: "rb rd" "rb ob"; }
+.deck-row > * { min-width: 0; padding: 0 26px; }
+.deck-row > .rb, .deck-row > .rb-read { border-left: 1px solid var(--border); }
+.deck-row.no-cp > .rb { border-left: 0; }
+.deck-row.no-cp > .ob { border-left: 1px solid var(--border); }
+.cp { grid-area: cp; }
+.ob { grid-area: ob; align-self: end; padding-top: 16px !important; }
+.rb { grid-area: rb; }
+.rb-read { grid-area: rd; }
+.wait { color: transparent !important; background: var(--wash) !important; border-radius: 4px; -webkit-background-clip: border-box !important; background-clip: border-box !important; }
+
+.ov-eyebrow { display: flex; align-items: center; margin: 0; font-size: var(--t-tiny); font-weight: 600; line-height: 16px; letter-spacing: .09em; text-transform: uppercase; color: var(--text-2); }
+.ov-fig { font-size: 34px; font-weight: 600; letter-spacing: -.045em; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
+:root[data-theme="dark"] .ov-fig:not(.cp-wait) { background: linear-gradient(180deg, #ffffff 35%, #b4e9ee); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.ov-fig.cp-wait { color: transparent; background: var(--wash); border-radius: 6px; }
+.ov-frac { display: inline-flex; align-items: baseline; font-size: 15px; font-weight: 600; line-height: 18px; letter-spacing: 0; font-variant-numeric: lining-nums proportional-nums; }
+.ov-frac-n { position: relative; top: -.38em; font-size: .74em; }
+.ov-frac-s { margin: 0 .03em; font-weight: 400; color: var(--text-2); }
+.ov-frac-d { font-size: .74em; }
+.ov-when { font-size: var(--t-small); font-weight: 500; letter-spacing: 0; color: var(--text-3); white-space: nowrap; }
+.ov-of { font-size: var(--t-cell); font-weight: 400; letter-spacing: 0; color: var(--text-2); }
+.ov-links { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 16px 0 0; font-size: var(--t-cell); font-weight: 500; }
+.ov-links a span { display: inline-block; transition: transform var(--dur) ease-out; }
+.ov-links a:hover { text-decoration: none; }
+.ov-links a:hover span { transform: translateX(3px); }
+
+/* current Fibre providers: the share, then the bonded set as one strip (a segment per validator) with the ⅔ needle through it */
+/* the three instruments' heads share one 24px line */
+.cp > .ov-eyebrow { min-height: 24px; }
+.cp-hero { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin: 14px 0 0; }
+.cp-help { font-size: var(--t-cell); color: var(--text-2); }
+.cp-help b { color: var(--text); font-weight: 600; }
+.cp-meter { position: relative; display: block; margin: 34px 0 0; }
+.cp-strip { position: relative; height: 16px; border-radius: 4px; overflow: hidden; }
+.cp-meter.wait .cp-strip { background: var(--wash); }
+.cp-strip svg { display: block; animation: cp-reveal .9s cubic-bezier(.2, .7, .2, 1) both; }
+.cp-strip rect { fill: var(--cp-rest); }
+.cp-strip rect.on { fill: var(--cp-on); }
+.cp-strip rect:hover { fill: var(--cp-on-hover); }
+.cp-strip rect:not(.on):hover { fill: var(--neutral); }
+.cp-q { position: absolute; left: var(--q); top: -24px; bottom: -5px; width: 0; z-index: 1; pointer-events: none; }
+.cp-q::before { content: ""; position: absolute; left: -1px; top: 19px; bottom: 0; width: 2px; border-radius: 1px; background: var(--text); box-shadow: 0 0 0 2px var(--paper); }
+.cp-q > span { position: absolute; left: 0; top: -2px; transform: translateX(-50%); display: inline-flex; align-items: baseline; gap: 3px; font-size: var(--t-tiny); font-weight: 600; line-height: 18px; letter-spacing: .02em; color: var(--text); white-space: nowrap; }
+.cp-rest { margin: 14px 0 0; font-size: var(--t-small); color: var(--text-3); }
+.cp-sw { display: inline-block; width: 9px; height: 9px; margin-right: 6px; border-radius: 2px; background: var(--cp-rest); box-shadow: inset 0 0 0 1px var(--line-soft); vertical-align: -1px; }
+@keyframes cp-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+
+/* recent blobs: the eyebrow, the live word and Pause; the count; the grid; its key */
+.rb { --rb-cell: 26px; --rb-gap: 5px; }
+.rb-head { display: flex; align-items: center; gap: 10px; min-height: 24px; }
+.rb-head .ov-eyebrow { margin-right: auto; }
+.rb-live { display: inline-flex; align-items: center; justify-content: flex-end; min-width: 7.2em; gap: 6px; font-size: var(--t-small); font-weight: 500; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.rb-live-d { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.rb[data-state="paused"] .rb-live-d { background: var(--text-3); }
+.rb[data-state="paused"] .rb-live { color: var(--text-2); }
+.rb[data-state="down"] .rb-live-d { background: var(--hold); }
+.rb[data-state="wait"] .rb-live-d { background: var(--pending); }
+.rb-pause { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 10px 0 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--paper); box-shadow: var(--shadow-sm); color: var(--text-2); font-size: var(--t-tiny); font-weight: 600; cursor: pointer; transition: color var(--dur), border-color var(--dur); }
+.rb-pause:hover { color: var(--text); }
+.rb-pause[aria-pressed="true"] { color: var(--accent-ink); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.rb-pause:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rb-count { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; margin: 12px 0 0; font-size: var(--t-small); color: var(--text-3); }
+.rb-total { font-size: 26px; font-weight: 600; letter-spacing: -.025em; line-height: 1.1; color: var(--text); }
+
+/* the grid: five rows, each a window on one tape. A row clips its tape a few px outside the places, so a ring or a glow
+   is not cut and a place sliding past the row's end is; the margins take that room back */
+.rb-grid { display: flex; flex-direction: column; gap: var(--rb-gap); width: calc(var(--rb-cell) * 10 + var(--rb-gap) * 9); max-width: 100%; margin: 16px 0 0; }
+.rb-row { position: relative; margin: -8px -7px; padding: 8px 7px; overflow: hidden; }
+.rb-tape { display: flex; gap: var(--rb-gap); width: max-content; }
+.rb-c {
+  position: relative; flex: none; display: grid; place-items: center; width: var(--rb-cell); height: var(--rb-cell); border-radius: 6px;
+  background: var(--rb-fill); transition: transform 160ms ease-out, box-shadow 160ms ease-out;
+}
+.rb-c.rb-empty { background: none; box-shadow: inset 0 0 0 1px var(--line-soft); }
+/* the blob's size: a square whose area is its share of the largest blob, inside a 3 px rim; too small to draw, a 4 px dot */
+.rb-sq { --s: calc((var(--rb-cell) - 6px) * var(--k, 0)); display: block; width: var(--s); height: var(--s); border-radius: clamp(1px, calc(var(--s) * .18), 4px); background: var(--rb-core); }
+.rb-sq.rb-dot { width: 4px; height: 4px; border-radius: 50%; }
+/* the newest: ringed. A ghost, a place's copy past its row's end, shows only while a move slides it out of view */
+.rb-c.rb-ghost { visibility: hidden; }
+.rb-grid.rb-moving .rb-c.rb-ghost { visibility: visible; }
+.rb-c.rb-newest { box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--accent); }
+a.rb-c:hover, .rb-c.rb-on { transform: scale(1.12); z-index: 1; text-decoration: none; box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--text-2); }
+/* while a move plays, a row's ends fade, so places slide in and out of view softly */
+.rb-grid.rb-moving .rb-row { -webkit-mask-image: linear-gradient(90deg, transparent, #000 7px, #000 calc(100% - 7px), transparent); mask-image: linear-gradient(90deg, transparent, #000 7px, #000 calc(100% - 7px), transparent); }
+a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-index: 1; }
+/* an arrival: its square fills in and its place glows, then cools to the fill over 1.2 s; once per read */
+.rb-c.rb-new .rb-sq { animation: rb-fill .5s cubic-bezier(.2, .8, .2, 1) both; }
+.rb-glow { position: absolute; inset: 0; border-radius: inherit; background: var(--rb-core); box-shadow: 0 0 12px 1px var(--rb-glow); opacity: 0; pointer-events: none; animation: rb-glow 1.2s ease-out both; }
+@keyframes rb-fill { from { transform: scale(.2); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes rb-glow { 0% { opacity: .6; } 30% { opacity: .38; } 100% { opacity: 0; } }
+
+/* the key, one line: what a square's size means, and the newest's ring */
+.rb-key { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin: 14px 0 0; font-size: var(--t-tiny); color: var(--text-3); }
+.rb-key > span { display: inline-flex; align-items: center; white-space: nowrap; }
+.rb-key-sq { display: inline-grid; place-items: center; flex: none; width: 14px; height: 14px; margin-right: 7px; border-radius: 3.5px; background: var(--rb-fill); }
+.rb-key-sq b { display: block; width: 5px; height: 5px; border-radius: 1px; background: var(--rb-core); }
+.rb-key-head { flex: none; width: 9px; height: 9px; margin: 0 7px 0 2px; border-radius: 2.5px; background: var(--rb-fill); box-shadow: 0 0 0 1.5px var(--paper), 0 0 0 2.75px var(--accent); }
+
+/* the readout: one blob's facts, the latest by default, the pointed one while a square is pointed at */
+.rb-read-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 24px; margin: 0; font-size: var(--t-small); font-weight: 400; }
+.rb-read-h .ov-eyebrow { display: inline; }
+.rb-spec { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 18px; margin: 12px 0 0; }
+.rb-spec > div { min-width: 0; }
+.rb-spec dt { margin: 0 0 3px; font-size: var(--t-small); color: var(--text-3); }
+.rb-spec dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15.5px; font-weight: 600; letter-spacing: -.012em; line-height: 21px; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
+/* in two columns the size comes last, so the two endorsement figures share a row */
+.rb-spec > .rb-size { order: 1; }
+/* the readout's links sit at the row's foot, level with the availability line beside them */
+.rb-read { display: flex; flex-direction: column; }
+.rb-read .ov-links { margin-top: 16px; }
+/* Tensile's own reading under the chain's figures: one quiet line under a hairline, "Observed by Tensile" as its prefix */
+.ob-row { display: flex; flex-wrap: wrap; align-items: baseline; margin: 0; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12px; line-height: 18px; color: var(--text-3); overflow-x: clip; }
+.ob-row > span { white-space: nowrap; }
+/* the separator hangs left of the figure: where the figure wraps under the prefix (a narrow column), it falls outside the row and is clipped */
+.ob-fig { margin-left: -18px; }
+.ob-fig::before { content: "·"; display: inline-block; width: 18px; text-align: center; color: var(--text-3); }
+.ob-pre { display: inline-flex; align-items: center; gap: 5px; align-self: center; margin-right: 18px; }
+.ob-pre svg { flex: none; color: var(--accent-ink); }
+.ob-fig b { margin-left: 2px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
+.ob-fig b.absent { color: var(--text-3); }
+/* the count under the figure, on its own line, never after a separator */
+.ob-h { flex-basis: 100%; font-variant-numeric: tabular-nums; }
+
+/* ---- the rolling figure (RollNumber): changed digits slide, the rest stay ---- */
+.rn { display: inline-flex; white-space: nowrap; font-variant-numeric: tabular-nums lining-nums; }
+.rn-v { display: inline-flex; }
+.rn-c { position: relative; display: inline-block; }
+.rn-roll { clip-path: inset(0 -.15em); }
+.rn-roll .rn-in { display: inline-block; animation: rn-in-up .46s cubic-bezier(.2, .8, .2, 1) both; }
+.rn-roll .rn-out { position: absolute; left: 0; top: 0; animation: rn-out-up .46s cubic-bezier(.2, .8, .2, 1) both; }
+.rn.down .rn-roll .rn-in { animation-name: rn-in-down; }
+.rn.down .rn-roll .rn-out { animation-name: rn-out-down; }
+@keyframes rn-in-up { from { transform: translateY(75%); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes rn-out-up { from { transform: none; opacity: 1; } to { transform: translateY(-75%); opacity: 0; } }
+@keyframes rn-in-down { from { transform: translateY(-75%); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes rn-out-down { from { transform: none; opacity: 1; } to { transform: translateY(75%); opacity: 0; } }
+
+/* ---- the header's block: quiet, in the muted greys; only the small dot moves, breathing once per block ---- */
+.blocktick { display: flex; align-items: center; gap: 6px; font-size: var(--t-small); color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.blocktick .bt-l { letter-spacing: .01em; }
+.blocktick .bt-n { color: var(--text-2); font-weight: 500; letter-spacing: .01em; }
+.bt-dot { flex: none; width: 6px; height: 6px; margin-right: 1px; border-radius: 50%; background: var(--neutral); opacity: .8; }
+.bt-dot.ok { background: var(--ok); } .bt-dot.hold { background: var(--hold); } .bt-dot.none { background: var(--neutral); }
+.bt-dot.beat { animation: bt-breathe 1.8s ease-in-out 1; }
+@keyframes bt-breathe { 0% { opacity: .8; box-shadow: 0 0 0 0 transparent; } 30% { opacity: 1; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); } 100% { opacity: .8; box-shadow: 0 0 0 0 transparent; } }
+.blocktick .soon { color: var(--text-3); border-left: 1px solid var(--line); padding-left: 8px; }
+
+/* ---- narrower screens ---- */
+@media (max-width: 1080px) {
+  .deck-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); grid-template-rows: auto auto auto; grid-template-areas: "cp rb" "ob rb" "rd rd"; row-gap: 0; }
+  .deck-row.no-cp { grid-template-columns: minmax(0, 1fr); grid-template-areas: "rb" "rd" "ob"; }
+  .deck-row.no-cp > .ob { border-left: 0; }
+  .deck-row > .rb-read { margin-top: 24px !important; }
+  .deck-row > .rb-read { border-left: 0; padding-top: 22px; margin: 0 26px; padding-left: 0; padding-right: 0; border-top: 1px solid var(--border); }
+  .rb-spec { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .rb-spec > .rb-size { order: 0; }
+  .cm-ev { width: 300px; }
+}
+@media (max-width: 860px) {
+  .cm-ev { display: none; }
+  .cm-bar { padding-left: 6px; }
+}
+@media (max-width: 720px) {
+  .deck { margin-top: 14px; border-radius: 14px; }
+  .cm-vp { border-radius: 14px 14px 0 0; }
+  /* the bar sits under the map, in the flow: the counts in three columns, the event on its own line */
+  .cm-bar {
+    position: relative; left: auto; bottom: auto; transform: none; width: auto; max-width: none; height: auto;
+    flex-direction: column-reverse; align-items: stretch; margin: -6px 12px 0; padding: 0; border-radius: 14px;
+  }
+  /* the event wraps to two lines rather than stopping mid-word, in a line that keeps room for two, so the rotation never moves the page */
+  .cm-ev { display: flex; align-items: center; width: auto; height: 56px; padding: 0 12px; border-right: 0; border-top: 1px solid var(--border); font-size: var(--t-small); }
+  .cm-ev-t { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; white-space: normal; line-height: 18px; }
+  .cm-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 10px 0; }
+  .cm-counts li { flex-direction: column; align-items: center; gap: 4px; padding: 0 6px; font-size: var(--t-tiny); text-align: center; white-space: normal; line-height: 1.25; }
+  .cm-counts b { font-size: 20px; }
+  .deck-row, .deck-row.no-cp { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-template-areas: "cp" "ob" "rb" "rd"; padding: 22px 0 18px; row-gap: 0; }
+  .deck-row.no-cp { grid-template-areas: "rb" "rd" "ob"; }
+  .deck-row > * { padding: 0 16px; }
+  .deck-row > .rb, .deck-row > .rb-read { border-left: 0; border-top: 1px solid var(--border); margin: 22px 16px 0 !important; padding: 22px 0 0; }
+  .ob { padding-top: 16px !important; }
+  .rb-spec { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rb-spec > .rb-size { order: 1; }
+  /* the map's name and key are in the bar's counts and the popovers here; the view buttons move to the empty south-west */
+  .cm-title { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .cm-tools { right: 8px; top: 8px; }
+  .cm-tools button { width: 30px; height: 28px; }
+  /* a tap on a badge zooms in; the buttons appear once there is a view to leave */
+  .cm-atlas:not(.zoomed) .cm-tools { display: none; }
+  .cm-badge { font-size: 10.5px; border-radius: 6px; }
+  .ov-fig { font-size: 30px; }
+}
+@media (max-width: 480px) {
+  .blocktick .bt-l { display: none; }
+  .rb { --rb-cell: 26px; --rb-gap: 4px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-land path, .cm-badge, .cm-pin, .cm-tools button, .rb-c, .ov-links a span { transition: none; }
+  .cm-pop, .cm-ev { animation: none; }
+  .cm-pin.live .cm-badge::after { animation: none; opacity: .7; transform: scale(1.35); }
+  .cp-strip svg, .rb-c.rb-new .rb-sq, .rb-glow, .bt-dot.beat, .rn-roll .rn-in, .rn-roll .rn-out { animation: none; }
+  .rn-roll .rn-out { display: none; }
 }
