@@ -9,11 +9,11 @@
 export const SOURCE_URL = (process.env.NEXT_PUBLIC_SOURCE_URL ?? "https://github.com/s0urledd/tensile").replace(/\/$/, "");
 
 /**
- * The API's public address, as the API page prints it in every command. The
- * site's own pages call the same routes on their own origin (/api), so this
- * is only what a reader copies. Unset, the page prints its own site's /api/v1
- * once it runs, since one export serves every network's site, and the
- * public deployment's address until then; set, it is printed as it is.
+ * The API's public /v1 address, which the API page prints without the /v1 as
+ * its base URL. The site's own pages call the same routes on their own origin
+ * (/api), so this is only what a reader copies. Unset, the page prints its
+ * own site's /api once it runs, since one export serves every network's site,
+ * and the public deployment's address until then.
  */
 export const API_URL_FIXED = !!process.env.NEXT_PUBLIC_API_URL;
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "https://tensile.huginn.tech/api/v1").replace(/\/$/, "");

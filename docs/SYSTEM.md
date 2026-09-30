@@ -352,13 +352,12 @@ GET /v1/hosting               where the registered endpoints are hosted, and how
 ```
 
 The public documentation is the site's API page (`web/src/app/developers`):
-the questions each kind of reader asks, the call and the fields that answer
-each one, and what every route shares. Its stability promise covers the
-fields and routes it names; anything else can change with the site that
-reads it, and `/v1/meta` is the site's own. A response carries what some
-reader uses: a field nothing reads is dropped from the answer, never from
-the store (the snapshot rows keep their internal figures; `shapes.go`
-projects them).
+every documented route in order, with its parameters, a Try it and an
+example answer (`endpoints.ts`), then what every route shares. `/v1/meta`,
+`/v1/sampling` and `/v1/avatars` are the site's own and not on it. A
+response carries what some reader uses: a field nothing reads is dropped
+from the answer, never from the store (the snapshot rows keep their
+internal figures; `shapes.go` projects them).
 
 **Windows**: `24h`, `7d`, `30d`, `all`.
 
@@ -437,7 +436,7 @@ Every page's header and footer read `/v1/meta` and `/v1/tip`.
 | `/publishers/` | `/v1/market`, `/v1/publishers` |
 | `/publisher/?addr=` | `/v1/publishers/{addr}` |
 | `/methodology/` | `/v1/params` (the protocol-parameters section; the rest is static) |
-| `/developers/` | nothing: the API page; its example answers are fixed text (`examples.ts`) |
+| `/developers/` | `/v1/health` for its status dot, and each route when its Try it is sent; its example answers are fixed text (`endpoints.ts`) |
 
 `MIN_RATED` (20) gates every *ranked rate* — service, reachability, throughput:
 below it the figure prints without a gauge and does not sort in either
