@@ -354,6 +354,11 @@ func (c *catchUp) rawFrom() error {
 			delete(c.e.anchors, d)
 		}
 	}
+	// A start that is not a store timestamp sorts between days, where the
+	// prune never deletes it, but no day before raw_from is summed, so only
+	// those from the gap before raw_from on are still wanted (gapClean).
+	i := sort.SearchStrings(c.e.weird, dayHi(dayAdd(now, -1)))
+	c.e.weird = append([]string(nil), c.e.weird[i:]...)
 	c.dropSealsReaching("0000", dayHi(dayAdd(now, -1)))
 	return nil
 }
@@ -587,7 +592,31 @@ func (c *catchUp) foldDecisions(from, hi int64) error {
 	for _, d := range days {
 		c.touchSettle(d, "", "", "")
 	}
-	return nil
+	// A new decision of a publication a correction can reach is
+	// fingerprinted from now on (readFingerprints), whether or not the
+	// publication had one before.
+	if len(promises) == 0 {
+		return nil
+	}
+	list := make([]string, 0, len(promises))
+	for h := range promises {
+		list = append(list, h)
+	}
+	sort.Strings(list)
+	b, _ := json.Marshal(list)
+	rr, err := c.q.QueryContext(c.ctx, reachableSQL, string(b))
+	if err != nil {
+		return err
+	}
+	defer rr.Close()
+	for rr.Next() {
+		var h string
+		if err := rr.Scan(&h); err != nil {
+			return err
+		}
+		c.e.reach[h] = true
+	}
+	return rr.Err()
 }
 
 // foldPublicationCorrections reads again the latest deadline of every day
@@ -1104,6 +1133,9 @@ func (c *catchUp) readCorrections(diff bool) error {
 		fp := corrFP{Pub: p.fp, Rows: hex.EncodeToString(sum[:])}
 		old, had := c.e.corr[h]
 		corr[h] = fp
+		if !had {
+			c.e.reach[h] = true // its decisions, if it has any, are fingerprinted too
+		}
 		if x.stale {
 			stale[h] = true
 		}
@@ -1135,9 +1167,16 @@ func (c *catchUp) readCorrections(diff bool) error {
 // verified params range covers (the corrector's own range pass). Each
 // catch-up fingerprints those decisions, and one whose fingerprint moved
 // drops the days of its points and its settlement day.
+//
+// Publications are never deleted, but their decisions are, with the prune,
+// so the publications fingerprinted (reach) are only those that had a
+// decision at the last catch-up: one left with none is dropped from them,
+// and taken back if a decision of it arrives (foldDecisions), as a
+// publication newly covered or corrected is added. What a catch-up reads
+// for them is what the store still holds of their decisions, not every
+// publication a correction ever reached.
 
-// coverNew adds to the covered set the new publications a verified range
-// covers.
+// coverNew adds to reach the new publications a verified range covers.
 func (c *catchUp) coverNew(pubs []pubHeights) error {
 	if len(pubs) == 0 {
 		return nil
@@ -1149,7 +1188,7 @@ func (c *catchUp) coverNew(pubs []pubHeights) error {
 	for _, p := range pubs {
 		for _, r := range ranges {
 			if p.promiseHeight-1 <= r[1] && p.settleHeight >= r[0] {
-				c.e.covered[p.promise] = true
+				c.e.reach[p.promise] = true
 			}
 		}
 	}
@@ -1173,9 +1212,9 @@ func (c *catchUp) verifiedRanges() ([][2]int64, error) {
 	return out, rows.Err()
 }
 
-// readFingerprints brings the covered set up to the verified ranges, reads
-// the fingerprint of every decision a correction can reach, and with diff
-// drops what moved.
+// readFingerprints adds to reach what the verified ranges new since cover,
+// reads the fingerprint of every decision of reach, drops from reach what
+// has none, and with diff drops what moved.
 func (c *catchUp) readFingerprints(diff bool) error {
 	rows, err := c.q.QueryContext(c.ctx, `SELECT id, from_height, to_height FROM param_uncertainty WHERE resolution = 'verified'`)
 	if err != nil {
@@ -1210,32 +1249,14 @@ func (c *catchUp) readFingerprints(diff bool) error {
 				pr.Close()
 				return err
 			}
-			c.e.covered[h] = true
+			c.e.reach[h] = true
 		}
 		if err := pr.Close(); err != nil {
 			return err
 		}
 		c.e.verified[r.id] = true
 	}
-	universe := map[string]bool{}
-	for h := range c.e.covered {
-		universe[h] = true
-	}
-	cr, err := c.q.QueryContext(c.ctx, `SELECT promise_hash FROM publications WHERE corrected_at IS NOT NULL`)
-	if err != nil {
-		return err
-	}
-	for cr.Next() {
-		var h string
-		if err := cr.Scan(&h); err != nil {
-			cr.Close()
-			return err
-		}
-		universe[h] = true
-	}
-	if err := cr.Close(); err != nil {
-		return err
-	}
+	universe := c.e.reach
 	fps := map[string]string{}
 	msu := map[string]string{}
 	pointDays := map[string]map[string]bool{}
@@ -1275,6 +1296,13 @@ func (c *catchUp) readFingerprints(diff bool) error {
 		for h, parts := range hs {
 			sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 			fps[h] = hex.EncodeToString(sum[:])
+		}
+	}
+	// A publication with no decision left has nothing a correction could
+	// move unseen; a decision of it arriving takes it back (foldDecisions).
+	for h := range c.e.reach {
+		if _, ok := fps[h]; !ok {
+			delete(c.e.reach, h)
 		}
 	}
 	moved := map[string]bool{}

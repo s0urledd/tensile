@@ -184,6 +184,13 @@ const nextRowSQL = `SELECT MIN(t) FROM (
 
 // ---- what the catch-up reads that no log records ----
 
+// reachableSQL is, of the publications named in ?1 (a JSON array of promise
+// hashes), those a correction can reach: moved by one, or covered by a
+// verified params range (the corrector's range pass).
+const reachableSQL = `SELECT p.promise_hash FROM json_each(?) j CROSS JOIN publications p ON p.promise_hash = j.value
+	WHERE p.corrected_at IS NOT NULL OR EXISTS (SELECT 1 FROM param_uncertainty u
+		WHERE u.resolution = 'verified' AND p.settlement_height >= u.from_height AND p.promise_height - 1 <= u.to_height)`
+
 // heldMix mixes a rowid into a second sum (heldAgg): the multiplier and
 // the prime are small enough that neither a product nor a sum of them
 // overflows an integer.

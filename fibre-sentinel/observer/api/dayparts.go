@@ -316,11 +316,12 @@ type epoch struct {
 	heldPubGate heldAgg
 	heldPubs    map[string]bool
 	// fps is the fingerprint of every decision of a publication a
-	// correction can reach (dayparts_catchup.go), by promise hash; covered
-	// the publications a verified params range covers, and verified the
-	// ranges already counted there.
+	// correction can reach (dayparts_catchup.go), by promise hash; reach
+	// those publications (a verified params range covers them, or a
+	// correction moved them) that had a decision at the last catch-up, and
+	// those added since; verified the ranges already counted there.
 	fps      map[string]string
-	covered  map[string]bool
+	reach    map[string]bool
 	verified map[string]bool
 	// corr is every corrected publication as the last catch-up saw it, by
 	// promise hash, and corrStale those with a row whose deadline disagrees
@@ -353,7 +354,7 @@ type epoch struct {
 func newEpoch() *epoch {
 	return &epoch{
 		marks: map[string][]mark{}, heldProm: map[string]heldAgg{}, heldPubs: map[string]bool{},
-		fps: map[string]string{}, covered: map[string]bool{}, verified: map[string]bool{},
+		fps: map[string]string{}, reach: map[string]bool{}, verified: map[string]bool{},
 		corr: map[string]corrFP{}, corrStale: map[string]bool{},
 		rows: map[string]*rowDay{}, settle: map[string]*settleDay{}, anchors: map[string]*dayAnchors{},
 	}
@@ -371,7 +372,7 @@ func (e *epoch) clone() *epoch {
 	for k, v := range e.fps {
 		c.fps[k] = v
 	}
-	c.covered = copySet(e.covered)
+	c.reach = copySet(e.reach)
 	c.verified = copySet(e.verified)
 	c.weird = append([]string(nil), e.weird...)
 	c.rows = make(map[string]*rowDay, len(e.rows))
