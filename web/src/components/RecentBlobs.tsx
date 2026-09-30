@@ -151,7 +151,11 @@ function useBlobFeed(paused: boolean) {
     if (paused) { window.clearTimeout(timer.current); setNext(null); return; }
     let dead = false;
     const schedule = () => {
-      if (dead || document.hidden) return;
+      // A read from before a pause (a closed effect) schedules nothing and clears nothing. Within one
+      // effect there is one timer at most: a read already under way when the page came back schedules too.
+      if (dead) return;
+      window.clearTimeout(timer.current);
+      if (document.hidden) return;
       const idle = Date.now() - cur.current.lastNewAt > IDLE_AFTER_MS;
       const every = cur.current.error ? SLOW_MS : idle ? SLOW_MS : FAST_MS;
       setNext({ at: Date.now() + every, every });
@@ -337,7 +341,7 @@ export default function RecentBlobs() {
           {shown && <span className="ov-when" title={utcWord(shown.settlement_time)}>settled {ago(shown.settlement_time)}</span>}
         </h3>
         <dl className="rb-spec" aria-busy={!shown || undefined}>
-          <div><dt>Height</dt><dd>{shown ? <RollNumber value={shown.settlement_height} format={int} /> : <span className="wait">0,000,000</span>}</dd></div>
+          <div><dt>Height</dt><dd>{shown ? (isLatest ? <RollNumber value={shown.settlement_height} format={int} /> : int(shown.settlement_height)) : <span className="wait">0,000,000</span>}</dd></div>
           <div><dt>Time</dt><dd>{shown ? whenUTC(shown.settlement_time) : <span className="wait">Sep 00 00:00</span>}</dd></div>
           <div><dt>Blob size</dt><dd>{shown ? bytes(shown.blob_size) : <span className="wait">00.0 MiB</span>}</dd></div>
           <div><dt>Endorsements</dt><dd>{shown?.attested_with_rows != null ? <>{int(shown.attested_with_rows)} <span className="ov-of">of {int(shown.validators_with_rows)} validators</span></> : shown ? "—" : <span className="wait">00 of 00</span>}</dd></div>
