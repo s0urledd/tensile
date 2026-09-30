@@ -151,13 +151,14 @@ func (e *epoch) fileOf(vantage string) partsFile {
 }
 
 // saveLater writes the partials in the background when they have moved and
-// a write is due; one write at a time.
-func (dp *dayParts) saveLater(s *Server) {
+// a write is due, or with now whenever they have moved; one write at a
+// time.
+func (dp *dayParts) saveLater(s *Server, now bool) {
 	if dp.file == "" {
 		return
 	}
 	dp.mu.Lock()
-	due := dp.cur != nil && dp.cur.seq != dp.saved && dp.writing == nil && time.Since(dp.savedAt) >= partsSaveEvery
+	due := dp.cur != nil && dp.cur.seq != dp.saved && dp.writing == nil && (now || time.Since(dp.savedAt) >= partsSaveEvery)
 	if !due {
 		dp.mu.Unlock()
 		return
@@ -188,6 +189,29 @@ func (dp *dayParts) wait() {
 	dp.mu.Unlock()
 	if done != nil {
 		<-done
+	}
+}
+
+// saveNow writes the partials now, once any write already running has
+// ended, and holds off saveLater while it does: two writes at once could
+// each remove the seal files the other names.
+func (dp *dayParts) saveNow(ctx context.Context, s *Server) error {
+	for {
+		dp.mu.Lock()
+		if running := dp.writing; running != nil {
+			dp.mu.Unlock()
+			<-running
+			continue
+		}
+		done := make(chan struct{})
+		dp.writing = done
+		dp.mu.Unlock()
+		err := dp.save(ctx, s)
+		dp.mu.Lock()
+		dp.writing = nil
+		dp.mu.Unlock()
+		close(done)
+		return err
 	}
 }
 

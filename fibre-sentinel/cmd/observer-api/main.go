@@ -158,6 +158,13 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("serve: %v", err)
 	}
+	// What the day partials, the memo and the ledger have come to since
+	// their last write, so the next start begins from it.
+	keepCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := handler.KeepDerived(keepCtx); err != nil {
+		log.Printf("keeping the day partials, the memo and the ledger: %v", err)
+	}
+	cancel()
 	log.Printf("stopped")
 }
 

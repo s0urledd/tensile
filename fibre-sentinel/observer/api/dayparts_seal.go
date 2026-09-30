@@ -687,6 +687,7 @@ func (s *Server) sealer() {
 	audited := s.now()
 	windows := auditWindowRuns
 	var comparing, over atomic.Bool
+	worked := false
 	for {
 		select {
 		case <-s.stop:
@@ -704,9 +705,16 @@ func (s *Server) sealer() {
 			wait = idle
 		case n == 0:
 			wait = idle
+			if worked {
+				// The burst is over: what it sealed is written now, not
+				// when the sealer next has work, however long that is.
+				worked = false
+				s.parts.wait()
+				s.parts.saveLater(s, true)
+			}
 		default:
-			wait = every
-			s.parts.saveLater(s)
+			wait, worked = every, true
+			s.parts.saveLater(s, false)
 		}
 		if s.now().Sub(audited) >= auditEvery {
 			audited = s.now()

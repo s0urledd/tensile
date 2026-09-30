@@ -101,3 +101,57 @@ func TestDayPartsLoadInTheBackground(t *testing.T) {
 	}
 	t.Logf("%s\n%s", next.parts.origin, tally)
 }
+
+// TestDayPartsSavedWhenTheSealerRests runs the sealer as the API does and
+// lets it seal everything due: once it rests, the file on disk holds every
+// day it sealed, with no write asked of it. It used to write at most once
+// a minute, and only after a unit of work, so the seals of a burst's last
+// minute waited for the sealer's next work, and a start in between began
+// from none of them.
+func TestDayPartsSavedWhenTheSealerRests(t *testing.T) {
+	skipUnderRace(t)
+	t.Parallel()
+	cfg := defaultSimConfig(67)
+	cfg.perDay, cfg.days = 10, 4
+	s := newSim(t, cfg)
+	s.plan()
+	srv := s.openAPI()
+	for at := s.t0.Add(time.Hour); at.Before(s.t0.Add(4*24*time.Hour + 6*time.Hour)); at = at.Add(6 * time.Hour) {
+		s.advance(at)
+		s.pass()
+	}
+	srv.sealPace = [2]time.Duration{time.Millisecond, 20 * time.Millisecond}
+	srv.stop = make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.sealer()
+	}()
+	// Resting: nothing new sealed for a second, and no write running.
+	sealed, still := -1, 0
+	for deadline := time.Now().Add(3 * time.Minute); still < 20; {
+		time.Sleep(50 * time.Millisecond)
+		srv.parts.mu.Lock()
+		n, writing := 0, srv.parts.writing
+		if srv.parts.cur != nil {
+			n = len(srv.parts.cur.rows)
+		}
+		srv.parts.mu.Unlock()
+		if n > 0 && n == sealed && writing == nil {
+			still++
+		} else {
+			sealed, still = n, 0
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the sealer did not come to rest: %d row days sealed", n)
+		}
+	}
+	close(srv.stop)
+	<-done
+	next := s.openAPI()
+	tally := s.compare(next, rand.New(rand.NewPCG(67, 1)), 4, "from the file the sealer wrote")
+	if !strings.HasPrefix(next.parts.origin, "loaded") || len(next.parts.cur.rows) < sealed {
+		t.Errorf("a start from what the sealer wrote: %s, %d of %d row days", next.parts.origin, len(next.parts.cur.rows), sealed)
+	}
+	t.Logf("%d row days sealed and written\n%s", sealed, tally)
+}

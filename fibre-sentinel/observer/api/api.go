@@ -387,6 +387,11 @@ func newServer(st *store.Store, info VantageInfo, log *scan.Logger, opts ...Opti
 	return s
 }
 
+// KeepDerived writes the day partials, the memo and the ledger now, as they
+// stand: for observer-api as it stops, so that the next start begins from
+// them and not from their last periodic write.
+func (s *Server) KeepDerived(ctx context.Context) error { return s.keepDerived(ctx) }
+
 // keepDerived writes the memo and the ledger out now if they have grown,
 // whatever their pace: for a process about to end. A write of the memo's
 // already running in the background ends first.
@@ -394,8 +399,7 @@ func (s *Server) keepDerived(ctx context.Context) error {
 	s.origRows.wait()
 	err := s.origRows.save(ctx, s.st.DB(), true)
 	if s.parts != nil {
-		s.parts.wait()
-		err = errors.Join(err, s.parts.save(ctx, s))
+		err = errors.Join(err, s.parts.saveNow(ctx, s))
 	}
 	s.recent.mu.Lock()
 	defer s.recent.mu.Unlock()
