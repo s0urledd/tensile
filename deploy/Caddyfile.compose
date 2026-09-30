@@ -20,9 +20,12 @@
 	header @static Cache-Control "public, max-age=31536000, immutable"
 
 	# The API sets its own Cache-Control (errors are no-store); do not override.
-	handle_path /api/* {
+	# The API under /api/v1; /api itself is the static page that documents it.
+	handle /api/v1/* {
+		uri strip_prefix /api
 		reverse_proxy api:8080
 	}
+	redir /developers* /api/ 301
 
 	handle {
 		root * /var/www/fibre-observer

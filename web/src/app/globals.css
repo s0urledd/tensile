@@ -1231,7 +1231,7 @@ body { background: var(--canvas); }
 }
 
 /* ------------------------------------------------------------------ API --- */
-/* The API page (app/developers): plain reference. A short head; then the
+/* The API page (app/api, at /api/): plain reference. A short head; then the
    endpoint list beside its index, one surface per endpoint that opens to its
    parameters, a Try it and an example; then the conventions. Below 900px the
    index folds away above the list. */

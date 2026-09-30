@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// The site's own server: the static export in SITE_ROOT, and /api/* passed to
-// observer-api. It exists for hosts where the front proxy is shared with other
-// projects and cannot be given a file_server block for this site; where it
+// The site's own server: the static export in SITE_ROOT, and /api/v1/* passed
+// to observer-api (/api itself is the static page that documents it). It
+// exists for hosts where the front proxy is shared with other projects and
+// cannot be given a file_server block for this site; where it
 // can, deploy/Caddyfile does the same job without it.
 //
 // It replaces web/test/serve.cjs in production, which is a fixture server:
@@ -179,7 +180,13 @@ function proxy(req, res, u) {
 const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url || "/", "http://site");
-    if (u.pathname === "/api" || u.pathname.startsWith("/api/")) return proxy(req, res, u);
+    // /api/v1 is the API; /api itself is the page that documents it (web/src/app/api).
+    if (u.pathname === "/api/v1" || u.pathname.startsWith("/api/v1/")) return proxy(req, res, u);
+    // The API page's first address, kept for links made to it.
+    if (u.pathname === "/developers" || u.pathname.startsWith("/developers/")) {
+      res.writeHead(301, { ...SECURITY, location: "/api/" });
+      return res.end();
+    }
     if (req.method !== "GET" && req.method !== "HEAD") {
       res.writeHead(405, { ...SECURITY, allow: "GET, HEAD" });
       return res.end();
@@ -198,5 +205,5 @@ const server = http.createServer(async (req, res) => {
 server.headersTimeout = 20_000;
 server.requestTimeout = 60_000;
 server.on("clientError", (_e, sock) => { if (sock.writable) sock.end("HTTP/1.1 400 Bad Request\r\n\r\n"); });
-server.listen(LISTEN.port, LISTEN.host, () => console.log(`site-server: ${ROOT} on ${LISTEN.host}:${LISTEN.port}, /api -> ${API.host}:${API.port}`));
+server.listen(LISTEN.port, LISTEN.host, () => console.log(`site-server: ${ROOT} on ${LISTEN.host}:${LISTEN.port}, /api/v1 -> ${API.host}:${API.port}`));
 for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => server.close(() => process.exit(0)));
