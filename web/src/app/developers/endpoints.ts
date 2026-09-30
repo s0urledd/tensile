@@ -474,7 +474,7 @@ export const GROUPS: Group[] = [
       {
         id: "validator-status",
         path: "/v1/validators/{addr}/status",
-        summary: "A small answer for monitoring: endpoint, service, endorsements, last check.",
+        summary: "One validator's endpoint state, service, endorsements and last check.",
         params: [validatorAddr, windowParam],
         errors: "400 when `as_of` is given; 404 when no validator is on record at the address.",
         example: EX_STATUS,
