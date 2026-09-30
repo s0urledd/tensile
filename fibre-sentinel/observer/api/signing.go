@@ -126,7 +126,7 @@ func (s *Server) signingByValidator(ctx context.Context, win Window, only string
 		filter = ` AND a.validator_address = ?`
 		args = append(args, only)
 	}
-	rows, err := s.st.DB().QueryContext(ctx, signingByValidatorSQL(filter), args...)
+	rows, err := s.q(ctx).QueryContext(ctx, signingByValidatorSQL(filter), args...)
 	if err != nil {
 		return nil, err
 	}

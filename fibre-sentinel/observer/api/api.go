@@ -129,6 +129,9 @@ type Server struct {
 	// closed. nil is time.Now; the snapshot harness (snapshot_harness_test.go)
 	// fixes it so two builds compute one moment.
 	clock func() time.Time
+	// txSlots bounds the read transactions open at once (readTx); nil reads
+	// without them.
+	txSlots chan struct{}
 }
 
 // now is the server's clock (clock).
@@ -293,6 +296,7 @@ func newServer(st *store.Store, info VantageInfo, log *scan.Logger, opts ...Opti
 	}
 	info.Complete = info.Location != "" && info.Provider != ""
 	s := &Server{st: st, vantage: info.Name, info: info, mux: http.NewServeMux(), log: log, blobs: newBlobCache(), labels: map[string]PublisherLabel{}}
+	s.txSlots = readSlots(st.DB().Stats().MaxOpenConnections)
 	for _, o := range opts {
 		o(s)
 	}
@@ -303,23 +307,13 @@ func newServer(st *store.Store, info VantageInfo, log *scan.Logger, opts ...Opti
 	// computed per request and never stored here: writing it into the shared
 	// snapshot would publish one reader's filter as everyone's headline.
 	s.net = newSnapshotCache("network", func(ctx context.Context, win Window) (*networkResponse, error) {
-		resp, err := s.computeNetwork(ctx, win, excludeSet{}, nil)
-		if err == nil {
-			resp.RecordThrough = s.recordThrough(ctx)
-		}
-		return resp, err
+		return s.networkSnapshot(ctx, win, excludeSet{}, nil)
 	})
 	// The publisher-side summary and the publisher list are one snapshot, so
 	// the publisher page's board and its table describe the same moment.
 	s.market = newSnapshotCache("market", s.computePublishing)
 	s.market.accept = marketSnapshotCurrent
-	s.vals = newSnapshotCache("validators", func(ctx context.Context, win Window) (validatorSnapshot, error) {
-		rows, err := s.validatorRows(ctx, win, "")
-		if err != nil {
-			return validatorSnapshot{}, err
-		}
-		return validatorSnapshot{Window: win, Rows: rows, RecordThrough: s.recordThrough(ctx)}, nil
-	})
+	s.vals = newSnapshotCache("validators", s.validatorsSnapshot)
 	// Both of these publish faults beside named validators, and both are
 	// cached for up to fifteen minutes. A hold landing in the database moves
 	// nothing they hold, so without this the figure a hold withdrew stays
@@ -536,7 +530,7 @@ func (s *Server) rolledFor(ctx context.Context, win Window, only string) (*rollu
 	if win.Span != 0 {
 		return nil, nil, nil
 	}
-	from, ok := rollup.RawFrom(s.st)
+	from, ok := rollup.RawFromIn(ctx, s.q(ctx))
 	if !ok {
 		return nil, nil, nil
 	}
@@ -544,7 +538,7 @@ func (s *Server) rolledFor(ctx context.Context, win Window, only string) (*rollu
 	if end := win.End.UTC().Truncate(24 * time.Hour).Add(24 * time.Hour); end.Before(before) {
 		before = end
 	}
-	r, err := rollup.Load(ctx, s.st.DB(), before, only)
+	r, err := rollup.Load(ctx, s.q(ctx), before, only)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -861,7 +855,7 @@ func upgradeSignalOf(meta map[string]string, now time.Time) *upgradeSignal {
 // one row, and would count its moniker as unique with its twin out of
 // sight. ok is false when nothing is published.
 func (s *Server) upgradeSignalSets(ctx context.Context) (missing, shared map[string]bool, ok bool) {
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT key, value FROM meta WHERE key IN ('fibre_active', 'signal_version', 'signal_missing')`)
+	rows, err := s.q(ctx).QueryContext(ctx, `SELECT key, value FROM meta WHERE key IN ('fibre_active', 'signal_version', 'signal_missing')`)
 	if err != nil {
 		return nil, nil, false
 	}
@@ -882,7 +876,7 @@ func (s *Server) upgradeSignalSets(ctx context.Context) (missing, shared map[str
 		missing[m] = true
 	}
 	shared = map[string]bool{}
-	srows, err := s.st.DB().QueryContext(ctx, `SELECT moniker FROM validator_identities
+	srows, err := s.q(ctx).QueryContext(ctx, `SELECT moniker FROM validator_identities
 		WHERE status = 'BOND_STATUS_BONDED' AND moniker <> '' GROUP BY moniker HAVING COUNT(*) > 1`)
 	if err != nil {
 		return nil, nil, false
@@ -914,7 +908,7 @@ func (s *Server) upgradeSignalSets(ctx context.Context) (missing, shared map[str
 // and so needs no cache at all.
 func (s *Server) vantageCount(ctx context.Context) int {
 	var n int
-	_ = s.st.DB().QueryRowContext(ctx, vantageCountSQL).Scan(&n)
+	_ = s.q(ctx).QueryRowContext(ctx, vantageCountSQL).Scan(&n)
 	if n == 0 {
 		n = 1
 	}
@@ -1047,7 +1041,7 @@ type recordThrough struct {
 // recordThrough reads the four meta keys the collector keeps for this. Nil
 // when the scanner has not written a checkpoint yet.
 func (s *Server) recordThrough(ctx context.Context) *recordThrough {
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT key, value FROM meta
+	rows, err := s.q(ctx).QueryContext(ctx, `SELECT key, value FROM meta
 		WHERE key IN ('last_scanned_height', 'last_scanned_time', 'chain_height', 'chain_tip_time')`)
 	if err != nil {
 		return nil
@@ -1151,7 +1145,7 @@ type networkResponse struct {
 // rows matching where, and how many rows that is.
 func (s *Server) latencyWhere(ctx context.Context, where string, args ...any) (p50, p95 *int64, n int64, err error) {
 	var a, b sql.NullInt64
-	err = s.st.DB().QueryRowContext(ctx, `SELECT
+	err = s.q(ctx).QueryRowContext(ctx, `SELECT
 			MAX(CASE WHEN rn = (c + 1) / 2         THEN ms END),
 			MAX(CASE WHEN rn = (c * 95 + 99) / 100 THEN ms END),
 			COALESCE(MAX(c), 0)
@@ -1181,7 +1175,7 @@ func (s *Server) classCountsWhere(ctx context.Context, where string, args ...any
 	// observer cannot vouch for publishes no serve verdict. It is an
 	// override on the same row, so the tally still covers exactly the
 	// population `where` selects and coverage.den is unchanged.
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT `+rollup.EffectiveClass("")+`, COUNT(*) FROM probe_rows WHERE `+where+` GROUP BY `+rollup.EffectiveClass(""), args...)
+	rows, err := s.q(ctx).QueryContext(ctx, `SELECT `+rollup.EffectiveClass("")+`, COUNT(*) FROM probe_rows WHERE `+where+` GROUP BY `+rollup.EffectiveClass(""), args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1307,10 +1301,10 @@ func scanObligations(r *rollup.Obligations) []any {
 // a promise settled late on a rolled day can still have rows that started
 // on a retained day. Without the bound those rows would count the
 // obligation a second time, beside the rollup's.
-func (s *Server) obligationArgs(win Window, extra ...any) []any {
+func (s *Server) obligationArgs(ctx context.Context, win Window, extra ...any) []any {
 	start := win.startArg()
 	if win.Span == 0 {
-		if from, ok := rollup.RawFrom(s.st); ok {
+		if from, ok := rollup.RawFromIn(ctx, s.q(ctx)); ok {
 			start = store.TS(from)
 		}
 	}
@@ -1322,8 +1316,8 @@ func (s *Server) obligationArgs(win Window, extra ...any) []any {
 // is appended to the WHERE clause (a validator filter), its arguments last.
 func (s *Server) obligationsWhere(ctx context.Context, win Window, extra string, extraArgs ...any) (obligationStats, error) {
 	var r rollup.Obligations
-	err := s.st.DB().QueryRowContext(ctx, `SELECT `+obligationSums+` FROM (`+obligationBuckets+extra+`)
-			GROUP BY validator_address, promise_hash)`, s.obligationArgs(win, extraArgs...)...).
+	err := s.q(ctx).QueryRowContext(ctx, `SELECT `+obligationSums+` FROM (`+obligationBuckets+extra+`)
+			GROUP BY validator_address, promise_hash)`, s.obligationArgs(ctx, win, extraArgs...)...).
 		Scan(scanObligations(&r)...)
 	if err != nil {
 		return obligationStats{}, err
@@ -1372,8 +1366,8 @@ func (s *Server) readObligations(ctx context.Context, win Window, now time.Time,
 	// The cutoff's two placeholders come before the buckets' in the text,
 	// so their arguments come first.
 	cutoff := provisionalCutoff(now)
-	args := append([]any{cutoff, cutoff}, s.obligationArgs(win, extraArgs...)...)
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT validator_address, `+obligationSums+`,
+	args := append([]any{cutoff, cutoff}, s.obligationArgs(ctx, win, extraArgs...)...)
+	rows, err := s.q(ctx).QueryContext(ctx, `SELECT validator_address, `+obligationSums+`,
 			COALESCE(SUM(NOT pending AND faults > 0 AND first_fault > ?), 0),
 			MAX(CASE WHEN NOT pending AND faults > 0 AND first_fault > ? THEN first_fault END)
 		FROM (`+obligationBuckets+extra+`)
@@ -1500,7 +1494,7 @@ func (s *Server) attestationWhere(ctx context.Context, where string, args ...any
 	// MAX ignores NULLs in SQLite and in Postgres, so an obligation with any
 	// verified evidence resolves to that evidence and only one with no
 	// evidence at all stays unknown.
-	err := s.st.DB().QueryRowContext(ctx, `SELECT
+	err := s.q(ctx).QueryRowContext(ctx, `SELECT
 			COALESCE(SUM(CASE WHEN a = 1 THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN a = 0 THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN a IS NULL THEN 1 ELSE 0 END), 0)
@@ -1544,12 +1538,11 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 		}
 		defer s.asOf.leave()
 		t0 := time.Now()
-		resp, err := s.computeNetwork(r.Context(), win, ex, excluded)
+		resp, err := s.networkSnapshot(r.Context(), win, ex, excluded)
 		if err != nil {
 			s.writeInternal(w, r.URL.Path, err)
 			return
 		}
-		resp.RecordThrough = s.recordThrough(r.Context())
 		resp.ComputedAt, resp.ComputeMs = t0.UTC().Format(time.RFC3339Nano), time.Since(t0).Milliseconds()
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, 200, networkOutOf(resp))
@@ -1576,6 +1569,38 @@ func (s *Server) logf() logf {
 	return func(format string, args ...any) { s.log.Printf(format, args...) }
 }
 
+// networkSnapshot is the network summary of win as the cache keeps it and a
+// pinned or filtered request is answered with: computeNetwork and the point
+// of the chain it rests on, read in one transaction (readTx).
+func (s *Server) networkSnapshot(ctx context.Context, win Window, ex excludeSet, excluded []string) (*networkResponse, error) {
+	var resp *networkResponse
+	err := s.readTx(ctx, func(ctx context.Context) error {
+		r, err := s.computeNetwork(ctx, win, ex, excluded)
+		if err != nil {
+			return err
+		}
+		r.RecordThrough = s.recordThrough(ctx)
+		resp = r
+		return nil
+	})
+	return resp, err
+}
+
+// validatorsSnapshot is the validator list of win, with the point of the
+// chain it rests on, read in one transaction (readTx).
+func (s *Server) validatorsSnapshot(ctx context.Context, win Window) (validatorSnapshot, error) {
+	var snap validatorSnapshot
+	err := s.readTx(ctx, func(ctx context.Context) error {
+		rows, err := s.validatorRows(ctx, win, "")
+		if err != nil {
+			return err
+		}
+		snap = validatorSnapshot{Window: win, Rows: rows, RecordThrough: s.recordThrough(ctx)}
+		return nil
+	})
+	return snap, err
+}
+
 // computeNetwork does the work handleNetwork used to do inline. It is called
 // from the snapshot cache rather than from the request, so its context outlives
 // the reader who triggered it.
@@ -1598,7 +1623,7 @@ func (s *Server) previousWindow(ctx context.Context, win Window, ex excludeSet) 
 	if p.Obligations, err = s.obligationsWhere(ctx, prev, ex.clause("pr.validator_address"), ex.addrs...); err != nil {
 		return nil, err
 	}
-	db := s.st.DB()
+	db := s.q(ctx)
 	var beats, beatsUp int64
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*),
 			COALESCE(SUM(CASE WHEN tcp_ok = 1 AND tls_ok = 1 THEN 1 ELSE 0 END), 0)
@@ -1614,7 +1639,7 @@ func (s *Server) previousWindow(ctx context.Context, win Window, ex excludeSet) 
 }
 
 func (s *Server) computeNetwork(ctx context.Context, win Window, ex excludeSet, excluded []string) (*networkResponse, error) {
-	db := s.st.DB()
+	db := s.q(ctx)
 	var resp networkResponse
 	resp.Window, resp.Vantage = win, s.vantage
 	resp.ObservedFromOneVantage = s.vantageCount(ctx) == 1
@@ -1818,7 +1843,7 @@ func (s *Server) registeredValidators(ctx context.Context, win Window) (map[stri
 		q = `SELECT DISTINCT validator_cons_address FROM endpoints WHERE first_seen_at <= ? AND (closed_at IS NULL OR closed_at > ?)`
 		args = []any{win.endArg(), win.endArg()}
 	}
-	rows, err := s.st.DB().QueryContext(ctx, q, args...)
+	rows, err := s.q(ctx).QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1877,7 +1902,7 @@ func (s *Server) reachabilityNow(ctx context.Context, only, asOf string) (map[st
 		{"probes", probeAnswerSQL, "probe", ""},
 	} {
 		q, args := latestAnswerSQL(t.table, t.ok, t.source, t.vantage, only, asOf)
-		rows, err := s.st.DB().QueryContext(ctx, q, args...)
+		rows, err := s.q(ctx).QueryContext(ctx, q, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -1910,7 +1935,7 @@ func (s *Server) reachabilityNow(ctx context.Context, only, asOf string) (map[st
 		}
 		var tcp, tls, id int
 		var reason string
-		err := s.st.DB().QueryRowContext(ctx, `SELECT q.tcp_ok, q.tls_ok, q.identity_ok, q.identity_reason FROM reachability q
+		err := s.q(ctx).QueryRowContext(ctx, `SELECT q.tcp_ok, q.tls_ok, q.identity_ok, q.identity_reason FROM reachability q
 			WHERE q.validator_address = ? AND q.outcome <> 'PROBE_ERROR' AND +q.started_at < ? AND q.validator_host = ? AND +q.vantage = ?
 			ORDER BY q.rowid DESC LIMIT 1`, addr, st.at, st.host, s.vantage).Scan(&tcp, &tls, &id, &reason)
 		if err != nil {
@@ -1966,7 +1991,7 @@ func (s *Server) confirmFromOtherVantages(ctx context.Context, out map[string]re
 		}
 		var vantage, reason string
 		var tcp, tls, id int
-		err := s.st.DB().QueryRowContext(ctx, otherVantageSQL, addr, lo, hi, s.vantage, st.host).Scan(&vantage, &tcp, &tls, &id, &reason)
+		err := s.q(ctx).QueryRowContext(ctx, otherVantageSQL, addr, lo, hi, s.vantage, st.host).Scan(&vantage, &tcp, &tls, &id, &reason)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
@@ -2250,7 +2275,7 @@ func identityStatus(st *reachState) string {
 }
 
 func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]validatorRow, error) {
-	db := s.st.DB()
+	db := s.q(ctx)
 	// Every aggregate below groups by validator, and a request for one
 	// validator used to compute all of them and throw the rest away at the
 	// end. On a store with 60 validators that made the detail page 1.4s, and
@@ -2282,7 +2307,7 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 		return v
 	}
 	// registry: every open endpoint (bech32 -> hex)
-	eps, err := s.st.CurrentEndpoints(ctx)
+	eps, err := store.CurrentEndpointsIn(ctx, s.q(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -2861,15 +2886,15 @@ func (s *Server) handleValidators(w http.ResponseWriter, r *http.Request) {
 		}
 		defer s.asOf.leave()
 		t0 := time.Now()
-		rows, err := s.validatorRows(r.Context(), win, "")
+		snap, err := s.validatorsSnapshot(r.Context(), win)
 		if err != nil {
 			s.writeInternal(w, r.URL.Path, err)
 			return
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, 200, map[string]any{
-			"window": win, "validators": listOfRows(rows), "as_of_note": AsOfNote,
-			"record_through": s.recordThrough(r.Context()),
+			"window": win, "validators": listOfRows(snap.Rows), "as_of_note": AsOfNote,
+			"record_through": snap.RecordThrough,
 			"computed_at":    t0.UTC().Format(time.RFC3339Nano),
 		})
 		return
@@ -2948,7 +2973,7 @@ const validatorNotSeen = "validator not seen in the registry or in any probe"
 func (s *Server) endorsedInRetention(ctx context.Context, addr string, at time.Time) (int64, error) {
 	var n int64
 	t := store.TS(at.UTC())
-	err := s.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM publications p
+	err := s.q(ctx).QueryRowContext(ctx, `SELECT COUNT(*) FROM publications p
 		JOIN assignments a ON a.promise_hash = p.promise_hash AND a.validator_address = ?
 		WHERE p.must_serve_until > ? AND p.settlement_time <= ? AND p.settlement_tx_code = 0 AND p.assignment_error = ''
 		  AND a.row_count > 0 AND a.attested = 1`, addr, t, t).Scan(&n)
@@ -2963,6 +2988,18 @@ func (s *Server) endorsedInRetention(ctx context.Context, addr string, at time.T
 // (detailFromSnapshots); a pinned window, or a validator the snapshots do not
 // list yet, is computed here.
 func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, now time.Time) (int, any, error) {
+	var status int
+	var out any
+	err := s.readTx(ctx, func(ctx context.Context) error {
+		var err error
+		status, out, err = s.validatorDetailIn(ctx, addr, win, now)
+		return err
+	})
+	return status, out, err
+}
+
+// validatorDetailIn is validatorDetail inside its read transaction.
+func (s *Server) validatorDetailIn(ctx context.Context, addr string, win Window, now time.Time) (int, any, error) {
 	if !win.AsOf {
 		out, ok, err := s.detailFromSnapshots(ctx, addr, win, now)
 		if err != nil {
@@ -3187,7 +3224,7 @@ func (s *Server) blobRowsAt(ctx context.Context, where string, limit, offset int
 	if offset > 0 {
 		q += " OFFSET " + strconv.Itoa(offset)
 	}
-	rows, err := s.st.DB().QueryContext(ctx, q, args...)
+	rows, err := s.q(ctx).QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -3279,7 +3316,7 @@ func (s *Server) blobRowsAt(ctx context.Context, where string, limit, offset int
 // blobs at once from bounds, and falls back to this where they cannot
 // decide.
 func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) (*reconstruct, error) {
-	db := s.st.DB()
+	db := s.q(ctx)
 	var needed, total sql.NullInt64
 	var msu, assignErr string
 	var sigma, distinct int
@@ -3406,7 +3443,7 @@ func (s *Server) servedRowsFromAssignments(ctx context.Context, hash string, poi
 		}
 	}
 	if len(missing) > 0 {
-		rows, err := s.st.DB().QueryContext(ctx, `SELECT rows_json FROM assignments WHERE promise_hash = ? AND rows_json IS NOT NULL
+		rows, err := s.q(ctx).QueryContext(ctx, `SELECT rows_json FROM assignments WHERE promise_hash = ? AND rows_json IS NOT NULL
 			AND validator_address IN (?`+strings.Repeat(", ?", len(missing)-1)+`)`, append([]any{hash}, missing...)...)
 		if err != nil {
 			return 0, err
@@ -3497,7 +3534,7 @@ func (s *Server) reconstructableCount(ctx context.Context, win Window) (reconstr
 	// waiting (the window open at the moment asked about) or closed without
 	// one. Counted, not examined.
 	var closedUnread int64
-	if err := s.st.DB().QueryRowContext(ctx, `SELECT COUNT(*),
+	if err := s.q(ctx).QueryRowContext(ctx, `SELECT COUNT(*),
 			COALESCE(SUM(NOT `+readable+` AND must_serve_until >= ?), 0),
 			COALESCE(SUM(NOT `+readable+` AND must_serve_until < ?), 0)
 		FROM publications WHERE settlement_time >= ? AND settlement_time <= ?`,
@@ -4026,7 +4063,7 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 	// than left to guess whether 100 rows is all of them. The extra row is
 	// trimmed by the caller that reports truncation.
 	q += " ORDER BY started_at DESC LIMIT " + strconv.Itoa(limit+1)
-	rows, err := s.st.DB().QueryContext(ctx, q, args...)
+	rows, err := s.q(ctx).QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

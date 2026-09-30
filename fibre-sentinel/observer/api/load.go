@@ -113,11 +113,11 @@ func heldAt(win Window, now time.Time) time.Time {
 
 // loadByValidatorAt is loadByValidator with "held now" asked at now.
 func (s *Server) loadByValidatorAt(ctx context.Context, win Window, only string, now time.Time) (map[string]loadStats, error) {
-	db := s.st.DB()
+	db := s.q(ctx)
 	// held now: settled by now and retention not over at now, whatever the
 	// window
 	nowArg := store.TS(now.UTC())
-	doc, err := s.origRows.doc(ctx, db, win.startArg(), win.endArg(), nowArg)
+	doc, err := s.origRows.doc(ctx, s.st.DB(), win.startArg(), win.endArg(), nowArg)
 	if err != nil {
 		return nil, err
 	}

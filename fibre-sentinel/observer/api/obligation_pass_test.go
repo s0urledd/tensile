@@ -26,7 +26,7 @@ import (
 // oldObligationsByValidator is obligationsByValidator as it shipped.
 func oldObligationsByValidator(ctx context.Context, s *Server, win Window, extra string, extraArgs ...any) (map[string]obligationStats, error) {
 	rows, err := s.st.DB().QueryContext(ctx, `SELECT validator_address, `+obligationSums+` FROM (`+obligationBuckets+extra+`)
-			GROUP BY validator_address, promise_hash) GROUP BY validator_address`, s.obligationArgs(win, extraArgs...)...)
+			GROUP BY validator_address, promise_hash) GROUP BY validator_address`, s.obligationArgs(ctx, win, extraArgs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +49,7 @@ func oldProvisionalByValidator(ctx context.Context, s *Server, win Window, now t
 	if win.End.Before(now.Add(-verdict.FaultSettling)) {
 		return out, nil
 	}
-	args := append(s.obligationArgs(win, extraArgs...), provisionalCutoff(now))
+	args := append(s.obligationArgs(ctx, win, extraArgs...), provisionalCutoff(now))
 	rows, err := s.st.DB().QueryContext(ctx, `SELECT validator_address, COUNT(*), MAX(first_fault) FROM (`+obligationBuckets+extra+`)
 			GROUP BY validator_address, promise_hash)
 		WHERE NOT pending AND faults > 0 AND first_fault > ?
