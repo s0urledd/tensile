@@ -3,14 +3,15 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { API_BASE, useApi, type Blob, type Rate, type Tip, int, pctOf, bytes, whenUTC, utcWord } from "@/lib/api";
-import { recon } from "@/lib/status";
-import { Mark, type Tier } from "@/components/Verdict";
 import { Eye } from "@/components/Metrics";
 import RollNumber, { reducedMotion } from "@/components/RollNumber";
 
 /**
  * The overview's recent blobs: the newest settlements as a grid of squares,
- * one per blob, newest first, and a readout of one blob's facts beside it.
+ * one per blob settled on chain, newest first, and a readout of one blob's
+ * facts beside it. It is the chain's stream only: Tensile reads a blob at the
+ * end of its retention window, hours after it settled, so its own figure is
+ * the Blob availability line, not a mark on these squares.
  *
  * The grid reads as text does, newest at the top left, so its reading order
  * is age order. New blobs enter at the top left and everything else moves on
@@ -19,11 +20,8 @@ import RollNumber, { reducedMotion } from "@/components/RollNumber";
  * row's right end entering the next row's left. The newest is ringed and
  * whatever arrived with it glows for 1.2 s; nothing else moves.
  *
- * Each square is filled with the blob's status as the Blobs list words it:
- * still in its retention window (the accent, lighter, edged), read and
- * available (the accent), read and unavailable (amber), or not read by
- * Tensile (grey). The inner square is the blob's size, known at settlement:
- * inside a 3 px rim of the status, its area is the blob's share of the
+ * Every square has the same fill. The inner square is the blob's size, known
+ * at settlement: inside a 3 px rim, its area is the blob's share of the
  * largest blob the protocol allows (128 MiB), and one too small to draw is a
  * 4 px dot.
  *
@@ -176,12 +174,6 @@ function useBlobFeed(height: number | undefined, skew: number) {
 
 // ---- words ----
 
-type Status = { key: "kept" | "hold" | "window" | "gap"; word: string; tier: Tier; title: string };
-function statusOf(b: Blob): Status {
-  const s = recon(b);
-  const key = s.tier === "kept" ? "kept" : s.tier === "hold" ? "hold" : s.word === "in retention window" ? "window" : "gap";
-  return { key, word: s.word, tier: s.tier, title: s.title };
-}
 function nth(n: number): string {
   const r10 = n % 10, r100 = n % 100;
   return n + (r10 === 1 && r100 !== 11 ? "st" : r10 === 2 && r100 !== 12 ? "nd" : r10 === 3 && r100 !== 13 ? "rd" : "th");
@@ -232,7 +224,7 @@ export function Availability({ observed }: { observed: Observed }) {
   return (
     <div className="ob">
       <p className="ob-row" aria-busy={!rec || undefined}
-        title="Observed by Tensile: blobs whose rows were enough to reconstruct them, over the blobs read (available plus unavailable): the newest ones with a reading, up to the API's sample limit.">
+        title="Observed by Tensile: blobs whose rows were enough to reconstruct them, over the blobs read (available plus unavailable), each read at the end of its retention window: the newest ones with a reading, up to the API's sample limit.">
         <span className="ob-pre"><Eye />Observed by Tensile</span>
         <span className="ob-fig">Blob availability {rec
           ? <b className={rec.den > 0 ? undefined : "absent"}>{pctOf(rec.num, rec.den)}</b>
@@ -259,19 +251,18 @@ type PlaceProps = { c: Cell; i: number; fresh: boolean; on: boolean; tab: boolea
  */
 const Place = memo(function Place({ c, i, fresh, on, tab, ghost, onShow, onKey, onFocusAt, onOpen }: PlaceProps) {
   const b = c.b;
-  const s = statusOf(b);
   const k = sideOf(b);
   const cls = `rb-c${i === 0 ? " rb-newest" : ""}${fresh ? " rb-new" : ""}${on ? " rb-on" : ""}${ghost ? " rb-ghost" : ""}`;
   const inner = <>
     <i key={b.promise_hash} className={`rb-sq${k * 20 < 4 ? " rb-dot" : ""}`} style={{ "--k": k.toFixed(4) } as React.CSSProperties} />
     {fresh && <b key={`g${b.promise_hash}`} className="rb-glow" aria-hidden="true" />}
   </>;
-  if (ghost) return <span className={cls} data-s={s.key} aria-hidden="true">{inner}</span>;
+  if (ghost) return <span className={cls} aria-hidden="true">{inner}</span>;
   const href = `/blob/?hash=${b.promise_hash}`;
   return (
-    <a href={href} data-i={i} className={cls} data-s={s.key} role="listitem"
+    <a href={href} data-i={i} className={cls} role="listitem"
       tabIndex={tab ? 0 : -1}
-      aria-label={`${i === 0 ? "Newest blob" : `${nth(i + 1)} newest blob`}: height ${int(b.settlement_height)}, settled ${utcWord(b.settlement_time)}, ${bytes(b.blob_size)}, ${s.word}`}
+      aria-label={`${i === 0 ? "Newest blob" : `${nth(i + 1)} newest blob`}: height ${int(b.settlement_height)}, settled ${utcWord(b.settlement_time)}, ${bytes(b.blob_size)}`}
       onClick={(e) => onOpen(e, href)}
       onMouseEnter={() => onShow(b.promise_hash)} onFocus={() => { onShow(b.promise_hash); onFocusAt(i); }}
       onKeyDown={(e) => onKey(e, i)}>
@@ -357,7 +348,6 @@ export default function RecentBlobs() {
   const selAt = sel ? cells.findIndex((c) => c.b.promise_hash === sel) : -1;
   const blob = selAt >= 0 ? cells[selAt].b : latest;
   const isLatest = !!blob && blob.promise_hash === latest?.promise_hash;
-  const st = blob ? statusOf(blob) : null;
 
   const state = paused ? "paused" : feed.error ? "down" : !feed.loaded ? "wait" : "live";
   const idle = feed.loaded && Date.now() + skew - feed.lastNewAt > IDLE_AFTER_MS;
@@ -367,7 +357,6 @@ export default function RecentBlobs() {
     : feed.error
       ? `The observer API did not answer (${feed.error}); the grid shows the last read.`
       : `Reads the newest blobs as the chain moves, at most every ${idle ? 15 : 5} s, while this page is open.`;
-  const statusKeys = new Set(cells.map((c) => statusOf(c.b).key));
 
   const rows = Array.from({ length: ROWS }, (_, r) => r);
   const mv = shown.move;
@@ -389,7 +378,7 @@ export default function RecentBlobs() {
           {shown.total != null ? <RollNumber value={shown.total} format={int} className="rb-total" /> : <span className="rb-total wait">0,000</span>}
           <span>settlements on record</span>
         </p>
-        <div className="rb-grid" ref={gridRef} role="list" aria-label="The newest blobs, newest first"
+        <div className="rb-grid" ref={gridRef} role="list" aria-label="The newest blobs settled on chain, newest first"
           onPointerEnter={() => setPointerIn(true)}
           onPointerLeave={() => { setPointerIn(false); setSel(null); }}
           onFocus={() => setFocusIn(true)}
@@ -412,16 +401,10 @@ export default function RecentBlobs() {
             </div>
           ))}
         </div>
-        <div className="rb-key" aria-hidden="true">
-          <p>
-            <span><i data-s="window" />in retention window</span>
-            <span><i data-s="kept" />available</span>
-            <span><i data-s="hold" />unavailable</span>
-            {statusKeys.has("gap") && <span><i data-s="gap" />not read by Tensile</span>}
-            <span><i data-s="head" />newest</span>
-          </p>
-          <p className="rb-key-size"><i className="rb-key-sq"><b /></i>Inner square area = blob size (full = 128 MiB)</p>
-        </div>
+        <p className="rb-key" aria-hidden="true">
+          <span title="The inner square's area is the blob's share of 128 MiB, the largest blob the protocol allows"><i className="rb-key-sq"><b /></i>Inner square = blob size (full = 128 MiB)</span>
+          <span><i className="rb-key-head" />newest</span>
+        </p>
       </div>
 
       <div className="rb-read">
@@ -432,13 +415,9 @@ export default function RecentBlobs() {
         <dl className="rb-spec" aria-busy={!blob || undefined}>
           <div><dt>Height</dt><dd>{blob ? (isLatest ? <RollNumber value={blob.settlement_height} format={int} /> : int(blob.settlement_height)) : <span className="wait">0,000,000</span>}</dd></div>
           <div><dt>Time</dt><dd>{blob ? whenUTC(blob.settlement_time) : <span className="wait">Sep 00 00:00</span>}</dd></div>
-          <div><dt>Blob size</dt><dd>{blob ? bytes(blob.blob_size) : <span className="wait">00.0 MiB</span>}</dd></div>
+          <div className="rb-size"><dt>Blob size</dt><dd>{blob ? bytes(blob.blob_size) : <span className="wait">00.0 MiB</span>}</dd></div>
           <div><dt>Endorsements</dt><dd>{blob?.attested_with_rows != null ? <>{int(blob.attested_with_rows)} <span className="ov-of">of {int(blob.validators_with_rows)} validators</span></> : blob ? "—" : <span className="wait">00 of 00</span>}</dd></div>
           <div><dt>Endorsed voting power</dt><dd>{blob?.attested_voting_power != null && blob.total_voting_power ? pctOf(blob.attested_voting_power, blob.total_voting_power) : blob ? "—" : <span className="wait">00.00%</span>}</dd></div>
-          <div className="rb-st">
-            <dt title="Observed by Tensile"><Eye />Status</dt>
-            <dd>{st ? <span className={`verdict verdict--${st.tier}`} title={st.title}><Mark tier={st.tier} /><span className="w">{st.word}</span></span> : <span className="wait">available</span>}</dd>
-          </div>
         </dl>
         <p className="ov-links">
           {blob ? <Link href={`/blob/?hash=${blob.promise_hash}`}>Blob details <span aria-hidden="true">→</span></Link> : <span className="wait" aria-hidden="true">Blob details →</span>}

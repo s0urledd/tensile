@@ -1097,16 +1097,9 @@ body { background: var(--canvas); }
   --cp-rest: rgb(var(--ink) / .13);
   --cp-on: var(--accent);
   --cp-on-hover: #008b97;
-  /* a recent blob's square is filled with its status (tile) and holds its size (core). In the retention window: the accent, lighter, edged */
-  --rb-window: color-mix(in srgb, var(--accent) 30%, var(--paper));
-  --rb-window-edge: color-mix(in srgb, var(--accent) 52%, var(--paper));
-  --rb-window-core: var(--accent);
-  --rb-kept: color-mix(in srgb, var(--accent) 88%, #ffffff);
-  --rb-kept-core: color-mix(in srgb, var(--accent) 40%, #ffffff);
-  --rb-hold: var(--hold);
-  --rb-hold-core: color-mix(in srgb, var(--hold) 40%, #ffffff);
-  --rb-gap: rgb(var(--ink) / .2);
-  --rb-gap-core: rgb(var(--ink) / .45);
+  /* a recent blob's square: one fill for every settled blob, and a lighter core that holds its size */
+  --rb-fill: color-mix(in srgb, var(--accent) 88%, #ffffff);
+  --rb-core: color-mix(in srgb, var(--accent) 40%, #ffffff);
   --rb-glow: rgb(0 106 116 / .4);
   position: relative; isolation: isolate; margin: 16px 0 18px; border-radius: var(--r-panel);
   background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow);
@@ -1125,15 +1118,8 @@ body { background: var(--canvas); }
   --cp-rest: rgb(255 255 255 / .11);
   --cp-on: #2ea4af;
   --cp-on-hover: #5fd0da;
-  --rb-window: color-mix(in srgb, var(--accent) 45%, var(--paper));
-  --rb-window-edge: color-mix(in srgb, var(--accent) 66%, var(--paper));
-  --rb-window-core: var(--accent);
-  --rb-kept: #2a9fab;
-  --rb-kept-core: #a3e4ea;
-  --rb-hold: var(--hold);
-  --rb-hold-core: #f3d9a8;
-  --rb-gap: rgb(255 255 255 / .16);
-  --rb-gap-core: rgb(255 255 255 / .42);
+  --rb-fill: #2a9fab;
+  --rb-core: #a3e4ea;
   --rb-glow: rgb(51 179 191 / .6);
   background: var(--paper);
 }
@@ -1334,61 +1320,43 @@ body { background: var(--canvas); }
 .rb-tape { display: flex; gap: var(--rb-gap); width: max-content; }
 .rb-c {
   position: relative; flex: none; display: grid; place-items: center; width: var(--rb-cell); height: var(--rb-cell); border-radius: 6px;
-  background: var(--rb-tile, transparent); box-shadow: var(--rb-edge, none); transition: transform 160ms ease-out, box-shadow 160ms ease-out;
+  background: var(--rb-fill); transition: transform 160ms ease-out, box-shadow 160ms ease-out;
 }
-.rb-c[data-s="window"] { --rb-tile: var(--rb-window); --rb-core: var(--rb-window-core); --rb-edge: inset 0 0 0 1px var(--rb-window-edge); }
-.rb-c[data-s="kept"] { --rb-tile: var(--rb-kept); --rb-core: var(--rb-kept-core); }
-.rb-c[data-s="hold"] { --rb-tile: var(--rb-hold); --rb-core: var(--rb-hold-core); }
-.rb-c[data-s="gap"] { --rb-tile: var(--rb-gap); --rb-core: var(--rb-gap-core); }
-.rb-c.rb-empty { box-shadow: inset 0 0 0 1px var(--line-soft); }
-/* the blob's size: a square whose area is its share of the largest blob, inside a 3 px rim of its status; too small to draw, a 4 px dot */
+.rb-c.rb-empty { background: none; box-shadow: inset 0 0 0 1px var(--line-soft); }
+/* the blob's size: a square whose area is its share of the largest blob, inside a 3 px rim; too small to draw, a 4 px dot */
 .rb-sq { --s: calc((var(--rb-cell) - 6px) * var(--k, 0)); display: block; width: var(--s); height: var(--s); border-radius: clamp(1px, calc(var(--s) * .18), 4px); background: var(--rb-core); }
 .rb-sq.rb-dot { width: 4px; height: 4px; border-radius: 50%; }
 /* the newest: ringed. A ghost, a place's copy past its row's end, shows only while a move slides it out of view */
 .rb-c.rb-ghost { visibility: hidden; }
 .rb-grid.rb-moving .rb-c.rb-ghost { visibility: visible; }
-.rb-c.rb-newest { box-shadow: var(--rb-edge, 0 0 0 0 transparent), 0 0 0 2px var(--paper), 0 0 0 3.5px var(--accent); }
-a.rb-c:hover, .rb-c.rb-on { transform: scale(1.12); z-index: 1; text-decoration: none; box-shadow: var(--rb-edge, 0 0 0 0 transparent), 0 0 0 2px var(--paper), 0 0 0 3.5px var(--text-2); }
+.rb-c.rb-newest { box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--accent); }
+a.rb-c:hover, .rb-c.rb-on { transform: scale(1.12); z-index: 1; text-decoration: none; box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--text-2); }
 /* while a move plays, a row's ends fade, so places slide in and out of view softly */
 .rb-grid.rb-moving .rb-row { -webkit-mask-image: linear-gradient(90deg, transparent, #000 7px, #000 calc(100% - 7px), transparent); mask-image: linear-gradient(90deg, transparent, #000 7px, #000 calc(100% - 7px), transparent); }
 a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-index: 1; }
-/* an arrival: its square fills in and its place glows, then cools to its colour over 1.2 s; once per read */
+/* an arrival: its square fills in and its place glows, then cools to the fill over 1.2 s; once per read */
 .rb-c.rb-new .rb-sq { animation: rb-fill .5s cubic-bezier(.2, .8, .2, 1) both; }
-.rb-glow { position: absolute; inset: 0; border-radius: inherit; background: var(--rb-kept-core); box-shadow: 0 0 12px 1px var(--rb-glow); opacity: 0; pointer-events: none; animation: rb-glow 1.2s ease-out both; }
+.rb-glow { position: absolute; inset: 0; border-radius: inherit; background: var(--rb-core); box-shadow: 0 0 12px 1px var(--rb-glow); opacity: 0; pointer-events: none; animation: rb-glow 1.2s ease-out both; }
 @keyframes rb-fill { from { transform: scale(.2); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes rb-glow { 0% { opacity: .6; } 30% { opacity: .38; } 100% { opacity: 0; } }
 
-/* the key: the status colours, then what a square's size means */
-.rb-key { margin: 14px 0 0; font-size: var(--t-tiny); color: var(--text-3); }
-.rb-key p { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0; }
-.rb-key p + p { margin-top: 6px; }
-.rb-key i { display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 2.5px; vertical-align: -1px; }
-.rb-key i[data-s="window"] { background: var(--rb-window); box-shadow: inset 0 0 0 1px var(--rb-window-edge); }
-.rb-key i[data-s="kept"] { background: var(--rb-kept); }
-.rb-key i[data-s="hold"] { background: var(--rb-hold); }
-.rb-key i[data-s="gap"] { background: var(--rb-gap); }
-.rb-key i[data-s="head"] { background: var(--rb-kept); box-shadow: 0 0 0 1.5px var(--paper), 0 0 0 2.75px var(--accent); margin-right: 7px; }
-.rb-key p.rb-key-size { display: block; }
-.rb-key .rb-key-sq { position: relative; display: inline-grid; place-items: center; width: 14px; height: 14px; margin-right: 7px; border-radius: 3.5px; background: var(--rb-kept); vertical-align: -3px; }
-.rb-key-sq b { display: block; width: 5px; height: 5px; border-radius: 1px; background: var(--rb-kept-core); }
+/* the key, one line: what a square's size means, and the newest's ring */
+.rb-key { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin: 14px 0 0; font-size: var(--t-tiny); color: var(--text-3); }
+.rb-key > span { display: inline-flex; align-items: center; white-space: nowrap; }
+.rb-key-sq { display: inline-grid; place-items: center; flex: none; width: 14px; height: 14px; margin-right: 7px; border-radius: 3.5px; background: var(--rb-fill); }
+.rb-key-sq b { display: block; width: 5px; height: 5px; border-radius: 1px; background: var(--rb-core); }
+.rb-key-head { flex: none; width: 9px; height: 9px; margin: 0 7px 0 2px; border-radius: 2.5px; background: var(--rb-fill); box-shadow: 0 0 0 1.5px var(--paper), 0 0 0 2.75px var(--accent); }
 
 /* the readout: one blob's facts, the latest by default, the pointed one while a square is pointed at */
 .rb-read-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 24px; margin: 0; font-size: var(--t-small); font-weight: 400; }
 .rb-read-h .ov-eyebrow { display: inline; }
 .rb-spec { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 18px; margin: 12px 0 0; }
 .rb-spec > div { min-width: 0; }
-.rb-spec dt { display: flex; align-items: center; gap: 5px; margin: 0 0 3px; font-size: var(--t-small); color: var(--text-3); }
-.rb-spec dt svg { flex: none; color: var(--accent-ink); }
+.rb-spec dt { margin: 0 0 3px; font-size: var(--t-small); color: var(--text-3); }
 .rb-spec dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15.5px; font-weight: 600; letter-spacing: -.012em; line-height: 21px; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
-.rb-st .verdict { gap: 6px; padding: 1px 10px 1px 9px; border-radius: 999px; line-height: 19px; white-space: nowrap; }
-.rb-st .verdict .w { font-size: var(--t-small); letter-spacing: 0; }
-.rb-st .verdict--kept { background: var(--accent-tint); }
-.rb-st .verdict--kept .w { color: var(--accent-ink); font-weight: 500; }
-.rb-st .verdict--hold { background: color-mix(in srgb, var(--hold) 13%, transparent); }
-.rb-st .verdict--hold .w { color: var(--hold-ink); font-weight: 500; }
-.rb-st .verdict--gap { padding-left: 0; padding-right: 0; }
-.rb-st .verdict--gap .w { color: var(--text-2); font-weight: 500; }
-/* the readout's links sit at the row's foot, level with the availability card beside them */
+/* in two columns the size comes last, so the two endorsement figures share a row */
+.rb-spec > .rb-size { order: 1; }
+/* the readout's links sit at the row's foot, level with the availability line beside them */
 .rb-read { display: flex; flex-direction: column; }
 .rb-read .ov-links { margin-top: 16px; }
 /* Tensile's own reading under the chain's figures: one quiet line under a hairline, "Observed by Tensile" as its prefix */
@@ -1434,6 +1402,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .deck-row > .rb-read { margin-top: 24px !important; }
   .deck-row > .rb-read { border-left: 0; padding-top: 22px; margin: 0 26px; padding-left: 0; padding-right: 0; border-top: 1px solid var(--border); }
   .rb-spec { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .rb-spec > .rb-size { order: 0; }
   .cm-ev { width: 300px; }
 }
 @media (max-width: 860px) {
@@ -1460,6 +1429,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .deck-row > .rb, .deck-row > .rb-read { border-left: 0; border-top: 1px solid var(--border); margin: 22px 16px 0 !important; padding: 22px 0 0; }
   .ob { padding-top: 16px !important; }
   .rb-spec { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rb-spec > .rb-size { order: 1; }
   /* the map's name and key are in the bar's counts and the popovers here; the view buttons move to the empty south-west */
   .cm-title { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .cm-tools { right: 8px; top: 8px; }
