@@ -36,15 +36,21 @@ export function useWindow(def: WindowName = "24h"): [WindowName, (w: WindowName)
  * rendered in the browser only (the static export cannot know them), so
  * nothing of it is in the prerendered HTML; the overview uses this instead,
  * so its frame is in the HTML at its final size and nothing moves when the
- * data arrives. A link with ?window=7d starts on 24h for one frame.
+ * data arrives.
+ *
+ * The third value is false until the URL has been read: until then the
+ * period is not known, and a page asks for nothing that depends on it (a
+ * null path to useApi), so a link with ?window=7d never asks for 24h first.
  */
-export function useWindowAfterMount(def: WindowName = "24h"): [WindowName, (w: WindowName) => void] {
+export function useWindowAfterMount(def: WindowName = "24h"): [WindowName, (w: WindowName) => void, boolean] {
   const [win, setWin] = useState<WindowName>(def);
+  const [known, setKnown] = useState(false);
   useEffect(() => {
     try {
       const w = new URLSearchParams(window.location.search).get("window");
       if (w && (WINDOWS as readonly string[]).includes(w)) setWin(w as WindowName);
     } catch { /* fine */ }
+    setKnown(true);
   }, []);
   const set = useCallback((w: WindowName) => {
     setWin(w);
@@ -54,7 +60,7 @@ export function useWindowAfterMount(def: WindowName = "24h"): [WindowName, (w: W
       window.history.replaceState(null, "", u.pathname + u.search + u.hash);
     } catch { /* fine */ }
   }, [def]);
-  return [win, set];
+  return [win, set, known];
 }
 
 export function WindowSwitch({ value, onChange }: { value: WindowName; onChange: (w: WindowName) => void }) {

@@ -26,17 +26,18 @@ const LIVE_POLL_MS = 15000;
  * loads.
  */
 function Overview() {
-  // read after mount, so the page is prerendered whole (see useWindowAfterMount)
-  const [win, setWin] = useWindowAfterMount("24h");
+  // read after mount, so the page is prerendered whole (see useWindowAfterMount); nothing that
+  // depends on the period is asked for until the URL has said which one it is
+  const [win, setWin, winKnown] = useWindowAfterMount("24h");
   const { data: meta, error: metaErr } = useApi<Meta>("/v1/meta");
-  const net = useApi<Network>(`/v1/network?window=${win}`);
+  const net = useApi<Network>(winKnown ? `/v1/network?window=${win}` : null);
   // Tensile's Blob availability figure is "now", not the period: every blob read so far
   const whole = useApi<Network>("/v1/network?window=all");
   // The 24h list is refreshed as often as every ten seconds on the observer
   // (endorsements move with every block; in September 2026 its 15-22 s
   // computation held it to about every 35-45 s), so it is read more often than
   // the longer periods, whose snapshots move every few minutes.
-  const vals = useApi<{ validators: Validator[] }>(`/v1/validators?window=${win}`, win === "24h" ? LIVE_POLL_MS : undefined);
+  const vals = useApi<{ validators: Validator[] }>(winKnown ? `/v1/validators?window=${win}` : null, win === "24h" ? LIVE_POLL_MS : undefined);
 
   const N = net.data;
   const rows = vals.data?.validators ?? [];
@@ -68,7 +69,7 @@ function Overview() {
       </div>
 
       {/* the period drives the table's Shard data and Endorsements; the map, the stake and the blobs are now */}
-      <Validators rows={rows} window={win} notLive={notLive} loading={vals.loading}
+      <Validators rows={rows} window={win} notLive={notLive} loading={vals.loading || (!vals.data && !vals.error)}
         periodSwitch={<WindowSwitch value={win} onChange={setWin} />} />
       <p className="tnote"><a href={`${API_BASE}/v1/feed.atom`} type="application/atom+xml">Network events (Atom)</a></p>
       {notLive && meta && <p className="tnote">Fibre is not live on {meta.chain_id} (app v{meta.app_version}{meta.fibre_app_version ? `, needs v${meta.fibre_app_version}` : ""}).</p>}
