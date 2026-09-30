@@ -1314,7 +1314,7 @@ body { background: var(--canvas); }
 .rb { --rb-cell: 26px; --rb-gap: 5px; }
 .rb-head { display: flex; align-items: center; gap: 10px; min-height: 24px; }
 .rb-head .ov-eyebrow { margin-right: auto; }
-.rb-live { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-small); font-weight: 500; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.rb-live { display: inline-flex; align-items: center; justify-content: flex-end; min-width: 7.2em; gap: 6px; font-size: var(--t-small); font-weight: 500; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .rb-live-d { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .rb[data-state="paused"] .rb-live-d { background: var(--text-3); }
 .rb[data-state="paused"] .rb-live { color: var(--text-2); }
