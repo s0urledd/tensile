@@ -434,6 +434,29 @@ func (s *sim) checkScenarios(srv *Server) {
 	if len(e.rows) == 0 || sealed == 0 {
 		s.t.Errorf("nothing sealed: %d row days, %d settlement days", len(e.rows), sealed)
 	}
+	// No settlement day whose obligation rows tie is sealed with them.
+	tied := 0
+	for d, sd := range e.settle {
+		var n int64
+		lo, hi := sd.MinStart, sd.MaxStart
+		if sd.Seal != nil {
+			lo, hi = sd.Seal.MinStart, sd.Seal.MaxStart
+		}
+		if lo == "" {
+			continue
+		}
+		if err := s.st.DB().QueryRow(dayTiesSQL, dayLo(d), dayHi(d), hi, lo).Scan(&n); err != nil {
+			s.t.Fatal(err)
+		}
+		if n == 0 {
+			continue
+		}
+		tied++
+		if sd.Seal != nil && sd.Seal.Obl != nil {
+			s.t.Errorf("settlement day %s is sealed with %d obligation row(s) tied on their newest reading", d, n)
+		}
+	}
+	s.t.Logf("%d settlement day(s) with tied obligation rows, read raw", tied)
 }
 
 // noteDark records whether a row day over while the prober's lines were held

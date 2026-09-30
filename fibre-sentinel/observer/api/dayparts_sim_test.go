@@ -429,8 +429,14 @@ func (s *sim) addPublication(i int, at time.Time) {
 		}
 		if tie {
 			// a second vantage reads the same blob at the very same instant,
-			// which ties the newest row of every pair both read
-			for _, m := range s.read(sp, pt, "v2", started) {
+			// which ties the newest row of every pair both read; before
+			// scen.tieFrom a millisecond later, which does not, so that the
+			// days a tie keeps raw are the few the scenario places them on
+			second := started
+			if sp.pub.SettlementTime.Before(s.scen.tieFrom) {
+				second = second.Add(time.Millisecond)
+			}
+			for _, m := range s.read(sp, pt, "v2", second) {
 				s.emit(m.StartedAt.Add(3*time.Second), "measurements.jsonl", m)
 			}
 		}
@@ -754,6 +760,9 @@ type simScen struct {
 	amendAt, weirdAt, lateAt, reapplyAt time.Time
 	// odd4000 is the day whose publications record original_rows 4000.
 	odd4000 time.Time
+	// tieFrom is where the second vantage's readings begin to tie with this
+	// one's: a settlement day with a tie is read raw, never sealed.
+	tieFrom time.Time
 }
 
 func (s *sim) planScenarios() {
@@ -771,6 +780,7 @@ func (s *sim) planScenarios() {
 	sc.unresolvable = day(3, 8)
 	sc.amendAt, sc.weirdAt, sc.lateAt = day(7, r(2, 20)), day(6, r(12, 20)), day(10, r(1, 20))
 	sc.odd4000 = day(6, 0)
+	sc.tieFrom = day(9, 0)
 	sc.collapse = -1
 	// The scenarios added later draw from an order of their own, so the
 	// record every seed writes is the one the ones above were placed in.

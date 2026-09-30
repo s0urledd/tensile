@@ -192,10 +192,7 @@ type settleSeal struct {
 	// MaxFirstFault is the newest first fault of any obligation of the day:
 	// none of them is provisional once the cutoff has passed it.
 	MaxFirstFault string `json:"max_first_fault,omitempty"`
-	// Ties counts the obligations whose newest rows tie (two vantages,
-	// equal timestamps), where the statement's last class depends on its
-	// plan; logged, never hidden.
-	Ties     int64  `json:"ties,omitempty"`
+	// When it was sealed, and its generation (its file's name).
 	SealedAt string `json:"sealed_at"`
 	Gen      int    `json:"gen"`
 	// Span is the row span the seal was computed with.
@@ -477,6 +474,8 @@ type dayParts struct {
 	// again; gens each day's seal generation. Both guarded by mu.
 	retry map[string]time.Time
 	gens  map[string]int
+	// logged are the lines logOnce has logged, by key; guarded by mu.
+	logged map[string]bool
 	// rebuilds counts the times the partials were begun again, and dropped
 	// the sealed days a catch-up dropped, for tests.
 	rebuilds int

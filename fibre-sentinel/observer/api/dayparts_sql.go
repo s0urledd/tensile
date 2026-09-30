@@ -204,7 +204,7 @@ const correctedRowsSQL = `SELECT r.promise_hash, r.rowid, r.phase, r.classificat
 // dayTiesSQL counts, among the obligation rows of the publications settled
 // in a span, the rows that tie on everything ObligationBuckets orders an
 // obligation's newest row by: where two exist, the class it reads depends
-// on the plan and the sort. Logged when a day is sealed.
+// on the plan and the sort. A day that has any is not sealed.
 var dayTiesSQL = `SELECT COUNT(*) FROM (
 		SELECT pr.validator_address, pr.promise_hash, pr.classification IN ('NOT_PROBED','PROBE_ERROR') AS g, pr.scheduled_at, pr.started_at
 		FROM ` + store.ObligationRowsVerified + ` pr JOIN publications pb ON pb.promise_hash = pr.promise_hash

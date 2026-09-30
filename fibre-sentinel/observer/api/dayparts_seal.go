@@ -23,7 +23,10 @@ import (
 //     own tests (rollup.WindowsClosed, rollup.ShadowVerdictsSettled), an
 //     hour has passed since the latest row of its promises started (a
 //     restarted prober stamps the readings it missed at its restart), no
-//     row of them has a deadline after now, and nothing of it is pending.
+//     row of them has a deadline after now, nothing of it is pending, and
+//     no two of its obligation rows tie on their newest reading (the class
+//     such an obligation counts as is the plan's to choose, so a day's
+//     statement and a window's cannot be shown to agree on it).
 //     A held day is sealed like any other: the held rows are diffed on
 //     every catch-up, so a hold raised or lifted drops it either way, and
 //     a range that cannot be closed does not keep the day raw for good;
@@ -352,6 +355,21 @@ func (dp *dayParts) later(key string, now time.Time) {
 	dp.retry[key] = now.Add(sealRetry)
 }
 
+// logOnce logs a line once per key for the process: a day tried again
+// every sealRetry says why it stays raw the first time only.
+func (dp *dayParts) logOnce(key, format string, args ...any) {
+	dp.mu.Lock()
+	if dp.logged == nil {
+		dp.logged = map[string]bool{}
+	}
+	seen := dp.logged[key]
+	dp.logged[key] = true
+	dp.mu.Unlock()
+	if !seen && dp.log != nil {
+		dp.log(format, args...)
+	}
+}
+
 // sealRow seals row day d: every validator's rows started on it, the
 // promises a collapse would move, and its anchors.
 func (s *Server) sealRow(ctx context.Context, e *epoch, d string, now time.Time) error {
@@ -497,11 +515,18 @@ func (s *Server) sealSettle(ctx context.Context, e *epoch, d string, now time.Ti
 				s.parts.later("settle:"+d, now)
 				return nil
 			}
-			if err := q.QueryRowContext(ctx, dayTiesSQL, dayLo(d), dayHi(d), hi, lo).Scan(&seal.Ties); err != nil {
+			// Rows that tie on everything ObligationBuckets orders by leave
+			// the class an obligation counts as to the plan and the sort, so
+			// the day's statement and a window's cannot be shown to agree on
+			// it: the day is read raw, and tried again as any other.
+			var ties int64
+			if err := q.QueryRowContext(ctx, dayTiesSQL, dayLo(d), dayHi(d), hi, lo).Scan(&ties); err != nil {
 				return err
 			}
-			if seal.Ties > 0 && s.parts.log != nil {
-				s.parts.log("day partials: settlement day %s has %d obligation row(s) tied on their newest reading; the class they count by depends on the statement's plan", d, seal.Ties)
+			if ties > 0 {
+				s.parts.logOnce("ties:"+d, "day partials: settlement day %s has %d obligation row(s) tied on their newest reading; it is read raw", d, ties)
+				s.parts.later("settle:"+d, now)
+				return nil
 			}
 		}
 	}
