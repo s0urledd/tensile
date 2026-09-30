@@ -730,8 +730,8 @@ type simScen struct {
 	unresolvable time.Time
 	// amendAt replays an amendment of a row already sealed; weirdAt writes
 	// a row start that is not a store timestamp; lateAt a reading of a
-	// pruned day.
-	amendAt, weirdAt, lateAt time.Time
+	// pruned day; reapplyAt applies corrections again under their range.
+	amendAt, weirdAt, lateAt, reapplyAt time.Time
 	// odd4000 is the day whose publications record original_rows 4000.
 	odd4000 time.Time
 }
@@ -752,6 +752,11 @@ func (s *sim) planScenarios() {
 	sc.amendAt, sc.weirdAt, sc.lateAt = day(7, r(2, 20)), day(6, r(12, 20)), day(10, r(1, 20))
 	sc.odd4000 = day(6, 0)
 	sc.collapse = -1
+	// The scenarios added later draw from an order of their own, so the
+	// record every seed writes is the one the ones above were placed in.
+	later := rand.New(rand.NewPCG(s.cfg.seed, 0x1a7e))
+	r = func(lo, hi float64) float64 { return lo + (hi-lo)*later.Float64() }
+	sc.reapplyAt = day(7, r(0, 12))
 }
 
 // inOutage reports whether a reading at t falls in the prober's outage.
@@ -935,4 +940,59 @@ func (s *sim) amendReplay() {
 	}
 	s.emitNow("amendments.jsonl", store.Amendment{DedupeKey: key, From: cls, To: string(probe.ClassUnmatchedGenuine),
 		Reason: "replayed: genuine rows no promise assigns", JudgedAt: s.now, ScannerFrontier: s.now})
+}
+
+// reapply applies a publication's correction and a row's correction again,
+// each under the range it was first applied under, as the corrector does
+// when the deadline its range pass recomputes moves and its sweep then
+// grades the rows again: the store rewrites the publication and the row,
+// and neither log gains a line (ON CONFLICT DO NOTHING). The publication's
+// deadline moves past the clock, so a publication of a day long sealed is
+// unread again; the row, of another publication where there is one, moves
+// into or out of its window on a deadline six hours earlier, and the sweep
+// grades it back.
+func (s *sim) reapply() {
+	s.t.Helper()
+	db := s.st.DB()
+	var key, ru, rh, val, sched, phase, cls, rmsu string
+	if err := db.QueryRow(`SELECT k.dedupe_key, k.uncertainty_id, r.promise_hash, r.validator_address, r.scheduled_at, r.phase, r.classification, r.must_serve_until
+		FROM probe_corrections k JOIN probes r ON r.dedupe_key = k.dedupe_key ORDER BY r.started_at LIMIT 1`).
+		Scan(&key, &ru, &rh, &val, &sched, &phase, &cls, &rmsu); err != nil {
+		s.t.Fatalf("no row correction to apply again: %v", err)
+	}
+	var h, u, msu string
+	if err := db.QueryRow(`SELECT k.promise_hash, k.uncertainty_id, p.must_serve_until FROM publication_corrections k
+		JOIN publications p ON p.promise_hash = k.promise_hash ORDER BY k.promise_hash = ?, p.settlement_time LIMIT 1`, rh).Scan(&h, &u, &msu); err != nil {
+		s.t.Fatalf("no publication correction to apply again: %v", err)
+	}
+	from, _ := time.Parse(store.TimeLayout, msu)
+	pc := store.Correction{SchemaVersion: store.CorrectionSchemaVersion, Kind: store.CorrectionPublicationDeadline,
+		UncertaintyID: u, PromiseHash: h, FromMustServeUntil: from, ToMustServeUntil: s.now.Add(3 * time.Hour),
+		FromBasis: "sim", ToBasis: "sim; CORRECTED: recomputed again", Reason: "sim: applied again under its range", JudgedAt: s.now}
+	at, _ := time.Parse(store.TimeLayout, sched)
+	rfrom, _ := time.Parse(store.TimeLayout, rmsu)
+	to := probe.PhasePost
+	if phase == string(probe.PhasePost) {
+		to = probe.PhaseInWindow
+	}
+	rc := store.Correction{SchemaVersion: store.CorrectionSchemaVersion, Kind: store.CorrectionProbeVerdict,
+		UncertaintyID: ru, PromiseHash: rh, DedupeKey: key, ValidatorAddress: val, ScheduledAt: at,
+		FromPhase: phase, ToPhase: string(to), FromClassification: cls, ToClassification: cls,
+		FromMustServeUntil: rfrom, ToMustServeUntil: rfrom.Add(-6 * time.Hour), PruneToleranceS: 300,
+		Reason: "sim: applied again under its range", JudgedAt: s.now}
+	for _, c := range []store.Correction{pc, rc} {
+		b, err := json.Marshal(c)
+		if err != nil {
+			s.t.Fatal(err)
+		}
+		if _, err := s.corrFile.Write(append(b, '\n')); err != nil {
+			s.t.Fatal(err)
+		}
+	}
+	if _, err := s.st.ApplyPublicationCorrection(pc); err != nil {
+		s.t.Fatal(err)
+	}
+	if _, err := s.st.ApplyProbeCorrection(rc); err != nil {
+		s.t.Fatal(err)
+	}
 }

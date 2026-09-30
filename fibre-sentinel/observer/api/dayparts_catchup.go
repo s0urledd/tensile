@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +40,9 @@ import (
 //	                                           the mark
 //	ApplyPublicationCorrection                 publication_corrections   the day's latest deadline read again;
 //	                                           past the mark             its seal dropped
+//	either of them again under the same        a fingerprint of the      the same; the rows' row days and the
+//	  range (the log keeps its first line)     corrected publications    settlement day
+//	                                           and their rows
 //	ApplySampledOutCorrection (no log)         a fingerprint of every    the points' row days and the
 //	                                           decision a correction     settlement day
 //	                                           can reach
@@ -268,6 +272,9 @@ func (dp *dayParts) build(ctx context.Context, s *Server, q store.Querier) (*epo
 	if err := c.readHolds(false); err != nil {
 		return nil, err
 	}
+	if err := c.readCorrections(false); err != nil {
+		return nil, err
+	}
 	if err := c.readFingerprints(false); err != nil {
 		return nil, err
 	}
@@ -310,7 +317,8 @@ func (dp *dayParts) catchUp(ctx context.Context, s *Server, q store.Querier, now
 	for _, t := range ladderTables {
 		steps = append(steps, func() error { return c.follow(t) })
 	}
-	steps = append(steps, func() error { return c.readHolds(true) }, func() error { return c.readFingerprints(true) })
+	steps = append(steps, func() error { return c.readHolds(true) }, func() error { return c.readCorrections(true) },
+		func() error { return c.readFingerprints(true) })
 	for _, step := range steps {
 		if err := step(); err != nil {
 			return nil, c.j, 0, err
@@ -615,7 +623,7 @@ func (c *catchUp) foldPublicationCorrections(from, hi int64) error {
 func (c *catchUp) readMaxPubMSU(d string) error {
 	c.touchSettle(d, "", "", "")
 	sd := c.e.settle[d]
-	if sd.Pubs == 0 {
+	if sd == nil || sd.Pubs == 0 {
 		return nil
 	}
 	var msu sql.NullString
@@ -962,6 +970,138 @@ func (c *catchUp) touchPromises(promises map[string]bool, msu map[string]string)
 	for _, x := range hds {
 		c.touchSettle(x.d, "", "", msu[x.h])
 	}
+	return nil
+}
+
+// A correction applied again under the range it was first applied under
+// leaves no trace in either log. ApplyPublicationCorrection and
+// ApplyProbeCorrection always rewrite their row, but the log keeps the first
+// line of a (target, range) pair (ON CONFLICT DO NOTHING), so nothing new
+// lands past the logs' marks. The corrector does it: its range pass runs
+// again on every pass while a verified range stays open, and applies a
+// publication's correction again whenever the deadline it recomputes has
+// moved (params_history grew); its sweep then grades the publication's rows
+// again under that publication's latest range, which is the same one. What
+// every apply does rewrite is corrected_at, with the deadline, the phase and
+// the class it sets. So each catch-up reads the corrected publications
+// (publications_corrected: the few a params range ever moved) and, for
+// those that moved and those with a row the sweep has still to grade,
+// their corrected and stale rows. A row is graded again only while its
+// deadline disagrees with its publication's, which only a correction of the
+// publication makes it do (store.StaleDeadline), so the rows of a
+// publication that neither moved nor has such a row cannot move unseen.
+
+// readCorrections reads the corrected publications and the rows it has to,
+// and with diff drops what moved: a publication's settlement day has its
+// latest deadline read again, and rows that moved drop their row days and
+// their settlement day.
+func (c *catchUp) readCorrections(diff bool) error {
+	rows, err := c.q.QueryContext(c.ctx, correctedPubsSQL)
+	if err != nil {
+		return err
+	}
+	type pub struct{ fp, day string }
+	pubs := map[string]pub{}
+	for rows.Next() {
+		var h, msu, at, day string
+		if err := rows.Scan(&h, &msu, &at, &day); err != nil {
+			rows.Close()
+			return err
+		}
+		pubs[h] = pub{msu + "|" + at, day}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	var check []string
+	for h, p := range pubs {
+		if old, ok := c.e.corr[h]; !diff || !ok || old.Pub != p.fp || c.e.corrStale[h] {
+			check = append(check, h)
+		}
+	}
+	gone := false
+	for h := range c.e.corr {
+		if _, ok := pubs[h]; !ok {
+			gone = true
+		}
+	}
+	if len(check) == 0 && !gone {
+		return nil
+	}
+	type rowsOf struct {
+		parts []string
+		days  map[string]bool
+		msu   string
+		stale bool
+	}
+	got := map[string]*rowsOf{}
+	if len(check) > 0 {
+		sort.Strings(check)
+		b, _ := json.Marshal(check)
+		rr, err := c.q.QueryContext(c.ctx, correctedRowsSQL, string(b))
+		if err != nil {
+			return err
+		}
+		for rr.Next() {
+			var h, phase, cls, msu, at, started string
+			var id, stale int64
+			if err := rr.Scan(&h, &id, &phase, &cls, &msu, &at, &started, &stale); err != nil {
+				rr.Close()
+				return err
+			}
+			x := got[h]
+			if x == nil {
+				x = &rowsOf{days: map[string]bool{}}
+				got[h] = x
+			}
+			x.parts = append(x.parts, strconv.FormatInt(id, 10), phase, cls, msu, at)
+			if len(started) >= 10 {
+				x.days[started[:10]] = true
+			}
+			x.msu = maxString(x.msu, msu)
+			x.stale = x.stale || stale != 0
+		}
+		if err := rr.Close(); err != nil {
+			return err
+		}
+	}
+	// The publications not read again are as they were, and none of them
+	// had a row to grade.
+	corr := make(map[string]corrFP, len(pubs))
+	for h := range pubs {
+		if old, ok := c.e.corr[h]; ok {
+			corr[h] = old
+		}
+	}
+	stale := map[string]bool{}
+	for _, h := range check {
+		p, x := pubs[h], got[h]
+		if x == nil {
+			x = &rowsOf{}
+		}
+		sum := sha256.Sum256([]byte(strings.Join(x.parts, "\x00")))
+		fp := corrFP{Pub: p.fp, Rows: hex.EncodeToString(sum[:])}
+		old, had := c.e.corr[h]
+		corr[h] = fp
+		if x.stale {
+			stale[h] = true
+		}
+		if !diff {
+			continue
+		}
+		if (!had || old.Pub != fp.Pub) && p.day != "" {
+			if err := c.readMaxPubMSU(p.day); err != nil {
+				return err
+			}
+		}
+		if !had || old.Rows != fp.Rows {
+			for d := range x.days {
+				c.touchRow(d)
+			}
+			c.touchSettle(p.day, "", "", x.msu)
+		}
+	}
+	c.e.corr, c.e.corrStale = corr, stale
 	return nil
 }
 

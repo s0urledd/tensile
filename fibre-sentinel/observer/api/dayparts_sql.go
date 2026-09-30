@@ -174,6 +174,25 @@ const daySpanSQL = `WITH pb AS MATERIALIZED (SELECT promise_hash FROM publicatio
 const dayMaxPubMSUSQL = `SELECT MAX(must_serve_until) FROM publications
 	WHERE settlement_time >= ? AND settlement_time <= ?` + ` AND settlement_height >= ? AND settlement_height <= ?`
 
+// ---- what the catch-up reads that no log records ----
+
+// correctedPubsSQL is every corrected publication (publications_corrected):
+// its deadline, when a correction last wrote it, and its settlement day.
+const correctedPubsSQL = `SELECT promise_hash, must_serve_until, corrected_at, COALESCE(substr(settlement_time, 1, 10), '')
+	FROM publications WHERE corrected_at IS NOT NULL`
+
+// correctedRowsSQL is, for the publications named in ?1 (a JSON array of
+// promise hashes), every row a correction wrote and every row whose
+// deadline disagrees with its publication's (the rows the corrector's sweep
+// grades): what a correction writes, the row's start and whether it is
+// stale, in order.
+const correctedRowsSQL = `SELECT r.promise_hash, r.rowid, r.phase, r.classification, r.must_serve_until, COALESCE(r.corrected_at, ''),
+		r.started_at, COALESCE(r.must_serve_until <> p.must_serve_until, 1)
+	FROM json_each(?) j CROSS JOIN publications p ON p.promise_hash = j.value
+	CROSS JOIN probes r ON r.promise_hash = p.promise_hash
+	WHERE r.corrected_at IS NOT NULL OR r.must_serve_until <> p.must_serve_until
+	ORDER BY r.promise_hash, r.rowid`
+
 // dayTiesSQL counts, among the obligation rows of the publications settled
 // in a span, the rows that tie on everything ObligationBuckets orders an
 // obligation's newest row by: where two exist, the class it reads depends

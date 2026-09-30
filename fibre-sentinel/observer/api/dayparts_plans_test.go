@@ -52,7 +52,9 @@ func dayPartsPlans() []dayPartsPlan {
 		// the catch-up
 		{"parts: held rows", `SELECT rowid, promise_hash FROM probes WHERE retention_unverified = 1`, nil, []string{"probes_held"}, nil},
 		{"parts: held publications", `SELECT promise_hash FROM publications WHERE retention_unverified = 1`, nil, []string{"publications_held"}, nil},
-		{"parts: corrected publications", `SELECT promise_hash FROM publications WHERE corrected_at IS NOT NULL`, nil, []string{"publications_corrected"}, nil},
+		{"parts: corrected publications", correctedPubsSQL, nil, []string{"publications_corrected"}, nil},
+		{"parts: rows of corrected publications", correctedRowsSQL, []any{"[]"},
+			[]string{"sqlite_autoindex_publications_1 (promise_hash=?)", "probes_promise (promise_hash=?)"}, []string{"j"}},
 		{"parts: new rows", `SELECT substr(r.started_at, 1, 10), COALESCE(substr(p.settlement_time, 1, 10), ''), MIN(r.started_at), MAX(r.started_at), MAX(r.must_serve_until), MAX(` + weirdSQL("r.started_at") + `)
 			FROM probes r LEFT JOIN publications p ON p.promise_hash = r.promise_hash WHERE r.rowid > ? AND r.rowid <= ? GROUP BY 1, 2`, []any{0, 10},
 			[]string{rowid, "sqlite_autoindex_publications_1 (promise_hash=?)"}, nil},

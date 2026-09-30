@@ -325,7 +325,7 @@ func equivRun(t *testing.T, cfg simConfig, sample int, restart bool, step [2]int
 	}
 	end := s.t0.Add(time.Duration(cfg.days)*24*time.Hour + 8*time.Hour)
 	sc := s.scen
-	amended, failed, weird := false, false, false
+	amended, failed, weird, reapplied := false, false, false, false
 	ctx := context.Background()
 	for at := s.t0.Add(time.Hour); !at.After(end); at = at.Add(time.Duration(step[0]+rng.IntN(step[1]-step[0])) * time.Minute) {
 		s.advance(at)
@@ -348,6 +348,10 @@ func equivRun(t *testing.T, cfg simConfig, sample int, restart bool, step [2]int
 		if !weird && !at.Before(sc.weirdAt) {
 			s.weirdRow(s.t0.Add(5 * 24 * time.Hour))
 			weird = true
+		}
+		if !reapplied && !at.Before(sc.reapplyAt) {
+			s.reapply()
+			reapplied = true
 		}
 		switch rng.IntN(3) {
 		case 1:
@@ -443,6 +447,12 @@ var simWitnesses = []struct {
 }{
 	{"a publication deadline corrected", `SELECT COUNT(*) FROM publication_corrections`},
 	{"a probe verdict corrected", `SELECT COUNT(*) FROM probe_corrections`},
+	// what every apply writes is corrected_at; one no line of the log was
+	// judged at is an apply the log kept no line of
+	{"a publication correction applied again under its range", `SELECT COUNT(*) FROM publications p WHERE p.corrected_at IS NOT NULL
+		AND NOT EXISTS (SELECT 1 FROM publication_corrections k WHERE k.promise_hash = p.promise_hash AND k.judged_at = p.corrected_at)`},
+	{"a row correction applied again under its range", `SELECT COUNT(*) FROM probes r WHERE r.corrected_at IS NOT NULL
+		AND NOT EXISTS (SELECT 1 FROM probe_corrections k WHERE k.dedupe_key = r.dedupe_key AND k.judged_at = r.corrected_at)`},
 	{"a sampled-out point corrected", `SELECT COUNT(*) FROM sampling_decisions d JOIN publications p ON p.promise_hash = d.promise_hash WHERE d.must_serve_until <> p.must_serve_until OR p.corrected_at IS NOT NULL`},
 	{"a collapse", `SELECT COUNT(*) FROM sampling_decisions WHERE source = 'rows'`},
 	{"an amendment", `SELECT COUNT(*) FROM probe_amendments`},

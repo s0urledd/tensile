@@ -28,8 +28,9 @@ import (
 //
 //   - day-partials.json holds the epoch: every table's marks ladder, raw_from,
 //     the vantage, every settlement day's ledger and span, the held rows
-//     and publications, the fingerprints, the anchors, and an index of the
-//     sealed days naming each one's file and digest;
+//     and publications, the fingerprints and the corrected publications
+//     (a file without them has every correction read again), the anchors,
+//     and an index of the sealed days naming each one's file and digest;
 //   - day-partials/row-<day>.g<n>.json and settle-<day>.g<n>.json hold one
 //     sealed day each, written once and never changed; a day sealed again
 //     is another file.
@@ -64,6 +65,8 @@ type partsFile struct {
 	Held        map[string]heldRow     `json:"held,omitempty"`
 	HeldPubs    []string               `json:"held_pubs,omitempty"`
 	FPs         map[string]string      `json:"fingerprints,omitempty"`
+	Corrected   map[string]corrFP      `json:"corrected,omitempty"`
+	CorrStale   []string               `json:"corrected_stale,omitempty"`
 	Covered     []string               `json:"covered,omitempty"`
 	Verified    []string               `json:"verified,omitempty"`
 	Weird       []string               `json:"weird,omitempty"`
@@ -129,7 +132,7 @@ func sealName(kind, day string, gen int) string {
 // fileOf is the epoch as day-partials.json keeps it.
 func (e *epoch) fileOf(vantage string) partsFile {
 	f := partsFile{
-		Vantage: vantage, Marks: e.marks, RawFrom: e.rawFrom, Held: map[string]heldRow{}, FPs: e.fps,
+		Vantage: vantage, Marks: e.marks, RawFrom: e.rawFrom, Held: map[string]heldRow{}, FPs: e.fps, Corrected: e.corr,
 		Weird: e.weird, FirstRow: e.firstRow, LedgerBuilt: e.ledgerBuilt, LedgerTo: e.ledgerTo, LedgerHi: e.ledgerHi,
 		PubsOdd: e.pubsOdd, Settle: e.settle, Anchors: e.anchors, Seals: map[string]sealRef{},
 	}
@@ -139,7 +142,7 @@ func (e *epoch) fileOf(vantage string) partsFile {
 	for _, m := range []struct {
 		set map[string]bool
 		out *[]string
-	}{{e.heldPubs, &f.HeldPubs}, {e.covered, &f.Covered}, {e.verified, &f.Verified}} {
+	}{{e.heldPubs, &f.HeldPubs}, {e.covered, &f.Covered}, {e.verified, &f.Verified}, {e.corrStale, &f.CorrStale}} {
 		for k := range m.set {
 			*m.out = append(*m.out, k)
 		}
@@ -319,6 +322,9 @@ func (dp *dayParts) load(ctx context.Context, s *Server, q store.Querier) (*epoc
 	if e.fps == nil {
 		e.fps = map[string]string{}
 	}
+	if f.Corrected != nil {
+		e.corr = f.Corrected
+	}
 	for k, h := range f.Held {
 		id, err := strconv.ParseInt(k, 10, 64)
 		if err != nil {
@@ -329,7 +335,7 @@ func (dp *dayParts) load(ctx context.Context, s *Server, q store.Querier) (*epoc
 	for _, m := range []struct {
 		list []string
 		set  map[string]bool
-	}{{f.HeldPubs, e.heldPubs}, {f.Covered, e.covered}, {f.Verified, e.verified}} {
+	}{{f.HeldPubs, e.heldPubs}, {f.Covered, e.covered}, {f.Verified, e.verified}, {f.CorrStale, e.corrStale}} {
 		for _, k := range m.list {
 			m.set[k] = true
 		}
