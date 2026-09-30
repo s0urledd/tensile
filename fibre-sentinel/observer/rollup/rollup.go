@@ -324,6 +324,12 @@ type Config struct {
 	// is. Other vantages' copied heartbeats are pruned with the rest but
 	// never counted. Empty counts every row.
 	Vantage string
+	// AfterPrune, when set, is called after each statement of the prune:
+	// with the table a DELETE emptied of the day, and with "raw_from" once
+	// the day is recorded pruned. The prune is several statements, each
+	// its own commit, and this is how a test looks at the store between
+	// them. Nothing sets it in production.
+	AfterPrune func(step, day string)
 }
 
 // Default is the retention decision of 2026-09-18: rows 90 days, raw JSON
@@ -476,6 +482,9 @@ func Run(ctx context.Context, st *store.Store, now time.Time, cfg Config) (Repor
 				}
 				k, _ := res.RowsAffected()
 				n += k
+				if cfg.AfterPrune != nil {
+					cfg.AfterPrune(table, from.Format(dayLayout))
+				}
 			}
 			// A sampled-out publication's rows are its decision, started at
 			// decided_at: pruned with the day its rows would have been,
@@ -486,11 +495,17 @@ func Run(ctx context.Context, st *store.Store, now time.Time, cfg Config) (Repor
 			}
 			k, _ := res.RowsAffected()
 			n += k
+			if cfg.AfterPrune != nil {
+				cfg.AfterPrune("sampling_decisions", from.Format(dayLayout))
+			}
 			rep.PrunedRows += n
 			rep.PrunedDays = append(rep.PrunedDays, from.Format(dayLayout))
 			from = from.Add(24 * time.Hour)
 			if err := st.SetMeta(metaRawFrom, from.Format(dayLayout), now); err != nil {
 				return rep, err
+			}
+			if cfg.AfterPrune != nil {
+				cfg.AfterPrune("raw_from", from.Format(dayLayout))
 			}
 		}
 	}
