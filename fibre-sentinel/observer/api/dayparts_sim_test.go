@@ -956,14 +956,22 @@ func (s *sim) healCorrector() {
 // strftime tells from a store timestamp.
 func (s *sim) weirdRow(between time.Time, leap bool) {
 	s.t.Helper()
-	db := s.st.DB()
 	v, tag := store.TS(between.Add(-time.Nanosecond))+"9", "weird|"
 	if leap {
 		v, tag = between.Add(-time.Nanosecond).Format("2006-01-02T15:04:")+"60.000000000Z", "leap|"
 	}
+	s.copyRow(between, v, tag)
+}
+
+// copyRow writes, straight into the store as a foreign writer would, a copy
+// of the newest reading started before a moment, with its start set to v
+// and tag before its key.
+func (s *sim) copyRow(before time.Time, v, tag string) {
+	s.t.Helper()
+	db := s.st.DB()
 	for _, q := range []string{
 		`DROP TABLE IF EXISTS temp.sim_weird`,
-		`CREATE TEMP TABLE sim_weird AS SELECT * FROM probes WHERE started_at < '` + store.TS(between) + `' ORDER BY rowid DESC LIMIT 1`,
+		`CREATE TEMP TABLE sim_weird AS SELECT * FROM probes WHERE started_at < '` + store.TS(before) + `' ORDER BY rowid DESC LIMIT 1`,
 		`UPDATE temp.sim_weird SET dedupe_key = '` + tag + `' || dedupe_key, started_at = '` + v + `'`,
 		`INSERT INTO probes SELECT * FROM temp.sim_weird`,
 		`DROP TABLE temp.sim_weird`,

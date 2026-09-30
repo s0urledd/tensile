@@ -261,15 +261,10 @@ func (dp *dayParts) build(ctx context.Context, s *Server, q store.Querier) (*epo
 		}
 	}
 	e.ledgerBuilt = e.ledgerHi == 0
-	var first sql.NullString
-	if err := q.QueryRowContext(ctx, `SELECT MIN(t) FROM (SELECT MIN(started_at) AS t FROM probes
-		UNION ALL SELECT MIN(started_at) FROM sampling_decision_points UNION ALL SELECT MIN(started_at) FROM reachability)`).Scan(&first); err != nil {
+	if first, ok, err := s.rowDayFrom(ctx, q, ""); err != nil {
 		return nil, err
-	}
-	if len(first.String) >= 10 {
-		if _, err := time.Parse(dayLayout, first.String[:10]); err == nil {
-			e.firstRow = first.String[:10]
-		}
+	} else if ok {
+		e.firstRow = first
 	}
 	c := &catchUp{s: s, q: q, ctx: ctx, e: e}
 	if err := c.readHolds(false); err != nil {

@@ -27,9 +27,11 @@ import (
 //     A held day is sealed like any other: the held rows are diffed on
 //     every catch-up, so a hold raised or lifted drops it either way, and
 //     a range that cannot be closed does not keep the day raw for good;
-//   - a row day an hour after it ends, once no row started on it awaits the
-//     late shadow verdict and nothing that is not a store timestamp sorts
-//     against its bounds (the boundary guard).
+//   - a row day that holds a row, an hour after it ends, once no row
+//     started on it awaits the late shadow verdict and nothing that is not
+//     a store timestamp sorts against its bounds (the boundary guard). A
+//     day with no row is never sealed: the raw span over it is a seek of
+//     each index.
 //
 // Neither is sealed before raw_from: the rollup holds those days. A
 // settlement day before raw_from is sealed without obligations, for the
@@ -152,7 +154,10 @@ func (s *Server) sealOnce(ctx context.Context) (bool, error) {
 				return s.knowSpan(ctx, e, d)
 			}
 		}
-		kind, d := s.parts.nextSeal(e, now)
+		kind, d, err := s.nextSeal(ctx, e, now)
+		if err != nil {
+			return err
+		}
 		switch kind {
 		case "row":
 			did = true
@@ -239,13 +244,27 @@ func (s *Server) daySpan(ctx context.Context, d string, sd *settleDay) (lo, hi, 
 
 // nextSeal picks the oldest day due to be sealed: a row day or a
 // settlement day, whichever is older, among those not waiting out a retry.
-func (dp *dayParts) nextSeal(e *epoch, now time.Time) (kind, day string) {
+//
+// A row day is sealed only when it has a row of a table the row days sum
+// (nextRowDay); a day with none is left to the raw spans, where it costs a
+// seek of each index and nothing more. Sealing every day from the first
+// row on sealed, and kept a file for, every empty day between a row
+// stamped long before the record (a clock gone wrong; a start the prober
+// never set is the year 1) and the record itself, oldest first, before any
+// day that holds something.
+func (s *Server) nextSeal(ctx context.Context, e *epoch, now time.Time) (kind, day string, err error) {
+	dp := s.parts
 	dp.mu.Lock()
-	defer dp.mu.Unlock()
-	if dp.retry == nil {
-		dp.retry = map[string]time.Time{}
+	retry := make(map[string]time.Time, len(dp.retry))
+	for k, t := range dp.retry {
+		if now.Before(t) {
+			retry[k] = t
+		} else {
+			delete(dp.retry, k) // waited out
+		}
 	}
-	waiting := func(k string) bool { t, ok := dp.retry[k]; return ok && now.Before(t) }
+	dp.mu.Unlock()
+	waiting := func(k string) bool { _, ok := retry[k]; return ok }
 	var settle []string
 	for d, sd := range e.settle {
 		if sd.Pubs == 0 || sd.Seal != nil || !sd.SpanKnown || waiting("settle:"+d) {
@@ -257,30 +276,70 @@ func (dp *dayParts) nextSeal(e *epoch, now time.Time) (kind, day string) {
 		settle = append(settle, d)
 	}
 	sort.Strings(settle)
-	row := ""
 	first := e.firstRow
 	if e.rawFrom != "" && e.rawFrom > first {
 		first = e.rawFrom
 	}
+	row := ""
 	if first != "" {
-		for d := first; ; d = dayAdd(d, 1) {
+		due := func(d string) bool {
 			t, err := time.Parse(dayLayout, d)
-			if err != nil || now.Before(t.Add(24*time.Hour+sealMargin)) {
+			return err == nil && !now.Before(t.Add(24*time.Hour+sealMargin))
+		}
+		for d := first; due(d); {
+			if e.rows[d] != nil || waiting("row:"+d) {
+				d = dayAdd(d, 1)
+				continue
+			}
+			next, ok, err := s.nextRowDay(ctx, s.q(ctx), d)
+			if err != nil {
+				return "", "", err
+			}
+			if !ok {
 				break
 			}
-			if e.rows[d] == nil && !waiting("row:"+d) {
+			if next == d {
 				row = d
 				break
 			}
+			d = next
 		}
 	}
 	switch {
 	case row != "" && (len(settle) == 0 || row <= settle[0]):
-		return "row", row
+		return "row", row, nil
 	case len(settle) > 0:
-		return "settle", settle[0]
+		return "settle", settle[0], nil
 	}
-	return "", ""
+	return "", "", nil
+}
+
+// nextRowDay is the first day at or after d that a row the row days sum
+// started on.
+func (s *Server) nextRowDay(ctx context.Context, q store.Querier, d string) (string, bool, error) {
+	return s.rowDayFrom(ctx, q, dayLo(d))
+}
+
+// rowDayFrom is the day of the first start at or after from of a row the
+// row days sum: a probe row, a decision point, or one of this observer's
+// heartbeats, sought through the tables' started_at indexes. A start whose
+// first ten characters are not a day is stepped over.
+func (s *Server) rowDayFrom(ctx context.Context, q store.Querier, from string) (string, bool, error) {
+	for {
+		var v sql.NullString
+		if err := q.QueryRowContext(ctx, nextRowSQL, from, s.vantage).Scan(&v); err != nil {
+			return "", false, err
+		}
+		if !v.Valid {
+			return "", false, nil
+		}
+		if len(v.String) >= 10 {
+			if _, err := time.Parse(dayLayout, v.String[:10]); err == nil {
+				return v.String[:10], true, nil
+			}
+		}
+		from = v.String + "\x00"
+	}
 }
 
 // later leaves a day for sealRetry.

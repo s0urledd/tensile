@@ -45,6 +45,8 @@ func dayPartsPlans() []dayPartsPlan {
 		{"parts: probe anchor", anchorProbeSQL, []any{lo, hi}, []string{"probes_started (started_at>? AND started_at<?)"}, nil},
 		{"parts: point anchor", anchorPointSQL, []any{lo, hi}, []string{"sampling_decision_points_started (started_at>? AND started_at<?)"}, nil},
 		{"parts: heartbeat anchor", anchorBeatSQL, []any{lo, hi, "v1"}, []string{"reachability_started (started_at>? AND started_at<?)"}, nil},
+		{"parts: the next day with a row", nextRowSQL, []any{lo, "v1"}, []string{"probes_started (started_at>?)",
+			"sampling_decision_points_started (started_at>?)", "reachability_started (started_at>?)"}, nil},
 		{"parts: probe anchor still there", `SELECT dedupe_key FROM probes WHERE rowid = ?`, []any{1}, []string{byRowid}, nil},
 		{"parts: boundary guard, probes", boundaryGapSQL("probes"), []any{hi, now}, []string{"probes_started (started_at>? AND started_at<?)"}, nil},
 		{"parts: boundary guard, points", boundaryGapSQL("sampling_decision_points"), []any{hi, now}, []string{"sampling_decision_points_started (started_at>? AND started_at<?)"}, nil},

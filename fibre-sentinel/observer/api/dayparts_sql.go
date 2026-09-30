@@ -174,6 +174,14 @@ const daySpanSQL = `WITH pb AS MATERIALIZED (SELECT promise_hash FROM publicatio
 const dayMaxPubMSUSQL = `SELECT MAX(must_serve_until) FROM publications
 	WHERE settlement_time >= ? AND settlement_time <= ?` + ` AND settlement_height >= ? AND settlement_height <= ?`
 
+// nextRowSQL is the first start at or after ?1 of a row the row days sum:
+// a probe row, a decision point, or one of this observer's heartbeats (?2),
+// each the first entry of its table's started_at index from there on.
+const nextRowSQL = `SELECT MIN(t) FROM (
+	SELECT * FROM (SELECT started_at AS t FROM probes WHERE started_at >= ?1 ORDER BY started_at LIMIT 1)
+	UNION ALL SELECT * FROM (SELECT started_at FROM sampling_decision_points WHERE started_at >= ?1 ORDER BY started_at LIMIT 1)
+	UNION ALL SELECT * FROM (SELECT started_at FROM reachability WHERE started_at >= ?1 AND +vantage = ?2 ORDER BY started_at LIMIT 1))`
+
 // ---- what the catch-up reads that no log records ----
 
 // correctedPubsSQL is every corrected publication (publications_corrected):
