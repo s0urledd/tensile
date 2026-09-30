@@ -168,7 +168,9 @@ func WithDataDir(dir string) Option { return func(s *Server) { s.dataDir = dir }
 
 // WithDayParts turns the day partials on or off (observer-api
 // -day-partials). Off, every window is read whole with the shipped
-// statements; on, the 7d, 30d and "all" windows are summed from them.
+// statements, each its own read, as the build before them read it; on,
+// the 7d, 30d and "all" windows are summed from them, each window in one
+// read transaction.
 func WithDayParts(on bool) Option { return func(s *Server) { s.noParts = !on } }
 
 // WithSnapshotDir keeps the snapshots in dir rather than under the data

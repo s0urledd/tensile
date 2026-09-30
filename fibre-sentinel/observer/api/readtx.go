@@ -51,6 +51,7 @@ func withQuerier(ctx context.Context, q store.Querier) context.Context {
 // slot. A store with a single connection (store.Open, the collector's and
 // the tests') has no slot to spare and is read without a transaction, as
 // it always was: nothing writes it while a computation of its own runs.
+// With the partials off there is no transaction at all (readTxWith).
 func (s *Server) readTx(ctx context.Context, fn func(context.Context) error) error {
 	return s.readTxWith(ctx, true, fn)
 }
@@ -65,6 +66,13 @@ func (s *Server) readTxFor(ctx context.Context, win Window, fn func(context.Cont
 func (s *Server) readTxWith(ctx context.Context, parts bool, fn func(context.Context) error) error {
 	if _, in := ctx.Value(querierKey{}).(store.Querier); in {
 		return fn(ctx) // already inside one
+	}
+	if s.parts == nil {
+		// The partials off (-day-partials=false): every statement is its
+		// own read, as in the build before them, with no connection held
+		// for a transaction and no slot to wait for. It is the way back
+		// without a rollback of the binary, so it goes all the way back.
+		return fn(ctx)
 	}
 	dp := s.parts
 	if !parts {

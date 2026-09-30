@@ -47,7 +47,7 @@ func main() {
 		// The 7d, 30d and "all" windows are summed from per-day partials
 		// kept beside the snapshots (observer/api/dayparts.go). Off, every
 		// window is read whole with the shipped statements, as before.
-		dayParts = flag.Bool("day-partials", true, "sum the 7d, 30d and all windows from per-day partials kept in -snapshot-dir; false reads every window whole")
+		dayParts = flag.Bool("day-partials", true, "sum the 7d, 30d and all windows from per-day partials kept in -snapshot-dir; false reads every window whole, each statement on its own, as the build before them did")
 	)
 	flag.Parse()
 	if *check != "" {
