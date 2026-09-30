@@ -474,7 +474,12 @@ func (s *Server) sealSettle(ctx context.Context, e *epoch, d string, now time.Ti
 }
 
 // anchorsFor picks an anchor row of each table on every day in days that
-// has none yet.
+// lacks one: a day not anchored yet, or one anchored while a table had no
+// row on it. That happens when the collector is down over a whole day: the
+// sealer seals the day empty, and when the backlog arrives the day is
+// dropped and sealed again with rows, which the prune then deletes. An
+// anchor still missing then would leave the prune of those rows unseen
+// until raw_from moved, after its last statement.
 func (s *Server) anchorsFor(ctx context.Context, e *epoch, days []string) (map[string]*dayAnchors, error) {
 	q := s.q(ctx)
 	out := map[string]*dayAnchors{}
@@ -490,36 +495,67 @@ func (s *Server) anchorsFor(ctx context.Context, e *epoch, days []string) (map[s
 		return &a, nil
 	}
 	for _, d := range days {
-		if e.anchors[d] != nil || len(d) != 10 {
+		if len(d) != 10 {
 			continue
 		}
-		lo, hi := dayLo(d), dayHi(d)
 		var a dayAnchors
+		if cur := e.anchors[d]; cur != nil {
+			if cur.Probe != nil && cur.Point != nil && cur.Beat != nil {
+				continue
+			}
+			a = *cur
+		}
+		lo, hi := dayLo(d), dayHi(d)
 		var err error
-		if a.Probe, err = pick(anchorProbeSQL, lo, hi); err != nil {
-			return nil, err
+		if a.Probe == nil {
+			if a.Probe, err = pick(anchorProbeSQL, lo, hi); err != nil {
+				return nil, err
+			}
 		}
 		if a.Probe == nil {
 			if a.Probe, err = pick(anchorProbeAnySQL, lo, hi); err != nil {
 				return nil, err
 			}
 		}
-		if a.Point, err = pick(anchorPointSQL, lo, hi); err != nil {
-			return nil, err
+		if a.Point == nil {
+			if a.Point, err = pick(anchorPointSQL, lo, hi); err != nil {
+				return nil, err
+			}
 		}
-		if a.Beat, err = pick(anchorBeatSQL, lo, hi, s.vantage); err != nil {
-			return nil, err
+		if a.Beat == nil {
+			if a.Beat, err = pick(anchorBeatSQL, lo, hi, s.vantage); err != nil {
+				return nil, err
+			}
 		}
 		out[d] = &a
 	}
 	return out, nil
 }
 
-// addAnchors installs anchors for days that have none.
+// addAnchors installs anchors for days that have none, and on a day that
+// has some fills in those it lacks; an anchor already there stays. An
+// anchor picked in an older snapshot than the epoch's can only be gone
+// already, which the next catch-up takes for the prune and drops the day
+// for: too much dropped, never too little.
 func (e *epoch) addAnchors(m map[string]*dayAnchors) {
 	for d, a := range m {
-		if e.anchors[d] == nil {
+		cur := e.anchors[d]
+		if cur == nil {
 			e.anchors[d] = a
+			continue
+		}
+		n := *cur
+		if n.Probe == nil {
+			n.Probe = a.Probe
+		}
+		if n.Point == nil {
+			n.Point = a.Point
+		}
+		if n.Beat == nil {
+			n.Beat = a.Beat
+		}
+		if n != *cur {
+			e.anchors[d] = &n
 		}
 	}
 }

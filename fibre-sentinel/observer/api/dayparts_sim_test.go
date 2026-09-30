@@ -87,6 +87,7 @@ type sim struct {
 	now    time.Time
 	vals   []simVal
 	events []simEvent
+	dark   []simEvent // the prober's lines held back (scen.dark)
 	seq    int
 	next   int
 	height int64
@@ -104,8 +105,10 @@ type sim struct {
 	// the rare cases already written once.
 	seen   map[string]bool
 	forced map[string]bool
-	// saved is set once the API has written its partials.
-	saved bool
+	// saved is set once the API has written its partials; sealedDark once
+	// a day was sealed empty while the collector was down.
+	saved      bool
+	sealedDark bool
 	// the collector's side
 	st         *store.Store
 	coll       *collect.Collector
@@ -607,9 +610,21 @@ func (s *sim) advance(at time.Time) {
 			f.Close()
 		}
 	}()
+	var due []simEvent
 	for s.next < len(s.events) && !s.events[s.next].at.After(at) {
 		ev := s.events[s.next]
 		s.next++
+		if (ev.file == "measurements.jsonl" || ev.file == probe.SampledOutFile) && (s.inDark(ev.at) || s.inDark(startOf(ev.line))) {
+			s.dark = append(s.dark, ev) // the prober's file lands late
+			continue
+		}
+		due = append(due, ev)
+	}
+	if !s.inDark(at) && len(s.dark) > 0 {
+		due = append(s.dark, due...)
+		s.dark = nil
+	}
+	for _, ev := range due {
 		f, ok := files[ev.file]
 		if !ok {
 			path := filepath.Join(s.dir, ev.file)
@@ -713,6 +728,11 @@ type simScen struct {
 	outage [2]time.Time
 	// backlog is a collector outage: no pass runs in it.
 	backlog [2]time.Time
+	// dark holds the prober's lines back over a whole day (its file lands
+	// late, as a vantage's pulled file does when the pull stalls) while
+	// the heartbeats go on: the day is sealed with heartbeats and no
+	// reading, and sealed again once its readings arrive.
+	dark [2]time.Time
 	// frontier holds the scanner's frontier back, so deferred shadow
 	// verdicts wait, and releases it.
 	frontier [2]time.Time
@@ -757,11 +777,32 @@ func (s *sim) planScenarios() {
 	later := rand.New(rand.NewPCG(s.cfg.seed, 0x1a7e))
 	r = func(lo, hi float64) float64 { return lo + (hi-lo)*later.Float64() }
 	sc.reapplyAt = day(7, r(0, 12))
+	sc.dark = [2]time.Time{day(0, r(18, 22)), day(2, r(6, 9))}
 }
 
 // inOutage reports whether a reading at t falls in the prober's outage.
 func (s *sim) inOutage(t time.Time) bool {
 	return !t.Before(s.scen.outage[0]) && t.Before(s.scen.outage[1])
+}
+
+// inDark reports whether the prober's lines are held back at t.
+func (s *sim) inDark(t time.Time) bool {
+	return !t.Before(s.scen.dark[0]) && t.Before(s.scen.dark[1])
+}
+
+// startOf is when a prober's line says its row starts: a reading's
+// started_at, a decision's decided_at. A line stamped into the held-back
+// span (a clock ahead) is held back with it.
+func startOf(line []byte) time.Time {
+	var v struct {
+		StartedAt time.Time `json:"started_at"`
+		DecidedAt time.Time `json:"decided_at"`
+	}
+	_ = json.Unmarshal(line, &v)
+	if !v.StartedAt.IsZero() {
+		return v.StartedAt
+	}
+	return v.DecidedAt
 }
 
 // afterPlan places what needs the publications first: the params ranges

@@ -353,12 +353,19 @@ func equivRun(t *testing.T, cfg simConfig, sample int, restart bool, step [2]int
 			s.reapply()
 			reapplied = true
 		}
-		switch rng.IntN(3) {
-		case 1:
+		switch {
+		case s.inDark(at):
+			// While the prober's lines are held back, the API seals what is
+			// due: a day over meanwhile has heartbeats and no reading.
+			if _, err := srv.sealDue(ctx, math.MaxInt); err != nil {
+				t.Fatal(err)
+			}
+			s.noteDark(srv)
+		case rng.IntN(3) == 1:
 			if _, err := srv.sealDue(ctx, 1); err != nil {
 				t.Fatal(err)
 			}
-		case 2:
+		case rng.IntN(2) == 1:
 			if _, err := srv.sealDue(ctx, math.MaxInt); err != nil {
 				t.Fatal(err)
 			}
@@ -410,6 +417,9 @@ func (s *sim) checkScenarios(srv *Server) {
 	if s.dropped+srv.parts.dropped == 0 {
 		s.t.Errorf("no sealed day was ever dropped by what came after it")
 	}
+	if !s.sealedDark {
+		s.t.Errorf("no day was sealed without a reading while the prober's lines were held back")
+	}
 	e := srv.parts.cur
 	sealed := 0
 	for _, sd := range e.settle {
@@ -419,6 +429,23 @@ func (s *sim) checkScenarios(srv *Server) {
 	}
 	if len(e.rows) == 0 || sealed == 0 {
 		s.t.Errorf("nothing sealed: %d row days, %d settlement days", len(e.rows), sealed)
+	}
+}
+
+// noteDark records whether a row day over while the prober's lines were held
+// back has been sealed with no probe row to anchor it: the day the backlog
+// lands on, and the prune later deletes.
+func (s *sim) noteDark(srv *Server) {
+	srv.parts.mu.Lock()
+	defer srv.parts.mu.Unlock()
+	e := srv.parts.cur
+	if e == nil {
+		return
+	}
+	for d := dayOfTime(s.scen.dark[0].Add(24 * time.Hour)); d < dayOfTime(s.scen.dark[1]); d = dayAdd(d, 1) {
+		if a := e.anchors[d]; e.rows[d] != nil && (a == nil || a.Probe == nil) {
+			s.sealedDark = true
+		}
 	}
 }
 
