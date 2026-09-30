@@ -222,17 +222,26 @@ const promiseRowDaysSQL = `SELECT DISTINCT substr(r.started_at, 1, 10) FROM json
 const correctedPubsSQL = `SELECT promise_hash, must_serve_until, corrected_at, COALESCE(substr(settlement_time, 1, 10), '')
 	FROM publications WHERE corrected_at IS NOT NULL`
 
-// correctedRowsSQL is, for the publications named in ?1 (a JSON array of
-// promise hashes), every row a correction wrote and every row whose
-// deadline disagrees with its publication's (the rows the corrector's sweep
-// grades): what a correction writes, the row's start and whether it is
-// stale, in order.
-const correctedRowsSQL = `SELECT r.promise_hash, r.rowid, r.phase, r.classification, r.must_serve_until, COALESCE(r.corrected_at, ''),
-		r.started_at, COALESCE(r.must_serve_until <> p.must_serve_until, 1)
-	FROM json_each(?) j CROSS JOIN publications p ON p.promise_hash = j.value
-	CROSS JOIN probes r ON r.promise_hash = p.promise_hash
-	WHERE r.corrected_at IS NOT NULL OR r.must_serve_until <> p.must_serve_until
-	ORDER BY r.promise_hash, r.rowid`
+// correctedRowsSQL is, per promise named in ?1 (a JSON array of promise
+// hashes), what a correction wrote on its rows, one line of text in rowid
+// order that the catch-up digests, their latest deadline, and the
+// publication's settlement day. The text is made in the statement, so a
+// catch-up is handed a row per promise, not one per corrected row.
+const correctedRowsSQL = `SELECT r.promise_hash,
+		group_concat(r.rowid || ' ' || r.phase || ' ' || r.classification || ' ' || r.must_serve_until || ' ' || r.corrected_at, ',' ORDER BY r.rowid),
+		MAX(r.must_serve_until),
+		COALESCE((SELECT substr(p.settlement_time, 1, 10) FROM publications p WHERE p.promise_hash = r.promise_hash), '')
+	FROM json_each(?) j CROSS JOIN probes r ON r.promise_hash = j.value
+	WHERE r.corrected_at IS NOT NULL
+	GROUP BY r.promise_hash`
+
+// correctedPromisesSQL is every promise the row corrections' log names
+// (a walk of probe_corrections_promise, at a build), and
+// newCorrectedPromisesSQL those of its lines with a rowid in (?1, ?2].
+const (
+	correctedPromisesSQL    = `SELECT DISTINCT promise_hash FROM probe_corrections`
+	newCorrectedPromisesSQL = `SELECT DISTINCT promise_hash FROM probe_corrections WHERE rowid > ?1 AND rowid <= ?2`
+)
 
 // dayTiesSQL counts, among the obligation rows of the publications settled
 // in a span, the rows that tie on everything ObligationBuckets orders an

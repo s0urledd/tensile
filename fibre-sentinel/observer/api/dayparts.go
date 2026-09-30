@@ -287,14 +287,6 @@ type dayAnchors struct {
 // lifted on as many others leaves all three alike only by chance.
 type heldAgg [3]int64
 
-// corrFP is a corrected publication as the last catch-up saw it: its
-// deadline and when a correction last wrote it, and a digest of its rows
-// that a correction wrote or whose deadline disagrees with it.
-type corrFP struct {
-	Pub  string `json:"pub"`
-	Rows string `json:"rows"`
-}
-
 // epoch is the partials as one catch-up left them: immutable once
 // published. A computation reads one epoch; the next catch-up starts from a
 // copy of it.
@@ -323,12 +315,13 @@ type epoch struct {
 	fps      map[string]string
 	reach    map[string]bool
 	verified map[string]bool
-	// corr is every corrected publication as the last catch-up saw it, by
-	// promise hash, and corrStale those with a row whose deadline disagrees
-	// with theirs, which the corrector's sweep grades again
-	// (readCorrections). Both are replaced whole, never changed.
-	corr      map[string]corrFP
-	corrStale map[string]bool
+	// corrPub is every corrected publication as the last catch-up saw it
+	// (its deadline, when a correction last wrote it, its settlement day),
+	// replaced whole; corrRows is, by promise, a digest of the rows a
+	// correction wrote, for every promise with such a row still in the
+	// store (readCorrections).
+	corrPub  map[string]string
+	corrRows map[string]string
 	// weird are the row starts that are not store timestamps, sorted: they
 	// sort between days, where no day's bounds hold them.
 	weird []string
@@ -355,7 +348,7 @@ func newEpoch() *epoch {
 	return &epoch{
 		marks: map[string][]mark{}, heldProm: map[string]heldAgg{}, heldPubs: map[string]bool{},
 		fps: map[string]string{}, reach: map[string]bool{}, verified: map[string]bool{},
-		corr: map[string]corrFP{}, corrStale: map[string]bool{},
+		corrPub: map[string]string{}, corrRows: map[string]string{},
 		rows: map[string]*rowDay{}, settle: map[string]*settleDay{}, anchors: map[string]*dayAnchors{},
 	}
 }
@@ -373,6 +366,10 @@ func (e *epoch) clone() *epoch {
 		c.fps[k] = v
 	}
 	c.reach = copySet(e.reach)
+	c.corrRows = make(map[string]string, len(e.corrRows))
+	for k, v := range e.corrRows {
+		c.corrRows[k] = v
+	}
 	c.verified = copySet(e.verified)
 	c.weird = append([]string(nil), e.weird...)
 	c.rows = make(map[string]*rowDay, len(e.rows))

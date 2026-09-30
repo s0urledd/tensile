@@ -60,8 +60,10 @@ func dayPartsPlans() []dayPartsPlan {
 		{"parts: corrected publications", correctedPubsSQL, nil, []string{"publications_corrected"}, nil},
 		{"parts: publications a correction can reach", reachableSQL, []any{"[]"},
 			[]string{"sqlite_autoindex_publications_1 (promise_hash=?)"}, []string{"j", "u"}},
-		{"parts: rows of corrected publications", correctedRowsSQL, []any{"[]"},
-			[]string{"sqlite_autoindex_publications_1 (promise_hash=?)", "probes_promise (promise_hash=?)"}, []string{"j"}},
+		{"parts: corrected rows of some promises", correctedRowsSQL, []any{"[]"},
+			[]string{"probes_promise (promise_hash=?)", "sqlite_autoindex_publications_1 (promise_hash=?)"}, []string{"j"}},
+		{"parts: promises of the row corrections' log", correctedPromisesSQL, nil, []string{"COVERING INDEX probe_corrections_promise"}, []string{"probe_corrections"}},
+		{"parts: promises of new lines of that log", newCorrectedPromisesSQL, []any{0, 10}, []string{rowid}, nil},
 		{"parts: new rows", `SELECT substr(r.started_at, 1, 10), COALESCE(substr(p.settlement_time, 1, 10), ''), MIN(r.started_at), MAX(r.started_at), MAX(r.must_serve_until), MAX(` + weirdSQL("r.started_at") + `)
 			FROM probes r LEFT JOIN publications p ON p.promise_hash = r.promise_hash WHERE r.rowid > ? AND r.rowid <= ? GROUP BY 1, 2`, []any{0, 10},
 			[]string{rowid, "sqlite_autoindex_publications_1 (promise_hash=?)"}, nil},

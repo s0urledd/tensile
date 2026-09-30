@@ -54,7 +54,7 @@ const (
 	dayPartsDir  = "day-partials"
 	// partsVersion names how the partials are folded and assembled; bump it
 	// whenever that changes.
-	partsVersion = 2
+	partsVersion = 3
 )
 
 // partsFile is day-partials.json.
@@ -68,8 +68,8 @@ type partsFile struct {
 	HeldPubGate heldAgg                `json:"held_pub_gate"`
 	HeldPubs    []string               `json:"held_pubs,omitempty"`
 	FPs         map[string]string      `json:"fingerprints,omitempty"`
-	Corrected   map[string]corrFP      `json:"corrected,omitempty"`
-	CorrStale   []string               `json:"corrected_stale,omitempty"`
+	CorrPub     map[string]string      `json:"corrected_pubs,omitempty"`
+	CorrRows    map[string]string      `json:"corrected_rows,omitempty"`
 	Reach       []string               `json:"reach,omitempty"`
 	Verified    []string               `json:"verified,omitempty"`
 	Weird       []string               `json:"weird,omitempty"`
@@ -135,14 +135,14 @@ func sealName(kind, day string, gen int) string {
 // fileOf is the epoch as day-partials.json keeps it.
 func (e *epoch) fileOf(vantage string) partsFile {
 	f := partsFile{
-		Vantage: vantage, Marks: e.marks, RawFrom: e.rawFrom, HeldGate: e.heldGate, HeldProm: e.heldProm, HeldPubGate: e.heldPubGate, FPs: e.fps, Corrected: e.corr,
+		Vantage: vantage, Marks: e.marks, RawFrom: e.rawFrom, HeldGate: e.heldGate, HeldProm: e.heldProm, HeldPubGate: e.heldPubGate, FPs: e.fps, CorrPub: e.corrPub, CorrRows: e.corrRows,
 		Weird: e.weird, FirstRow: e.firstRow, LedgerBuilt: e.ledgerBuilt, LedgerTo: e.ledgerTo, LedgerHi: e.ledgerHi,
 		PubsOdd: e.pubsOdd, Settle: e.settle, Anchors: e.anchors, Seals: map[string]sealRef{},
 	}
 	for _, m := range []struct {
 		set map[string]bool
 		out *[]string
-	}{{e.heldPubs, &f.HeldPubs}, {e.reach, &f.Reach}, {e.verified, &f.Verified}, {e.corrStale, &f.CorrStale}} {
+	}{{e.heldPubs, &f.HeldPubs}, {e.reach, &f.Reach}, {e.verified, &f.Verified}} {
 		for k := range m.set {
 			*m.out = append(*m.out, k)
 		}
@@ -364,8 +364,11 @@ func (dp *dayParts) load(ctx context.Context, s *Server, q store.Querier) (*epoc
 	if e.fps == nil {
 		e.fps = map[string]string{}
 	}
-	if f.Corrected != nil {
-		e.corr = f.Corrected
+	if f.CorrPub != nil {
+		e.corrPub = f.CorrPub
+	}
+	if f.CorrRows != nil {
+		e.corrRows = f.CorrRows
 	}
 	e.heldGate, e.heldPubGate = f.HeldGate, f.HeldPubGate
 	if f.HeldProm != nil {
@@ -374,7 +377,7 @@ func (dp *dayParts) load(ctx context.Context, s *Server, q store.Querier) (*epoc
 	for _, m := range []struct {
 		list []string
 		set  map[string]bool
-	}{{f.HeldPubs, e.heldPubs}, {f.Reach, e.reach}, {f.Verified, e.verified}, {f.CorrStale, e.corrStale}} {
+	}{{f.HeldPubs, e.heldPubs}, {f.Reach, e.reach}, {f.Verified, e.verified}} {
 		for _, k := range m.list {
 			m.set[k] = true
 		}

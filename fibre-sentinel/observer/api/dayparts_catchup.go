@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -42,7 +41,8 @@ import (
 //	                                           past the mark             its seal dropped
 //	either of them again under the same        a fingerprint of the      the same; the rows' row days and the
 //	  range (the log keeps its first line)     corrected publications    settlement day
-//	                                           and their rows
+//	                                           and of every row a
+//	                                           correction wrote
 //	ApplySampledOutCorrection (no log)         a fingerprint of every    the points' row days and the
 //	                                           decision a correction     settlement day
 //	                                           can reach
@@ -490,10 +490,7 @@ func (c *catchUp) fold(table string, from, hi int64) error {
 			LEFT JOIN publications p ON p.promise_hash = r.promise_hash
 			WHERE a.rowid > ? AND a.rowid <= ? GROUP BY 1, 2`, "", from, hi)
 	case "probe_corrections":
-		return c.foldRows(`SELECT substr(r.started_at, 1, 10), COALESCE(substr(p.settlement_time, 1, 10), ''), '', '', MAX(r.must_serve_until), 0
-			FROM probe_corrections k JOIN probes r ON r.dedupe_key = k.dedupe_key
-			LEFT JOIN publications p ON p.promise_hash = r.promise_hash
-			WHERE k.rowid > ? AND k.rowid <= ? GROUP BY 1, 2`, "", from, hi)
+		return c.foldProbeCorrections(from, hi)
 	case "publication_corrections":
 		return c.foldPublicationCorrections(from, hi)
 	}
@@ -1033,129 +1030,161 @@ func (c *catchUp) touchPromises(promises map[string]bool, msu map[string]string)
 // moved (params_history grew); its sweep then grades the publication's rows
 // again under that publication's latest range, which is the same one. What
 // every apply does rewrite is corrected_at, with the deadline, the phase and
-// the class it sets. So each catch-up reads the corrected publications
-// (publications_corrected: the few a params range ever moved) and, for
-// those that moved and those with a row the sweep has still to grade,
-// their corrected and stale rows. A row is graded again only while its
-// deadline disagrees with its publication's, which only a correction of the
-// publication makes it do (store.StaleDeadline), so the rows of a
-// publication that neither moved nor has such a row cannot move unseen.
+// the class it sets, so each catch-up reads those of what a correction has
+// written: the corrected publications (publications_corrected, the few a
+// params range ever moved), and the corrected rows of every promise with
+// one still in the store (a probes_promise seek each). A row is corrected
+// a first time only with a line in probe_corrections, so the promises are
+// taken from the log as its lines arrive, and dropped once the prune has
+// taken their rows. A publication that moved has its day's latest deadline
+// read again; rows that moved drop their row days and their settlement day.
 
-// readCorrections reads the corrected publications and the rows it has to,
-// and with diff drops what moved: a publication's settlement day has its
-// latest deadline read again, and rows that moved drop their row days and
-// their settlement day.
+// readCorrections reads the corrected publications and rows, and with diff
+// drops what moved. Without it (a build), the promises are read from the
+// whole log first.
 func (c *catchUp) readCorrections(diff bool) error {
 	rows, err := c.q.QueryContext(c.ctx, correctedPubsSQL)
 	if err != nil {
 		return err
 	}
-	type pub struct{ fp, day string }
-	pubs := map[string]pub{}
+	pubs, days := map[string]string{}, map[string]string{}
 	for rows.Next() {
 		var h, msu, at, day string
 		if err := rows.Scan(&h, &msu, &at, &day); err != nil {
 			rows.Close()
 			return err
 		}
-		pubs[h] = pub{msu + "|" + at, day}
+		pubs[h], days[h] = msu+"|"+at, day
 	}
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	var check []string
-	for h, p := range pubs {
-		if old, ok := c.e.corr[h]; !diff || !ok || old.Pub != p.fp || c.e.corrStale[h] {
-			check = append(check, h)
+	for h, fp := range pubs {
+		old, had := c.e.corrPub[h]
+		if had && old == fp {
+			continue
 		}
-	}
-	gone := false
-	for h := range c.e.corr {
-		if _, ok := pubs[h]; !ok {
-			gone = true
-		}
-	}
-	if len(check) == 0 && !gone {
-		return nil
-	}
-	type rowsOf struct {
-		parts []string
-		days  map[string]bool
-		msu   string
-		stale bool
-	}
-	got := map[string]*rowsOf{}
-	if len(check) > 0 {
-		sort.Strings(check)
-		b, _ := json.Marshal(check)
-		rr, err := c.q.QueryContext(c.ctx, correctedRowsSQL, string(b))
-		if err != nil {
-			return err
-		}
-		for rr.Next() {
-			var h, phase, cls, msu, at, started string
-			var id, stale int64
-			if err := rr.Scan(&h, &id, &phase, &cls, &msu, &at, &started, &stale); err != nil {
-				rr.Close()
-				return err
-			}
-			x := got[h]
-			if x == nil {
-				x = &rowsOf{days: map[string]bool{}}
-				got[h] = x
-			}
-			x.parts = append(x.parts, strconv.FormatInt(id, 10), phase, cls, msu, at)
-			if len(started) >= 10 {
-				x.days[started[:10]] = true
-			}
-			x.msu = maxString(x.msu, msu)
-			x.stale = x.stale || stale != 0
-		}
-		if err := rr.Close(); err != nil {
-			return err
-		}
-	}
-	// The publications not read again are as they were, and none of them
-	// had a row to grade.
-	corr := make(map[string]corrFP, len(pubs))
-	for h := range pubs {
-		if old, ok := c.e.corr[h]; ok {
-			corr[h] = old
-		}
-	}
-	stale := map[string]bool{}
-	for _, h := range check {
-		p, x := pubs[h], got[h]
-		if x == nil {
-			x = &rowsOf{}
-		}
-		sum := sha256.Sum256([]byte(strings.Join(x.parts, "\x00")))
-		fp := corrFP{Pub: p.fp, Rows: hex.EncodeToString(sum[:])}
-		old, had := c.e.corr[h]
-		corr[h] = fp
 		if !had {
 			c.e.reach[h] = true // its decisions, if it has any, are fingerprinted too
 		}
-		if x.stale {
-			stale[h] = true
-		}
-		if !diff {
-			continue
-		}
-		if (!had || old.Pub != fp.Pub) && p.day != "" {
-			if err := c.readMaxPubMSU(p.day); err != nil {
+		if diff && days[h] != "" {
+			if err := c.readMaxPubMSU(days[h]); err != nil {
 				return err
 			}
 		}
-		if !had || old.Rows != fp.Rows {
-			for d := range x.days {
-				c.touchRow(d)
+	}
+	c.e.corrPub = pubs
+
+	if !diff {
+		lr, err := c.q.QueryContext(c.ctx, correctedPromisesSQL)
+		if err != nil {
+			return err
+		}
+		for lr.Next() {
+			var h string
+			if err := lr.Scan(&h); err != nil {
+				lr.Close()
+				return err
 			}
-			c.touchSettle(p.day, "", "", x.msu)
+			c.e.corrRows[h] = ""
+		}
+		if err := lr.Close(); err != nil {
+			return err
 		}
 	}
-	c.e.corr, c.e.corrStale = corr, stale
+	if len(c.e.corrRows) == 0 {
+		return nil
+	}
+	list := make([]string, 0, len(c.e.corrRows))
+	for h := range c.e.corrRows {
+		list = append(list, h)
+	}
+	sort.Strings(list)
+	b, _ := json.Marshal(list)
+	rr, err := c.q.QueryContext(c.ctx, correctedRowsSQL, string(b))
+	if err != nil {
+		return err
+	}
+	// A promise with no corrected row left (the prune took them) is dropped:
+	// a line of the log arriving for it takes it back.
+	corrRows := make(map[string]string, len(list))
+	var moved []string
+	type settleOf struct{ day, msu string }
+	settles := map[string]settleOf{}
+	for rr.Next() {
+		var h, text, msu, settle string
+		if err := rr.Scan(&h, &text, &msu, &settle); err != nil {
+			rr.Close()
+			return err
+		}
+		sum := sha256.Sum256([]byte(text))
+		d := hex.EncodeToString(sum[:])
+		corrRows[h] = d
+		if diff && c.e.corrRows[h] != d {
+			moved = append(moved, h)
+			settles[h] = settleOf{settle, msu}
+		}
+	}
+	if err := rr.Close(); err != nil {
+		return err
+	}
+	c.e.corrRows = corrRows
+	if len(moved) == 0 {
+		return nil
+	}
+	// The rows' days, of the promises whose corrected rows moved.
+	sort.Strings(moved)
+	mb, _ := json.Marshal(moved)
+	dr, err := c.q.QueryContext(c.ctx, promiseRowDaysSQL, string(mb))
+	if err != nil {
+		return err
+	}
+	var rowDays []string
+	for dr.Next() {
+		var d string
+		if err := dr.Scan(&d); err != nil {
+			dr.Close()
+			return err
+		}
+		rowDays = append(rowDays, d)
+	}
+	if err := dr.Close(); err != nil {
+		return err
+	}
+	for _, d := range rowDays {
+		c.touchRow(d)
+	}
+	for _, h := range moved {
+		c.touchSettle(settles[h].day, "", "", settles[h].msu)
+	}
 	return nil
+}
+
+// foldProbeCorrections applies new lines of the row corrections' log: the
+// rows' days and settlement days, and their promises are followed from now
+// on (readCorrections).
+func (c *catchUp) foldProbeCorrections(from, hi int64) error {
+	if err := c.foldRows(`SELECT substr(r.started_at, 1, 10), COALESCE(substr(p.settlement_time, 1, 10), ''), '', '', MAX(r.must_serve_until), 0
+			FROM probe_corrections k JOIN probes r ON r.dedupe_key = k.dedupe_key
+			LEFT JOIN publications p ON p.promise_hash = r.promise_hash
+			WHERE k.rowid > ? AND k.rowid <= ? GROUP BY 1, 2`, "", from, hi); err != nil {
+		return err
+	}
+	rows, err := c.q.QueryContext(c.ctx, newCorrectedPromisesSQL, from, hi)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return err
+		}
+		if _, ok := c.e.corrRows[h]; !ok {
+			c.e.corrRows[h] = ""
+		}
+	}
+	return rows.Err()
 }
 
 // A sampled-out correction (store.ApplySampledOutCorrection) moves a

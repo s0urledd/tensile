@@ -366,6 +366,11 @@ func equivRun(t *testing.T, cfg simConfig, sample int, restart bool, step [2]int
 				t.Fatal(err)
 			}
 		}
+		if s.again != nil && at.After(sc.reapplyAt.Add(3*time.Hour)) {
+			// After the sealer's turn too: the second apply of a correction,
+			// which no log records.
+			s.reapplyAgain()
+		}
 		if !weird && !at.Before(sc.weirdAt) {
 			// After the sealer's turn, so that the comparison below is the
 			// first to meet them, before a seal of the day beside them would

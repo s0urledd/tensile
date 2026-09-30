@@ -38,7 +38,7 @@ var writeCensus = map[string]writeMechanism{
 	// the settlement days
 	"INSERT probes": {"probes past the mark: the row's day, its promise's settlement day (span widened)", "a restarted prober's row"},
 	"UPDATE probes SET amended_at,classification,classification_at_probe,classification_reason,shadowed_by":                                                       {"probe_amendments past the mark (written in the same transaction)", "an amendment"},
-	"UPDATE probes SET classification,classification_at_probe,classification_reason,corrected_at,must_serve_until,must_serve_until_at_probe,phase,phase_at_probe": {"probe_corrections past the mark (written in the same transaction); applied again under its range, which adds no line: the corrected publications' rows fingerprinted", "a row correction applied again under its range"},
+	"UPDATE probes SET classification,classification_at_probe,classification_reason,corrected_at,must_serve_until,must_serve_until_at_probe,phase,phase_at_probe": {"probe_corrections past the mark (written in the same transaction); applied again under its range, which adds no line: every row a correction wrote, fingerprinted every catch-up", "a row correction applied again under its range"},
 	"UPDATE probes SET retention_unverified":         {"an aggregate of the held rows every catch-up, per promise once it moves", "a held publication"},
 	"UPDATE ? SET raw_json":                          {notRead + " (raw_json, stripped by the retention pass)", ""},
 	"DELETE probes":                                  {"the collapse: its decision past the mark (collapsible sets); the prune: raw_from and the anchors", "a collapse"},

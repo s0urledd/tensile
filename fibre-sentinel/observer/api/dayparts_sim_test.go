@@ -88,6 +88,8 @@ type sim struct {
 	vals   []simVal
 	events []simEvent
 	dark   []simEvent // the prober's lines held back (scen.dark)
+	// again is a correction applied once, to be applied again (reapply).
+	again  *store.Correction
 	seq    int
 	next   int
 	height int64
@@ -1059,4 +1061,40 @@ func (s *sim) reapply() {
 	if _, err := s.st.ApplyProbeCorrection(rc); err != nil {
 		s.t.Fatal(err)
 	}
+	// And a row of a publication no correction moved, corrected a first
+	// time (a line of the log) now and again later (none): the store takes
+	// both from anyone, whatever the corrector itself would do.
+	var sh string
+	if err := db.QueryRow(`SELECT r.dedupe_key, r.promise_hash, r.validator_address, r.scheduled_at, r.phase, r.classification, r.must_serve_until
+		FROM probes r JOIN publications p ON p.promise_hash = r.promise_hash
+		WHERE p.corrected_at IS NULL AND r.corrected_at IS NULL AND r.phase = 'in_window' AND r.started_at < ?
+		ORDER BY r.started_at DESC LIMIT 1`, store.TS(s.now.Add(-36*time.Hour))).
+		Scan(&key, &sh, &val, &sched, &phase, &cls, &rmsu); err != nil {
+		s.t.Fatalf("no row of an uncorrected publication: %v", err)
+	}
+	at, _ = time.Parse(store.TimeLayout, sched)
+	rfrom, _ = time.Parse(store.TimeLayout, rmsu)
+	first := store.Correction{SchemaVersion: store.CorrectionSchemaVersion, Kind: store.CorrectionProbeVerdict,
+		UncertaintyID: "sim-again", PromiseHash: sh, DedupeKey: key, ValidatorAddress: val, ScheduledAt: at,
+		FromPhase: phase, ToPhase: phase, FromClassification: cls, ToClassification: cls,
+		FromMustServeUntil: rfrom, ToMustServeUntil: rfrom, PruneToleranceS: 300,
+		Reason: "sim: a first correction", JudgedAt: s.now}
+	if _, err := s.st.ApplyProbeCorrection(first); err != nil {
+		s.t.Fatal(err)
+	}
+	again := first
+	again.ToPhase, again.ToMustServeUntil, again.Reason = string(probe.PhasePost), rfrom.Add(-6*time.Hour), "sim: the same correction again, other values"
+	s.again = &again
+}
+
+// reapplyAgain applies again, under the same range and with other values,
+// the correction reapply applied a first time to a row of a publication no
+// correction moved: the row moves, the log gains no line.
+func (s *sim) reapplyAgain() {
+	s.t.Helper()
+	s.again.JudgedAt = s.now
+	if _, err := s.st.ApplyProbeCorrection(*s.again); err != nil {
+		s.t.Fatal(err)
+	}
+	s.again = nil
 }
