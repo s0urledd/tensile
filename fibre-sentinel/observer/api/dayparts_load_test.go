@@ -5,6 +5,8 @@ import (
 	"errors"
 	"math"
 	"math/rand/v2"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -154,4 +156,47 @@ func TestDayPartsSavedWhenTheSealerRests(t *testing.T) {
 		t.Errorf("a start from what the sealer wrote: %s, %d of %d row days", next.parts.origin, len(next.parts.cur.rows), sealed)
 	}
 	t.Logf("%d row days sealed and written\n%s", sealed, tally)
+}
+
+// TestDayPartsSealTempsSwept: a seal write killed before its rename leaves
+// a temporary file the size of the seal beside the seals; the next write
+// of the partials removes it once it is old enough that no write can still
+// be at it, and leaves a young one alone.
+func TestDayPartsSealTempsSwept(t *testing.T) {
+	skipUnderRace(t)
+	t.Parallel()
+	cfg := defaultSimConfig(68)
+	cfg.perDay, cfg.days = 5, 2
+	s := newSim(t, cfg)
+	s.plan()
+	srv := s.openAPI()
+	s.advance(s.t0.Add(30 * time.Hour))
+	s.pass()
+	ctx := context.Background()
+	if _, err := srv.sealDue(ctx, math.MaxInt); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(s.snaps, dayPartsDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old, young := filepath.Join(dir, "row-2026-03-02.g1.json.123.tmp"), filepath.Join(dir, "row-2026-03-02.g2.json.456.tmp")
+	for _, p := range []string{old, young} {
+		if err := os.WriteFile(p, []byte("{"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	then := time.Now().Add(-staleDerivedTemp - time.Hour)
+	if err := os.Chtimes(old, then, then); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.keepDerived(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("an abandoned seal write's temporary file is still there: %v", err)
+	}
+	if _, err := os.Stat(young); err != nil {
+		t.Errorf("a young temporary file was removed: %v", err)
+	}
 }

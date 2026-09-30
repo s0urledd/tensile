@@ -296,21 +296,30 @@ func (dp *dayParts) save(ctx context.Context, s *Server) error {
 	dp.saved, dp.savedAt = e.seq, time.Now()
 	dp.mu.Unlock()
 	// The seal files nothing names any more; each is replaced by another
-	// generation or dropped.
+	// generation or dropped. And the temporary files of seal writes that
+	// never reached their rename (a process killed mid-write), each the size
+	// of its seal, once they are old enough that no write can still be at
+	// them (staleDerivedTemp).
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
+	now := time.Now()
 	for _, ent := range entries {
 		name := ent.Name()
-		if strings.HasSuffix(name, ".json") && !written[name] {
+		switch {
+		case strings.HasSuffix(name, ".json") && !written[name]:
 			_ = os.Remove(filepath.Join(dir, name))
 			dp.mu.Lock()
 			delete(dp.sealFiles, name)
 			dp.mu.Unlock()
+		case strings.HasSuffix(name, ".tmp") && !ent.IsDir():
+			if fi, err := ent.Info(); err == nil && now.Sub(fi.ModTime()) > staleDerivedTemp {
+				_ = os.Remove(filepath.Join(dir, name))
+			}
 		}
 	}
-	sweepDerivedTemps(dp.file, time.Now())
+	sweepDerivedTemps(dp.file, now)
 	return nil
 }
 
