@@ -22,16 +22,25 @@ import (
 // The shadow audit: the partials checked against the store while they
 // serve. Every hour one sealed row day and one sealed settlement day,
 // chosen at random, are read again raw in a read transaction and compared
-// with what is kept for them; for the first week after a start the
-// network summary of one longer window is also computed both ways, from
-// the partials and with the shipped statements over the whole window, in
-// one read. A difference is logged with where it is, and what differs is
-// dropped: the day, or every sealed day when a window differed. Nothing a
-// reader is served waits for it.
+// with what is kept for them. For the first few hours after a start a
+// window is also computed both ways, from the partials and with the
+// shipped statements over the whole window, in one read: the network
+// summary or the validator list of a pinned window as short as still sums
+// sealed days, the two consecutive sealed days with the fewest rows and
+// half a day either side (auditWindowOf), so that its raw half costs two
+// quiet days and not a week of busy ones. It runs beside the sealer, not in
+// it, and a comparison that took longer than auditWindowBudget ends them
+// for the process. A difference is logged with where it is, and what
+// differs is dropped: the day, or every sealed day when a window differed.
+// Nothing a reader is served waits for it.
 
 const (
 	auditEvery = time.Hour
-	auditWeek  = 7 * 24 * time.Hour
+	// auditWindowRuns is how many windows a process compares after it
+	// starts, one an hour; auditWindowBudget how long one may take before
+	// the rest are left out.
+	auditWindowRuns   = 3
+	auditWindowBudget = 2 * time.Minute
 )
 
 // checkRowSeal reads row day d again and reports whether it is what the
@@ -133,8 +142,9 @@ func sameJSON(a, b any) bool {
 	return err1 == nil && err2 == nil && bytes.Equal(x, y)
 }
 
-// auditOnce is one hour's audit.
-func (s *Server) auditOnce(ctx context.Context, started time.Time) error {
+// auditOnce is one hour's audit of the days: a sealed row day and a
+// sealed settlement day, read again.
+func (s *Server) auditOnce(ctx context.Context) error {
 	var badRow, badSettle string
 	err := s.partsTx(ctx, func(ctx context.Context, e *epoch) error {
 		q := s.q(ctx)
@@ -186,18 +196,36 @@ func (s *Server) auditOnce(ctx context.Context, started time.Time) error {
 			return true
 		}, 0)
 	}
-	if s.now().Sub(started) > auditWeek {
-		return nil
+	return nil
+}
+
+// auditWindow computes one window both ways, auditWindowOf's: the network
+// summary, or with list the validator list. A difference drops every
+// sealed day. It reports how long the comparison took.
+func (s *Server) auditWindow(ctx context.Context, list bool) (time.Duration, error) {
+	var win Window
+	ok := false
+	s.parts.mu.Lock()
+	if s.parts.cur != nil {
+		win, ok = s.parts.cur.auditWindowOf()
 	}
-	names := []string{"7d", "30d", "all"}
-	win := windowFor(names[rand.IntN(len(names))], s.now())
-	n, diffs, err := s.comparePaths(ctx, []pathCase{networkCase(s, win, excludeSet{}, nil)})
+	s.parts.mu.Unlock()
+	if !ok {
+		return 0, nil
+	}
+	c := networkCase(s, win, excludeSet{}, nil)
+	if list {
+		c = validatorsCase(s, win, "")
+	}
+	t0 := time.Now()
+	n, diffs, err := s.comparePaths(ctx, []pathCase{c})
+	took := time.Since(t0)
 	if err != nil {
-		return err
+		return took, err
 	}
 	if len(diffs) > 0 {
 		if s.log != nil {
-			s.log.Printf("day partials: audit: network %s differs from the shipped statements (%d compared); every sealed day dropped:\n%s", win.Name, n, strings.Join(diffs, "\n"))
+			s.log.Printf("day partials: audit: %s differs from the shipped statements (%d compared); every sealed day dropped:\n%s", c.name, n, strings.Join(diffs, "\n"))
 		}
 		s.parts.publish(func(cur *epoch, _ []journalEntry) bool {
 			cur.rows = map[string]*rowDay{}
@@ -209,7 +237,46 @@ func (s *Server) auditOnce(ctx context.Context, started time.Time) error {
 			return true
 		}, 0)
 	}
-	return nil
+	return took, nil
+}
+
+// auditWindowOf is the window the audit compares: pinned, from noon of the
+// day before to noon of the day after the two consecutive sealed row days
+// with the fewest rows (one day where no two are consecutive), so that it
+// sums sealed days and reads raw spans at both ends while its raw half
+// costs two quiet days. false when nothing is sealed.
+func (e *epoch) auditWindowOf() (Window, bool) {
+	size := func(d string) (int64, bool) {
+		rd := e.rows[d]
+		if rd == nil {
+			return 0, false
+		}
+		var n int64
+		for _, p := range rd.Vals {
+			n += p.Probes + p.Beats
+		}
+		return n, true
+	}
+	best, bestN, bestDays := "", int64(-1), 0
+	for d := range e.rows {
+		n, _ := size(d)
+		days := 1
+		if m, ok := size(dayAdd(d, 1)); ok {
+			n, days = n+m, 2
+		}
+		if days > bestDays || (days == bestDays && (bestN < 0 || n < bestN || (n == bestN && d < best))) {
+			best, bestN, bestDays = d, n, days
+		}
+	}
+	if best == "" {
+		return Window{}, false
+	}
+	lo, err := time.Parse(dayLayout, best)
+	if err != nil {
+		return Window{}, false
+	}
+	start, end := lo.Add(-12*time.Hour), lo.Add(time.Duration(bestDays)*24*time.Hour+12*time.Hour)
+	return Window{Name: "audit", Span: end.Sub(start), Start: start, End: end, AsOf: true}, true
 }
 
 // computedFields are the two fields that say when and how fast, not what.

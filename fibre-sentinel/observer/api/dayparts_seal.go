@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/rollup"
@@ -668,7 +669,9 @@ func (s *Server) sealer() {
 		every, idle = s.sealPace[0], s.sealPace[1]
 	}
 	wait := every
-	started, audited := s.now(), s.now()
+	audited := s.now()
+	windows := auditWindowRuns
+	var comparing, over atomic.Bool
 	for {
 		select {
 		case <-s.stop:
@@ -692,11 +695,34 @@ func (s *Server) sealer() {
 		}
 		if s.now().Sub(audited) >= auditEvery {
 			audited = s.now()
-			ctx, cancel := context.WithTimeout(context.Background(), snapshotTimeoutAll)
-			if err := s.auditOnce(ctx, started); err != nil && s.log != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), snapshotTimeout)
+			if err := s.auditOnce(ctx); err != nil && s.log != nil {
 				s.log.Printf("day partials: audit: %v", err)
 			}
 			cancel()
+			// The window beside the sealer, one at a time, the first few
+			// hours only, and none after one that ran over its budget.
+			if windows > 0 && !over.Load() && comparing.CompareAndSwap(false, true) {
+				windows--
+				list := windows%2 == 0
+				s.bg.Add(1)
+				go func() {
+					defer s.bg.Done()
+					defer comparing.Store(false)
+					ctx, cancel := context.WithTimeout(context.Background(), snapshotTimeout)
+					defer cancel()
+					took, err := s.auditWindow(ctx, list)
+					if err != nil && s.log != nil {
+						s.log.Printf("day partials: audit: %v", err)
+					}
+					if took > auditWindowBudget {
+						if s.log != nil {
+							s.log.Printf("day partials: audit: a window took %s both ways; no more are compared", took.Round(time.Second))
+						}
+						over.Store(true)
+					}
+				}()
+			}
 		}
 	}
 }

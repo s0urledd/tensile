@@ -44,15 +44,16 @@ func TestTheAuditDropsASealTheStoreDoesNotHold(t *testing.T) {
 	if rows < 2 || settles < 2 {
 		t.Fatalf("too little sealed to audit: %d row days, %d settlement days", rows, settles)
 	}
-	// The week the window comparison runs in has passed: only the days.
-	weekAgo := s.now.Add(-auditWeek - time.Hour)
+	// The days alone, eight times over, then with a window.
 	for i := 0; i < 8; i++ {
-		if err := srv.auditOnce(ctx, weekAgo); err != nil {
+		if err := srv.auditOnce(ctx); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := srv.auditOnce(ctx, s.now); err != nil {
-		t.Fatal(err)
+	for _, list := range []bool{false, true} {
+		if _, err := srv.auditWindow(ctx, list); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if r, st := count(srv); r != rows || st != settles {
 		t.Fatalf("the audit dropped days the store holds: %d row days and %d settlement days left of %d and %d", r, st, rows, settles)
@@ -85,13 +86,13 @@ func TestTheAuditDropsASealTheStoreDoesNotHold(t *testing.T) {
 		}, 0)
 	}
 	corrupt(srv)
-	if err := srv.auditOnce(ctx, weekAgo); err != nil {
+	if err := srv.auditOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if r, st := count(srv); r != rows-1 || st != settles-1 {
 		t.Errorf("the audit of one day of each kind left %d row days and %d settlement days of %d and %d", r, st, rows, settles)
 	}
-	if err := srv.auditOnce(ctx, s.now); err != nil {
+	if _, err := srv.auditWindow(ctx, rand.IntN(2) == 0); err != nil {
 		t.Fatal(err)
 	}
 	if r, st := count(srv); r != 0 || st != 0 {
