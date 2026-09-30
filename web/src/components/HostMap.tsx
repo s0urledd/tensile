@@ -26,8 +26,8 @@ import { type EndpointState, endpointState, readiness } from "@/components/Readi
  * corner buttons, a double click, a pinch on a trackpad and a drag (once
  * zoomed) move the view, each in one eased flight.
  *
- * Under the map, one floating bar: the newest event on the left, the three
- * counts on the right. The map has no heading of its own: the counts say what
+ * Across the map's foot, two small pills: the newest event at the left, the
+ * three counts in the centre. The map has no heading of its own: the counts say what
  * it shows, and the panel's one heading on the subject is "Current Fibre
  * providers" under it. The box (its shape set in the stylesheet) and the bar
  * are in the prerendered page and the land is drawn as soon as the box is
@@ -157,6 +157,36 @@ function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
 }
 
 /** what a badge is called: its city, its country, or its countries */
+/**
+ * each country's box in map units, from its outline (absolute M, relative m and l, z): a hosted
+ * country narrower than SPOT_MIN px on screen (Singapore, Hong Kong) is drawn as a soft spot of its
+ * tint as well, SPOT_R px across its middle, so it reads as hosted as the larger ones do
+ */
+const SPOT_MIN = 8, SPOT_R = 28;
+const BOXES: Map<string, { x: number; y: number; e: number }> = (() => {
+  const out = new Map<string, { x: number; y: number; e: number }>();
+  for (const [cc, d] of COUNTRIES) {
+    if (!cc) continue;
+    let x = 0, y = 0, sx = 0, sy = 0, cmd = "M", x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const t = d.match(/[MmLlZz]|-?\d+(?:\.\d+)?/g) ?? [];
+    for (let i = 0; i < t.length; i++) {
+      const k = t[i];
+      if (/[MmLlZz]/.test(k)) { cmd = k; if (k === "z" || k === "Z") { x = sx; y = sy; } continue; }
+      const a = +k, b = +t[++i];
+      if (cmd === "M") { x = a; y = b; sx = x; sy = y; cmd = "L"; }
+      else if (cmd === "m") { x += a; y += b; sx = x; sy = y; cmd = "l"; }
+      else if (cmd === "L") { x = a; y = b; }
+      else { x += a; y += b; }
+      x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+    }
+    if (x1 < x0) continue;
+    const prev = out.get(cc);
+    const e = Math.max(x1 - x0, y1 - y0);
+    if (!prev || e > prev.e) out.set(cc, { x: (x0 + x1) / 2, y: (y0 + y1) / 2, e });
+  }
+  return out;
+})();
+
 function placeLabel(c: Cluster): string {
   if (c.locs === 1 && c.hosts[0].city) return `${c.hosts[0].city}, ${countryName(c.hosts[0].cc)}`;
   if (c.ccs.length === 1) return countryName(c.ccs[0]);
@@ -211,7 +241,9 @@ function useFeedEvents(enabled: boolean): FeedEvent[] {
   return events;
 }
 
-const EVENT_WORD: Record<string, string> = { registered: "registered as a Fibre provider", "host-changed": "changed its Fibre host" };
+const EVENT_WORD: Record<string, string> = { registered: "new Fibre provider", "host-changed": "changed its Fibre host" };
+/** "22 h ago" for "22 h 52 min ago": the pill's clock needs the hour, not the minute */
+const shortAgo = (t: string) => ago(t).replace(/(\d+ h) \d+ min/, "$1");
 
 /** the graticule: meridians every 30°, parallels every 20°, as polylines in map units */
 const GRATICULE: string = (() => {
@@ -462,6 +494,11 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
     </>
   ), [hosted, openCcs]);
 
+  const spots = scale > 0 ? [...new Set([...hosted, ...openCcs])].flatMap((cc) => {
+    const bx = BOXES.get(cc);
+    return bx && bx.e * scale < SPOT_MIN ? [{ cc, x: bx.x, y: bx.y, r: SPOT_R / scale, hi: openCcs.has(cc) }] : [];
+  }) : [];
+
   // ---- badges on screen ----
   const placed = width > 0 ? clusters.map((c) => {
     const [x, y] = toPx(c.ux, c.uy);
@@ -487,7 +524,15 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
           {/* drawn once the box is measured: the prerendered page holds the box, not the 90 kB of outlines */}
           {width > 0 && (
             <svg className="cm-land" viewBox={`${view.x} ${view.y} ${view.w} ${view.w * aspect}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false">
+              <defs>
+                {(["on", "hi"] as const).map((k) => (
+                  <radialGradient key={k} id={`cm-spot-${k}`}>
+                    <stop offset="0" className={k} /><stop offset=".5" className={k} /><stop offset="1" className={k} stopOpacity="0" />
+                  </radialGradient>
+                ))}
+              </defs>
               {land}
+              {spots.map((p) => <circle key={p.cc} cx={p.x} cy={p.y} r={p.r} fill={`url(#cm-spot-${p.hi ? "hi" : "on"})`} />)}
             </svg>
           )}
         </div>
@@ -535,10 +580,8 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
                 {isOpen && !moving && (
                   <div className="cm-pop" style={pop} role="group" aria-label={place}>
                     <p className="cm-pop-h">
-                      <b>{place}</b>
-                      <span>{n} provider{one ? "" : "s"}</span>
+                      {c.ccs.length > 2 ? <b>{n} Fibre providers</b> : <><b>{place}</b><span>{n} provider{one ? "" : "s"}</span></>}
                     </p>
-                    {cities.length > 0 && <p className="cm-pop-cities">{cities.map(([k, m]) => <span key={k}>{k}{m > 1 && <i> {m}</i>}</span>)}</p>}
                     <ul ref={scrollFade} onScroll={(e) => scrollFade(e.currentTarget)}>
                       {c.hosts.map((h) => (
                         <li key={h.v.address}>
@@ -575,19 +618,17 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
         </div>
       </div>
 
-      {/* one floating bar under the map: the newest event, then the three counts */}
+      {/* two pills across the map's foot: the newest event at the left, the three counts in the centre */}
       <div className="cm-bar" ref={bar}>
         <p className="cm-ev" key={cur ? `${cur.v.address}|${cur.at}|${cur.event ?? ""}` : "none"}>
           {cur ? (
             <>
               <i className="cm-ev-dot" data-tone={cur.event === "last reachable" ? "hold" : "ok"} aria-hidden="true" />
-              <span className="cm-ev-t" title={`${name(cur.v)}${cur.event ? ` ${cur.event}` : " served its rows"}${cur.host?.cc ? ` · ${countryName(cur.host.cc)}` : ""} · ${utcWord(cur.at)}`}>
+              <span className="cm-ev-t" title={`${name(cur.v)}${cur.event ? ` · ${cur.event}` : " served its rows"}${cur.host?.cc ? ` · ${countryName(cur.host.cc)}` : ""}${cur.host?.provider ? ` · ${cur.host.provider}` : ""} · ${utcWord(cur.at)}`}>
                 <Link href={valLink(cur.v)}>{name(cur.v)}</Link>
-                {cur.event ? <> {cur.event}</> : <> served its rows</>}
-                {cur.host?.cc && <span className="cm-ev-s"> · {countryName(cur.host.cc)}</span>}
-                {!cur.event && cur.host?.provider && <span className="cm-ev-s"> · {cur.host.provider}</span>}
+                {cur.event ? <> · {cur.event}</> : <> served its rows</>}
               </span>
-              <span className="cm-ev-ago">{ago(cur.at)}</span>
+              <span className="cm-ev-ago">{shortAgo(cur.at)}</span>
             </>
           ) : <span className="cm-ev-t wait">{" "}</span>}
         </p>

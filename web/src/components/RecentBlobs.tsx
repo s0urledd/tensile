@@ -2,16 +2,15 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { API_BASE, useApi, type Blob, type Rate, type Tip, int, pctOf, bytes, whenUTC, utcWord } from "@/lib/api";
-import { Eye } from "@/components/Metrics";
+import { API_BASE, useApi, type Blob, type Tip, int, pctOf, bytes, whenUTC, utcWord } from "@/lib/api";
 import RollNumber, { reducedMotion } from "@/components/RollNumber";
 
 /**
  * The overview's recent blobs: the newest settlements as a grid of squares,
  * one per blob settled on chain, newest first, and a readout of one blob's
  * facts beside it. It is the chain's stream only: Tensile reads a blob at the
- * end of its retention window, hours after it settled, so its own figure is
- * the Blob availability line, not a mark on these squares.
+ * end of its retention window, hours after it settled, so nothing of its own
+ * reading is marked on these squares.
  *
  * The grid reads as text does, newest at the top left, so its reading order
  * is age order. New blobs enter at the top left and everything else moves on
@@ -20,14 +19,11 @@ import RollNumber, { reducedMotion } from "@/components/RollNumber";
  * row's right end entering the next row's left. The newest is ringed and
  * whatever arrived with it glows for 1.2 s; nothing else moves.
  *
- * Every square has the same fill. The inner square is the blob's size, known
- * at settlement: inside a 3 px rim, its area is the blob's share of the
- * largest blob the protocol allows (128 MiB), and one too small to draw is a
- * 4 px dot.
+ * Every square has the same fill; a blob's size and the rest are in the
+ * readout, for the square under the pointer or focus.
  *
- * While the pointer is on the grid, a square has focus, or the reader pressed
- * Pause, the grid holds still: reads go on, "Paused · N new" counts what came
- * in, and letting go brings it all in one move.
+ * While the pointer is on the grid or a square has focus, the grid holds
+ * still: reads go on, and letting go brings what came in in one move.
  *
  * Reading the list: GET /v1/blobs when the chain moves (the header's /v1/tip
  * stream, shared, so no request of its own), at most every 5 s while blobs
@@ -43,8 +39,6 @@ const FAST_MS = 5000, SLOW_MS = 15000, FALLBACK_MS = 30000;
 /** no new blob for this long reads at the slow pace */
 const IDLE_AFTER_MS = 120000;
 const SLIDE_MS = 420;
-/** the protocol's largest blob (x/fibre MaxBlobSize at the pinned celestia-app, /v1/params protocol.max_blob_size_bytes): a full square */
-const MAX_BLOB = 128 * 1024 * 1024;
 
 type Cell = { b: Blob; seq: number };
 type Feed = {
@@ -208,35 +202,6 @@ function Age({ at, skew }: { at: string; skew: number }) {
   return now ? <span className="ov-when" title={utcWord(at)}>settled {liveAgo(at, now)}</span> : null;
 }
 
-/** the side of a blob's square, as a share of its place's: the square's area is the blob's share of the largest blob */
-const sideOf = (b: Blob) => Math.sqrt(Math.max(0, Math.min(1, (b.blob_size || 0) / MAX_BLOB)));
-
-export type Observed = { rec: Rate | null | undefined; examinedAll: boolean };
-
-/**
- * Tensile's own figure beside the chain's: the Blob availability share (CIP-51's
- * term) over the blobs whose reading decides them. One quiet line under a
- * hairline, prefixed "Observed by Tensile", set smaller than the chain's
- * figures. It keeps its place while it loads.
- */
-export function Availability({ observed }: { observed: Observed }) {
-  const rec = observed.rec;
-  return (
-    <div className="ob">
-      <p className="ob-row" aria-busy={!rec || undefined}
-        title="Observed by Tensile: blobs whose rows were enough to reconstruct them, over the blobs read (available plus unavailable), each read at the end of its retention window: the newest ones with a reading, up to the API's sample limit.">
-        <span className="ob-pre"><Eye />Observed by Tensile</span>
-        <span className="ob-fig">Blob availability {rec
-          ? <b className={rec.den > 0 ? undefined : "absent"}>{pctOf(rec.num, rec.den)}</b>
-          : <b className="wait">000%</b>}</span>
-        {rec
-          ? <span className="ob-h">{rec.den > 0 ? `${int(rec.num)} of ${observed.examinedAll ? "" : "the newest "}${int(rec.den)} blobs read` : "none read"}</span>
-          : <span className="ob-h"><span className="wait">0,000 of 0,000 blobs read</span></span>}
-      </p>
-    </div>
-  );
-}
-
 /** what the grid shows: a snapshot of the feed, and the last move into it */
 type Shown = { cells: Cell[]; total: number | null; move: { id: number; n: number; fresh: Set<string> } | null };
 
@@ -244,19 +209,15 @@ type PlaceProps = { c: Cell; i: number; fresh: boolean; on: boolean; tab: boolea
 /**
  * one place on the tape: a real one is the blob's link; a ghost is its copy past a row's end, there
  * only to slide out of view. A place keeps its element from one move to the next and only takes the
- * next blob's attributes; the square (and an arrival's glow) is the blob's own element, so it is
- * new, and plays its arrival once, whenever the blob in the place changes. A plain link, with the
+ * next blob's attributes; an arrival's glow is the blob's own element, so it is new, and plays once,
+ * whenever the blob in the place changes. A plain link, with the
  * app's router on a plain click: fifty of Next's links re-rendering on every read were the cost of a
  * move.
  */
 const Place = memo(function Place({ c, i, fresh, on, tab, ghost, onShow, onKey, onFocusAt, onOpen }: PlaceProps) {
   const b = c.b;
-  const k = sideOf(b);
   const cls = `rb-c${i === 0 ? " rb-newest" : ""}${fresh ? " rb-new" : ""}${on ? " rb-on" : ""}${ghost ? " rb-ghost" : ""}`;
-  const inner = <>
-    <i key={b.promise_hash} className={`rb-sq${k * 20 < 4 ? " rb-dot" : ""}`} style={{ "--k": k.toFixed(4) } as React.CSSProperties} />
-    {fresh && <b key={`g${b.promise_hash}`} className="rb-glow" aria-hidden="true" />}
-  </>;
+  const inner = fresh ? <b key={`g${b.promise_hash}`} className="rb-glow" aria-hidden="true" /> : null;
   if (ghost) return <span className={cls} aria-hidden="true">{inner}</span>;
   const href = `/blob/?hash=${b.promise_hash}`;
   return (
@@ -280,10 +241,9 @@ export default function RecentBlobs() {
   const skew = tip.data?.server_time && tip.fetchedAt ? Date.parse(tip.data.server_time) - Date.parse(tip.fetchedAt) : 0;
   const feed = useBlobFeed(tip.data?.height, skew);
 
-  const [paused, setPaused] = useState(false);
   const [pointerIn, setPointerIn] = useState(false);
   const [focusIn, setFocusIn] = useState(false);
-  const hold = paused || pointerIn || focusIn;
+  const hold = pointerIn || focusIn;
   const [motion, setMotion] = useState(true);
   useEffect(() => { setMotion(!reducedMotion()); }, []);
 
@@ -303,7 +263,6 @@ export default function RecentBlobs() {
       };
     });
   }, [feed, hold]);
-  const waiting = shown.cells.length ? Math.max(0, feed.next - 1 - shown.cells[0].seq) : 0;
 
   // ---- the move: every row's tape slides by the places that came in, once, together ----
   const gridRef = useRef<HTMLDivElement>(null);
@@ -349,14 +308,12 @@ export default function RecentBlobs() {
   const blob = selAt >= 0 ? cells[selAt].b : latest;
   const isLatest = !!blob && blob.promise_hash === latest?.promise_hash;
 
-  const state = paused ? "paused" : feed.error ? "down" : !feed.loaded ? "wait" : "live";
+  const state = feed.error ? "down" : !feed.loaded ? "wait" : "live";
   const idle = feed.loaded && Date.now() + skew - feed.lastNewAt > IDLE_AFTER_MS;
-  const liveWord = paused ? (waiting ? `Paused · ${int(waiting)} new` : "Paused") : feed.error ? "Not answering" : feed.loaded ? "Live" : "Connecting";
-  const liveTitle = paused
-    ? "Paused: the grid holds still while new blobs are counted."
-    : feed.error
-      ? `The observer API did not answer (${feed.error}); the grid shows the last read.`
-      : `Reads the newest blobs as the chain moves, at most every ${idle ? 15 : 5} s, while this page is open.`;
+  const liveWord = feed.error ? "Not answering" : feed.loaded ? "Live" : "Connecting";
+  const liveTitle = feed.error
+    ? `The observer API did not answer (${feed.error}); the grid shows the last read.`
+    : `Reads the newest blobs as the chain moves, at most every ${idle ? 15 : 5} s, while this page is open.`;
 
   const rows = Array.from({ length: ROWS }, (_, r) => r);
   const mv = shown.move;
@@ -366,13 +323,6 @@ export default function RecentBlobs() {
         <div className="rb-head">
           <h2 className="ov-eyebrow">Recent blobs</h2>
           <span className="rb-live" title={liveTitle}><i className="rb-live-d" aria-hidden="true" />{liveWord}</span>
-          <button type="button" className="rb-pause" aria-pressed={paused} onClick={() => setPaused((p) => !p)}
-            title={paused ? "Resume: bring in what arrived" : "Hold the grid still"}>
-            {paused
-              ? <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M3 1.8v8.4L10 6z" fill="currentColor" /></svg>
-              : <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M3 2h2v8H3zM7 2h2v8H7z" fill="currentColor" /></svg>}
-            {paused ? "Resume" : "Pause"}
-          </button>
         </div>
         <p className="rb-count">
           {shown.total != null ? <RollNumber value={shown.total} format={int} className="rb-total" /> : <span className="rb-total wait">0,000</span>}
@@ -401,10 +351,6 @@ export default function RecentBlobs() {
             </div>
           ))}
         </div>
-        <p className="rb-key" aria-hidden="true">
-          <span title="The inner square's area is the blob's share of 128 MiB, the largest blob the protocol allows"><i className="rb-key-sq"><b /></i>Inner square = blob size (full = 128 MiB)</span>
-          <span><i className="rb-key-head" />newest</span>
-        </p>
       </div>
 
       <div className="rb-read">
