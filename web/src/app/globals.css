@@ -1093,7 +1093,9 @@ body { background: var(--canvas); }
   --cm-badge-ink: #ffffff;
   --cm-badge-hold-ink: #ffffff;
   --cm-badge-glow: 0 1px 2px rgb(16 24 32 / .22), 0 4px 12px -4px rgb(0 106 116 / .45);
-  --cp-rest: rgb(var(--ink) / .09);
+  --cp-rest: rgb(var(--ink) / .13);
+  --cp-on: var(--accent);
+  --cp-on-hover: #008b97;
   --rb-window: color-mix(in srgb, var(--accent) 70%, var(--paper));
   --rb-window-fill: color-mix(in srgb, var(--accent) 14%, var(--paper));
   --rb-head-glow: 30%;
@@ -1112,7 +1114,9 @@ body { background: var(--canvas); }
   --cm-badge-ink: #04171a;
   --cm-badge-hold-ink: #1f1500;
   --cm-badge-glow: 0 0 16px -3px rgb(51 179 191 / .7);
-  --cp-rest: rgb(255 255 255 / .07);
+  --cp-rest: rgb(255 255 255 / .11);
+  --cp-on: #2ea4af;
+  --cp-on-hover: #5fd0da;
   --rb-window: color-mix(in srgb, var(--accent) 80%, var(--paper));
   --rb-window-fill: color-mix(in srgb, var(--accent) 24%, var(--paper));
   --rb-head-glow: 55%;
@@ -1270,30 +1274,26 @@ body { background: var(--canvas); }
 .ov-links a:hover { text-decoration: none; }
 .ov-links a:hover span { transform: translateX(3px); }
 
-/* current Fibre providers: the share, then a segmented meter (fiftieths) with the ⅔ needle through it */
+/* current Fibre providers: the share, then the bonded set as one strip (a segment per validator) with the ⅔ needle through it */
 /* the three instruments' heads share one 24px line */
 .cp > .ov-eyebrow { min-height: 24px; }
 .cp-hero { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin: 14px 0 0; }
 .cp-help { font-size: var(--t-cell); color: var(--text-2); }
 .cp-help b { color: var(--text); font-weight: 600; }
 .cp-meter { position: relative; display: block; margin: 34px 0 0; }
-.cp-track {
-  position: relative; display: block; height: 16px; border-radius: 3px; background: var(--cp-rest);
-  -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 calc(2% - 2px), transparent calc(2% - 2px) 2%);
-  mask-image: repeating-linear-gradient(90deg, #000 0 calc(2% - 2px), transparent calc(2% - 2px) 2%);
-}
-.cp-track i {
-  position: absolute; left: 0; top: 0; bottom: 0; width: var(--v); transform-origin: left center;
-  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 52%, var(--paper)), var(--accent));
-  animation: cp-grow 1s cubic-bezier(.2, .7, .2, 1) both;
-}
-.cp-meter.wait .cp-track i { width: 0; }
+.cp-strip { position: relative; height: 16px; border-radius: 4px; overflow: hidden; }
+.cp-meter.wait .cp-strip { background: var(--wash); }
+.cp-strip svg { display: block; animation: cp-reveal .9s cubic-bezier(.2, .7, .2, 1) both; }
+.cp-strip rect { fill: var(--cp-rest); }
+.cp-strip rect.on { fill: var(--cp-on); }
+.cp-strip rect:hover { fill: var(--cp-on-hover); }
+.cp-strip rect:not(.on):hover { fill: var(--neutral); }
 .cp-q { position: absolute; left: var(--q); top: -24px; bottom: -5px; width: 0; z-index: 1; pointer-events: none; }
 .cp-q::before { content: ""; position: absolute; left: -1px; top: 19px; bottom: 0; width: 2px; border-radius: 1px; background: var(--text); box-shadow: 0 0 0 2px var(--paper); }
 .cp-q > span { position: absolute; left: 0; top: -2px; transform: translateX(-50%); display: inline-flex; align-items: baseline; gap: 3px; font-size: var(--t-tiny); font-weight: 600; line-height: 18px; letter-spacing: .02em; color: var(--text); white-space: nowrap; }
 .cp-rest { margin: 14px 0 0; font-size: var(--t-small); color: var(--text-3); }
 .cp-sw { display: inline-block; width: 9px; height: 9px; margin-right: 6px; border-radius: 2px; background: var(--cp-rest); box-shadow: inset 0 0 0 1px var(--line-soft); vertical-align: -1px; }
-@keyframes cp-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes cp-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
 
 /* recent blobs: the eyebrow, the live ring and Pause; the count; the grid; its key */
 .rb-head { display: flex; align-items: center; gap: 10px; min-height: 24px; }
@@ -1446,6 +1446,6 @@ body { background: var(--canvas); }
   .cm-land path, .cm-badge, .cm-pin, .cm-tools button, .rb-c, .rb-f, .ov-links a span { transition: none; }
   .cm-pop, .cm-ev { animation: none; }
   .cm-pin.live .cm-badge::after { animation: none; opacity: .7; transform: scale(1.35); }
-  .cp-track i, .rb-f.fresh, .rb-f.fresh::after, .rb-ring-f, .bt-dot.beat, .rn-roll .rn-in, .rn-roll .rn-out { animation: none; }
+  .cp-strip svg, .rb-f.fresh, .rb-f.fresh::after, .rb-ring-f, .bt-dot.beat, .rn-roll .rn-in, .rn-roll .rn-out { animation: none; }
   .rn-roll .rn-out { display: none; }
 }
