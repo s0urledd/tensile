@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 export const WINDOWS = ["24h", "7d", "30d", "all"] as const;
@@ -19,6 +19,33 @@ export function useWindow(def: WindowName = "24h"): [WindowName, (w: WindowName)
   const params = useSearchParams();
   const fromUrl = params.get("window");
   const [win, setWin] = useState<WindowName>((WINDOWS as readonly string[]).includes(fromUrl ?? "") ? (fromUrl as WindowName) : def);
+  const set = useCallback((w: WindowName) => {
+    setWin(w);
+    try {
+      const u = new URL(window.location.href);
+      if (w === def) u.searchParams.delete("window"); else u.searchParams.set("window", w);
+      window.history.replaceState(null, "", u.pathname + u.search + u.hash);
+    } catch { /* fine */ }
+  }, [def]);
+  return [win, set];
+}
+
+/**
+ * The same period, read from the URL once the page is in the browser rather
+ * than while it renders. A page that reads search params while rendering is
+ * rendered in the browser only (the static export cannot know them), so
+ * nothing of it is in the prerendered HTML; the overview uses this instead,
+ * so its frame is in the HTML at its final size and nothing moves when the
+ * data arrives. A link with ?window=7d starts on 24h for one frame.
+ */
+export function useWindowAfterMount(def: WindowName = "24h"): [WindowName, (w: WindowName) => void] {
+  const [win, setWin] = useState<WindowName>(def);
+  useEffect(() => {
+    try {
+      const w = new URLSearchParams(window.location.search).get("window");
+      if (w && (WINDOWS as readonly string[]).includes(w)) setWin(w as WindowName);
+    } catch { /* fine */ }
+  }, []);
   const set = useCallback((w: WindowName) => {
     setWin(w);
     try {
