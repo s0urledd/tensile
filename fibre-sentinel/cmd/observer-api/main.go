@@ -44,6 +44,10 @@ func main() {
 		// (deploy/README.md, "Upgrading a running observer").
 		snapDir  = flag.String("snapshot-dir", "", "where the window snapshots are kept across restarts (default <data-dir>/snapshots; with -warm-only <data-dir>/snapshots.next)")
 		warmOnly = flag.Bool("warm-only", false, "compute every window snapshot once into -snapshot-dir, reading the database only, then exit; serves nothing, and refuses the live <data-dir>/snapshots")
+		// The 7d, 30d and "all" windows are summed from per-day partials
+		// kept beside the snapshots (observer/api/dayparts.go). Off, every
+		// window is read whole with the shipped statements, as before.
+		dayParts = flag.Bool("day-partials", true, "sum the 7d, 30d and all windows from per-day partials kept in -snapshot-dir; false reads every window whole")
 	)
 	flag.Parse()
 	if *check != "" {
@@ -113,7 +117,7 @@ func main() {
 	if len(reg) > 0 {
 		log.Printf("publisher labels: %d from %s", len(reg), *labels)
 	}
-	opts := []api.Option{api.WithPublisherLabels(reg), api.WithDataDir(*dataDir), api.WithSnapshotDir(*snapDir)}
+	opts := []api.Option{api.WithPublisherLabels(reg), api.WithDataDir(*dataDir), api.WithSnapshotDir(*snapDir), api.WithDayParts(*dayParts)}
 	if *warmOnly {
 		// The live API keeps serving meanwhile; this only reads. Every
 		// snapshot depends on the vantage (its heartbeats) and the market
