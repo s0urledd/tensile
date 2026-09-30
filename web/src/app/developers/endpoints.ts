@@ -493,7 +493,6 @@ export const GROUPS: Group[] = [
         id: "probes",
         path: "/v1/probes",
         summary: "Tensile's readings, newest first, by validator, blob, class or time.",
-        desc: "A reading is one download of a validator's rows of one blob.",
         params: [
           { name: "validator", in: "query", type: "string", desc: "A validator's consensus, operator or account address.", example: HUGINN },
           { name: "blob", in: "query", type: "string", desc: "A promise hash, 64 hex characters." },
