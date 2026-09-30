@@ -3097,6 +3097,19 @@ func (s *Server) endorsedInRetention(ctx context.Context, addr string, at time.T
 // (detailFromSnapshots); a pinned window, or a validator the snapshots do not
 // list yet, is computed here.
 func (s *Server) validatorDetail(ctx context.Context, addr string, win Window, now time.Time) (int, any, error) {
+	// From the snapshots before anything else, as the build before the
+	// partials answered it: the answer reads a few rows beside them, and
+	// needs neither a connection held for a transaction nor the partials
+	// caught up, so it never waits behind a long refresh for either.
+	if !win.AsOf {
+		out, ok, err := s.detailFromSnapshots(ctx, addr, win, now)
+		if err != nil {
+			return 0, nil, err
+		}
+		if ok {
+			return 200, out, nil
+		}
+	}
 	var status int
 	var out any
 	err := s.readTx(ctx, func(ctx context.Context) error {
