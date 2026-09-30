@@ -2074,7 +2074,9 @@ type validatorRow struct {
 	// consensus address, or before identities have been polled once. A reader
 	// recognises a validator by this, not by twenty hex characters.
 	Moniker string `json:"moniker,omitempty"`
-	// Operator is the celestiavaloper... address, for linking out.
+	// Operator is the celestiavaloper... address, for linking out and for
+	// the site's links to this row's page; absent for an older consensus
+	// key of an operator that holds a newer one (operatorAddrs).
 	Operator string `json:"operator_address,omitempty"`
 	// KeybaseIdentity is the operator's Keybase key suffix when it set one,
 	// which is how an avatar could be resolved later. Deliberately NOT called
@@ -2670,6 +2672,16 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	// rows are a subset of what the assignment table produces anyway. Before
 	// it, they are the whole answer to "am I in your list", with every measured
 	// column honestly empty.
+	//
+	// The operator address a row publishes comes from operatorAddrs: an
+	// older consensus key of an operator that holds a newer one publishes
+	// none, so its page stays linked by the consensus address. The row's own
+	// operator account still keys its timeouts below, so no count moves.
+	ops, err := s.operatorAddrs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	account := map[string]string{}
 	irows, err := db.QueryContext(ctx, `SELECT vi.cons_address, vi.operator_address, vi.moniker, vi.identity, vi.website, vi.jailed, vi.status, vi.tokens,
 			EXISTS (SELECT 1 FROM validator_avatars a WHERE UPPER(a.identity) = UPPER(vi.identity) AND a.status = 'ok')
 		FROM validator_identities vi`)
@@ -2694,7 +2706,8 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 			}
 			v = get(hexAddr)
 		}
-		v.Moniker, v.Operator, v.KeybaseIdentity, v.Website = moniker, op, identity, website
+		v.Moniker, v.Operator, v.KeybaseIdentity, v.Website = moniker, ops[hexAddr], identity, website
+		account[hexAddr] = op
 		if hasAvatar == 1 {
 			v.AvatarURL = "/v1/avatars/" + strings.ToUpper(identity)
 		}
@@ -2780,8 +2793,8 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 		v.Obligations = byObligation[addr]
 		v.ByObligation = v.Obligations.Rate
 		v.ProvisionalFaults = provisional[addr]
-		if v.Operator != "" {
-			v.TimeoutsEnforced = timeouts[accountKey(v.Operator)]
+		if op := account[addr]; op != "" {
+			v.TimeoutsEnforced = timeouts[accountKey(op)]
 		}
 		// The registry supplies the bech32 form only for validators that
 		// registered an endpoint; before Fibre is live that is nobody, and
@@ -3687,7 +3700,8 @@ type assignmentRow struct {
 	ValidatorAddress string `json:"validator_address"`
 	// OperatorAddress is the validator's celestiavaloper1… from the staking
 	// module, the address the blob page links the validator by. Absent when
-	// the chain has no validator at this consensus address.
+	// the chain has no validator at this consensus address, or when its
+	// operator has since moved to a newer consensus key (operatorAddrs).
 	OperatorAddress string `json:"operator_address,omitempty"`
 	// Moniker is the name from the staking module, so this table reads like
 	// a list of validators rather than a list of hashes. Empty when the chain
@@ -3748,8 +3762,17 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "no publication with this promise hash")
 		return
 	}
+	// The operator addresses, for the assignments and the readings alike: a
+	// reading can name a validator the assignment does not (one asked
+	// without rows), and a superseded consensus key gets none
+	// (operatorAddrs), which a join on the identities would not know.
+	ops, err := s.operatorAddrs(ctx)
+	if err != nil {
+		s.writeInternal(w, r.URL.Path, err)
+		return
+	}
 	rows, err := s.st.DB().QueryContext(ctx, `SELECT a.validator_address, a.voting_power, a.row_count, a.attested,
-			COALESCE(i.moniker, ''), COALESCE(i.operator_address, ''), a.host_at_settlement
+			COALESCE(i.moniker, ''), a.host_at_settlement
 		FROM assignments a
 		LEFT JOIN validator_identities i ON i.cons_address = a.validator_address
 		WHERE a.promise_hash = ? ORDER BY a.voting_power DESC, a.validator_address`, hash)
@@ -3761,7 +3784,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var a assignmentRow
 		var att sql.NullInt64
-		if err := rows.Scan(&a.ValidatorAddress, &a.VotingPower, &a.RowCount, &att, &a.Moniker, &a.OperatorAddress, &a.HostAtSettlement); err != nil {
+		if err := rows.Scan(&a.ValidatorAddress, &a.VotingPower, &a.RowCount, &att, &a.Moniker, &a.HostAtSettlement); err != nil {
 			rows.Close()
 			s.writeInternal(w, r.URL.Path, err)
 			return
@@ -3770,6 +3793,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 			b := att.Int64 == 1
 			a.Attested = &b
 		}
+		a.OperatorAddress = ops[strings.ToLower(a.ValidatorAddress)]
 		assigns = append(assigns, a)
 	}
 	rows.Close()
@@ -3779,17 +3803,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	probes, moreProbes := trim(probes, 1000)
-	if len(probes) > 0 {
-		// A reading can name a validator the assignment does not (one asked
-		// without rows), so the readings take the whole map, not the
-		// assignments' join.
-		ops, err := s.operatorAddrs(ctx)
-		if err != nil {
-			s.writeInternal(w, r.URL.Path, err)
-			return
-		}
-		withOperators(probes, ops)
-	}
+	withOperators(probes, ops)
 	if err := s.blobService(ctx, hash, assigns); err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
@@ -3961,7 +3975,8 @@ type probeRow struct {
 	PromiseHash      string `json:"promise_hash"`
 	ValidatorAddress string `json:"validator_address"`
 	// OperatorAddress is the validator's celestiavaloper1…, from the staking
-	// set (operatorAddrs); absent when the collector has not read one.
+	// set (operatorAddrs); absent when the collector has not read one, or
+	// for an older consensus key of an operator that holds a newer one.
 	OperatorAddress string `json:"operator_address,omitempty"`
 	ValidatorHost   string `json:"validator_host"`
 	Assigned        bool   `json:"assigned"`

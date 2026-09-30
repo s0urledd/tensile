@@ -350,20 +350,26 @@ func validatorLink(hexAddr, operator string) string {
 func (s *Server) validatorFeed(ctx context.Context, addr, authority string, now time.Time) (*feed.Feed, int, error) {
 	db := s.st.DB()
 	bech, _ := consBech(addr)
-	var moniker, operator string
+	var moniker string
 	var known int
 	if err := db.QueryRowContext(ctx, `SELECT
 			COALESCE((SELECT moniker FROM validator_identities WHERE cons_address = ?), ''),
-			COALESCE((SELECT operator_address FROM validator_identities WHERE cons_address = ?), ''),
 			(SELECT COUNT(*) FROM validator_identities WHERE cons_address = ?)
 			+ (SELECT COUNT(*) FROM endpoints WHERE validator_cons_address = ?)
 			+ (SELECT COUNT(*) FROM (SELECT 1 FROM reachability WHERE validator_address = ? LIMIT 1))
 			+ (SELECT COUNT(*) FROM host_events WHERE cons_address = ?)`,
-		addr, addr, addr, bech, addr, addr).Scan(&moniker, &operator, &known); err != nil {
+		addr, addr, bech, addr, addr).Scan(&moniker, &known); err != nil {
 		return nil, 0, err
 	}
 	if known == 0 {
 		return nil, http.StatusNotFound, nil
+	}
+	// The operator address from operatorAddrs, so an older consensus key of
+	// an operator that holds a newer one links its own page by the consensus
+	// address rather than the newer validator's by the operator address.
+	ops, err := s.operatorAddrs(ctx)
+	if err != nil {
+		return nil, 0, err
 	}
 	fm, err := s.readFeedMeta(ctx)
 	if err != nil {
@@ -376,8 +382,7 @@ func (s *Server) validatorFeed(ctx context.Context, addr, authority string, now 
 	id := func(parts ...string) string {
 		return feed.TagID(authority, feedTagDate, append([]string{"tensile", fm.chainID, addr}, parts...)...)
 	}
-	link := validatorLink(addr, operator)
-	ops := map[string]string{addr: operator}
+	link := validatorLink(addr, ops[addr])
 	var es []feed.Entry
 
 	// Registrations and host changes, from the chain's own events.

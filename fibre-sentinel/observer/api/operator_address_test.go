@@ -285,3 +285,113 @@ func TestFeedsLinkValidatorsByOperatorAddress(t *testing.T) {
 		t.Fatal("network feed: no host change entry")
 	}
 }
+
+// An operator whose validator was removed and created again under a new
+// consensus key leaves two identities with one operator address, since the
+// table is only ever upserted. The operator address names the newer one:
+// the older consensus key carries none anywhere, so every link to its page
+// keeps the consensus address and still opens that page, not the newer
+// validator's.
+func TestSupersededConsensusKeyKeepsItsHexLink(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	now := time.Now().UTC().Truncate(time.Second)
+	created, msu := now.Add(-2*time.Hour), now.Add(-30*time.Minute)
+	at := msu.Add(-10 * time.Minute)
+	old, cur := selfAddrs["kept"], selfAddrs["broke"]
+	insertReading(t, st, "old1", created, msu, 4, probe.EndReadLabel, at, []endVal{{addr: old, rows: 4, w: ok}})
+	insertReading(t, st, "cur1", created, msu, 4, probe.EndReadLabel, at, []endVal{{addr: cur, rows: 4, w: ok}})
+	op := valoperOf(t, 0xe1)
+	// The old key as the staking set last listed it, then the new one under
+	// the same operator; the old row is never touched again.
+	if _, err := st.UpsertValidatorIdentities([]scan.ValidatorIdentity{{ConsAddressHex: old, OperatorAddress: op, Moniker: "again",
+		Tokens: "1000000", Status: "BOND_STATUS_UNBONDED"}}, now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertValidatorIdentities([]scan.ValidatorIdentity{{ConsAddressHex: cur, OperatorAddress: op, Moniker: "again",
+		Tokens: "1000000", Status: "BOND_STATUS_BONDED"}}, now); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptestServer(t, st)
+	want := map[string]string{old: "", cur: op}
+
+	type named struct {
+		Validator string `json:"validator_address"`
+		Operator  string `json:"operator_address"`
+	}
+	for _, blob := range []string{"old1", "cur1"} {
+		var probes struct {
+			Probes []named `json:"probes"`
+		}
+		if code := get(t, ts, "/v1/probes?blob="+blob, &probes); code != 200 || len(probes.Probes) != 1 {
+			t.Fatalf("probes of %s: %d, %+v", blob, code, probes)
+		}
+		var b struct {
+			Assignments []named `json:"assignments"`
+			Probes      []named `json:"probes"`
+		}
+		if code := get(t, ts, "/v1/blobs/"+blob, &b); code != 200 || len(b.Assignments) != 1 || len(b.Probes) != 1 {
+			t.Fatalf("blob %s: %d, %+v", blob, code, b)
+		}
+		for what, r := range map[string]named{"probes": probes.Probes[0], "assignment": b.Assignments[0], "blob reading": b.Probes[0]} {
+			if r.Operator != want[r.Validator] {
+				t.Errorf("%s of %s: %s has operator_address %q, want %q", what, blob, r.Validator, r.Operator, want[r.Validator])
+			}
+		}
+	}
+
+	var list struct {
+		Validators []struct {
+			Address  string `json:"address"`
+			Operator string `json:"operator_address"`
+		} `json:"validators"`
+	}
+	if code := get(t, ts, "/v1/validators?window=all", &list); code != 200 {
+		t.Fatalf("validators: %d", code)
+	}
+	seen := 0
+	for _, v := range list.Validators {
+		if w, mine := want[v.Address]; mine {
+			seen++
+			if v.Operator != w {
+				t.Errorf("list: %s has operator_address %q, want %q", v.Address, v.Operator, w)
+			}
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("list: %d of the two validators", seen)
+	}
+
+	// the operator address opens the newer validator; the old one's own
+	// page names no operator address
+	var status struct {
+		Address  string `json:"address"`
+		Operator string `json:"operator_address"`
+	}
+	if code := get(t, ts, "/v1/validators/"+op+"/status?window=all", &status); code != 200 || status.Address != cur || status.Operator != op {
+		t.Errorf("status by operator: %d, %+v, want %s", code, status, cur)
+	}
+	status.Address, status.Operator = "", ""
+	if code := get(t, ts, "/v1/validators/"+old+"/status?window=all", &status); code != 200 || status.Address != old || status.Operator != "" {
+		t.Errorf("status of the old key: %d, %+v, want %s and no operator address", code, status, old)
+	}
+
+	// each feed links its own validator's page
+	for addr, page := range map[string]string{old: "/validator/?addr=" + old, cur: "/validator/?addr=" + op} {
+		found := false
+		for _, l := range fetchAtomLinks(t, ts, "/v1/validators/"+addr+"/feed.atom").Links {
+			if l.Rel == "alternate" {
+				found = true
+				if l.Href != page {
+					t.Errorf("feed of %s: its page is %q, want %q", addr, l.Href, page)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("feed of %s: no page link", addr)
+		}
+	}
+}

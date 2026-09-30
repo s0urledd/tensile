@@ -360,7 +360,12 @@ list, page and status, the rows of `/v1/probes`, a blob's `assignments` and
 `probes`, and `/v1/network?exclude=` (`excluded_operator_addresses`, keyed by
 the address in `excluded`). It comes from `validator_identities`, read once
 per answer (`operatorAddrs`), and is absent for a validator the staking set
-this observer read does not name. Every route that takes a validator takes
+this observer read does not name. The table is only ever upserted, so a
+validator removed and created again under the same operator with a new
+consensus key leaves two rows with one operator address; the operator
+address then goes only to the newest row, the one it resolves to, and the
+older consensus key carries none, so its page stays linked by the
+consensus address. Every route that takes a validator takes
 any of its spellings: the consensus address in hex or `celestiavalcons1…`,
 the operator address, or the operator's account address (`resolveAddr`).
 The feeds link each validator's page by its operator address too, falling
