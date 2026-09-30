@@ -64,7 +64,7 @@ export default function CurrentProviders({ rows }: { rows: Validator[] | null })
       </h2>
       <p className="cp-hero">
         <b className={`ov-fig${ready ? "" : " cp-wait"}`}>{ready ? pct!(regPower) : "00.0%"}</b>
-        <span className="cp-help">{ready ? <>of voting power · <b>{int(r!.registered.length)}</b> of {int(r!.bonded.length)} validators</> : " "}</span>
+        <span className="cp-help">{ready ? <>of voting power · <b>{int(r!.registered.length)}</b> of {int(r!.bonded.length)} validators</> : " "}</span>
       </p>
       <div className={`cp-meter${ready ? "" : " wait"}`} style={{ "--q": q } as React.CSSProperties} role="img"
         aria-label={ready ? `${pct!(regPower)} of voting power with a Fibre provider, ${int(r!.registered.length)} of ${int(r!.bonded.length)} validators; ${pct!(quorum)} needed` : "Loading"}>
@@ -82,7 +82,7 @@ export default function CurrentProviders({ rows }: { rows: Validator[] | null })
         </div>
       </div>
       <p className="cp-rest">
-        {ready ? <><i className="cp-sw" aria-hidden="true" />no Fibre provider {pct!(total - regPower)} · {int(offCount)} validator{offCount === 1 ? "" : "s"}</> : " "}
+        {ready ? <><i className="cp-sw" aria-hidden="true" />no Fibre provider {pct!(total - regPower)} · {int(offCount)} validator{offCount === 1 ? "" : "s"}</> : " "}
       </p>
     </div>
   );
