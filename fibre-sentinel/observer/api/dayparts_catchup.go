@@ -200,17 +200,19 @@ func (dp *dayParts) advance(ctx context.Context, s *Server, q store.Querier, now
 		err error
 	)
 	if dp.cur == nil {
-		e, err = dp.build(ctx, s, q)
+		dp.rebuilds++
+		e, err = build(ctx, s, q)
 		j.all = true
 	} else {
 		var dropped int
-		e, j, dropped, err = dp.catchUp(ctx, s, q, now)
+		e, j, dropped, err = catchUpFrom(ctx, s, q, dp.cur, now)
 		dp.dropped += dropped
 		if errors.Is(err, errRegressed) {
 			if dp.log != nil {
 				dp.log("day partials: %v; building them again", err)
 			}
-			e, err = dp.build(ctx, s, q)
+			dp.rebuilds++
+			e, err = build(ctx, s, q)
 			j = journalEntry{all: true}
 		}
 	}
@@ -235,8 +237,7 @@ func (dp *dayParts) advance(ctx context.Context, s *Server, q store.Querier, now
 // where the tables are now, the holds and fingerprints as they are, and an
 // empty ledger the sealer fills (dayparts_seal.go). Nothing is summed yet,
 // so every figure is read raw until the days are sealed.
-func (dp *dayParts) build(ctx context.Context, s *Server, q store.Querier) (*epoch, error) {
-	dp.rebuilds++
+func build(ctx context.Context, s *Server, q store.Querier) (*epoch, error) {
 	e := newEpoch()
 	var err error
 	if e.store, err = readStoreIdentity(ctx, q); err != nil {
@@ -298,10 +299,11 @@ func markKey(k string) (key, col string) {
 	return k, ""
 }
 
-// catchUp is one catch-up: dp.cur, copied, brought to the store as q sees
-// it.
-func (dp *dayParts) catchUp(ctx context.Context, s *Server, q store.Querier, now time.Time) (*epoch, journalEntry, int, error) {
-	c := &catchUp{s: s, q: q, ctx: ctx, e: dp.cur.clone(), now: now}
+// catchUpFrom is one catch-up: base, copied, brought to the store as q
+// sees it. It returns the new epoch, what it dropped and how many sealed
+// days that was.
+func catchUpFrom(ctx context.Context, s *Server, q store.Querier, base *epoch, now time.Time) (*epoch, journalEntry, int, error) {
+	c := &catchUp{s: s, q: q, ctx: ctx, e: base.clone(), now: now}
 	id, err := readStoreIdentity(ctx, q)
 	if err != nil {
 		return nil, c.j, 0, err

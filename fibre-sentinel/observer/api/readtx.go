@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
@@ -38,7 +39,8 @@ func withQuerier(ctx context.Context, q store.Querier) context.Context {
 }
 
 // readTx runs fn in one read transaction: every read fn makes through
-// s.q sees the store as it stood at its first read.
+// s.q sees the store as it stood at its first read. The computation sums
+// the day partials where it can (readTxFor says when it cannot).
 //
 // A transaction holds one of the store's connections for as long as fn
 // runs, and fn still reads the memo and the ledger through the database
@@ -50,16 +52,39 @@ func withQuerier(ctx context.Context, q store.Querier) context.Context {
 // the tests') has no slot to spare and is read without a transaction, as
 // it always was: nothing writes it while a computation of its own runs.
 func (s *Server) readTx(ctx context.Context, fn func(context.Context) error) error {
+	return s.readTxWith(ctx, true, fn)
+}
+
+// readTxFor is readTx for a computation of win: one the partials do not
+// serve (the day's window, partsFor) reads no epoch, so it neither waits
+// for the partials to load nor catches them up.
+func (s *Server) readTxFor(ctx context.Context, win Window, fn func(context.Context) error) error {
+	return s.readTxWith(ctx, partsFor(win), fn)
+}
+
+func (s *Server) readTxWith(ctx context.Context, parts bool, fn func(context.Context) error) error {
 	if _, in := ctx.Value(querierKey{}).(store.Querier); in {
 		return fn(ctx) // already inside one
+	}
+	dp := s.parts
+	if !parts {
+		dp = nil
+	}
+	if dp != nil {
+		// The partials kept on disk are loaded before the first catch-up,
+		// in the background: waiting for them here holds no connection and
+		// no lock, and ends with ctx.
+		if err := dp.ready(ctx, s); err != nil {
+			return err
+		}
 	}
 	if s.txSlots == nil {
 		// No connection to spare for one. The partials are still caught up
 		// first, under their lock, so the computation reads one epoch.
-		if s.parts != nil {
-			s.parts.mu.Lock()
-			ctx = s.parts.enterLocked(ctx, s, s.st.DB())
-			s.parts.mu.Unlock()
+		if dp != nil {
+			dp.mu.Lock()
+			ctx = dp.enterLocked(ctx, s, s.st.DB())
+			dp.mu.Unlock()
 		}
 		return fn(ctx)
 	}
@@ -76,13 +101,13 @@ func (s *Server) readTx(ctx context.Context, fn func(context.Context) error) err
 	// starts from is never newer than the snapshot it reads.
 	var tx *sql.Tx
 	var err error
-	if s.parts != nil {
-		s.parts.mu.Lock()
+	if dp != nil {
+		dp.mu.Lock()
 		tx, err = s.st.DB().BeginTx(ctx, nil)
 		if err == nil {
-			ctx = s.parts.enterLocked(ctx, s, tx)
+			ctx = dp.enterLocked(ctx, s, tx)
 		}
-		s.parts.mu.Unlock()
+		dp.mu.Unlock()
 	} else {
 		tx, err = s.st.DB().BeginTx(ctx, nil)
 	}
@@ -93,13 +118,37 @@ func (s *Server) readTx(ctx context.Context, fn func(context.Context) error) err
 	return fn(withQuerier(ctx, tx))
 }
 
+// readSnapshot runs fn over one read transaction of its own, on a slot
+// like any computation's, with no partials: the load's.
+func (s *Server) readSnapshot(ctx context.Context, fn func(q store.Querier) error) error {
+	if s.txSlots == nil {
+		return fn(s.st.DB())
+	}
+	select {
+	case s.txSlots <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-s.txSlots }()
+	tx, err := s.st.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	return fn(tx)
+}
+
 // enterLocked catches the partials up to the store as q sees it and hands
 // the epoch to the computation under ctx. A catch-up that fails is logged
 // and the computation reads the shipped statements over its whole window,
 // as it did before there were partials; the next computation tries again.
-// The caller holds the lock.
+// So does one that finds the kept partials not loaded, because their load
+// failed. The caller holds the lock.
 func (dp *dayParts) enterLocked(ctx context.Context, s *Server, q store.Querier) context.Context {
-	e, err := dp.advanceLoaded(ctx, s, q, s.now())
+	if dp.cur == nil && !dp.loaded {
+		return ctx
+	}
+	e, err := dp.advance(ctx, s, q, s.now())
 	if err != nil {
 		if dp.log != nil {
 			dp.log("day partials: catching up: %v; reading the whole window", err)
@@ -109,53 +158,141 @@ func (dp *dayParts) enterLocked(ctx context.Context, s *Server, q store.Querier)
 	return withEpoch(ctx, e)
 }
 
-// advanceLoaded is advance, which on its first call begins from the kept
-// partials (dayparts_file.go) when they are there and may be used.
-func (dp *dayParts) advanceLoaded(ctx context.Context, s *Server, q store.Querier, now time.Time) (*epoch, error) {
+// The first catch-up after a start begins from the partials kept on disk
+// (dayparts_file.go) when they may be used: the file is read, caught up to
+// the store and the newest sealed days of it recomputed (verifyLoaded).
+// That is seconds, and minutes on a busy record, so it is not done under
+// the partials' lock, which every computation that sums them takes: it
+// runs in the background, in a read transaction of its own, and the epoch
+// it ends with is installed under the lock at the end. The computations
+// that sum the partials wait for it (ready), holding nothing; the rest do
+// not (readTxFor), nor does a validator's page served from the snapshots.
+// A load that fails, as opposed to one that refuses the file, installs
+// nothing: the next computation starts it again, rather than building the
+// partials from nothing over a file that may well be good.
+
+// loadTimeout bounds the background load.
+const loadTimeout = snapshotTimeoutAll
+
+// ready returns once the kept partials have been loaded, refused or found
+// missing, starting the load if nothing has: or with ctx's error, if ctx
+// ends first. The load is not the caller's: it goes on for the next.
+func (dp *dayParts) ready(ctx context.Context, s *Server) error {
+	dp.mu.Lock()
 	if dp.cur != nil || dp.loaded {
-		return dp.advance(ctx, s, q, now)
+		dp.mu.Unlock()
+		return nil
 	}
-	dp.loaded = true
-	t0 := time.Now()
-	e, why, err := dp.load(ctx, s, q)
-	if err != nil {
-		dp.loaded = false
-		return nil, err
+	done := dp.loading
+	if done == nil {
+		done = make(chan struct{})
+		dp.loading = done
+		go dp.loadKept(s, done)
 	}
-	switch {
-	case e == nil && why == "":
-		dp.origin = "built from the store: no " + dp.file
-	case e == nil:
-		dp.origin = "built from the store: " + dp.file + " refused: " + string(why)
-	default:
-		e.seq = 1
-		dp.cur = e
-		dp.journal = []journalEntry{{seq: 1, all: true}}
-		caught, err := dp.advance(ctx, s, q, now)
-		if err != nil {
-			dp.cur, dp.journal = nil, nil
-			return nil, err
+	dp.mu.Unlock()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// loadKept is the background load: it reads, catches up and checks the
+// kept partials, or builds them from the store when there are none or they
+// are refused, and installs the epoch. On an error it installs nothing.
+func (dp *dayParts) loadKept(s *Server, done chan struct{}) {
+	defer close(done)
+	ctx, cancel := context.WithTimeout(context.Background(), loadTimeout)
+	defer cancel()
+	go func() {
+		select {
+		case <-s.stop:
+			cancel()
+		case <-ctx.Done():
 		}
-		why, err := s.verifyLoaded(ctx, q, caught)
-		if err != nil {
-			dp.cur, dp.journal = nil, nil
-			return nil, err
+	}()
+	t0 := time.Now()
+	var (
+		e       *epoch
+		kept    keptSeals
+		origin  string
+		loaded  bool
+		dropped int
+		rebuilt bool
+	)
+	err := s.readSnapshot(ctx, func(q store.Querier) error {
+		var why refusal
+		var err error
+		var f *epoch
+		if f, kept, why, err = dp.load(ctx, s, q); err != nil {
+			return err
+		}
+		if f != nil {
+			var caught *epoch
+			caught, _, dropped, err = catchUpFrom(ctx, s, q, f, s.now())
+			switch {
+			case errors.Is(err, errRegressed):
+				why = refusal(err.Error())
+			case err != nil:
+				return err
+			default:
+				if dp.failLoad != nil {
+					if err := dp.failLoad(); err != nil {
+						return err
+					}
+				}
+				if why, err = s.verifyLoaded(ctx, q, caught); err != nil {
+					return err
+				}
+				if why == "" {
+					e, loaded = caught, true
+					origin = "loaded from " + dp.file
+					return nil
+				}
+			}
 		}
 		if why == "" {
-			dp.origin = "loaded from " + dp.file
-			dp.saved = caught.seq
-			if dp.log != nil {
-				dp.log("day partials: %s (%s)", dp.origin, time.Since(t0).Round(time.Millisecond))
-			}
-			return caught, nil
+			origin = "built from the store: no " + dp.file
+		} else {
+			origin = "built from the store: " + dp.file + " refused: " + string(why)
 		}
-		dp.origin = "built from the store: " + dp.file + " refused: " + string(why)
-		dp.cur, dp.journal = nil, nil
+		kept = keptSeals{}
+		rebuilt = true
+		e, err = build(ctx, s, q)
+		return err
+	})
+	dp.mu.Lock()
+	defer dp.mu.Unlock()
+	dp.loading = nil
+	if err != nil {
+		if dp.log != nil {
+			dp.log("day partials: loading %s: %v; the next computation tries again, and reads the whole window meanwhile", dp.file, err)
+		}
+		return
 	}
-	if dp.log != nil && dp.file != "" {
-		dp.log("day partials: %s", dp.origin)
+	dp.loaded, dp.origin = true, origin
+	if dp.cur != nil {
+		return // cannot happen: nothing catches up before the load ends
 	}
-	return dp.advance(ctx, s, q, now)
+	e.seq = 1
+	dp.cur, dp.journal = e, []journalEntry{{seq: 1, all: true}}
+	dp.dropped += dropped
+	if rebuilt {
+		dp.rebuilds++
+	}
+	if loaded {
+		dp.sealFiles, dp.saved = kept.files, e.seq
+		if dp.gens == nil {
+			dp.gens = map[string]int{}
+		}
+		for k, g := range kept.gens {
+			dp.gens[k] = max(dp.gens[k], g)
+		}
+	}
+	if dp.log != nil && (loaded || dp.file != "") {
+		dp.log("day partials: %s (%s)", origin, time.Since(t0).Round(time.Millisecond))
+	}
 }
 
 // maxReadTx bounds the transactions open at once over a pool with no limit

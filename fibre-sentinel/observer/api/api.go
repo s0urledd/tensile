@@ -1614,7 +1614,7 @@ func (s *Server) logf() logf {
 // of the chain it rests on, read in one transaction (readTx).
 func (s *Server) networkSnapshot(ctx context.Context, win Window, ex excludeSet, excluded []string) (*networkResponse, error) {
 	var resp *networkResponse
-	err := s.readTx(ctx, func(ctx context.Context) error {
+	err := s.readTxFor(ctx, win, func(ctx context.Context) error {
 		r, err := s.computeNetwork(ctx, win, ex, excluded)
 		if err != nil {
 			return err
@@ -1630,7 +1630,7 @@ func (s *Server) networkSnapshot(ctx context.Context, win Window, ex excludeSet,
 // chain it rests on, read in one transaction (readTx).
 func (s *Server) validatorsSnapshot(ctx context.Context, win Window) (validatorSnapshot, error) {
 	var snap validatorSnapshot
-	err := s.readTx(ctx, func(ctx context.Context) error {
+	err := s.readTxFor(ctx, win, func(ctx context.Context) error {
 		rows, err := s.validatorRows(ctx, win, "")
 		if err != nil {
 			return err

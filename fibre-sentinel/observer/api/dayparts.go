@@ -461,13 +461,18 @@ type dayParts struct {
 	// file is where the partials are kept (dayparts_file.go); "" for
 	// nowhere.
 	file string
-	// persisted state (dayparts_file.go), guarded by mu.
+	// persisted state (dayparts_file.go), guarded by mu. loaded is set once
+	// the kept partials were loaded, refused or found missing, and loading
+	// while that runs (readtx.go).
 	saved     uint64
 	savedAt   time.Time
 	loaded    bool
+	loading   chan struct{}
 	origin    string
 	writing   chan struct{}
 	sealFiles map[string]string
+	// failLoad, when set, fails the load before its check, for tests.
+	failLoad func() error
 	// sealing is held while the sealer runs, so one seals at a time.
 	sealing sync.Mutex
 	// retry holds the days the sealer could not seal and when to try them

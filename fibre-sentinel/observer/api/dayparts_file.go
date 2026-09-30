@@ -291,26 +291,35 @@ func (dp *dayParts) save(ctx context.Context, s *Server) error {
 	return nil
 }
 
+// keptSeals are the seal files a loaded epoch names, by name with their
+// digests, and the newest generation of each day in them.
+type keptSeals struct {
+	files map[string]string
+	gens  map[string]int
+}
+
 // load reads the kept partials, or refuses them: an epoch that may be
-// caught up from, or nil and why not.
-func (dp *dayParts) load(ctx context.Context, s *Server, q store.Querier) (*epoch, refusal, error) {
+// caught up from and the seal files it names, or nil and why not. It
+// changes nothing of dp.
+func (dp *dayParts) load(ctx context.Context, s *Server, q store.Querier) (*epoch, keptSeals, refusal, error) {
+	kept := keptSeals{files: map[string]string{}, gens: map[string]int{}}
 	if dp.file == "" {
-		return nil, "", nil
+		return nil, kept, "", nil
 	}
 	var f partsFile
 	ok, why := readDerived(dp.file, &f)
 	if !ok {
-		return nil, why, nil
+		return nil, kept, why, nil
 	}
 	def, err := partsDefinition(ctx, q)
 	if err != nil {
-		return nil, "", err
+		return nil, kept, "", err
 	}
 	if why, err := checkHeader(ctx, q, f.derivedHeader, "day-partials", def); why != "" || err != nil {
-		return nil, why, err
+		return nil, kept, why, err
 	}
 	if f.Vantage != s.vantage {
-		return nil, refusal(fmt.Sprintf("computed for vantage %q, not %q", f.Vantage, s.vantage)), nil
+		return nil, kept, refusal(fmt.Sprintf("computed for vantage %q, not %q", f.Vantage, s.vantage)), nil
 	}
 	e := newEpoch()
 	e.store = f.Store
@@ -328,7 +337,7 @@ func (dp *dayParts) load(ctx context.Context, s *Server, q store.Querier) (*epoc
 	for k, h := range f.Held {
 		id, err := strconv.ParseInt(k, 10, 64)
 		if err != nil {
-			return nil, refusal("a held row keyed " + strconv.Quote(k)), nil
+			return nil, kept, refusal("a held row keyed " + strconv.Quote(k)), nil
 		}
 		e.held[id] = h
 	}
@@ -358,7 +367,6 @@ func (dp *dayParts) load(ctx context.Context, s *Server, q store.Querier) (*epoc
 		e.anchors[d] = a
 	}
 	dir := filepath.Join(filepath.Dir(dp.file), dayPartsDir)
-	files := map[string]string{}
 	for key, ref := range f.Seals {
 		var sf sealFile
 		ok, why := readDerived(filepath.Join(dir, ref.File), &sf)
@@ -366,14 +374,14 @@ func (dp *dayParts) load(ctx context.Context, s *Server, q store.Querier) (*epoc
 			if why == "" {
 				why = "missing"
 			}
-			return nil, refusal(ref.File + ": " + string(why)), nil
+			return nil, kept, refusal(ref.File + ": " + string(why)), nil
 		}
 		b, err := os.ReadFile(filepath.Join(dir, ref.File))
 		if err != nil || string(b[len(digestOpen):len(digestOpen)+64]) != ref.Digest {
-			return nil, refusal(ref.File + " is not the file the index names"), nil
+			return nil, kept, refusal(ref.File + " is not the file the index names"), nil
 		}
 		if sf.Kind != "day-partial-row" && sf.Kind != "day-partial-settle" || sf.Definition != def || sf.Store != f.Store {
-			return nil, refusal(ref.File + " is of another kind, definition or store"), nil
+			return nil, kept, refusal(ref.File + " is of another kind, definition or store"), nil
 		}
 		kind, day, _ := strings.Cut(key, ":")
 		switch {
@@ -382,22 +390,18 @@ func (dp *dayParts) load(ctx context.Context, s *Server, q store.Querier) (*epoc
 		case kind == "settle" && sf.Settle != nil && e.settle[day] != nil:
 			e.settle[day].Seal = sf.Settle
 		default:
-			return nil, refusal(ref.File + " does not hold " + key), nil
+			return nil, kept, refusal(ref.File + " does not hold " + key), nil
 		}
-		files[ref.File] = ref.Digest
-		if dp.gens == nil {
-			dp.gens = map[string]int{}
-		}
+		kept.files[ref.File] = ref.Digest
 		gen := 0
 		if sf.Row != nil {
 			gen = sf.Row.Gen
 		} else {
 			gen = sf.Settle.Gen
 		}
-		if gen > dp.gens[key] {
-			dp.gens[key] = gen
+		if gen > kept.gens[key] {
+			kept.gens[key] = gen
 		}
 	}
-	dp.sealFiles = files
-	return e, "", nil
+	return e, kept, "", nil
 }
