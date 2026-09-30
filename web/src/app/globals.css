@@ -431,6 +431,10 @@ tr.warn .col-pin { background: color-mix(in srgb, var(--paper) 93%, var(--hold))
 .facts dd.addr { display: flex; align-items: baseline; min-width: 0; }
 .facts dd.addr .mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .facts dd.addr .copy { flex: none; }
+/* shortened in the middle: the head is cut first, the tail stays */
+.facts dd.addr .mid { display: flex; }
+.facts dd.addr .mid > :first-child { min-width: 0; overflow: hidden; }
+.facts dd.addr .mid > :last-child { flex: none; }
 .copy { font: 500 11px/1.4 var(--sans); color: var(--text-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; margin-left: 6px; vertical-align: 1px; background: var(--wash); cursor: pointer; }
 .copy:hover { color: var(--text); }
 .periods { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: var(--t-cell); }

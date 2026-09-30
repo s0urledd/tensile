@@ -56,6 +56,16 @@ function shortDate(ts: string): string {
 }
 
 /**
+ * An address shortened in the middle, as shortMid(s, 18, 6) prints it, in two
+ * parts: in a narrow card the head gives way first, so the tail that tells
+ * two addresses apart stays in view.
+ */
+function MidAddr({ s }: { s: string }) {
+  if (s.length <= 18 + 6 + 1) return <span className="mono">{s}</span>;
+  return <span className="mono mid"><span>{s.slice(0, 18)}</span><span>…{s.slice(-6)}</span></span>;
+}
+
+/**
  * The website a validator put in its staking description, as a link we are
  * willing to render: anyone can write anything there, so only http(s) URLs
  * pass, and a bare domain ("example.io") gets https:// in front.
@@ -204,8 +214,8 @@ function Page() {
         {v.host && v.hosting && <div><dt>Hosting</dt><dd><HostingFact h={v.hosting} /></dd></div>}
         {/* One fact: the operator address, and the consensus address under it as the second. Each is an .addr line, so a narrow card shortens the address and never hides its copy button. */}
         <div><dt>{v.operator_address ? "Operator address" : "Consensus address"}</dt>
-          {v.operator_address && <dd className="addr" title={v.operator_address}><span className="mono">{shortMid(v.operator_address, 18, 6)}</span><Copy text={v.operator_address} label="operator address" /></dd>}
-          <dd className={v.operator_address ? "addr second" : "addr"} title={[v.cons_address && `consensus ${v.cons_address}`, `hex ${v.address}`].filter(Boolean).join(" · ")}><span className="mono">{shortMid(cons, 18, 6)}</span><Copy text={cons} label="consensus address" /></dd>
+          {v.operator_address && <dd className="addr" title={v.operator_address}><MidAddr s={v.operator_address} /><Copy text={v.operator_address} label="operator address" /></dd>}
+          <dd className={v.operator_address ? "addr second" : "addr"} title={[v.cons_address && `consensus ${v.cons_address}`, `hex ${v.address}`].filter(Boolean).join(" · ")}><MidAddr s={cons} /><Copy text={cons} label="consensus address" /></dd>
         </div>
         <div><dt>Links</dt><dd>
           {site && <><a href={site} rel="nofollow noopener noreferrer" target="_blank">{site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</a><span className="soft"> · </span></>}
