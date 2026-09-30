@@ -215,14 +215,17 @@ func TestAnswersNameValidatorsByOperatorAddress(t *testing.T) {
 	}
 }
 
-// atomLinks is a feed as far as its links: the feed's own, and each entry's.
+// atomLinks is a feed as far as its links and titles: the feed's own, and
+// each entry's.
 type atomLinks struct {
+	Title string `xml:"title"`
 	Links []struct {
 		Rel  string `xml:"rel,attr"`
 		Href string `xml:"href,attr"`
 	} `xml:"link"`
 	Entries []struct {
 		ID       string `xml:"id"`
+		Title    string `xml:"title"`
 		Category struct {
 			Term string `xml:"term,attr"`
 		} `xml:"category"`
@@ -438,5 +441,64 @@ func TestSupersededConsensusKeyKeepsItsHexLink(t *testing.T) {
 		if !found {
 			t.Errorf("feed of %s: no page link", addr)
 		}
+	}
+}
+
+// A validator with no moniker is named in the feeds' titles by its operator
+// address, shortened as the site shows it, so a feed reader and a site
+// reader see one name; one with neither keeps its hex prefix. The entries'
+// IDs do not move.
+func TestFeedsNameAValidatorWithoutMonikerByOperatorAddress(t *testing.T) {
+	f := newHostingFixture(t)
+	before := httptest.NewServer(api.New(f.st, "test"))
+	defer before.Close()
+	was := fetchAtomLinks(t, before, "/v1/validators/"+f.addrs[1]+"/feed.atom")
+
+	// Beta loses its moniker and gains an operator address; Gamma has neither.
+	op := valoperOf(t, 0xb1)
+	ids := []scan.ValidatorIdentity{
+		{ConsAddressHex: f.addrs[1], OperatorAddress: op, Tokens: "20000000", Status: "BOND_STATUS_BONDED"},
+		{ConsAddressHex: f.addrs[2], Tokens: "30000000", Status: "BOND_STATUS_BONDED"},
+	}
+	if _, err := f.st.UpsertValidatorIdentities(ids, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(api.New(f.st, "test"))
+	defer ts.Close()
+
+	short := op[:18] + "…" + op[len(op)-4:] // the site's shortMid(op, 18, 4)
+	d := fetchAtomLinks(t, ts, "/v1/validators/"+f.addrs[1]+"/feed.atom")
+	if !strings.Contains(d.Title, " · "+short+" · ") {
+		t.Errorf("Beta's feed is titled %q, want it named %s", d.Title, short)
+	}
+	if len(d.Entries) == 0 || len(d.Entries) != len(was.Entries) {
+		t.Fatalf("Beta: %d entries, were %d", len(d.Entries), len(was.Entries))
+	}
+	for i, e := range d.Entries {
+		if !strings.HasPrefix(e.Title, short+": ") {
+			t.Errorf("Beta: %s is titled %q, want it named %s", e.Category.Term, e.Title, short)
+		}
+		if e.ID != was.Entries[i].ID {
+			t.Errorf("Beta: entry %d has id %s, was %s", i, e.ID, was.Entries[i].ID)
+		}
+	}
+
+	hexName := f.addrs[2][:12] + "…"
+	if g := fetchAtomLinks(t, ts, "/v1/validators/"+f.addrs[2]+"/feed.atom"); !strings.Contains(g.Title, " · "+hexName+" · ") {
+		t.Errorf("Gamma's feed is titled %q, want it named %s", g.Title, hexName)
+	}
+
+	// the network feed names Beta's host change the same way
+	found := false
+	for _, e := range fetchAtomLinks(t, ts, "/v1/feed.atom").Entries {
+		if e.Category.Term == "host-changed" {
+			found = true
+			if !strings.HasPrefix(e.Title, short+": ") {
+				t.Errorf("network feed: host change titled %q, want it named %s", e.Title, short)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("network feed: no host change entry")
 	}
 }

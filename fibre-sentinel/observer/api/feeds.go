@@ -345,6 +345,22 @@ func validatorLink(hexAddr, operator string) string {
 	return "/validator/?addr=" + hexAddr
 }
 
+// feedName is how a feed's titles name a validator: its moniker, else its
+// operator address shortened as the site shows it (shortMid, 18 and 4), so
+// a feed reader and a site reader see one name for it, else a prefix of
+// the consensus address. Only titles: an entry's ID never carries a name.
+func feedName(moniker, hexAddr, operator string) string {
+	switch {
+	case moniker != "":
+		return moniker
+	case len(operator) > 18+4+1:
+		return operator[:18] + "…" + operator[len(operator)-4:]
+	case operator != "":
+		return operator
+	}
+	return hexAddr[:12] + "…"
+}
+
 // validatorFeed builds one validator's feed. status is 404 when nothing
 // about the address is on record at all.
 func (s *Server) validatorFeed(ctx context.Context, addr, authority string, now time.Time) (*feed.Feed, int, error) {
@@ -375,10 +391,7 @@ func (s *Server) validatorFeed(ctx context.Context, addr, authority string, now 
 	if err != nil {
 		return nil, 0, err
 	}
-	name := moniker
-	if name == "" {
-		name = addr[:12] + "…"
-	}
+	name := feedName(moniker, addr, ops[addr])
 	id := func(parts ...string) string {
 		return feed.TagID(authority, feedTagDate, append([]string{"tensile", fm.chainID, addr}, parts...)...)
 	}
@@ -543,10 +556,7 @@ func (s *Server) registrationEntries(ctx context.Context, only string, fm feedMe
 		if source != "event" || (had && before == host) {
 			continue
 		}
-		name := names[addr]
-		if name == "" {
-			name = addr[:12] + "…"
-		}
+		name := feedName(names[addr], addr, ops[addr])
 		e := feed.Entry{At: parseTS(at), Link: validatorLink(addr, ops[addr]),
 			ID: feed.TagID(authority, feedTagDate, "tensile", fm.chainID, addr, "registration", fmt.Sprintf("%d-%d", h, tx))}
 		if !had || before == "" {
@@ -627,10 +637,7 @@ func (s *Server) bondedListEntries(ctx context.Context, bech, hexAddr, name stri
 		}
 		nm := name
 		if bech == "" {
-			nm = names[addr]
-			if nm == "" {
-				nm = addr[:12] + "…"
-			}
+			nm = feedName(names[addr], addr, ops[addr])
 		}
 		base := []string{"tensile", fm.chainID, addr}
 		atStart := e.first == fm.firstPoll
@@ -791,10 +798,7 @@ func (s *Server) networkFeed(ctx context.Context, authority string, now time.Tim
 		if store.TS(fe.At) < cut {
 			continue
 		}
-		nm := names[a]
-		if nm == "" {
-			nm = a[:12] + "…"
-		}
+		nm := feedName(names[a], a, ops[a])
 		fe.ID = feed.TagID(authority, feedTagDate, "tensile", fm.chainID, a, "first-fault")
 		fe.Link, fe.Title = "/blob/?hash="+fe.Link, nm+": "+fe.Title
 		es = append(es, fe)

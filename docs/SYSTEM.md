@@ -369,8 +369,10 @@ consensus address. Every route that takes a validator takes
 any of its spellings: the consensus address in hex or `celestiavalcons1…`,
 the operator address, or the operator's account address (`resolveAddr`).
 The feeds link each validator's page by its operator address too, falling
-back to the consensus address; an entry's ID keeps the consensus address it
-was minted with, so a feed reader never sees an entry twice.
+back to the consensus address, and a validator with no moniker is named in
+their titles by its shortened operator address, as the site names it
+(`feedName`); an entry's ID keeps the consensus address it was minted
+with, so a feed reader never sees an entry twice.
 
 The public documentation is the site's API page (`web/src/app/developers`):
 the questions each kind of reader asks, the call and the fields that answer
