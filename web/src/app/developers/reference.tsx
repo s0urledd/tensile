@@ -107,7 +107,8 @@ function Code({ text, format, label }: { text: string; format?: Endpoint["format
 
 function TypeCell({ p }: { p: Param }) {
   const bits: ReactNode[] = [];
-  if (p.values) bits.push(<span key="v">one of {p.values.map((v, i) => <Fragment key={v}>{i > 0 && " "}<code>{v}</code></Fragment>)}</span>);
+  if (p.values?.length === 1) bits.push(<code key="v">{p.values[0]}</code>);
+  else if (p.values) bits.push(<span key="v">one of {p.values.map((v, i) => <Fragment key={v}>{i > 0 && " "}<code>{v}</code></Fragment>)}</span>);
   else bits.push(<span key="t">{p.type}</span>);
   if (p.range) bits.push(<span key="r">{p.range}</span>);
   if (p.default !== undefined) bits.push(<span key="d">default <code>{p.default}</code></span>);
