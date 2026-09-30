@@ -186,9 +186,10 @@ var dayTiesSQL = `SELECT COUNT(*) FROM (
 		GROUP BY 1, 2, 3, 4, 5 HAVING COUNT(*) > 1)`
 
 // dayCollapsibleSQL is the promises with a row on a day that a collapse
-// would make a decision of, sought through probes_sampled_out (whose WHERE
-// this repeats).
-const dayCollapsibleSQL = `SELECT DISTINCT promise_hash FROM probes
+// would make a decision of, read from probes_sampled_out, which holds only
+// the rows still to collapse (none, once a store is migrated): left to
+// itself the planner walks every NOT_PROBED row instead.
+const dayCollapsibleSQL = `SELECT DISTINCT promise_hash FROM probes INDEXED BY probes_sampled_out
 	WHERE ` + store.SampledOutReasonSQL + ` AND +started_at >= ? AND +started_at <= ?`
 
 // The anchors of a row day: one row of each table started on it, and the

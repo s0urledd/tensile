@@ -143,6 +143,11 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 	)
 	scans["not yet read"] = []string{"publications"}
 	scans["not yet read, pinned"] = []string{"publications"}
+	// The day partials' statements (dayparts_plans_test.go).
+	for _, p := range dayPartsPlans() {
+		cases = append(cases, c{p.name, p.q, p.args, p.want})
+		scans[p.name] = p.scans
+	}
 	for _, tc := range cases {
 		plan, err := st.QueryPlan(ctx, tc.q, tc.args...)
 		if err != nil {
@@ -151,7 +156,7 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 		joined := strings.Join(plan, "\n")
 		// probe_rows is the co-routine a UNION ALL view runs as: its arms are
 		// the plan steps above it, and those are what must not walk a table.
-		if bad := store.FullScans(plan, append([]string{"v", "m", "w", "vp", "vr", "probe_rows"}, scans[tc.name]...), apiPartial); len(bad) > 0 {
+		if bad := store.FullScans(plan, append([]string{"v", "m", "w", "vp", "vr", "probe_rows"}, scans[tc.name]...), append(append([]string{}, apiPartial...), dayPartsPartial...)); len(bad) > 0 {
 			t.Errorf("%s walks a whole table or index: %v\nplan:\n%s", tc.name, bad, joined)
 		}
 		for _, w := range tc.want {
