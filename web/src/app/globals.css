@@ -1363,13 +1363,16 @@ body { background: var(--canvas); }
 /* the readout's links sit at the row's foot, level with the availability card beside them */
 .rb-read { display: flex; flex-direction: column; }
 .rb-read .ov-links { margin-top: auto; padding-top: 14px; }
-.rb-obs { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 16px; padding: 10px 12px; border-radius: var(--r-card); background: var(--obs-bg); box-shadow: var(--obs-edge); }
-.rb-obs .obs-tag { height: 24px; }
-.rb-obs p { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin: 0; font-size: var(--t-small); color: var(--text-3); }
-.rb-obs-l { color: var(--text-2); }
-.rb-obs-h { flex-basis: 100%; }
-.rb-obs b { font-size: 14px; font-weight: 600; color: var(--text); }
-.rb-obs b.absent { color: var(--text-3); }
+/* Tensile's own reading under the chain's figures: one quiet line under a hairline, "Observed by Tensile" as its prefix */
+.ob-row { display: flex; flex-wrap: wrap; align-items: baseline; margin: 0; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12px; line-height: 18px; color: var(--text-3); }
+.ob-row > span { white-space: nowrap; }
+.ob-fig::before { content: "·"; margin: 0 7px; color: var(--text-3); }
+.ob-pre { display: inline-flex; align-items: center; gap: 5px; align-self: center; }
+.ob-pre svg { flex: none; color: var(--accent-ink); }
+.ob-fig b { margin-left: 2px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
+.ob-fig b.absent { color: var(--text-3); }
+/* the count under the figure, on its own line, never after a separator */
+.ob-h { flex-basis: 100%; font-variant-numeric: tabular-nums; }
 
 /* ---- the rolling figure (RollNumber): changed digits slide, the rest stay ---- */
 .rn { display: inline-flex; white-space: nowrap; font-variant-numeric: tabular-nums lining-nums; }

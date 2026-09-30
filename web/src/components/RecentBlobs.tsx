@@ -192,24 +192,24 @@ export type Observed = { rec: Rate | null | undefined; examinedAll: boolean };
 
 /**
  * Tensile's own figure beside the chain's: the Blob availability share (CIP-51's
- * term) over the blobs whose reading decides them, marked as observed and set
- * quieter than the chain's figures. It keeps its place while it loads.
+ * term) over the blobs whose reading decides them. One quiet line under a
+ * hairline, prefixed "Observed by Tensile", set smaller than the chain's
+ * figures. It keeps its place while it loads.
  */
 export function Availability({ observed }: { observed: Observed }) {
   const rec = observed.rec;
   return (
     <div className="ob">
-      <aside className="rb-obs" aria-label="Observed by Tensile" aria-busy={!rec || undefined}
+      <p className="ob-row" aria-busy={!rec || undefined}
         title="Observed by Tensile: blobs whose rows were enough to reconstruct them, over the blobs read (available plus unavailable): the newest ones with a reading, up to the API's sample limit.">
-        <span className="obs-tag"><Eye />Observed by Tensile</span>
-        <p>
-          <span className="rb-obs-l">Blob availability</span>
-          {rec
-            ? <><b className={`num${rec.den > 0 ? "" : " absent"}`}>{pctOf(rec.num, rec.den)}</b>
-              <span className="rb-obs-h">{rec.den > 0 ? `${int(rec.num)} of ${observed.examinedAll ? "" : "the newest "}${int(rec.den)} blobs read` : "none read"}</span></>
-            : <><b className="wait">000%</b><span className="rb-obs-h wait">0,000 of 0,000 blobs read</span></>}
-        </p>
-      </aside>
+        <span className="ob-pre"><Eye />Observed by Tensile</span>
+        <span className="ob-fig">Blob availability {rec
+          ? <b className={rec.den > 0 ? undefined : "absent"}>{pctOf(rec.num, rec.den)}</b>
+          : <b className="wait">000%</b>}</span>
+        {rec
+          ? <span className="ob-h">{rec.den > 0 ? `${int(rec.num)} of ${observed.examinedAll ? "" : "the newest "}${int(rec.den)} blobs read` : "none read"}</span>
+          : <span className="ob-h"><span className="wait">0,000 of 0,000 blobs read</span></span>}
+      </p>
     </div>
   );
 }
