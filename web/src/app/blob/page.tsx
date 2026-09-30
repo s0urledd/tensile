@@ -6,9 +6,12 @@ import { useApi, type Blob, type BlobReading, type Meta, int, bytes, tia, utcWor
 import StatusLine from "@/components/StatusLine";
 import { Metric, Metrics } from "@/components/Metrics";
 import Copy from "@/components/Copy";
+import { validatorHref } from "@/lib/addr";
 
 type Assignment = {
   validator_address: string; moniker?: string; voting_power: number; row_count: number; attested: boolean | null; host_at_settlement: string | null;
+  /** celestiavaloper1… from the staking set; absent when the chain names no validator at this consensus address */
+  operator_address?: string;
   /** this validator's obligation on the blob, by the rule its counts use; absent when it counts neither way */
   service?: "served" | "not_served" | "in_retention_window" | "deadline_unverified";
   provisional?: boolean;
@@ -199,9 +202,10 @@ function Page() {
                   : p.classification === "PROBE_ERROR" ? "Tensile's request failed on its own side: counted neither way."
                   : rc?.status === "yes" ? "Counted neither way: the blob was available all the same." : "Counted neither way.";
                 const detail = p ? `${p.schedule_label === "end" ? "end reading" : `reading ${p.schedule_label}`} · ${utcWord(p.started_at)} · ${int(p.rows_returned)} / ${int(p.rows_expected)} rows · ${int(p.total_duration_ms)} ms${p.raw_error ? ` · ${p.raw_error}` : ""}` : "";
+                const page = validatorHref(a.operator_address, a.validator_address);
                 return (
                   <tr key={a.validator_address} className={a.service === "not_served" ? "fault-row" : undefined}>
-                    <td className="id col-pin"><Link className="mon" href={`/validator/?addr=${a.validator_address}`}>{a.moniker || shortMid(a.validator_address, 12, 4)}</Link></td>
+                    <td className="id col-pin"><Link className="mon" href={page}>{a.moniker || (a.operator_address ? shortMid(a.operator_address, 18, 4) : shortMid(a.validator_address, 12, 4))}</Link></td>
                     <td className="num">{int(a.voting_power)}</td>
                     <td className="num">{int(a.row_count)}</td>
                     <td title={a.attested === true ? "Signature verified against the consensus key." : a.attested === false ? "No verified signature on the settlement: nothing owed. A settlement needs ⅔ of the voting power." : "Recorded before signatures were verified."}>{a.attested === true ? "yes" : a.attested === false ? <span className="soft">no</span> : "—"}</td>
@@ -209,7 +213,7 @@ function Page() {
                       {sv ? <><span className={"mk " + sv[0]} /> <span className={"word" + (sv[0] === "fault" ? " fault" : "")}>{word}</span></> : <span className="soft">{lent ? "served" : "—"}</span>}
                     </td>
                     <td className="mono soft">{a.host_at_settlement ? a.host_at_settlement : a.host_at_settlement === "" ? <span title="no endpoint registered when the promise settled">—</span> : <span className="sans" title="the registry could not be read at that height">not read</span>}</td>
-                    <td className="go"><Link href={`/validator/?addr=${a.validator_address}`} aria-label={`open ${a.moniker || a.validator_address}`}>→</Link></td>
+                    <td className="go"><Link href={page} aria-label={`open ${a.moniker || a.operator_address || a.validator_address}`}>→</Link></td>
                   </tr>
                 );
               })}

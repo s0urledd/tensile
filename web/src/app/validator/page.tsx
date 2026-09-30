@@ -13,6 +13,7 @@ import { HostingFact } from "@/components/Hosting";
 import { SELF_VALIDATOR } from "@/lib/site";
 import PreLive from "@/components/PreLive";
 import Diagnosis from "@/components/Diagnosis";
+import { pageAddr } from "@/lib/addr";
 
 type Span = { window: Window; obligations: Obligations; provisional_faults?: ProvisionalFaults };
 type Detail = {
@@ -152,6 +153,11 @@ function Page() {
   const bonded = !v.jailed && (!v.bond_status || v.bond_status === "BOND_STATUS_BONDED");
   const rw = v.reachability_window;
   const self = !!SELF_VALIDATOR && [v.address, v.cons_address, v.operator_address].some((a) => !!a && a.toLowerCase() === SELF_VALIDATOR);
+  // The address the page names the validator by, and its API links carry: the
+  // operator address when the staking set names one, with the consensus
+  // address under it in the same fact.
+  const own = pageAddr(v.operator_address, v.address);
+  const cons = v.cons_address || v.address;
   // Readings inside the retention window: the earlier schedule's checks after
   // the deadline count in nothing and stay in the full history.
   const probes = data.recent_probes.filter((p) => p.phase === "in_window").sort((a, b) => b.started_at.localeCompare(a.started_at));
@@ -164,7 +170,7 @@ function Page() {
   const lastServed = grouped.find((r) => r.g === "served")?.p;
   // Every not-served row of the period, for when they are older than the
   // newest rows this page carries: served=no is the obligations' own rule.
-  const notServedHref = `${API_BASE}/v1/probes?validator=${v.address}&served=no${data.window.start ? `&since=${encodeURIComponent(data.window.start)}` : ""}&limit=1000`;
+  const notServedHref = `${API_BASE}/v1/probes?validator=${own}&served=no${data.window.start ? `&since=${encodeURIComponent(data.window.start)}` : ""}&limit=1000`;
   const measuring = !!o && o.total > 0 && decided < MIN_RATED && o.pending > 0;
   const att = v.attestation;
   const sig = v.signing;
@@ -181,8 +187,8 @@ function Page() {
     <>
       <div className="head">
         <div>
-          <p className="crumb"><Link href={win === "24h" ? "/" : `/?window=${win}`}>Validators</Link> › {v.moniker || shortMid(v.cons_address || v.address, 18, 4)}</p>
-          <h1><Avatar v={v} />{v.moniker || <span className="mono">{shortMid(v.cons_address || v.address, 22, 6)}</span>}{self && <span className="ours" title="Huginn Tech runs both this validator and Tensile. It is measured by the same code as every other validator, never filtered or adjusted.">runs Tensile</span>}</h1>
+          <p className="crumb"><Link href={win === "24h" ? "/" : `/?window=${win}`}>Validators</Link> › {v.moniker || shortMid(v.operator_address || cons, 18, 4)}</p>
+          <h1><Avatar v={v} />{v.moniker || <span className="mono">{shortMid(v.operator_address || cons, 22, 6)}</span>}{self && <span className="ours" title="Huginn Tech runs both this validator and Tensile. It is measured by the same code as every other validator, never filtered or adjusted.">runs Tensile</span>}</h1>
           <div className="chips">
             <span className="state" title={e.title}><i className={"dot " + e.dot} />{e.word}</span>
             {v.host && <span title={v.identity_reason || "The consensus-key check on the newest handshake."}>TLS identity <b className="word">{identityWord[v.identity_status] ?? v.identity_status}</b></span>}
@@ -196,10 +202,14 @@ function Page() {
           ? <div><dt>Endpoint</dt><dd><span className="mono">{v.host}</span>{v.endpoint_since && <span className="soft"> · since {shortDate(v.endpoint_since)}</span>}</dd></div>
           : v.last_host && <div title="The registration stays on chain; the validator left the bonded provider list."><dt>Last endpoint</dt><dd><span className="mono">{v.last_host}</span>{v.endpoint_closed_at && <span className="soft"> · left {dateUTC(v.endpoint_closed_at)}</span>}</dd></div>}
         {v.host && v.hosting && <div><dt>Hosting</dt><dd><HostingFact h={v.hosting} /></dd></div>}
-        {v.operator_address && <div><dt>Operator address</dt><dd title={[v.operator_address, v.cons_address && `consensus ${v.cons_address}`, `hex ${v.address}`].filter(Boolean).join(" · ")}><span className="mono">{shortMid(v.operator_address, 18, 6)}</span><Copy text={v.operator_address} label="operator address" /></dd></div>}
+        {/* One fact, so it keeps the width the operator address and its copy button need: the operator address, and the consensus address under it as the second. */}
+        <div><dt>{v.operator_address ? "Operator address" : "Consensus address"}</dt>
+          {v.operator_address && <dd title={v.operator_address}><span className="mono">{shortMid(v.operator_address, 18, 6)}</span><Copy text={v.operator_address} label="operator address" /></dd>}
+          <dd className={v.operator_address ? "second" : undefined} title={[v.cons_address && `consensus ${v.cons_address}`, `hex ${v.address}`].filter(Boolean).join(" · ")}><span className="mono">{shortMid(cons, 18, 6)}</span><Copy text={cons} label="consensus address" /></dd>
+        </div>
         <div><dt>Links</dt><dd>
           {site && <><a href={site} rel="nofollow noopener noreferrer" target="_blank">{site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</a><span className="soft"> · </span></>}
-          <a href={`${API_BASE}/v1/validators/${v.address}/feed.atom`} type="application/atom+xml" title="Endpoint changes of this validator, as an Atom feed">Atom feed</a>
+          <a href={`${API_BASE}/v1/validators/${own}/feed.atom`} type="application/atom+xml" title="Endpoint changes of this validator, as an Atom feed">Atom feed</a>
         </dd></div>
       </dl>
       <PreLive meta={meta} />
@@ -299,7 +309,7 @@ function Page() {
                 <button type="button" aria-pressed={onlyNotServed} onClick={() => setOnlyNotServed(true)}>Not served <span className="n">{int(notServedRows.length)}</span></button>
               </div>
             )}
-            <a className="dis" href={onlyNotServed ? notServedHref : `${API_BASE}/v1/probes?validator=${v.address}&limit=1000`}>Full history →</a>
+            <a className="dis" href={onlyNotServed ? notServedHref : `${API_BASE}/v1/probes?validator=${own}&limit=1000`}>Full history →</a>
           </div>
         </div>
         <div className="tablewrap">

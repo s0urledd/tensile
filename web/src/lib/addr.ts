@@ -53,3 +53,20 @@ export function isOperatorAccount(needle: string, operator: string | undefined):
   const a = bech32Hex(needle);
   return a !== null && a.length === 40 && a === bech32Hex(operator);
 }
+
+/**
+ * The address a link to a validator's page carries: its operator address
+ * (celestiavaloper1…), the one explorers list and operators know, whenever
+ * the staking set names one, else the address the row already carries. The
+ * page and the API take every spelling (observer/api/validator_addr.go), so
+ * a link made with a consensus address, hex or celestiavalcons1…, still opens
+ * the same page.
+ */
+export function pageAddr(operator: string | undefined, fallback: string): string {
+  return operator || fallback;
+}
+
+/** The validator page of one validator, by pageAddr; query is appended as given ("&window=7d"). */
+export function validatorHref(operator: string | undefined, fallback: string, query = ""): string {
+  return `/validator/?addr=${encodeURIComponent(pageAddr(operator, fallback))}${query}`;
+}

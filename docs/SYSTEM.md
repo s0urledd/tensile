@@ -456,6 +456,14 @@ Every page's header and footer read `/v1/meta` and `/v1/tip`.
 | `/methodology/` | `/v1/params` (the protocol-parameters section; the rest is static) |
 | `/developers/` | nothing: the API page; its example answers are fixed text (`examples.ts`) |
 
+Every link to a validator's page — the overview's table and map, the map's
+line of events from `/v1/feed.atom`, a blob's assignments — carries the
+operator address (`/validator/?addr=celestiavaloper1…`, `validatorHref` in
+`lib/addr.ts`), and the consensus address only for a validator with none on
+record. The page names the validator by its operator address and shows the
+consensus address under it; a link with the hex or `celestiavalcons1…`
+address opens the same page, as the API resolves every spelling.
+
 `MIN_RATED` (20) gates every *ranked rate* — service, reachability, throughput:
 below it the figure prints without a gauge and does not sort in either
 direction. It deliberately does **not** gate the fault count: a ratio needs a

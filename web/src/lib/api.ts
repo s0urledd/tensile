@@ -320,6 +320,8 @@ export type ValidatorReading = {
 export type Probe = {
   promise_hash: string;
   validator_address: string;
+  /** celestiavaloper1… from the staking set, when the collector has read one */
+  operator_address?: string;
   validator_host: string;
   assigned: boolean;
   /** true proven obliged, false unproven, null recorded before verification existed */
@@ -428,6 +430,8 @@ export type Blob = {
 /** one validator's reading of a blob, as the blob page lists them */
 export type BlobReading = {
   validator_address: string;
+  /** celestiavaloper1… from the staking set, when the collector has read one */
+  operator_address?: string;
   schedule_label: string;
   started_at: string;
   phase: string;
