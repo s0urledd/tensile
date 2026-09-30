@@ -51,7 +51,8 @@ export type Group = { id: string; title: string; endpoints: Endpoint[] };
 
 // ---- parameters several routes share ----
 
-const HUGINN = "e4401aea8b1f8359fe58216d70d78a402689a2a4";
+// validators are written in the operator form, as the site links them
+const HUGINN = "celestiavaloper1d2ktc37cme7ydk30ylzhamutcynhdvyet7nt3x";
 const PUBLISHER = "celestia1las83d0dt9gew3faq2mxp2gtupq5drclee9snr";
 const NAMESPACE = "00000000000000000000000000000000000000736f762d6e696b6f2d61";
 const BLOB = "36f68ba9a781754e80037357ebf485d25e471332f436596904467099cfda2417";
@@ -66,7 +67,7 @@ const asOf: Param = {
 };
 const validatorAddr: Param = {
   name: "addr", in: "path", type: "string", required: true,
-  desc: "The validator's consensus, operator or account address.", example: HUGINN,
+  desc: "The validator's operator address (celestiavaloper1…), or its consensus or account address.", example: HUGINN,
 };
 const rows: Param = {
   name: "rows", in: "query", type: "string", values: ["0", "1"], default: "0",
@@ -481,7 +482,7 @@ export const GROUPS: Group[] = [
       {
         id: "validator-feed",
         path: "/v1/validators/{addr}/feed.atom",
-        summary: "Atom feed of one validator's registration and endpoint events.",
+        summary: "Atom feed of one validator's endpoint, bonded-list and first not-served events.",
         desc: "The newest 50 entries of the last 30 days. A reachability or certificate change is published once three checks in a row agree.",
         params: [validatorAddr],
         errors: "404 when no validator is on record at the address.",
@@ -493,7 +494,7 @@ export const GROUPS: Group[] = [
         path: "/v1/probes",
         summary: "Tensile's readings, newest first, by validator, blob, class or time.",
         params: [
-          { name: "validator", in: "query", type: "string", desc: "A validator's consensus, operator or account address.", example: HUGINN },
+          { name: "validator", in: "query", type: "string", desc: "A validator's operator address (celestiavaloper1…), or its consensus or account address.", example: HUGINN },
           { name: "blob", in: "query", type: "string", desc: "A promise hash, 64 hex characters." },
           { name: "class", in: "query", type: "string", desc: "A classification, such as HEALTHY, FAULT or UNREACHABLE.", example: "HEALTHY" },
           { name: "served", in: "query", type: "string", values: ["no"], desc: "Only the readings counted as not served." },
@@ -522,7 +523,7 @@ export const GROUPS: Group[] = [
           { name: "publisher", in: "query", type: "string", desc: "The celestia1… account whose escrow paid." },
           { name: "limit", in: "query", type: "integer", range: "1–500", default: "50", desc: "Blobs per page.", example: "2" },
           { name: "before_height", in: "query", type: "integer", desc: "Blobs settled before this height: pass `next_before_height`." },
-          { name: "before_tx_index", in: "query", type: "integer", default: "0", desc: "With `before_height`: pass `next_before_tx_index`." },
+          { name: "before_tx_index", in: "query", type: "integer", range: "0 or more", default: "0", desc: "With `before_height`: pass `next_before_tx_index`." },
           { name: "offset", in: "query", type: "integer", range: "0–100000", default: "0", desc: "Blobs to skip, for numbered pages." },
         ],
         example: EX_BLOBS,

@@ -246,7 +246,7 @@ function TryIt({ ep }: { ep: Endpoint }) {
               <span>{answer.bytes.toLocaleString("en-US")} bytes</span>
             </p>
             {answer.kind === "binary"
-              ? <p className="api-meta">A {answer.type || "binary"} file: not shown here.</p>
+              ? <p className="api-meta">A file ({answer.type || "binary"}): not shown here.</p>
               : <Code text={answer.body} format={answer.kind === "json" ? undefined : "text"} label={`Response from ${answer.url}`} />}
           </>
         ))}
