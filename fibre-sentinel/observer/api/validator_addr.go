@@ -101,6 +101,39 @@ func (s *Server) resolveAddr(ctx context.Context, raw string) (string, error) {
 	return strings.ToLower(cons), nil
 }
 
+// operatorAddrs maps each consensus address the staking set names (lower-case
+// hex, the key every row here carries) to its operator address. The rows of
+// a reading, a blob's readings and the feeds' links name a validator by the
+// consensus address they are keyed by; a reader knows it by the
+// celestiavaloper1… every explorer shows, so an answer that names validators
+// carries that too, looked up here once per answer rather than once per row.
+// A validator the collector has not read, or one with no operator address on
+// record, is absent, and its rows carry none.
+func (s *Server) operatorAddrs(ctx context.Context) (map[string]string, error) {
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT cons_address, operator_address FROM validator_identities
+		WHERE operator_address <> ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var cons, op string
+		if err := rows.Scan(&cons, &op); err != nil {
+			return nil, err
+		}
+		out[strings.ToLower(cons)] = op
+	}
+	return out, rows.Err()
+}
+
+// withOperators sets each reading's operator address from ops.
+func withOperators(rows []probeRow, ops map[string]string) {
+	for i := range rows {
+		rows[i].OperatorAddress = ops[strings.ToLower(rows[i].ValidatorAddress)]
+	}
+}
+
 // writeAddrErr answers a failed resolveAddr: its own status for an addrError,
 // 500 for anything else (a store error is never the caller's fault).
 func (s *Server) writeAddrErr(w http.ResponseWriter, path string, err error) {

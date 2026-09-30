@@ -351,6 +351,22 @@ GET /v1/signing               endorsements per settled promise against the ⅔ q
 GET /v1/hosting               where the registered endpoints are hosted, and how concentrated
 ```
 
+**Validator addresses.** Every row is keyed by the consensus address in
+lower-case hex, and the answers keep naming validators by it (`address`,
+`validator_address`), which is what the site keys on. A reader knows a
+validator by its operator address, so every answer that names one also
+carries `operator_address` (`celestiavaloper1…`) beside it: the validator
+list, page and status, the rows of `/v1/probes`, a blob's `assignments` and
+`probes`, and `/v1/network?exclude=` (`excluded_operator_addresses`, keyed by
+the address in `excluded`). It comes from `validator_identities`, read once
+per answer (`operatorAddrs`), and is absent for a validator the staking set
+this observer read does not name. Every route that takes a validator takes
+any of its spellings: the consensus address in hex or `celestiavalcons1…`,
+the operator address, or the operator's account address (`resolveAddr`).
+The feeds link each validator's page by its operator address too, falling
+back to the consensus address; an entry's ID keeps the consensus address it
+was minted with, so a feed reader never sees an entry twice.
+
 The public documentation is the site's API page (`web/src/app/developers`):
 the questions each kind of reader asks, the call and the fields that answer
 each one, and what every route shares. Its stability promise covers the
@@ -413,7 +429,8 @@ refuses the live directory) so a switch does not start cold
 429 with `Retry-After`):
 
 - `?as_of=<RFC3339>` — what the observer would have published at that moment
-- `?exclude=<addr>` — the summary without named validators
+- `?exclude=<addr>` — the summary without named validators (any spelling of
+  each; `excluded` echoes their consensus addresses)
 
 Both are `Cache-Control: no-store`. The cache is keyed by window alone, so
 writing either into it would publish one reader's view as everyone's

@@ -1459,20 +1459,30 @@ func (e excludeSet) args(base ...any) []any {
 const ExcludeNote = "Figures exclude the validators named in `excluded`. Reconstructability is computed over the whole set, because excluding a validator from it would answer a different question."
 
 // parseExclude reads `?exclude=`, which may be repeated or comma-separated,
-// and takes either form of address the rest of the API takes.
-func parseExclude(r *http.Request) (excludeSet, []string, error) {
+// and takes every spelling of a validator the rest of the API takes
+// (resolveAddr): the consensus address in hex or celestiavalcons1…, the
+// operator's celestiavaloper1… the site shows, or its account address. The
+// answer names each excluded validator by its consensus address, the key
+// every figure is filtered on. A refusal is an *addrError, answered by
+// writeAddrErr as on every route that takes a validator.
+func (s *Server) parseExclude(r *http.Request) (excludeSet, []string, error) {
 	var ex excludeSet
 	var names []string
-	seen := map[string]bool{}
+	seen, asked := map[string]bool{}, map[string]bool{}
 	for _, raw := range r.URL.Query()["exclude"] {
 		for _, part := range strings.Split(raw, ",") {
-			part = strings.TrimSpace(part)
-			if part == "" {
+			part = strings.ToLower(strings.TrimSpace(part))
+			if part == "" || asked[part] {
 				continue
 			}
-			addr, err := parseAddr(part)
+			asked[part] = true
+			addr, err := s.resolveAddr(r.Context(), part)
 			if err != nil {
-				return excludeSet{}, nil, fmt.Errorf("exclude %q: address must be 40 hex chars or celestiavalcons1...", part)
+				var ae *addrError
+				if errors.As(err, &ae) {
+					return excludeSet{}, nil, &addrError{ae.status, fmt.Sprintf("exclude %q: %s", part, ae.msg)}
+				}
+				return excludeSet{}, nil, err
 			}
 			if seen[addr] {
 				continue
@@ -1480,10 +1490,12 @@ func parseExclude(r *http.Request) (excludeSet, []string, error) {
 			seen[addr] = true
 			ex.addrs = append(ex.addrs, addr)
 			names = append(names, addr)
+			// Refused as soon as the bound is passed, so a long list is
+			// never looked up to its end.
+			if len(ex.addrs) > maxExclude {
+				return excludeSet{}, nil, &addrError{400, fmt.Sprintf("exclude takes at most %d validators", maxExclude)}
+			}
 		}
-	}
-	if len(ex.addrs) > maxExclude {
-		return excludeSet{}, nil, fmt.Errorf("exclude takes at most %d validators", maxExclude)
 	}
 	return ex, names, nil
 }
@@ -1521,9 +1533,9 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	ex, excluded, err := parseExclude(r)
+	ex, excluded, err := s.parseExclude(r)
 	if err != nil {
-		writeErr(w, 400, err.Error())
+		s.writeAddrErr(w, r.URL.Path, err)
 		return
 	}
 	if win.AsOf || ex.on() {
@@ -1551,8 +1563,24 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.RecordThrough = s.recordThrough(r.Context())
 		resp.ComputedAt, resp.ComputeMs = t0.UTC().Format(time.RFC3339Nano), time.Since(t0).Milliseconds()
+		out := networkOutOf(resp)
+		if len(excluded) > 0 {
+			ops, err := s.operatorAddrs(r.Context())
+			if err != nil {
+				s.writeInternal(w, r.URL.Path, err)
+				return
+			}
+			for _, a := range excluded {
+				if op := ops[a]; op != "" {
+					if out.ExcludedOperators == nil {
+						out.ExcludedOperators = map[string]string{}
+					}
+					out.ExcludedOperators[a] = op
+				}
+			}
+		}
 		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, 200, networkOutOf(resp))
+		writeJSON(w, 200, out)
 		return
 	}
 	resp, at, ms, err := s.net.get(r.Context(), s.logf(), win)
@@ -3657,6 +3685,10 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 
 type assignmentRow struct {
 	ValidatorAddress string `json:"validator_address"`
+	// OperatorAddress is the validator's celestiavaloper1… from the staking
+	// module, the address the blob page links the validator by. Absent when
+	// the chain has no validator at this consensus address.
+	OperatorAddress string `json:"operator_address,omitempty"`
 	// Moniker is the name from the staking module, so this table reads like
 	// a list of validators rather than a list of hashes. Empty when the chain
 	// has no validator at this consensus address.
@@ -3717,7 +3749,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := s.st.DB().QueryContext(ctx, `SELECT a.validator_address, a.voting_power, a.row_count, a.attested,
-			COALESCE(i.moniker, ''), a.host_at_settlement
+			COALESCE(i.moniker, ''), COALESCE(i.operator_address, ''), a.host_at_settlement
 		FROM assignments a
 		LEFT JOIN validator_identities i ON i.cons_address = a.validator_address
 		WHERE a.promise_hash = ? ORDER BY a.voting_power DESC, a.validator_address`, hash)
@@ -3729,7 +3761,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var a assignmentRow
 		var att sql.NullInt64
-		if err := rows.Scan(&a.ValidatorAddress, &a.VotingPower, &a.RowCount, &att, &a.Moniker, &a.HostAtSettlement); err != nil {
+		if err := rows.Scan(&a.ValidatorAddress, &a.VotingPower, &a.RowCount, &att, &a.Moniker, &a.OperatorAddress, &a.HostAtSettlement); err != nil {
 			rows.Close()
 			s.writeInternal(w, r.URL.Path, err)
 			return
@@ -3747,6 +3779,17 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	probes, moreProbes := trim(probes, 1000)
+	if len(probes) > 0 {
+		// A reading can name a validator the assignment does not (one asked
+		// without rows), so the readings take the whole map, not the
+		// assignments' join.
+		ops, err := s.operatorAddrs(ctx)
+		if err != nil {
+			s.writeInternal(w, r.URL.Path, err)
+			return
+		}
+		withOperators(probes, ops)
+	}
 	if err := s.blobService(ctx, hash, assigns); err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
@@ -3917,8 +3960,11 @@ type probeRow struct {
 	Vantage          string `json:"-"`
 	PromiseHash      string `json:"promise_hash"`
 	ValidatorAddress string `json:"validator_address"`
-	ValidatorHost    string `json:"validator_host"`
-	Assigned         bool   `json:"assigned"`
+	// OperatorAddress is the validator's celestiavaloper1…, from the staking
+	// set (operatorAddrs); absent when the collector has not read one.
+	OperatorAddress string `json:"operator_address,omitempty"`
+	ValidatorHost   string `json:"validator_host"`
+	Assigned        bool   `json:"assigned"`
 	// Attested: the settled promise proves this validator stored the blob.
 	// false means unproven (so this probe is UNATTESTED and outside the serve
 	// rate), null means the measurement predates signature verification.
@@ -4203,6 +4249,14 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, truncated := trim(rows, limit)
+	if len(rows) > 0 {
+		ops, err := s.operatorAddrs(r.Context())
+		if err != nil {
+			s.writeInternal(w, r.URL.Path, err)
+			return
+		}
+		withOperators(rows, ops)
+	}
 	out := map[string]any{"probes": rows, "limit": limit, "truncated": truncated, "rows_included": withRows}
 	if truncated && len(rows) > 0 {
 		// Where to continue from: everything strictly older than the last row
