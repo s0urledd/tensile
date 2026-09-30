@@ -1073,14 +1073,15 @@ body { background: var(--canvas); }
    accent with their count; a lone host is a small square with none. Names
    only on hover, focus or tap. One floating bar straddles the map's foot: the
    newest event, then the three counts. Under it a row of instruments divided
-   by hairlines: the current Fibre providers' share of voting power on a
-   segmented meter, the recent blobs grid, the latest blob's readout.
+   by hairlines: the current Fibre providers' share of voting power over a
+   strip of the validators themselves, the recent blobs (newest first, a tape
+   that moves once per read), the latest blob's readout.
 
    Colour is spent as elsewhere: the accent for the chain's facts and the
    instruments, amber only for an unreachable host or an unavailable blob, red
-   only for a broken obligation's pip. Motion is spent on arrivals only (a
-   blob's square, a rolled digit, the header's block dot) and every bit of it
-   stops under prefers-reduced-motion.
+   only for a broken obligation's pip. Motion is spent on arrivals only (the
+   blobs' tape and glow, a rolled digit, the header's block dot) and every bit
+   of it stops under prefers-reduced-motion.
    ========================================================================== */
 .deck {
   /* the sea is the panel; land and badges are tokens so the two themes are a handful of lines */
@@ -1096,10 +1097,17 @@ body { background: var(--canvas); }
   --cp-rest: rgb(var(--ink) / .13);
   --cp-on: var(--accent);
   --cp-on-hover: #008b97;
-  --rb-window: color-mix(in srgb, var(--accent) 70%, var(--paper));
-  --rb-window-fill: color-mix(in srgb, var(--accent) 14%, var(--paper));
-  --rb-head-glow: 30%;
-  --rb-fade: .5;
+  /* a recent blob's square is filled with its status (tile) and holds its size (core). In the retention window: the accent, lighter, edged */
+  --rb-window: color-mix(in srgb, var(--accent) 30%, var(--paper));
+  --rb-window-edge: color-mix(in srgb, var(--accent) 52%, var(--paper));
+  --rb-window-core: var(--accent);
+  --rb-kept: color-mix(in srgb, var(--accent) 88%, #ffffff);
+  --rb-kept-core: color-mix(in srgb, var(--accent) 40%, #ffffff);
+  --rb-hold: var(--hold);
+  --rb-hold-core: color-mix(in srgb, var(--hold) 40%, #ffffff);
+  --rb-gap: rgb(var(--ink) / .2);
+  --rb-gap-core: rgb(var(--ink) / .45);
+  --rb-glow: rgb(0 106 116 / .4);
   position: relative; isolation: isolate; margin: 16px 0 18px; border-radius: var(--r-panel);
   background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow);
 }
@@ -1117,10 +1125,16 @@ body { background: var(--canvas); }
   --cp-rest: rgb(255 255 255 / .11);
   --cp-on: #2ea4af;
   --cp-on-hover: #5fd0da;
-  --rb-window: color-mix(in srgb, var(--accent) 80%, var(--paper));
-  --rb-window-fill: color-mix(in srgb, var(--accent) 24%, var(--paper));
-  --rb-head-glow: 55%;
-  --rb-fade: .6;
+  --rb-window: color-mix(in srgb, var(--accent) 45%, var(--paper));
+  --rb-window-edge: color-mix(in srgb, var(--accent) 66%, var(--paper));
+  --rb-window-core: var(--accent);
+  --rb-kept: #2a9fab;
+  --rb-kept-core: #a3e4ea;
+  --rb-hold: var(--hold);
+  --rb-hold-core: #f3d9a8;
+  --rb-gap: rgb(255 255 255 / .16);
+  --rb-gap-core: rgb(255 255 255 / .42);
+  --rb-glow: rgb(51 179 191 / .6);
   background: var(--paper);
 }
 
@@ -1295,52 +1309,67 @@ body { background: var(--canvas); }
 .cp-sw { display: inline-block; width: 9px; height: 9px; margin-right: 6px; border-radius: 2px; background: var(--cp-rest); box-shadow: inset 0 0 0 1px var(--line-soft); vertical-align: -1px; }
 @keyframes cp-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
 
-/* recent blobs: the eyebrow, the live ring and Pause; the count; the grid; its key */
+/* recent blobs: the eyebrow, the live word and Pause; the count; the grid; its key */
+.rb { --rb-cell: 26px; --rb-gap: 5px; }
 .rb-head { display: flex; align-items: center; gap: 10px; min-height: 24px; }
 .rb-head .ov-eyebrow { margin-right: auto; }
-.rb-live { display: inline-flex; align-items: center; justify-content: flex-end; min-width: 7.6em; gap: 6px; font-size: var(--t-small); font-weight: 500; color: var(--text-3); white-space: nowrap; }
-.rb-ring { flex: none; overflow: visible; }
-.rb-ring-t { fill: none; stroke: var(--line); stroke-width: 1.6; }
-.rb-ring-d { fill: var(--accent); }
-.rb[data-state="paused"] .rb-ring-d { fill: var(--text-3); }
-.rb[data-state="down"] .rb-ring-d { fill: var(--hold); }
-.rb[data-state="wait"] .rb-ring-d { fill: var(--pending); }
+.rb-live { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-small); font-weight: 500; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.rb-live-d { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.rb[data-state="paused"] .rb-live-d { background: var(--text-3); }
+.rb[data-state="paused"] .rb-live { color: var(--text-2); }
+.rb[data-state="down"] .rb-live-d { background: var(--hold); }
+.rb[data-state="wait"] .rb-live-d { background: var(--pending); }
 .rb-pause { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 10px 0 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--paper); box-shadow: var(--shadow-sm); color: var(--text-2); font-size: var(--t-tiny); font-weight: 600; cursor: pointer; transition: color var(--dur), border-color var(--dur); }
 .rb-pause:hover { color: var(--text); }
 .rb-pause[aria-pressed="true"] { color: var(--accent-ink); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.rb-pause:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .rb-count { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; margin: 12px 0 0; font-size: var(--t-small); color: var(--text-3); }
 .rb-total { font-size: 26px; font-weight: 600; letter-spacing: -.025em; line-height: 1.1; color: var(--text); }
-.rb-grid { list-style: none; margin: 14px 0 0; padding: 0; display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 4px; }
-.rb-slot { display: block; min-width: 0; }
-/* a square is the link (it keeps its place and focus); its fill is the blob's */
-.rb-c { position: relative; display: block; aspect-ratio: 1; border-radius: 5px; transition: transform 160ms ease-out; }
-/* the older, the fainter: down to 1 - --rb-fade for the oldest square */
-.rb-f { --o: calc(1 - var(--age, 0) * var(--rb-fade)); position: absolute; inset: 0; border-radius: inherit; background: var(--rb-c, transparent); opacity: var(--o); transition: background-color .4s ease-out, opacity .4s ease-out; }
-.rb-f[data-s="kept"] { --rb-c: var(--accent); }
-.rb-f[data-s="window"] { --rb-c: var(--rb-window-fill); box-shadow: inset 0 0 0 1.5px var(--rb-window); }
-.rb-f[data-s="hold"] { --rb-c: var(--hold); }
-.rb-f[data-s="gap"] { --rb-c: var(--neutral); }
+
+/* the grid: five rows, each a window on one tape. A row clips its tape a few px outside the places, so a ring or a glow
+   is not cut and a place sliding past the row's end is; the margins take that room back */
+.rb-grid { display: flex; flex-direction: column; gap: var(--rb-gap); width: calc(var(--rb-cell) * 10 + var(--rb-gap) * 9); max-width: 100%; margin: 16px 0 0; }
+.rb-row { position: relative; margin: -8px -7px; padding: 8px 7px; overflow: hidden; }
+.rb-tape { display: flex; gap: var(--rb-gap); width: max-content; }
+.rb-c {
+  position: relative; flex: none; display: grid; place-items: center; width: var(--rb-cell); height: var(--rb-cell); border-radius: 6px;
+  background: var(--rb-tile, transparent); box-shadow: var(--rb-edge, none); transition: transform 160ms ease-out, box-shadow 160ms ease-out;
+}
+.rb-c[data-s="window"] { --rb-tile: var(--rb-window); --rb-core: var(--rb-window-core); --rb-edge: inset 0 0 0 1px var(--rb-window-edge); }
+.rb-c[data-s="kept"] { --rb-tile: var(--rb-kept); --rb-core: var(--rb-kept-core); }
+.rb-c[data-s="hold"] { --rb-tile: var(--rb-hold); --rb-core: var(--rb-hold-core); }
+.rb-c[data-s="gap"] { --rb-tile: var(--rb-gap); --rb-core: var(--rb-gap-core); }
 .rb-c.rb-empty { box-shadow: inset 0 0 0 1px var(--line-soft); }
-/* the head: the newest square, ringed */
-/* the ring is on the fill, so it arrives with it at the end of a sweep */
-.rb-c.head .rb-f { --rb-ring: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--accent), 0 0 16px 1px color-mix(in srgb, var(--accent) var(--rb-head-glow), transparent); box-shadow: var(--rb-ring); }
-.rb-c.head .rb-f[data-s="window"] { box-shadow: inset 0 0 0 1.5px var(--rb-window), var(--rb-ring); }
-.rb-c.head .rb-f, .rb-c:hover .rb-f, .rb-c.on .rb-f, .rb-c:focus-visible .rb-f { opacity: 1; }
-.rb-c:hover, .rb-c.on { transform: scale(1.18); z-index: 1; text-decoration: none; box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--text-2); }
-.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-index: 1; }
-/* an arrival: the square grows in and lights, then cools to its colour; one sweep per read */
-.rb-f.fresh { animation: rb-in .52s cubic-bezier(.2, .8, .2, 1) var(--d, 0ms) backwards; }
-.rb-f.fresh::after { content: ""; position: absolute; inset: -3px; border-radius: 8px; background: var(--accent); filter: blur(5px); opacity: 0; pointer-events: none; animation: rb-glow 2.6s ease-out var(--d, 0ms) both; }
-@keyframes rb-in { 0% { transform: scale(.3); opacity: 0; } 55% { transform: scale(1.14); opacity: 1; } 100% { transform: scale(1); opacity: var(--o, 1); } }
-@keyframes rb-glow { 0% { opacity: 0; } 14% { opacity: .8; } 100% { opacity: 0; } }
-.rb-key { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 12px 0 0; font-size: var(--t-tiny); color: var(--text-3); }
-.rb-key i { display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 2px; vertical-align: -.5px; }
-.rb-key i[data-s="kept"] { background: var(--accent); }
-.rb-key i[data-s="window"] { background: var(--rb-window-fill); box-shadow: inset 0 0 0 1.5px var(--rb-window); }
-.rb-key i[data-s="head"] { width: 9px; height: 9px; background: var(--accent); box-shadow: 0 0 0 1.5px var(--paper), 0 0 0 2.75px var(--accent); margin-right: 7px; }
-.rb-key i[data-s="hold"] { background: var(--hold); }
-.rb-key i[data-s="gap"] { background: var(--neutral); }
-.rb-key-n { margin-left: auto; }
+/* the blob's size: a square whose area is its share of the largest blob, inside a 3 px rim of its status; too small to draw, a 4 px dot */
+.rb-sq { --s: calc((var(--rb-cell) - 6px) * var(--k, 0)); display: block; width: var(--s); height: var(--s); border-radius: clamp(1px, calc(var(--s) * .18), 4px); background: var(--rb-core); }
+.rb-sq.rb-dot { width: 4px; height: 4px; border-radius: 50%; }
+/* the newest: ringed. A ghost, a place's copy past its row's end, shows only while a move slides it out of view */
+.rb-c.rb-ghost { visibility: hidden; }
+.rb-grid.rb-moving .rb-c.rb-ghost { visibility: visible; }
+.rb-c.rb-newest { box-shadow: var(--rb-edge, 0 0 0 0 transparent), 0 0 0 2px var(--paper), 0 0 0 3.5px var(--accent); }
+a.rb-c:hover, .rb-c.rb-on { transform: scale(1.12); z-index: 1; text-decoration: none; box-shadow: var(--rb-edge, 0 0 0 0 transparent), 0 0 0 2px var(--paper), 0 0 0 3.5px var(--text-2); }
+/* while a move plays, a row's ends fade, so places slide in and out of view softly */
+.rb-grid.rb-moving .rb-row { -webkit-mask-image: linear-gradient(90deg, transparent, #000 7px, #000 calc(100% - 7px), transparent); mask-image: linear-gradient(90deg, transparent, #000 7px, #000 calc(100% - 7px), transparent); }
+a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-index: 1; }
+/* an arrival: its square fills in and its place glows, then cools to its colour over 1.2 s; once per read */
+.rb-c.rb-new .rb-sq { animation: rb-fill .5s cubic-bezier(.2, .8, .2, 1) both; }
+.rb-c.rb-new::after { content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--rb-kept-core); box-shadow: 0 0 12px 1px var(--rb-glow); opacity: 0; pointer-events: none; animation: rb-glow 1.2s ease-out both; }
+@keyframes rb-fill { from { transform: scale(.2); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes rb-glow { 0% { opacity: .6; } 30% { opacity: .38; } 100% { opacity: 0; } }
+
+/* the key: the status colours, then what a square's size means */
+.rb-key { margin: 14px 0 0; font-size: var(--t-tiny); color: var(--text-3); }
+.rb-key p { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0; }
+.rb-key p + p { margin-top: 6px; }
+.rb-key i { display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 2.5px; vertical-align: -1px; }
+.rb-key i[data-s="window"] { background: var(--rb-window); box-shadow: inset 0 0 0 1px var(--rb-window-edge); }
+.rb-key i[data-s="kept"] { background: var(--rb-kept); }
+.rb-key i[data-s="hold"] { background: var(--rb-hold); }
+.rb-key i[data-s="gap"] { background: var(--rb-gap); }
+.rb-key i[data-s="head"] { background: var(--rb-kept); box-shadow: 0 0 0 1.5px var(--paper), 0 0 0 2.75px var(--accent); margin-right: 7px; }
+.rb-key-size { gap: 0 !important; }
+.rb-key .rb-key-sq { position: relative; display: inline-grid; place-items: center; width: 14px; height: 14px; margin-right: 7px; border-radius: 3.5px; background: var(--rb-kept); vertical-align: -3px; }
+.rb-key-sq b { display: block; width: 5px; height: 5px; border-radius: 1px; background: var(--rb-kept-core); }
 
 /* the readout: one blob's facts, the latest by default, the pointed one while a square is pointed at */
 .rb-read-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 24px; margin: 0; font-size: var(--t-small); font-weight: 400; }
@@ -1360,7 +1389,7 @@ body { background: var(--canvas); }
 .rb-st .verdict--gap .w { color: var(--text-2); font-weight: 500; }
 /* the readout's links sit at the row's foot, level with the availability card beside them */
 .rb-read { display: flex; flex-direction: column; }
-.rb-read .ov-links { margin-top: auto; padding-top: 14px; }
+.rb-read .ov-links { margin-top: 16px; }
 /* Tensile's own reading under the chain's figures: one quiet line under a hairline, "Observed by Tensile" as its prefix */
 .ob-row { display: flex; flex-wrap: wrap; align-items: baseline; margin: 0; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12px; line-height: 18px; color: var(--text-3); }
 .ob-row > span { white-space: nowrap; }
@@ -1438,17 +1467,15 @@ body { background: var(--canvas); }
   .cm-atlas:not(.zoomed) .cm-tools { display: none; }
   .cm-badge { font-size: 10.5px; border-radius: 6px; }
   .ov-fig { font-size: 30px; }
-  .rb-key-n { margin-left: 0; }
 }
 @media (max-width: 480px) {
   .blocktick .bt-l { display: none; }
-  .rb-grid { gap: 4px; }
-  .rb-c { border-radius: 4px; }
+  .rb { --rb-cell: 26px; --rb-gap: 4px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .cm-land path, .cm-badge, .cm-pin, .cm-tools button, .rb-c, .rb-f, .ov-links a span { transition: none; }
+  .cm-land path, .cm-badge, .cm-pin, .cm-tools button, .rb-c, .ov-links a span { transition: none; }
   .cm-pop, .cm-ev { animation: none; }
   .cm-pin.live .cm-badge::after { animation: none; opacity: .7; transform: scale(1.35); }
-  .cp-strip svg, .rb-f.fresh, .rb-f.fresh::after, .bt-dot.beat, .rn-roll .rn-in, .rn-roll .rn-out { animation: none; }
+  .cp-strip svg, .rb-c.rb-new .rb-sq, .rb-c.rb-new::after, .bt-dot.beat, .rn-roll .rn-in, .rn-roll .rn-out { animation: none; }
   .rn-roll .rn-out { display: none; }
 }
