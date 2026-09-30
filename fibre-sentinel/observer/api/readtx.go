@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"database/sql"
+	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
@@ -48,8 +50,17 @@ func withQuerier(ctx context.Context, q store.Querier) context.Context {
 // the tests') has no slot to spare and is read without a transaction, as
 // it always was: nothing writes it while a computation of its own runs.
 func (s *Server) readTx(ctx context.Context, fn func(context.Context) error) error {
-	if _, in := ctx.Value(querierKey{}).(store.Querier); in || s.txSlots == nil {
-		// Already inside one, or no connection to spare for one.
+	if _, in := ctx.Value(querierKey{}).(store.Querier); in {
+		return fn(ctx) // already inside one
+	}
+	if s.txSlots == nil {
+		// No connection to spare for one. The partials are still caught up
+		// first, under their lock, so the computation reads one epoch.
+		if s.parts != nil {
+			s.parts.mu.Lock()
+			ctx = s.parts.enterLocked(ctx, s, s.st.DB())
+			s.parts.mu.Unlock()
+		}
 		return fn(ctx)
 	}
 	select {
@@ -58,15 +69,93 @@ func (s *Server) readTx(ctx context.Context, fn func(context.Context) error) err
 		return ctx.Err()
 	}
 	defer func() { <-s.txSlots }()
-	// BEGIN, deferred: the snapshot is taken at fn's first read. The
+	// BEGIN, deferred: the snapshot is taken at the first read. The
 	// connection is query_only (store.OpenReadOnly), so nothing here can
-	// write.
-	tx, err := s.st.DB().BeginTx(ctx, nil)
+	// write. With the partials on, the transaction is begun and its first
+	// read (the catch-up) made under their lock, so the epoch a catch-up
+	// starts from is never newer than the snapshot it reads.
+	var tx *sql.Tx
+	var err error
+	if s.parts != nil {
+		s.parts.mu.Lock()
+		tx, err = s.st.DB().BeginTx(ctx, nil)
+		if err == nil {
+			ctx = s.parts.enterLocked(ctx, s, tx)
+		}
+		s.parts.mu.Unlock()
+	} else {
+		tx, err = s.st.DB().BeginTx(ctx, nil)
+	}
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	return fn(withQuerier(ctx, tx))
+}
+
+// enterLocked catches the partials up to the store as q sees it and hands
+// the epoch to the computation under ctx. A catch-up that fails is logged
+// and the computation reads the shipped statements over its whole window,
+// as it did before there were partials; the next computation tries again.
+// The caller holds the lock.
+func (dp *dayParts) enterLocked(ctx context.Context, s *Server, q store.Querier) context.Context {
+	e, err := dp.advanceLoaded(ctx, s, q, s.now())
+	if err != nil {
+		if dp.log != nil {
+			dp.log("day partials: catching up: %v; reading the whole window", err)
+		}
+		return ctx
+	}
+	return withEpoch(ctx, e)
+}
+
+// advanceLoaded is advance, which on its first call begins from the kept
+// partials (dayparts_file.go) when they are there and may be used.
+func (dp *dayParts) advanceLoaded(ctx context.Context, s *Server, q store.Querier, now time.Time) (*epoch, error) {
+	if dp.cur != nil || dp.loaded {
+		return dp.advance(ctx, s, q, now)
+	}
+	dp.loaded = true
+	t0 := time.Now()
+	e, why, err := dp.load(ctx, s, q)
+	if err != nil {
+		dp.loaded = false
+		return nil, err
+	}
+	switch {
+	case e == nil && why == "":
+		dp.origin = "built from the store: no " + dp.file
+	case e == nil:
+		dp.origin = "built from the store: " + dp.file + " refused: " + string(why)
+	default:
+		e.seq = 1
+		dp.cur = e
+		dp.journal = []journalEntry{{seq: 1, all: true}}
+		caught, err := dp.advance(ctx, s, q, now)
+		if err != nil {
+			dp.cur, dp.journal = nil, nil
+			return nil, err
+		}
+		why, err := s.verifyLoaded(ctx, q, caught)
+		if err != nil {
+			dp.cur, dp.journal = nil, nil
+			return nil, err
+		}
+		if why == "" {
+			dp.origin = "loaded from " + dp.file
+			dp.saved = caught.seq
+			if dp.log != nil {
+				dp.log("day partials: %s (%s)", dp.origin, time.Since(t0).Round(time.Millisecond))
+			}
+			return caught, nil
+		}
+		dp.origin = "built from the store: " + dp.file + " refused: " + string(why)
+		dp.cur, dp.journal = nil, nil
+	}
+	if dp.log != nil && dp.file != "" {
+		dp.log("day partials: %s", dp.origin)
+	}
+	return dp.advance(ctx, s, q, now)
 }
 
 // maxReadTx bounds the transactions open at once over a pool with no limit

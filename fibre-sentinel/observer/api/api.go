@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -132,6 +133,10 @@ type Server struct {
 	// txSlots bounds the read transactions open at once (readTx); nil reads
 	// without them.
 	txSlots chan struct{}
+	// parts are the day partials the longer windows are summed from
+	// (dayparts.go); nil computes every window from its rows, as before.
+	parts   *dayParts
+	noParts bool
 }
 
 // now is the server's clock (clock).
@@ -156,6 +161,11 @@ func WithPublisherLabels(m map[string]PublisherLabel) Option {
 
 // WithDataDir tells the server where the processes' status files live.
 func WithDataDir(dir string) Option { return func(s *Server) { s.dataDir = dir } }
+
+// WithDayParts turns the day partials on or off (observer-api
+// -day-partials). Off, every window is read whole with the shipped
+// statements; on, the 7d, 30d and "all" windows are summed from them.
+func WithDayParts(on bool) Option { return func(s *Server) { s.noParts = !on } }
 
 // WithSnapshotDir keeps the snapshots in dir rather than under the data
 // directory: observer-api -snapshot-dir, for a warm-up into a directory the
@@ -211,6 +221,14 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 			log.Printf("warming the blob page: %v", err)
 		}
 	}()
+	// And the day partials, sealed in the background as days end.
+	if s.parts != nil {
+		s.bg.Add(1)
+		go func() {
+			defer s.bg.Done()
+			s.sealer()
+		}()
+	}
 	s.mux.HandleFunc("GET /v1/meta", s.handleMeta)
 	s.mux.HandleFunc("GET /v1/network", s.handleNetwork)
 	s.mux.HandleFunc("GET /v1/validators", s.handleValidators)
@@ -257,6 +275,19 @@ func WarmSnapshots(ctx context.Context, st *store.Store, info VantageInfo, log *
 	dir := s.snapshotsIn()
 	if dir == "" {
 		return errors.New("no snapshot directory: set a data directory or a snapshot directory")
+	}
+	// The day partials first, sealed for every day that is due, so the
+	// longer windows below are summed from them and the files written at
+	// the end are what the API that takes these files over begins from.
+	if s.parts != nil {
+		t0 := time.Now()
+		n, err := s.sealDue(ctx, math.MaxInt)
+		if err != nil {
+			return fmt.Errorf("day partials: %w", err)
+		}
+		if log != nil {
+			log.Printf("warm-only: day partials: %d step(s) in %s", n, time.Since(t0).Round(time.Second))
+		}
 	}
 	for _, c := range []interface {
 		precompute(context.Context, string, logf) error
@@ -343,6 +374,12 @@ func newServer(st *store.Store, info VantageInfo, log *scan.Logger, opts ...Opti
 		s.recent.file = filepath.Join(dir, endorsementLedgerFile)
 		s.origRows.log, s.recent.log = s.logf(), s.logf()
 	}
+	if !s.noParts {
+		s.parts = &dayParts{log: s.logf()}
+		if dir := s.snapshotsIn(); dir != "" {
+			s.parts.file = filepath.Join(dir, dayPartsFile)
+		}
+	}
 	return s
 }
 
@@ -352,6 +389,10 @@ func newServer(st *store.Store, info VantageInfo, log *scan.Logger, opts ...Opti
 func (s *Server) keepDerived(ctx context.Context) error {
 	s.origRows.wait()
 	err := s.origRows.save(ctx, s.st.DB(), true)
+	if s.parts != nil {
+		s.parts.wait()
+		err = errors.Join(err, s.parts.save(ctx, s))
+	}
 	s.recent.mu.Lock()
 	defer s.recent.mu.Unlock()
 	return errors.Join(err, s.recent.save(ctx, s.st.DB(), true))
