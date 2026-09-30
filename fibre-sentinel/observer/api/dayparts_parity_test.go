@@ -17,8 +17,13 @@ import (
 // longer windows of the network and the validator list are computed from
 // the partials and with the shipped statements (CompareDayParts), and
 // must not differ. A zero base is the newest moment the store holds.
+// Under the race detector, which has nothing to find in it, it does
+// nothing.
 func PartsAfter(t testing.TB, st *store.Store, vantage string, base time.Time) {
 	t.Helper()
+	if raceOn {
+		return
+	}
 	ctx := context.Background()
 	if base.IsZero() {
 		var last sql.NullString

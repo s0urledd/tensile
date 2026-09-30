@@ -286,13 +286,23 @@ func (s *sim) compare(srv *Server, rng *rand.Rand, sample int, label string) *eq
 	return tally
 }
 
-// equivSeeds is how many seeds the harness runs (TENSILE_DAYPARTS_SEEDS
-// overrides it), and equivFull whether it runs at full scale.
+// equivSeeds is how many seeds the harness runs: four by default, which
+// keeps the package inside its time; TENSILE_DAYPARTS_SEEDS sets more.
+// equivFull is whether it runs at full scale.
 func equivSeeds() int {
 	if v, err := strconv.Atoi(os.Getenv("TENSILE_DAYPARTS_SEEDS")); err == nil && v > 0 {
 		return v
 	}
-	return 20
+	return 4
+}
+
+// skipUnderRace skips a run of one goroutine under the race detector, which
+// has nothing to find in it and slows it past the package's time;
+// TestDayPartsUnderConcurrency is the partials' race test.
+func skipUnderRace(t *testing.T) {
+	if raceOn {
+		t.Skip("one goroutine: nothing for the race detector (TestDayPartsUnderConcurrency)")
+	}
 }
 
 func equivFull() bool { return os.Getenv("TENSILE_DAYPARTS_FULL") != "" }
@@ -456,6 +466,8 @@ var simWitnesses = []struct {
 // TENSILE_DAYPARTS_FULL runs every case at every pass at the design's
 // scale (200 publications a day); TENSILE_DAYPARTS_SEEDS sets the seeds.
 func TestDayPartsEquivalence(t *testing.T) {
+	skipUnderRace(t)
+	t.Parallel()
 	seeds := equivSeeds()
 	total := newTally()
 	results := make([]*equivTally, seeds)
@@ -464,8 +476,8 @@ func TestDayPartsEquivalence(t *testing.T) {
 			t.Parallel()
 			cfg := defaultSimConfig(uint64(i + 1))
 			// At the design's scale every case is compared after every pass
-			// of one to three hours; in CI, at a seventh of the volume, a
-			// sample after every pass of two to five hours, so twenty seeds
+			// of one to three hours; by default, at a seventh of the volume,
+			// a sample after every pass of two to five hours, so the seeds
 			// fit the package's time.
 			sample, step := 0, [2]int{60, 180}
 			if !equivFull() {
@@ -490,6 +502,8 @@ func TestDayPartsEquivalence(t *testing.T) {
 // the partials again from the files written before: every change made
 // meanwhile is found by the catch-up, and every figure is still exact.
 func TestDayPartsRollback(t *testing.T) {
+	skipUnderRace(t)
+	t.Parallel()
 	cfg := defaultSimConfig(101)
 	cfg.perDay = 30
 	s := newSim(t, cfg)

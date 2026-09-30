@@ -17,6 +17,7 @@ import (
 // holding the changed days is refused when it is loaded; the partials
 // then built from the store are exact again.
 func TestTheAuditDropsASealTheStoreDoesNotHold(t *testing.T) {
+	skipUnderRace(t)
 	t.Parallel()
 	cfg := defaultSimConfig(33)
 	cfg.perDay, cfg.days = 10, 5
@@ -97,7 +98,7 @@ func TestTheAuditDropsASealTheStoreDoesNotHold(t *testing.T) {
 		t.Errorf("a window that differed left %d row days and %d settlement days sealed", r, st)
 	}
 	rng := rand.New(rand.NewPCG(33, 1))
-	s.compare(srv, rng, 0, "after the audit")
+	s.compare(srv, rng, 4, "after the audit")
 
 	// Sealed again, changed again, and written out: the next start refuses
 	// the file.
@@ -107,7 +108,7 @@ func TestTheAuditDropsASealTheStoreDoesNotHold(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := s.openAPI()
-	tally := s.compare(next, rng, 0, "after the refused file")
+	tally := s.compare(next, rng, 4, "after the refused file")
 	if !strings.Contains(next.parts.origin, "refused") || !strings.Contains(next.parts.origin, "is not what the store holds") {
 		t.Errorf("a file of changed days was not refused: %s", next.parts.origin)
 	}

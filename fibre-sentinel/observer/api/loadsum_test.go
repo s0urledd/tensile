@@ -26,6 +26,7 @@ import (
 // loadBytes over the same terms kept as exact integers.
 // TENSILE_LOADSUM_TERMS sets the terms per trial (1.9 million reach 2^60).
 func TestLoadSumIsExactlyRounded(t *testing.T) {
+	skipUnderRace(t)
 	terms := 40000
 	if v, err := strconv.Atoi(os.Getenv("TENSILE_LOADSUM_TERMS")); err == nil && v > 0 {
 		terms = v

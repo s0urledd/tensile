@@ -534,7 +534,7 @@ func (dp *dayParts) nextGen(key string) int {
 }
 
 // sealEvery is how often the sealer looks for work, and sealIdle how long
-// it rests once there is none.
+// it rests once there is none (Server.sealPace sets others, for tests).
 const (
 	sealEvery = 2 * time.Second
 	sealIdle  = 30 * time.Second
@@ -543,7 +543,11 @@ const (
 // sealer runs until Close: the ledger build, the spans and the seals, one
 // unit at a time.
 func (s *Server) sealer() {
-	wait := sealEvery
+	every, idle := sealEvery, sealIdle
+	if s.sealPace != [2]time.Duration{} {
+		every, idle = s.sealPace[0], s.sealPace[1]
+	}
+	wait := every
 	started, audited := s.now(), s.now()
 	for {
 		select {
@@ -559,11 +563,11 @@ func (s *Server) sealer() {
 			if s.log != nil {
 				s.log.Printf("day partials: sealer: %v", err)
 			}
-			wait = sealIdle
+			wait = idle
 		case n == 0:
-			wait = sealIdle
+			wait = idle
 		default:
-			wait = sealEvery
+			wait = every
 			s.parts.saveLater(s)
 		}
 		if s.now().Sub(audited) >= auditEvery {

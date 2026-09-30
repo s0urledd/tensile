@@ -137,6 +137,9 @@ type Server struct {
 	// (dayparts.go); nil computes every window from its rows, as before.
 	parts   *dayParts
 	noParts bool
+	// sealPace is the sealer's pace, how often it looks for work and how
+	// long it rests once there is none; zero is sealEvery and sealIdle.
+	sealPace [2]time.Duration
 }
 
 // now is the server's clock (clock).
