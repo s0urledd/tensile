@@ -39,10 +39,11 @@ import (
 // computed with, and of the views they read as the store holds them, so a
 // build that computes any of it differently begins again rather than
 // believing a file. Loading checks the header, every seal file's digest
-// against the index, and then recomputes the newest sealed day of each
-// kind and one other at random and compares; the catch-up that follows
-// checks every mark and anchor, as it does on every computation. Any doubt
-// begins the partials again, as a start with no file does.
+// against the index (a seal file missing, or not the one the index names,
+// leaves only its own day unsealed), and then recomputes the newest sealed
+// day of each kind and one other at random and compares; the catch-up that
+// follows checks every mark and anchor, as it does on every computation.
+// Any other doubt begins the partials again, as a start with no file does.
 //
 // An older build does not know the files and never reads them. Coming back,
 // a file written before has marks the store has only grown past since, and
@@ -396,18 +397,25 @@ func (dp *dayParts) load(ctx context.Context, s *Server, q store.Querier) (*epoc
 		e.anchors[d] = a
 	}
 	dir := filepath.Join(filepath.Dir(dp.file), dayPartsDir)
+	missing := 0
 	for key, ref := range f.Seals {
 		var sf sealFile
+		// A seal file missing, or not the one the index names (another
+		// process's of the same name), leaves its day unsealed, read raw
+		// until it is sealed again: nothing else the index holds rests on
+		// it, so a copy that left the seal files behind, or mixed in
+		// another directory's, costs those days and not every other one.
 		ok, why := readDerived(filepath.Join(dir, ref.File), &sf)
+		if !ok && why == "" {
+			missing++
+			continue
+		}
 		if !ok {
-			if why == "" {
-				why = "missing"
-			}
 			return nil, kept, refusal(ref.File + ": " + string(why)), nil
 		}
-		b, err := os.ReadFile(filepath.Join(dir, ref.File))
-		if err != nil || string(b[len(digestOpen):len(digestOpen)+64]) != ref.Digest {
-			return nil, kept, refusal(ref.File + " is not the file the index names"), nil
+		if b, err := os.ReadFile(filepath.Join(dir, ref.File)); err != nil || string(b[len(digestOpen):len(digestOpen)+64]) != ref.Digest {
+			missing++
+			continue
 		}
 		if sf.Kind != "day-partial-row" && sf.Kind != "day-partial-settle" || sf.Definition != def || sf.Store != f.Store {
 			return nil, kept, refusal(ref.File + " is of another kind, definition or store"), nil
@@ -431,6 +439,9 @@ func (dp *dayParts) load(ctx context.Context, s *Server, q store.Querier) (*epoc
 		if gen > kept.gens[key] {
 			kept.gens[key] = gen
 		}
+	}
+	if missing > 0 && dp.log != nil {
+		dp.log("day partials: %d of the %d sealed day(s) %s names have no file of theirs in %s; they are read raw until they are sealed again", missing, len(f.Seals), dp.file, dir)
 	}
 	return e, kept, "", nil
 }

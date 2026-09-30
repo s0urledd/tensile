@@ -200,3 +200,75 @@ func TestDayPartsSealTempsSwept(t *testing.T) {
 		t.Errorf("a young temporary file was removed: %v", err)
 	}
 }
+
+// TestDayPartsIndexWithoutItsSeals copies the kept partials the way the
+// warm-up's copy step once did, the *.json files and not day-partials/, and
+// starts from the copy: the index is loaded, marks, ledger and all, and
+// only the days whose seal files are missing are left unsealed, rather than
+// the whole file refused and everything built again. A seal file that is
+// another's of the same name leaves its day unsealed the same way.
+func TestDayPartsIndexWithoutItsSeals(t *testing.T) {
+	skipUnderRace(t)
+	t.Parallel()
+	cfg := defaultSimConfig(69)
+	cfg.perDay, cfg.days = 10, 4
+	s := newSim(t, cfg)
+	s.plan()
+	srv := s.openAPI()
+	for at := s.t0.Add(time.Hour); at.Before(s.t0.Add(4*24*time.Hour + 6*time.Hour)); at = at.Add(6 * time.Hour) {
+		s.advance(at)
+		s.pass()
+	}
+	ctx := context.Background()
+	if _, err := srv.sealDue(ctx, math.MaxInt); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.keepDerived(ctx); err != nil {
+		t.Fatal(err)
+	}
+	sealed := len(srv.parts.cur.rows)
+	names, err := filepath.Glob(filepath.Join(s.snaps, "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	copied := filepath.Join(t.TempDir(), "snapshots")
+	if err := os.MkdirAll(copied, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range names {
+		b, err := os.ReadFile(n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(copied, filepath.Base(n)), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	next := s.openAPI(WithSnapshotDir(copied))
+	rng := rand.New(rand.NewPCG(69, 1))
+	tally := s.compare(next, rng, 4, "from an index without its seals")
+	if !strings.HasPrefix(next.parts.origin, "loaded") || next.parts.rebuilds != 0 || len(next.parts.cur.rows) != 0 || !next.parts.cur.ledgerBuilt {
+		t.Errorf("an index without its seals: %s, %d rebuild(s), %d row days, ledger built %v", next.parts.origin, next.parts.rebuilds, len(next.parts.cur.rows), next.parts.cur.ledgerBuilt)
+	}
+
+	// One seal file swapped for another of the same kind: that day alone
+	// is left unsealed.
+	dir := filepath.Join(s.snaps, dayPartsDir)
+	files, err := filepath.Glob(filepath.Join(dir, "row-*.json"))
+	if err != nil || len(files) < 2 {
+		t.Fatalf("row seal files: %v %v", files, err)
+	}
+	b, err := os.ReadFile(files[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(files[0], b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	again := s.openAPI()
+	tally.add(s.compare(again, rng, 4, "with a seal file swapped"))
+	if !strings.HasPrefix(again.parts.origin, "loaded") || len(again.parts.cur.rows) != sealed-1 {
+		t.Errorf("a seal file swapped: %s, %d of %d row days", again.parts.origin, len(again.parts.cur.rows), sealed)
+	}
+	t.Logf("%s\n%s", again.parts.origin, tally)
+}
