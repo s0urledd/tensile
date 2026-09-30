@@ -497,19 +497,55 @@ func Run(ctx context.Context, st *store.Store, now time.Time, cfg Config) (Repor
 	return rep, nil
 }
 
-// finalMargin is added to the last must_serve_until of a day's promises
+// FinalMargin is added to the last must_serve_until of a day's promises
 // before the day counts as final: the last in-window probe may start late
 // (the prober's lateness allowance) and the prune tolerance sits past the
 // deadline.
-const finalMargin = time.Hour
+const FinalMargin = time.Hour
 
 // dayFinal reports whether every obligation of the promises settled on d
-// is decided: their windows have closed, and no probe row of theirs still
-// awaits the late shadow verdict.
+// is decided: their windows have closed, no probe row of theirs still
+// awaits the late shadow verdict, and none of them is held. It is the three
+// checks below, in that order, each over the whole day's publications.
 func dayFinal(ctx context.Context, db *sql.DB, d, now time.Time) (bool, string, error) {
+	for _, check := range []func() (bool, string, error){
+		func() (bool, string, error) { return WindowsClosed(ctx, db, d, now, nil) },
+		func() (bool, string, error) { return ShadowVerdictsSettled(ctx, db, d, nil) },
+		func() (bool, string, error) { return PromisesUnheld(ctx, db, d, nil) },
+	} {
+		if final, why, err := check(); err != nil || !final {
+			return final, why, err
+		}
+	}
+	return true, "", nil
+}
+
+// Heights narrows a day's publications by settlement height as well as by
+// settlement time. It is a planner aid and nothing else: the day is still
+// its settlement_time bounds, and the range must hold every publication
+// settled that day (the API passes the lowest and highest height of those
+// it has counted there), so the answer is the same with it as without it.
+// Without it nothing indexes settlement_time, and each check walks every
+// publication.
+type Heights struct{ Lo, Hi int64 }
+
+// dayPublications is the WHERE clause over the publications (under the
+// alias prefix p) settled on d, and its arguments, narrowed by h when set.
+func dayPublications(p string, d time.Time, h *Heights) (string, []any) {
 	lo, hi := dayRange(d)
+	if h == nil {
+		return p + `settlement_time >= ? AND ` + p + `settlement_time <= ?`, []any{lo, hi}
+	}
+	return p + `settlement_height >= ? AND ` + p + `settlement_height <= ? AND ` + p + `settlement_time >= ? AND ` + p + `settlement_time <= ?`,
+		[]any{h.Lo, h.Hi, lo, hi}
+}
+
+// WindowsClosed reports whether the retention window of every promise
+// settled on d had closed FinalMargin before now.
+func WindowsClosed(ctx context.Context, q store.Querier, d, now time.Time, h *Heights) (bool, string, error) {
+	where, args := dayPublications("", d, h)
 	var last sql.NullString
-	if err := db.QueryRowContext(ctx, `SELECT MAX(must_serve_until) FROM publications WHERE settlement_time >= ? AND settlement_time <= ?`, lo, hi).Scan(&last); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT MAX(must_serve_until) FROM publications WHERE `+where, args...).Scan(&last); err != nil {
 		return false, "", err
 	}
 	if last.Valid && last.String != "" {
@@ -517,31 +553,46 @@ func dayFinal(ctx context.Context, db *sql.DB, d, now time.Time) (bool, string, 
 		if err != nil {
 			return false, "", fmt.Errorf("must_serve_until %q: %w", last.String, err)
 		}
-		if now.Before(t.Add(finalMargin)) {
+		if now.Before(t.Add(FinalMargin)) {
 			return false, "a promise settled that day is under obligation until " + t.UTC().Format(time.RFC3339), nil
 		}
 	}
+	return true, "", nil
+}
+
+// ShadowVerdictsSettled reports whether no probe row of a promise settled
+// on d still awaits the late shadow verdict.
+func ShadowVerdictsSettled(ctx context.Context, q store.Querier, d time.Time, h *Heights) (bool, string, error) {
+	where, args := dayPublications("pb.", d, h)
 	var deferred int64
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM probes pr JOIN publications pb ON pb.promise_hash = pr.promise_hash
-		WHERE pb.settlement_time >= ? AND pb.settlement_time <= ?
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM probes pr JOIN publications pb ON pb.promise_hash = pr.promise_hash
+		WHERE `+where+`
 		  AND pr.classification = 'PROBE_ERROR' AND pr.shadow_gap IS NOT NULL AND pr.amended_at IS NULL
-		  AND pr.outcome IN ('WRONG_ROWS','PARTIAL') AND pr.commitment_verified = 1`, lo, hi).Scan(&deferred); err != nil {
+		  AND pr.outcome IN ('WRONG_ROWS','PARTIAL') AND pr.commitment_verified = 1`, args...).Scan(&deferred); err != nil {
 		return false, "", err
 	}
 	if deferred > 0 {
 		return false, fmt.Sprintf("%d probe row(s) of its promises await the late shadow verdict", deferred), nil
 	}
-	// A promise whose params range is still open must keep its raw rows:
-	// rolling the day freezes the buckets and the prune then deletes the
-	// rows a correction would re-grade, so a fault withheld today would
-	// come back as a frozen fault tomorrow with nothing left to correct.
-	// rollup.Run walks days in order, so one held day holds every later
-	// one — which is why the scanner closes a range in the pass that opens
-	// it, and why an unreadable range is recorded unresolvable rather than
-	// left open forever.
+	return true, "", nil
+}
+
+// PromisesUnheld reports whether no promise settled on d sits in an
+// x/fibre params range that still withholds.
+//
+// A promise whose params range is still open must keep its raw rows:
+// rolling the day freezes the buckets and the prune then deletes the
+// rows a correction would re-grade, so a fault withheld today would
+// come back as a frozen fault tomorrow with nothing left to correct.
+// rollup.Run walks days in order, so one held day holds every later
+// one — which is why the scanner closes a range in the pass that opens
+// it, and why an unreadable range is recorded unresolvable rather than
+// left open forever.
+func PromisesUnheld(ctx context.Context, q store.Querier, d time.Time, h *Heights) (bool, string, error) {
+	where, args := dayPublications("", d, h)
 	var held int64
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM publications
-		WHERE retention_unverified = 1 AND settlement_time >= ? AND settlement_time <= ?`, lo, hi).Scan(&held); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM publications
+		WHERE retention_unverified = 1 AND `+where, args...).Scan(&held); err != nil {
 		return false, "", err
 	}
 	if held > 0 {
