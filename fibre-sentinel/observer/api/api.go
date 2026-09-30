@@ -2435,11 +2435,8 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	// The effective class throughout, as the network figures use: a held
 	// row publishes no verdict for one validator either, and the
 	// per-validator figures must add up to the network's.
-	cls := rollup.EffectiveClass("")
 	// classes per validator in window
-	rows, err = db.QueryContext(ctx, `SELECT validator_address, `+cls+`, COUNT(*) FROM probe_rows
-		WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`+vfilter("validator_address")+`
-		GROUP BY validator_address, `+cls, vargs(win.startArg(), win.endArg())...)
+	rows, err = db.QueryContext(ctx, valClassesSQL(vfilter("validator_address")), vargs(win.startArg(), win.endArg())...)
 	if err != nil {
 		return nil, err
 	}
@@ -2475,26 +2472,7 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	// blobs a validator happened to be probed on (the same server read
 	// 110 KB/s on 130 KB shards and 8.7 MB/s on 27 MB ones). Smaller or
 	// uncounted records sort last and are outside the sample.
-	rows, err = db.QueryContext(ctx, `SELECT validator_address,
-			MAX(CASE WHEN rn = (c + 1) / 2          THEN ms END),
-			MAX(CASE WHEN rn = (c * 95 + 99) / 100  THEN ms END),
-			MAX(c),
-			MAX(CASE WHEN rb = (cb + 1) / 2         THEN bps END),
-			MAX(cb)
-		FROM (
-			SELECT validator_address AS validator_address,
-			       total_duration_ms AS ms,
-			       CASE WHEN bytes_returned >= ? AND download_ms > 0 THEN bytes_returned * 1000 / download_ms END AS bps,
-			       ROW_NUMBER() OVER (PARTITION BY validator_address ORDER BY total_duration_ms) AS rn,
-			       COUNT(*)     OVER (PARTITION BY validator_address)                            AS c,
-			       ROW_NUMBER() OVER (PARTITION BY validator_address
-			                          ORDER BY (bytes_returned IS NULL OR bytes_returned < ? OR download_ms <= 0), bytes_returned * 1000.0 / NULLIF(download_ms, 0)) AS rb,
-			       SUM(CASE WHEN bytes_returned >= ? AND download_ms > 0 THEN 1 ELSE 0 END)
-			                    OVER (PARTITION BY validator_address)                            AS cb
-			FROM probes
-			WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'
-			  AND classification = 'HEALTHY' AND total_duration_ms > 0`+vfilter("validator_address")+`
-		) GROUP BY validator_address`, vargs(throughputMinBytes, throughputMinBytes, throughputMinBytes, win.startArg(), win.endArg())...)
+	rows, err = db.QueryContext(ctx, valLatencySQL(vfilter("validator_address")), vargs(throughputMinBytes, throughputMinBytes, throughputMinBytes, win.startArg(), win.endArg())...)
 	if err != nil {
 		return nil, err
 	}
@@ -2527,15 +2505,7 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 		return nil, err
 	}
 	// proven / unproven / unknown per (validator, blob) obligation.
-	rows, err = db.QueryContext(ctx, `SELECT validator_address,
-			COALESCE(SUM(CASE WHEN a = 1 THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN a = 0 THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN a IS NULL THEN 1 ELSE 0 END), 0)
-		FROM (
-			SELECT validator_address AS validator_address, MAX(attested) AS a
-			FROM probe_rows WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window'`+vfilter("validator_address")+`
-			GROUP BY validator_address, promise_hash
-		) GROUP BY validator_address`, vargs(win.startArg(), win.endArg())...)
+	rows, err = db.QueryContext(ctx, valAttestationSQL(vfilter("validator_address")), vargs(win.startArg(), win.endArg())...)
 	if err != nil {
 		return nil, err
 	}
@@ -2558,10 +2528,7 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	// rows came back verified (the effective class, so a held row is not
 	// one), which the overview's map names as the validators that served
 	// last.
-	rows, err = db.QueryContext(ctx, `SELECT validator_address, COUNT(*), MAX(started_at),
-			MAX(CASE WHEN `+cls+` = 'HEALTHY' THEN started_at END)
-		FROM probe_rows
-		WHERE started_at >= ? AND started_at <= ?`+vfilter("validator_address")+` GROUP BY validator_address`, vargs(win.startArg(), win.endArg())...)
+	rows, err = db.QueryContext(ctx, valSeenSQL(vfilter("validator_address")), vargs(win.startArg(), win.endArg())...)
 	if err != nil {
 		return nil, err
 	}
@@ -2591,13 +2558,7 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	// A PROBE_ERROR heartbeat is the observer's own failure (a host it could
 	// not parse, an identity check it starved of CPU) and is left out of
 	// every count, as its probe-side twin is.
-	hrows, err := db.QueryContext(ctx, `SELECT validator_address, COUNT(*),
-			COALESCE(SUM(CASE WHEN tcp_ok = 1 AND tls_ok = 1 THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN tcp_ok = 1 AND tls_ok = 1 AND identity_ok = 1 THEN 1 ELSE 0 END), 0),
-			MAX(CASE WHEN tcp_ok = 1 AND tls_ok = 1 THEN NULL ELSE started_at END),
-			MAX(CASE WHEN tcp_ok = 1 AND tls_ok = 1 THEN started_at END)
-		FROM reachability WHERE started_at >= ? AND started_at <= ? AND outcome <> 'PROBE_ERROR' AND +vantage = ?`+vfilter("validator_address")+`
-		GROUP BY validator_address`, vargs(win.startArg(), win.endArg(), s.vantage)...)
+	hrows, err := db.QueryContext(ctx, valBeatsSQL(vfilter("validator_address")), vargs(win.startArg(), win.endArg(), s.vantage)...)
 	if err != nil {
 		return nil, err
 	}
