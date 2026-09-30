@@ -477,8 +477,10 @@ type dayParts struct {
 	// again; gens each day's seal generation. Both guarded by mu.
 	retry map[string]time.Time
 	gens  map[string]int
-	// logged are the lines logOnce has logged, by key; guarded by mu.
+	// logged are the lines logOnce has logged, by key, and turn whose turn
+	// it is while the ledger is built (ledgerTurn); guarded by mu.
 	logged map[string]bool
+	turn   bool
 	// rebuilds counts the times the partials were begun again, and dropped
 	// the sealed days a catch-up dropped, for tests.
 	rebuilds int

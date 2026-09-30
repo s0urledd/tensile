@@ -55,8 +55,10 @@ const sealMargin = time.Hour
 // is tried again.
 const sealRetry = 10 * time.Minute
 
-// ledgerChunk is how many publications one step of the ledger build folds.
-const ledgerChunk = 2000
+// ledgerChunk is how many publications one step of the ledger build folds:
+// seconds of work at the busiest traffic seen, so a build of a long record
+// is hundreds of steps, not thousands.
+const ledgerChunk = 10000
 
 // partsTx runs fn in a read transaction under an epoch caught up to it, as
 // a computation is (readTx), and hands it the epoch.
@@ -147,11 +149,18 @@ func (s *Server) sealOnce(ctx context.Context) (bool, error) {
 	did := false
 	err := s.partsTx(ctx, func(ctx context.Context, e *epoch) error {
 		now := s.now().UTC()
+		building := !e.ledgerBuilt && !e.pubsOdd
 		switch {
 		case e.pubsOdd:
-		case !e.ledgerBuilt:
-			did = true
-			return s.buildLedger(ctx, e)
+		case building:
+			// A row day does not read the ledger, so the ledger's steps take
+			// turns with the row days rather than all coming first: after a
+			// rebuild the validators' rows are summed long before every
+			// publication ever stored is in the ledger.
+			if s.parts.ledgerTurn() {
+				did = true
+				return s.buildLedger(ctx, e)
+			}
 		default:
 			if d := e.unknownSpan(); d != "" {
 				did = true
@@ -162,13 +171,17 @@ func (s *Server) sealOnce(ctx context.Context) (bool, error) {
 		if err != nil {
 			return err
 		}
-		switch kind {
-		case "row":
+		switch {
+		case kind == "row":
 			did = true
 			return s.sealRow(ctx, e, d, now)
-		case "settle":
+		case kind == "settle" && !building:
 			did = true
 			return s.sealSettle(ctx, e, d, now)
+		}
+		if building {
+			did = true
+			return s.buildLedger(ctx, e)
 		}
 		return nil
 	})
@@ -654,17 +667,19 @@ func (dp *dayParts) nextGen(key string) int {
 	return dp.gens[key]
 }
 
-// sealEvery is how often the sealer looks for work, and sealIdle how long
-// it rests once there is none (Server.sealPace sets others, for tests).
+// sealBusy is the sealer's pause between two units of work while there is
+// more, none: a pause after every unit put hours of waiting into a build
+// of thousands of them. sealIdle is how long it rests once there is none
+// (Server.sealPace sets others, for tests).
 const (
-	sealEvery = 2 * time.Second
-	sealIdle  = 30 * time.Second
+	sealBusy = time.Duration(0)
+	sealIdle = 30 * time.Second
 )
 
 // sealer runs until Close: the ledger build, the spans and the seals, one
 // unit at a time.
 func (s *Server) sealer() {
-	every, idle := sealEvery, sealIdle
+	every, idle := sealBusy, sealIdle
 	if s.sealPace != [2]time.Duration{} {
 		every, idle = s.sealPace[0], s.sealPace[1]
 	}
@@ -725,4 +740,13 @@ func (s *Server) sealer() {
 			}
 		}
 	}
+}
+
+// ledgerTurn reports whether the ledger's build takes this unit of the
+// sealer's work: every other one while the ledger is being built.
+func (dp *dayParts) ledgerTurn() bool {
+	dp.mu.Lock()
+	defer dp.mu.Unlock()
+	dp.turn = !dp.turn
+	return dp.turn
 }
