@@ -27,7 +27,9 @@ import { type EndpointState, endpointState, readiness } from "@/components/Readi
  * zoomed) move the view, each in one eased flight.
  *
  * Under the map, one floating bar: the newest event on the left, the three
- * counts on the right. The box (its shape set in the stylesheet) and the bar
+ * counts on the right. The map has no heading of its own: the counts say what
+ * it shows, and the panel's one heading on the subject is "Current Fibre
+ * providers" under it. The box (its shape set in the stylesheet) and the bar
  * are in the prerendered page and the land is drawn as soon as the box is
  * measured, all before the list arrives, so nothing moves when it does.
  */
@@ -463,7 +465,7 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
   ];
 
   return (
-    <section className="cm" aria-labelledby="hostmap-h">
+    <section className="cm" aria-label="Map of Fibre providers">
       <div className={`cm-atlas${zoomed ? " zoomed" : ""}${open ? " has-open" : ""}`} ref={box}
         onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
         onDoubleClick={onDoubleClick}>
@@ -475,8 +477,8 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
             </svg>
           )}
         </div>
+        {/* no heading of its own: the counts on the bar say what the map shows, and "Current Fibre providers" below is the one heading */}
         <div className="cm-title">
-          <h2 id="hostmap-h" className="ov-eyebrow">Fibre providers</h2>
           <p className="cm-key" title="Observed by Tensile: whether each registered host answered its latest endpoint check">
             <Eye />
             <span><i className="k-ok" />reachable</span>
