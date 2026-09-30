@@ -12,7 +12,7 @@ npm run build                                               # writes out/ for Ca
 
 `NEXT_PUBLIC_API_BASE` defaults to same-origin `/api`, which is what the
 Caddyfile in `deploy/` proxies to `observer-api`. `NEXT_PUBLIC_API_URL` is
-the API's public `/v1` address; the API page (`/developers/`) prints it
+the API's public `/v1` address; the API page (`/api/`) prints it
 without the `/v1` as its base URL. Unset, the page prints its own site's
 `/api` (`NEXT_PUBLIC_API_BASE` resolved against the page's origin), so one
 export serves every network's site; set it only when the API is published

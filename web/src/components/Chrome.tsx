@@ -21,7 +21,7 @@ const NAV: [string, string][] = [
   ["/", "Overview"],
   ["/blobs/", "Blobs"],
   ["/publishers/", "Publishers"],
-  ["/developers/", "API"],
+  ["/api/", "API"],
 ];
 
 /**

@@ -374,7 +374,7 @@ their titles by its shortened operator address, as the site names it
 (`feedName`); an entry's ID keeps the consensus address it was minted
 with, so a feed reader never sees an entry twice.
 
-The public documentation is the site's API page (`web/src/app/developers`):
+The public documentation is the site's API page (`web/src/app/api`, served at `/api/`):
 every documented route in order, with its parameters, a Try it and an
 example answer (`endpoints.ts`), then what every route shares. `/v1/meta`
 and `/v1/avatars` are the site's own, and `/v1/sampling` serves the earlier
@@ -461,7 +461,7 @@ Every page's header and footer read `/v1/meta` and `/v1/tip`.
 | `/publishers/` | `/v1/market`, `/v1/publishers` |
 | `/publisher/?addr=` | `/v1/publishers/{addr}` |
 | `/methodology/` | `/v1/params` (the protocol-parameters section; the rest is static) |
-| `/developers/` | `/v1/health` for its status dot, and each route when its Try it is sent; its example answers are fixed text (`endpoints.ts`) |
+| `/api/` | `/v1/health` for its status dot, and each route when its Try it is sent; its example answers are fixed text (`endpoints.ts`) |
 
 Every link to a validator's page — the overview's table and map, the map's
 line of events from `/v1/feed.atom`, a blob's assignments — carries the

@@ -330,8 +330,9 @@ and `mocha.observer.example.org`:
 sudo cp deploy/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
 ```
 
-Caddy serves the same static export on every site, proxies each site's
-`/api/*` to that network's `observer-api` port, and gets TLS certificates
+Caddy serves the same static export on every site (its `/api/` page
+documents the API), proxies each site's `/api/v1/*` to that network's
+`observer-api` port, and gets TLS certificates
 from Let's Encrypt. Delete the second site block if you run one network.
 
 , and the header shows
