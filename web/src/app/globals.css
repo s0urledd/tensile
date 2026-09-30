@@ -1239,6 +1239,9 @@ body { background: var(--canvas); }
 .api code { overflow-wrap: anywhere; }
 .api-hero { padding: 36px 0 0; }
 .api-hero-top { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; }
+/* the page's title carries the site's mark, as the header does */
+.api-title { display: flex; align-items: center; gap: 12px; }
+.api-title .mark-logo { color: var(--accent); flex: none; }
 .api-hero .lede { margin: 10px 0 0; font-size: 15px; line-height: 1.5; color: var(--text-2); max-width: 64ch; }
 .api-health { display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 11px 0 10px; border-radius: 999px; background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow-sm); font-size: var(--t-small); color: var(--text-2); white-space: nowrap; }
 .api-health .dot { width: 7px; height: 7px; margin: 0; }
@@ -1351,6 +1354,7 @@ body { background: var(--canvas); }
 @media (max-width: 640px) {
   .api-hero { padding-top: 22px; }
   .api-hero h1 { font-size: 26px; }
+  .api-title .mark-logo { width: 27px; height: 27px; }
   .api-base { flex-wrap: wrap; gap: 2px 8px; padding: 8px 8px 8px 12px; }
   .api-base-label { flex-basis: 100%; }
   .api-base code { font-size: 12px; }
