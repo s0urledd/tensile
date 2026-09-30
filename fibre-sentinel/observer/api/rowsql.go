@@ -1,6 +1,10 @@
 package api
 
-import "github.com/plsgiveup/fibre/fibre-sentinel/observer/rollup"
+import (
+	"strconv"
+
+	"github.com/plsgiveup/fibre/fibre-sentinel/observer/rollup"
+)
 
 // The statements the validator list reads its row figures with, one per
 // figure, over the rows started in [?1, ?2] (the window's start and end).
@@ -86,4 +90,35 @@ func valBeatsSQL(filter string) string {
 			MAX(CASE WHEN tcp_ok = 1 AND tls_ok = 1 THEN started_at END)
 		FROM reachability WHERE started_at >= ? AND started_at <= ? AND outcome <> 'PROBE_ERROR' AND +vantage = ?` + filter + `
 		GROUP BY validator_address`
+}
+
+// The statements the day partials add beside those: the same populations,
+// read as what a merge needs rather than as the figure itself.
+
+// valGapsSQL is the gap rows (NOT_PROBED, PROBE_ERROR) per validator and
+// outcome: the network's probe_gaps and probe_gaps_by_outcome, split by
+// validator.
+func valGapsSQL(filter string) string {
+	return `SELECT validator_address, outcome, COUNT(*) FROM probe_rows
+		WHERE started_at >= ? AND started_at <= ? AND classification IN ('NOT_PROBED','PROBE_ERROR')` + filter + `
+		GROUP BY validator_address, outcome`
+}
+
+// valLatencyHistSQL is the service-time population as a histogram per
+// validator: how many readings took each whole number of milliseconds.
+// The rank the figures read depends only on these counts.
+func valLatencyHistSQL(filter string) string {
+	return `SELECT validator_address, total_duration_ms, COUNT(*) FROM probes
+		WHERE ` + latencyPopSQL + filter + `
+		GROUP BY validator_address, total_duration_ms`
+}
+
+// valThroughputHistSQL is the transfer-rate population as a histogram per
+// validator: how many readings of a large enough shard moved each whole
+// number of bytes per second (the figure published), over a shard of at
+// least throughputMinBytes.
+func valThroughputHistSQL(filter string) string {
+	return `SELECT validator_address, bytes_returned * 1000 / download_ms, COUNT(*) FROM probes
+		WHERE bytes_returned >= ` + strconv.Itoa(throughputMinBytes) + ` AND download_ms > 0 AND ` + latencyPopSQL + filter + `
+		GROUP BY validator_address, bytes_returned * 1000 / download_ms`
 }

@@ -148,10 +148,16 @@ func memoKey(h string) bool {
 // publication committed between this and the statement is simply not in the
 // object, and the statement reads its record.
 func (m *originalRowsMemo) doc(ctx context.Context, db *sql.DB, start, end, now string) (string, error) {
+	return m.docWhere(ctx, db, loadPopulationSQL, start, end, now)
+}
+
+// docWhere is doc for the publications (aliased p) where selects: the
+// entries a statement over those publications reads.
+func (m *originalRowsMemo) docWhere(ctx context.Context, db *sql.DB, where string, args ...any) (string, error) {
 	if err := m.open(ctx, db); err != nil {
 		return "", err
 	}
-	rows, err := db.QueryContext(ctx, `SELECT p.promise_hash FROM publications p WHERE `+loadPopulationSQL, start, end, now)
+	rows, err := db.QueryContext(ctx, `SELECT p.promise_hash FROM publications p WHERE `+where, args...)
 	if err != nil {
 		return "", err
 	}

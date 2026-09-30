@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
 // Derived state kept across restarts.
@@ -99,7 +101,7 @@ type storeIdentity struct {
 	Schema  int    `json:"schema"`
 }
 
-func readStoreIdentity(ctx context.Context, db *sql.DB) (storeIdentity, error) {
+func readStoreIdentity(ctx context.Context, db store.Querier) (storeIdentity, error) {
 	var id storeIdentity
 	if err := db.QueryRowContext(ctx, `SELECT applied_at, (SELECT MAX(version) FROM schema_migrations)
 			FROM schema_migrations WHERE version = 1`).Scan(&id.Created, &id.Schema); err != nil {
@@ -151,7 +153,7 @@ type refusal string
 
 // checkHeader refuses a file that is not kind under definition for the
 // store db is.
-func checkHeader(ctx context.Context, db *sql.DB, h derivedHeader, kind, definition string) (refusal, error) {
+func checkHeader(ctx context.Context, db store.Querier, h derivedHeader, kind, definition string) (refusal, error) {
 	switch {
 	case h.Kind != kind:
 		return refusal("kind " + h.Kind + ", not " + kind), nil

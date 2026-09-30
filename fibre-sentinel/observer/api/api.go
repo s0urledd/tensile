@@ -1367,11 +1367,7 @@ func (s *Server) readObligations(ctx context.Context, win Window, now time.Time,
 	// so their arguments come first.
 	cutoff := provisionalCutoff(now)
 	args := append([]any{cutoff, cutoff}, s.obligationArgs(ctx, win, extraArgs...)...)
-	rows, err := s.q(ctx).QueryContext(ctx, `SELECT validator_address, `+obligationSums+`,
-			COALESCE(SUM(NOT pending AND faults > 0 AND first_fault > ?), 0),
-			MAX(CASE WHEN NOT pending AND faults > 0 AND first_fault > ? THEN first_fault END)
-		FROM (`+obligationBuckets+extra+`)
-			GROUP BY validator_address, promise_hash) GROUP BY validator_address`, args...)
+	rows, err := s.q(ctx).QueryContext(ctx, obligationPassSQL(extra), args...)
 	if err != nil {
 		return obligationPass{}, err
 	}
