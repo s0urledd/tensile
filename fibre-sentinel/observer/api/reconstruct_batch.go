@@ -71,9 +71,10 @@ type asOfPin struct {
 	now time.Time
 }
 
-func pinFor(win Window) asOfPin {
+// pinFor is win's pin, asked at now when win is live.
+func pinFor(win Window, now time.Time) asOfPin {
 	if !win.AsOf {
-		return asOfPin{now: time.Now()}
+		return asOfPin{now: now}
 	}
 	return asOfPin{at: win.endArg(), now: win.End}
 }

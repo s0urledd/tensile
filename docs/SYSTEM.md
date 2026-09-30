@@ -379,6 +379,27 @@ so it refreshes about every 35–45 s), and the windows of one cache are taken
 at different moments, so a longer window can count less than a shorter one
 until its next refresh. Persisted to `<data-dir>/snapshots/` (`-snapshot-dir`)
 so a restart serves the last figures at once; the warm-up then replaces them.
+Two files beside them keep what the snapshots derive from the whole record,
+`original-rows.json` (each publication's `original_rows`, read once from its
+record) and `endorsement-ledger.json` (each validator's newest
+endorsements), so a restart catches them up instead of rebuilding them
+(`derived.go`). Each is used only by a build that computes it the same way
+(a digest of its SQL and of a version of the Go that folds it), and only
+for the store it was computed from while that store still holds everything
+it was computed from: the store's creation time (`schema_migrations` version
+1), chain id and schema version (so a migration costs one rebuild), the
+newest row it read and that row's key, and its newest entries read again.
+The identity a file names is the one the store had when the memo or ledger
+began to be read, not when the file is written: an API still running when
+the collector migrates writes neither under the new schema, but drops both
+and builds them again from the migrated store.
+Each also carries a sha256 of its own body, so an edit or damage below the
+entries read again is caught too. Anything else, a file whose digest is not
+its body's, or one that does not parse, is refused and rebuilt from the
+store, and left for the next write to replace rather than removed, since
+another process may have written a good one in its place meanwhile. Each
+write goes to a temporary file of its own, synced and renamed into place.
+An older build does not read them.
 A file is served only under the revision it was computed under (holds,
 activation, `verdict.MethodologyVersion`) and for the vantage it was computed
 for. A window with nothing to serve makes a reader wait at most 8 s, then

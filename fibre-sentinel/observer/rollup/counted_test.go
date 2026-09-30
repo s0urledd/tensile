@@ -46,6 +46,7 @@ type validator struct {
 	missed     bool     // the prober missed the request (NOT_PROBED)
 	unendorsed bool     // rows assigned, no endorsement on the promise
 	late       bool     // the request started after must_serve_until (a stored row, phase grace)
+	unassigned bool     // the promise gives it no rows: its row is stored, it is not in the assignment
 }
 
 func served(name string, holds []int) validator {
@@ -100,13 +101,16 @@ func (r *readings) blob(needed, total int, vals ...validator) string {
 	p.Assignment.ProtocolParams.Fingerprint = fmt.Sprintf("fp-%d-%d", needed, total)
 	distinct := map[int]bool{}
 	for _, v := range vals {
+		if v.unassigned {
+			continue
+		}
 		p.Assignment.Validators = append(p.Assignment.Validators, scan.ValidatorAssignment{Address: v.name, VotingPower: 10, RowCount: len(v.holds), Rows: v.holds, Attested: !v.unendorsed})
 		p.Assignment.Sigma += len(v.holds)
 		for _, x := range v.holds {
 			distinct[x] = true
 		}
 	}
-	p.Assignment.Distinct, p.Assignment.ValidatorsWithRows = len(distinct), len(vals)
+	p.Assignment.Distinct, p.Assignment.ValidatorsWithRows = len(distinct), len(p.Assignment.Validators)
 	raw, _ := json.Marshal(p)
 	if _, err := r.st.UpsertPublication(p, raw); err != nil {
 		r.t.Fatal(err)
@@ -121,7 +125,7 @@ func (r *readings) blob(needed, total int, vals ...validator) string {
 			start, phase = msu.Add(5*time.Second), probe.PhaseGrace
 		}
 		m := probe.Measurement{SchemaVersion: probe.MeasurementSchemaVersion, Vantage: "ut-1", PromiseHash: hash, Commitment: hash,
-			MustServeUntil: msu, ValidatorAddress: v.name, ValidatorHost: v.name + ":7980", Assigned: true, Attested: !v.unendorsed,
+			MustServeUntil: msu, ValidatorAddress: v.name, ValidatorHost: v.name + ":7980", Assigned: !v.unassigned, Attested: !v.unendorsed,
 			AssignedRowCount: len(v.holds), ScheduleLabel: probe.EndReadLabel, ScheduledAt: at, StartedAt: start, FinishedAt: start.Add(time.Second),
 			Phase: phase, Outcome: v.out, Classification: v.cls}
 		switch {
@@ -232,6 +236,18 @@ func fixture(t *testing.T) (*readings, map[string]string) {
 	hashes["pair-unavailable"] = r.blob(8, 32, failed("t1", rowsFrom(0, 4), probe.ClassFault, probe.OutcomeNotFound),
 		served("u0", rowsFrom(4, 1)))
 	r.sameAs = time.Time{}
+	// A NOT_PROBED row says the prober missed the reading only when it is an
+	// assigned validator's, in the window. One that started after
+	// must_serve_until, or one of a validator the promise gives no rows,
+	// missed nothing: the blob is Unavailable, and the validator that did
+	// not serve is not served. The rows that came back are short of the
+	// cheap bound, so the missed test is what decides both.
+	lateMissed := validator{name: "g3", holds: rowsFrom(8, 4), missed: true}
+	lateMissed.late = true
+	hashes["missed-late"] = r.blob(8, 32, failed("g1", rowsFrom(0, 4), probe.ClassFault, probe.OutcomeNotFound),
+		served("g2", rowsFrom(4, 1)), lateMissed)
+	hashes["missed-no-rows"] = r.blob(8, 32, failed("h1", rowsFrom(0, 4), probe.ClassFault, probe.OutcomeNotFound),
+		served("h2", rowsFrom(4, 1)), validator{name: "h3", missed: true, unassigned: true})
 	return r, hashes
 }
 
@@ -285,6 +301,8 @@ func TestTheSQLAndTheGoTwinCountTheSameRows(t *testing.T) {
 		"straddle-short":   {"y1": "HEALTHY", "y3": "FAULT"},
 		"pair-available":   {"q1": "HEALTHY"},
 		"pair-unavailable": {"t1": "FAULT", "u0": "HEALTHY"},
+		"missed-late":      {"g1": "FAULT", "g2": "HEALTHY", "g3": "NOT_PROBED"},
+		"missed-no-rows":   {"h1": "FAULT", "h2": "HEALTHY", "h3": "NOT_PROBED"},
 	} {
 		for v, c := range want {
 			if got := sqlCls[hashes[blob]+"|"+v]; got != c {
@@ -304,6 +322,8 @@ func TestTheSQLAndTheGoTwinCountTheSameRows(t *testing.T) {
 		"straddle-short":   {verdict.BlobUnavailable, probe.ClientErrNotEnoughShards},
 		"pair-available":   {verdict.BlobAvailable, ""},
 		"pair-unavailable": {verdict.BlobUnavailable, probe.ClientErrNotEnoughShards},
+		"missed-late":      {verdict.BlobUnavailable, probe.ClientErrNotEnoughShards},
+		"missed-no-rows":   {verdict.BlobUnavailable, probe.ClientErrNotEnoughShards},
 	} {
 		h := hashes[blob]
 		if got := verdict.BlobReading(byPoint[h], blobs[h], false); got.Status != want[0] || got.Error != want[1] {
@@ -394,7 +414,7 @@ func TestTheSQLAndTheGoTwinAgreeOnTheObligations(t *testing.T) {
 			t.Errorf("%s: rolled %+v, Go %+v", a, got, byVal[a])
 		}
 	}
-	for _, v := range []string{"big", "gap", "nohost", "bigd", "e1", "t1", "b", "c", "d", "y3"} {
+	for _, v := range []string{"big", "gap", "nohost", "bigd", "e1", "t1", "b", "c", "d", "y3", "g1", "h1"} {
 		if b := byVal[v]; b.Broken != 1 {
 			t.Errorf("%s: %+v, want one not served", v, b)
 		}
@@ -404,12 +424,12 @@ func TestTheSQLAndTheGoTwinAgreeOnTheObligations(t *testing.T) {
 			t.Errorf("%s: %+v, want counted neither way", v, b)
 		}
 	}
-	for _, v := range []string{"short", "deferred", "u0", "q1", "x1", "y1", "m1"} {
+	for _, v := range []string{"short", "deferred", "u0", "q1", "x1", "y1", "m1", "g2", "h2"} {
 		if b := byVal[v]; b.Served != 1 {
 			t.Errorf("%s: %+v, want served", v, b)
 		}
 	}
-	for _, v := range []string{"never", "x2", "y2"} {
+	for _, v := range []string{"never", "x2", "y2", "g3", "h3"} {
 		if _, ok := byVal[v]; ok {
 			t.Errorf("%s: an obligation for a validator the reading never asked in the window", v)
 		}

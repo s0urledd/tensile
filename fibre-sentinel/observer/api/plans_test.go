@@ -121,11 +121,15 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 			[]string{"SCAN p"}},
 		c{"load memo lookup", `SELECT p.promise_hash, ` + originalRowsSQL + ` FROM json_each(?) j JOIN publications p ON p.promise_hash = j.value`, []any{"[]"},
 			[]string{"SEARCH p USING INDEX sqlite_autoindex_publications_1 (promise_hash=?)"}},
-		c{"endorsement ledger", `SELECT a.rowid, a.validator_address, a.attested, p.settlement_height, p.settlement_tx_index, p.settlement_time
-			FROM assignments a JOIN publications p ON p.promise_hash = a.promise_hash
-			WHERE a.rowid > ? AND a.rowid <= ? AND ` + recentPopulationSQL,
+		c{"endorsement ledger", ledgerRowsSQL + ` WHERE a.rowid > ? AND a.rowid <= ? AND ` + recentPopulationSQL,
 			[]any{0, 10}, []string{"SEARCH a USING INTEGER PRIMARY KEY (rowid>? AND rowid<?)", "SEARCH p USING INDEX sqlite_autoindex_publications_1 (promise_hash=?)"}},
+		// The checks a kept memo or ledger passes at a start (derived.go):
+		// the rows the file names, sought one by one, never a walk.
+		c{"endorsement ledger file", ledgerCheckSQL, []any{"[1,2]"},
+			[]string{"SEARCH a USING INTEGER PRIMARY KEY (rowid=?)", "SEARCH p USING INDEX sqlite_autoindex_publications_1 (promise_hash=?)"}},
+		c{"memo file", memoCheckSQL, []any{10, memoChecked}, []string{"SEARCH p USING INTEGER PRIMARY KEY (rowid<?)"}},
 	)
+	scans["endorsement ledger file"] = []string{"j"} // the list of rowids passed in
 	scans["load memo candidates"] = []string{"p"}
 	scans["load memo lookup"] = []string{"j"} // the list of hashes passed in
 	// The window's publications still waiting for a reading

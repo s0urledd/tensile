@@ -111,6 +111,35 @@ func TestTheSQLAndTheGoTwinCutTheWindowAtTheSamePoint(t *testing.T) {
 	}
 }
 
+// Whether the prober missed a request of a reading is asked of that
+// reading's rows, sought by (promise_hash, scheduled_at). As a list drawn
+// once per statement it walked every assigned in-window row the store
+// holds, so every obligation figure paid for the whole retained history;
+// and left to the planner, the correlated form seeks probes_window by
+// (assigned, phase), which is the same walk once per reading asked. The plan
+// is the assertion: a store in a test is too small for either to show.
+func TestTheMissedTestReadsOnlyItsReadingsRows(t *testing.T) {
+	st := openStore(t)
+	const lo, hi = "2026-09-01T00:00:00.000000000Z", "2026-09-02T00:00:00.000000000Z"
+	plan, err := st.QueryPlan(context.Background(), `SELECT `+rollup.ObligationSums+` FROM (`+rollup.ObligationBuckets+`)
+		GROUP BY validator_address, promise_hash)`, hi, lo, hi, hi, rollup.RowLowerBound(lo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(plan, "\n")
+	if !strings.Contains(joined, "SEARCH qm USING INDEX probes_promise (promise_hash=? AND scheduled_at=?)") {
+		t.Errorf("the missed test does not seek the reading's rows by probes_promise:\n%s", joined)
+	}
+	for _, step := range plan {
+		if strings.Contains(step, " qm ") && strings.Contains(step, "probes_window") {
+			t.Errorf("the missed test walks probes_window: %s\nplan:\n%s", step, joined)
+		}
+	}
+	if strings.Contains(joined, "LIST SUBQUERY") {
+		t.Errorf("the obligation statement draws a list over the whole store:\n%s", joined)
+	}
+}
+
 // The hold is applied twice, once in SQL and once in Go, and the two must
 // land on the same answer for every row. A disagreement here is worse than
 // a wrong answer: sentinel-recompute would report a divergence on every

@@ -97,7 +97,7 @@ func loadSQL(filter string) string {
 // loadByValidator computes loadStats per validator over win, for one
 // validator when only is set.
 func (s *Server) loadByValidator(ctx context.Context, win Window, only string) (map[string]loadStats, error) {
-	return s.loadByValidatorAt(ctx, win, only, heldAt(win, time.Now()))
+	return s.loadByValidatorAt(ctx, win, only, heldAt(win, s.now()))
 }
 
 // heldAt is the moment "held now" is asked at: now, or the pin on a pinned

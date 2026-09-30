@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"sync"
@@ -187,12 +189,42 @@ const recentPopulationSQL = `p.settlement_tx_code = 0 AND p.assignment_error = '
 // A tie on both, which the chain does not produce, is broken by rowid, newest
 // first, where the window function left it to the plan.
 //
+// With file set it is kept across restarts (derived.go): read back before
+// the first computation uses it, checked row by row against the store, and
+// written again after a refresh that moved it, at most every
+// ledgerSaveEvery. A restart then folds in the assignments stored since the
+// last write, as a refresh does.
+//
+// The file names the store the ledger was built from (store), not the store
+// as it is when the file is written: a migration between the two may have
+// rewritten rows at or below upTo, which the ledger never reads again. A
+// write that finds the store at another identity writes nothing and drops
+// the ledger, which the next refresh builds again from the store as it is
+// now.
+//
 // The zero value is ready to use.
 type endorsementLedger struct {
 	mu sync.Mutex
 	// upTo is the highest assignments rowid folded in.
 	upTo int64
 	vals map[string]*ledgerEntry
+	// store is the identity of the store the ledger was built from, and the
+	// one the file is written under: the file's, when open kept it, or the
+	// store's, read before the first row was, when refresh built it from
+	// nothing. Only kept with file set.
+	store storeIdentity
+
+	// file is where the ledger is kept, or "" for nowhere; opened says it
+	// has been read (or found missing, or refused) by this process,
+	// savedUpTo and savedAt are the file's upTo and when it was written,
+	// and origin says how this process's ledger began, which log (when
+	// set) is told.
+	file      string
+	log       logf
+	opened    bool
+	savedUpTo int64
+	savedAt   time.Time
+	origin    string
 }
 
 type ledgerEntry struct {
@@ -200,14 +232,24 @@ type ledgerEntry struct {
 	// recentEndorsements of them.
 	top []ledgerRow
 	// last is the settlement time of the newest endorsement; set says there
-	// is one.
-	last string
-	set  bool
+	// is one, and lastRow is the assignment it was read from.
+	last    string
+	set     bool
+	lastRow int64
 }
 
 type ledgerRow struct {
 	height, txIndex, rowid, attested int64
 }
+
+// ledgerVersion names how the ledger folds rows in: the order newer puts
+// them in, what add keeps (the newest recentEndorsements rows, and the
+// newest endorsement by settlement time, the first one read on a tie), and
+// which rows refresh hands it. It must be bumped whenever any of them
+// changes, so that a file folded the old way is rebuilt rather than caught
+// up (ledgerDefinition). TestTheLedgerFoldIsTheOneItsVersionNames holds the
+// fold to the version.
+const ledgerVersion = 1
 
 // newer orders ledger rows newest first.
 func (r ledgerRow) newer(o ledgerRow) bool {
@@ -224,7 +266,7 @@ func (r ledgerRow) newer(o ledgerRow) bool {
 // so a refresh that failed half way can be run again.
 func (e *ledgerEntry) add(r ledgerRow, at string) {
 	if r.attested == 1 && (!e.set || at > e.last) {
-		e.last, e.set = at, true
+		e.last, e.set, e.lastRow = at, true, r.rowid
 	}
 	i := 0
 	for i < len(e.top) && e.top[i].newer(r) {
@@ -244,6 +286,263 @@ func (e *ledgerEntry) add(r ledgerRow, at string) {
 	}
 }
 
+// ledgerRowsSQL reads assignments as the ledger folds them in, from a and
+// its publication p; the caller appends the WHERE clause.
+const ledgerRowsSQL = `SELECT a.rowid, a.validator_address, a.attested,
+			p.settlement_height, p.settlement_tx_index, p.settlement_time
+		FROM assignments a JOIN publications p ON p.promise_hash = a.promise_hash`
+
+// ledgerCheckSQL reads again, as the ledger folds them in, the assignments
+// a file names (?, a JSON list of rowids), each sought by its rowid.
+const ledgerCheckSQL = `SELECT a.rowid, a.validator_address, a.attested,
+			p.settlement_height, p.settlement_tx_index, p.settlement_time
+		FROM json_each(?) j CROSS JOIN assignments a ON a.rowid = j.value JOIN publications p ON p.promise_hash = a.promise_hash
+		WHERE ` + recentPopulationSQL
+
+// ledgerSaveEvery is how often a ledger that moved is written out.
+const ledgerSaveEvery = time.Minute
+
+// ledgerDefinition is what the ledger is computed with: the rows it reads,
+// how many it keeps, and the fold (ledgerVersion).
+var ledgerDefinition = definitionOf(ledgerRowsSQL, recentPopulationSQL, strconv.Itoa(recentEndorsements),
+	"ledger "+strconv.Itoa(ledgerVersion))
+
+// ledgerFile is the ledger on disk.
+type ledgerFile struct {
+	derivedHeader
+	// UpTo is the highest assignments rowid folded in, and UpToRow that
+	// assignment's key.
+	UpTo    int64 `json:"up_to"`
+	UpToRow struct {
+		PromiseHash string `json:"promise_hash"`
+		Validator   string `json:"validator_address"`
+	} `json:"up_to_row"`
+	Validators map[string]ledgerFileEntry `json:"validators"`
+}
+
+type ledgerFileEntry struct {
+	// Top is ledgerEntry.top, each row as [height, tx index, rowid,
+	// attested].
+	Top     [][4]int64 `json:"top"`
+	Last    *string    `json:"last,omitempty"`
+	LastRow int64      `json:"last_row,omitempty"`
+}
+
+// open reads the ledger's file the first time the ledger is used, and keeps
+// it if the store is still the one it was computed from (derived.go):
+// otherwise the ledger is built from every assignment, as it was before
+// there were files, and the file is left for its first write to replace.
+// An error is a query that failed, and the next computation tries again.
+// The caller holds l.mu.
+func (l *endorsementLedger) open(ctx context.Context, db *sql.DB) error {
+	if l.opened {
+		return nil
+	}
+	if l.file == "" {
+		l.opened, l.origin = true, "not kept on disk"
+		return nil
+	}
+	t0 := time.Now()
+	sweepDerivedTemps(l.file, t0)
+	f, vals, why, err := l.load(ctx, db)
+	if err != nil {
+		return err
+	}
+	l.opened = true
+	defer func() {
+		if l.log != nil {
+			l.log("endorsement ledger: %s (%s)", l.origin, time.Since(t0).Round(time.Millisecond))
+		}
+	}()
+	switch {
+	case why != "":
+		l.origin = "built from the store: " + l.file + " refused: " + string(why)
+		return nil
+	case vals == nil:
+		l.origin = "built from the store: no " + l.file
+		return nil
+	}
+	l.upTo, l.vals, l.store = f.UpTo, vals, f.Store
+	l.savedUpTo, l.savedAt = f.UpTo, time.Now()
+	l.origin = fmt.Sprintf("loaded %d validators from %s (assignments through rowid %d)", len(vals), l.file, f.UpTo)
+	return nil
+}
+
+// load reads and checks the file: the ledger when it may be used, a refusal
+// when it may not, nothing when there is none.
+func (l *endorsementLedger) load(ctx context.Context, db *sql.DB) (ledgerFile, map[string]*ledgerEntry, refusal, error) {
+	var f ledgerFile
+	ok, why := readDerived(l.file, &f)
+	if !ok {
+		return f, nil, why, nil
+	}
+	if why, err := checkHeader(ctx, db, f.derivedHeader, "endorsement-ledger", ledgerDefinition); why != "" || err != nil {
+		return f, nil, why, err
+	}
+	refuse := func(format string, args ...any) (ledgerFile, map[string]*ledgerEntry, refusal, error) {
+		return f, nil, refusal(fmt.Sprintf(format, args...)), nil
+	}
+	if f.UpTo < 0 {
+		return refuse("up_to %d", f.UpTo)
+	}
+	// The mark: the newest assignment folded in must be the same one now,
+	// under the same rowid.
+	if f.UpTo > 0 {
+		var h, v string
+		switch err := db.QueryRowContext(ctx, `SELECT promise_hash, validator_address FROM assignments WHERE rowid = ?`, f.UpTo).Scan(&h, &v); {
+		case errors.Is(err, sql.ErrNoRows):
+			return refuse("the store has no assignment %d: it is older than the file", f.UpTo)
+		case err != nil:
+			return f, nil, "", err
+		case h != f.UpToRow.PromiseHash || v != f.UpToRow.Validator:
+			return refuse("assignment %d is another one now", f.UpTo)
+		}
+	}
+	// Every row the ledger publishes is read again: it must still be in
+	// the population, the same validator's, with the same height,
+	// transaction index and endorsement, and the newest endorsement's
+	// settlement time must be what the ledger says.
+	vals := map[string]*ledgerEntry{}
+	type want struct {
+		addr string
+		row  ledgerRow
+		at   *string
+	}
+	wants := map[int64][]want{}
+	var ids []int64
+	for addr, fe := range f.Validators {
+		// A validator is in the ledger from its first row on, and has an
+		// endorsement once any row it holds was one.
+		if len(fe.Top) == 0 || len(fe.Top) > recentEndorsements {
+			return refuse("%s keeps %d rows", addr, len(fe.Top))
+		}
+		e := &ledgerEntry{}
+		for i, t := range fe.Top {
+			r := ledgerRow{height: t[0], txIndex: t[1], rowid: t[2], attested: t[3]}
+			if r.rowid <= 0 || r.rowid > f.UpTo || (i > 0 && !e.top[i-1].newer(r)) {
+				return refuse("%s's rows are out of order or past up_to", addr)
+			}
+			if r.attested == 1 && fe.Last == nil {
+				return refuse("%s has an endorsement in its rows and none recorded", addr)
+			}
+			e.top = append(e.top, r)
+			wants[r.rowid] = append(wants[r.rowid], want{addr: addr, row: r})
+			ids = append(ids, r.rowid)
+		}
+		if fe.Last != nil {
+			if fe.LastRow <= 0 || fe.LastRow > f.UpTo {
+				return refuse("%s's newest endorsement is past up_to", addr)
+			}
+			e.last, e.set, e.lastRow = *fe.Last, true, fe.LastRow
+			wants[fe.LastRow] = append(wants[fe.LastRow], want{addr: addr, row: ledgerRow{rowid: fe.LastRow, attested: 1}, at: fe.Last})
+			ids = append(ids, fe.LastRow)
+		}
+		vals[addr] = e
+	}
+	list, err := json.Marshal(ids)
+	if err != nil {
+		return f, nil, "", err
+	}
+	rows, err := db.QueryContext(ctx, ledgerCheckSQL, string(list))
+	if err != nil {
+		return f, nil, "", err
+	}
+	defer rows.Close()
+	seen := map[int64]bool{}
+	for rows.Next() {
+		var addr, at string
+		var r ledgerRow
+		if err := rows.Scan(&r.rowid, &addr, &r.attested, &r.height, &r.txIndex, &at); err != nil {
+			return f, nil, "", err
+		}
+		if seen[r.rowid] {
+			continue // listed twice: in the top rows and as the newest endorsement
+		}
+		seen[r.rowid] = true
+		for _, w := range wants[r.rowid] {
+			switch {
+			case addr != w.addr:
+				return refuse("assignment %d is %s's now, not %s's", r.rowid, addr, w.addr)
+			case w.at != nil:
+				if r.attested != 1 || at != *w.at {
+					return refuse("%s's newest endorsement, assignment %d, is not what the file says", w.addr, r.rowid)
+				}
+			case r != w.row:
+				return refuse("assignment %d of %s is not what the file says", r.rowid, w.addr)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return f, nil, "", err
+	}
+	for id := range wants {
+		if !seen[id] {
+			return refuse("assignment %d is no longer one the ledger reads", id)
+		}
+	}
+	return f, vals, "", nil
+}
+
+// save writes the ledger out when it has moved since the last write and
+// ledgerSaveEvery has passed; force writes whenever it has moved. For a
+// store no longer at the identity the ledger was built from nothing is
+// written, and the ledger is dropped (drop). The caller holds l.mu.
+func (l *endorsementLedger) save(ctx context.Context, db *sql.DB, force bool) error {
+	if l.file == "" || !l.opened || l.vals == nil || l.upTo == l.savedUpTo {
+		return nil
+	}
+	if !force && !l.savedAt.IsZero() && time.Since(l.savedAt) < ledgerSaveEvery {
+		return nil
+	}
+	id, err := readStoreIdentity(ctx, db)
+	if err != nil {
+		return err
+	}
+	if id != l.store {
+		l.drop(id)
+		return nil
+	}
+	f := ledgerFile{UpTo: l.upTo, Validators: make(map[string]ledgerFileEntry, len(l.vals))}
+	f.derivedHeader = derivedHeader{Kind: "endorsement-ledger", Format: derivedFormat, Definition: ledgerDefinition, Store: l.store}
+	if l.upTo > 0 {
+		if err := db.QueryRowContext(ctx, `SELECT promise_hash, validator_address FROM assignments WHERE rowid = ?`, l.upTo).
+			Scan(&f.UpToRow.PromiseHash, &f.UpToRow.Validator); err != nil {
+			return err
+		}
+	}
+	for addr, e := range l.vals {
+		fe := ledgerFileEntry{Top: make([][4]int64, 0, len(e.top))}
+		for _, r := range e.top {
+			fe.Top = append(fe.Top, [4]int64{r.height, r.txIndex, r.rowid, r.attested})
+		}
+		if e.set {
+			last := e.last
+			fe.Last, fe.LastRow = &last, e.lastRow
+		}
+		f.Validators[addr] = fe
+	}
+	if err := writeDerived(l.file, f); err != nil {
+		return err
+	}
+	l.savedUpTo, l.savedAt = l.upTo, time.Now()
+	return nil
+}
+
+// drop forgets the ledger, for a store no longer at the identity it was
+// built from (save), which is now id: a migration since may have rewritten
+// rows at or below upTo, which refresh never reads again, and a file of it
+// would be believed under the identity the store has now. The next refresh
+// builds it again from the store, and the next save writes that. The caller
+// holds l.mu.
+func (l *endorsementLedger) drop(id storeIdentity) {
+	l.origin = "built from the store again: " + storeChange(l.store, id)
+	l.upTo, l.vals, l.store = 0, nil, storeIdentity{}
+	l.savedUpTo, l.savedAt = 0, time.Time{}
+	if l.log != nil {
+		l.log("endorsement ledger: %s", l.origin)
+	}
+}
+
 // refresh folds in every assignment stored since the last refresh. The
 // caller holds l.mu.
 func (l *endorsementLedger) refresh(ctx context.Context, db *sql.DB) error {
@@ -252,17 +551,22 @@ func (l *endorsementLedger) refresh(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	if hi < l.upTo || l.vals == nil {
-		// Fewer rows than already read: the table is not the one this
-		// ledger was built from. Start again.
-		l.upTo, l.vals = 0, map[string]*ledgerEntry{}
+		// Nothing built yet, or fewer rows than already read: the table is
+		// not the one this ledger was built from. Start again, under the
+		// identity the store has before the first row is read.
+		var id storeIdentity
+		if l.file != "" {
+			var err error
+			if id, err = readStoreIdentity(ctx, db); err != nil {
+				return err
+			}
+		}
+		l.upTo, l.vals, l.store = 0, map[string]*ledgerEntry{}, id
 	}
 	if hi == l.upTo {
 		return nil
 	}
-	rows, err := db.QueryContext(ctx, `SELECT a.rowid, a.validator_address, a.attested,
-			p.settlement_height, p.settlement_tx_index, p.settlement_time
-		FROM assignments a JOIN publications p ON p.promise_hash = a.promise_hash
-		WHERE a.rowid > ? AND a.rowid <= ? AND `+recentPopulationSQL, l.upTo, hi)
+	rows, err := db.QueryContext(ctx, ledgerRowsSQL+` WHERE a.rowid > ? AND a.rowid <= ? AND `+recentPopulationSQL, l.upTo, hi)
 	if err != nil {
 		return err
 	}
@@ -292,8 +596,21 @@ func (l *endorsementLedger) refresh(ctx context.Context, db *sql.DB) error {
 func (l *endorsementLedger) fill(ctx context.Context, db *sql.DB, only string, out map[string]signingStats) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if err := l.open(ctx, db); err != nil {
+		return err
+	}
 	if err := l.refresh(ctx, db); err != nil {
 		return err
+	}
+	// Not being able to write the file costs the next start a longer
+	// catch-up, not this computation its answer.
+	_ = l.save(ctx, db, false)
+	if l.vals == nil {
+		// save dropped it: the store is not the one it was built from.
+		// Built again before it answers.
+		if err := l.refresh(ctx, db); err != nil {
+			return err
+		}
 	}
 	for addr, e := range l.vals {
 		if only != "" && addr != only {

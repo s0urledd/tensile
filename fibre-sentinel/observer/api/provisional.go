@@ -38,7 +38,6 @@ package api
 // badge.
 
 import (
-	"context"
 	"sort"
 	"time"
 
@@ -72,37 +71,14 @@ func isProvisional(counted, startedAt string, now time.Time) bool {
 	return counted == "FAULT" && startedAt > provisionalCutoff(now)
 }
 
-// provisionalByValidator counts, per validator, the broken obligations of the
-// window whose earliest FAULT is still settling at now. It reads the same
-// buckets the obligation counts do, with the same filter, so the count is a
-// subset of obligations.broken by construction.
-func (s *Server) provisionalByValidator(ctx context.Context, win Window, now time.Time, extra string, extraArgs ...any) (map[string]*provisionalFaults, error) {
-	out := map[string]*provisionalFaults{}
-	if win.End.Before(now.Add(-verdict.FaultSettling)) {
-		return out, nil // no row this window admits can still be settling
-	}
-	args := append(s.obligationArgs(win, extraArgs...), provisionalCutoff(now))
-	// obligationBuckets leaves its inner FROM ( open for the caller's
-	// filters, hence the ")" before its GROUP BY, as in obligationsWhere.
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT validator_address, COUNT(*), MAX(first_fault) FROM (`+obligationBuckets+extra+`)
-			GROUP BY validator_address, promise_hash)
-		WHERE NOT pending AND faults > 0 AND first_fault > ?
-		GROUP BY validator_address`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var addr, youngest string
-		var n int64
-		if err := rows.Scan(&addr, &n, &youngest); err != nil {
-			return nil, err
-		}
-		out[addr] = newProvisional(n, youngest)
-	}
-	return out, rows.Err()
-}
+// The count per validator is the broken obligations of the window whose
+// earliest FAULT is still settling at now: read off the same buckets as the
+// obligation counts, in the same pass (Server.readObligations), so it is a
+// subset of obligations.broken by construction. A window that ended before
+// provisionalCutoff has none, since no row it admits started after it.
 
+// newProvisional is the provisional part of n broken obligations whose
+// youngest first fault started at youngest.
 func newProvisional(n int64, youngest string) *provisionalFaults {
 	until := youngest
 	if t, err := time.Parse(store.TimeLayout, youngest); err == nil {
