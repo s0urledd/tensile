@@ -1360,10 +1360,12 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .rb-read { display: flex; flex-direction: column; }
 .rb-read .ov-links { margin-top: 16px; }
 /* Tensile's own reading under the chain's figures: one quiet line under a hairline, "Observed by Tensile" as its prefix */
-.ob-row { display: flex; flex-wrap: wrap; align-items: baseline; margin: 0; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12px; line-height: 18px; color: var(--text-3); }
+.ob-row { display: flex; flex-wrap: wrap; align-items: baseline; margin: 0; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12px; line-height: 18px; color: var(--text-3); overflow-x: clip; }
 .ob-row > span { white-space: nowrap; }
-.ob-fig::before { content: "·"; margin: 0 7px; color: var(--text-3); }
-.ob-pre { display: inline-flex; align-items: center; gap: 5px; align-self: center; }
+/* the separator hangs left of the figure: where the figure wraps under the prefix (a narrow column), it falls outside the row and is clipped */
+.ob-fig { margin-left: -18px; }
+.ob-fig::before { content: "·"; display: inline-block; width: 18px; text-align: center; color: var(--text-3); }
+.ob-pre { display: inline-flex; align-items: center; gap: 5px; align-self: center; margin-right: 18px; }
 .ob-pre svg { flex: none; color: var(--accent-ink); }
 .ob-fig b { margin-left: 2px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
 .ob-fig b.absent { color: var(--text-3); }
