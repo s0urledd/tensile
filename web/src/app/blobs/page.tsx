@@ -163,6 +163,7 @@ function Page() {
         <WindowSwitch value={win} onChange={setWin} />
       </div>
       <PreLive meta={meta} />
+      {m.error && <div className="note hold"><span className="label">Observer</span><p>Cannot reach the observer API: {m.error}. Nothing below is current.</p></div>}
       <BlobsDeck win={win} onWin={setWin} market={m.data} newest={newest} skew={skew} />
 
       <section id="list" className="listing lg-list">
