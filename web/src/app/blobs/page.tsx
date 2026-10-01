@@ -181,8 +181,8 @@ function Page() {
         {tab === "blobs"
           ? (
             <Ledger feed={feed} live={live} skew={skew} days={days} onNs={setNs}>
-              {(total) => <Pager total={total} page={page} size={SIZE} maxPages={MAX_PAGE} onPage={setPage}
-                noun={q ? (total === 1 ? "settlement with this filter" : "settlements with this filter") : total === 1 ? "settlement on record" : "settlements on record"} />}
+              {(total) => (total === 0 && page === 1 ? null : <Pager total={total} page={page} size={SIZE} maxPages={MAX_PAGE} onPage={setPage}
+                noun={q ? (total === 1 ? "settlement with this filter" : "settlements with this filter") : total === 1 ? "settlement on record" : "settlements on record"} />)}
             </Ledger>
           )
           : <Namespaces rows={nss.data?.namespaces ?? null} truncated={!!nss.data?.truncated} onPick={showNs} />}
