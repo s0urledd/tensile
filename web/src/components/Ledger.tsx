@@ -1,21 +1,21 @@
 "use client";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { API_BASE, type Blob, int, bytes, tia, pctOf, nsDisplay, utc, utcWord } from "@/lib/api";
+import { API_BASE, type Blob, int, bytes, tia, pctOf, nsDisplay, utcWord } from "@/lib/api";
 import { lane } from "@/lib/status";
 import { unit } from "@/components/Unit";
 import { Eye } from "@/components/Metrics";
 import { Frac } from "@/components/CurrentProviders";
 import Ident from "@/components/Ident";
 import { reducedMotion } from "@/components/RollNumber";
-import { age, dayMonth } from "@/components/BlobsDeck";
+import { age, monthDayTime } from "@/components/BlobsDeck";
 
 /**
- * The Blobs list as a ledger. A band opens each UTC day with the day's own
- * totals; under it the blobs, newest first, each a row of its own with its
- * height, when it settled and how long ago, whatever block it shares with
- * the rows around it. Figures are right-aligned on their digits. Endorsed
+ * The Blobs list as a ledger: the blobs, newest first, each a row of its own
+ * with its height, when it settled (the day and the second, UTC) and how
+ * long ago, whatever block or day it shares with the rows around it.
+ * Figures are right-aligned on their digits. Endorsed
  * is the share of voting power with a short meter whose tick is the ⅔ a
  * settlement needs. Tensile's own reading has a lane of its own at the end,
  * empty until Tensile has read the blob.
@@ -172,23 +172,6 @@ function take(v: Shown, f: Feed): Shown {
   return { path: f.path, rows: f.rows, total: f.total, loaded: true, move: fresh.size ? { id: (v.move?.id ?? 0) + 1, fresh } : v.move };
 }
 
-/** a day's settlements on record and their blob size, with when that was computed */
-export type DayTotal = { settlements: number; bytes: number; at?: string };
-
-const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-/** "Today · 1 Oct", "Yesterday · 30 Sep", "Mon 28 Sep 2026" */
-function dayName(day: string, now: number): string {
-  const d = new Date(day + "T00:00:00Z");
-  const today = new Date(now).toISOString().slice(0, 10), yday = new Date(now - 86400_000).toISOString().slice(0, 10);
-  if (day === today) return `Today · ${dayMonth(d)}`;
-  if (day === yday) return `Yesterday · ${dayMonth(d)}`;
-  return `${WD[d.getUTCDay()]} ${dayMonth(d)} ${d.getUTCFullYear()}`;
-}
-
-type Line =
-  | { kind: "day"; day: string; name: string; sum: DayTotal | null }
-  | { kind: "blob"; b: Blob; age: string | null };
-
 /** the publisher of a row: who paid, else who submitted it */
 const payer = (b: Blob) => b.publisher || b.signer;
 
@@ -217,7 +200,7 @@ const Row = memo(function Row({ b, age: ag, fresh, onNs, onOpen }: RowProps) {
     <tr className={`row${fresh ? " fresh" : ""}`} data-h={b.promise_hash}
       onClick={(e) => { if (!(e.target as HTMLElement).closest("a, button") && !window.getSelection()?.toString()) onOpen(e, href); }}>
       <td className="c-h">{int(b.settlement_height)}<Link className="rc" href={href} tabIndex={-1} aria-hidden="true" /></td>
-      <td className="c-t"><span title={utcWord(b.settlement_time)}><span className="tm">{utc(b.settlement_time).slice(11, 19)}</span>{ag && <span className="ag">{ag}</span>}</span></td>
+      <td className="c-t"><span title={utcWord(b.settlement_time)}><span className="tm">{monthDayTime(b.settlement_time)}</span>{ag && <span className="ag">{ag}</span>}</span></td>
       <td className="c-b">
         <Link href={href} title={b.promise_hash} aria-label={`Blob ${b.promise_hash.slice(0, 10)}, height ${int(b.settlement_height)}`}>{b.promise_hash.slice(0, 6)}<span className="el">…</span>{b.promise_hash.slice(-4)}</Link>
         <span className="ht">#{int(b.settlement_height)}</span>
@@ -243,19 +226,14 @@ const Row = memo(function Row({ b, age: ag, fresh, onNs, onOpen }: RowProps) {
   );
 });
 
-/** the first page's places while it loads: a day band and a page of rows, each cell's shape at its size */
+/** the first page's places while it loads: a page of rows, each cell's shape at its size */
 function Placeholders({ rows }: { rows: number }) {
   return (
     <>
-      <tr className="day">
-        <td colSpan={8}><span className="sr-only">Loading…</span><span className="wait" aria-hidden="true">Mon 28 Sep 2026</span></td>
-        <td className="gap" aria-hidden="true" />
-        <td className="tn" aria-hidden="true" />
-      </tr>
       {Array.from({ length: rows }, (_, i) => (
         <tr key={i} className="row sk" aria-hidden="true">
           <td className="c-h"><span className="wait">1,204,085</span></td>
-          <td className="c-t"><span className="wait">20:48:38</span></td>
+          <td className="c-t"><span className="wait">Sep 28 20:48:38</span></td>
           <td className="c-b"><span className="wait">36f68b…2417</span><span className="ht"><span className="wait">#1,204,085</span></span></td>
           <td className="c-ns"><span className="wait">sov-niko-a</span></td>
           <td className="c-p"><span className="wait">celestia ••• 9snr</span></td>
@@ -271,7 +249,7 @@ function Placeholders({ rows }: { rows: number }) {
   );
 }
 
-export default function Ledger({ feed, size, live, skew, days, onNs, children }: {
+export default function Ledger({ feed, size, live, skew, onNs, children }: {
   feed: Feed;
   /** the rows a page holds: as many places are kept while the first one loads */
   size: number;
@@ -279,8 +257,6 @@ export default function Ledger({ feed, size, live, skew, days, onNs, children }:
   live: boolean;
   /** the observer's clock minus the reader's, for the ages */
   skew: number;
-  /** a day's totals, or null when they are not the list's (a filtered list) or not on record yet */
-  days: (day: string) => DayTotal | null;
   onNs: (ns: string) => void;
   /** the pager, under the table; it counts what the table shows */
   children?: (total: number) => React.ReactNode;
@@ -328,21 +304,17 @@ export default function Ledger({ feed, size, live, skew, days, onNs, children }:
   };
 
   // ---- the move: the rows that were there slide down by what came in, once, and what came in glows once ----
-  const headDay = useRef<string | null>(null);
   useLayoutEffect(() => {
     const tb = bodyRef.current, mv = shown.move;
     if (!tb || !mv || !motion) return;
     const trs = [...tb.children] as HTMLElement[];
-    // a day band that was already on top stays where it is; the rows slide out from under it
-    const keep = trs[0]?.dataset.day && trs[0].dataset.day === headDay.current ? 1 : 0;
     const firstOld = trs.find((tr) => tr.dataset.h && !mv.fresh.has(tr.dataset.h));
-    if (!firstOld || keep >= trs.length) return;
-    const shift = firstOld.offsetTop - trs[keep].offsetTop;
+    if (!firstOld) return;
+    const shift = firstOld.offsetTop - trs[0].offsetTop;
     if (shift <= 0) return;
-    const anims = trs.slice(keep).map((tr) => tr.animate([{ transform: `translateY(${-shift}px)` }, { transform: "none" }], { duration: SLIDE_MS, easing: "cubic-bezier(.2, .8, .2, 1)" }));
+    const anims = trs.map((tr) => tr.animate([{ transform: `translateY(${-shift}px)` }, { transform: "none" }], { duration: SLIDE_MS, easing: "cubic-bezier(.2, .8, .2, 1)" }));
     return () => anims.forEach((a) => a.cancel());
   }, [shown.move?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-  useLayoutEffect(() => { headDay.current = (bodyRef.current?.firstElementChild as HTMLElement | null)?.dataset.day ?? null; });
 
   // ---- the ages, on the observer's clock: every second while the newest is under a minute old ----
   const [now, setNow] = useState(0);
@@ -359,19 +331,6 @@ export default function Ledger({ feed, size, live, skew, days, onNs, children }:
     tick();
     return () => window.clearTimeout(t);
   }, [shown.rows]);
-
-  const lines = useMemo(() => {
-    const out: Line[] = [];
-    const clock = now || Date.now();
-    let prev: Blob | null = null;
-    for (const b of shown.rows) {
-      const day = b.settlement_time.slice(0, 10);
-      if (!prev || prev.settlement_time.slice(0, 10) !== day) out.push({ kind: "day", day, name: dayName(day, clock), sum: days(day) });
-      out.push({ kind: "blob", b, age: now ? age(now - Date.parse(b.settlement_time)) : null });
-      prev = b;
-    }
-    return out;
-  }, [shown.rows, now, days]);
 
   const router = useRouter();
   const onOpen = useCallback((e: React.MouseEvent, href: string) => {
@@ -397,6 +356,7 @@ export default function Ledger({ feed, size, live, skew, days, onNs, children }:
           )}
         </div>
         <div className={`lg-tw${waiting ? " is-waiting" : ""}`} aria-busy={waiting || !shown.loaded}>
+          {!shown.loaded && !feed.error && <span className="sr-only">Loading…</span>}
           <table className="lg-t">
             <thead>
               <tr>
@@ -417,18 +377,9 @@ export default function Ledger({ feed, size, live, skew, days, onNs, children }:
                 ? <tr className="lg-empty"><td colSpan={10}>{feed.refused ? `${feed.error.charAt(0).toUpperCase()}${feed.error.slice(1)}.` : `The observer API is not answering (${feed.error}).`}</td></tr>
                 : <Placeholders rows={size} />)}
               {shown.loaded && shown.rows.length === 0 && <tr className="lg-empty"><td colSpan={10}>No blob recorded{shown.path.includes("&namespace=") || shown.path.includes("&publisher=") ? " with this filter" : ""}.</td></tr>}
-              {lines.map((l) => l.kind === "day"
-                ? (
-                  <tr key={`d${l.day}`} className="day" data-day={l.day}>
-                    <td colSpan={8}>
-                      {l.name}
-                      {l.sum && <span className="sum" title={l.sum.at ? `On record that day, as of ${utc(l.sum.at).slice(11, 16)} UTC` : undefined}>{int(l.sum.settlements)} settlement{l.sum.settlements === 1 ? "" : "s"} · {bytes(l.sum.bytes)}</span>}
-                    </td>
-                    <td className="gap" aria-hidden="true" />
-                    <td className="tn" aria-hidden="true" />
-                  </tr>
-                )
-                : <Row key={l.b.promise_hash} b={l.b} age={l.age} fresh={!!fresh?.has(l.b.promise_hash)} onNs={onNs} onOpen={onOpen} />)}
+              {shown.rows.map((b) => (
+                <Row key={b.promise_hash} b={b} age={now ? age(now - Date.parse(b.settlement_time)) : null} fresh={!!fresh?.has(b.promise_hash)} onNs={onNs} onOpen={onOpen} />
+              ))}
             </tbody>
           </table>
         </div>
