@@ -1,5 +1,5 @@
 "use client";
-import { Suspense, useCallback, useState } from "react";
+import { Suspense, useCallback, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import PreLive from "@/components/PreLive";
 import { useApi, type Meta, type Market, type Blob, type NamespaceRow, type Publisher, type Tip, int, bytes, nsDisplay, shortHex, utcWord } from "@/lib/api";
@@ -107,10 +107,14 @@ function Page() {
   const tip = useApi<Tip>("/v1/tip", 4000); // the header's stream: no request of its own
   const skew = tip.data?.server_time && tip.fetchedAt ? Date.parse(tip.data.server_time) - Date.parse(tip.fetchedAt) : 0;
   const feed = useLedger(`/v1/blobs?limit=${SIZE}&offset=${offset}${q}`, live, tip.data?.height, skew);
-  // the chain's newest blobs, for the deck's rate and last blob: the list's own while it shows them, else a read of their own
+  // the chain's newest blobs, for the deck's rate and last blob: the list's own while it shows them, else a read of their own;
+  // the last ones read stand while another page or filter loads, so the deck does not blank
   const plain = live && !q;
   const head = useApi<{ blobs: Blob[] }>(plain ? null : `/v1/blobs?limit=${SIZE}`);
-  const newest = plain ? (feed.loaded ? feed.rows : null) : head.data?.blobs ?? null;
+  const newestRead = plain ? (feed.loaded ? feed.rows : null) : head.data?.blobs ?? null;
+  const newestKept = useRef<Blob[] | null>(null);
+  if (newestRead) newestKept.current = newestRead;
+  const newest = newestRead ?? newestKept.current;
 
   const { data: meta } = useApi<Meta>("/v1/meta");
   const m = useApi<Market>(`/v1/market?window=${win}`);
