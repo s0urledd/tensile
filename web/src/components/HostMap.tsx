@@ -157,17 +157,24 @@ function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
 }
 
 /**
- * each country's box in map units, from its outline (absolute M, relative m and l, z): a hosted
- * country narrower than SPOT_MIN px on screen, so no wider than the badge over it (Singapore, Hong Kong,
- * South Korea, Slovenia, the Baltics), is drawn as a soft spot of its tint as well, SPOT_R px across its
- * middle, so it reads as hosted as the larger ones do; zoomed in far enough, its own outline takes over
+ * each country's middle and size in map units, and the points of its outline, from the outline itself
+ * (absolute M, relative m and l, z). A hosted country narrower than SPOT_MIN px on screen, so no wider
+ * than the badge over it, would vanish under the badge. Where a larger hosted country's outline comes
+ * within SPOT_NEAR px of its middle, that one's tint already makes the place read blue (Slovenia, the
+ * Baltics, South Korea beside Japan); a small country on its own (Singapore, Hong Kong) is drawn as a pool
+ * of its tint instead, SPOT_R px around its middle, solid well past the badge's edge and fading out.
+ * Zoomed in far enough, its own outline takes over.
  */
-const SPOT_MIN = 30, SPOT_R = 28;
-const BOXES: Map<string, { x: number; y: number; e: number }> = (() => {
-  const out = new Map<string, { x: number; y: number; e: number }>();
+const SPOT_MIN = 30, SPOT_R = 34, SPOT_NEAR = 24;
+type Box = { x: number; y: number; e: number; pts: number[] };
+const BOXES: Map<string, Box> = (() => {
+  const out = new Map<string, Box>();
+  const pts = new Map<string, number[]>();
   for (const [cc, d] of COUNTRIES) {
     if (!cc) continue;
     let x = 0, y = 0, sx = 0, sy = 0, cmd = "M", x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const p = pts.get(cc) ?? [];
+    pts.set(cc, p);
     const t = d.match(/[MmLlZz]|-?\d+(?:\.\d+)?/g) ?? [];
     for (let i = 0; i < t.length; i++) {
       const k = t[i];
@@ -178,11 +185,12 @@ const BOXES: Map<string, { x: number; y: number; e: number }> = (() => {
       else if (cmd === "L") { x = a; y = b; }
       else { x += a; y += b; }
       x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+      p.push(x, y);
     }
     if (x1 < x0) continue;
     const prev = out.get(cc);
     const e = Math.max(x1 - x0, y1 - y0);
-    if (!prev || e > prev.e) out.set(cc, { x: (x0 + x1) / 2, y: (y0 + y1) / 2, e });
+    if (!prev || e > prev.e) out.set(cc, { x: (x0 + x1) / 2, y: (y0 + y1) / 2, e, pts: p });
   }
   return out;
 })();
@@ -495,10 +503,23 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
     </>
   ), [hosted, openCcs]);
 
-  const spots = scale > 0 ? [...new Set([...hosted, ...openCcs])].flatMap((cc) => {
-    const bx = BOXES.get(cc);
-    return bx && bx.e * scale < SPOT_MIN ? [{ cc, x: bx.x, y: bx.y, r: SPOT_R / scale, hi: openCcs.has(cc) }] : [];
-  }) : [];
+  // each lit country with, for every other lit country, that one's size and how near its outline comes to this one's middle
+  const lit = useMemo(() => [...new Set([...hosted, ...openCcs])].flatMap((cc) => {
+    const b = BOXES.get(cc);
+    if (!b) return [];
+    const others = [...hosted].flatMap((o) => {
+      const q = o === cc ? undefined : BOXES.get(o);
+      if (!q) return [];
+      let d = Infinity;
+      for (let i = 0; i < q.pts.length; i += 2) d = Math.min(d, Math.hypot(q.pts[i] - b.x, q.pts[i + 1] - b.y));
+      return [{ e: q.e, d }];
+    });
+    return [{ cc, b, others }];
+  }), [hosted, openCcs]);
+  const spots = scale > 0
+    ? lit.filter(({ b, others }) => b.e * scale < SPOT_MIN && !others.some((o) => o.e * scale >= SPOT_MIN && o.d * scale < SPOT_NEAR))
+      .map(({ cc, b }) => ({ cc, x: b.x, y: b.y, r: SPOT_R / scale, hi: openCcs.has(cc) }))
+    : [];
 
   // ---- badges on screen ----
   const placed = width > 0 ? clusters.map((c) => {
@@ -528,7 +549,7 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
               <defs>
                 {(["on", "hi"] as const).map((k) => (
                   <radialGradient key={k} id={`cm-spot-${k}`}>
-                    <stop offset="0" className={k} /><stop offset=".5" className={k} /><stop offset="1" className={k} stopOpacity="0" />
+                    <stop offset="0" className={k} /><stop offset=".7" className={k} /><stop offset="1" className={k} stopOpacity="0" />
                   </radialGradient>
                 ))}
               </defs>
