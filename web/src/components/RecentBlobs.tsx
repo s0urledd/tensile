@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { API_BASE, useApi, type Blob, type Tip, int, pctOf, bytes, whenUTC, utcWord } from "@/lib/api";
 import RollNumber, { reducedMotion } from "@/components/RollNumber";
+import { Frac } from "@/components/CurrentProviders";
 
 /**
  * The overview's recent blobs: the newest settlements as a grid of squares,
@@ -308,6 +309,8 @@ export default function RecentBlobs() {
   const selAt = sel ? cells.findIndex((c) => c.b.promise_hash === sel) : -1;
   const blob = selAt >= 0 ? cells[selAt].b : latest;
   const isLatest = !!blob && blob.promise_hash === latest?.promise_hash;
+  // the endorsed voting power over the set's total at the promise height: the figure and its bar
+  const vp = blob?.attested_voting_power != null && blob.total_voting_power ? { n: blob.attested_voting_power, of: blob.total_voting_power } : null;
 
   const state = feed.error ? "down" : !feed.loaded ? "wait" : "live";
   const idle = feed.loaded && Date.now() + skew - feed.lastNewAt > IDLE_AFTER_MS;
@@ -359,12 +362,24 @@ export default function RecentBlobs() {
           <span className="ov-eyebrow">{isLatest || !blob ? "Latest blob" : `Blob · ${selAt === 0 ? "newest" : `${nth(selAt + 1)} newest`}`}</span>
           {blob && <Age at={blob.settlement_time} skew={skew} />}
         </h3>
+        {/* the height as the figure, "Height · time · size" under it; the endorsed share before its bar, the ⅔ a blob
+            needs as a needle over it, "Endorsed voting power · 48 of 82 validators" under them. The names the lines
+            do not show stay for screen readers */}
         <dl className="rb-spec" aria-busy={!blob || undefined}>
-          <div><dt>Height</dt><dd>{blob ? (isLatest ? <RollNumber value={blob.settlement_height} format={int} /> : int(blob.settlement_height)) : <span className="wait">0,000,000</span>}</dd></div>
-          <div><dt>Time</dt><dd>{blob ? whenUTC(blob.settlement_time) : <span className="wait">Sep 00 00:00</span>}</dd></div>
-          <div className="rb-size"><dt>Blob size</dt><dd>{blob ? bytes(blob.blob_size) : <span className="wait">00.0 MiB</span>}</dd></div>
-          <div><dt>Endorsements</dt><dd>{blob?.attested_with_rows != null ? <>{int(blob.attested_with_rows)} <span className="ov-of">of {int(blob.validators_with_rows)} validators</span></> : blob ? "—" : <span className="wait">00 of 00</span>}</dd></div>
-          <div><dt>Endorsed voting power</dt><dd>{blob?.attested_voting_power != null && blob.total_voting_power ? pctOf(blob.attested_voting_power, blob.total_voting_power) : blob ? "—" : <span className="wait">00.00%</span>}</dd></div>
+          <div className="rb-h"><dt>Height</dt><dd><span className={`ov-fig${blob ? "" : " wait"}`}>{blob ? (isLatest ? <RollNumber value={blob.settlement_height} format={int} /> : int(blob.settlement_height)) : "0,000,000"}</span></dd></div>
+          <div className="rb-t"><dt className="sr-only">Time</dt><dd>{blob ? whenUTC(blob.settlement_time) : <span className="wait">Sep 00 00:00</span>}</dd></div>
+          <div className="rb-size"><dt className="sr-only">Blob size</dt><dd>{blob ? bytes(blob.blob_size) : <span className="wait">00.0 MiB</span>}</dd></div>
+          <div className="rb-vp">
+            <dt>Endorsed voting power</dt>
+            <dd>
+              {vp ? pctOf(vp.n, vp.of) : blob ? "—" : <span className="wait">00.00%</span>}
+              <span className="rb-meter" aria-hidden="true">
+                <span className="rb-bar">{vp && <i style={{ width: `${Math.min(100, Math.max(0, (100 * vp.n) / vp.of))}%` }} />}</span>
+                {vp && <span className="rb-q"><span><Frac /> needed</span></span>}
+              </span>
+            </dd>
+          </div>
+          <div className="rb-e"><dt className="sr-only">Endorsements</dt><dd>{blob?.attested_with_rows != null ? <>{int(blob.attested_with_rows)} <span className="ov-of">of {int(blob.validators_with_rows)} validators</span></> : blob ? "—" : <span className="wait">00 of 00</span>}</dd></div>
         </dl>
         <p className="ov-links">
           {blob ? <Link href={`/blob/?hash=${blob.promise_hash}`}>Blob details <span aria-hidden="true">→</span></Link> : <span className="wait" aria-hidden="true">Blob details →</span>}
