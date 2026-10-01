@@ -33,6 +33,9 @@ import { age, dayMonth } from "@/components/BlobsDeck";
  * reader is in the list, nothing under them moves: the new blobs gather in a
  * pill at the table's edge, and a click on it brings them in. Older pages
  * hold still.
+ *
+ * While a page loads, the list keeps its size: a page of placeholders at
+ * first, then the last page's rows, quieted, until the next one comes.
  */
 
 const FAST_MS = 5000, SLOW_MS = 15000, FALLBACK_MS = 30000;
@@ -248,8 +251,38 @@ const Row = memo(function Row({ b, cont, age: ag, ns, pub, size, fee, laneRep, f
   );
 });
 
-export default function Ledger({ feed, live, skew, days, onNs, children }: {
+/** the first page's places while it loads: a day band and a page of rows, each cell's shape at its size */
+function Placeholders({ rows }: { rows: number }) {
+  return (
+    <>
+      <tr className="day">
+        <td colSpan={8}><span className="sr-only">Loading…</span><span className="wait" aria-hidden="true">Mon 28 Sep 2026</span></td>
+        <td className="gap" aria-hidden="true" />
+        <td className="tn" aria-hidden="true" />
+      </tr>
+      {Array.from({ length: rows }, (_, i) => (
+        <tr key={i} className="row sk" aria-hidden="true">
+          <td className="c-h"><span className="wait">1,204,085</span></td>
+          <td className="c-t"><span className="wait">20:48:38</span></td>
+          <td className="c-b"><span className="wait">36f68b…2417</span><span className="ht"><span className="wait">#1,204,085</span></span></td>
+          <td className="c-ns"><span className="wait">sov-niko-a</span></td>
+          <td className="c-p"><span className="wait">celestia ••• 9snr</span></td>
+          <td className="c-sz num"><span className="wait">16.0 MiB</span></td>
+          <td className="c-fee num"><span className="wait">3.530 TIA</span></td>
+          <td className="c-e num"><span className="wait">69.88%</span></td>
+          <td className="gap" />
+          <td className="tn" />
+          <td className="c-m"><span className="wait">sov-niko-a · 16.0 MiB · 9snr</span></td>
+        </tr>
+      ))}
+    </>
+  );
+}
+
+export default function Ledger({ feed, size, live, skew, days, onNs, children }: {
   feed: Feed;
+  /** the rows a page holds: as many places are kept while the first one loads */
+  size: number;
   /** the first page: new blobs come in */
   live: boolean;
   /** the observer's clock minus the reader's, for the ages */
@@ -287,9 +320,14 @@ export default function Ledger({ feed, live, skew, days, onNs, children }: {
 
   const [shown, setShown] = useState<Shown>(() => ({ path: feed.path, rows: feed.rows, total: feed.total, loaded: feed.loaded, move: null }));
   useEffect(() => {
-    // a new page or filter replaces the rows at once; new rows of the same list wait while the reader holds them
-    setShown((v) => (feed.path !== v.path || !v.loaded || !hold ? take(v, feed) : v));
+    setShown((v) => {
+      // a new page or filter: the rows on screen stay, quieted, until its answer (or its error) comes, so the list keeps its size
+      if (feed.path !== v.path) return v.loaded && !feed.loaded && !feed.error ? v : take(v, feed);
+      // new rows of the same list wait while the reader holds them
+      return !v.loaded || !hold ? take(v, feed) : v;
+    });
   }, [feed, hold]);
+  const waiting = feed.path !== shown.path;
   const pending = live && feed.loaded && feed.path === shown.path ? Math.max(0, feed.total - shown.total) : 0;
   const bringIn = () => {
     setShown((v) => take(v, feed));
@@ -385,7 +423,7 @@ export default function Ledger({ feed, live, skew, days, onNs, children }: {
             </button>
           )}
         </div>
-        <div className="lg-tw">
+        <div className={`lg-tw${waiting ? " is-waiting" : ""}`} aria-busy={waiting || !shown.loaded}>
           <table className="lg-t">
             <thead>
               <tr>
@@ -402,8 +440,10 @@ export default function Ledger({ feed, live, skew, days, onNs, children }: {
               </tr>
             </thead>
             <tbody ref={bodyRef}>
-              {!shown.loaded && <tr className="lg-empty"><td colSpan={10}>{feed.refused ? `${feed.error?.charAt(0).toUpperCase()}${feed.error?.slice(1)}.` : feed.error ? `The observer API is not answering (${feed.error}).` : "Loading…"}</td></tr>}
-              {shown.loaded && shown.rows.length === 0 && <tr className="lg-empty"><td colSpan={10}>No blob recorded{feed.path.includes("&namespace=") || feed.path.includes("&publisher=") ? " with this filter" : ""}.</td></tr>}
+              {!shown.loaded && (feed.error
+                ? <tr className="lg-empty"><td colSpan={10}>{feed.refused ? `${feed.error.charAt(0).toUpperCase()}${feed.error.slice(1)}.` : `The observer API is not answering (${feed.error}).`}</td></tr>
+                : <Placeholders rows={size} />)}
+              {shown.loaded && shown.rows.length === 0 && <tr className="lg-empty"><td colSpan={10}>No blob recorded{shown.path.includes("&namespace=") || shown.path.includes("&publisher=") ? " with this filter" : ""}.</td></tr>}
               {lines.map((l) => l.kind === "day"
                 ? (
                   <tr key={`d${l.day}`} className="day" data-day={l.day}>
@@ -421,7 +461,14 @@ export default function Ledger({ feed, live, skew, days, onNs, children }: {
           </table>
         </div>
       </div>
-      {shown.loaded && children?.(shown.total)}
+      {shown.loaded
+        ? children?.(shown.total)
+        : !feed.error && (
+          <div className="pager" aria-hidden="true">
+            <span className="count"><span className="wait">Showing 1–25 of 0,000 settlements on record</span></span>
+            <span className="ctl"><span className="wait lg-ctl-wait">First ‹ Page 1 of 000 › Last</span></span>
+          </div>
+        )}
     </>
   );
 }
