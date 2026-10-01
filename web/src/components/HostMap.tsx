@@ -159,8 +159,8 @@ function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
 
 /**
  * A hosted country too small to show around its badge would vanish under it, so it is drawn larger: a
- * copy of its own outline about its middle, flat in the hosted tint with the same edge as every other
- * country, on top of the land and under the badges. Where a larger hosted country beside it already
+ * copy of its own outline about its middle, flat in the hosted tint as every other hosted country, on
+ * top of the land and under the badges. Where a larger hosted country beside it already
  * shows the place blue (Slovenia, the Baltics, South Korea beside Japan), it is left as it is. Which
  * countries are small is decided at the home view, so the set holds through a zoom; each copy keeps its
  * size until its own outline, zoomed in, is as large.
@@ -275,21 +275,6 @@ function useFeedEvents(enabled: boolean): FeedEvent[] {
 const EVENT_WORD: Record<string, string> = { registered: "new Fibre provider", "host-changed": "changed its Fibre host" };
 /** "22 h ago" for "22 h 52 min ago": the pill's clock needs the hour, not the minute */
 const shortAgo = (t: string) => ago(t).replace(/(\d+ h) \d+ min/, "$1");
-
-/** the graticule: meridians every 30°, parallels every 20°, as polylines in map units */
-const GRATICULE: string = (() => {
-  const d: string[] = [];
-  for (let lon = -180; lon <= 180; lon += 30) {
-    const pts: string[] = [];
-    for (let lat = -60; lat <= 84; lat += 4) { const [x, y] = project(lon, lat); pts.push(`${x.toFixed(0)} ${y.toFixed(0)}`); }
-    d.push("M" + pts.join("L"));
-  }
-  for (let lat = -40; lat <= 80; lat += 20) {
-    const [x0, y] = project(-180, lat), [x1] = project(180, lat);
-    d.push(`M${x0.toFixed(0)} ${y.toFixed(0)}H${x1.toFixed(0)}`);
-  }
-  return d.join("");
-})();
 
 export default function HostMap({ rows }: { rows: Validator[] | null }) {
   const loading = !rows;
@@ -518,7 +503,6 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
   const openCcs = useMemo(() => new Set(clusters.find((c) => c.id === open)?.ccs ?? []), [clusters, open]);
   const land = useMemo(() => (
     <>
-      <path d={GRATICULE} className="cm-grat" />
       {COUNTRIES.map(([cc, d], i) => (
         <path key={cc || i} d={d} className={openCcs.has(cc) ? "hi" : hosted.has(cc) ? "on" : undefined} />
       ))}

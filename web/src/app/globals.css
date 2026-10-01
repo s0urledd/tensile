@@ -1028,8 +1028,8 @@ body { background: var(--canvas); }
    The overview's top: one instrument panel (page.tsx, .deck).
 
    The map of Fibre providers sits full-bleed at the top of the panel, its sea
-   the panel itself, the land one calm solid shade (a country with a host a
-   shade warmer), a faint graticule under it. Places are rounded squares in the
+   the panel itself, the land one calm solid shade with no grid and no borders
+   (a country with a host a shade warmer). Places are rounded squares in the
    accent with their count; a lone host is a small square with none. Names
    only on hover, focus or tap. One floating bar straddles the map's foot: the
    newest event, then the three counts. Under it a row of three instruments:
@@ -1049,9 +1049,6 @@ body { background: var(--canvas); }
   --cm-land: #e7eaeb;
   --cm-land-on: #c6e1e4;
   --cm-land-hi: #a6d0d4;
-  --cm-grat: rgb(var(--ink) / .02);
-  /* borders between countries sit a little lighter than the land, not cut down to the sea */
-  --cm-edge: color-mix(in srgb, var(--paper) 55%, var(--cm-land));
   --cm-halo: var(--paper);
   --cm-badge: var(--accent);
   --cm-badge-ink: #ffffff;
@@ -1085,8 +1082,6 @@ body { background: var(--canvas); }
   --cm-land: #1b2226;
   --cm-land-on: #1f3f46;
   --cm-land-hi: #24565e;
-  --cm-grat: rgb(255 255 255 / .012);
-  --cm-edge: color-mix(in srgb, var(--paper) 38%, var(--cm-land));
   --cm-badge: #33b3bf;
   --cm-badge-ink: #04171a;
   --cm-badge-hold-ink: #1f1500;
@@ -1124,10 +1119,11 @@ body { background: var(--canvas); }
   mask-composite: intersect;
 }
 .cm-land { display: block; width: 100%; height: 100%; }
-.cm-land path { fill: var(--cm-land); stroke: var(--cm-edge); stroke-width: .5; stroke-linejoin: round; vector-effect: non-scaling-stroke; transition: fill 220ms ease-out; }
-.cm-land path.on { fill: var(--cm-land-on); }
-.cm-land path.hi { fill: var(--cm-land-hi); }
-.cm-land path.cm-grat { fill: none; stroke: var(--cm-grat); stroke-width: 1; }
+/* only the land: no grid and no borders, a hosted country set off by its tint alone. Each country is stroked in its
+   own fill, so the seams where two outlines meet do not show as hairlines */
+.cm-land path { fill: var(--cm-land); stroke: var(--cm-land); stroke-width: .6; stroke-linejoin: round; vector-effect: non-scaling-stroke; transition: fill 220ms ease-out, stroke 220ms ease-out; }
+.cm-land path.on { fill: var(--cm-land-on); stroke: var(--cm-land-on); }
+.cm-land path.hi { fill: var(--cm-land-hi); stroke: var(--cm-land-hi); }
 
 /* the map's name and the key of Tensile's check, in its top-left corner; the view buttons in the other */
 .cm-title { position: absolute; left: 24px; top: 18px; z-index: 6; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px; pointer-events: none; }
