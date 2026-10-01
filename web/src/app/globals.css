@@ -1623,12 +1623,15 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 @media (max-width: 1180px) {
   .lg-t .lg-who .hd { display: none; }
 }
-@media (max-width: 1060px) {
+/* a narrower table: the time without its age, and its head without "(UTC)" (every time says UTC on hover),
+   so the namespace and the publisher keep room for their names */
+@media (max-width: 1080px) {
   .lg-t th.c-t { width: 92px; }
-  .lg-t .c-t .ag { display: none; }
+  .lg-t th.c-t .per, .lg-t .c-t .ag { display: none; }
 }
-/* the table becomes a list: two lines a blob, Tensile's lane beside them, nothing that scrolls sideways */
-@media (max-width: 1000px) {
+/* the table becomes a list before its columns would cut their names: two lines a blob, Tensile's lane beside them,
+   nothing that scrolls sideways */
+@media (max-width: 1040px) {
   .lg-t, .lg-t tbody { display: block; }
   .lg-t thead { display: none; }
   /* no column heads to clear */
