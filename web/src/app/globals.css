@@ -1055,7 +1055,6 @@ body { background: var(--canvas); }
   --cm-badge: var(--accent);
   --cm-badge-ink: #ffffff;
   --cm-badge-hold-ink: #ffffff;
-  --cm-badge-glow: 0 1px 2px rgb(16 24 32 / .22), 0 4px 12px -4px rgb(0 106 116 / .45);
   --cp-rest: rgb(var(--ink) / .13);
   --cp-on: var(--accent);
   --cp-on-hover: #008b97;
@@ -1082,7 +1081,6 @@ body { background: var(--canvas); }
   --cm-badge: #33b3bf;
   --cm-badge-ink: #04171a;
   --cm-badge-hold-ink: #1f1500;
-  --cm-badge-glow: 0 0 16px -3px rgb(51 179 191 / .7);
   --cp-rest: rgb(255 255 255 / .11);
   --cp-on: #2ea4af;
   --cp-on-hover: #5fd0da;
@@ -1134,7 +1132,7 @@ body { background: var(--canvas); }
 .cm-tools button:disabled { opacity: .38; cursor: default; }
 .cm-tools button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-/* the badges: rounded squares in the accent; the open one ringed and the others stepping back */
+/* the badges: flat rounded squares in the accent, edged in the panel's colour (no glow, no shadow); the open one ringed and the others stepping back */
 .cm-pins { list-style: none; margin: 0; padding: 0; position: absolute; inset: 0; z-index: 5; pointer-events: none; }
 .cm-pin { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 1; pointer-events: auto; transition: opacity 180ms ease-out; }
 .cm-pin:not(.one) { z-index: 2; }
@@ -1145,11 +1143,11 @@ body { background: var(--canvas); }
 .cm-badge {
   position: relative; display: grid; place-items: center; border-radius: 7px; background: var(--cm-badge); color: var(--cm-badge-ink);
   font-size: 12px; font-weight: 600; line-height: 1; letter-spacing: -.01em; font-variant-numeric: tabular-nums lining-nums;
-  box-shadow: 0 0 0 2px var(--cm-halo), var(--cm-badge-glow); transition: transform 180ms ease-out, outline-color 180ms;
+  box-shadow: 0 0 0 2px var(--cm-halo); transition: transform 180ms ease-out, outline-color 180ms;
   outline: 2px solid transparent; outline-offset: 3px;
 }
-.cm-pin.one .cm-badge { border-radius: 3px; box-shadow: 0 0 0 2px var(--cm-halo); }
-.cm-badge[data-tone="hold"] { background: var(--hold); color: var(--cm-badge-hold-ink); box-shadow: 0 0 0 2px var(--cm-halo); }
+.cm-pin.one .cm-badge { border-radius: 3px; }
+.cm-badge[data-tone="hold"] { background: var(--hold); color: var(--cm-badge-hold-ink); }
 .cm-badge[data-tone="none"] { background: var(--surface-2); color: var(--text-2); box-shadow: inset 0 0 0 1px var(--line), 0 0 0 2px var(--cm-halo); }
 .cm-b:hover .cm-badge, .cm-pin.open .cm-badge { transform: scale(1.1); }
 .cm-pin.open .cm-badge, .cm-b:focus-visible .cm-badge { outline-color: var(--accent); }
