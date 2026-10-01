@@ -466,7 +466,6 @@ tr.warn .col-pin { background: color-mix(in srgb, var(--paper) 93%, var(--hold))
    ========================================================================== */
 .section-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 20px 0 0; margin: 0 0 14px; }
 .section-head .spacer, .spacer { flex: 1; }
-.sample { font-size: var(--t-cell); color: var(--text-2); }
 .label { font-size: var(--t-small); font-weight: 500; color: var(--text-2); }
 input[type=search] { border: 1px solid var(--line); background: var(--paper); color: var(--text); border-radius: 6px; padding: 0 12px; height: 34px; font: inherit; font-size: var(--t-cell); min-width: 280px; }
 input[type=search]:focus { border-color: var(--accent); outline: none; }
@@ -703,7 +702,7 @@ button.rowlink:hover { color: var(--accent-ink); text-decoration: underline; }
 .diag a { font-weight: 500; }
 /* the filter's counts sit in the button, quieter than its word */
 #evidence .seg { margin-top: 0; }
-#evidence .seg .n, #list .seg .n { color: var(--text-3); font-variant-numeric: tabular-nums; margin-left: 4px; }
+#evidence .seg .n { color: var(--text-3); font-variant-numeric: tabular-nums; margin-left: 4px; }
 
 /* Tensile's own reading under the chain's figures: one quiet line */
 .observed { margin: 10px 0 0; font-size: var(--t-small); color: var(--text-2); }
