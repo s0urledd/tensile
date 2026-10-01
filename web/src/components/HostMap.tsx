@@ -156,13 +156,13 @@ function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
   }).sort((x, y) => x.ux - y.ux);
 }
 
-/** what a badge is called: its city, its country, or its countries */
 /**
  * each country's box in map units, from its outline (absolute M, relative m and l, z): a hosted
- * country narrower than SPOT_MIN px on screen (Singapore, Hong Kong) is drawn as a soft spot of its
- * tint as well, SPOT_R px across its middle, so it reads as hosted as the larger ones do
+ * country narrower than SPOT_MIN px on screen, so no wider than the badge over it (Singapore, Hong Kong,
+ * South Korea, Slovenia, the Baltics), is drawn as a soft spot of its tint as well, SPOT_R px across its
+ * middle, so it reads as hosted as the larger ones do; zoomed in far enough, its own outline takes over
  */
-const SPOT_MIN = 8, SPOT_R = 28;
+const SPOT_MIN = 30, SPOT_R = 28;
 const BOXES: Map<string, { x: number; y: number; e: number }> = (() => {
   const out = new Map<string, { x: number; y: number; e: number }>();
   for (const [cc, d] of COUNTRIES) {
@@ -187,6 +187,7 @@ const BOXES: Map<string, { x: number; y: number; e: number }> = (() => {
   return out;
 })();
 
+/** what a badge is called: its city, its country, or its countries */
 function placeLabel(c: Cluster): string {
   if (c.locs === 1 && c.hosts[0].city) return `${c.hosts[0].city}, ${countryName(c.hosts[0].cc)}`;
   if (c.ccs.length === 1) return countryName(c.ccs[0]);

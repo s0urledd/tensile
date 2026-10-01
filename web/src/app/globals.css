@@ -1046,8 +1046,8 @@ body { background: var(--canvas); }
 .deck {
   /* the sea is the panel; land and badges are tokens so the two themes are a handful of lines */
   --cm-land: #e7eaeb;
-  --cm-land-on: #d6e6e7;
-  --cm-land-hi: #b5d7da;
+  --cm-land-on: #c6e1e4;
+  --cm-land-hi: #a6d0d4;
   --cm-grat: rgb(var(--ink) / .02);
   /* borders between countries sit a little lighter than the land, not cut down to the sea */
   --cm-edge: color-mix(in srgb, var(--paper) 55%, var(--cm-land));
@@ -1075,8 +1075,8 @@ body { background: var(--canvas); }
 .deck::before { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: var(--stage-glow); pointer-events: none; }
 :root[data-theme="dark"] .deck {
   --cm-land: #1b2226;
-  --cm-land-on: #1b3035;
-  --cm-land-hi: #1f4a51;
+  --cm-land-on: #1f3f46;
+  --cm-land-hi: #24565e;
   --cm-grat: rgb(255 255 255 / .012);
   --cm-edge: color-mix(in srgb, var(--paper) 38%, var(--cm-land));
   --cm-badge: #33b3bf;
