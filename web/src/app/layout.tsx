@@ -13,7 +13,7 @@ import { Header, Footer } from "@/components/Chrome";
 const preloaded = ["ibm-plex-sans-latin", "ibm-plex-mono-latin", "ibm-plex-mono-latin-500", "dm-sans-latin"];
 
 export const metadata: Metadata = {
-  title: "Tensile · Celestia Fibre observer",
+  title: "Tensile · Real-time Celestia Fibre explorer",
   description: "Tensile: independent measurement of whether Celestia validators keep their Fibre serving promise.",
 };
 
