@@ -1442,11 +1442,13 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 
 @media (max-width: 1000px) {
   .lg-deck { grid-template-columns: 240px minmax(0, 1fr); }
+  /* the last blob's height and time keep one line */
+  .lg-deck.is-quiet { grid-template-columns: 284px minmax(0, 1fr); }
 }
 @media (max-width: 720px) {
   .lg-head { flex-wrap: nowrap; }
   .lg-head .seg button, .lg-head .seg button:first-child { padding: 0 12px; }
-  .lg-deck { grid-template-columns: minmax(0, 1fr); margin-top: 14px; }
+  .lg-deck, .lg-deck.is-quiet { grid-template-columns: minmax(0, 1fr); margin-top: 14px; }
   .lg-lead { padding: 18px 16px 4px; border-right: 0; }
   .lg-fig { font-size: 40px; }
   .lg-stats { margin-top: 16px; }
