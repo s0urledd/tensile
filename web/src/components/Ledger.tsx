@@ -9,7 +9,7 @@ import { Eye } from "@/components/Metrics";
 import { Frac } from "@/components/CurrentProviders";
 import Ident from "@/components/Ident";
 import { reducedMotion } from "@/components/RollNumber";
-import { age } from "@/components/BlobsDeck";
+import { age, dayMonth } from "@/components/BlobsDeck";
 
 /**
  * The Blobs list as a ledger. A band opens each UTC day with the day's own
@@ -167,14 +167,13 @@ function take(v: Shown, f: Feed): Shown {
 export type DayTotal = { settlements: number; bytes: number; at?: string };
 
 const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const dm = (d: Date) => d.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
 /** "Today · 1 Oct", "Yesterday · 30 Sep", "Mon 28 Sep 2026" */
 function dayName(day: string, now: number): string {
   const d = new Date(day + "T00:00:00Z");
   const today = new Date(now).toISOString().slice(0, 10), yday = new Date(now - 86400_000).toISOString().slice(0, 10);
-  if (day === today) return `Today · ${dm(d)}`;
-  if (day === yday) return `Yesterday · ${dm(d)}`;
-  return `${WD[d.getUTCDay()]} ${dm(d)} ${d.getUTCFullYear()}`;
+  if (day === today) return `Today · ${dayMonth(d)}`;
+  if (day === yday) return `Yesterday · ${dayMonth(d)}`;
+  return `${WD[d.getUTCDay()]} ${dayMonth(d)} ${d.getUTCFullYear()}`;
 }
 
 type Line =

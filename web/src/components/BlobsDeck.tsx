@@ -40,11 +40,17 @@ export function age(ms: number): string {
   return h % 24 ? `${d} d ${h % 24} h` : `${d} d`;
 }
 
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** "28 Sep", the UTC day; spelled out here, since a locale's short month can be "Sept" */
+export function dayMonth(d: Date): string {
+  return `${d.getUTCDate()} ${MON[d.getUTCMonth()]}`;
+}
+
 /** "28 Sep 20:48:38 UTC" */
 export function dayTime(s: string): string {
   const d = new Date(s);
   if (isNaN(d.getTime())) return s;
-  return `${d.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" })} ${utc(s).slice(11, 19)} UTC`;
+  return `${dayMonth(d)} ${utc(s).slice(11, 19)} UTC`;
 }
 
 /** the observer's clock, read every 15 s: the deck's ages are minutes and days */
@@ -59,6 +65,19 @@ function useNow(skew: number): number {
     return () => window.clearInterval(t);
   }, []);
   return now;
+}
+
+/** a phone's width: the chart is shorter there */
+function useNarrow(): boolean {
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const q = window.matchMedia("(max-width: 720px)");
+    const on = () => setNarrow(q.matches);
+    on();
+    q.addEventListener("change", on);
+    return () => q.removeEventListener("change", on);
+  }, []);
+  return narrow;
 }
 
 /** blobs per minute over the newest blobs read (newest first), while the newest is recent: the chain's pace now */
@@ -108,6 +127,7 @@ export default function BlobsDeck({ win, onWin, market, newest, skew }: {
   skew: number;
 }) {
   const now = useNow(skew);
+  const narrow = useNarrow();
   const m = market;
   // the answer for another period, kept while this one loads, is not this chart
   const mine = !!m && m.window.name === win;
@@ -171,7 +191,7 @@ export default function BlobsDeck({ win, onWin, market, newest, skew }: {
         </dl>
       </div>
       <div className="lg-plot">
-        <Chart title={`Settlements per ${per}`} height={176}
+        <Chart title={`Settlements per ${per}`} height={narrow ? 150 : 176}
           head={<div className="lg-plot-h"><h3 className="ov-eyebrow">Settlements per {per}</h3>{rate}</div>}
           series={[{ key: "n", label: "settlements", color: "var(--accent)" }]}
           rows={series.map((c) => ({ x: c.title, label: c.label, short: c.short, values: { n: c.settlements }, note: `${bytes(c.bytes)} · ${tia(c.fees)} fees` }))}
