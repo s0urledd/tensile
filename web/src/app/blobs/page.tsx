@@ -147,7 +147,7 @@ function Page() {
     }))
     : null;
   const nsN = nss.data?.namespaces.length ?? 0;
-  const liveWord = !live ? null : feed.error ? "Not answering" : feed.loaded ? "Live" : "Connecting";
+  const liveWord = !live || feed.refused ? null : feed.error ? "Not answering" : feed.loaded ? "Live" : "Connecting";
   const liveTitle = feed.error
     ? `The observer API did not answer (${feed.error}); the list shows the last read.`
     : "New blobs come in as the chain moves, while this page is open.";

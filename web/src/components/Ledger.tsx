@@ -47,10 +47,17 @@ export type Feed = {
   total: number;
   loaded: boolean;
   error: string | null;
+  /** the API refused the request itself (a 400: a filter that is no namespace or account), which is no outage and is not asked again */
+  refused: boolean;
   /** when the newest row arrived, on the observer's clock (when it settled, on the first read) */
   lastNewAt: number;
 };
-const empty = (path: string): Feed => ({ path, rows: [], total: 0, loaded: false, error: null, lastNewAt: 0 });
+const empty = (path: string): Feed => ({ path, rows: [], total: 0, loaded: false, error: null, refused: false, lastNewAt: 0 });
+
+/** a failed read, with the status the API answered (0: no answer) */
+class ReadError extends Error {
+  constructor(message: string, readonly status: number) { super(message); }
+}
 
 async function readPage(path: string): Promise<{ blobs: Blob[]; total: number }> {
   const ctl = new AbortController();
@@ -60,7 +67,7 @@ async function readPage(path: string): Promise<{ blobs: Blob[]; total: number }>
     if (!r.ok) {
       let msg = String(r.status);
       try { const j = await r.json(); if (j?.error) msg = j.error; } catch { /* keep the status */ }
-      throw new Error(msg);
+      throw new ReadError(msg, r.status);
     }
     const j = await r.json();
     return { blobs: Array.isArray(j.blobs) ? j.blobs : [], total: typeof j.total === "number" ? j.total : 0 };
@@ -106,11 +113,11 @@ export function useLedger(path: string, live: boolean, height: number | undefine
       const known = new Set(before?.rows.map((b) => b.promise_hash));
       const came = !!before && page.blobs.some((b) => !known.has(b.promise_hash));
       const lastNewAt = !before ? (page.blobs[0] ? Date.parse(page.blobs[0].settlement_time) : 0) : came ? Date.now() + skewRef.current : before.lastNewAt;
-      apply({ path: p, rows: page.blobs, total: page.total, loaded: true, error: null, lastNewAt });
+      apply({ path: p, rows: page.blobs, total: page.total, loaded: true, error: null, refused: false, lastNewAt });
     } catch (e) {
       if (p !== pathRef.current) return;
       const f = cur.current.path === p ? cur.current : empty(p);
-      apply({ ...f, error: e instanceof Error ? e.message : String(e) });
+      apply({ ...f, error: e instanceof Error ? e.message : String(e), refused: e instanceof ReadError && e.status === 400 });
     } finally {
       busy.current = false;
       // the page or a filter changed while this read was out: read the new one now
@@ -121,7 +128,7 @@ export function useLedger(path: string, live: boolean, height: number | undefine
   /** a read now, or at the end of the current gap if the last one was sooner */
   const request = useCallback(() => {
     window.clearTimeout(later.current);
-    if (document.hidden) return;
+    if (document.hidden || cur.current.refused) return;
     const wait = gap() - (Date.now() - last.current);
     if (wait <= 0) read();
     else later.current = window.setTimeout(read, wait);
@@ -139,7 +146,8 @@ export function useLedger(path: string, live: boolean, height: number | undefine
   // live: a slow read when the chain stops moving, and one when the page comes back into view; any page: another try after an error
   useEffect(() => {
     const t = window.setInterval(() => {
-      if (!document.hidden && (liveRef.current || cur.current.error) && Date.now() - last.current >= FALLBACK_MS) read();
+      const f = cur.current;
+      if (!document.hidden && !f.refused && (liveRef.current || f.error) && Date.now() - last.current >= FALLBACK_MS) read();
     }, 5000);
     const onVis = () => { if (document.hidden) window.clearTimeout(later.current); else if (liveRef.current) request(); };
     document.addEventListener("visibilitychange", onVis);
@@ -386,7 +394,7 @@ export default function Ledger({ feed, live, skew, days, onNs, children }: {
               </tr>
             </thead>
             <tbody ref={bodyRef}>
-              {!shown.loaded && <tr className="lg-empty"><td colSpan={10}>{feed.error ? `The observer API is not answering (${feed.error}).` : "Loading…"}</td></tr>}
+              {!shown.loaded && <tr className="lg-empty"><td colSpan={10}>{feed.refused ? `${feed.error?.charAt(0).toUpperCase()}${feed.error?.slice(1)}.` : feed.error ? `The observer API is not answering (${feed.error}).` : "Loading…"}</td></tr>}
               {shown.loaded && shown.rows.length === 0 && <tr className="lg-empty"><td colSpan={10}>No blob recorded{feed.path.includes("&namespace=") || feed.path.includes("&publisher=") ? " with this filter" : ""}.</td></tr>}
               {lines.map((l) => l.kind === "day"
                 ? (
