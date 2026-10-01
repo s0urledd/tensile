@@ -1259,7 +1259,6 @@ body { background: var(--canvas); }
 .ov-frac-d { font-size: .74em; }
 .ov-when { font-size: var(--t-small); font-weight: 500; letter-spacing: 0; color: var(--text-3); white-space: nowrap; }
 .ov-of { font-size: var(--t-cell); font-weight: 400; letter-spacing: 0; color: var(--text-2); }
-.ov-links { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 16px 0 0; font-size: var(--t-cell); font-weight: 500; }
 .ov-links a span { display: inline-block; transition: transform var(--dur) ease-out; }
 .ov-links a:hover { text-decoration: none; }
 .ov-links a:hover span { transform: translateX(3px); }
@@ -1375,7 +1374,6 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .rb-read .ov-links > a:hover { background: var(--rb-btn-hover); }
 .rb-read .ov-links > a:first-child { background: var(--accent-tint); color: var(--accent-ink); }
 .rb-read .ov-links > a:first-child:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
-/* Tensile's own reading under the chain's figures: one quiet line under a hairline, "Observed by Tensile" as its prefix */
 
 /* ---- the rolling figure (RollNumber): changed digits slide, the rest stay ---- */
 .rn { display: inline-flex; white-space: nowrap; font-variant-numeric: tabular-nums lining-nums; }
