@@ -456,7 +456,7 @@ Every page's header and footer read `/v1/meta` and `/v1/tip`.
 |---|---|
 | `/` | `/v1/network` (the period, and `all` for Available), `/v1/validators` (the map's "served last" line is the rows' `last_served_at`), `/v1/blobs?limit=1` |
 | `/validator/?addr=` | `/v1/validators/{addr}` |
-| `/blobs/` | `/v1/blobs`, `/v1/namespaces`, `/v1/market` |
+| `/blobs/` | `/v1/blobs` (the first page again as the chain moves), `/v1/namespaces`, `/v1/market` (the period, and `all` for the day bands), `/v1/publishers` (once its filter opens) |
 | `/blob/?hash=` | `/v1/blobs/{hash}` |
 | `/publishers/` | `/v1/market`, `/v1/publishers` |
 | `/publisher/?addr=` | `/v1/publishers/{addr}` |

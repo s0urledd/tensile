@@ -117,13 +117,19 @@ function stackPx(vals: number[], px: number): { ext: number; gap: number }[] {
   return out;
 }
 
-export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title, sub, figure, figureTitle, empty }: {
+export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title, head, sub, figure, figureTitle, empty }: {
   series: Series[];
   rows: Row[];
   fmt: (v: number) => string;
   fmtAxis?: (v: number) => string;
   height?: number;
   title: string;
+  /**
+   * a head of the caller's own in place of the title and figure (the Blobs
+   * deck's eyebrow and live rate); the title still names the plot to
+   * assistive tech, and the readout may rise over this head as over its own
+   */
+  head?: ReactNode;
   /** a line beside the title in place of a figure (use figure to set the figure large) */
   sub?: string;
   /** the period's total, printed large under the title: "1.35 GiB" (the period itself is in the title: "Blob size per day (7d)") */
@@ -260,14 +266,16 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
 
   return (
     <div className={"chart" + (single ? " chart--single" : "")} ref={ref} style={single ? ({ "--series": series[0].color } as CSSProperties) : undefined}>
-      <div className="chart-head">
-        <div className="chart-title">{single && <i className="chart-key" aria-hidden="true" />}{title}</div>
-        <div className="chart-figure">
-          {figure !== undefined
-            ? <b className="num" title={figureTitle}>{figure}</b>
-            : sub !== undefined ? <span>{sub}</span> : <b aria-hidden="true">&nbsp;</b>}
+      {head ?? (
+        <div className="chart-head">
+          <div className="chart-title">{single && <i className="chart-key" aria-hidden="true" />}{title}</div>
+          <div className="chart-figure">
+            {figure !== undefined
+              ? <b className="num" title={figureTitle}>{figure}</b>
+              : sub !== undefined ? <span>{sub}</span> : <b aria-hidden="true">&nbsp;</b>}
+          </div>
         </div>
-      </div>
+      )}
       <div className="chart-plot" ref={plotRef} style={{ height }}>
       {width > 0 && (
         <>

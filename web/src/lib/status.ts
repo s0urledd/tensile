@@ -6,9 +6,9 @@ import type { Tier } from "@/components/Verdict";
  * channel the verdicts use. It is celestia-app's client's own result:
  * Available, enough rows came back to reconstruct the blob; Unavailable,
  * with the client's error ("no shards retrieved", "not enough shards to
- * reconstruct blob"). The Blobs list words each blob's status with it; the
- * overview's recent blobs carry no status, since every blob there is still
- * in its retention window.
+ * reconstruct blob"). The Blobs list words each blob's status with it, in
+ * its Tensile lane (lane() below); the overview's recent blobs carry no
+ * status, since every blob there is still in its retention window.
  */
 export function recon(b: Blob): { word: string; tier: Tier; title: string } {
   const r = b.reconstructable;
@@ -21,4 +21,19 @@ export function recon(b: Blob): { word: string; tier: Tier; title: string } {
   const rows = `${int(r.served_distinct_rows)} distinct rows came back, ${int(r.needed_rows)} needed to reconstruct`;
   if (r.status === "yes") return { word: "available", tier: "kept", title: rows };
   return { word: "unavailable", tier: "hold", title: r.error ? `${rows}: ${r.error}.` : `${rows}.` };
+}
+
+/**
+ * The same status for the Blobs list's Tensile lane, whose head already
+ * names Tensile: nothing until there is a reading to show, so a lane down a
+ * burst of new blobs stays empty instead of saying "in retention window" on
+ * every row; then available or unavailable, or "not read" once the window
+ * has closed without a reading.
+ */
+export function lane(b: Blob): { word: string; tier: Tier; title: string } | null {
+  const r = b.reconstructable;
+  const read = !!r && (r.status === "yes" || r.status === "no");
+  if (!read && new Date(b.must_serve_until).getTime() > Date.now()) return null;
+  const rc = recon(b);
+  return read ? rc : { ...rc, word: "not read" };
 }

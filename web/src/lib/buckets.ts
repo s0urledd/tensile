@@ -6,9 +6,10 @@ import type { WindowName } from "@/lib/window";
  * UTC hour for a day, one per UTC day otherwise (seven or thirty, or every
  * day on record for "all"). Every bucket the window touches is there, the
  * first and the last partial ones included, and an empty one is a zero, so
- * a quiet week is a quiet week and not a shorter chart.
+ * a quiet week is a quiet week and not a shorter chart. A bucket carries its
+ * settlements, their blob size and the fees they paid.
  */
-export type Bucket = { key: string; label: string; short?: string; title: string; bytes: number; settlements: number; partial: boolean };
+export type Bucket = { key: string; label: string; short?: string; title: string; bytes: number; settlements: number; fees: number; partial: boolean };
 
 const day = (d: string) => new Date(d + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 
@@ -28,7 +29,7 @@ export function buckets(market: Market, win: WindowName): Bucket[] {
       const c = byHour.get(key);
       const partial = h === h1 || (h === h0 && start % 3600_000 !== 0);
       out.push({ key, label: `${key.slice(11)}:00`, title: `${day(key.slice(0, 10))} ${key.slice(11)}:00 UTC${partial ? " (partial hour)" : ""}`,
-        bytes: c?.bytes ?? 0, settlements: c?.settlements ?? 0, partial });
+        bytes: c?.bytes ?? 0, settlements: c?.settlements ?? 0, fees: c?.fees_utia ?? 0, partial });
     }
     return out;
   }
@@ -43,7 +44,7 @@ export function buckets(market: Market, win: WindowName): Bucket[] {
     const key = new Date(d * 86400_000).toISOString().slice(0, 10);
     const c = byDay.get(key);
     const partial = d === d1 || (!unbounded && d === d0 && start % 86400_000 !== 0);
-    out.push({ key, label: day(key), short: String(Number(key.slice(8))), title: `${day(key)} UTC${partial ? " (partial day)" : ""}`, bytes: c?.bytes ?? 0, settlements: c?.settlements ?? 0, partial });
+    out.push({ key, label: day(key), short: String(Number(key.slice(8))), title: `${day(key)} UTC${partial ? " (partial day)" : ""}`, bytes: c?.bytes ?? 0, settlements: c?.settlements ?? 0, fees: c?.fees_utia ?? 0, partial });
   }
   return out;
 }
