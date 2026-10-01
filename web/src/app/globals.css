@@ -346,10 +346,10 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
    so the table reads as an even grid. A rate is a pair — share right-aligned
    in a fixed box, counts left-aligned in the next — centred as one block,
    so the per cent signs sit in one line whatever the counts are. The whole
-   row opens the validator: the name is the real link, and a cover link
-   (.rowcover, out of the tab order and hidden from assistive tech) stretches
-   over the row for the pointer. Anything in a cell that carries its own
-   title or link sits above the cover. */
+   row opens the validator by its own click (lib/row.ts); the name is the real
+   link. No link is stretched over the row: a phone's browser that does not
+   make a table row a box for it would spread every row's cover over the page,
+   the last row's on top. */
 .vt { font-variant-numeric: tabular-nums; }
 .vt th:not(:first-child), .vt td:not(:first-child) { text-align: center; padding-left: 6px; padding-right: 6px; }
 @media (min-width: 900px) {
@@ -382,11 +382,9 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
 .vt tbody .fig, .vt tbody .fig .rate, .vt tbody .state { font-weight: 500; }
 .vt tbody tr { position: relative; }
 .vt tbody tr:not(.empty) { cursor: pointer; }
-.vt .rowcover { position: absolute; inset: 0; z-index: 0; }
 /* a positioned row lets the pinned cell's background cover the collapsed rule; draw it on the cell */
 .vt tbody td.col-pin { box-shadow: inset 0 -1px 0 var(--line-soft); }
-.vt .rowcover:focus { outline: none; }
-.vt td [title], .vt td a:not(.rowcover), .vt td[title] > * { position: relative; z-index: 1; }
+.vt td [title], .vt td a, .vt td[title] > * { position: relative; z-index: 1; }
 .u { color: var(--text-3); font-weight: 400; }
 /* above the cells it scrolls over: a cell with its own title sits at z-index 1 (above the row cover) and would draw on top of it */
 .col-pin { position: sticky; left: 0; z-index: 2; background: var(--paper); }
@@ -1610,9 +1608,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-t tr.row td { transition: background var(--dur); }
 .lg-t tr.row:hover td { background: color-mix(in srgb, var(--accent) 5%, var(--paper)); }
 /* the row's cover link, for the pointer; anything in a cell with a link, a button or a title of its own sits above it */
-.lg-t .rc { position: absolute; inset: 0; z-index: 0; }
-.lg-t .rc:focus { outline: none; }
-.lg-t td a:not(.rc), .lg-t td button, .lg-t td [title] { position: relative; z-index: 1; }
+.lg-t td a, .lg-t td button, .lg-t td [title] { position: relative; z-index: 1; }
 .lg-t tr.lg-empty td { padding: 28px 18px; color: var(--text-2); white-space: normal; background: none; }
 /* while a page loads, the list keeps its size: the first page's places, or the last page's rows quieted
    (after a moment, so a quick answer never flickers) */
