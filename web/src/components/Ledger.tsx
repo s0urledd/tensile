@@ -13,13 +13,9 @@ import { age, dayMonth } from "@/components/BlobsDeck";
 
 /**
  * The Blobs list as a ledger. A band opens each UTC day with the day's own
- * totals; under it the blobs, newest first. The blobs of one block sit
- * together: the block's height and time are on its first row only, the rows
- * after it closer and with no rule between them, and nothing else is drawn
- * to group them. Figures are right-aligned on their digits. Within a block,
- * a value the row above already showed (the namespace, the publisher, the
- * size, the fee) steps back, so a block's blobs of one publisher read as
- * one publisher and each block starts at full strength. Endorsed
+ * totals; under it the blobs, newest first, each a row of its own with its
+ * height, when it settled and how long ago, whatever block it shares with
+ * the rows around it. Figures are right-aligned on their digits. Endorsed
  * is the share of voting power with a short meter whose tick is the ⅔ a
  * settlement needs. Tensile's own reading has a lane of its own at the end,
  * empty until Tensile has read the blob.
@@ -191,7 +187,7 @@ function dayName(day: string, now: number): string {
 
 type Line =
   | { kind: "day"; day: string; name: string; sum: DayTotal | null }
-  | { kind: "blob"; b: Blob; cont: boolean; age: string | null; ns: boolean; pub: boolean; size: boolean; fee: boolean; lane: boolean };
+  | { kind: "blob"; b: Blob; age: string | null };
 
 /** the publisher of a row: who paid, else who submitted it */
 const payer = (b: Blob) => b.publisher || b.signer;
@@ -208,32 +204,28 @@ function Who({ addr }: { addr: string }) {
   );
 }
 
-type RowProps = {
-  b: Blob; cont: boolean; age: string | null; ns: boolean; pub: boolean; size: boolean; fee: boolean; laneRep: boolean;
-  fresh: boolean; onNs: (ns: string) => void; onOpen: (e: React.MouseEvent, href: string) => void;
-};
+type RowProps = { b: Blob; age: string | null; fresh: boolean; onNs: (ns: string) => void; onOpen: (e: React.MouseEvent, href: string) => void };
 /** one blob: the cells of the table, and the second line a phone shows under the first */
-const Row = memo(function Row({ b, cont, age: ag, ns, pub, size, fee, laneRep, fresh, onNs, onOpen }: RowProps) {
+const Row = memo(function Row({ b, age: ag, fresh, onNs, onOpen }: RowProps) {
   const href = `/blob/?hash=${b.promise_hash}`;
   const who = payer(b);
   const name = nsDisplay(b.namespace);
   const ln = lane(b);
   const share = b.attested_voting_power != null && b.total_voting_power ? b.attested_voting_power / b.total_voting_power : null;
-  const rep = (on: boolean) => (on ? " rep" : "");
   return (
     // A click on a cell that sits above the cover link (a titled figure) opens the blob too; links and buttons keep their own.
-    <tr className={`row${cont ? " cont" : ""}${fresh ? " fresh" : ""}`} data-h={b.promise_hash}
+    <tr className={`row${fresh ? " fresh" : ""}`} data-h={b.promise_hash}
       onClick={(e) => { if (!(e.target as HTMLElement).closest("a, button") && !window.getSelection()?.toString()) onOpen(e, href); }}>
-      <td className="c-h">{!cont && int(b.settlement_height)}<Link className="rc" href={href} tabIndex={-1} aria-hidden="true" /></td>
-      <td className="c-t">{!cont && <span title={utcWord(b.settlement_time)}><span className="tm">{utc(b.settlement_time).slice(11, 19)}</span>{ag && <span className="ag">{ag}</span>}</span>}</td>
+      <td className="c-h">{int(b.settlement_height)}<Link className="rc" href={href} tabIndex={-1} aria-hidden="true" /></td>
+      <td className="c-t"><span title={utcWord(b.settlement_time)}><span className="tm">{utc(b.settlement_time).slice(11, 19)}</span>{ag && <span className="ag">{ag}</span>}</span></td>
       <td className="c-b">
         <Link href={href} title={b.promise_hash} aria-label={`Blob ${b.promise_hash.slice(0, 10)}, height ${int(b.settlement_height)}`}>{b.promise_hash.slice(0, 6)}<span className="el">…</span>{b.promise_hash.slice(-4)}</Link>
-        {!cont && <span className="ht">#{int(b.settlement_height)}</span>}
+        <span className="ht">#{int(b.settlement_height)}</span>
       </td>
-      <td className={"c-ns" + rep(ns)}><button type="button" className="nsb" onClick={() => onNs(b.namespace)} title={`${b.namespace} · show only this namespace`}>{name}</button></td>
-      <td className={"c-p" + rep(pub)}>{who ? <Who addr={who} /> : "—"}</td>
-      <td className={"c-sz num" + rep(size)}>{unit(bytes(b.blob_size))}</td>
-      <td className={"c-fee num" + rep(fee)}>{b.charge ? unit(tia(b.charge.fee_utia)) : "—"}</td>
+      <td className="c-ns"><button type="button" className="nsb" onClick={() => onNs(b.namespace)} title={`${b.namespace} · show only this namespace`}>{name}</button></td>
+      <td className="c-p">{who ? <Who addr={who} /> : "—"}</td>
+      <td className="c-sz num">{unit(bytes(b.blob_size))}</td>
+      <td className="c-fee num">{b.charge ? unit(tia(b.charge.fee_utia)) : "—"}</td>
       <td className="c-e num">
         {share == null ? "—" : (
           <span className="en" title={`${b.attested_with_rows != null ? `${int(b.attested_with_rows)} of ${int(b.validators_with_rows)} validators holding rows endorsed it. ` : ""}A settlement needs ⅔ of voting power.`}>
@@ -243,8 +235,8 @@ const Row = memo(function Row({ b, cont, age: ag, ns, pub, size, fee, laneRep, f
         )}
       </td>
       <td className="gap" aria-hidden="true" />
-      <td className={"tn" + rep(laneRep)}>{ln && <span className={ln.tier === "hold" ? "hold" : undefined} title={ln.title}>{ln.word}</span>}</td>
-      <td className={"c-m" + rep(ns && pub && size)}>
+      <td className="tn">{ln && <span className={ln.tier === "hold" ? "hold" : undefined} title={ln.title}>{ln.word}</span>}</td>
+      <td className="c-m">
         <span className="nm">{name}</span><span className="sep">·</span>{bytes(b.blob_size)}{who && <><span className="sep">·</span><Who addr={who} /></>}
       </td>
     </tr>
@@ -371,30 +363,11 @@ export default function Ledger({ feed, size, live, skew, days, onNs, children }:
   const lines = useMemo(() => {
     const out: Line[] = [];
     const clock = now || Date.now();
-    let prev: Blob | null = null, lastAge: string | null = null;
+    let prev: Blob | null = null;
     for (const b of shown.rows) {
       const day = b.settlement_time.slice(0, 10);
-      if (!prev || prev.settlement_time.slice(0, 10) !== day) {
-        out.push({ kind: "day", day, name: dayName(day, clock), sum: days(day) });
-        prev = null;
-        lastAge = null;
-      }
-      const cont = !!prev && prev.settlement_height === b.settlement_height;
-      // an age on a block's first row, and only where it says something the one above did not
-      const a: string | null = now && !cont ? age(now - Date.parse(b.settlement_time)) : null;
-      const showAge: string | null = a && a !== lastAge ? a : null;
-      if (showAge) lastAge = showAge;
-      // a value steps back only under its own block's first row, so every block starts at full strength
-      const above = cont ? prev : null;
-      const lp = above ? lane(above) : null, lb = lane(b);
-      out.push({
-        kind: "blob", b, cont, age: showAge,
-        ns: !!above && above.namespace === b.namespace,
-        pub: !!above && payer(above) === payer(b),
-        size: !!above && above.blob_size === b.blob_size,
-        fee: !!above && !!above.charge && !!b.charge && above.charge.fee_utia === b.charge.fee_utia,
-        lane: !!lp && !!lb && lb.tier !== "hold" && lp.word === lb.word,
-      });
+      if (!prev || prev.settlement_time.slice(0, 10) !== day) out.push({ kind: "day", day, name: dayName(day, clock), sum: days(day) });
+      out.push({ kind: "blob", b, age: now ? age(now - Date.parse(b.settlement_time)) : null });
       prev = b;
     }
     return out;
@@ -455,8 +428,7 @@ export default function Ledger({ feed, size, live, skew, days, onNs, children }:
                     <td className="tn" aria-hidden="true" />
                   </tr>
                 )
-                : <Row key={l.b.promise_hash} b={l.b} cont={l.cont} age={l.age} ns={l.ns} pub={l.pub} size={l.size} fee={l.fee} laneRep={l.lane}
-                  fresh={!!fresh?.has(l.b.promise_hash)} onNs={onNs} onOpen={onOpen} />)}
+                : <Row key={l.b.promise_hash} b={l.b} age={l.age} fresh={!!fresh?.has(l.b.promise_hash)} onNs={onNs} onOpen={onOpen} />)}
             </tbody>
           </table>
         </div>
