@@ -143,13 +143,14 @@ export function useLedger(path: string, live: boolean, height: number | undefine
   }, [path, apply, read]);
   // live: a read each time the chain moves
   useEffect(() => { if (live) request(); }, [height, live, request]);
-  // live: a slow read when the chain stops moving, and one when the page comes back into view; any page: another try after an error
+  // live: a slow read when the chain stops moving, and one when the page comes back into view; any page: another try after an error,
+  // and its first read when it was opened in a tab out of view
   useEffect(() => {
     const t = window.setInterval(() => {
       const f = cur.current;
       if (!document.hidden && !f.refused && (liveRef.current || f.error) && Date.now() - last.current >= FALLBACK_MS) read();
     }, 5000);
-    const onVis = () => { if (document.hidden) window.clearTimeout(later.current); else if (liveRef.current) request(); };
+    const onVis = () => { if (document.hidden) window.clearTimeout(later.current); else if (liveRef.current || !cur.current.loaded) request(); };
     document.addEventListener("visibilitychange", onVis);
     return () => { window.clearInterval(t); window.clearTimeout(later.current); document.removeEventListener("visibilitychange", onVis); };
   }, [read, request]);
