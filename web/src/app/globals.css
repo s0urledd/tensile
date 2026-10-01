@@ -1245,7 +1245,8 @@ body { background: var(--canvas); }
 :root[data-theme="dark"] .ov-fig:not(.cp-wait) { background: linear-gradient(180deg, #ffffff 35%, #b4e9ee); -webkit-background-clip: text; background-clip: text; color: transparent; }
 /* a rolling digit (RollNumber) paints apart from the figure's own text, out of reach of its gradient: it carries the
    gradient itself, or in dark the digit would vanish for as long as it rolls */
-:root[data-theme="dark"] .ov-fig:not(.cp-wait) .rn-roll > span { background: linear-gradient(180deg, #ffffff 35%, #b4e9ee); -webkit-background-clip: text; background-clip: text; }
+:root[data-theme="dark"] .ov-fig:not(.cp-wait) .rn-roll > span,
+:root[data-theme="dark"] .lg-fig .rn-roll > span { background: linear-gradient(180deg, #ffffff 35%, #b4e9ee); -webkit-background-clip: text; background-clip: text; }
 .ov-fig.cp-wait { color: transparent; background: var(--wash); border-radius: 6px; }
 .ov-frac { display: inline-flex; align-items: baseline; font-size: 15px; font-weight: 600; line-height: 18px; letter-spacing: 0; font-variant-numeric: lining-nums proportional-nums; }
 .ov-frac-n { position: relative; top: -.38em; font-size: .74em; }
