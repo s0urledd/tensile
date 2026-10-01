@@ -1115,8 +1115,6 @@ body { background: var(--canvas); }
 .cm-land path.on { fill: var(--cm-land-on); }
 .cm-land path.hi { fill: var(--cm-land-hi); }
 .cm-land path.cm-grat { fill: none; stroke: var(--cm-grat); stroke-width: 1; }
-.cm-land stop.on { stop-color: var(--cm-land-on); }
-.cm-land stop.hi { stop-color: var(--cm-land-hi); }
 
 /* the map's name and the key of Tensile's check, in its top-left corner; the view buttons in the other */
 .cm-title { position: absolute; left: 24px; top: 18px; z-index: 6; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px; pointer-events: none; }

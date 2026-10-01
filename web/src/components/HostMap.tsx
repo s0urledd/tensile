@@ -4,7 +4,7 @@ import Link from "next/link";
 import { type Validator, API_BASE, ago, utcWord, int } from "@/lib/api";
 import { validatorHref } from "@/lib/addr";
 import type { Hosting } from "@/lib/hosting";
-import { FRAME, COUNTRIES, project, countryPoint } from "@/lib/map/project";
+import { FRAME, COUNTRIES, TINY, project, countryPoint } from "@/lib/map/project";
 import { countryName } from "@/components/Flag";
 import { Eye } from "@/components/Metrics";
 import { type EndpointState, endpointState, readiness } from "@/components/Readiness";
@@ -14,7 +14,8 @@ import { type EndpointState, endpointState, readiness } from "@/components/Readi
  * placed by the city its address geolocates to (hosting.lat/lon) or, without
  * one, by its country's label point, over Natural Earth country outlines
  * (Equal Earth) drawn as calm solid land. A country with a host is a shade
- * warmer; the open place's countries are lit.
+ * warmer; one too small to show around its badge is drawn larger, in its own
+ * shape; the open place's countries are lit.
  *
  * Every place is a rounded square in the accent carrying its count; a lone
  * host is a small square with no figure. Hosts close together on screen share
@@ -157,40 +158,61 @@ function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
 }
 
 /**
- * each country's middle and size in map units, and the points of its outline, from the outline itself
- * (absolute M, relative m and l, z). A hosted country narrower than SPOT_MIN px on screen, so no wider
- * than the badge over it, would vanish under the badge. Where a larger hosted country's outline comes
- * within SPOT_NEAR px of its middle, that one's tint already makes the place read blue (Slovenia, the
- * Baltics, South Korea beside Japan); a small country on its own (Singapore, Hong Kong) is drawn as a pool
- * of its tint instead, SPOT_R px around its middle, solid well past the badge's edge and fading out.
- * Zoomed in far enough, its own outline takes over.
+ * A hosted country too small to show around its badge would vanish under it, so it is drawn larger: a
+ * copy of its own outline about its middle, flat in the hosted tint with the same edge as every other
+ * country, on top of the land and under the badges. Where a larger hosted country beside it already
+ * shows the place blue (Slovenia, the Baltics, South Korea beside Japan), it is left as it is. Which
+ * countries are small is decided at the home view, so the set holds through a zoom; each copy keeps its
+ * size until its own outline, zoomed in, is as large.
  */
-const SPOT_MIN = 30, SPOT_R = 34, SPOT_NEAR = 24;
-type Box = { x: number; y: number; e: number; pts: number[] };
-const BOXES: Map<string, Box> = (() => {
-  const out = new Map<string, Box>();
-  const pts = new Map<string, number[]>();
+/** px: the larger side a small hosted country is drawn at: about 2.4 times a two-host badge (23 px, 19 px narrow), so 13-16 px of its land shows past it on its long side */
+const TINY_L = 56, TINY_L_NARROW = 44;
+/** px at the home view: a country at least this wide shows around its badge; a smaller one is hidden by it */
+const SHOWN = 30, SHOWN_NARROW = 24;
+/** px: a shown hosted country whose land comes this close to a small one's middle already makes that place read blue */
+const NEAR = 16, NEAR_NARROW = 12;
+/** px: a neighbour's piece smaller than this does not count as beside (India's Andaman and Nicobar Islands beside Singapore) */
+const RING = 8;
+/**
+ * the shape a small country is drawn larger in: its middle and larger side in map units, and its path,
+ * on TINY's grid where e is 100 (unit) or in map units
+ */
+type Own = { x: number; y: number; e: number; d: string; unit: boolean };
+/**
+ * each country's size and its rings (each one's size and points) in map units, from its outline (absolute
+ * M, relative m and l, z), and its own shape: its 1:10m outline from TINY, else its largest ring, so far
+ * islands (the Azores, Marion Island) neither move its middle nor grow with it
+ */
+type Shape = { e: number; rings: { e: number; pts: number[] }[]; own: Own };
+const SHAPES: Map<string, Shape> = (() => {
+  const out = new Map<string, Shape>();
+  const extent = (p: number[]) => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i < p.length; i += 2) { x0 = Math.min(x0, p[i]); y0 = Math.min(y0, p[i + 1]); x1 = Math.max(x1, p[i]); y1 = Math.max(y1, p[i + 1]); }
+    return { x: (x0 + x1) / 2, y: (y0 + y1) / 2, e: Math.max(x1 - x0, y1 - y0) };
+  };
   for (const [cc, d] of COUNTRIES) {
     if (!cc) continue;
-    let x = 0, y = 0, sx = 0, sy = 0, cmd = "M", x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    const p = pts.get(cc) ?? [];
-    pts.set(cc, p);
+    let x = 0, y = 0, sx = 0, sy = 0, cmd = "M";
+    const rings: number[][] = [];
     const t = d.match(/[MmLlZz]|-?\d+(?:\.\d+)?/g) ?? [];
     for (let i = 0; i < t.length; i++) {
       const k = t[i];
       if (/[MmLlZz]/.test(k)) { cmd = k; if (k === "z" || k === "Z") { x = sx; y = sy; } continue; }
       const a = +k, b = +t[++i];
-      if (cmd === "M") { x = a; y = b; sx = x; sy = y; cmd = "L"; }
-      else if (cmd === "m") { x += a; y += b; sx = x; sy = y; cmd = "l"; }
+      if (cmd === "M") { x = a; y = b; sx = x; sy = y; cmd = "L"; rings.push([]); }
+      else if (cmd === "m") { x += a; y += b; sx = x; sy = y; cmd = "l"; rings.push([]); }
       else if (cmd === "L") { x = a; y = b; }
       else { x += a; y += b; }
-      x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
-      p.push(x, y);
+      rings[rings.length - 1].push(x, y);
     }
-    if (x1 < x0) continue;
-    const prev = out.get(cc);
-    const e = Math.max(x1 - x0, y1 - y0);
-    if (!prev || e > prev.e) out.set(cc, { x: (x0 + x1) / 2, y: (y0 + y1) / 2, e, pts: p });
+    if (!rings.length) continue;
+    const rs = rings.map((pts) => ({ ...extent(pts), pts }));
+    const big = rs.reduce((p, q) => (q.e > p.e ? q : p)), tiny = TINY[cc];
+    const own: Own = tiny
+      ? { x: tiny[0], y: tiny[1], e: tiny[2], d: tiny[3], unit: true }
+      : { x: big.x, y: big.y, e: big.e, d: `M${big.pts.slice(0, 2).join(" ")}L${big.pts.slice(2).join(" ")}Z`, unit: false };
+    out.set(cc, { e: extent(rings.flat()).e, rings: rs.map(({ e, pts }) => ({ e, pts })), own });
   }
   return out;
 })();
@@ -503,23 +525,34 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
     </>
   ), [hosted, openCcs]);
 
-  // each lit country with, for every other lit country, that one's size and how near its outline comes to this one's middle
-  const lit = useMemo(() => [...new Set([...hosted, ...openCcs])].flatMap((cc) => {
-    const b = BOXES.get(cc);
-    if (!b) return [];
+  // each hosted country's size and own shape with, for every other hosted one, that one's size and how near each of its rings comes to this one's middle
+  const beside = useMemo(() => [...hosted].flatMap((cc) => {
+    const s = SHAPES.get(cc);
+    if (!s) return [];
+    const { e, own } = s;
     const others = [...hosted].flatMap((o) => {
-      const q = o === cc ? undefined : BOXES.get(o);
+      const q = o === cc ? undefined : SHAPES.get(o);
       if (!q) return [];
-      let d = Infinity;
-      for (let i = 0; i < q.pts.length; i += 2) d = Math.min(d, Math.hypot(q.pts[i] - b.x, q.pts[i + 1] - b.y));
-      return [{ e: q.e, d }];
+      return [{ e: q.e, rings: q.rings.map((r) => {
+        let d = Infinity;
+        for (let i = 0; i < r.pts.length; i += 2) d = Math.min(d, Math.hypot(r.pts[i] - own.x, r.pts[i + 1] - own.y));
+        return { e: r.e, d };
+      }) }];
     });
-    return [{ cc, b, others }];
-  }), [hosted, openCcs]);
-  const spots = scale > 0
-    ? lit.filter(({ b, others }) => b.e * scale < SPOT_MIN && !others.some((o) => o.e * scale >= SPOT_MIN && o.d * scale < SPOT_NEAR))
-      .map(({ cc, b }) => ({ cc, x: b.x, y: b.y, r: SPOT_R / scale, hi: openCcs.has(cc) }))
-    : [];
+    return [{ cc, e, own, others }];
+  }), [hosted]);
+  // the small ones, by the home view's scale: hidden by the badge, with no shown hosted country's land beside; larger first
+  const sHome = width > 0 ? width / home.w : 0;
+  const small = useMemo(() => {
+    if (!sHome) return [];
+    const shown = narrow ? SHOWN_NARROW : SHOWN, near = narrow ? NEAR_NARROW : NEAR;
+    return beside.filter(({ e, others }) => e * sHome < shown
+      && !others.some((o) => o.e * sHome >= shown && o.rings.some((r) => r.e * sHome >= RING && r.d * sHome < near)))
+      .sort((a, b) => b.own.e - a.own.e);
+  }, [beside, sHome, narrow]);
+  // each drawn with its larger side tinyL px, until its own outline is that large
+  const tinyL = narrow ? TINY_L_NARROW : TINY_L;
+  const grown = scale > 0 ? small.filter(({ own }) => own.e * scale < tinyL) : [];
 
   // ---- badges on screen ----
   const placed = width > 0 ? clusters.map((c) => {
@@ -543,18 +576,14 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
         onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
         onDoubleClick={onDoubleClick}>
         <div className="cm-vp">
-          {/* drawn once the box is measured: the prerendered page holds the box, not the 90 kB of outlines */}
+          {/* drawn once the box is measured: the prerendered page holds the box, not the 100 kB of outlines */}
           {width > 0 && (
             <svg className="cm-land" viewBox={`${view.x} ${view.y} ${view.w} ${view.w * aspect}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false">
-              <defs>
-                {(["on", "hi"] as const).map((k) => (
-                  <radialGradient key={k} id={`cm-spot-${k}`}>
-                    <stop offset="0" className={k} /><stop offset=".7" className={k} /><stop offset="1" className={k} stopOpacity="0" />
-                  </radialGradient>
-                ))}
-              </defs>
               {land}
-              {spots.map((p) => <circle key={p.cc} cx={p.x} cy={p.y} r={p.r} fill={`url(#cm-spot-${p.hi ? "hi" : "on"})`} />)}
+              {grown.map(({ cc, own: o }) => (
+                <path key={"tiny-" + cc} d={o.d} className={openCcs.has(cc) ? "hi" : "on"}
+                  transform={o.unit ? `translate(${o.x} ${o.y}) scale(${tinyL / scale / 100})` : `translate(${o.x} ${o.y}) scale(${tinyL / (o.e * scale)}) translate(${-o.x} ${-o.y})`} />
+              ))}
             </svg>
           )}
         </div>
