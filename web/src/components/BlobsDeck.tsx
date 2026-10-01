@@ -189,7 +189,8 @@ export default function BlobsDeck({ win, onWin, market, newest, skew }: {
       <div className="lg-lead">
         {/* a figure keeps the last answer while another period loads, so it names that answer's period */}
         <h2 className="ov-eyebrow">Blobs <span className="per">({periodName(m?.window.name ?? win)})</span></h2>
-        <p className="lg-fig" title="Blobs (BlobID) settled in the period.">{m ? <RollNumber value={m.blobs} format={int} /> : <span className="wait">0,000</span>}</p>
+        {/* keyed by the period: a new period's figure replaces the last one at once; only the same period's figure rolls as blobs arrive */}
+        <p className="lg-fig" title="Blobs (BlobID) settled in the period.">{m ? <RollNumber key={m.window.name} value={m.blobs} format={int} /> : <span className="wait">0,000</span>}</p>
         {/* the settlements that paid for them, only where they are not the same count */}
         {m && m.settlements !== m.blobs && <p className="lg-help" title="A blob settled twice counts once as a blob and twice as a settlement."><b>{int(m.settlements)}</b> settlements</p>}
         <dl className="lg-stats">
