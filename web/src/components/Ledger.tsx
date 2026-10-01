@@ -278,6 +278,10 @@ export default function Ledger({ feed, live, skew, days, onNs, children }: {
     window.addEventListener("resize", on);
     return () => { cancelAnimationFrame(raf); window.removeEventListener("scroll", on); window.removeEventListener("resize", on); };
   }, []);
+  // focus on something the list has since taken away (the pill, a replaced row) leaves without a blur in some browsers: it no longer holds
+  useEffect(() => {
+    if (focusIn && !wrapRef.current?.contains(document.activeElement)) setFocusIn(false);
+  }, [feed, focusIn]);
   const hold = live && (pointerIn || focusIn || away);
 
   const [shown, setShown] = useState<Shown>(() => ({ path: feed.path, rows: feed.rows, total: feed.total, loaded: feed.loaded, move: null }));
