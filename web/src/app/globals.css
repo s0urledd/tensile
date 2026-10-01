@@ -1059,9 +1059,10 @@ body { background: var(--canvas); }
   --cp-rest: rgb(var(--ink) / .13);
   --cp-on: var(--accent);
   --cp-on-hover: #008b97;
-  /* a recent blob's square: one fill for every settled blob, and a lighter core that holds its size */
-  --rb-fill: color-mix(in srgb, var(--accent) 88%, #ffffff);
-  --rb-core: color-mix(in srgb, var(--accent) 40%, #ffffff);
+  /* a recent blob's square: one tone for every settled blob, 3:1 on the paper; the newest, the pointed one and an
+     arrival lit with the accent */
+  --rb-fill: #33a2ac;
+  --rb-lit: var(--accent);
   --rb-glow: rgb(0 106 116 / .4);
   position: relative; isolation: isolate; margin: 16px 0 18px; border-radius: var(--r-panel);
   background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow);
@@ -1081,8 +1082,8 @@ body { background: var(--canvas); }
   --cp-rest: rgb(255 255 255 / .11);
   --cp-on: #2ea4af;
   --cp-on-hover: #5fd0da;
-  --rb-fill: #2a9fab;
-  --rb-core: #a3e4ea;
+  --rb-fill: #246c75;
+  --rb-lit: #33b3bf;
   --rb-glow: rgb(51 179 191 / .6);
   background: var(--paper);
 }
@@ -1209,15 +1210,17 @@ body { background: var(--canvas); }
 @keyframes cm-in { from { opacity: 0; } to { opacity: 1; } }
 
 /* ---- the row of instruments under the map ---- */
+/* equal outer columns, so the recent blobs sit on the deck's axis, under the counts pill */
 .deck-row {
-  display: grid; grid-template-columns: minmax(0, .92fr) minmax(0, 1.12fr) minmax(0, 1fr);
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.04fr) minmax(0, 1fr);
   grid-template-areas: "cp rb rd";
   padding: 44px 0 18px;
 }
 .deck-row.no-cp { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); grid-template-areas: "rb rd"; }
 .deck-row > * { min-width: 0; padding: 0 26px; }
-.deck-row > .rb, .deck-row > .rb-read { border-left: 1px solid var(--border); }
-.deck-row.no-cp > .rb { border-left: 0; }
+/* the dividers: hairlines that fade at both ends, drawn as backgrounds so they take no width from a column */
+.deck-row > .rb, .deck-row > .rb-read { background: linear-gradient(180deg, transparent, var(--border) 16%, var(--border) 84%, transparent) 0 0 / 1px 100% no-repeat; }
+.deck-row.no-cp > .rb { background: none; }
 .cp { grid-area: cp; }
 .rb { grid-area: rb; }
 .rb-read { grid-area: rd; }
@@ -1263,40 +1266,44 @@ body { background: var(--canvas); }
 .cp-sw.none { background: var(--pending); }
 @keyframes cp-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
 
-/* recent blobs: the eyebrow, the live word and Pause; the count; the grid; its key */
-.rb { --rb-cell: 26px; --rb-gap: 5px; }
-.rb-head { display: flex; align-items: center; gap: 10px; min-height: 24px; }
-.rb-head .ov-eyebrow { margin-right: auto; }
-.rb-live { display: inline-flex; align-items: center; justify-content: flex-end; min-width: 7.2em; gap: 6px; font-size: var(--t-small); font-weight: 500; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* recent blobs: one centred column. The eyebrow and the live word on the heads' line, the count on the links' line,
+   the grid centred between them */
+.rb { --rb-cell: 20px; --rb-gap: 7px; display: flex; flex-direction: column; align-items: center; text-align: center; }
+.rb-head { display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 24px; }
+.rb-live { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-small); font-weight: 500; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .rb-live-d { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .rb[data-state="down"] .rb-live-d { background: var(--hold); }
 .rb[data-state="wait"] .rb-live-d { background: var(--pending); }
-.rb-count { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; margin: 12px 0 0; font-size: var(--t-small); color: var(--text-3); }
-.rb-total { font-size: 26px; font-weight: 600; letter-spacing: -.025em; line-height: 1.1; color: var(--text); }
+.rb-count { display: flex; align-items: baseline; justify-content: center; flex-wrap: wrap; gap: 0 6px; margin: 0; font-size: var(--t-small); color: var(--text-3); }
+.rb-total { font-size: 15.5px; font-weight: 600; letter-spacing: -.012em; line-height: 21px; color: var(--text); }
 
 /* the grid: five rows, each a window on one tape. A row clips its tape a few px outside the places, so a ring or a glow
    is not cut and a place sliding past the row's end is; the margins take that room back */
-.rb-grid { display: flex; flex-direction: column; gap: var(--rb-gap); width: calc(var(--rb-cell) * 10 + var(--rb-gap) * 9); max-width: 100%; margin: 16px 0 0; }
+.rb-grid { display: flex; flex-direction: column; gap: var(--rb-gap); width: calc(var(--rb-cell) * 10 + var(--rb-gap) * 9); max-width: 100%; margin: auto 0; padding: 18px 0; }
 .rb-row { position: relative; margin: -8px -7px; padding: 8px 7px; overflow: hidden; }
 .rb-tape { display: flex; gap: var(--rb-gap); width: max-content; }
 .rb-c {
-  position: relative; flex: none; display: grid; place-items: center; width: var(--rb-cell); height: var(--rb-cell); border-radius: 6px;
+  position: relative; flex: none; display: grid; place-items: center; width: var(--rb-cell); height: var(--rb-cell); border-radius: 5px;
   background: var(--rb-fill); transition: transform 160ms ease-out, box-shadow 160ms ease-out;
 }
 .rb-c.rb-empty { background: none; box-shadow: inset 0 0 0 1px var(--line-soft); }
-/* the newest: ringed. A ghost, a place's copy past its row's end, shows only while a move slides it out of view */
+/* the newest: lit and ringed; the square under the pointer or focus: lit, a little larger, ringed in grey.
+   A ghost, a place's copy past its row's end, shows only while a move slides it out of view */
 .rb-c.rb-ghost { visibility: hidden; }
 .rb-grid.rb-moving .rb-c.rb-ghost { visibility: visible; }
-.rb-c.rb-newest { box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--accent); }
-a.rb-c:hover, .rb-c.rb-on { transform: scale(1.12); z-index: 1; text-decoration: none; box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--text-2); }
+.rb-c.rb-newest { background: var(--rb-lit); box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--accent); }
+a.rb-c:hover, .rb-c.rb-on { background: var(--rb-lit); transform: scale(1.12); z-index: 1; text-decoration: none; box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--text-2); }
+/* a square takes half the gap on each side, so the pointer between two squares still names a blob. A row's clip margins
+   reach over the row above it, so only the squares take the pointer: the gap under a row's squares is theirs, not the next row's */
+a.rb-c::after { content: ""; position: absolute; inset: calc(var(--rb-gap) / -2); }
+.rb-row { pointer-events: none; }
+a.rb-c { pointer-events: auto; }
 /* while a move plays, a row's ends fade, so places slide in and out of view softly */
 .rb-grid.rb-moving .rb-row { -webkit-mask-image: linear-gradient(90deg, transparent, #000 7px, #000 calc(100% - 7px), transparent); mask-image: linear-gradient(90deg, transparent, #000 7px, #000 calc(100% - 7px), transparent); }
 a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-index: 1; }
-/* an arrival: its square fills in and its place glows, then cools to the fill over 1.2 s; once per read */
-.rb-glow { position: absolute; inset: 0; border-radius: inherit; background: var(--rb-core); box-shadow: 0 0 12px 1px var(--rb-glow); opacity: 0; pointer-events: none; animation: rb-glow 1.2s ease-out both; }
-@keyframes rb-glow { 0% { opacity: .6; } 30% { opacity: .38; } 100% { opacity: 0; } }
-
-/* the key, one line: what a square's size means, and the newest's ring */
+/* an arrival: its square comes in lit and glowing, then cools to the settled tone over 1.4 s; once per read */
+.rb-glow { position: absolute; inset: 0; border-radius: inherit; background: var(--rb-lit); box-shadow: 0 0 14px 1px var(--rb-glow); opacity: 0; pointer-events: none; animation: rb-glow 1.4s ease-out both; }
+@keyframes rb-glow { 0% { opacity: 1; } 35% { opacity: .75; } 100% { opacity: 0; } }
 
 /* the readout: one blob's facts, the latest by default, the pointed one while a square is pointed at */
 .rb-read-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 24px; margin: 0; font-size: var(--t-small); font-weight: 400; }
@@ -1341,7 +1348,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .deck-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); grid-template-rows: auto auto; grid-template-areas: "cp rb" "rd rd"; row-gap: 0; }
   .deck-row.no-cp { grid-template-columns: minmax(0, 1fr); grid-template-areas: "rb" "rd"; }
   .deck-row > .rb-read { margin-top: 24px !important; }
-  .deck-row > .rb-read { border-left: 0; padding-top: 22px; margin: 0 26px; padding-left: 0; padding-right: 0; border-top: 1px solid var(--border); }
+  .deck-row > .rb-read { background: none; padding-top: 22px; margin: 0 26px; padding-left: 0; padding-right: 0; border-top: 1px solid var(--border); }
   .rb-spec { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .rb-spec > .rb-size { order: 0; }
 }
@@ -1369,7 +1376,10 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .deck-row, .deck-row.no-cp { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-template-areas: "cp" "rb" "rd"; padding: 22px 0 18px; row-gap: 0; }
   .deck-row.no-cp { grid-template-areas: "rb" "rd"; }
   .deck-row > * { padding: 0 16px; }
-  .deck-row > .rb, .deck-row > .rb-read { border-left: 0; border-top: 1px solid var(--border); margin: 22px 16px 0 !important; padding: 22px 0 0; }
+  .deck-row > .rb, .deck-row > .rb-read { background: none; border-top: 1px solid var(--border); margin: 22px 16px 0 !important; padding: 22px 0 0; }
+  /* without the current providers the recent blobs open the row, under the bar, with no rule above them */
+  .deck-row.no-cp > .rb { border-top: 0; margin-top: 0 !important; padding-top: 0; }
+  .rb-grid { margin: 0; }
   .rb-spec { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .rb-spec > .rb-size { order: 1; }
   /* the map's name and key are in the bar's counts and the popovers here; the view buttons move to the empty south-west */
@@ -1383,7 +1393,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 }
 @media (max-width: 480px) {
   .blocktick .bt-l { display: none; }
-  .rb { --rb-cell: 26px; --rb-gap: 4px; }
+  .rb { --rb-cell: 24px; --rb-gap: 6px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .cm-land path, .cm-badge, .cm-pin, .cm-tools button, .rb-c, .ov-links a span { transition: none; }
@@ -1466,11 +1476,10 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 /* =============================================================================
    The Blobs page's list: a ledger (components/Ledger.tsx, Picker.tsx).
 
-   A band opens each UTC day with the day's totals; a block's blobs sit
-   together with their height once and nothing drawn between them; within a
-   block, a value the row above showed steps back; figures sit right on their
-   digits; and
-   Tensile's own reading keeps a tinted lane of its own at the far right.
+   Every blob is a full row of its own, with the same rule and room as any
+   other, and says the day it settled as well as the second; figures sit
+   right on their digits; and Tensile's own reading keeps a tinted lane of
+   its own at the far right.
    New blobs come in with one move and one glow, or gather in a glass pill
    on the table's edge while the reader is in the list.
    ========================================================================== */
@@ -1532,8 +1541,9 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-t th:first-child, .lg-t td:first-child { padding-left: 18px; }
 .lg-t .num { text-align: right; }
 .lg-t tbody tr:first-child td { border-top: 0; }
-/* a column whose cells are always about as wide is as wide as they are; the namespace and the publisher share the rest */
-.lg-t th.c-h { width: 100px; } .lg-t th.c-t { width: 138px; } .lg-t th.c-b { width: 116px; } .lg-t th.c-sz { width: 92px; } .lg-t th.c-fee { width: 92px; }
+/* a column whose cells are always about as wide is as wide as they are (the time at its widest: "May 28 20:48:38 23 h 59 min",
+   and the publisher's chip); the namespace takes the rest */
+.lg-t th.c-h { width: 100px; } .lg-t th.c-t { width: 206px; } .lg-t th.c-b { width: 116px; } .lg-t th.c-p { width: 148px; } .lg-t th.c-sz { width: 92px; } .lg-t th.c-fee { width: 92px; }
 .lg-t th.c-e { width: 132px; } .lg-t th.gap { width: 14px; } .lg-t th.tn { width: 112px; }
 .lg-t tr.row { position: relative; cursor: pointer; }
 .lg-t tr.row td { transition: background var(--dur); }
@@ -1550,15 +1560,6 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-tw tbody { transition: opacity .2s ease-out; }
 .lg-tw.is-waiting tbody { opacity: .45; pointer-events: none; transition-delay: .15s; }
 .pager .lg-ctl-wait { display: inline-block; height: 32px; line-height: 32px; padding: 0 14px; border-radius: 999px; }
-
-/* a day: a quiet band with the day's own totals, above the rows that slide in under it */
-.lg-t tr.day td { position: relative; z-index: 2; padding: 7px 18px 6px; background: color-mix(in srgb, var(--paper) 97%, var(--text)); font-family: var(--sans); font-size: var(--t-tiny); font-weight: 600; line-height: 16px; letter-spacing: .09em; text-transform: uppercase; color: var(--text-2); }
-.lg-t tr.day td.gap, .lg-t tr.day td.tn { padding: 0; border-left: 0; }
-.lg-t tr.day .sum { float: right; font-size: var(--t-small); font-weight: 500; letter-spacing: .02em; text-transform: none; color: var(--text-3); font-variant-numeric: tabular-nums; }
-
-/* a block: its height and time once, on its first row; the rows after it closer, with no rule between them and nothing drawn */
-.lg-t tr.cont td { padding-top: 3px; border-top-color: transparent; }
-.lg-t tr.row:has(+ tr.cont) td { padding-bottom: 6px; }
 
 .lg-t .c-h { font-weight: 500; }
 .lg-t .c-t .tm { font-weight: 500; }
@@ -1580,11 +1581,6 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .ident .ident-bg { fill: var(--accent-tint); }
 .ident path { fill: var(--accent); }
 .lg-t .c-sz, .lg-t .c-fee { font-weight: 500; }
-/* within a block, a value the row above already showed steps back: the block's blobs of one publisher read as one publisher */
-.lg-t td.rep, .lg-t td.rep .lg-who .tl, .lg-t td.rep .u { color: var(--text-3); font-weight: 400; }
-.lg-t td.rep .nsb { font-weight: 400; }
-.lg-t td.rep .ident { opacity: .45; }
-.lg-t td.rep .lg-who .hd { opacity: .75; }
 
 /* Endorsed: the share of voting power, and a short meter whose tick is the ⅔ a settlement needs */
 .lg-t th .ov-frac { margin-left: 3px; font-size: 12px; color: var(--text-2); }
@@ -1601,7 +1597,6 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-t th.tn svg { margin-right: 6px; vertical-align: -2px; color: var(--accent-ink); }
 .lg-t td.tn { font-family: var(--sans); font-size: var(--t-small); color: var(--text-3); }
 .lg-t tr.row:hover td.tn { background: color-mix(in srgb, var(--accent) 5%, var(--paper)); }
-.lg-t td.tn.rep > span:not(.hold) { opacity: .6; }
 .lg-t td.tn .hold { color: var(--hold-ink); font-weight: 500; }
 .lg-t td.tn .hold::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--hold); vertical-align: 1px; }
 .lg-t .c-m { display: none; }
@@ -1620,27 +1615,26 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-nss .hx { margin-left: 8px; font-family: var(--mono); font-size: 11.5px; color: var(--text-3); }
 .lg-nss .sub { margin-left: 6px; font-size: var(--t-small); color: var(--text-3); }
 
-@media (max-width: 1180px) {
+/* a table narrower than the page at its widest: the publisher's chip without the address's prefix */
+@media (max-width: 1220px) {
+  .lg-t th.c-p { width: 92px; }
   .lg-t .lg-who .hd { display: none; }
 }
-/* a narrower table: the time without its age, and its head without "(UTC)" (every time says UTC on hover),
-   so the namespace and the publisher keep room for their names */
-@media (max-width: 1080px) {
-  .lg-t th.c-t { width: 92px; }
-  .lg-t th.c-t .per, .lg-t .c-t .ag { display: none; }
+/* narrower still: the time without its age (the day and the second stay), so the namespace keeps room for its name */
+@media (max-width: 1160px) {
+  .lg-t th.c-t { width: 132px; }
+  .lg-t .c-t .ag { display: none; }
 }
 /* the table becomes a list before its columns would cut their names: two lines a blob, Tensile's lane beside them,
    nothing that scrolls sideways */
-@media (max-width: 1040px) {
+@media (max-width: 1080px) {
   .lg-t, .lg-t tbody { display: block; }
   .lg-t thead { display: none; }
   /* no column heads to clear */
   .lg-newbar { top: 28px; }
-  .lg-t tr.row { --pt: 11px; --pb: 12px; display: grid; grid-template-columns: minmax(0, 1fr) auto 104px; grid-template-areas: "b t l" "m e l"; column-gap: 14px; row-gap: 4px; padding: var(--pt) 0 var(--pb) 16px; border-top: 1px solid var(--border); }
-  .lg-t tbody tr:first-child, .lg-t tr.day + tr.row { border-top: 0; }
-  /* a blob's two lines sit tight; a block's blobs closer than other blobs, with no rule between them */
-  .lg-t tr.row.cont { --pt: 6px; border-top-color: transparent; }
-  .lg-t tr.row:has(+ tr.cont) { --pb: 6px; }
+  /* the blob's line and the namespace's each end in a column of their own, so a long time does not narrow the line under it */
+  .lg-t tr.row { --pt: 11px; --pb: 12px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto 104px; grid-template-areas: "b t t l" "m m e l"; column-gap: 14px; row-gap: 4px; padding: var(--pt) 0 var(--pb) 16px; border-top: 1px solid var(--border); }
+  .lg-t tbody tr:first-child { border-top: 0; }
   .lg-t tr.row td { display: none; padding: 0; border: 0; background: none; }
   .lg-t tr.row td.c-b, .lg-t tr.row td.c-t, .lg-t tr.row td.c-m, .lg-t tr.row td.c-e { display: flex; align-items: center; height: 20px; }
   .lg-t tr.row td.c-t, .lg-t tr.row td.c-e { justify-content: flex-end; }
@@ -1658,14 +1652,8 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .lg-t .c-m .lg-who { gap: 6px; vertical-align: -3px; }
   .lg-t .c-m .lg-who .hd { display: none; }
   .lg-t .c-m .lg-who .tl { color: var(--text-2); }
-  .lg-t td.c-m.rep, .lg-t td.c-m.rep .lg-who .tl { color: var(--text-3); }
-  .lg-t td.c-m.rep .ident { opacity: .45; }
   .lg-t .c-e { grid-area: e; justify-self: end; }
   .lg-t .en .pc { min-width: 0; }
-  .lg-t tr.day { display: block; }
-  .lg-t tr.day td { display: block; padding: 7px 16px 6px; border-top: 1px solid var(--border); }
-  .lg-t tbody tr.day:first-child td { border-top: 0; }
-  .lg-t tr.day td.gap, .lg-t tr.day td.tn { display: none; }
   .lg-t tr.fresh { animation: lg-fresh 1.8s ease-out; }
   .lg-t tr.fresh td { animation: none; }
   .lg-t tr.lg-empty, .lg-t tr.lg-empty td { display: block; }
@@ -1685,11 +1673,14 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .lg-pick.on .lg-chip .k, .lg-chip .pre { display: none; }
   .lg-newbar { top: 22px; }
   /* a phone keeps the chain's two lines; Tensile's reading is on the blob's page */
-  .lg-t tr.row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "b t" "m e"; padding-right: 14px; padding-left: 14px; }
+  .lg-t tr.row { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "b t t" "m m e"; padding-right: 14px; padding-left: 14px; }
   .lg-t tr.row td.tn { display: none; }
   .lg-nss tr.row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "n l" "s f"; }
-  .lg-t tr.day td { padding-left: 14px; padding-right: 14px; }
   .em { width: 40px; }
+}
+/* a small phone: the time without its age (the day and the second stay), so the blob's line keeps its height whole */
+@media (max-width: 440px) {
+  .lg-t .c-t .ag { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   .lg-t tr.row td { transition: none; }

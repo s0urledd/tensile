@@ -42,7 +42,7 @@ export function age(ms: number): string {
 
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 /** "28 Sep", the UTC day; spelled out here, since a locale's short month can be "Sept" */
-export function dayMonth(d: Date): string {
+function dayMonth(d: Date): string {
   return `${d.getUTCDate()} ${MON[d.getUTCMonth()]}`;
 }
 
@@ -51,6 +51,13 @@ export function dayTime(s: string): string {
   const d = new Date(s);
   if (isNaN(d.getTime())) return s;
   return `${dayMonth(d)} ${utc(s).slice(11, 19)} UTC`;
+}
+
+/** "Sep 28 20:48:38", in UTC: the day as the site's short dates write it, and the second */
+export function monthDayTime(s: string): string {
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s;
+  return `${MON[d.getUTCMonth()]} ${d.getUTCDate()} ${utc(s).slice(11, 19)}`;
 }
 
 /** the observer's clock, read every 15 s: the deck's ages are minutes and days */

@@ -17,10 +17,11 @@ import RollNumber, { reducedMotion } from "@/components/RollNumber";
  * by as many places, row by row: each row is a window on one tape, and all
  * five slide together in one 420 ms move per read, the places that leave a
  * row's right end entering the next row's left. The newest is ringed and
- * whatever arrived with it glows for 1.2 s; nothing else moves.
+ * whatever arrived with it glows for 1.4 s; nothing else moves.
  *
- * Every square has the same fill; a blob's size and the rest are in the
- * readout, for the square under the pointer or focus.
+ * Settled blobs share one tone; the newest and the arrivals are lit with the
+ * accent, as is the square under the pointer or focus. A blob's size and the
+ * rest are in the readout, for that square.
  *
  * While the pointer is on the grid or a square has focus, the grid holds
  * still: reads go on, and letting go brings what came in in one move.
@@ -270,7 +271,7 @@ export default function RecentBlobs() {
     const g = gridRef.current, mv = shown.move;
     if (!g || !mv || !motion) return;
     const first = g.querySelectorAll<HTMLElement>(".rb-row:first-child .rb-c");
-    const pitch = first.length > 1 ? first[1].offsetLeft - first[0].offsetLeft : 31;
+    const pitch = first.length > 1 ? first[1].offsetLeft - first[0].offsetLeft : 27;
     const d = Math.min(mv.n, COLS) * pitch;
     g.classList.add("rb-moving");
     const anims = [...g.querySelectorAll<HTMLElement>(".rb-tape")].map((t) =>
@@ -324,10 +325,6 @@ export default function RecentBlobs() {
           <h2 className="ov-eyebrow">Recent blobs</h2>
           <span className="rb-live" title={liveTitle}><i className="rb-live-d" aria-hidden="true" />{liveWord}</span>
         </div>
-        <p className="rb-count">
-          {shown.total != null ? <RollNumber value={shown.total} format={int} className="rb-total" /> : <span className="rb-total wait">0,000</span>}
-          <span>settlements on record</span>
-        </p>
         <div className="rb-grid" ref={gridRef} role="list" aria-label="The newest blobs settled on chain, newest first"
           onPointerEnter={() => setPointerIn(true)}
           onPointerLeave={() => { setPointerIn(false); setSel(null); }}
@@ -351,6 +348,10 @@ export default function RecentBlobs() {
             </div>
           ))}
         </div>
+        <p className="rb-count">
+          {shown.total != null ? <RollNumber value={shown.total} format={int} className="rb-total" /> : <span className="rb-total wait">0,000</span>}
+          <span>settlements on record</span>
+        </p>
       </div>
 
       <div className="rb-read">

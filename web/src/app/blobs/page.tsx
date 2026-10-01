@@ -6,7 +6,7 @@ import { useApi, type Meta, type Market, type Blob, type NamespaceRow, type Publ
 import Pager, { usePage } from "@/components/Pager";
 import { useWindow, WindowSwitch } from "@/lib/window";
 import BlobsDeck, { age, dayTime } from "@/components/BlobsDeck";
-import Ledger, { useLedger, type DayTotal } from "@/components/Ledger";
+import Ledger, { useLedger } from "@/components/Ledger";
 import Picker, { type Choice } from "@/components/Picker";
 import Ident from "@/components/Ident";
 
@@ -118,26 +118,10 @@ function Page() {
 
   const { data: meta } = useApi<Meta>("/v1/meta");
   const m = useApi<Market>(`/v1/market?window=${win}`);
-  // the days of the whole record, for the ledger's day bands
-  const all = useApi<Market>("/v1/market?window=all");
   const nss = useApi<{ namespaces: NamespaceRow[]; truncated?: boolean }>("/v1/namespaces?limit=100");
   // the publishers, once the reader opens their filter
   const [wantPubs, setWantPubs] = useState(false);
   const pubs = useApi<{ publishers: Publisher[] }>(wantPubs ? "/v1/publishers?window=all" : null);
-
-  // A day band's totals: from the freshest answer whose period holds the whole day (the selected
-  // period's, else the whole record's), and none on a filtered list, whose days are not the record's.
-  const days = useCallback((day: string): DayTotal | null => {
-    if (q) return null;
-    const t = Date.parse(day + "T00:00:00Z");
-    for (const mk of [m.data, all.data]) {
-      if (!mk) continue;
-      const whole = mk.window.name === "all" || mk.window.start.startsWith("0001-") || Date.parse(mk.window.start) <= t;
-      const d = whole ? mk.daily.find((x) => x.day === day) : undefined;
-      if (d) return { settlements: d.settlements, bytes: d.bytes, at: mk.computed_at };
-    }
-    return null;
-  }, [q, m.data, all.data]);
 
   const nsChoices: Choice[] | null = nss.data
     ? nss.data.namespaces.map((n) => ({ value: n.namespace, label: <NsName ns={n.namespace} />, count: n.blobs, find: `${nsDisplay(n.namespace)} ${nsHex(n.namespace)}`.toLowerCase() }))
@@ -185,7 +169,7 @@ function Page() {
 
         {tab === "blobs"
           ? (
-            <Ledger feed={feed} size={SIZE} live={live} skew={skew} days={days} onNs={setNs}>
+            <Ledger feed={feed} size={SIZE} live={live} skew={skew} onNs={setNs}>
               {(total) => (total === 0 && page === 1 ? null : <Pager total={total} page={page} size={SIZE} maxPages={MAX_PAGE} onPage={setPage}
                 noun={q ? (total === 1 ? "settlement with this filter" : "settlements with this filter") : total === 1 ? "settlement on record" : "settlements on record"} />)}
             </Ledger>
