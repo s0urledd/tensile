@@ -1468,8 +1468,9 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
    The Blobs page's list: a ledger (components/Ledger.tsx, Picker.tsx).
 
    A band opens each UTC day with the day's totals; a block's blobs sit
-   together with their height once and nothing drawn between them; a value
-   the row above showed steps back; figures sit right on their digits; and
+   together with their height once and nothing drawn between them; within a
+   block, a value the row above showed steps back; figures sit right on their
+   digits; and
    Tensile's own reading keeps a tinted lane of its own at the far right.
    New blobs come in with one move and one glow, or gather in a glass pill
    on the table's edge while the reader is in the list.
@@ -1573,7 +1574,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .ident .ident-bg { fill: var(--accent-tint); }
 .ident path { fill: var(--accent); }
 .lg-t .c-sz, .lg-t .c-fee { font-weight: 500; }
-/* a value the row above already showed steps back: one publisher's burst reads as one publisher */
+/* within a block, a value the row above already showed steps back: the block's blobs of one publisher read as one publisher */
 .lg-t td.rep, .lg-t td.rep .lg-who .tl, .lg-t td.rep .u { color: var(--text-3); font-weight: 400; }
 .lg-t td.rep .nsb { font-weight: 400; }
 .lg-t td.rep .ident { opacity: .45; }

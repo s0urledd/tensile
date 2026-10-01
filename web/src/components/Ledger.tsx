@@ -16,9 +16,10 @@ import { age, dayMonth } from "@/components/BlobsDeck";
  * totals; under it the blobs, newest first. The blobs of one block sit
  * together: the block's height and time are on its first row only, the rows
  * after it closer and with no rule between them, and nothing else is drawn
- * to group them. Figures are right-aligned on their digits. A value the row
- * above already showed (the namespace, the publisher, the size, the fee)
- * steps back, so a burst of one publisher reads as one publisher. Endorsed
+ * to group them. Figures are right-aligned on their digits. Within a block,
+ * a value the row above already showed (the namespace, the publisher, the
+ * size, the fee) steps back, so a block's blobs of one publisher read as
+ * one publisher and each block starts at full strength. Endorsed
  * is the share of voting power with a short meter whose tick is the ⅔ a
  * settlement needs. Tensile's own reading has a lane of its own at the end,
  * empty until Tensile has read the blob.
@@ -345,13 +346,15 @@ export default function Ledger({ feed, live, skew, days, onNs, children }: {
       const a: string | null = now && !cont ? age(now - Date.parse(b.settlement_time)) : null;
       const showAge: string | null = a && a !== lastAge ? a : null;
       if (showAge) lastAge = showAge;
-      const lp = prev ? lane(prev) : null, lb = lane(b);
+      // a value steps back only under its own block's first row, so every block starts at full strength
+      const above = cont ? prev : null;
+      const lp = above ? lane(above) : null, lb = lane(b);
       out.push({
         kind: "blob", b, cont, age: showAge,
-        ns: !!prev && prev.namespace === b.namespace,
-        pub: !!prev && payer(prev) === payer(b),
-        size: !!prev && prev.blob_size === b.blob_size,
-        fee: !!prev && !!prev.charge && !!b.charge && prev.charge.fee_utia === b.charge.fee_utia,
+        ns: !!above && above.namespace === b.namespace,
+        pub: !!above && payer(above) === payer(b),
+        size: !!above && above.blob_size === b.blob_size,
+        fee: !!above && !!above.charge && !!b.charge && above.charge.fee_utia === b.charge.fee_utia,
         lane: !!lp && !!lb && lb.tier !== "hold" && lp.word === lb.word,
       });
       prev = b;
