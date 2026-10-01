@@ -218,7 +218,7 @@ const Row = memo(function Row({ b, age: ag, fresh, onNs, onOpen }: RowProps) {
         )}
       </td>
       <td className="gap" aria-hidden="true" />
-      <td className="tn">{ln && <span className={ln.tier === "hold" ? "hold" : undefined} title={ln.title}>{ln.word}</span>}</td>
+      <td className="tn">{ln && <span className={ln.tier === "hold" ? "hold" : ln.tier === "kept" ? "ok" : undefined} title={ln.title}>{ln.word}</span>}</td>
       <td className="c-m">
         <span className="nm">{name}</span><span className="sep">·</span>{bytes(b.blob_size)}{who && <><span className="sep">·</span><Who addr={who} /></>}
       </td>
