@@ -1377,6 +1377,8 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .deck-row.no-cp { grid-template-areas: "rb" "rd"; }
   .deck-row > * { padding: 0 16px; }
   .deck-row > .rb, .deck-row > .rb-read { background: none; border-top: 1px solid var(--border); margin: 22px 16px 0 !important; padding: 22px 0 0; }
+  /* without the current providers the recent blobs open the row, under the bar, with no rule above them */
+  .deck-row.no-cp > .rb { border-top: 0; margin-top: 0 !important; padding-top: 0; }
   .rb-grid { margin: 0; }
   .rb-spec { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .rb-spec > .rb-size { order: 1; }
