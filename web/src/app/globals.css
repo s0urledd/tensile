@@ -1209,15 +1209,17 @@ body { background: var(--canvas); }
 @keyframes cm-in { from { opacity: 0; } to { opacity: 1; } }
 
 /* ---- the row of instruments under the map ---- */
+/* equal outer columns, so the recent blobs sit on the deck's axis, under the counts pill */
 .deck-row {
-  display: grid; grid-template-columns: minmax(0, .92fr) minmax(0, 1.12fr) minmax(0, 1fr);
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.04fr) minmax(0, 1fr);
   grid-template-areas: "cp rb rd";
   padding: 44px 0 18px;
 }
 .deck-row.no-cp { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); grid-template-areas: "rb rd"; }
 .deck-row > * { min-width: 0; padding: 0 26px; }
-.deck-row > .rb, .deck-row > .rb-read { border-left: 1px solid var(--border); }
-.deck-row.no-cp > .rb { border-left: 0; }
+/* the dividers: hairlines that fade at both ends, drawn as backgrounds so they take no width from a column */
+.deck-row > .rb, .deck-row > .rb-read { background: linear-gradient(180deg, transparent, var(--border) 16%, var(--border) 84%, transparent) 0 0 / 1px 100% no-repeat; }
+.deck-row.no-cp > .rb { background: none; }
 .cp { grid-area: cp; }
 .rb { grid-area: rb; }
 .rb-read { grid-area: rd; }
@@ -1263,24 +1265,24 @@ body { background: var(--canvas); }
 .cp-sw.none { background: var(--pending); }
 @keyframes cp-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
 
-/* recent blobs: the eyebrow, the live word and Pause; the count; the grid; its key */
-.rb { --rb-cell: 26px; --rb-gap: 5px; }
-.rb-head { display: flex; align-items: center; gap: 10px; min-height: 24px; }
-.rb-head .ov-eyebrow { margin-right: auto; }
-.rb-live { display: inline-flex; align-items: center; justify-content: flex-end; min-width: 7.2em; gap: 6px; font-size: var(--t-small); font-weight: 500; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* recent blobs: one centred column. The eyebrow and the live word on the heads' line, the count on the links' line,
+   the grid centred between them */
+.rb { --rb-cell: 20px; --rb-gap: 7px; display: flex; flex-direction: column; align-items: center; text-align: center; }
+.rb-head { display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 24px; }
+.rb-live { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-small); font-weight: 500; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .rb-live-d { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .rb[data-state="down"] .rb-live-d { background: var(--hold); }
 .rb[data-state="wait"] .rb-live-d { background: var(--pending); }
-.rb-count { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; margin: 12px 0 0; font-size: var(--t-small); color: var(--text-3); }
-.rb-total { font-size: 26px; font-weight: 600; letter-spacing: -.025em; line-height: 1.1; color: var(--text); }
+.rb-count { display: flex; align-items: baseline; justify-content: center; flex-wrap: wrap; gap: 0 6px; margin: 0; font-size: var(--t-small); color: var(--text-3); }
+.rb-total { font-size: 15.5px; font-weight: 600; letter-spacing: -.012em; line-height: 21px; color: var(--text); }
 
 /* the grid: five rows, each a window on one tape. A row clips its tape a few px outside the places, so a ring or a glow
    is not cut and a place sliding past the row's end is; the margins take that room back */
-.rb-grid { display: flex; flex-direction: column; gap: var(--rb-gap); width: calc(var(--rb-cell) * 10 + var(--rb-gap) * 9); max-width: 100%; margin: 16px 0 0; }
+.rb-grid { display: flex; flex-direction: column; gap: var(--rb-gap); width: calc(var(--rb-cell) * 10 + var(--rb-gap) * 9); max-width: 100%; margin: auto 0; padding: 18px 0; }
 .rb-row { position: relative; margin: -8px -7px; padding: 8px 7px; overflow: hidden; }
 .rb-tape { display: flex; gap: var(--rb-gap); width: max-content; }
 .rb-c {
-  position: relative; flex: none; display: grid; place-items: center; width: var(--rb-cell); height: var(--rb-cell); border-radius: 6px;
+  position: relative; flex: none; display: grid; place-items: center; width: var(--rb-cell); height: var(--rb-cell); border-radius: 5px;
   background: var(--rb-fill); transition: transform 160ms ease-out, box-shadow 160ms ease-out;
 }
 .rb-c.rb-empty { background: none; box-shadow: inset 0 0 0 1px var(--line-soft); }
@@ -1341,7 +1343,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .deck-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); grid-template-rows: auto auto; grid-template-areas: "cp rb" "rd rd"; row-gap: 0; }
   .deck-row.no-cp { grid-template-columns: minmax(0, 1fr); grid-template-areas: "rb" "rd"; }
   .deck-row > .rb-read { margin-top: 24px !important; }
-  .deck-row > .rb-read { border-left: 0; padding-top: 22px; margin: 0 26px; padding-left: 0; padding-right: 0; border-top: 1px solid var(--border); }
+  .deck-row > .rb-read { background: none; padding-top: 22px; margin: 0 26px; padding-left: 0; padding-right: 0; border-top: 1px solid var(--border); }
   .rb-spec { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .rb-spec > .rb-size { order: 0; }
 }
@@ -1369,7 +1371,8 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .deck-row, .deck-row.no-cp { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-template-areas: "cp" "rb" "rd"; padding: 22px 0 18px; row-gap: 0; }
   .deck-row.no-cp { grid-template-areas: "rb" "rd"; }
   .deck-row > * { padding: 0 16px; }
-  .deck-row > .rb, .deck-row > .rb-read { border-left: 0; border-top: 1px solid var(--border); margin: 22px 16px 0 !important; padding: 22px 0 0; }
+  .deck-row > .rb, .deck-row > .rb-read { background: none; border-top: 1px solid var(--border); margin: 22px 16px 0 !important; padding: 22px 0 0; }
+  .rb-grid { margin: 0; }
   .rb-spec { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .rb-spec > .rb-size { order: 1; }
   /* the map's name and key are in the bar's counts and the popovers here; the view buttons move to the empty south-west */
@@ -1383,7 +1386,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 }
 @media (max-width: 480px) {
   .blocktick .bt-l { display: none; }
-  .rb { --rb-cell: 26px; --rb-gap: 4px; }
+  .rb { --rb-cell: 24px; --rb-gap: 6px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .cm-land path, .cm-badge, .cm-pin, .cm-tools button, .rb-c, .ov-links a span { transition: none; }

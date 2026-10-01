@@ -270,7 +270,7 @@ export default function RecentBlobs() {
     const g = gridRef.current, mv = shown.move;
     if (!g || !mv || !motion) return;
     const first = g.querySelectorAll<HTMLElement>(".rb-row:first-child .rb-c");
-    const pitch = first.length > 1 ? first[1].offsetLeft - first[0].offsetLeft : 31;
+    const pitch = first.length > 1 ? first[1].offsetLeft - first[0].offsetLeft : 27;
     const d = Math.min(mv.n, COLS) * pitch;
     g.classList.add("rb-moving");
     const anims = [...g.querySelectorAll<HTMLElement>(".rb-tape")].map((t) =>
@@ -324,10 +324,6 @@ export default function RecentBlobs() {
           <h2 className="ov-eyebrow">Recent blobs</h2>
           <span className="rb-live" title={liveTitle}><i className="rb-live-d" aria-hidden="true" />{liveWord}</span>
         </div>
-        <p className="rb-count">
-          {shown.total != null ? <RollNumber value={shown.total} format={int} className="rb-total" /> : <span className="rb-total wait">0,000</span>}
-          <span>settlements on record</span>
-        </p>
         <div className="rb-grid" ref={gridRef} role="list" aria-label="The newest blobs settled on chain, newest first"
           onPointerEnter={() => setPointerIn(true)}
           onPointerLeave={() => { setPointerIn(false); setSel(null); }}
@@ -351,6 +347,10 @@ export default function RecentBlobs() {
             </div>
           ))}
         </div>
+        <p className="rb-count">
+          {shown.total != null ? <RollNumber value={shown.total} format={int} className="rb-total" /> : <span className="rb-total wait">0,000</span>}
+          <span>settlements on record</span>
+        </p>
       </div>
 
       <div className="rb-read">
