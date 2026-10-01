@@ -1530,9 +1530,9 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-t th:first-child, .lg-t td:first-child { padding-left: 18px; }
 .lg-t .num { text-align: right; }
 .lg-t tbody tr:first-child td { border-top: 0; }
-/* the widths follow what the cells hold; Tensile's lane takes what is left */
-.lg-t th.c-h { width: 9.5%; } .lg-t th.c-t { width: 13%; } .lg-t th.c-b { width: 10.5%; } .lg-t th.c-ns { width: 11%; } .lg-t th.c-p { width: 14.5%; }
-.lg-t th.c-sz { width: 8%; } .lg-t th.c-fee { width: 8.5%; } .lg-t th.c-e { width: 12%; } .lg-t th.gap { width: 14px; }
+/* a column whose cells are always about as wide is as wide as they are; the namespace and the publisher share the rest */
+.lg-t th.c-h { width: 100px; } .lg-t th.c-t { width: 138px; } .lg-t th.c-b { width: 116px; } .lg-t th.c-sz { width: 92px; } .lg-t th.c-fee { width: 92px; }
+.lg-t th.c-e { width: 132px; } .lg-t th.gap { width: 14px; } .lg-t th.tn { width: 112px; }
 .lg-t tr.row { position: relative; cursor: pointer; }
 .lg-t tr.row td { transition: background var(--dur); }
 .lg-t tr.row:hover td { background: color-mix(in srgb, var(--accent) 5%, var(--paper)); }
@@ -1589,8 +1589,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-t .gap { padding: 0; border-top-color: transparent; }
 .lg-t .tn { padding-left: 16px; padding-right: 18px; background: var(--obs-bg); border-left: 1px dashed var(--line); }
 .lg-t th.tn { background: color-mix(in srgb, var(--paper) 97.5%, var(--text)); }
-.lg-t th.tn span { display: inline-flex; align-items: center; gap: 6px; }
-.lg-t th.tn svg { color: var(--accent-ink); }
+.lg-t th.tn svg { margin-right: 6px; vertical-align: -2px; color: var(--accent-ink); }
 .lg-t td.tn { font-family: var(--sans); font-size: var(--t-small); color: var(--text-3); }
 .lg-t tr.row:hover td.tn { background: color-mix(in srgb, var(--accent) 5%, var(--paper)); }
 .lg-t td.tn.rep > span:not(.hold) { opacity: .6; }
@@ -1608,22 +1607,25 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-nss th.n-nm { width: 26%; } .lg-nss th.n-pub { width: 10%; } .lg-nss th.n-n { width: 11%; } .lg-nss th.n-sz { width: 12%; } .lg-nss th.n-24 { width: 13%; } .lg-nss th.n-first { width: 14%; }
 .lg-nss th.n-first, .lg-nss td.n-first { padding-left: 28px; }
 .lg-nss td.n-nm .nsb { font-weight: 600; }
+.lg-nss td.n-nm .nsb .mono { font-weight: 500; }
 .lg-nss .hx { margin-left: 8px; font-family: var(--mono); font-size: 11.5px; color: var(--text-3); }
 .lg-nss .sub { margin-left: 6px; font-size: var(--t-small); color: var(--text-3); }
 
-@media (max-width: 1060px) {
+@media (max-width: 1180px) {
   .lg-t .lg-who .hd { display: none; }
 }
-@media (max-width: 1000px) {
+@media (max-width: 1060px) {
+  .lg-t th.c-t { width: 92px; }
   .lg-t .c-t .ag { display: none; }
 }
-@media (max-width: 960px) {
+/* the table becomes a list: two lines a blob, Tensile's lane beside them, nothing that scrolls sideways */
+@media (max-width: 1000px) {
   .lg-t, .lg-t tbody { display: block; }
   .lg-t thead { display: none; }
   .lg-t tr.row { --pt: 11px; --pb: 12px; display: grid; grid-template-columns: minmax(0, 1fr) auto 104px; grid-template-areas: "b t l" "m e l"; column-gap: 14px; row-gap: 4px; padding: var(--pt) 0 var(--pb) 16px; border-top: 1px solid var(--border); }
   .lg-t tbody tr:first-child, .lg-t tr.day + tr.row { border-top: 0; }
-  .lg-t tr.row.cont { --pt: 3px; border-top-color: transparent; }
-  .lg-t tr.row:has(+ tr.cont) { --pb: 6px; }
+  .lg-t tr.row.cont { --pt: 2px; border-top-color: transparent; }
+  .lg-t tr.row:has(+ tr.cont) { --pb: 4px; }
   .lg-t tr.row td { display: none; padding: 0; border: 0; background: none; }
   .lg-t tr.row td.c-b, .lg-t tr.row td.c-t, .lg-t tr.row td.c-m, .lg-t tr.row td.c-e { display: block; }
   .lg-t tr.row:hover { background: color-mix(in srgb, var(--accent) 5%, var(--paper)); }
@@ -1662,6 +1664,8 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .lg-tools { width: 100%; }
   .lg-live { margin-left: auto; }
   .lg-chip { max-width: 190px; }
+  /* a picked filter says only what it is */
+  .lg-pick.on .lg-chip .k, .lg-chip .pre { display: none; }
   .lg-newbar { top: 22px; }
   /* a phone keeps the chain's two lines; Tensile's reading is on the blob's page */
   .lg-t tr.row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "b t" "m e"; padding-right: 14px; padding-left: 14px; }

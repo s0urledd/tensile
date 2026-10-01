@@ -171,7 +171,7 @@ function Page() {
             {tab === "blobs" && <>
               <Picker name="Namespace" icon={NS_ICON} value={ns} text={ns ? <NsName ns={ns} /> : null} choices={nsChoices}
                 accept={(s) => (/^[0-9a-f]{58}$/.test(s) ? s : null)} placeholder="Name or hex" onPick={setNs} />
-              <Picker name="Publisher" icon={PUB_ICON} value={pub} text={pub ? `celestia ••• ${pub.slice(-4)}` : null} choices={pubChoices}
+              <Picker name="Publisher" icon={PUB_ICON} value={pub} text={pub ? <><span className="pre">celestia </span>••• {pub.slice(-4)}</> : null} choices={pubChoices}
                 accept={(s) => (/^celestia1[0-9a-z]{38}$/.test(s) ? s : null)} placeholder="Address" onPick={setPub} onOpen={() => setWantPubs(true)} />
             </>}
             {tab === "blobs" && liveWord && <span className={`lg-live${feed.error ? " down" : ""}`} title={liveTitle}><i aria-hidden="true" />{liveWord}</span>}
