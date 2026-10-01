@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { API_BASE, useApi, type Blob, type Tip, int, pctOf, bytes, whenUTC, utcWord } from "@/lib/api";
 import RollNumber, { reducedMotion } from "@/components/RollNumber";
-import { Frac } from "@/components/CurrentProviders";
 
 /**
  * The overview's recent blobs: the newest settlements as a grid of squares,
@@ -363,8 +362,8 @@ export default function RecentBlobs() {
           {blob && <Age at={blob.settlement_time} skew={skew} />}
         </h3>
         {/* the height as the figure, "Height · time · size" under it; the endorsed share before its bar, the ⅔ a blob
-            needs as a needle over it, "Endorsed voting power · 48 of 82 validators" under them. The names the lines
-            do not show stay for screen readers */}
+            needs as a bare needle on it (the providers' strip beside it says what the needle is), "Endorsed voting
+            power · 48 of 82 validators" under them. The names the lines do not show stay for screen readers */}
         <dl className="rb-spec" aria-busy={!blob || undefined}>
           <div className="rb-h"><dt>Height</dt><dd><span className={`ov-fig${blob ? "" : " wait"}`}>{blob ? (isLatest ? <RollNumber value={blob.settlement_height} format={int} /> : int(blob.settlement_height)) : "0,000,000"}</span></dd></div>
           <div className="rb-t"><dt className="sr-only">Time</dt><dd>{blob ? whenUTC(blob.settlement_time) : <span className="wait">Sep 00 00:00</span>}</dd></div>
@@ -375,7 +374,7 @@ export default function RecentBlobs() {
               {vp ? pctOf(vp.n, vp.of) : blob ? "—" : <span className="wait">00.00%</span>}
               <span className="rb-meter" aria-hidden="true">
                 <span className="rb-bar">{vp && <i style={{ width: `${Math.min(100, Math.max(0, (100 * vp.n) / vp.of))}%` }} />}</span>
-                {vp && <span className="rb-q"><span><Frac /> needed</span></span>}
+                {vp && <span className="rb-q" />}
               </span>
             </dd>
           </div>

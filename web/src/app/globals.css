@@ -346,10 +346,10 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
    so the table reads as an even grid. A rate is a pair — share right-aligned
    in a fixed box, counts left-aligned in the next — centred as one block,
    so the per cent signs sit in one line whatever the counts are. The whole
-   row opens the validator: the name is the real link, and a cover link
-   (.rowcover, out of the tab order and hidden from assistive tech) stretches
-   over the row for the pointer. Anything in a cell that carries its own
-   title or link sits above the cover. */
+   row opens the validator by its own click (lib/row.ts); the name is the real
+   link. No link is stretched over the row: a phone's browser that does not
+   make a table row a box for it would spread every row's cover over the page,
+   the last row's on top. */
 .vt { font-variant-numeric: tabular-nums; }
 .vt th:not(:first-child), .vt td:not(:first-child) { text-align: center; padding-left: 6px; padding-right: 6px; }
 @media (min-width: 900px) {
@@ -382,11 +382,9 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
 .vt tbody .fig, .vt tbody .fig .rate, .vt tbody .state { font-weight: 500; }
 .vt tbody tr { position: relative; }
 .vt tbody tr:not(.empty) { cursor: pointer; }
-.vt .rowcover { position: absolute; inset: 0; z-index: 0; }
 /* a positioned row lets the pinned cell's background cover the collapsed rule; draw it on the cell */
 .vt tbody td.col-pin { box-shadow: inset 0 -1px 0 var(--line-soft); }
-.vt .rowcover:focus { outline: none; }
-.vt td [title], .vt td a:not(.rowcover), .vt td[title] > * { position: relative; z-index: 1; }
+.vt td [title], .vt td a, .vt td[title] > * { position: relative; z-index: 1; }
 .u { color: var(--text-3); font-weight: 400; }
 /* above the cells it scrolls over: a cell with its own title sits at z-index 1 (above the row cover) and would draw on top of it */
 .col-pin { position: sticky; left: 0; z-index: 2; background: var(--paper); }
@@ -1028,8 +1026,8 @@ body { background: var(--canvas); }
    The overview's top: one instrument panel (page.tsx, .deck).
 
    The map of Fibre providers sits full-bleed at the top of the panel, its sea
-   the panel itself, the land one calm solid shade (a country with a host a
-   shade warmer), a faint graticule under it. Places are rounded squares in the
+   the panel itself, the land one calm solid shade with no grid and no borders
+   (a country with a host a shade warmer). Places are rounded squares in the
    accent with their count; a lone host is a small square with none. Names
    only on hover, focus or tap. One floating bar straddles the map's foot: the
    newest event, then the three counts. Under it a row of three instruments:
@@ -1049,9 +1047,6 @@ body { background: var(--canvas); }
   --cm-land: #e7eaeb;
   --cm-land-on: #c6e1e4;
   --cm-land-hi: #a6d0d4;
-  --cm-grat: rgb(var(--ink) / .02);
-  /* borders between countries sit a little lighter than the land, not cut down to the sea */
-  --cm-edge: color-mix(in srgb, var(--paper) 55%, var(--cm-land));
   --cm-halo: var(--paper);
   --cm-badge: var(--accent);
   --cm-badge-ink: #ffffff;
@@ -1085,8 +1080,6 @@ body { background: var(--canvas); }
   --cm-land: #1b2226;
   --cm-land-on: #1f3f46;
   --cm-land-hi: #24565e;
-  --cm-grat: rgb(255 255 255 / .012);
-  --cm-edge: color-mix(in srgb, var(--paper) 38%, var(--cm-land));
   --cm-badge: #33b3bf;
   --cm-badge-ink: #04171a;
   --cm-badge-hold-ink: #1f1500;
@@ -1124,10 +1117,11 @@ body { background: var(--canvas); }
   mask-composite: intersect;
 }
 .cm-land { display: block; width: 100%; height: 100%; }
-.cm-land path { fill: var(--cm-land); stroke: var(--cm-edge); stroke-width: .5; stroke-linejoin: round; vector-effect: non-scaling-stroke; transition: fill 220ms ease-out; }
-.cm-land path.on { fill: var(--cm-land-on); }
-.cm-land path.hi { fill: var(--cm-land-hi); }
-.cm-land path.cm-grat { fill: none; stroke: var(--cm-grat); stroke-width: 1; }
+/* only the land: no grid and no borders, a hosted country set off by its tint alone. Each country is stroked in its
+   own fill, so the seams where two outlines meet do not show as hairlines */
+.cm-land path { fill: var(--cm-land); stroke: var(--cm-land); stroke-width: .6; stroke-linejoin: round; vector-effect: non-scaling-stroke; transition: fill 220ms ease-out, stroke 220ms ease-out; }
+.cm-land path.on { fill: var(--cm-land-on); stroke: var(--cm-land-on); }
+.cm-land path.hi { fill: var(--cm-land-hi); stroke: var(--cm-land-hi); }
 
 /* the map's name and the key of Tensile's check, in its top-left corner; the view buttons in the other */
 .cm-title { position: absolute; left: 24px; top: 18px; z-index: 6; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px; pointer-events: none; }
@@ -1340,7 +1334,6 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 /* the facts as one wrapping line of items, the dl's rows dissolved:
    1,204,085
    Height · Sep 28 20:48 UTC · 16.0 MiB
-                         ⅔ needed
    69.88%  ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬|▬──────
    Endorsed voting power · 48 of 82 validators
    Every item stands 14px after the one before it, the "·" in that space. The list starts 14px early and is cut where
@@ -1352,9 +1345,9 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .rb-spec dd { font-weight: 400; color: var(--text-2); font-variant-numeric: tabular-nums lining-nums; }
 .rb-h dd { order: -1; flex: 0 1 100%; display: flex; margin-bottom: 8px; }
 .rb-t dd::before, .rb-size dd::before, .rb-e dd::before { content: "·"; position: absolute; margin-left: -9px; font-weight: 400; color: var(--text-3); }
-/* the endorsed share before its bar, the ⅔ needle over the bar as on the current providers' strip */
+/* the endorsed share before its bar, the ⅔ needle across the bar as on the current providers' strip, without its words */
 .rb-vp dd {
-  flex: 0 1 100%; display: flex; align-items: center; gap: 12px; margin-top: 26px;
+  flex: 0 1 100%; display: flex; align-items: center; gap: 12px; margin-top: 16px;
   font-size: 15.5px; font-weight: 600; letter-spacing: -.012em; line-height: 21px; color: var(--text);
 }
 .rb-vp dt, .rb-e dd { order: 1; margin-top: 4px; }
@@ -1362,9 +1355,8 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .rb-meter { position: relative; flex: 1 1 auto; height: 6px; }
 .rb-bar { position: absolute; inset: 0; overflow: hidden; border-radius: 3px; background: var(--rb-track); }
 .rb-bar > i { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, var(--rb-fill), var(--rb-lit)); }
-.rb-q { position: absolute; left: 66.6667%; top: -24px; bottom: -5px; width: 0; pointer-events: none; }
-.rb-q::before { content: ""; position: absolute; left: -1px; top: 19px; bottom: 0; width: 2px; border-radius: 1px; background: var(--text); box-shadow: 0 0 0 1.5px var(--rb-sheet-halo); }
-.rb-q > span { position: absolute; left: 0; top: -2px; transform: translateX(-50%); display: inline-flex; align-items: baseline; gap: 3px; font-size: var(--t-tiny); font-weight: 600; line-height: 18px; letter-spacing: .02em; color: var(--text); white-space: nowrap; }
+.rb-q { position: absolute; left: 66.6667%; top: -5px; bottom: -5px; width: 0; pointer-events: none; }
+.rb-q::before { content: ""; position: absolute; left: -1px; top: 0; bottom: 0; width: 2px; border-radius: 1px; background: var(--text); box-shadow: 0 0 0 1.5px var(--rb-sheet-halo); }
 /* the links: two buttons side by side at the sheet's foot, the blob's own in the accent's tint */
 .rb-read .ov-links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: auto 0 0; padding-top: 13px; font-size: 12.5px; }
 .rb-read .ov-links > * {
@@ -1616,9 +1608,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-t tr.row td { transition: background var(--dur); }
 .lg-t tr.row:hover td { background: color-mix(in srgb, var(--accent) 5%, var(--paper)); }
 /* the row's cover link, for the pointer; anything in a cell with a link, a button or a title of its own sits above it */
-.lg-t .rc { position: absolute; inset: 0; z-index: 0; }
-.lg-t .rc:focus { outline: none; }
-.lg-t td a:not(.rc), .lg-t td button, .lg-t td [title] { position: relative; z-index: 1; }
+.lg-t td a, .lg-t td button, .lg-t td [title] { position: relative; z-index: 1; }
 .lg-t tr.lg-empty td { padding: 28px 18px; color: var(--text-2); white-space: normal; background: none; }
 /* while a page loads, the list keeps its size: the first page's places, or the last page's rows quieted
    (after a moment, so a quick answer never flickers) */
@@ -1664,9 +1654,15 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-t th.tn svg { margin-right: 6px; vertical-align: -2px; color: var(--accent-ink); }
 .lg-t td.tn { font-family: var(--sans); font-size: var(--t-small); color: var(--text-3); }
 .lg-t tr.row:hover td.tn { background: color-mix(in srgb, var(--accent) 5%, var(--paper)); }
+.lg-t td.tn .ok { color: var(--ok); font-weight: 500; }
 .lg-t td.tn .hold { color: var(--hold-ink); font-weight: 500; }
 .lg-t td.tn .hold::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--hold); vertical-align: 1px; }
 .lg-t .c-m { display: none; }
+/* in the table, the time, the publisher and Tensile's reading sit centred under their heads */
+@media (min-width: 1081px) {
+  .lg-t th.c-t, .lg-t td.c-t, .lg-t th.c-p, .lg-t td.c-p, .lg-t th.tn, .lg-t td.tn { text-align: center; }
+  .lg-t .tn { padding-left: 14px; padding-right: 14px; }
+}
 
 /* an arrival: its row lit once, cooling to the paper */
 .lg-t tr.fresh td { animation: lg-fresh 1.8s ease-out; }

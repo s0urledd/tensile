@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { API_BASE, type Blob, int, bytes, tia, pctOf, nsDisplay, utcWord } from "@/lib/api";
 import { lane } from "@/lib/status";
+import { openRow } from "@/lib/row";
 import { unit } from "@/components/Unit";
 import { Eye } from "@/components/Metrics";
 import { Frac } from "@/components/CurrentProviders";
@@ -196,10 +197,10 @@ const Row = memo(function Row({ b, age: ag, fresh, onNs, onOpen }: RowProps) {
   const ln = lane(b);
   const share = b.attested_voting_power != null && b.total_voting_power ? b.attested_voting_power / b.total_voting_power : null;
   return (
-    // A click on a cell that sits above the cover link (a titled figure) opens the blob too; links and buttons keep their own.
+    // The whole row opens the blob; links and buttons keep their own.
     <tr className={`row${fresh ? " fresh" : ""}`} data-h={b.promise_hash}
-      onClick={(e) => { if (!(e.target as HTMLElement).closest("a, button") && !window.getSelection()?.toString()) onOpen(e, href); }}>
-      <td className="c-h">{int(b.settlement_height)}<Link className="rc" href={href} tabIndex={-1} aria-hidden="true" /></td>
+      onClick={(e) => openRow(e, href, onOpen)} onAuxClick={(e) => openRow(e, href, onOpen)}>
+      <td className="c-h">{int(b.settlement_height)}</td>
       <td className="c-t"><span title={utcWord(b.settlement_time)}><span className="tm">{monthDayTime(b.settlement_time)}</span>{ag && <span className="ag">{ag}</span>}</span></td>
       <td className="c-b">
         <Link href={href} title={b.promise_hash} aria-label={`Blob ${b.promise_hash.slice(0, 10)}, height ${int(b.settlement_height)}`}>{b.promise_hash.slice(0, 6)}<span className="el">…</span>{b.promise_hash.slice(-4)}</Link>
@@ -218,7 +219,7 @@ const Row = memo(function Row({ b, age: ag, fresh, onNs, onOpen }: RowProps) {
         )}
       </td>
       <td className="gap" aria-hidden="true" />
-      <td className="tn">{ln && <span className={ln.tier === "hold" ? "hold" : undefined} title={ln.title}>{ln.word}</span>}</td>
+      <td className="tn">{ln && <span className={ln.tier === "hold" ? "hold" : ln.tier === "kept" ? "ok" : undefined} title={ln.title}>{ln.word}</span>}</td>
       <td className="c-m">
         <span className="nm">{name}</span><span className="sep">·</span>{bytes(b.blob_size)}{who && <><span className="sep">·</span><Who addr={who} /></>}
       </td>

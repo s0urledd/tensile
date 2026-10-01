@@ -9,6 +9,7 @@ import Info from "./Info";
 import { HostingCell } from "./Hosting";
 import { SELF_VALIDATOR } from "@/lib/site";
 import { isOperatorAccount, validatorHref } from "@/lib/addr";
+import { openRow } from "@/lib/row";
 
 /**
  * The validators table: who, whether the endpoint answers right now, how
@@ -91,6 +92,7 @@ export default function Validators({ rows, window: win, notLive, loading, period
   const [filter, setFilter] = useState<Filter>("all");
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "power", dir: -1 });
   const router = useRouter();
+  const go = (_: React.MouseEvent, to: string) => router.push(to);
 
   const counts = useMemo(() => ({
     all: rows.length,
@@ -209,9 +211,9 @@ export default function Validators({ rows, window: win, notLive, loading, period
             {list.map((v) => {
               const e = endpoint(v);
               return (
-                // A click that lands on a titled figure (above the cover link) opens the page too; links keep their own target.
+                // The whole row opens the validator; links keep their own target.
                 <tr key={v.address} className={e.warn ? "warn" : undefined}
-                  onClick={(ev) => { if (!(ev.target as HTMLElement).closest("a") && !window.getSelection()?.toString()) router.push(href(v)); }}>
+                  onClick={(ev) => openRow(ev, href(v), go)} onAuxClick={(ev) => openRow(ev, href(v), go)}>
                   <td className="id col-pin">
                     <span className="who">
                       <Avatar v={v} />
@@ -226,7 +228,7 @@ export default function Validators({ rows, window: win, notLive, loading, period
                       </span>
                     </span>
                   </td>
-                  <td><Link className="rowcover" href={href(v)} tabIndex={-1} aria-hidden="true" /><span className="state" title={e.title}><i className={"dot " + e.dot} />{e.word}</span></td>
+                  <td><span className="state" title={e.title}><i className={"dot " + e.dot} />{e.word}</span></td>
                   {showHosting && <td><HostingCell h={v.hosting} /></td>}
                   <td className="num fig">{int(v.voting_power)}</td>
                   <td className="num fig">{shard(v)}</td>
