@@ -17,10 +17,11 @@ import RollNumber, { reducedMotion } from "@/components/RollNumber";
  * by as many places, row by row: each row is a window on one tape, and all
  * five slide together in one 420 ms move per read, the places that leave a
  * row's right end entering the next row's left. The newest is ringed and
- * whatever arrived with it glows for 1.2 s; nothing else moves.
+ * whatever arrived with it glows for 1.4 s; nothing else moves.
  *
- * Every square has the same fill; a blob's size and the rest are in the
- * readout, for the square under the pointer or focus.
+ * Settled blobs share one tone; the newest and the arrivals are lit with the
+ * accent, as is the square under the pointer or focus. A blob's size and the
+ * rest are in the readout, for that square.
  *
  * While the pointer is on the grid or a square has focus, the grid holds
  * still: reads go on, and letting go brings what came in in one move.

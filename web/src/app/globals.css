@@ -1059,9 +1059,10 @@ body { background: var(--canvas); }
   --cp-rest: rgb(var(--ink) / .13);
   --cp-on: var(--accent);
   --cp-on-hover: #008b97;
-  /* a recent blob's square: one fill for every settled blob, and a lighter core that holds its size */
-  --rb-fill: color-mix(in srgb, var(--accent) 88%, #ffffff);
-  --rb-core: color-mix(in srgb, var(--accent) 40%, #ffffff);
+  /* a recent blob's square: one tone for every settled blob, 3:1 on the paper; the newest, the pointed one and an
+     arrival lit with the accent */
+  --rb-fill: #33a2ac;
+  --rb-lit: var(--accent);
   --rb-glow: rgb(0 106 116 / .4);
   position: relative; isolation: isolate; margin: 16px 0 18px; border-radius: var(--r-panel);
   background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow);
@@ -1081,8 +1082,8 @@ body { background: var(--canvas); }
   --cp-rest: rgb(255 255 255 / .11);
   --cp-on: #2ea4af;
   --cp-on-hover: #5fd0da;
-  --rb-fill: #2a9fab;
-  --rb-core: #a3e4ea;
+  --rb-fill: #246c75;
+  --rb-lit: #33b3bf;
   --rb-glow: rgb(51 179 191 / .6);
   background: var(--paper);
 }
@@ -1286,19 +1287,18 @@ body { background: var(--canvas); }
   background: var(--rb-fill); transition: transform 160ms ease-out, box-shadow 160ms ease-out;
 }
 .rb-c.rb-empty { background: none; box-shadow: inset 0 0 0 1px var(--line-soft); }
-/* the newest: ringed. A ghost, a place's copy past its row's end, shows only while a move slides it out of view */
+/* the newest: lit and ringed; the square under the pointer or focus: lit, a little larger, ringed in grey.
+   A ghost, a place's copy past its row's end, shows only while a move slides it out of view */
 .rb-c.rb-ghost { visibility: hidden; }
 .rb-grid.rb-moving .rb-c.rb-ghost { visibility: visible; }
-.rb-c.rb-newest { box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--accent); }
-a.rb-c:hover, .rb-c.rb-on { transform: scale(1.12); z-index: 1; text-decoration: none; box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--text-2); }
+.rb-c.rb-newest { background: var(--rb-lit); box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--accent); }
+a.rb-c:hover, .rb-c.rb-on { background: var(--rb-lit); transform: scale(1.12); z-index: 1; text-decoration: none; box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--text-2); }
 /* while a move plays, a row's ends fade, so places slide in and out of view softly */
 .rb-grid.rb-moving .rb-row { -webkit-mask-image: linear-gradient(90deg, transparent, #000 7px, #000 calc(100% - 7px), transparent); mask-image: linear-gradient(90deg, transparent, #000 7px, #000 calc(100% - 7px), transparent); }
 a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-index: 1; }
-/* an arrival: its square fills in and its place glows, then cools to the fill over 1.2 s; once per read */
-.rb-glow { position: absolute; inset: 0; border-radius: inherit; background: var(--rb-core); box-shadow: 0 0 12px 1px var(--rb-glow); opacity: 0; pointer-events: none; animation: rb-glow 1.2s ease-out both; }
-@keyframes rb-glow { 0% { opacity: .6; } 30% { opacity: .38; } 100% { opacity: 0; } }
-
-/* the key, one line: what a square's size means, and the newest's ring */
+/* an arrival: its square comes in lit and glowing, then cools to the settled tone over 1.4 s; once per read */
+.rb-glow { position: absolute; inset: 0; border-radius: inherit; background: var(--rb-lit); box-shadow: 0 0 14px 1px var(--rb-glow); opacity: 0; pointer-events: none; animation: rb-glow 1.4s ease-out both; }
+@keyframes rb-glow { 0% { opacity: 1; } 35% { opacity: .75; } 100% { opacity: 0; } }
 
 /* the readout: one blob's facts, the latest by default, the pointed one while a square is pointed at */
 .rb-read-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 24px; margin: 0; font-size: var(--t-small); font-weight: 400; }
