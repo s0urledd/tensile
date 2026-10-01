@@ -1032,10 +1032,11 @@ body { background: var(--canvas); }
    shade warmer), a faint graticule under it. Places are rounded squares in the
    accent with their count; a lone host is a small square with none. Names
    only on hover, focus or tap. One floating bar straddles the map's foot: the
-   newest event, then the three counts. Under it a row of instruments divided
-   by hairlines: the current Fibre providers' share of voting power over a
-   strip of the validators themselves, the recent blobs (newest first, a tape
-   that moves once per read), the latest blob's readout.
+   newest event, then the three counts. Under it a row of three instruments:
+   the current Fibre providers' share of voting power over a strip of the
+   validators themselves, open on the panel; the recent blobs (newest first, a
+   tape that moves once per read) in a window of their own; the latest blob's
+   readout on a sheet of the accent.
 
    Colour is spent as elsewhere: the accent for the chain's facts and the
    instruments, amber only for an unreachable host or an unavailable blob, red
@@ -1067,6 +1068,14 @@ body { background: var(--canvas); }
   --rb-win-edge: var(--border);
   --rb-win-shadow: 0 12px 32px -16px rgb(16 24 32 / .22), inset 0 1px 0 rgb(255 255 255 / .9);
   --rb-glow: rgb(0 106 116 / .4);
+  /* the latest blob's sheet: the accent laid flat on the panel, deeper at its top left, another material than the
+     window; the ⅔ needle's halo in its colour, the bar's track, and the plain button a lighter patch of it */
+  --rb-sheet: linear-gradient(160deg, color-mix(in srgb, var(--accent) 12%, var(--paper)), color-mix(in srgb, var(--accent) 7%, var(--paper)) 70%);
+  --rb-sheet-hi: inset 0 1px 0 rgb(255 255 255 / .8);
+  --rb-sheet-halo: color-mix(in srgb, var(--accent) 8%, var(--paper));
+  --rb-track: rgb(0 106 116 / .12);
+  --rb-btn: rgb(255 255 255 / .6);
+  --rb-btn-hover: rgb(255 255 255 / .9);
   position: relative; isolation: isolate; margin: 16px 0 18px; border-radius: var(--r-panel);
   background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow);
 }
@@ -1090,6 +1099,12 @@ body { background: var(--canvas); }
   --rb-win-edge: rgb(255 255 255 / .075);
   --rb-win-shadow: 0 18px 40px -18px rgb(0 0 0 / .7), inset 0 1px 0 rgb(255 255 255 / .05);
   --rb-glow: rgb(51 179 191 / .6);
+  --rb-sheet: linear-gradient(160deg, color-mix(in srgb, var(--accent) 19%, var(--paper)), color-mix(in srgb, var(--accent) 10%, var(--paper)) 70%);
+  --rb-sheet-hi: inset 0 1px 0 rgb(255 255 255 / .04);
+  --rb-sheet-halo: color-mix(in srgb, var(--accent) 11%, var(--paper));
+  --rb-track: rgb(255 255 255 / .09);
+  --rb-btn: rgb(255 255 255 / .06);
+  --rb-btn-hover: rgb(255 255 255 / .1);
   background: var(--paper);
 }
 
@@ -1310,18 +1325,53 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .rb-glow { position: absolute; inset: 0; border-radius: inherit; background: var(--rb-lit); box-shadow: 0 0 14px 1px var(--rb-glow); opacity: 0; pointer-events: none; animation: rb-glow 1.4s ease-out both; }
 @keyframes rb-glow { 0% { opacity: 1; } 35% { opacity: .75; } 100% { opacity: 0; } }
 
-/* the readout: one blob's facts, the latest by default, the pointed one while a square is pointed at */
+/* the readout: one blob's facts, the latest by default, the pointed one while a square is pointed at. It lies on a
+   sheet of the accent, level with the window's top and as tall as the row: no edge and no drop shadow, only its colour
+   sets it off from the window beside it */
+.deck-row > .rb-read {
+  align-self: stretch; margin: -17px 22px 0 4px; padding: 17px 22px 16px;
+  border-radius: 18px; background: var(--rb-sheet); box-shadow: var(--rb-sheet-hi);
+}
+.rb-read { display: flex; flex-direction: column; }
 .rb-read-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 24px; margin: 0; font-size: var(--t-small); font-weight: 400; }
 .rb-read-h .ov-eyebrow { display: inline; }
-.rb-spec { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 18px; margin: 12px 0 0; }
-.rb-spec > div { min-width: 0; }
-.rb-spec dt { margin: 0 0 3px; font-size: var(--t-small); color: var(--text-3); }
-.rb-spec dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15.5px; font-weight: 600; letter-spacing: -.012em; line-height: 21px; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
-/* in two columns the size comes last, so the two endorsement figures share a row */
-.rb-spec > .rb-size { order: 1; }
-/* the readout's links sit at the row's foot, level with the availability line beside them */
-.rb-read { display: flex; flex-direction: column; }
-.rb-read .ov-links { margin-top: 16px; }
+/* the facts as one wrapping line of items, the dl's rows dissolved:
+   1,204,085
+   Height · Sep 28 20:48 UTC · 16.0 MiB
+                         ⅔ needed
+   69.88%  ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬|▬──────
+   Endorsed voting power · 48 of 82 validators
+   Every item stands 14px after the one before it, the "·" in that space. The list starts 14px early and is cut where
+   its items start, so an item that wraps to the start of a line on a narrow sheet leaves its "·" out of view */
+.rb-spec { position: relative; display: flex; flex-wrap: wrap; align-items: baseline; margin: 14px 0 0 -14px; clip-path: inset(-40px -40px -40px 14px); }
+.rb-spec > div { display: contents; }
+.rb-spec dt, .rb-spec dd { min-width: 0; margin: 0 0 0 14px; font-size: var(--t-cell); line-height: 18px; white-space: nowrap; }
+.rb-spec dt { color: var(--text-3); }
+.rb-spec dd { font-weight: 400; color: var(--text-2); font-variant-numeric: tabular-nums lining-nums; }
+.rb-h dd { order: -1; flex: 0 1 100%; display: flex; margin-bottom: 8px; }
+.rb-t dd::before, .rb-size dd::before, .rb-e dd::before { content: "·"; position: absolute; margin-left: -9px; font-weight: 400; color: var(--text-3); }
+/* the endorsed share before its bar, the ⅔ needle over the bar as on the current providers' strip */
+.rb-vp dd {
+  flex: 0 1 100%; display: flex; align-items: center; gap: 12px; margin-top: 26px;
+  font-size: 15.5px; font-weight: 600; letter-spacing: -.012em; line-height: 21px; color: var(--text);
+}
+.rb-vp dt, .rb-e dd { order: 1; margin-top: 4px; }
+.rb-e dd { font-weight: 600; color: var(--text); }
+.rb-meter { position: relative; flex: 1 1 auto; height: 6px; }
+.rb-bar { position: absolute; inset: 0; overflow: hidden; border-radius: 3px; background: var(--rb-track); }
+.rb-bar > i { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, var(--rb-fill), var(--rb-lit)); }
+.rb-q { position: absolute; left: 66.6667%; top: -24px; bottom: -5px; width: 0; pointer-events: none; }
+.rb-q::before { content: ""; position: absolute; left: -1px; top: 19px; bottom: 0; width: 2px; border-radius: 1px; background: var(--text); box-shadow: 0 0 0 1.5px var(--rb-sheet-halo); }
+.rb-q > span { position: absolute; left: 0; top: -2px; transform: translateX(-50%); display: inline-flex; align-items: baseline; gap: 3px; font-size: var(--t-tiny); font-weight: 600; line-height: 18px; letter-spacing: .02em; color: var(--text); white-space: nowrap; }
+/* the links: two buttons side by side at the sheet's foot, the blob's own in the accent's tint */
+.rb-read .ov-links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: auto 0 0; padding-top: 13px; font-size: 12.5px; }
+.rb-read .ov-links > * {
+  display: flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: var(--r-ctl);
+  background: var(--rb-btn); color: var(--text); font-weight: 500; white-space: nowrap; transition: background var(--dur);
+}
+.rb-read .ov-links > a:hover { background: var(--rb-btn-hover); }
+.rb-read .ov-links > a:first-child { background: var(--accent-tint); color: var(--accent-ink); }
+.rb-read .ov-links > a:first-child:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
 /* Tensile's own reading under the chain's figures: one quiet line under a hairline, "Observed by Tensile" as its prefix */
 
 /* ---- the rolling figure (RollNumber): changed digits slide, the rest stay ---- */
@@ -1352,10 +1402,21 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 @media (max-width: 1080px) {
   .deck-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); grid-template-rows: auto auto; grid-template-areas: "cp rb" "rd rd"; row-gap: 0; }
   .deck-row.no-cp { grid-template-columns: minmax(0, 1fr); grid-template-areas: "rb" "rd"; }
-  .deck-row > .rb-read { margin-top: 24px !important; }
-  .deck-row > .rb-read { background: none; padding-top: 22px; margin: 0 26px; padding-left: 0; padding-right: 0; border-top: 1px solid var(--border); }
-  .rb-spec { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .rb-spec > .rb-size { order: 0; }
+  /* the sheet takes the row under the other two */
+  .deck-row > .rb-read { margin: 24px 26px 0 !important; }
+}
+/* there, the figure and its line on the left, the endorsed share and its line on the right, the two lines level. The
+   space between the two gives way first, then the gap (40px down to 16px, an item's own 14px included), so neither
+   line is ever cut. The buttons at the foot, as wide as each other */
+@media (max-width: 1080px) and (min-width: 721px) {
+  .rb-spec { display: grid; grid-template-columns: max-content max-content minmax(max-content, 1fr) minmax(2px, 26px) max-content minmax(max-content, 1fr); }
+  .rb-h dd { grid-area: 1 / 1 / 2 / 4; margin: 0 0 0 14px; }
+  .rb-vp dd { grid-area: 1 / 5 / 2 / 7; margin: 0 0 0 14px; }
+  .rb-h dt, .rb-t dd, .rb-size dd, .rb-vp dt, .rb-e dd { grid-row: 2; margin-top: 8px; }
+  .rb-vp dt { grid-column: 5; }
+  .rb-e dd { grid-column: 6; }
+  .rb-read .ov-links { width: max-content; padding-top: 16px; }
+  .rb-read .ov-links > * { padding: 0 20px; }
 }
 @media (max-width: 860px) {
   .cm-ev { display: none; }
@@ -1381,13 +1442,11 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .deck-row, .deck-row.no-cp { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-template-areas: "cp" "rb" "rd"; padding: 22px 0 18px; row-gap: 0; }
   .deck-row.no-cp { grid-template-areas: "rb" "rd"; }
   .deck-row > * { padding: 0 16px; }
-  .deck-row > .rb-read { background: none; border-top: 1px solid var(--border); margin: 22px 16px 0 !important; padding: 22px 0 0; }
+  .deck-row > .rb-read { margin: 18px 16px 0 !important; padding: 15px 16px 16px; }
   .deck-row > .rb { justify-self: stretch; width: auto; margin: 22px 16px 0 !important; padding: 16px 12px 18px; }
   /* without the current providers the recent blobs open the row, under the bar */
   .deck-row.no-cp > .rb { margin-top: 0 !important; }
   .rb-grid { margin: 0; }
-  .rb-spec { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .rb-spec > .rb-size { order: 1; }
   /* the map's name and key are in the bar's counts and the popovers here; the view buttons move to the empty south-west */
   .cm-title { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .cm-tools { right: 8px; top: 8px; }
