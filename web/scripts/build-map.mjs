@@ -4,9 +4,9 @@
  * the output is committed and nothing here runs in the browser.
  *
  *   npm i --no-save d3-geo topojson-server topojson-simplify topojson-client
- *   node web/scripts/build-map.mjs <ne_50m_admin_0_countries.geojson>
+ *   node web/scripts/build-map.mjs <ne_50m_admin_0_countries.geojson> <ne_10m_admin_0_countries.geojson>
  *
- * Input is Natural Earth 1:50m admin-0 countries (public domain), from
+ * Input is Natural Earth 1:50m and 1:10m admin-0 countries (public domain), from
  * https://github.com/nvkelso/natural-earth-vector/tree/master/geojson
  * The four packages are d3-geo and topojson (ISC); they are needed only here.
  *
@@ -18,6 +18,11 @@
  *               relative commands on an integer grid. Code is ISO 3166-1
  *               alpha-2, or "" where Natural Earth has none.
  *   points      code -> [lon, lat], each country's Natural Earth label point
+ *   tiny        code -> [x, y, e, path] for every country under TINY_E units
+ *               across at 1:50m: its 1:10m outline about its middle x, y (map
+ *               units), e its larger side in map units, the path in relative
+ *               commands on a grid where the larger side is 100. The map draws a
+ *               small hosted country larger from it, so its own shape shows.
  *
  * The countries share their borders in a topology before simplification, so
  * neighbours stay seamless; tiny islands are dropped unless they are the
@@ -34,9 +39,9 @@ const { topology } = require("topojson-server");
 const { presimplify, simplify, quantile } = require("topojson-simplify");
 const { feature } = require("topojson-client");
 
-const [countriesPath] = process.argv.slice(2);
-if (!countriesPath) {
-  console.error("usage: build-map.mjs <ne_50m_admin_0_countries.geojson>");
+const [countriesPath, detailPath] = process.argv.slice(2);
+if (!countriesPath || !detailPath) {
+  console.error("usage: build-map.mjs <ne_50m_admin_0_countries.geojson> <ne_10m_admin_0_countries.geojson>");
   process.exit(2);
 }
 const outDir = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "lib", "map");
@@ -45,6 +50,8 @@ mkdirSync(outDir, { recursive: true });
 const W = 4800;      // frame width in map units; coordinates are whole units
 const KEEP = 0.2;    // share of points kept by simplification (Visvalingam, by triangle area)
 const MIN_RING = 5;  // units²: smaller rings go, unless a country's largest
+const TINY_E = 24;   // units: a country narrower than this at 1:50m also gets its 1:10m outline (tiny)
+const TINY_TOL = 2;  // its simplification, in hundredths of its larger side (Douglas-Peucker)
 
 const src = JSON.parse(readFileSync(countriesPath, "utf8"));
 const codeOf = (p) => [p.ISO_A2_EH, p.ISO_A2, p.WB_A2].find((v) => typeof v === "string" && /^[A-Z]{2}$/.test(v)) ?? "";
@@ -133,6 +140,46 @@ countries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
 
 const [k] = [proj.scale()], [tx, ty] = proj.translate();
 const sortedPoints = Object.fromEntries(Object.keys(points).sort().map((c) => [c, points[c]]));
-const out = JSON.stringify({ w: W, h: H, k: +k.toFixed(4), tx: +tx.toFixed(3), ty: +ty.toFixed(3), countries, points: sortedPoints });
+// ---- tiny: the 1:10m outline of each small country, for drawing it larger ----
+// Its rings near the 1:50m outline and at least 5% of the largest one's area, about their middle, scaled so the
+// larger side is 100 and simplified to TINY_TOL of it.
+const extent = (rs) => { let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; for (const r of rs) for (const [x, y] of r) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); } return { x: (x0 + x1) / 2, y: (y0 + y1) / 2, e: Math.max(x1 - x0, y1 - y0) }; };
+function dp(pts, tol) {
+  const keep = new Uint8Array(pts.length); keep[0] = keep[pts.length - 1] = 1;
+  const st = [[0, pts.length - 1]];
+  while (st.length) {
+    const [a, b] = st.pop(); let md = -1, mi = -1;
+    const [ax, ay] = pts[a], [bx, by] = pts[b], dx = bx - ax, dy = by - ay, l = Math.hypot(dx, dy);
+    for (let i = a + 1; i < b; i++) { const d = l ? Math.abs(dy * pts[i][0] - dx * pts[i][1] + bx * ay - by * ax) / l : Math.hypot(pts[i][0] - ax, pts[i][1] - ay); if (d > md) { md = d; mi = i; } }
+    if (md > tol) { keep[mi] = 1; st.push([a, mi], [mi, b]); }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+// a closed ring is split at its point farthest from the start, and each half simplified
+const dpRing = (r, tol) => { let fi = 0, fd = -1; r.forEach((q, i) => { const d = Math.hypot(q[0] - r[0][0], q[1] - r[0][1]); if (d > fd) { fd = d; fi = i; } }); return [...dp(r.slice(0, fi + 1), tol).slice(0, -1), ...dp(r.slice(fi), tol)].slice(0, -1); };
+const small = new Map();
+for (const [code, rings] of byCode) {
+  if (!code) continue;
+  const big = Math.max(...rings.map(area)), b = extent(rings.filter((r) => area(r) >= MIN_RING || area(r) === big));
+  if (b.e < TINY_E) small.set(code, b);
+}
+const tiny = {};
+for (const f of JSON.parse(readFileSync(detailPath, "utf8")).features) {
+  const code = codeOf(f.properties), b = small.get(code);
+  if (!b || tiny[code]) continue;
+  let rings = ringsOf(f).filter((r) => r.some(([x, y]) => Math.hypot(x - b.x, y - b.y) < Math.max(12, b.e)));
+  if (!rings.length) continue;
+  const big = Math.max(...rings.map(area));
+  rings = rings.filter((r) => area(r) >= big * 0.05);
+  const m = extent(rings), n = 100 / m.e;
+  let d = "", at = null;
+  for (const r of rings) {
+    const pts = ringPath(dpRing(r, TINY_TOL / n).map(([x, y]) => [(x - m.x) * n, (y - m.y) * n]));
+    if (pts) { d += ringD(pts, at); at = pts[0]; }
+  }
+  if (d) tiny[code] = [+m.x.toFixed(2), +m.y.toFixed(2), +m.e.toFixed(2), d];
+}
+const sortedTiny = Object.fromEntries(Object.keys(tiny).sort().map((c) => [c, tiny[c]]));
+const out = JSON.stringify({ w: W, h: H, k: +k.toFixed(4), tx: +tx.toFixed(3), ty: +ty.toFixed(3), countries, points: sortedPoints, tiny: sortedTiny });
 writeFileSync(join(outDir, "world.json"), out + "\n");
-console.log(`${W}x${H}, ${countries.length} countries, ${totalPts} points, ${(out.length / 1024).toFixed(1)} KB -> ${outDir}/world.json`);
+console.log(`${W}x${H}, ${countries.length} countries (${Object.keys(tiny).length} tiny), ${totalPts} points, ${(out.length / 1024).toFixed(1)} KB -> ${outDir}/world.json`);

@@ -1,7 +1,8 @@
 /**
  * The host map's geometry: country outlines and label points built offline
- * by web/scripts/build-map.mjs from Natural Earth 1:50m, and the Equal Earth
- * forward projection that places a host in the same map units.
+ * by web/scripts/build-map.mjs from Natural Earth 1:50m (small countries
+ * also at 1:10m), and the Equal Earth forward projection that places a host
+ * in the same map units.
  */
 import world from "./world.json";
 
@@ -10,6 +11,9 @@ export const FRAME = { w: world.w, h: world.h };
 
 /** every country as [ISO alpha-2 or "", SVG path in map units] */
 export const COUNTRIES = world.countries as [string, string][];
+
+/** small countries' 1:10m outlines: middle x, y and larger side e in map units, the path on a grid where e is 100 */
+export const TINY = world.tiny as unknown as Record<string, [number, number, number, string]>;
 
 const A1 = 1.340264, A2 = -0.081106, A3 = 0.000893, A4 = 0.003796, M = Math.sqrt(3) / 2;
 
