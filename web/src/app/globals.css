@@ -786,7 +786,6 @@ body { background: var(--canvas); }
 /* the chain panel */
 .board { position: relative; isolation: isolate; padding: 28px; border-radius: var(--r-panel); background: var(--stage-bg); border: 1px solid var(--border); box-shadow: var(--shadow); }
 .board::before { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: var(--stage-glow); pointer-events: none; }
-.board--rail { display: grid; grid-template-columns: 216px minmax(0, 1fr); gap: 40px; }
 .board--stack { display: grid; gap: 32px; margin-top: 24px; }
 .board--stack .board-charts { position: relative; padding-top: 32px; }
 .board--stack .board-charts::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, var(--border), var(--border) 60%, transparent); }
@@ -803,9 +802,6 @@ body { background: var(--canvas); }
 .figs .metric .value.absent { color: var(--text-3); }
 .figs .metric .help { font-size: var(--t-cell); color: var(--text-2); }
 :root[data-theme="dark"] .figs .metric .value:not(.absent) { background: linear-gradient(180deg, #ffffff 35%, #b4e9ee); -webkit-background-clip: text; background-clip: text; color: transparent; }
-.rail { display: grid; align-content: start; gap: 36px; padding-top: 2px; }
-/* a long count runs into the gutter rather than losing its last digits */
-.rail .metric .value { overflow: visible; text-overflow: clip; }
 /* six figures, three to a row (two below 1000px). The figures of a row share its rows
    (eyebrow, figure, help line), so an eyebrow that runs to two lines ("Payment promise
    timeouts (24h)") keeps the figures of its row level; a one-line eyebrow sits just above
@@ -898,8 +894,6 @@ body { background: var(--canvas); }
 .panel-head { border-bottom: 0; padding-bottom: 2px; }
 
 @media (max-width: 1000px) {
-  .board--rail { grid-template-columns: 1fr; gap: 32px; }
-  .rail { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
   .figs.row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 720px) {
@@ -1431,4 +1425,72 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .cm-pin.live .cm-badge::after { animation: none; opacity: .7; transform: scale(1.35); }
   .cp-strip svg, .rb-glow, .bt-dot.beat, .rn-roll .rn-in, .rn-roll .rn-out { animation: none; }
   .rn-roll .rn-out { display: none; }
+}
+
+/* =============================================================================
+   The Blobs page (app/blobs): its deck (components/BlobsDeck.tsx).
+
+   The overview's panel with two instruments and a hairline between them:
+   the period's lead figure over three quiet ones, and one chart with the
+   chain's rate above it. A quiet period folds it to one band that says when
+   the last blob was, with the period's empty buckets as one flat line.
+   ========================================================================== */
+.lg-head { align-items: center; }
+
+/* ---- the deck ---- */
+.lg-deck { display: grid; grid-template-columns: 288px minmax(0, 1fr); margin: 18px 0 0; }
+.lg-lead { display: flex; flex-direction: column; min-width: 0; padding: 22px 28px 18px; border-right: 1px solid var(--border); }
+.lg-deck .ov-eyebrow { min-height: 22px; }
+.lg-deck .ov-eyebrow .per { margin-left: 5px; text-transform: none; letter-spacing: .03em; }
+.lg-fig { margin: 10px 0 0; font-size: 46px; font-weight: 600; letter-spacing: -.045em; line-height: 1; color: var(--text); white-space: nowrap; font-variant-numeric: tabular-nums lining-nums; }
+.lg-fig small { margin-left: 8px; font-size: 16px; font-weight: 500; letter-spacing: -.01em; color: var(--text-2); -webkit-text-fill-color: var(--text-2); }
+:root[data-theme="dark"] .lg-fig { background: linear-gradient(180deg, #ffffff 35%, #b4e9ee); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.lg-help { margin: 9px 0 0; font-size: var(--t-cell); color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lg-help b { color: var(--text); font-weight: 600; }
+.lg-stats { display: grid; margin: 18px 0 0; }
+.lg-stats > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 8px 0 7px; border-top: 1px solid var(--border); }
+.lg-stats dt { font-size: var(--t-cell); color: var(--text-2); }
+.lg-stats dd { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -.012em; color: var(--text); white-space: nowrap; font-variant-numeric: tabular-nums lining-nums; }
+.lg-stats dd .u, .lg-stats dd .of { font-size: var(--t-cell); font-weight: 400; letter-spacing: 0; color: var(--text-3); }
+.lg-plot { position: relative; min-width: 0; padding: 22px 26px 12px 24px; }
+.lg-plot-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 22px; margin-bottom: 14px; }
+/* the chain's rate, set as the overview's pills set their counts */
+.lg-pace { display: inline-flex; align-items: baseline; gap: 6px; font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
+.lg-pace b { font-size: 14.5px; font-weight: 600; letter-spacing: -.01em; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
+.lg-pace .d { align-self: center; width: 7px; height: 7px; margin-right: 2px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-tint); }
+
+/* a quiet period: the last blob, the period's empty buckets as one flat line, and the period that holds it */
+.lg-deck.is-quiet .lg-plot { display: flex; flex-direction: column; padding-bottom: 18px; }
+.lg-flat { position: relative; display: grid; margin: 16px 0 0; }
+.lg-flat::before { content: ""; position: absolute; left: 0; right: 0; top: 19px; height: 1px; background: var(--baseline); }
+.lg-flat span { display: flex; flex-direction: column; align-items: center; min-width: 0; }
+.lg-flat i { width: 8px; max-width: 60%; height: 2px; margin-top: 16px; border-radius: 1px; background: var(--baseline); opacity: .75; }
+.lg-flat em { margin-top: 9px; font-style: normal; font-size: var(--t-tiny); color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.lg-rest { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; margin-top: auto; padding-top: 14px; }
+.lg-rest p { margin: 0; font-size: var(--t-cell); color: var(--text-2); }
+.lg-go { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px 0 14px; border: 0; border-radius: 999px; background: var(--accent-tint); color: var(--accent-ink); font-size: var(--t-small); font-weight: 600; cursor: pointer; transition: background var(--dur); }
+.lg-go:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.lg-go svg { transition: transform var(--dur) ease-out; }
+.lg-go:hover svg { transform: translateX(2px); }
+
+@media (max-width: 1000px) {
+  .lg-deck { grid-template-columns: 240px minmax(0, 1fr); }
+}
+@media (max-width: 720px) {
+  .lg-head { flex-wrap: nowrap; }
+  .lg-head .seg button, .lg-head .seg button:first-child { padding: 0 12px; }
+  .lg-deck { grid-template-columns: minmax(0, 1fr); margin-top: 14px; }
+  .lg-lead { padding: 18px 16px 4px; border-right: 0; }
+  .lg-fig { font-size: 40px; }
+  .lg-stats { margin-top: 16px; }
+  .lg-plot { margin: 12px 0 0; padding: 16px 16px 12px; border-top: 1px solid var(--border); }
+  .lg-deck.is-quiet .lg-lead { padding-bottom: 16px; }
+  .lg-deck.is-quiet .lg-plot { margin-top: 0; }
+  .lg-flat em.alt { display: none; }
+}
+@media (max-width: 400px) {
+  .lg-head .seg button, .lg-head .seg button:first-child { padding: 0 10px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lg-go svg { transition: none; }
 }

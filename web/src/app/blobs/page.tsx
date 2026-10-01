@@ -4,14 +4,12 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import PreLive from "@/components/PreLive";
 import { unit } from "@/components/Unit";
-import { useApi, type Meta, type Market, type Blob, type NamespaceRow, utc, ago, nsDisplay, bytes, int, pctOf, tia, shortBech } from "@/lib/api";
+import { useApi, type Meta, type Market, type Blob, type NamespaceRow, type Tip, utc, ago, nsDisplay, bytes, int, pctOf, tia, shortBech } from "@/lib/api";
 import { Mark } from "@/components/Verdict";
 import { recon } from "@/lib/status";
-import Chart from "@/components/Chart";
-import { Metric, Figures } from "@/components/Metrics";
-import { buckets } from "@/lib/buckets";
 import Pager, { usePage } from "@/components/Pager";
-import { useWindow, WindowSwitch, periodName, withPeriod } from "@/lib/window";
+import { useWindow, WindowSwitch } from "@/lib/window";
+import BlobsDeck from "@/components/BlobsDeck";
 
 /** rows per page of the blob list */
 const SIZE = 25;
@@ -42,56 +40,29 @@ function Page() {
   const { data, error, loading } = useApi<BlobPage>(`/v1/blobs?limit=${SIZE}&offset=${offset}${nsq}`);
   // the rows of the page asked for, not the last one received while the next loads
   const rows = data && data.offset === offset && (data.namespace ?? "") === ns.trim().toLowerCase() ? data.blobs : null;
+  // the chain's newest blobs, for the deck's rate and last blob: the list's own while it shows them, else a read of their own
+  const plain = page === 1 && !nsq;
+  const head = useApi<BlobPage>(plain ? null : `/v1/blobs?limit=${SIZE}`);
+  const newest = plain ? rows : head.data?.blobs ?? null;
+  const tip = useApi<Tip>("/v1/tip", 4000); // the header's stream: no request of its own
+  const skew = tip.data?.server_time && tip.fetchedAt ? Date.parse(tip.data.server_time) - Date.parse(tip.fetchedAt) : 0;
   const { data: meta } = useApi<Meta>("/v1/meta");
   const nss = useApi<{ namespaces: NamespaceRow[] }>("/v1/namespaces?limit=100");
   const { data: m } = useApi<Market>(`/v1/market?window=${win}`);
-  // the answer for another period, kept while this one loads, is not this chart
-  const series = m && m.window.name === win ? buckets(m, win) : [];
-  const per = win === "24h" ? "hour" : "day";
-  // Figures and charts name their period in the title. A figure keeps the last
-  // answer while another period loads, so it names that answer's period; a
-  // chart draws only the period selected, so it names that one.
-  const period = periodName(m?.window?.name ?? win);
-  const mib = (v: number) => (v >= 1024 ? `${(v / 1024).toFixed(2)} GiB` : v >= 10 ? `${Math.round(v)} MiB` : `${v.toFixed(2)} MiB`);
-  const axisMib = (v: number) => (v >= 1024 ? `${(v / 1024).toFixed(v % 1024 ? 1 : 0)} GiB` : `${Number.isInteger(v) ? v : v.toFixed(1)} MiB`);
   const nsN = nss.data?.namespaces.length ?? 0;
   const nsMore = !!(nss.data as { truncated?: boolean } | null)?.truncated;
 
   return (
     <>
-      <div className="page-head">
-        <div><h1>Blobs</h1><p className="lede">Blobs published through Fibre and settled on chain.</p></div>
+      <div className="page-head lg-head">
+        <h1>Blobs</h1>
+        <WindowSwitch value={win} onChange={setWin} />
       </div>
       <PreLive meta={meta} />
       {error && !data && <p className="notice">The observer API is not answering ({error}); the page retries every 30 seconds. This is an observer outage, not a Fibre network outage.</p>}
       {error && data && <p className="sample">Showing the last list received; the API is not answering right now ({error}).</p>}
 
-      <section className="group" id="chain">
-        <div className="sec-head">
-          <div><h2>On chain</h2><p className="sub">The period&rsquo;s settlements.</p></div>
-          <WindowSwitch value={win} onChange={setWin} />
-        </div>
-        <div className="board board--rail">
-          <Figures className="rail">
-            <Metric size="hero" label="Blobs" period={period} value={m ? int(m.blobs) : "—"} tone={m && m.blobs > 0 ? undefined : "absent"}
-              help={m ? `${int(m.settlements)} settlement${m.settlements === 1 ? "" : "s"}` : " "}
-              title="Blobs (BlobID) settled in the period, and the settlements that paid for them." />
-            <Metric label="Namespaces" period={period} value={m?.namespaces != null ? int(m.namespaces) : "—"} tone={m?.namespaces ? undefined : "absent"}
-              help={m?.namespaces_total != null ? `${int(m.namespaces_total)} on record` : " "}
-              title="Namespaces the period's settlements used." />
-          </Figures>
-          <div className="board-charts">
-            <Chart title={withPeriod(`Blob size per ${per}`, win)} figure={m && series.length ? bytes(m.bytes) : undefined} figureTitle="Summed over settlements: a blob settled twice counts twice."
-              series={[{ key: "bytes", label: "blob size", color: "var(--accent)" }]}
-              rows={series.map((c) => ({ x: c.title, label: c.label, short: c.short, values: { bytes: c.bytes / (1 << 20) }, note: `${int(c.settlements)} settlement${c.settlements === 1 ? "" : "s"}` }))}
-              fmt={mib} fmtAxis={axisMib} empty={m && m.window.name === win ? "nothing settled" : "loading…"} />
-            <Chart title={withPeriod(`Settlements per ${per}`, win)} figure={m && series.length ? int(m.settlements) : undefined}
-              series={[{ key: "n", label: "settlements", color: "var(--accent-2)" }]}
-              rows={series.map((c) => ({ x: c.title, label: c.label, short: c.short, values: { n: c.settlements }, note: bytes(c.bytes) }))}
-              fmt={(v) => int(v)} empty={m && m.window.name === win ? "nothing settled" : "loading…"} />
-          </div>
-        </div>
-      </section>
+      <BlobsDeck win={win} onWin={setWin} market={m} newest={newest} skew={skew} />
 
       <section id="list" className="listing">
         <div className="list-head">
