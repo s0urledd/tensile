@@ -67,11 +67,12 @@ function useNow(skew: number): number {
   return now;
 }
 
-/** a phone's width: the chart is shorter there */
+const NARROW = "(max-width: 720px)";
+/** a phone's width: the chart is shorter there, from the first paint (the page is drawn in the browser only) */
 function useNarrow(): boolean {
-  const [narrow, setNarrow] = useState(false);
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.matchMedia(NARROW).matches);
   useEffect(() => {
-    const q = window.matchMedia("(max-width: 720px)");
+    const q = window.matchMedia(NARROW);
     const on = () => setNarrow(q.matches);
     on();
     q.addEventListener("change", on);
