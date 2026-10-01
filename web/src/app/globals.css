@@ -1340,7 +1340,6 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 /* the facts as one wrapping line of items, the dl's rows dissolved:
    1,204,085
    Height · Sep 28 20:48 UTC · 16.0 MiB
-                         ⅔ needed
    69.88%  ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬|▬──────
    Endorsed voting power · 48 of 82 validators
    Every item stands 14px after the one before it, the "·" in that space. The list starts 14px early and is cut where
@@ -1352,9 +1351,9 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .rb-spec dd { font-weight: 400; color: var(--text-2); font-variant-numeric: tabular-nums lining-nums; }
 .rb-h dd { order: -1; flex: 0 1 100%; display: flex; margin-bottom: 8px; }
 .rb-t dd::before, .rb-size dd::before, .rb-e dd::before { content: "·"; position: absolute; margin-left: -9px; font-weight: 400; color: var(--text-3); }
-/* the endorsed share before its bar, the ⅔ needle over the bar as on the current providers' strip */
+/* the endorsed share before its bar, the ⅔ needle across the bar as on the current providers' strip, without its words */
 .rb-vp dd {
-  flex: 0 1 100%; display: flex; align-items: center; gap: 12px; margin-top: 26px;
+  flex: 0 1 100%; display: flex; align-items: center; gap: 12px; margin-top: 16px;
   font-size: 15.5px; font-weight: 600; letter-spacing: -.012em; line-height: 21px; color: var(--text);
 }
 .rb-vp dt, .rb-e dd { order: 1; margin-top: 4px; }
@@ -1362,9 +1361,8 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .rb-meter { position: relative; flex: 1 1 auto; height: 6px; }
 .rb-bar { position: absolute; inset: 0; overflow: hidden; border-radius: 3px; background: var(--rb-track); }
 .rb-bar > i { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, var(--rb-fill), var(--rb-lit)); }
-.rb-q { position: absolute; left: 66.6667%; top: -24px; bottom: -5px; width: 0; pointer-events: none; }
-.rb-q::before { content: ""; position: absolute; left: -1px; top: 19px; bottom: 0; width: 2px; border-radius: 1px; background: var(--text); box-shadow: 0 0 0 1.5px var(--rb-sheet-halo); }
-.rb-q > span { position: absolute; left: 0; top: -2px; transform: translateX(-50%); display: inline-flex; align-items: baseline; gap: 3px; font-size: var(--t-tiny); font-weight: 600; line-height: 18px; letter-spacing: .02em; color: var(--text); white-space: nowrap; }
+.rb-q { position: absolute; left: 66.6667%; top: -5px; bottom: -5px; width: 0; pointer-events: none; }
+.rb-q::before { content: ""; position: absolute; left: -1px; top: 0; bottom: 0; width: 2px; border-radius: 1px; background: var(--text); box-shadow: 0 0 0 1.5px var(--rb-sheet-halo); }
 /* the links: two buttons side by side at the sheet's foot, the blob's own in the accent's tint */
 .rb-read .ov-links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: auto 0 0; padding-top: 13px; font-size: 12.5px; }
 .rb-read .ov-links > * {
