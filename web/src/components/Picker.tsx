@@ -9,10 +9,14 @@ import { int } from "@/lib/api";
  * and a whole identifier that is not among them (one past the list's end)
  * can be picked as typed, so every namespace and every publisher stays
  * reachable however long the lists grow.
+ *
+ * With find, the chip is a search whose pick opens a page rather than
+ * filtering a list (Find a publisher): it only ever says its name, with no
+ * chevron, and a whole identifier typed is opened.
  */
 export type Choice = { value: string; label: ReactNode; count?: number; find: string };
 
-export default function Picker({ name, icon, value, text, choices, accept, placeholder, onPick, onOpen }: {
+export default function Picker({ name, icon, value, text, choices, accept, placeholder, onPick, onOpen, find = false }: {
   name: string;
   icon: ReactNode;
   /** the value picked, "" for none */
@@ -27,6 +31,8 @@ export default function Picker({ name, icon, value, text, choices, accept, place
   onPick: (v: string) => void;
   /** the first open: the page asks for the choices then */
   onOpen?: () => void;
+  /** a search that opens what is picked: the chip is its name alone */
+  find?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -70,7 +76,7 @@ export default function Picker({ name, icon, value, text, choices, accept, place
         {icon}
         {value
           ? <><span className="k">{name}</span><span className="v">{text}</span></>
-          : <>{name}<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="m2.2 3.8 2.8 2.8 2.8-2.8" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg></>}
+          : find ? name : <>{name}<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="m2.2 3.8 2.8 2.8 2.8-2.8" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg></>}
       </button>
       {value && (
         <button type="button" className="lg-x" aria-label={`Show every ${name.toLowerCase()}`} title={`Show every ${name.toLowerCase()}`} onClick={() => pick("")}>
@@ -81,11 +87,11 @@ export default function Picker({ name, icon, value, text, choices, accept, place
         <div className="lg-pop" ref={pop} role="dialog" aria-label={name} style={dx ? { transform: `translateX(${dx}px)` } : undefined}>
           <label className="find">
             <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.75" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="m10.5 10.5 3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
-            <input ref={input} type="search" placeholder={placeholder} aria-label={`Find a ${name.toLowerCase()}`} value={q} onChange={(e) => setQ(e.target.value)}
+            <input ref={input} type="search" placeholder={placeholder} aria-label={find ? name : `Find a ${name.toLowerCase()}`} value={q} onChange={(e) => setQ(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") { const v = extra ?? (hit.length === 1 ? hit[0].value : null); if (v) pick(v); } }} />
           </label>
           <ul>
-            {extra && <li><button type="button" onClick={() => pick(extra)}><span className="nm">Show <span className="mono">{extra.length > 20 ? `${extra.slice(0, 10)}…${extra.slice(-6)}` : extra}</span></span></button></li>}
+            {extra && <li><button type="button" onClick={() => pick(extra)}><span className="nm">{find ? "Open" : "Show"} <span className="mono">{extra.length > 20 ? `${extra.slice(0, 10)}…${extra.slice(-6)}` : extra}</span></span></button></li>}
             {choices === null && <li className="none">Loading…</li>}
             {choices !== null && hit.length === 0 && !extra && <li className="none">Nothing matches</li>}
             {hit.map((c) => (

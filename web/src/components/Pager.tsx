@@ -42,7 +42,8 @@ export default function Pager({ total, page, size, maxPages, onPage, noun }: {
   const to = Math.min(total, at * size);
   return (
     <div className="pager">
-      <span className="count">{total === 0 ? `No ${noun}` : <>Showing <b>{int(from)}–{int(to)}</b> of <b>{int(total)}</b> {noun}</>}</span>
+      {/* one row is "Showing 1 of 1", not a range from it to itself */}
+      <span className="count">{total === 0 ? `No ${noun}` : <>Showing <b>{from === to ? int(from) : <>{int(from)}–{int(to)}</>}</b> of <b>{int(total)}</b> {noun}</>}</span>
       {pages > 1 && (
         <span className="ctl" role="group" aria-label="pages">
           <button type="button" className="btn" disabled={at <= 1} onClick={() => onPage(1)}>First</button>

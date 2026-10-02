@@ -6,9 +6,8 @@ import type { RateTone } from "@/lib/api";
  * and at most one short helper line. Nothing about formulas or fields; the
  * definitions live on the methodology page.
  *
- * In a Metrics row each figure is a card of its own; in Figures (the chain
- * panel of the Blobs and Publishers pages) it is set straight on the panel,
- * and `size="hero"` makes it the page's lead figure.
+ * In a Metrics row each figure is a card of its own, and `size="hero"`
+ * makes it the page's lead figure.
  */
 export function Metric({ label, period, value, den, help, tone, title, size }: {
   label: string;
@@ -35,9 +34,28 @@ export function Metrics({ children }: { children: ReactNode }) {
   return <section className="metrics">{children}</section>;
 }
 
-/** figures set on a panel rather than each in a card of its own */
-export function Figures({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={"figs" + (className ? " " + className : "")}>{children}</div>;
+/**
+ * One cell of a framed panel of figures (.pan, the Publishers pages): its
+ * name, with the period it counts when it counts one, over the figure. A
+ * line under it (children, each a <dd className="pan-s">) only where a line
+ * has something to say.
+ */
+export function PanelFig({ label, period, value, title, className, children }: {
+  label: string;
+  /** "(24h)" after the name, set apart so the uppercase label keeps it as it is */
+  period?: string;
+  value: ReactNode;
+  title?: string;
+  className?: string;
+  children?: ReactNode;
+}) {
+  return (
+    <div className={"pan-c" + (className ? " " + className : "")} title={title}>
+      <dt>{label}{period && <> <span className="per">({period})</span></>}</dt>
+      <dd className="pan-v">{value}</dd>
+      {children}
+    </div>
+  );
 }
 
 /** the eye of the "Observed by Tensile" badge */
