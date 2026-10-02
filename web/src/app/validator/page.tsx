@@ -140,9 +140,11 @@ const HELD = new Set<Group>(["unreachable", "certificate rejected", "no endpoint
 type Tone = "ok" | "fault" | "hold" | "quiet";
 /**
  * One line of the readings: a validator's requests at one reading of a blob (at a full reading the reading's own and
- * any made again after an answer that did not serve), worded by the last, which carries the result and its reason.
+ * any made again after an answer that did not serve), worded by the last that reached the validator, which gives the
+ * reason (a request of Tensile's own that failed never speaks for it). made: how many reached it; at: when the reading
+ * asked it first.
  */
-type Line = { p: ValidatorReading; tries: ValidatorReading[]; g: Group; full: boolean };
+type Line = { p: ValidatorReading; tries: ValidatorReading[]; made: number; g: Group; full: boolean; at: string };
 function linesOf(rows: ValidatorReading[]): Line[] {
   const by = new Map<string, ValidatorReading[]>();
   for (const p of rows) {
@@ -152,15 +154,21 @@ function linesOf(rows: ValidatorReading[]): Line[] {
   const out: Line[] = [];
   for (const group of by.values()) {
     const { last, tries } = attemptsOf(group);
-    // what the requests count as together: a later answer replaces an earlier one, so the last carries the word
-    const p: ValidatorReading = { ...last, service: judged(tries) || undefined };
-    out.push({ p, tries, g: groupOf(p), full: fullReading(last.schedule_label, last.started_at) });
+    const made = tries.filter((t) => !ownGap(t.classification));
+    // what the requests count as together: a later answer replaces an earlier one, and a gap of Tensile's own among
+    // them leaves the validator counted neither way (the observer's service word on each says which)
+    const p: ValidatorReading = { ...(made[made.length - 1] ?? last), service: judged(tries) || undefined };
+    out.push({ p, tries, made: made.length, g: groupOf(p), full: fullReading(last.schedule_label, last.started_at), at: tries[0].started_at });
   }
-  return out.sort((a, b) => b.p.started_at.localeCompare(a.p.started_at));
+  // the newest requests are a cut of 50: a reading whose own request fell outside it would show its later attempts
+  // alone, so it is left out (a later attempt never follows a request that was not made)
+  return out.filter((l) => (l.tries[0].attempt ?? 0) === 0).sort((a, b) => b.at.localeCompare(a.at));
 }
 /** one request's answer in a few words, for the list of a validator's requests at a reading */
 const answerWord = (p: ValidatorReading): string =>
-  p.service === "served" || p.outcome === "SERVED_OK" ? "served" : p.classification === "PROBE_ERROR" ? "Tensile's own error" : whatCame(p);
+  p.service === "served" || p.outcome === "SERVED_OK" ? "served"
+  : p.classification === "NOT_PROBED" ? "not made in time"
+  : p.classification === "PROBE_ERROR" ? "Tensile's own error" : whatCame(p);
 /**
  * The lane's word for one reading, in the Blobs list's tones: served green,
  * not served red, a failure that did not count amber with its dot (the rows
@@ -322,7 +330,7 @@ function Page() {
               value={<>{notLive || !o || decided === 0 ? "—" : pctOf(o.served, decided)}{!notLive && held.length > 0 && <Warn text={`${plural(held.length, "reading")} in this period did not count: ${heldWhy}. ${heldText} The readings below show each one.`} />}</>}
               title={notLive ? undefined : !o || o.total === 0 ? ((v.signing?.signed ?? 0) > 0 ? "Not read yet." : "Nothing endorsed in this period.")
                 : decided === 0 ? (o.not_counted > 0 ? `Read, none counted: ${notCountedText(o)}.` : "Not read yet.")
-                : `${int(o.served)} of ${int(decided)} counted readings served${refText ? `; ${refText}` : ""}. Endorsed shards served, over served plus not served. A shard Tensile’s own request failed on or could not make in time, or a blob not read by Tensile, counts neither way; before ${FULL_READ_SINCE_WORDS}, so did a shard not asked for, or one that failed on a blob that was available.`} />
+                : `${int(o.served)} of ${int(decided)} counted readings served${refText ? `; ${refText}` : ""}. Endorsed shards served, over served plus not served. A shard whose request failed on Tensile’s side or could not be made in time, or whose reading Tensile did not make or that reached no server, counts neither way; before ${FULL_READ_SINCE_WORDS}, so did a shard not asked for, or one that failed on a blob that was available.`} />
             <PanelFig label="Not served" className={notLive ? "na" : (o?.broken ?? 0) > 0 ? "bad" : undefined}
               value={<>{notLive ? "—" : int(o?.broken ?? 0)}{!notLive && prov > 0 && <Warn text={`${int(prov)} of these ${prov === 1 ? "is" : "are"} younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.`} />}</>}
               title={`Endorsed shards whose own rows did not come back, at the reading and each time they were asked again. Before ${FULL_READ_SINCE_WORDS}: rows that did not come back from a blob that could not be reconstructed.`} />
@@ -393,29 +401,30 @@ function Page() {
               {probes.length === 0 && <tr className="lg-empty"><td colSpan={6}>No reading of this validator on record yet.</td></tr>}
               {probes.length > 0 && shown.length === 0 && <tr className="lg-empty"><td colSpan={6}>
                 No not-served reading among the newest {int(probes.length)}.{(o?.broken ?? 0) > 0 && <> Older ones are <a href={notServedHref}>in the API →</a></>}</td></tr>}
-              {shown.map(({ p, g, tries, full }) => {
-                const r = resultOf(p, g);
+              {shown.map(({ p, g, tries, made, full, at: readAt }) => {
+                // the end reading's result shows as soon as it is in; the record takes it when the window closes, and
+                // only then can a not-served one be provisional
+                const open = endOfWindow(p.schedule_label) && Date.parse(p.scheduled_at) + 10 * 60_000 > now;
+                const r = resultOf(open ? { ...p, provisional: false } : p, g);
                 const href = `/blob/?hash=${p.promise_hash}`;
-                const t = Date.parse(p.started_at);
+                const t = Date.parse(readAt);
                 const rows = p.rows_expected ? <><b>{int(p.rows_returned)}</b><span className="u"> / {int(p.rows_expected)}</span></> : "—";
                 const ms = <>{int(p.total_duration_ms)}<span className="u"> ms</span></>;
-                // the end reading's result shows as soon as it is in; the record takes it when the window closes
-                const open = endOfWindow(p.schedule_label) && Date.parse(p.scheduled_at) + 10 * 60_000 > now;
                 // a validator asked more than once says so after the word (on a line of its own where the lane is narrow)
-                const at = tries.length > 1 ? <span className="at">{askedTimes(tries.length)}</span> : null;
+                const at = made > 1 ? <span className="at">{askedTimes(made)}</span> : null;
                 const notes = [
                   r.tone === "hold" && (full
                     ? (tries.some((x) => ownGap(x.classification))
                       ? "not counted: the rows did not come back, but one of Tensile’s own requests at the reading failed or was not made in time"
-                      : "not counted: the rows did not come back, but one of Tensile’s own requests at the reading failed or was not made in time, or none of its requests reached a server")
+                      : "not counted: the rows did not come back, but one of Tensile’s own requests at the reading failed or was not made in time, or no request of the reading reached any server")
                     : "not counted: the rows did not come back, and the blob was available from other validators"),
-                  tries.length > 1 && `${askedTimes(tries.length)}: ${tries.map(answerWord).join(", ")}; the last answer carries the result`,
+                  tries.length > 1 && `requests in order: ${tries.map(answerWord).join(", ")}${judged(tries) ? "; the last answer carries the result" : ""}`,
                   open && "the retention window is still open: final when it closes",
                   !endOfWindow(p.schedule_label) && "read on the earlier schedule",
                   `outcome: ${p.outcome.toLowerCase().replace(/_/g, " ")}`,
                   g === "not served" && p.raw_error,
                   r.tone === "hold" && p.raw_error,
-                  g === "not served" && p.provisional && "provisional: counted, and can still be withdrawn",
+                  g === "not served" && p.provisional && !open && "provisional: counted, and can still be withdrawn",
                   p.attested === false && "not endorsed by this validator, so outside the rate",
                   p.retry_first_outcome && `first answer ${p.retry_first_outcome.toLowerCase().replace(/_/g, " ")}, dialled again at once`,
                   p.host_changed && `re-registered during the window: the upload went to ${p.host_at_settlement}`,
@@ -425,7 +434,7 @@ function Page() {
                 return (
                   <tr key={`${p.vantage}|${p.promise_hash}|${p.scheduled_at}`} className="row"
                     onClick={(ev) => openRow(ev, href, onOpen)} onAuxClick={(ev) => openRow(ev, href, onOpen)}>
-                    <td className="c-t"><span title={utcWord(p.started_at)}><span className="tm">{monthDayTime(p.started_at)}</span><span className="ag">{age(now - t)}</span></span></td>
+                    <td className="c-t"><span title={utcWord(readAt)}><span className="tm">{monthDayTime(readAt)}</span><span className="ag">{age(now - t)}</span></span></td>
                     <td className="c-b"><Link href={href} title={p.promise_hash}>{p.promise_hash.slice(0, 6)}<span className="el">…</span>{p.promise_hash.slice(-4)}</Link></td>
                     <td className="c-r">{rows}</td>
                     <td className="c-d">{ms}</td>

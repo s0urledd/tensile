@@ -22,9 +22,10 @@ Live at **https://tensile.huginn.tech**.
   the window is open.
 - **Verdicts** per blob, the client's own result (available, or unavailable
   with the client's error), and per validator, from a fixed taxonomy in
-  which each validator is judged on its own answer: served when its rows
-  came back and verified, not served when its last answer did not serve,
-  and never counted against it when the gap was this observer's own
+  which each validator that endorsed the blob is judged on its own
+  answers: served when its rows came back and verified, not served when
+  its last answer did not serve, and never counted against it when the gap
+  was this observer's own
   ([`docs/verdicts.md`](docs/verdicts.md)).
 - **Signed daily exports** of the full record, so every figure can be
   recomputed offline ([`docs/exports-signing.md`](docs/exports-signing.md)).

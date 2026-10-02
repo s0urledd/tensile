@@ -516,7 +516,7 @@ export const GROUPS: Group[] = [
         id: "probes",
         path: "/v1/probes",
         summary: "Tensile's readings, newest first, by validator, blob, class or time.",
-        desc: "One row per request: `attempt` 1 or 2 is a validator asked again after an answer that did not serve. `service` says what a request counts as; the last answer carries it.",
+        desc: "One row per request: `attempt` 1 or 2 is a request made again after an answer that did not serve, or `NOT_PROBED` when it could not start in time. `service` says what a request counts as; the last answer carries it.",
         params: [
           { name: "validator", in: "query", type: "string", desc: "A validator's operator address (celestiavaloper1…), or its consensus or account address.", example: HUGINN },
           { name: "blob", in: "query", type: "string", desc: "A promise hash, 64 hex characters." },

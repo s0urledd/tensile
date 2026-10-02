@@ -190,16 +190,17 @@ export type Obligations = {
   /** its rows came back and verified, at the reading or when asked again */
   served: number;
   /**
-   * not served: its own rows did not come back, at the reading and each time it was asked again (no shard, rows that do
-   * not verify or too few, a wrong certificate, an endpoint that could not be reached, a timeout, a rate limit or a
-   * server error); at a reading before FULL_READ_SINCE, its rows did not come back and the blob could not be reconstructed
+   * not served: none of its answers served and none was Tensile's own gap, its last giving the reason (no shard, rows
+   * that do not verify or too few, a wrong or expired certificate, no registered endpoint, an endpoint that could not be
+   * reached, a timeout, a rate limit or a server error); at a reading before FULL_READ_SINCE, its rows did not come back
+   * and the blob could not be reconstructed
    */
   broken: number;
   /**
    * counted neither way: one of its answers was Tensile's own gap (a request it could not make in time, or an error on
    * its side), no request of the reading reached a server, or the blob was not read by Tensile; at a reading before
-   * FULL_READ_SINCE also a validator not asked because the rows were already enough, or a failure on a blob that was
-   * available
+   * FULL_READ_SINCE also a failure on a blob that was available (a validator such a reading did not ask has no
+   * obligation at all)
    */
   not_counted: number;
   /** read, and the retention window has not ended (an endorsed shard not read yet has no obligation row) */
@@ -304,6 +305,7 @@ export type ValidatorReading = {
   promise_hash: string;
   /** true proven obliged, false unproven, null recorded before verification existed */
   attested: boolean | null;
+  /** "full" (every endorser asked for its own rows; so is "end" started at or after FULL_READ_SINCE), "end" (the one reading near the end of the window, before it), or the earlier schedule's w1…wN, grace, post */
   schedule_label: string;
   scheduled_at: string;
   started_at: string;
@@ -344,6 +346,7 @@ export type Probe = {
   /** true proven obliged, false unproven, null recorded before verification existed */
   attested: boolean | null;
   assigned_row_count: number;
+  /** "full" (every endorser asked for its own rows; so is "end" started at or after FULL_READ_SINCE), "end" (the one reading near the end of the window, before it), or the earlier schedule's w1…wN, grace, post */
   schedule_label: string;
   scheduled_at: string;
   started_at: string;
@@ -417,8 +420,9 @@ export type Reconstruct = {
   /** validators whose rows came back verified */
   served_by_validators: number;
   /**
-   * validators the reading asked: at a full reading every endorsing validator, and only those; at a reading before
-   * FULL_READ_SINCE, endorsing or not, in the client's order until the rows were enough
+   * validators the reading asked (a request of Tensile's own that failed or could not be made asks no one): at a full
+   * reading the endorsing validators, and only those; at a reading before FULL_READ_SINCE, endorsing or not, most of
+   * them in the client's order until the rows were enough
    */
   probed_validators: number;
 };
@@ -454,6 +458,7 @@ export type BlobReading = {
   validator_address: string;
   /** celestiavaloper1… from the staking set, when the collector has read one */
   operator_address?: string;
+  /** "full" (every endorser asked for its own rows; so is "end" started at or after FULL_READ_SINCE), "end" (the one reading near the end of the window, before it), or the earlier schedule's w1…wN, grace, post */
   schedule_label: string;
   started_at: string;
   phase: string;
@@ -477,8 +482,9 @@ export type BlobReading = {
  * When Tensile began reading every blob in full (probe.FullReadSince on the observer): every validator that endorsed
  * the blob is asked for its own rows 10 minutes before the retention window ends, one that did not serve is asked
  * again, up to two more times, about 90 s apart, while the window is open, and each is judged on its own answers,
- * whatever the blob's reconstruction. Readings started before it asked validators in the client's order until the
- * blob could be rebuilt, and keep the rule of their time: not served only when the blob was unavailable.
+ * whatever the blob's reconstruction; the first such readings, labelled "end", asked each validator once. Readings
+ * started before it (most of them asking validators in the client's order until the blob could be rebuilt) keep the
+ * rule of their time: not served only when the blob was unavailable.
  */
 export const FULL_READ_SINCE = "2026-10-02T16:09:49Z";
 const FULL_READ_SINCE_MS = Date.parse(FULL_READ_SINCE);
