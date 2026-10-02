@@ -3,7 +3,7 @@ import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useApi, type Blob, type BlobReading, type Meta, int, bytes, tia, utcWord, hhmm, dur, shortMid, nsDisplay, notFound, pctOf, API_BASE,
-  endOfWindow, fullReading, ownGap, ownSide, sharedAnswer, rawErrorWords, foreignRows, attemptsOf, judged as judgedBy, askedTimes, FULL_READ_SINCE, FULL_READ_SINCE_WORDS } from "@/lib/api";
+  endOfWindow, fullReading, ownGap, ownSide, sharedAnswer, rawErrorWords, foreignRows, asksAgain, attemptsOf, judged as judgedBy, askedTimes, FULL_READ_SINCE, FULL_READ_SINCE_WORDS } from "@/lib/api";
 import StatusLine from "@/components/StatusLine";
 import { Eye } from "@/components/Metrics";
 import Avatar from "@/components/Avatar";
@@ -51,8 +51,8 @@ const reasonOf = (p: BlobReading | undefined): string => {
   if (REASON[p.classification]) return REASON[p.classification];
   if (p.outcome === "NOT_FOUND") return "not found";
   if (p.outcome === "INVALID_ROWS") return "rows do not verify";
-  if (p.outcome === "PARTIAL") return "too few rows";
   if (foreignRows(p)) return "other rows of the blob";
+  if (p.outcome === "PARTIAL") return "too few rows";
   return p.outcome.toLowerCase().replace(/_/g, " ");
 };
 /**
@@ -66,6 +66,10 @@ const answerOf = (p: BlobReading, full = false): string => {
   if (p.classification === "PROBE_ERROR") return `Tensile's own ${ownSide(p.raw_error) || "error"}`;
   return full && sharedAnswer(p.raw_error) ? `same answer as its request for another blob at ${hhmm(p.started_at)}: ${reasonOf(p)}` : reasonOf(p);
 };
+/** answers in order, a run of the same one written once with its count: "not found ×2, no answer" */
+const inOrder = (ws: string[]): string =>
+  ws.reduce<[string, number][]>((a, w) => { const l = a[a.length - 1]; if (l && l[0] === w) l[1]++; else a.push([w, 1]); return a; }, [])
+    .map(([w, k]) => (k > 1 ? `${w} ×${k}` : w)).join(", ");
 /** a short answer, or other rows, of the blob that verified and are no settled promise's set (UNMATCHED_GENUINE) */
 const unmatched = (p: BlobReading): boolean => p.classification === "UNMATCHED_GENUINE" && (p.outcome === "WRONG_ROWS" || p.outcome === "PARTIAL");
 /** a reading that failed on the validator's side: no rows, for a reason of its own (not Tensile's, not "not asked") */
@@ -121,18 +125,15 @@ function resultOf(a: Assignment, s: Seat | undefined): { r: Result; early: boole
 /**
  * Why a validator whose own rows did not come back at a full reading counts neither way, when the record does not say
  * it was Tensile's own gap: the reading reached no server; Tensile still owed it a later attempt that is not on record
- * (its last answer did not serve, was not its third, and ended early enough for another request 90 s later, before a
- * minute ahead of the window's end); or rows of the blob came back that are not its own (a short answer that was all
- * its own rows would have counted as not served, so here it was not).
+ * (its last answer carries next_attempt_due); or rows of the blob came back that are not its own (a short answer that
+ * was all its own rows would have counted as not served, so here it was not).
  */
 type Cause = "own" | "none" | "owed" | "foreign" | "";
 function causeOf(s: Seat, blob: BlobSide): Cause {
   if (s.tries.some((t) => ownGap(t.classification))) return "own";
   if (!blob.judged) return "none";
   if (s.tries.some(foreignRows)) return "foreign";
-  const l = s.last;
-  const ended = Date.parse(l.started_at) + l.total_duration_ms;
-  if (l.schedule_label === "full" && (l.attempt ?? 0) < 2 && ended + 90_000 < blob.until - 60_000) return "owed";
+  if (s.last.next_attempt_due) return "owed";
   if (s.tries.some(unmatched)) return "foreign";
   return "";
 }
@@ -159,7 +160,7 @@ const CAUSE_SHORT: Record<Exclude<Cause, "">, string> = {
  * once by each request's answer in turn, so the attempts read without a hover.
  */
 type Mark = { tone: "fault" | "hold" | ""; res: string; tab: string; word: string; r: Result; cause?: Cause };
-type BlobSide = { judged: boolean; available: boolean; full: boolean; retried: boolean; again: boolean; closes: string; until: number };
+type BlobSide = { judged: boolean; available: boolean; full: boolean; retried: boolean; closes: string; until: number };
 function markOf(a: Assignment, s: Seat | undefined, blob: BlobSide): Mark {
   const { r, early } = resultOf(a, s);
   // the validator's own last answer gives the reason, and only the requests that reached it count as asked
@@ -170,11 +171,12 @@ function markOf(a: Assignment, s: Seat | undefined, blob: BlobSide): Mark {
   const why = cause === "foreign" ? "other rows of the blob" : reasonOf(p);
   const n = s?.made ?? 0;
   const times = n > 1 ? ` · ${askedTimes(n)}` : "";
-  // every request of the validator, oldest first, when there were several, Tensile's own gaps among them
-  const seq = s && s.tries.length > 1 ? s.tries.map((t) => answerOf(t)).join(", ") : "";
+  // every request of the validator, oldest first, when there were several, Tensile's own gaps among them; a run of
+  // the same answer once, with its count, in the cell, and each in the hover
+  const seq = s && s.tries.length > 1 ? inOrder(s.tries.map((t) => answerOf(t))) : "";
   const tries = seq ? ` Requests in order: ${s!.tries.map((t) => answerOf(t, true)).join(", ")}.` : "";
-  // a validator not served while the window is open can still be asked again, up to two more times
-  const again = early && r === "not_served" && blob.retried && blob.again && n < 3 ? "; until then it can be asked again" : "";
+  // while the window is open, a validator whose last answer still owes it another request: its result can change
+  const again = early && s && asksAgain(s.last, blob.until) ? "; it is asked again before then" : "";
   const final = early ? ` Final when the retention window closes at ${blob.closes}${again}.` : "";
   const prov = a.provisional ? " · provisional" : "";
   if (r === "served") return { r, tone: "", res: `served${times}`, tab: seq ? `served · ${seq}` : "served", word: `Served: its ${full ? "own " : ""}rows came back and verified.${tries}${final}` };
@@ -185,6 +187,9 @@ function markOf(a: Assignment, s: Seat | undefined, blob: BlobSide): Mark {
     };
   }
   const one = (res: string, word: string, tone: Mark["tone"] = ""): Mark => ({ r, tone, res, tab: res, word });
+  if (r === "in_retention_window" && s && full && failed(p) && asksAgain(s.last, blob.until)) {
+    return one("in retention window", `Asked, and its own rows have not come back yet (${why}); it is asked again before the retention window closes at ${blob.closes}.${tries}`);
+  }
   if (r === "in_retention_window") return one("in retention window", SERVICE.in_retention_window[1]);
   if (r === "deadline_unverified") return one("deadline unverified", SERVICE.deadline_unverified[1]);
   // counted neither way
@@ -205,7 +210,13 @@ function markOf(a: Assignment, s: Seat | undefined, blob: BlobSide): Mark {
     : one("not asked", "Not asked: the reading had enough rows before it reached this validator.");
   const gap = (res: string, word: string): Mark => ({ r, tone: "", res, tab: seq ? `${res} · ${seq}` : res, word: `${word}${tries}${final}` });
   if (p.classification === "NOT_PROBED") return gap("not read", "Tensile could not make this request in time: counted neither way.");
-  if (p.classification === "PROBE_ERROR") return gap("read failed", `Tensile's request failed on its own side${ownSide(p.raw_error) ? `, its ${ownSide(p.raw_error)}` : ""}: counted neither way.`);
+  if (p.classification === "PROBE_ERROR") {
+    const side = ownSide(p.raw_error);
+    return gap("read failed", side === "network" ? "Tensile's own network was down for this request: counted neither way."
+      : side === "resolver" ? "Tensile's own resolver was too slow for this request: counted neither way."
+      : side === "clock" ? "Whether the certificate had lapsed rests on Tensile's own clock: counted neither way."
+      : "Tensile's request failed on its own side: counted neither way.");
+  }
   return one("—", "Counted neither way.");
 }
 
@@ -264,7 +275,7 @@ function Page() {
   // A full reading judges each endorser on its own answers, whatever the blob came to: one Tensile missed in part (not
   // read, or in its window) still counts the validators it asked.
   const counted = judged || (full && rows.some((a) => { const r = resultOf(a, seats.get(a.validator_address)).r; return r === "served" || r === "not_served"; }));
-  const side: BlobSide = { judged: counted, available, full, retried, again: Date.parse(b.must_serve_until) - 60_000 > Date.now(), closes, until: Date.parse(b.must_serve_until) };
+  const side: BlobSide = { judged: counted, available, full, retried, closes, until: Date.parse(b.must_serve_until) };
   const marks = new Map(rows.map((a) => [a.validator_address, markOf(a, seats.get(a.validator_address), side)]));
   // Who served is read from the same words the names carry, so the figures and the marks cannot disagree: the record's
   // once the window has closed, and while it is open the reading's own, as soon as it is in.
@@ -322,7 +333,7 @@ function Page() {
     : endRead ? (everyEndorser
       ? `Read once, 10 minutes before the retention window ends: every validator that endorsed the blob was asked once. Readings before ${FULL_READ_SINCE_WORDS} keep the rule of their time.`
       : enough
-      ? "Read once, 10 minutes before the retention window ends, as celestia-app’s client downloads it: the validators in its order, until enough rows came back. A reading that stops at enough rows keeps the earlier rule: a validator is not served only when the blob could not be reconstructed."
+      ? "Read once, 10 minutes before the retention window ends, as celestia-app’s client downloads it: the validators in its order, until enough rows came back. A reading that stops at enough rows keeps the earlier rule: a validator is not served only when its rows did not come back and the blob could not be reconstructed."
       : `Read once, 10 minutes before the retention window ends, as celestia-app’s client downloads it: the validators in its order, until enough rows came back. Readings before ${FULL_READ_SINCE_WORDS} keep the rule of their time.`)
     : probes.length > 0 ? "Read on the earlier schedule, at several points in the retention window, and judged by the rule of its time." : "Not read by Tensile.";
   // the figures, in the facts' own rows: the chain's three, then Tensile's three, marked with its eye

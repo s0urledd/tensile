@@ -326,8 +326,9 @@ export type ValidatorReading = {
   host_changed?: boolean;
   /**
    * what this request counts as for the validator: served; not_served (at a full reading, its last answer when none
-   * served and none was Tensile's own gap; at an earlier one, rows that did not come back from a blob that was
-   * unavailable); absent when it counts neither way, among them an answer a later one replaced
+   * served and none was Tensile's own gap or rows of the blob not its own; at an earlier one, rows that did not come
+   * back from a blob that was unavailable); absent when it counts neither way, among them an answer a later one
+   * replaced, or one whose next attempt is still owed
    */
   service?: "served" | "not_served";
   /** a not-served reading younger than the settling period: counted, and an x/fibre params change can still withdraw it */
@@ -338,6 +339,18 @@ export type ValidatorReading = {
    * failed before any blob was asked for (its raw_error names that request: sharedAnswer)
    */
   attempt?: number;
+  /**
+   * at a full reading, on an answer that did not serve: when its validator is to be asked again. The answer is then
+   * not its last, and until that request is on record (made, or recorded as not made) the validator counts neither
+   * way. Absent when none is owed.
+   */
+  next_attempt_due?: string;
+  /**
+   * on a short answer (outcome PARTIAL) only: true when every row that came back is one this promise assigns the
+   * validator (at a full reading, not served), false when some are not (rows of the blob that are not its own,
+   * counted neither way)
+   */
+  rows_subset_of_assignment?: boolean;
 };
 
 /** one reading row of /v1/probes */
@@ -385,6 +398,10 @@ export type Probe = {
   provisional?: boolean;
   /** see ValidatorReading.attempt */
   attempt?: number;
+  /** see ValidatorReading.next_attempt_due */
+  next_attempt_due?: string;
+  /** see ValidatorReading.rows_subset_of_assignment */
+  rows_subset_of_assignment?: boolean;
 };
 
 // Below this many rated probes a percentage is noise dressed as a
@@ -427,7 +444,7 @@ export type Reconstruct = {
   /**
    * validators the reading asked (a request of Tensile's own that failed or could not be made asks no one): at a full
    * reading the endorsing validators, and only those; at a reading before FULL_READ_SINCE, endorsing or not, most of
-   * them in the client's order until the rows were enough
+   * them in the client's order until the rows were enough, as at a reading labelled enough
    */
   probed_validators: number;
 };
@@ -481,6 +498,10 @@ export type BlobReading = {
   service?: "served" | "not_served";
   /** see ValidatorReading.attempt */
   attempt?: number;
+  /** see ValidatorReading.next_attempt_due */
+  next_attempt_due?: string;
+  /** see ValidatorReading.rows_subset_of_assignment */
+  rows_subset_of_assignment?: boolean;
 };
 
 /**
@@ -489,8 +510,8 @@ export type BlobReading = {
  * again, up to two more times, about 90 s apart, while the window is open, and each is judged on its own answers,
  * whatever the blob's reconstruction; the first such readings, labelled "end", asked each validator once. Readings
  * started before it (most of them asking validators in the client's order until the blob could be rebuilt), and a
- * reading made after it that stops at enough rows (labelled "enough"), keep the rule of their time: not served only
- * when the blob was unavailable.
+ * reading made after it that stops at enough rows (labelled "enough"), keep the earlier rule: not served only when
+ * the blob was unavailable.
  */
 export const FULL_READ_SINCE = "2026-10-02T16:09:49Z";
 const FULL_READ_SINCE_MS = Date.parse(FULL_READ_SINCE);
@@ -548,11 +569,21 @@ export function rawErrorWords(p: { raw_error?: string; started_at: string }): st
 /**
  * Rows of the blob that verified and are not the validator's own, with no settled promise to explain them: under
  * hash-order serving they show neither that it holds its rows nor that it does not, so at a full reading Tensile counts
- * them neither way. Only rows other than its own are certain from the row alone; a short answer (PARTIAL) is either a
- * part of its own rows, which is not served, or not.
+ * them neither way. Other rows (WRONG_ROWS), or a short answer (PARTIAL) whose rows the record says are not all its
+ * own; a short answer that is a part of its own rows is not served.
  */
-export function foreignRows(p: { classification: string; outcome: string }): boolean {
-  return p.classification === "UNMATCHED_GENUINE" && p.outcome === "WRONG_ROWS";
+export function foreignRows(p: { classification: string; outcome: string; rows_subset_of_assignment?: boolean }): boolean {
+  return p.classification === "UNMATCHED_GENUINE"
+    && (p.outcome === "WRONG_ROWS" || (p.outcome === "PARTIAL" && p.rows_subset_of_assignment === false));
+}
+
+/**
+ * Whether a validator's last answer at a full reading still owes it another request (the record's next_attempt_due),
+ * and that request can still be made: due before a minute ahead of the window's end. One due later was owed only
+ * because of Tensile's own delays, and is recorded as not made, Tensile's own gap.
+ */
+export function asksAgain(p: { next_attempt_due?: string }, until: number): boolean {
+  return !!p.next_attempt_due && Date.parse(p.next_attempt_due) < until - 60_000;
 }
 
 /**

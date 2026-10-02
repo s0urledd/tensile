@@ -81,11 +81,12 @@ not make in time, a failure on its own side (its network, its resolver, its
 clock), rows of the blob that are not the validator's own (under hash-order
 serving they show neither that it holds its rows nor that it does not), or
 an attempt it owed that is not on record. A validator that did not endorse
-owes nothing, is not asked and is never counted. Readings made before
-2026-10-02T16:09:49Z, and readings made with `-end-read-all=false`
-(labelled `enough`), stop at the rows that reconstruct the blob and keep
-that rule: a validator is not served only when the blob was unavailable and
-its rows did not come back.
+owes nothing, is not asked and is never counted. Most readings made before
+2026-10-02T16:09:49Z stopped at the rows that reconstruct the blob (the
+first end readings, from 27 September 2026, asked each endorser once), and
+a reading made with `-end-read-all=false` (labelled `enough`) still does;
+all of them keep that rule: a validator is not served only when the blob
+was unavailable and its rows did not come back.
 
 ### Why the tolerance is set from the *measured* prune lag
 
@@ -211,7 +212,8 @@ all (`-download-timeout`, the client's `RPCTimeout`):
 
 At the reading's own request, a failed lookup or dial (whatever the cause),
 an unreachable peer or a timeout is asked again at once, as the client
-re-dials; a later attempt is one request. Hosts come from `x/valaddr` `AllBondedFibreProviders`
+re-dials, even when the re-dial starts past the request's start cutoff: it
+is part of the request; a later attempt is one request. Hosts come from `x/valaddr` `AllBondedFibreProviders`
 (latest height, cached); consensus keys from `/validators` at the promise
 height. The assignment is **recomputed** here and cross-checked against the
 row counts in the scan record — a mismatch is a hard error, not a silent
@@ -221,14 +223,17 @@ divergence.
 default; label `full`) asks every endorser, whatever the rows already held.
 A validator whose answer did not serve is asked again, up to twice, 90 s
 after its last answer (`-retry-spacing`), when that is still before
-`must_serve_until - 1 min` (`-request-start-margin`); an attempt that could
-not start by then is not owed. Attempts wait in a lane per validator, one
-in flight to each, and read the validator's current host from the registry.
-A request that fails before the validator's identity is verified (no such
-host, a connect refused, timed out or unroutable, a failed handshake or
-certificate) answers every attempt of that validator waiting at the same
-host, each on a row of its own (`shared_from`). An owed attempt that cannot
-start in time is written `NOT_PROBED`, this observer's gap. At a full
+`must_serve_until - 1 min` (`-request-start-margin`); an attempt that the
+validator's own time leaves no room for is not owed. This observer's own
+delays (a late reading, a wait for room, a lane, a restart) are taken out
+first: an attempt only they push past that point stays owed. Attempts wait
+in a lane per validator, one in flight to each, and read the validator's
+current host from the registry. A later attempt that fails before the
+validator's identity is verified (no such host, a connect refused, timed
+out or unroutable, a failed handshake or certificate) answers every attempt
+of that validator waiting at the same host (for a certificate, under the
+same key), each on a row of its own (`shared_from`). An owed attempt that
+cannot start in time is written `NOT_PROBED`, this observer's gap. At a full
 reading a failure that rests on this observer's own side is rewritten to
 `PROBE_ERROR`, the wire outcome kept in `raw_error` (`ownside.go`): a
 connect that timed out or found no route while nothing else reached a
@@ -285,7 +290,7 @@ earlier schedule only:
 
 **Not served** is the only thing said against a validator: the chain *proves*
 it stored rows of a blob, and its own rows did not come back, at the reading
-or any time it was asked again — not found, bad rows or fewer of its own
+and each time it was asked again — not found, bad rows or fewer of its own
 than it holds, no answer, a rejected certificate, an error, a rate limit or
 no registered host, as a reader using the client meets them. One gap of
 this observer's own among its answers, or an attempt it owed that is not on
@@ -311,8 +316,10 @@ once, with 512 MiB of shards (`-in-flight-mib`); `-link-mbps`, set from the
 observer's measured link, also holds the shard bytes in flight to what the
 link moves in half a request's time, so a timeout is never this observer's
 own full link. Shard bytes are let go no faster than 400 Mbit/s
-(`-max-read-mbps`, a token bucket charged each request's expected shard
-bytes; 0 turns it off), so the readings leave room on a port they share.
+(`-max-read-mbps`, a token bucket charged each request's whole expected
+shard, with a quarter of a second of burst; 0 turns it off), so the
+readings leave room on the observer's port: at the default, no more than
+62.5 MB in any second.
 These only delay a request until its last start, the wait is never part of
 the request's own time, and every row records the load it was let go
 under and its wait (`observer_load`). The reading's

@@ -69,9 +69,10 @@ chain block
        ├─ Classify(Evidence) → one classification + a reason per validator asked
        ├─→ measurements.jsonl (a reading's rows together)
        └─ a validator whose answer did not serve: asked again up to twice,
-          90 s after its last answer, while a request can start 60 s before
-          must_serve_until; one lane per validator, an endpoint failure
-          answering every attempt waiting in it
+          90 s after its last answer, when that is more than 60 s before
+          must_serve_until; one request each, no re-dial; one lane per
+          validator, a later attempt's endpoint failure answering every
+          attempt waiting in it
           └─→ measurements.jsonl (a row per attempt, attempt 1 and 2)
 
   heartbeat: every 5 min, every bonded provider's endpoint, layers 1-3 only
@@ -286,25 +287,31 @@ the way celestia-app's Fibre client asks for a shard (a full reading, label
   reading shares, which gives the blob's result
 - a validator whose answer did not serve is asked again, up to twice
   (`FullReadRetries`), 90 s after its last answer (`-retry-spacing`), when
-  that is still before `must_serve_until - 1 min`; an attempt that could
-  not start by then is not owed, no row is written for it, and the answer
-  before it is the validator's last. A row that owes an attempt says when
-  it is due (`next_attempt_due`). Each attempt is one request with no
-  re-dial, runs on its own (no blob slot, no shared Reconstructor), goes to
+  that is more than a minute before `must_serve_until`; an attempt the
+  validator's own time leaves no room for is not owed, no row is written
+  for it, and the answer before it is the validator's last. This
+  observer's own delays (a late reading, a wait for room, a lane, a
+  restart) are taken out first: an attempt only they push past that point
+  stays owed, and is written `NOT_PROBED` when its cutoff comes. A row that
+  owes an attempt says when it is due (`next_attempt_due`). Each attempt
+  is one request with no re-dial, runs on its own (no blob slot, no shared
+  Reconstructor), goes to
   the host the registry names then, and waits in its validator's lane (one
   worker each, so one attempt in flight to a validator, the one whose
   cutoff comes first); it writes a row of its own (`attempt` 1 and 2), and
   a restart resolves each blob once for the attempts the record still
   owes, then makes them or records them as abandoned
-- a request that fails before the validator's identity is verified (no
-  such host, a connect refused, timed out or unroutable, a failed
+- a later attempt that fails before the validator's identity is verified
+  (no such host, a connect refused, timed out or unroutable, a failed
   handshake or certificate) answers every other attempt of that validator
-  due and waiting at the same host when it began: each gets its own row,
+  due and waiting at the same host when it began (for a certificate, under
+  the same key): each gets its own row,
   `shared_from` naming the request and `raw_error` saying so
 - no request of the reading, nor a later attempt, starts later than
   `must_serve_until - 1 min` (`-request-start-margin`); one that was owed
   and cannot is not made, and its validator's row says so (`NOT_PROBED`):
-  this observer's gap
+  this observer's gap. The client's re-dial is part of its request and
+  follows it, past that point or not
 - a rate limit, a `CANCELLED` the server sends, a timeout or "no route to
   host" from a validator is that validator's rows not coming back, as the
   client sees it, unless it rests on this observer's own side: at a full
@@ -318,9 +325,9 @@ the way celestia-app's Fibre client asks for a shard (a full reading, label
   at once, 512 MiB of shards in flight (`-in-flight-mib`), and with
   `-link-mbps` set, no more shard bytes than the link moves in half a
   request's time; shard bytes let go no faster than 400 Mbit/s
-  (`-max-read-mbps`: a token bucket charged each request's expected shard
-  bytes, with about a second of burst, so the readings leave room on the
-  port the observer shares); a request waits for room until its last
+  (`-max-read-mbps`: a token bucket charged each request's whole expected
+  shard, with a quarter of a second of burst, so the readings leave room
+  on the observer's port); a request waits for room until its last
   start, its time starts once it is let go, and it carries the phase the
   reading started in, so the wait changes nothing. Every row records `observer_load`. The
   reading's own requests have no limit per validator, as the client has

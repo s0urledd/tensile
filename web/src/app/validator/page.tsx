@@ -85,6 +85,7 @@ function safeSite(raw?: string): string | null {
 const wordOf = (cls: string): [string, string] => WORDS[cls] ?? [cls.toLowerCase().replace(/_/g, " "), "other"];
 /** what came back, in a few words: the outcome of a FAULT, else the class */
 const whatCame = (p: ValidatorReading): string => {
+  if (foreignRows(p)) return "other rows of the blob";
   if (p.classification === "FAULT" || p.classification === "HEALTHY") {
     return ({ NOT_FOUND: "not found", INVALID_ROWS: "rows do not verify", PARTIAL: "short shard", WRONG_ROWS: "wrong rows", SERVED_OK: "served" } as Record<string, string>)[p.outcome]
       ?? p.outcome.toLowerCase().replace(/_/g, " ");
@@ -261,8 +262,8 @@ function Page() {
   for (const r of held) { const w = resultOf(r.p, r.g).word; heldBy.set(w, (heldBy.get(w) ?? 0) + 1); }
   const heldWhy = [...heldBy].map(([w, n]) => `${w} (${int(n)})`).join(", ");
   const heldFull = held.filter((r) => r.full).length;
-  const gapText = "the reading had a gap of Tensile’s own: a request that failed on its side or was not made in time, rows of the blob that are not the validator’s own, no request that reached any server, or a request still owed and not on record";
-  const heldText = heldFull === held.length ? `The rows did not come back, but ${gapText}.`
+  const gapText = "each counted neither way: one of Tensile’s requests failed on its side or was not made in time, rows of the blob came back that are not the validator’s own, no request reached any server, or a request Tensile still owed is not on record";
+  const heldText = heldFull === held.length ? `Its own rows did not come back, but ${gapText}.`
     : heldFull === 0 ? "The rows did not come back, and the blob was available from other validators."
     : `The rows did not come back, but ${gapText}; or, before ${FULL_READ_SINCE_WORDS}, the blob was available from other validators.`;
   const tone = o && decided > 0 ? rateTone(o.served, decided) : undefined;
@@ -334,7 +335,7 @@ function Page() {
               value={<>{notLive || !o || decided === 0 ? "—" : pctOf(o.served, decided)}{!notLive && held.length > 0 && <Warn text={`${plural(held.length, "reading")} in this period did not count: ${heldWhy}. ${heldText} The readings below show each one.`} />}</>}
               title={notLive ? undefined : !o || o.total === 0 ? ((v.signing?.signed ?? 0) > 0 ? "Not read yet." : "Nothing endorsed in this period.")
                 : decided === 0 ? (o.not_counted > 0 ? `Read, none counted: ${notCountedText(o)}.` : "Not read yet.")
-                : `${int(o.served)} of ${int(decided)} counted readings served${refText ? `; ${refText}` : ""}. Endorsed shards served, over served plus not served. A shard whose request failed on Tensile’s side, could not be made in time, or is still owed and not on record, whose answer was rows of the blob that are not the validator’s own, or whose reading Tensile did not make or that reached no server, counts neither way; before ${FULL_READ_SINCE_WORDS}, so did a shard not asked for, or one that failed on a blob that was available.`} />
+                : `${int(o.served)} of ${int(decided)} counted readings served${refText ? `; ${refText}` : ""}. Endorsed shards served, over served plus not served. A shard counts neither way when one of its requests failed on Tensile’s side or could not be made in time, an answer was rows of the blob that are not the validator’s own, a request Tensile still owed is not on record, or its reading was not made or reached no server; before ${FULL_READ_SINCE_WORDS}, so did a shard not asked for, or one that failed on a blob that was available.`} />
             <PanelFig label="Not served" className={notLive ? "na" : (o?.broken ?? 0) > 0 ? "bad" : undefined}
               value={<>{notLive ? "—" : int(o?.broken ?? 0)}{!notLive && prov > 0 && <Warn text={`${int(prov)} of these ${prov === 1 ? "is" : "are"} younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.`} />}</>}
               title={`Endorsed shards whose own rows did not come back, at the reading and each time they were asked again. Before ${FULL_READ_SINCE_WORDS}: rows that did not come back from a blob that could not be reconstructed.`} />
