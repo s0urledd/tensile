@@ -177,7 +177,7 @@ function take(v: Shown, f: Feed): Shown {
 const payer = (b: Blob) => b.publisher || b.signer;
 
 /** a publisher as a chip: its mark, the address's prefix quietly, its last four characters */
-function Who({ addr }: { addr: string }) {
+export function Who({ addr }: { addr: string }) {
   const i = addr.indexOf("1");
   return (
     <Link className="lg-who" href={`/publisher/?addr=${addr}`} title={addr}>

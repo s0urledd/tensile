@@ -40,6 +40,30 @@ export function Figures({ children, className }: { children: ReactNode; classNam
   return <div className={"figs" + (className ? " " + className : "")}>{children}</div>;
 }
 
+/**
+ * One cell of a framed panel of figures (.pan, the Publishers pages): its
+ * name, with the period it counts when it counts one, over the figure. A
+ * line under it (children, each a <dd className="pan-s">) only where a line
+ * has something to say.
+ */
+export function PanelFig({ label, period, value, title, className, children }: {
+  label: string;
+  /** "(24h)" after the name, set apart so the uppercase label keeps it as it is */
+  period?: string;
+  value: ReactNode;
+  title?: string;
+  className?: string;
+  children?: ReactNode;
+}) {
+  return (
+    <div className={"pan-c" + (className ? " " + className : "")} title={title}>
+      <dt>{label}{period && <> <span className="per">({period})</span></>}</dt>
+      <dd className="pan-v">{value}</dd>
+      {children}
+    </div>
+  );
+}
+
 /** the eye of the "Observed by Tensile" badge */
 export const Eye = () => (
   <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8Z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" /><circle cx="8" cy="8" r="2" fill="currentColor" /></svg>

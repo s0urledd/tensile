@@ -466,6 +466,11 @@ export type Sum = { count: number; utia: number };
 /** x/fibre's charge for a blob, on /v1/params: fee = (base_gas + gas_per_chunk × ⌈blob_size / chunk_bytes⌉) × utia_per_gas */
 export type PriceFormula = { base_gas: number; gas_per_chunk: number; chunk_bytes: number; utia_per_gas: number; note: string };
 
+/** the fee of one blob of this size, in utia, by the module's price formula */
+export function blobFee(f: PriceFormula, size: number): number {
+  return (f.base_gas + f.gas_per_chunk * Math.ceil(size / f.chunk_bytes)) * f.utia_per_gas;
+}
+
 export type PublisherShare = {
   publisher: string;
   label?: string;

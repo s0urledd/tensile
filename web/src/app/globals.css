@@ -1750,3 +1750,141 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .lg-t tr.row td { transition: none; }
   .lg-t tr.fresh, .lg-t tr.fresh td, .lg-new, .lg-pop { animation: none; }
 }
+
+/* =============================================================================
+   Publishers (app/publishers): a framed panel of the period's figures, then
+   the publishers in the Blobs list's own rows (.lg-tw, .lg-t).
+
+   The panel (.pan) is the table's own frame (paper, a hairline border, the
+   card radius, the small shadow; no glow), its cells a label in the table
+   heads' caps over a figure in the rows' face, the unit quieter, hairlines
+   between them. A publisher's page leads with one too.
+   ========================================================================== */
+/* ---- the panel ---- */
+.pan { background: var(--paper); border: 1px solid var(--border); border-radius: var(--r-card); box-shadow: var(--shadow-sm); overflow: clip; }
+.pan-c { min-width: 0; padding: 17px 18px 18px; background: var(--paper); }
+.pan-c dt { font-size: var(--t-tiny); line-height: 14px; font-weight: 500; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pan-c dt .per { text-transform: none; letter-spacing: .03em; }
+.pan-c dd { margin: 0; font-family: var(--font-table); font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
+.pan-c .pan-v { margin-top: 9px; font-size: 24px; line-height: 28px; font-weight: 500; letter-spacing: -.02em; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.pan-v .u { margin-left: 1px; font-size: 14px; font-weight: 400; letter-spacing: 0; color: var(--text-3); }
+/* a line under a figure, only when it has something to say; its figure in the stronger grey */
+.pan-c .pan-s { margin-top: 6px; font-size: 12.5px; line-height: 18px; color: var(--text-3); }
+.pan-c .pan-s + .pan-s { margin-top: 1px; }
+.pan-s b { font-weight: 500; color: var(--text-2); }
+.pan-s .sep { margin: 0 6px; }
+/* settlements took some of a queued withdrawal: the ledger's amber mark and ink */
+.pan-c .pan-s.hold { color: var(--hold-ink); font-weight: 500; }
+.pan-s.hold::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 7px; border-radius: 50%; background: var(--hold); vertical-align: 1px; }
+/* a timeout is money charged for a blob never settled: red, as the site marks a charge for a timeout */
+.pan-c.fault .pan-v, .pan-c .pan-s.to, .pan-s.to b { color: var(--fault); }
+
+/* ---- the head: the title, then on the right Find and the period ---- */
+.pl-ctl { display: flex; align-items: center; gap: 10px; }
+.pl-find .lg-chip { padding-right: 14px; }
+.pl-find .lg-pop { width: 340px; }
+/* the period switch beside these figures: the pressed state as a ring, without the glow */
+:root[data-theme="dark"] .pl-head .seg button[aria-pressed="true"] { box-shadow: inset 0 0 0 1px rgb(51 179 191 / .45); }
+.pl-list { margin-top: 24px; }
+/* six cells on a regular grid, the hairlines the grid's 1 px gaps in the table's rule colour: the period's five
+   figures, then the escrow held now, last as the escrow lane is last in the table, and at full width right over it */
+.pl-pan { --esc-w: 155px; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) var(--esc-w); gap: 1px; margin: 0 0 28px; background: linear-gradient(var(--border), var(--border)) padding-box, var(--paper) border-box; }
+.pl-pan > .pan-c { container-type: inline-size; }
+/* in a narrow cell the timeout line's two halves stack, the dot between them dropped */
+.pl-pan .pan-s.to > span { white-space: nowrap; }
+@container (max-width: 236px) {
+  .pl-pan .pan-s.to .sep { display: none; }
+  .pl-pan .pan-s.to > span { display: block; }
+}
+
+/* ---- the table: a publisher a row ---- */
+/* The publisher's chip and the time are as wide as they are, Settlements as wide as its head (its counts are
+   short); the other figures share the rest evenly, so each sits about as far from the one before it, and the
+   escrow keeps its lane at the end. */
+.pl-t thead th { height: 44px; }
+.pl-t th.c-pub { width: 200px; }
+.pl-t th.c-t { width: 206px; }
+.pl-t th.gap { width: 10px; }
+.pl-t th.c-esc { width: 156px; }
+.pl-t th.c-n { width: 110px; }
+.pl-t th.c-sz, .pl-t th.c-sh, .pl-t th.c-fee, .pl-t th.c-to { width: auto; }
+.pl-t.has-to th.c-pub { width: 118px; }
+.pl-t.has-to .lg-who .hd { display: none; }
+.pl-t th.c-t, .pl-t td.c-t { text-align: center; }
+/* a head that sorts: the word is the button, the order in force an arrow just before it, in the head's padding */
+.pl-t th .sort { all: unset; position: relative; cursor: pointer; border-radius: 3px; transition: color var(--dur); }
+.pl-t th .sort:hover { color: var(--text-2); }
+.pl-t th .sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.pl-t th .sort .ar { display: none; position: absolute; right: 100%; top: 50%; width: 9px; height: 9px; margin: -5px 5px 0 0; color: var(--accent-ink); }
+.pl-t th .sort[aria-pressed="true"] { color: var(--text-2); }
+.pl-t th .sort[aria-pressed="true"] .ar { display: block; }
+.pl-t th .sort[data-dir="asc"] .ar { transform: rotate(180deg); }
+.pl-t td { font-weight: 500; }
+.pl-t .none, .pl-t td.c-nb { color: var(--text-3); font-weight: 400; }
+.pl-t td.c-nb { text-align: center; }
+.pl-t .c-t .ag { font-weight: 400; }
+/* the share is a reading aid, not a figure of its own: plain and quieter */
+.pl-t td.c-sh { font-weight: 400; color: var(--text-2); }
+/* The escrow: what the publisher can spend now, set off by the gap as Tensile's lane is on Blobs, but the chain's
+   own figure, so a plain rule and no tint. Each figure sits centred under the head; the amber dot of an escrow
+   that cannot pay one more blob hangs to its left, so it moves no figure off the centre. */
+.pl-t .c-esc { padding-left: 14px; padding-right: 14px; text-align: center; border-left: 1px solid var(--border); }
+.pl-t .low { position: relative; color: var(--hold-ink); }
+.pl-t .low .u { color: inherit; opacity: .78; }
+.pl-t .low::before { content: ""; position: absolute; right: 100%; top: 50%; width: 6px; height: 6px; margin: -3px 7px 0 0; border-radius: 50%; background: var(--hold); }
+.pl-t .tox { color: var(--fault); }
+.pl-t td .kp { display: none; }
+
+/* ---- narrower ---- */
+/* the summary three a row below the width where six cells hold their figures */
+@media (max-width: 1219.98px) {
+  .pl-pan { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+/* the chip stays whole where the Blobs list drops its prefix: this row has the room */
+@media (min-width: 1081px) and (max-width: 1220px) {
+  .pl-t:not(.has-to) .lg-who .hd { display: inline; }
+}
+/* the time without its age, as on Blobs */
+@media (max-width: 1160px) {
+  .pl-t th.c-t { width: 160px; }
+}
+/* a list before the columns would cut their figures: two lines a publisher, its escrow in the lane beside them.
+   One slim head names the time and the lane once; the second line says what each figure is. */
+@media (max-width: 1080px) {
+  .pl-t thead { display: block; }
+  .pl-t thead tr { display: grid; grid-template-columns: minmax(0, 1fr) auto 150px; grid-template-areas: "a t l"; column-gap: 14px; padding-left: 16px; border-bottom: 1px solid var(--border); }
+  .lg-t.pl-t thead th { display: none; width: auto; height: auto; padding: 12px 0 10px; border-bottom: 0; }
+  .lg-t.pl-t thead th.c-pub { display: block; grid-area: a; }
+  .lg-t.pl-t thead th.c-t { display: block; grid-area: t; text-align: right; }
+  .lg-t.pl-t thead th.c-esc { display: block; grid-area: l; padding: 12px 14px 10px; }
+  .pl-t tr.row { grid-template-columns: minmax(0, 1fr) auto 150px; grid-template-areas: "a t l" "m m l"; }
+  .pl-t tr.row td.c-pub, .pl-t tr.row td.c-m { display: flex; align-items: center; height: 20px; }
+  .pl-t .c-pub { grid-area: a; min-width: 0; }
+  .pl-t .c-pub .lg-who .hd { display: none; }
+  .pl-t .c-m { grid-area: m; font-weight: 400; }
+  .pl-t .c-m .w { margin-left: 4px; color: var(--text-3); }
+  .pl-t tr.row td.c-esc { display: flex; align-items: center; justify-content: center; grid-area: l; margin: calc(-1 * var(--pt)) 0 calc(-1 * var(--pb)); padding: 0 14px; border-left: 1px solid var(--border); }
+}
+@media (max-width: 720px) {
+  .pl-head { flex-wrap: wrap; row-gap: 14px; }
+  .pl-ctl { display: contents; }
+  .pl-find { order: 3; flex-basis: 100%; }
+  .pl-find .lg-pick, .pl-find .lg-chip { width: 100%; max-width: none; }
+  .pl-find .lg-pop { left: 0; right: auto; width: 100%; }
+  .pl-list { margin-top: 20px; }
+  /* the panels a size smaller; the summary two figures a row, Deposited beside the escrow held now */
+  .pl-pan { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 24px; }
+  .pan-c { padding: 14px 14px 15px; }
+  .pan-c .pan-v { margin-top: 7px; font-size: 22px; line-height: 26px; letter-spacing: -.018em; }
+  .pan-v .u { font-size: 13px; }
+  .pan-c .pan-s { margin-top: 5px; font-size: var(--t-small); line-height: 17px; }
+  /* a phone keeps two lines and no head: who and when, then what it posted and paid beside the escrow it holds */
+  .pl-t thead { display: none; }
+  .pl-t tr.row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "a t" "m l"; }
+  .pl-t .c-m .n-set { display: none; }
+  .pl-t tr.to .c-m .n-sz { display: none; }
+  .pl-t tr.row td.c-esc { justify-content: flex-end; height: 20px; margin: 0; padding: 0; border: 0; }
+  .pl-t td.c-esc .kp { display: inline; margin: 0 6px 0 0; font-size: 13px; font-weight: 400; color: var(--text-3); }
+  /* there the amber dot sits in the line, before the figure */
+  .pl-t .low::before { position: static; display: inline-block; margin: 0 7px 0 0; vertical-align: 1px; }
+}
