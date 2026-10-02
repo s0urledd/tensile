@@ -272,16 +272,13 @@ func (p *Prober) retriesOwed(pub scan.Publication, pt SchedulePoint) bool {
 }
 
 // recoverRetries queues the attempts an earlier run owed on pub's full
-// reading: those it made and could not follow, because it stopped.
+// reading: those it made and could not follow, because it stopped. Each
+// is made at the point of the reading it follows, as the record has it.
 func (p *Prober) recoverRetries(pub scan.Publication, pt SchedulePoint) {
 	for _, mk := range p.store.PendingAttempts(pub.PromiseHash) {
-		if !mk.ScheduledAt.Equal(pt.At) {
-			continue
-		}
 		t := Target{AddressHex: mk.Validator, Host: mk.Host, HostAtSettlement: mk.HostAtSettlement, Assigned: mk.Assigned,
 			Attested: mk.Attested, AttestationUnknown: mk.AttestationUnknown, RowCount: mk.RowCount}
-		point := pt
-		point.Label = FullReadLabel
+		point := SchedulePoint{At: mk.ScheduledAt, Phase: pt.Phase, Label: FullReadLabel}
 		p.retries.push(&retryJob{pub: pub, point: point, target: t, order: mk.Order, attempt: mk.Attempt + 1,
 			due: mk.FinishedAt.Add(p.cfg.RetrySpacing), cutoff: p.requestStartBy(pub),
 			result: mk.BlobResult, clientErr: mk.BlobError, recovered: true})
