@@ -150,13 +150,15 @@ export default function BlobsDeck({ win, onWin, market, newest, skew }: {
     return (
       <section className="deck lg-deck is-quiet" aria-label="The period's settlements">
         <div className="lg-lead">
-          <h2 className="ov-eyebrow">Last blob</h2>
-          {last
-            ? <>
-              <p className="lg-fig">{now ? age(now - lastAt) : <span className="wait">0 d 00 h</span>}<small>ago</small></p>
-              <p className="lg-help"><Link href={`/blob/?hash=${last.promise_hash}`}>#{int(last.settlement_height)}</Link> · {dayTime(last.settlement_time)}</p>
-            </>
-            : <p className="lg-help lg-none">{newest ? "No blob on record" : <span className="wait">#0,000,000 · 00 Sep 00:00:00 UTC</span>}</p>}
+          <div className="lg-sum">
+            <h2 className="ov-eyebrow">Last blob</h2>
+            {last
+              ? <>
+                <p className="lg-fig">{now ? age(now - lastAt) : <span className="wait">0 d 00 h</span>}<small>ago</small></p>
+                <p className="lg-help"><Link href={`/blob/?hash=${last.promise_hash}`}>#{int(last.settlement_height)}</Link> · {dayTime(last.settlement_time)}</p>
+              </>
+              : <p className="lg-help lg-none">{newest ? "No blob on record" : <span className="wait">#0,000,000 · 00 Sep 00:00:00 UTC</span>}</p>}
+          </div>
         </div>
         <div className="lg-plot">
           <h3 className="ov-eyebrow">Settlements per {per} <span className="per">({periodName(win)})</span></h3>
@@ -187,12 +189,15 @@ export default function BlobsDeck({ win, onWin, market, newest, skew }: {
   return (
     <section className="deck lg-deck" aria-label="The period's settlements">
       <div className="lg-lead">
-        {/* a figure keeps the last answer while another period loads, so it names that answer's period */}
-        <h2 className="ov-eyebrow">Blobs <span className="per">({periodName(m?.window.name ?? win)})</span></h2>
-        {/* keyed by the period: a new period's figure replaces the last one at once; only the same period's figure rolls as blobs arrive */}
-        <p className="lg-fig" title="Blobs (BlobID) settled in the period.">{m ? <RollNumber key={m.window.name} value={m.blobs} format={int} /> : <span className="wait">0,000</span>}</p>
-        {/* the settlements that paid for them, only where they are not the same count */}
-        {m && m.settlements !== m.blobs && <p className="lg-help" title="A blob settled twice counts once as a blob and twice as a settlement."><b>{int(m.settlements)}</b> settlements</p>}
+        {/* the period's count in a window of its own, the other figures in the one under it */}
+        <div className="lg-sum">
+          {/* a figure keeps the last answer while another period loads, so it names that answer's period */}
+          <h2 className="ov-eyebrow">Blobs <span className="per">({periodName(m?.window.name ?? win)})</span></h2>
+          {/* keyed by the period: a new period's figure replaces the last one at once; only the same period's figure rolls as blobs arrive */}
+          <p className="lg-fig" title="Blobs (BlobID) settled in the period.">{m ? <RollNumber key={m.window.name} value={m.blobs} format={int} /> : <span className="wait">0,000</span>}</p>
+          {/* the settlements that paid for them, only where they are not the same count */}
+          {m && m.settlements !== m.blobs && <p className="lg-help" title="A blob settled twice counts once as a blob and twice as a settlement."><b>{int(m.settlements)}</b> settlements</p>}
+        </div>
         <dl className="lg-stats">
           <div title="Summed over settlements: a blob settled twice counts twice."><dt>Blob size</dt><dd>{m ? unit(bytes(m.bytes)) : <span className="wait">000.00 GiB</span>}</dd></div>
           <div><dt>Fees paid</dt><dd>{m ? unit(tia(m.fees_settled_utia)) : <span className="wait">00,000 TIA</span>}</dd></div>
