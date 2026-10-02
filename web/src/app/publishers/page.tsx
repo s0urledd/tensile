@@ -12,6 +12,7 @@ import Picker, { type Choice } from "@/components/Picker";
 import Ident from "@/components/Ident";
 import { Who } from "@/components/Ledger";
 import { PanelFig } from "@/components/Metrics";
+import Warn from "@/components/Warn";
 import { age, monthDayTime } from "@/components/BlobsDeck";
 
 /** rows per page of the publisher list */
@@ -129,33 +130,27 @@ function Page() {
 
       <section id="list" className="listing pl-list">
         {/* The period's figures, then the escrow held now: last, as the escrow lane is last in the table, and at
-            full width right over that lane. A line under a figure only when its figure is not zero. */}
+            full width right over that lane. Each cell is a label and a figure; what qualifies a figure is on hover,
+            and a timeout is a red dot beside the fees, its words on hover. */}
         <dl className="pan pl-pan">
-          <PanelFig label="Publishers" period={per} value={ready && list ? int(list.count) : "—"}>
-            {ready && noBlobs > 0 && <dd className="pan-s" title={`${plural(pubs.length - noBlobs, "account")} posted blobs in the period; ${plural(noBlobs, "account")} only moved escrow`}><b>{int(noBlobs)}</b> with no blobs</dd>}
-          </PanelFig>
+          <PanelFig label="Publishers" period={per} value={ready && list ? int(list.count) : "—"}
+            title={ready && noBlobs > 0 ? `${plural(pubs.length - noBlobs, "account")} posted blobs in the period; ${plural(noBlobs, "account")} only moved escrow` : undefined} />
           <PanelFig label="Settlements" period={per} value={ready ? int(m.settlements) : "—"} />
-          <PanelFig label="Blob size" period={per} value={ready ? unit(bytes(m.bytes)) : "—"}>
-            {ready && (m.namespaces ?? 0) > 0 && <dd className="pan-s"><b>{int(m.namespaces)}</b> namespace{m.namespaces === 1 ? "" : "s"}</dd>}
-          </PanelFig>
-          <PanelFig label="Fees paid" period={per} value={ready ? unit(tia(m.fees_settled_utia)) : "—"}>
-            {ready && m.paid_per_mib_utia != null && <dd className="pan-s"><b>{tia(m.paid_per_mib_utia)}</b> per MiB</dd>}
-            {ready && m.timeouts > 0 && (
-              <dd className="pan-s to" title={`${plural(m.timeouts, "payment promise")} not settled in time in the period; ${tia(m.timed_out_utia)} charged all the same`}>
-                <span><b>{int(m.timeouts)}</b> timed out</span><span className="sep">·</span><span><b>{tia(m.timed_out_utia)}</b> charged</span>
-              </dd>
-            )}
-          </PanelFig>
-          <PanelFig label="Deposited" period={per} value={ready ? unit(tia(m.deposits.utia)) : "—"} title={ready ? `${plural(m.deposits.count, "deposit")} into escrow in the period` : undefined}>
-            {ready && m.withdrawals_executed.utia > 0 && <dd className="pan-s" title={`${plural(m.withdrawals_executed.count, "withdrawal")} paid out of escrow in the period`}><b>{tia(m.withdrawals_executed.utia)}</b> withdrawn</dd>}
-          </PanelFig>
-          <PanelFig label="Escrow held" period="now" value={ready ? unit(tia(held)) : "—"} title={ready && m.escrow_total_at ? `Every escrow on the chain, read at ${utcWord(m.escrow_total_at)}` : undefined}>
-            {/* the accounts the escrow is in: the ones read one by one, while they hold all of it */}
-            {ready && (m.escrow_total_utia == null || m.escrow_total_utia === m.escrow_held_utia) && <dd className="pan-s">in <b>{int(m.escrow_accounts)}</b> account{m.escrow_accounts === 1 ? "" : "s"}</dd>}
-            {ready && queued && queued.count > 0 && (
-              <dd className="pan-s" title={`${plural(queued.count, "withdrawal")} queued${queued.next_available_at ? `; the next is payable from ${utcWord(queued.next_available_at)}` : ""}`}><b>{tia(queued.utia)}</b> queued</dd>
-            )}
-          </PanelFig>
+          <PanelFig label="Blob size" period={per} value={ready ? unit(bytes(m.bytes)) : "—"}
+            title={ready && (m.namespaces ?? 0) > 0 ? `In ${plural(m.namespaces!, "namespace")}` : undefined} />
+          <PanelFig label="Fees paid" period={per}
+            value={ready ? <>{unit(tia(m.fees_settled_utia))}{m.timeouts > 0 && <Warn tone="fault" text={`${plural(m.timeouts, "payment promise")} timed out in the period; ${tia(m.timed_out_utia)} charged all the same`} />}</> : "—"}
+            title={ready && m.paid_per_mib_utia != null ? `${tia(m.paid_per_mib_utia)} per MiB` : undefined} />
+          <PanelFig label="Deposited" period={per} value={ready ? unit(tia(m.deposits.utia)) : "—"}
+            title={ready ? [`${plural(m.deposits.count, "deposit")} into escrow in the period`, m.withdrawals_executed.utia > 0 ? `${tia(m.withdrawals_executed.utia)} withdrawn (${plural(m.withdrawals_executed.count, "withdrawal")} paid out)` : ""].filter(Boolean).join("; ") : undefined} />
+          {/* on hover: the accounts the escrow is in (while the ones read one by one hold all of it), any queued
+              withdrawal, and when the chain was read */}
+          <PanelFig label="Escrow held" period="now" value={ready ? unit(tia(held)) : "—"}
+            title={ready ? [
+              m.escrow_total_utia == null || m.escrow_total_utia === m.escrow_held_utia ? `In ${plural(m.escrow_accounts, "account")}` : "",
+              queued && queued.count > 0 ? `${tia(queued.utia)} queued to withdraw${queued.next_available_at ? `, the next payable from ${utcWord(queued.next_available_at)}` : ""}` : "",
+              m.escrow_total_at ? `read at ${utcWord(m.escrow_total_at)}` : "",
+            ].filter(Boolean).join("; ") : undefined} />
         </dl>
 
         <div className="lg-tw">
