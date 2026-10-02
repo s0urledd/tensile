@@ -68,6 +68,16 @@ type Row struct {
 	RowsReturned       int
 	CommitmentVerified bool
 	AssignedRowCount   int
+	// RowsSubsetOfAssignment: a short answer (PARTIAL) whose rows are all
+	// the validator's own (probe.DownloadResult.RowsSubsetOfAssignment). At
+	// a full reading it tells a short shard of its own (not served) from
+	// another shard's rows (probe.FullForeign, counted neither way).
+	RowsSubsetOfAssignment bool
+	// NextAttemptOwed: the row says its validator is owed another attempt
+	// at its full reading (probe.Measurement.NextAttemptDue). Such a row is
+	// not the validator's last answer; until the attempt is on record the
+	// validator counts neither way.
+	NextAttemptOwed bool
 }
 
 // EffectiveClass is the classification every rule below is built from: the
@@ -92,20 +102,26 @@ func (r Row) EffectiveClass() probe.Classification {
 // endorser for its own rows) counts on the validator's own answers, whatever
 // the blob came to:
 //
-//   - HEALTHY (served): this answer's rows came back and verified, no
-//     fewer than the validator holds (probe.FullServed);
+//   - HEALTHY (served): this answer handed over the validator's own rows,
+//     verified (probe.FullServed: exactly its assignment, or exactly
+//     another settled promise's over the same commitment);
 //   - NOT_PROBED, PROBE_ERROR: this observer's gap (probe.FullGap); never
 //     counted;
-//   - NotCounted: an answer that did not serve, when another answer of the
-//     same validator at the same reading served, was this observer's gap,
-//     or came later (the last answer decides, and a gap among them leaves
-//     the validator unjudged); and every answer of a reading in which not a
-//     single request reached a server;
+//   - NotCounted: genuine rows that are not the validator's own and that no
+//     settled promise explains (probe.FullForeign: this observer's gap too);
+//     an answer that did not serve, when another answer of the same
+//     validator at the same reading served, was this observer's gap, or
+//     came later (the last answer decides, and a gap among them leaves the
+//     validator unjudged); an answer after which the validator was owed
+//     another attempt that is not on record (NextAttemptOwed: an attempt
+//     this observer owed and never recorded is never the validator's
+//     failure); and every answer of a reading in which not a single request
+//     reached a server;
 //   - FAULT (not served): the validator's last answer, when none served and
 //     none was this observer's gap: no such shard, rows that do not verify
-//     or too few of them, a wrong certificate, no registered host, an
-//     endpoint that could not be reached, a timeout, a rate limit or a
-//     server error, every time it was asked.
+//     or fewer of its own than it holds, a wrong certificate, no registered
+//     host, an endpoint that could not be reached, a timeout, a rate limit
+//     or a server error, every time it was asked.
 //
 // Any other row counts as its blob's reading leaves it:
 //
@@ -132,11 +148,15 @@ func (r Row) CountedClass(rd Reading) probe.Classification {
 		switch {
 		case probe.FullServed(r.CommitmentVerified, r.Outcome, r.Classification):
 			c = probe.ClassHealthy
-		case probe.FullGap(r.Classification):
+		case r.Classification == probe.ClassNotProbed || r.Classification == probe.ClassProbeError:
 			return r.Classification
+		case probe.FullForeign(r.CommitmentVerified, r.Outcome, r.Classification, r.RowsSubsetOfAssignment):
+			return NotCounted
 		case rd.settledElsewhere(r):
 			return NotCounted
 		case !rd.Ran:
+			return NotCounted
+		case r.NextAttemptOwed:
 			return NotCounted
 		default:
 			c = probe.ClassFault
@@ -198,6 +218,7 @@ func FromMeasurement(m probe.Measurement) Row {
 		Phase: m.Phase, Classification: m.Classification, Outcome: m.Outcome, TLSOK: m.TLS.OK, TCPOK: m.TCP.OK,
 		RowIndices: m.Download.RowIndices, RowsReturned: m.Download.RowsReturned,
 		CommitmentVerified: m.Download.CommitmentVerified, AssignedRowCount: m.AssignedRowCount,
+		RowsSubsetOfAssignment: m.Download.RowsSubsetOfAssignment, NextAttemptOwed: m.NextAttemptDue != nil,
 	}
 }
 

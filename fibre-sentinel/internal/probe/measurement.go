@@ -79,7 +79,7 @@ type Measurement struct {
 	AssignedRowCount   int  `json:"assigned_row_count"`
 
 	// scheduling
-	ScheduleLabel string    `json:"schedule_label"` // "full" for the one reading of a blob that asks every endorser; "end" before it; earlier rows w1..w4, grace, post
+	ScheduleLabel string    `json:"schedule_label"` // "full" for the one reading of a blob that asks every endorser ("enough" for one that stops at enough rows); "end" before it; earlier rows w1..w4, grace, post
 	ScheduledAt   time.Time `json:"scheduled_at"`
 	StartedAt     time.Time `json:"started_at"`
 	FinishedAt    time.Time `json:"finished_at"`
@@ -89,6 +89,23 @@ type Measurement struct {
 	// did not serve (retry.go). Every attempt is its own row, at the
 	// reading's point. Additive, omitempty: 0 on every other row.
 	Attempt int `json:"attempt,omitempty"`
+	// NextAttemptDue, on a row of a full reading that did not serve, is when
+	// its validator is to be asked again (retry.go): set only while an
+	// attempt is left and it can start before must_serve_until less the
+	// request start margin. A row that carries it is not the validator's
+	// last answer: until the attempt is on record (made, or recorded as not
+	// made) the validator is judged on neither (observer/verdict), so an
+	// attempt this observer owed and never recorded is never read as the
+	// validator's failure. Additive, omitempty.
+	NextAttemptDue *time.Time `json:"next_attempt_due,omitempty"`
+	// SharedFrom names, by its dedupe key, the request whose answer this
+	// row of a later attempt repeats: the validator's endpoint failed before
+	// any blob was asked for (no such host, a connect refused, timed out or
+	// unroutable, a failed handshake or certificate) while this attempt was
+	// due and waiting for the validator's one attempt in flight, so the
+	// endpoint's answer is this attempt's too (retry.go). Empty on a row of
+	// a request of its own. Additive, omitempty.
+	SharedFrom string `json:"shared_from,omitempty"`
 
 	// per-layer results (each timed and judged on its own)
 	DNS      StepResult     `json:"dns"`
@@ -143,9 +160,23 @@ type Measurement struct {
 	// receive bound, its re-dial). Additive, omitempty.
 	ClientRules bool `json:"client_rules,omitempty"`
 
+	// ObserverLoad is this observer's own load when the request was let
+	// go, so a timeout can be read beside what the observer itself had in
+	// flight. Additive, omitempty.
+	ObserverLoad *LoadInfo `json:"observer_load,omitempty"`
+
 	// novel is how many of the returned rows the blob's reading had not
 	// already seen. Not recorded.
 	novel int
+}
+
+// LoadInfo is this observer's load at the moment a request was let go
+// (Prober.admitBy): the requests and shard bytes in flight then, this one
+// included, and how long the request waited for that room.
+type LoadInfo struct {
+	RequestsInFlight   int   `json:"requests_in_flight"`
+	ShardBytesInFlight int64 `json:"shard_bytes_in_flight"`
+	AdmitWaitMS        int64 `json:"admit_wait_ms"`
 }
 
 // ReadInfo places one validator's answer in its blob's reading. A row of a
@@ -363,13 +394,13 @@ func dedupeKey(vantage, promiseHash, validatorAddr string, scheduledAt time.Time
 }
 
 // AttemptMark is what the record says of a validator in a full reading
-// whose last answer did not serve, while it can still be asked again: the
-// last attempt, when it ended, and what a later attempt needs to be made
-// and recorded after a restart (Prober.recoverRetries).
+// whose last answer did not serve, while it is owed another attempt: the
+// last attempt, when the next is due, and what that attempt needs to be
+// made and recorded after a restart (Prober.recoverRetries).
 type AttemptMark struct {
 	Validator          string
 	Attempt            int
-	FinishedAt         time.Time
+	Due                time.Time
 	ScheduledAt        time.Time
 	Order              int
 	BlobResult         string
@@ -383,11 +414,11 @@ type AttemptMark struct {
 }
 
 // retryOpen reports whether a row of a full reading leaves its validator
-// to be asked again: it did not serve, it is not a request that could not
-// be made in time, and attempts are left.
+// owed another attempt: the row says when it is due (NextAttemptDue), which
+// the prober sets only on an answer that did not serve, is not a request
+// that could not be made, and has an attempt left that can start in time.
 func retryOpen(m Measurement) bool {
-	return m.ScheduleLabel == FullReadLabel && m.Attempt < FullReadRetries && m.Classification != ClassNotProbed &&
-		!FullServed(m.Download.CommitmentVerified, m.Outcome, m.Classification)
+	return m.ScheduleLabel == FullReadLabel && m.NextAttemptDue != nil
 }
 
 // MeasurementStore is an append-only measurements.jsonl plus an in-memory set
@@ -502,7 +533,7 @@ func (s *MeasurementStore) remember(m Measurement) {
 		open = map[string]AttemptMark{}
 		s.open[m.PromiseHash] = open
 	}
-	mark := AttemptMark{Validator: m.ValidatorAddress, Attempt: m.Attempt, FinishedAt: m.FinishedAt, ScheduledAt: m.ScheduledAt,
+	mark := AttemptMark{Validator: m.ValidatorAddress, Attempt: m.Attempt, Due: *m.NextAttemptDue, ScheduledAt: m.ScheduledAt,
 		Host: m.ValidatorHost, HostAtSettlement: m.HostAtSettlement, Assigned: m.Assigned, Attested: m.Attested,
 		AttestationUnknown: m.AttestationUnknown, RowCount: m.AssignedRowCount}
 	if m.Read != nil {
@@ -512,7 +543,8 @@ func (s *MeasurementStore) remember(m Measurement) {
 }
 
 // PendingAttempts is, for a full reading of promiseHash, every validator
-// whose last answer on record did not serve while attempts are left.
+// whose last row on record says it is owed another attempt
+// (Measurement.NextAttemptDue).
 func (s *MeasurementStore) PendingAttempts(promiseHash string) []AttemptMark {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -567,6 +599,20 @@ func (s *MeasurementStore) AppendDeferred(m Measurement) error {
 // fsync, skipping rows already on record, so a reading lands whole or, torn
 // by a crash, is repaired to the rows before the tear.
 func (s *MeasurementStore) AppendReading(ms []Measurement) error {
+	return s.appendRows(ms, true)
+}
+
+// AppendDeferredRows is AppendReading without the fsync: one write, made
+// durable by the next Sync. The later attempts of full readings are written
+// this way and synced about once a second (Prober.runRetries), so a burst of
+// them costs one fsync, not one each, on a disk the host shares. A row lost
+// to a crash before its Sync is owed again after the restart, from what the
+// file holds.
+func (s *MeasurementStore) AppendDeferredRows(ms []Measurement) error {
+	return s.appendRows(ms, false)
+}
+
+func (s *MeasurementStore) appendRows(ms []Measurement, sync bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var buf []byte
@@ -588,10 +634,13 @@ func (s *MeasurementStore) AppendReading(ms []Measurement) error {
 	if _, err := s.f.Write(buf); err != nil {
 		return fmt.Errorf("write measurements: %w", err)
 	}
-	if err := s.f.Sync(); err != nil {
-		return fmt.Errorf("fsync measurements: %w", err)
+	s.dirty = true
+	if sync {
+		if err := s.f.Sync(); err != nil {
+			return fmt.Errorf("fsync measurements: %w", err)
+		}
+		s.dirty = false
 	}
-	s.dirty = false
 	for _, m := range kept {
 		s.remember(m)
 	}

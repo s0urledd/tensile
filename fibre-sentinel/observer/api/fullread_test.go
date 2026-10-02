@@ -19,6 +19,9 @@ type fullVal struct {
 	addr  string
 	rows  int
 	tries []wire
+	// owedLast: its last answer on record still owed it another attempt,
+	// which is not on record (the prober stopped and never wrote it).
+	owedLast bool
 }
 
 // insertFullReading writes one publication read once, as a full reading,
@@ -60,7 +63,11 @@ func insertFullReading(t *testing.T, st *store.Store, hash string, created, msu 
 	for i, v := range vals {
 		for k, w := range v.tries {
 			start := at.Add(time.Duration(i)*time.Second + time.Duration(k)*90*time.Second)
-			class, reason := probe.Classify(probe.Evidence{Assigned: true, Attested: true, Phase: probe.PhaseInWindow, Outcome: w.outcome})
+			// WRONG_ROWS here is genuine rows of the blob that are not the
+			// validator's own: verified, and no settled promise's.
+			verified := w.outcome == probe.OutcomeServedOK || w.outcome == probe.OutcomeWrongRows
+			class, reason := probe.Classify(probe.Evidence{Assigned: true, Attested: true, Phase: probe.PhaseInWindow, Outcome: w.outcome,
+				CommitmentVerified: verified})
 			m := probe.Measurement{
 				SchemaVersion: probe.AttestationSchemaVersion, Vantage: "test",
 				PromiseHash: hash, Commitment: "cc" + hash, MustServeUntil: msu, ValidatorSetHeight: 299,
@@ -75,6 +82,18 @@ func insertFullReading(t *testing.T, st *store.Store, hash string, created, msu 
 				m.Download.OK, m.Download.RowsReturned, m.Download.RowsExpected = true, v.rows, v.rows
 				m.Download.CommitmentVerified, m.Download.AssignmentVerified = true, true
 				m.Download.RowIndices = held[v.addr]
+			}
+			if w.outcome == probe.OutcomeWrongRows {
+				m.Download.RowsReturned, m.Download.RowsExpected, m.Download.CommitmentVerified = v.rows, v.rows, true
+				for r := 0; r < v.rows; r++ {
+					m.Download.RowIndices = append(m.Download.RowIndices, uint32(1000+r))
+				}
+			}
+			// As the prober writes it: every answer that did not serve and
+			// was made, but the last, says when the next attempt is due.
+			if (k < len(v.tries)-1 || v.owedLast) && w.outcome != probe.OutcomeMissed && !verified {
+				due := m.FinishedAt.Add(90 * time.Second)
+				m.NextAttemptDue = &due
 			}
 			raw, err := json.Marshal(m)
 			if err != nil {
@@ -110,6 +129,8 @@ func TestTheAPIJudgesAFullReadingOnEachEndorsersAnswers(t *testing.T) {
 		{addr: "never", rows: 2, tries: []wire{gone, refused, err500}},
 		{addr: "toolate", rows: 2, tries: []wire{gone, missed}},
 		{addr: "ourside", rows: 2, tries: []wire{err500, local, err500}},
+		{addr: "foreign", rows: 2, tries: []wire{gone, {probe.OutcomeWrongRows, true}}},
+		{addr: "owedgone", rows: 2, tries: []wire{gone}, owedLast: true},
 	})
 	ts := httptestServer(t, st)
 
@@ -150,7 +171,7 @@ func TestTheAPIJudgesAFullReadingOnEachEndorsersAnswers(t *testing.T) {
 	if blob.Blob.Reconstructable.Status != "yes" {
 		t.Errorf("blob status %q, want yes", blob.Blob.Reconstructable.Status)
 	}
-	want := map[string]string{"whole": "served", "later": "served", "never": "not_served", "toolate": "", "ourside": ""}
+	want := map[string]string{"whole": "served", "later": "served", "never": "not_served", "toolate": "", "ourside": "", "foreign": "", "owedgone": ""}
 	for _, a := range blob.Assignments {
 		if a.Service != want[a.ValidatorAddress] {
 			t.Errorf("assignment %s: service %q, want %q", a.ValidatorAddress, a.Service, want[a.ValidatorAddress])
@@ -166,6 +187,7 @@ func TestTheAPIJudgesAFullReadingOnEachEndorsersAnswers(t *testing.T) {
 	}
 	for v, w := range map[string][]string{
 		"whole": {"served"}, "later": {"", "served"}, "never": {"", "", "not_served"}, "toolate": {"", ""}, "ourside": {"", "", ""},
+		"foreign": {"", ""}, "owedgone": {""},
 	} {
 		got := readings[v]
 		// newest first on the page; put them back in attempt order
@@ -203,6 +225,7 @@ func TestTheAPIJudgesAFullReadingOnEachEndorsersAnswers(t *testing.T) {
 	wantObl := map[string]obligationsJSON{
 		"whole": {Total: 1, Served: 1}, "later": {Total: 1, Served: 1}, "never": {Total: 1, Broken: 1},
 		"toolate": {Total: 1, NotCounted: 1}, "ourside": {Total: 1, NotCounted: 1},
+		"foreign": {Total: 1, NotCounted: 1}, "owedgone": {Total: 1, NotCounted: 1},
 	}
 	for _, v := range vals.Validators {
 		g := v.Obligations

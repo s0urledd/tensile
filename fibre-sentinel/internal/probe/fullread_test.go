@@ -163,11 +163,11 @@ func TestAValidatorThatDidNotServeIsAskedAgain(t *testing.T) {
 	}
 }
 
-// A later attempt that cannot start before must_serve_until less the
-// margin is not made: the validator's row for it says so (NOT_PROBED,
-// this observer's gap), written before the window closes, and it is not
-// asked again.
-func TestARetryThatCannotStartInTimeIsNotProbed(t *testing.T) {
+// A later attempt that could not start before must_serve_until less the
+// margin is not owed: the rule asks again only while the retry can start
+// in time. The answer before it carries no next attempt, no job is queued
+// and no row is written for it, so that answer is the validator's last.
+func TestALaterAttemptThatCannotStartInTimeIsNotOwed(t *testing.T) {
 	f := newReadFixture(t, 4, 16, []fakeVal{
 		{rows: rowsOf(0, 2), serve: fakeServes},
 		{rows: rowsOf(1, 2), serve: fakeNotFound},
@@ -177,19 +177,63 @@ func TestARetryThatCannotStartInTimeIsNotProbed(t *testing.T) {
 	p.cfg.RetrySpacing = 4 * time.Second
 	ms := readFull(t, p, f.pub)
 	rows := attemptsOf(ms)[f.targets[1].AddressHex]
-	if len(rows) != 2 {
-		t.Fatalf("%d rows for the validator that did not serve, want its answer and the retry not made", len(rows))
+	if len(rows) != 1 {
+		t.Fatalf("%d rows for the validator that did not serve, want its one answer: no attempt was owed", len(rows))
 	}
-	m := rows[1]
-	if m.Attempt != 1 || m.Classification != ClassNotProbed || m.Outcome != OutcomeMissed || m.Phase != PhaseInWindow ||
-		!strings.Contains(m.ClassificationReason, "retry could not start") {
-		t.Fatalf("retry row: attempt %d %s / %s %s %q", m.Attempt, m.Outcome, m.Classification, m.Phase, m.ClassificationReason)
-	}
-	if !m.StartedAt.Before(f.pub.MustServeUntil) {
-		t.Fatalf("the retry not made was written %s after must_serve_until", m.StartedAt.Sub(f.pub.MustServeUntil))
+	if m := rows[0]; m.NextAttemptDue != nil || m.Outcome != OutcomeNotFound {
+		t.Fatalf("its answer: %s, next attempt due %v, want none", m.Outcome, m.NextAttemptDue)
 	}
 	if n := f.calls[1].Load(); n != 1 {
 		t.Fatalf("the validator was asked %d times, want once", n)
+	}
+	if s := p.store.PendingAttempts(f.pub.PromiseHash); len(s) != 0 {
+		t.Fatalf("attempts owed: %+v", s)
+	}
+}
+
+// An attempt that was owed and could not start in time is not made, and
+// its row says so (NOT_PROBED, this observer's gap), written before the
+// window closes: here two blobs owe the same validator an attempt, one in
+// flight to it at a time, and the first runs out its whole time past the
+// second's cutoff.
+func TestAnOwedAttemptThatCannotStartInTimeIsNotProbed(t *testing.T) {
+	serve := func(ctx context.Context, call int, honest *fibretypes.BlobShard) (*fibretypes.DownloadShardResponse, error) {
+		if call == 3 { // the first later attempt: it hangs
+			return fakeHangs(ctx, call, honest)
+		}
+		return fakeNotFound(ctx, call, honest)
+	}
+	f := newReadFixture(t, 4, 8, []fakeVal{{rows: []int{0, 1, 2, 3}, serve: serve}})
+	g := *f
+	g.pub.PromiseHash = strings.Repeat("e4", 32)
+	p := readProber(t, f, &g)
+	p.cfg.Timeouts.Download = 5 * time.Second
+	p.cfg.RetrySpacing = 300 * time.Millisecond
+	p.cfg.RequestStartMargin = time.Until(f.pub.MustServeUntil) - 2500*time.Millisecond
+	ms := readFull(t, p, f.pub, g.pub)
+	var made, notMade int
+	for _, m := range ms {
+		if m.Attempt == 0 {
+			if m.Outcome != OutcomeNotFound || m.NextAttemptDue == nil {
+				t.Fatalf("the reading's own answer: %s, next due %v", m.Outcome, m.NextAttemptDue)
+			}
+			continue
+		}
+		switch {
+		case m.Attempt == 1 && m.Outcome == OutcomeRPCTimeout && m.NextAttemptDue == nil:
+			made++
+		case m.Attempt == 1 && m.Classification == ClassNotProbed &&
+			strings.Contains(m.ClassificationReason, "earlier attempt was still under way") && m.StartedAt.Before(f.pub.MustServeUntil):
+			notMade++
+		default:
+			t.Fatalf("attempt %d: %s / %s %q", m.Attempt, m.Outcome, m.Classification, m.ClassificationReason)
+		}
+	}
+	if made != 1 || notMade != 1 {
+		t.Fatalf("%d attempts made and %d not made, want one of each", made, notMade)
+	}
+	if n := f.calls[0].Load(); n != 3 {
+		t.Fatalf("the validator was asked %d times, want 3", n)
 	}
 }
 
@@ -338,6 +382,7 @@ func TestARestartMakesTheAttemptsItOwes(t *testing.T) {
 			})
 			before := readProber(t, f)
 			before.cfg.AskEveryEndorser = true
+			before.cfg.RetrySpacing = 50 * time.Millisecond
 			// The dispatcher alone: the reading is made, its attempt is
 			// queued and never run, as when the process stops.
 			if ms := readNow(t, before, f.pub); len(ms) != 2 {
@@ -362,7 +407,7 @@ func TestARestartMakesTheAttemptsItOwes(t *testing.T) {
 				p.cfg.RequestStartMargin = time.Until(f.pub.MustServeUntil) + time.Minute
 			}
 			owed := st.PendingAttempts(f.pub.PromiseHash)
-			if len(owed) != 1 || owed[0].Validator != f.targets[1].AddressHex || owed[0].Attempt != 0 {
+			if len(owed) != 1 || owed[0].Validator != f.targets[1].AddressHex || owed[0].Attempt != 0 || owed[0].Due.IsZero() {
 				t.Fatalf("owed after the restart: %+v", owed)
 			}
 			due, missed, finished := p.planReads([]scan.Publication{f.pub}, time.Now())
@@ -406,10 +451,11 @@ func TestARestartMakesTheAttemptsItOwes(t *testing.T) {
 	}
 }
 
-// The store keeps, per full reading, the validators whose last answer did
-// not serve while attempts are left, from the rows as they are appended and
-// again from the file on open; a served answer, an attempt not made, the
-// last attempt and every row of another label leave nothing owed.
+// The store keeps, per full reading, the validators whose last row says
+// they are owed another attempt (NextAttemptDue), from the rows as they are
+// appended and again from the file on open; a served answer, an attempt not
+// made, the last attempt, an answer whose next attempt could not have
+// started in time, and every row of another label leave nothing owed.
 func TestTheStoreKnowsTheAttemptsStillOwed(t *testing.T) {
 	dir := t.TempDir()
 	st, err := OpenMeasurementStore(dir)
@@ -417,13 +463,19 @@ func TestTheStoreKnowsTheAttemptsStillOwed(t *testing.T) {
 		t.Fatal(err)
 	}
 	at := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	cutoff := at.Add(9 * time.Minute)
+	p := testProber(t)
 	row := func(v string, label string, attempt int, o Outcome, c Classification, verified bool) Measurement {
 		m := Measurement{Vantage: "v1", PromiseHash: "p1", ValidatorAddress: v, ScheduleLabel: label, ScheduledAt: at,
 			StartedAt: at.Add(time.Duration(attempt) * time.Minute), FinishedAt: at.Add(time.Duration(attempt)*time.Minute + time.Second),
 			Attempt: attempt, Outcome: o, Classification: c, Phase: PhaseInWindow, Read: &ReadInfo{Order: 3, BlobResult: ReadAvailable}}
 		m.Download.CommitmentVerified = verified
+		m.NextAttemptDue = p.nextAttemptDue(m, cutoff)
 		return m
 	}
+	late := row("late", FullReadLabel, 0, OutcomeNotFound, ClassFault, false)
+	late.FinishedAt = cutoff.Add(-time.Second) // 90 s on is past the cutoff
+	late.NextAttemptDue = p.nextAttemptDue(late, cutoff)
 	ms := []Measurement{
 		row("open", FullReadLabel, 0, OutcomeNotFound, ClassFault, false),
 		row("served", FullReadLabel, 0, OutcomeNotFound, ClassFault, false),
@@ -436,6 +488,18 @@ func TestTheStoreKnowsTheAttemptsStillOwed(t *testing.T) {
 		row("last", FullReadLabel, 2, OutcomeNotFound, ClassFault, false),
 		row("old", EndReadLabel, 0, OutcomeNotFound, ClassFault, false),
 		row("gap", FullReadLabel, 0, OutcomeProbeError, ClassProbeError, false),
+		late,
+	}
+	for _, m := range ms {
+		owed := m.NextAttemptDue != nil
+		want := m.ScheduleLabel == FullReadLabel && m.Attempt < FullReadRetries && m.Classification != ClassNotProbed &&
+			!m.fullServed() && m.ValidatorAddress != "late"
+		if owed != want {
+			t.Fatalf("%s attempt %d (%s): owed %v, want %v", m.ValidatorAddress, m.Attempt, m.Outcome, owed, want)
+		}
+		if owed && !m.NextAttemptDue.Equal(m.FinishedAt.Add(p.cfg.RetrySpacing)) {
+			t.Fatalf("%s: due %s, want %s after its answer ended", m.ValidatorAddress, m.NextAttemptDue, p.cfg.RetrySpacing)
+		}
 	}
 	if err := st.AppendReading(ms); err != nil {
 		t.Fatal(err)
@@ -444,7 +508,7 @@ func TestTheStoreKnowsTheAttemptsStillOwed(t *testing.T) {
 	got := func(st *MeasurementStore) string {
 		var vs []string
 		for _, m := range st.PendingAttempts("p1") {
-			if m.Order != 3 || m.BlobResult != ReadAvailable || !m.ScheduledAt.Equal(at) {
+			if m.Order != 3 || m.BlobResult != ReadAvailable || !m.ScheduledAt.Equal(at) || !m.Due.Equal(at.Add(time.Second+p.cfg.RetrySpacing)) {
 				t.Fatalf("mark %+v", m)
 			}
 			vs = append(vs, m.Validator)
@@ -483,6 +547,7 @@ func TestTheFullReadingWords(t *testing.T) {
 		{FullReadLabel, FullReadSince.Add(-time.Hour), true},
 		{EndReadLabel, FullReadSince, true},
 		{EndReadLabel, FullReadSince.Add(-time.Nanosecond), false},
+		{EnoughReadLabel, FullReadSince.Add(time.Hour), false},
 		{"w4", FullReadSince.Add(time.Hour), false},
 		{"grace", FullReadSince.Add(time.Hour), false},
 	} {
@@ -490,23 +555,39 @@ func TestTheFullReadingWords(t *testing.T) {
 			t.Errorf("FullReading(%q, %s) = %v", c.label, c.at, got)
 		}
 	}
+	for label, end := range map[string]bool{FullReadLabel: true, EndReadLabel: true, EnoughReadLabel: true, "w4": false, "post": false} {
+		if EndOfWindowLabel(label) != end {
+			t.Errorf("EndOfWindowLabel(%q) = %v", label, !end)
+		}
+	}
+	// Served is the validator's own rows, or another settled promise's
+	// exactly; rows of the blob that are not its own and that no settled
+	// promise explains are this observer's gap; a short shard of its own
+	// rows is neither (it is not served).
 	for _, c := range []struct {
-		verified bool
-		o        Outcome
-		cls      Classification
-		served   bool
+		verified    bool
+		o           Outcome
+		cls         Classification
+		subset      bool
+		served, gap bool
 	}{
-		{true, OutcomeServedOK, ClassHealthy, true},
-		{true, OutcomeWrongRows, ClassUnmatchedGenuine, true},
-		{true, OutcomeWrongRows, ClassShadowedShard, true},
-		{true, OutcomePartial, ClassShadowedShard, true},
-		{true, OutcomePartial, ClassUnmatchedGenuine, false},
-		{true, OutcomePartial, ClassProbeError, false},
-		{false, OutcomeInvalidRows, ClassFault, false},
-		{false, OutcomeNotFound, ClassFault, false},
+		{true, OutcomeServedOK, ClassHealthy, false, true, false},
+		{true, OutcomeWrongRows, ClassShadowedShard, false, true, false},
+		{true, OutcomePartial, ClassShadowedShard, false, true, false},
+		{true, OutcomeWrongRows, ClassUnmatchedGenuine, false, false, true},
+		{true, OutcomePartial, ClassUnmatchedGenuine, false, false, true},
+		{true, OutcomePartial, ClassUnmatchedGenuine, true, false, false},
+		{true, OutcomePartial, ClassProbeError, true, false, true},
+		{false, OutcomeInvalidRows, ClassFault, false, false, false},
+		{false, OutcomeNotFound, ClassFault, false, false, false},
+		{false, OutcomeTCPTimeout, ClassProbeError, false, false, true},
+		{false, OutcomeMissed, ClassNotProbed, false, false, true},
 	} {
 		if got := FullServed(c.verified, c.o, c.cls); got != c.served {
 			t.Errorf("FullServed(%v, %s, %s) = %v", c.verified, c.o, c.cls, got)
+		}
+		if got := FullGap(c.verified, c.o, c.cls, c.subset); got != c.gap {
+			t.Errorf("FullGap(%v, %s, %s, subset %v) = %v", c.verified, c.o, c.cls, c.subset, got)
 		}
 	}
 	m := Measurement{Vantage: "v", PromiseHash: "p", ValidatorAddress: "a", ScheduledAt: FullReadSince}

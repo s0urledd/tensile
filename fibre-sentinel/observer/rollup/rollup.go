@@ -202,11 +202,14 @@ const DeadlineDerivedSQL = `('HEALTHY','FAULT')`
 // verdict.Row.CountedClass, which says it in full.
 //
 // A row of a full reading (FullReadingSQL) counts on the validator's own
-// answers at that reading: HEALTHY (served) when this answer's rows came
-// back verified and whole (FullServedSQL); NOT_PROBED and PROBE_ERROR, this
-// observer's gap; 'NOT_COUNTED' when another of its answers there served,
-// was this observer's gap or started later, or when not a single request of
-// the reading reached a server; FAULT (not served) otherwise.
+// answers at that reading: HEALTHY (served) when this answer handed over
+// the validator's own rows, verified (FullServedSQL); NOT_PROBED and
+// PROBE_ERROR, this observer's gap; 'NOT_COUNTED' for rows that are not its
+// own and that no settled promise explains (FullForeignSQL), when another of
+// its answers there served, was this observer's gap or started later, when
+// not a single request of the reading reached a server, or when the row
+// still owed its validator an attempt (next_attempt_due) that is not on
+// record; FAULT (not served) otherwise.
 //
 // Any other row counts as its blob's reading leaves it: HEALTHY (served)
 // when its rows came back verified; FAULT (not served) when they did not
@@ -236,10 +239,12 @@ func CountedClass(alias string) string {
 	nc := `'` + string(verdict.NotCounted) + `'`
 	full := `(CASE WHEN ` + FullServedSQL(alias) + ` THEN ` + held("HEALTHY") +
 		` WHEN ` + p + `classification IN ('NOT_PROBED','PROBE_ERROR') THEN ` + p + `classification` +
+		` WHEN ` + FullForeignSQL(alias) + ` THEN ` + nc +
 		` WHEN EXISTS (SELECT 1 FROM probes qa WHERE qa.promise_hash = ` + h + ` AND qa.scheduled_at = ` + t + `
 				AND qa.validator_address = ` + p + `validator_address
-				AND (` + FullServedSQL("qa") + ` OR qa.classification IN ('NOT_PROBED','PROBE_ERROR') OR qa.started_at > ` + p + `started_at)) THEN ` + nc +
+				AND (` + FullServedSQL("qa") + ` OR ` + FullGapSQL("qa") + ` OR qa.started_at > ` + p + `started_at)) THEN ` + nc +
 		` WHEN NOT ` + ranSQL(h, t) + ` THEN ` + nc +
+		` WHEN ` + p + `next_attempt_due IS NOT NULL THEN ` + nc +
 		` ELSE ` + held("FAULT") + ` END)`
 	return `(CASE WHEN ` + p + `phase <> 'in_window' OR COALESCE(` + p + `assigned, 0) <> 1 OR COALESCE(` + p + `attested, 0) <> 1 THEN ` + p + `classification` +
 		` WHEN ` + FullReadingSQL(alias) + ` THEN ` + full +
@@ -252,7 +257,7 @@ func CountedClass(alias string) string {
 
 // EndLabelsSQL is probe.EndOfWindowLabel as a SQL IN list: the labels of
 // the one reading of a blob near the end of its window.
-const EndLabelsSQL = `('` + probe.EndReadLabel + `','` + probe.FullReadLabel + `')`
+const EndLabelsSQL = `('` + probe.EndReadLabel + `','` + probe.FullReadLabel + `','` + probe.EnoughReadLabel + `')`
 
 // FullReadingSQL is probe.FullReading over the row under alias: a full
 // reading's label, or the end reading's from probe.FullReadSince on.
@@ -263,11 +268,27 @@ func FullReadingSQL(alias string) string {
 }
 
 // FullServedSQL is probe.FullServed over the row under alias: rows that
-// verified, and no fewer than assigned unless another settled promise's
-// (SHADOWED_SHARD).
+// verified and are exactly the validator's own assignment (SERVED_OK), or
+// exactly another settled promise's (SHADOWED_SHARD).
 func FullServedSQL(alias string) string {
 	p := alias + "."
-	return `(COALESCE(` + p + `commitment_verified, 0) = 1 AND (` + p + `outcome <> 'PARTIAL' OR ` + p + `classification = 'SHADOWED_SHARD'))`
+	return `(COALESCE(` + p + `commitment_verified, 0) = 1 AND (` + p + `outcome = 'SERVED_OK' OR ` + p + `classification = 'SHADOWED_SHARD'))`
+}
+
+// FullForeignSQL is probe.FullForeign over the row under alias: verified
+// rows that are not the validator's own and that no settled promise
+// explains.
+func FullForeignSQL(alias string) string {
+	p := alias + "."
+	return `(COALESCE(` + p + `commitment_verified, 0) = 1 AND ` + p + `classification <> 'SHADOWED_SHARD' AND (` + p +
+		`outcome = 'WRONG_ROWS' OR (` + p + `outcome = 'PARTIAL' AND COALESCE(` + p + `rows_subset_of_assignment, 0) = 0)))`
+}
+
+// FullGapSQL is probe.FullGap over the row under alias: this observer's
+// gap at a full reading.
+func FullGapSQL(alias string) string {
+	p := alias + "."
+	return `(` + p + `classification IN ('NOT_PROBED','PROBE_ERROR') OR ` + FullForeignSQL(alias) + `)`
 }
 
 // NotServedSQL is true of a row that counts as not served (CountedClass
@@ -310,11 +331,11 @@ func ranSQL(h, t string) string {
 	return `EXISTS (SELECT 1 FROM probes q WHERE q.promise_hash = ` + h + ` AND q.scheduled_at = ` + t + ` AND ` + Reached("q") + `)`
 }
 
-// missedSQL is true when the prober missed a validator of the reading of
+// missedSQL is true when the prober missed a request of the reading of
 // promise h at t: a NOT_PROBED row of an assigned validator in the window,
-// and no other row of that validator at the reading (a later attempt of a
-// full reading that could not be made leaves its validator asked all the
-// same). verdict.ReadingOf's Missed is the Go twin.
+// and, at a full reading (FullReadingSQL), no other row of that validator
+// at the reading (a later attempt that could not be made leaves its
+// validator asked all the same). verdict.ReadingOf's Missed is the Go twin.
 //
 // It asks the reading's own rows, sought by probes_promise (promise_hash,
 // scheduled_at), so it costs what one reading's rows cost. It used to be a
@@ -333,8 +354,8 @@ func ranSQL(h, t string) string {
 func missedSQL(h, t string) string {
 	return `EXISTS (SELECT 1 FROM probes qm WHERE qm.promise_hash = ` + h + ` AND qm.scheduled_at = ` + t + `
 			AND +qm.assigned = 1 AND +qm.phase = 'in_window' AND +qm.classification = 'NOT_PROBED'
-			AND NOT EXISTS (SELECT 1 FROM probes qo WHERE qo.promise_hash = qm.promise_hash AND qo.scheduled_at = qm.scheduled_at
-				AND +qo.validator_address = qm.validator_address AND +qo.classification <> 'NOT_PROBED'))`
+			AND (NOT ` + FullReadingSQL("qm") + ` OR NOT EXISTS (SELECT 1 FROM probes qo WHERE qo.promise_hash = qm.promise_hash
+				AND qo.scheduled_at = qm.scheduled_at AND +qo.validator_address = qm.validator_address AND +qo.classification <> 'NOT_PROBED')))`
 }
 
 // Reached is verdict.Reached (probe.Reached) over a probes row under the

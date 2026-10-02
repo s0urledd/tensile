@@ -20,8 +20,16 @@
 // already held, and one whose answer did not serve is asked again, up to
 // FullReadRetries times, Config.RetrySpacing after its last answer, while
 // the request can start Config.RequestStartMargin before must_serve_until
-// (retry.go). The later attempts hold neither the reading's blob slot nor
-// its Reconstructor, and each writes a row of its own (Measurement.Attempt).
+// (retry.go; the row says when, Measurement.NextAttemptDue). The later
+// attempts hold neither the reading's blob slot nor its Reconstructor, are
+// one request each with at most one in flight to a validator, and each
+// writes a row of its own (Measurement.Attempt); an endpoint that fails
+// before any blob is asked for answers every attempt of its validator that
+// is waiting (Measurement.SharedFrom). A failure of a full reading that
+// this observer cannot pin on the validator (its network, its resolver,
+// its clock) is rewritten as its own gap (ownside.go). Without
+// AskEveryEndorser the reading stops once the rows are enough
+// (EnoughReadLabel).
 //
 // The queue of readings is never stored. The Prober re-derives it every cycle
 // from publications.jsonl and the existing measurements.jsonl, so a restart
@@ -54,8 +62,10 @@
 // class says what happened on the wire. What counts is decided in
 // observer/verdict. At a full reading each endorser is judged on its own
 // answers: served when one of them served (FullServed), this observer's gap
-// when one was NOT_PROBED or PROBE_ERROR or the reading reached no server,
-// not served otherwise, by its last answer. At a reading that stopped once
+// when one was (FullGap: NOT_PROBED, PROBE_ERROR, or rows that are not its
+// own and that no settled promise explains), when an attempt it was owed is
+// not on record, or when the reading reached no server; not served
+// otherwise, by its last answer. At a reading that stopped once
 // the rows were enough, a validator whose rows came back verified served,
 // and an endorsing validator whose rows did not come back is not served only
 // when the blob was Unavailable. A validator that did not endorse is never

@@ -279,6 +279,10 @@ func main() {
 				next.LatenessMS = next.StartedAt.Sub(pt.At).Milliseconds()
 				next.Attempt = k
 				next.Read = &probe.ReadInfo{Order: m.Read.Order, BlobResult: result, BlobError: clientErr}
+				// The row before an attempt says when it is due, as the
+				// prober's does (Measurement.NextAttemptDue).
+				due := next.StartedAt
+				attempt.NextAttemptDue = &due
 				writeJSON(measFile, attempt)
 				nRows++
 				gt[string(attempt.Classification)]++

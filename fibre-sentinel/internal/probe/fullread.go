@@ -13,14 +13,19 @@ import (
 // on the blob's reconstruction (observer/verdict Row.CountedClass, rollup's
 // SQL twin):
 //
-//   - served: an attempt's rows came back and verified (FullServed);
-//   - this observer's gap, counted neither way: an attempt that is NOT_PROBED
-//     or PROBE_ERROR (FullGap), or a reading in which not a single request
-//     reached a server;
-//   - otherwise not served, by the last of its attempts.
+//   - served: an answer handed over the validator's own rows, verified
+//     (FullServed);
+//   - this observer's gap, counted neither way: an answer that is NOT_PROBED
+//     or PROBE_ERROR, or genuine rows of the blob that are not the
+//     validator's and that no settled promise explains (FullGap); a reading
+//     in which not a single request reached a server; and an answer after
+//     which the validator was still owed an attempt that is not on record
+//     (Measurement.NextAttemptDue);
+//   - otherwise not served, by the last of its answers.
 //
 // Readings that were not full (every label before FullReadSince: w1..wN,
-// grace, post, end) keep the rule of their time.
+// grace, post, end; and EnoughReadLabel after it) keep the rule of their
+// time.
 
 // FullReadLabel is the schedule label of a full reading: the one reading of
 // a blob, EndReadOffset before its must_serve_until, that asked every
@@ -28,13 +33,23 @@ import (
 // with Measurement.Attempt above 0.
 const FullReadLabel = "full"
 
+// EnoughReadLabel is the schedule label of a reading made after full
+// readings began that stopped once the rows reconstructed the blob
+// (sentinel-probe -end-read-all=false). It is the end of the window's one
+// reading, judged by the rule of a reading that stopped at enough, never as
+// a full reading: without its own label it would read as EndReadLabel from
+// FullReadSince on, which is a full reading.
+const EnoughReadLabel = "enough"
+
 // FullReadSince is the moment the prober began asking every endorser:
 // the deploy of -end-read-all (PR #177), 2026-10-02T16:09:49Z. Those
 // readings were labelled EndReadLabel until FullReadLabel existed, so an
 // "end" row started at or after it belongs to a full reading too
 // (FullReading). An "end" row started before it is of a reading that stopped
 // once the rows reconstructed the blob. It is a constant of the record:
-// moving it would rewrite how readings already made are judged.
+// moving it would rewrite how readings already made are judged. No build
+// writes EndReadLabel any more: a full reading is FullReadLabel, and one
+// that stops at enough is EnoughReadLabel.
 var FullReadSince = time.Date(2026, time.October, 2, 16, 9, 49, 0, time.UTC)
 
 // FullReadRetries is how many more times a full reading asks a validator
@@ -52,24 +67,47 @@ func FullReading(label string, startedAt time.Time) bool {
 // the end of its window, full or not: a served answer there speaks for the
 // end of the promise.
 func EndOfWindowLabel(label string) bool {
-	return label == EndReadLabel || label == FullReadLabel
+	return label == EndReadLabel || label == FullReadLabel || label == EnoughReadLabel
 }
 
-// FullServed reports whether one answer of a full reading served: its rows
-// came back and verified against the commitment, and they were no fewer
-// than the validator holds, unless they are exactly another settled
+// FullServed reports whether one answer of a full reading served: the rows
+// that came back verified against the commitment and are exactly the
+// validator's own assignment (SERVED_OK), or exactly another settled
 // promise's assignment over the same commitment (SHADOWED_SHARD), which a
 // validator cannot tell apart from this one's.
 func FullServed(verified bool, o Outcome, c Classification) bool {
-	return verified && (o != OutcomePartial || c == ClassShadowedShard)
+	return verified && (o == OutcomeServedOK || c == ClassShadowedShard)
+}
+
+// FullForeign reports a verified answer of rows that are not the validator's
+// own and that no settled promise explains (UNMATCHED_GENUINE, or a verdict
+// deferred on a scan gap): more of them than it holds, or other ones
+// (WRONG_ROWS), or fewer that are not a part of its own (PARTIAL, not
+// subsetOfOwn). The store serves the first shard of a commitment by
+// promise-hash order, so such rows say neither that the validator holds its
+// own rows nor that it does not. A short answer that is a part of its own
+// rows is not foreign: it handed over fewer of its rows than it holds.
+func FullForeign(verified bool, o Outcome, c Classification, subsetOfOwn bool) bool {
+	return verified && c != ClassShadowedShard && (o == OutcomeWrongRows || (o == OutcomePartial && !subsetOfOwn))
 }
 
 // FullGap reports whether an answer of a full reading is this observer's
-// gap: the request could not be made in time (NOT_PROBED), or it failed on
-// this observer's side (PROBE_ERROR: its resolver, a request abandoned by a
-// restart, a verdict deferred on its own blindness).
-func FullGap(c Classification) bool {
-	return c == ClassNotProbed || c == ClassProbeError
+// gap, counted neither way: the request could not be made in time
+// (NOT_PROBED), it failed on this observer's side (PROBE_ERROR: its
+// resolver, its network, a request abandoned by a restart, a verdict
+// deferred on its own blindness), or the rows that came back are foreign
+// (FullForeign).
+func FullGap(verified bool, o Outcome, c Classification, subsetOfOwn bool) bool {
+	return c == ClassNotProbed || c == ClassProbeError || FullForeign(verified, o, c, subsetOfOwn)
+}
+
+// fullServed and fullGap are FullServed and FullGap of a row.
+func (m Measurement) fullServed() bool {
+	return FullServed(m.Download.CommitmentVerified, m.Outcome, m.Classification)
+}
+
+func (m Measurement) fullGap() bool {
+	return FullGap(m.Download.CommitmentVerified, m.Outcome, m.Classification, m.Download.RowsSubsetOfAssignment)
 }
 
 // AttemptOfKey is the attempt a dedupe key names: 0 for the reading's own
