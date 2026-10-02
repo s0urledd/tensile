@@ -31,6 +31,14 @@
 // AskEveryEndorser the reading stops once the rows are enough
 // (EnoughReadLabel).
 //
+// Every request waits for room under this observer's own limits: requests
+// and shard bytes in flight, and the rate shard bytes are let go at
+// (Config.MaxReadMbps, ceiling.go), so the observer never takes its shared
+// port from the work beside it. The wait only delays a request, up to its
+// start cutoff (past it the request is not made: NOT_PROBED, this
+// observer's gap), and is recorded on the row (LoadInfo), never in the
+// request's own time.
+//
 // The queue of readings is never stored. The Prober re-derives it every cycle
 // from publications.jsonl and the existing measurements.jsonl, so a restart
 // resumes exactly. Every wait is bounded, and a SIGINT/SIGTERM stops it

@@ -13,6 +13,12 @@
 // reading ends with one Measurement per validator asked, appended together
 // to <data-dir>/measurements.jsonl, and each later attempt appends its own.
 //
+// Every request waits for room under this observer's limits, and its shard
+// bytes are let go no faster than -max-read-mbps (default 400 Mbit/s), so
+// the readings leave room on a port they share. A wait is never part of a
+// request's time; one that would pass the request's start cutoff makes it
+// NOT_PROBED, this observer's gap.
+//
 // The queue of readings is never persisted: it is re-derived from the
 // publications and the existing measurements every cycle, so a restart
 // resumes exactly.
@@ -72,6 +78,7 @@ func main() {
 		blobs       = flag.Int("blob-concurrency", 16, "blobs being read at once")
 		inFlightMiB = flag.Int64("in-flight-mib", 512, "shard bytes in flight at once, MiB; a count of requests does not bound memory when one shard can be hundreds of MiB")
 		linkMbps    = flag.Int("link-mbps", 0, "this observer's measured receive rate, Mbit/s; when set, the shard bytes in flight are held to what it moves in half a request's time, so a timeout is never this observer's own full link (0 = not set)")
+		maxRead     = flag.Int("max-read-mbps", probe.DefaultMaxReadMbps, "reading-rate ceiling, Mbit/s: every request is charged its shard's bytes against a bucket of this rate (about a second of it as burst) and waits for them before it is let go, so the readings never take the port from what shares it; the wait is not the request's time, and one that would pass the request's start cutoff is NOT_PROBED (0 = no ceiling)")
 		localHosts  = flag.Bool("allow-unroutable-hosts", false,
 			"dial registered hosts on loopback or a private range (a local devnet; never a public vantage)")
 		backfill = flag.Duration("backfill-missed", 0, "on (re)start, write NOT_PROBED rows only for readings newer than this that were not made; 0 (default) writes them for every one still on record")
@@ -106,6 +113,15 @@ func main() {
 		// attempt: the readings would quietly become gaps.
 		log.Fatalf("-request-start-margin (%s) must be below -read-deadline (%s), which must be below -end-read-offset (%s), and -retry-spacing (%s) positive",
 			*startBy, *readDL, *endOffset, *spacing)
+	}
+	if *maxRead < 0 || *linkMbps < 0 {
+		log.Fatalf("-max-read-mbps (%d) and -link-mbps (%d) must not be negative (0 = not set)", *maxRead, *linkMbps)
+	}
+	if *maxRead > 0 && *linkMbps > 0 && *maxRead >= *linkMbps {
+		// -link-mbps bounds what is in flight at once, -max-read-mbps the
+		// rate it is let go at; a ceiling at or above the link leaves the
+		// link nothing for the work beside the readings.
+		log.Printf("WARNING: -max-read-mbps %d is not below -link-mbps %d: the readings may take the whole link", *maxRead, *linkMbps)
 	}
 	sched := probe.ScheduleConfig{PruneTolerance: *pruneTol, EndReadOffset: *endOffset, ReadDeadline: *readDL}
 	if *endSince != "" {
@@ -159,6 +175,7 @@ func main() {
 		RetrySpacing:         *spacing,
 		InFlightBytes:        *inFlightMiB << 20,
 		LinkMbps:             *linkMbps,
+		MaxReadMbps:          *maxRead,
 		AllowUnroutableHosts: *localHosts,
 		BackfillMissed:       *backfill,
 		RunConfig:            flagConfig(),

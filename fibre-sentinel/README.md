@@ -268,8 +268,13 @@ than counting the entries the transaction carries.
 
 A reading asks only as many validators as it needs, so a validator is asked
 for some blobs, not all of them. At most 16 blobs (`-blob-concurrency`) and
-64 requests (`-concurrency`) are in flight at once, with 512 MiB of shards
-(`-in-flight-mib`). These only delay a request, never drop one, and there is
+256 requests (`-concurrency`) are in flight at once, with 512 MiB of shards
+(`-in-flight-mib`), and shard bytes are let go no faster than 400 Mbit/s
+(`-max-read-mbps`, a token bucket charged each request's expected shard
+bytes; 0 turns it off), so the readings leave room on a port they share.
+These only delay a request, never drop one, and the wait is never part of
+the request's own time; a full reading's request that cannot start before
+its cutoff is `NOT_PROBED`, this observer's gap. There is
 no limit per validator, as the client has none. `publications.jsonl` is
 tailed incrementally and a publication is
 forgotten once its reading is on record. On a (re)start every reading that
