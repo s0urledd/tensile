@@ -2036,8 +2036,9 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .pb-id { gap: 10px; }
   .pb-id .ident { width: 26px; height: 26px; }
   .pb-h1 { font-size: 24px; line-height: 30px; }
-  /* the whole address on its own, wrapping anywhere over two lines, the copy button at its end */
-  .pb-addr { display: block; margin-top: 8px; }
+  /* the whole address on its own, wrapping anywhere over two lines of even length, the copy button at its end: never
+     its last few characters alone beside the button */
+  .pb-addr { display: block; margin-top: 8px; text-wrap: balance; }
   .pb-addr .mono { font-size: 12.5px; line-height: 19px; overflow-wrap: anywhere; word-break: break-all; }
   .pb-addr .copy { margin-left: 8px; vertical-align: -6px; }
   .pb-meta { width: auto; margin-top: 18px; padding: 2px 14px; }
