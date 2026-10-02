@@ -544,10 +544,25 @@ export type Publisher = {
   largest_blob_bytes: number;
   timeouts: number;
   timed_out_utia: number;
+  /** its first and last escrow movement of any kind, over the whole record */
   first_seen_at: string;
   last_seen_at: string;
+  /** the namespaces its settlements in the period used, the most used first, at most 10; namespaces_total counts them all */
+  namespaces?: PublisherNamespace[];
+  namespaces_total?: number;
+  /** its first and last settlement over the whole record, whatever the period; null when it never settled */
+  first_settlement_at?: string | null;
+  last_settlement_at?: string | null;
+  /** every blob it paid for, over the whole record, by Tensile's reading; null until the API has counted them after a start */
+  readings?: PublisherReadings | null;
   escrow: Escrow | null;
 };
+
+/** one namespace a publisher's settlements used */
+export type PublisherNamespace = { namespace: string; settlements: number; bytes: number };
+
+/** a publisher's blobs by the Blobs list's Tensile lane (lib/status.ts lane()) */
+export type PublisherReadings = { available: number; unavailable: number; in_retention_window: number; not_read: number };
 
 export type Payment = {
   kind: "settlement" | "timeout" | "deposit" | "withdrawal_request" | "withdrawal_executed";

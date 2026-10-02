@@ -255,6 +255,13 @@ const EX_PUBLISHERS = `{
       "fees_utia": 29888510000,
       "fees_share": 0.9882393979672135,
       "paid_per_mib_utia": 220625,
+      "namespaces": [
+        {"namespace": "00000000000000000000000000000000000000736f762d6e696b6f2d61", "settlements": 8467, "bytes": 142052687872}
+      ],
+      "namespaces_total": 1,
+      "first_settlement_at": "2026-09-28T12:47:32.406462187Z",
+      "last_settlement_at": "2026-09-28T20:48:38.760812205Z",
+      "readings": {"available": 8324, "unavailable": 0, "in_retention_window": 0, "not_read": 143},
       "escrow": {"balance_utia": 111490000, "available_utia": 111490000}
     }
   ]
@@ -267,9 +274,22 @@ const EX_PUBLISHER = `{
     "settlements": 8467,
     "fees_utia": 29888510000,
     "timeouts": 0,
+    "first_settlement_at": "2026-09-28T12:47:32.406462187Z",
+    "last_settlement_at": "2026-09-28T20:48:38.760812205Z",
+    "readings": {"available": 8324, "unavailable": 0, "in_retention_window": 0, "not_read": 143},
     "escrow": {"balance_utia": 111490000, "available_utia": 111490000},
     "pending_withdrawals": {"count": 0, "utia": 0}
   },
+  "windows": [
+    {
+      "window": {"name": "all"},
+      "settlements": 8467,
+      "namespaces": [
+        {"namespace": "00000000000000000000000000000000000000736f762d6e696b6f2d61", "settlements": 8467, "bytes": 142052687872}
+      ],
+      "namespaces_total": 1
+    }
+  ],
   "recent_payments": [
     {
       "kind": "settlement",
@@ -561,7 +581,8 @@ export const GROUPS: Group[] = [
       {
         id: "publishers",
         path: "/v1/publishers",
-        summary: "Publishers with escrow movements in the period: fees, bytes, escrow.",
+        summary: "Publishers with escrow movements in the period: fees, bytes, namespaces, escrow.",
+        desc: "`namespaces` lists the period's ten most used; `first_settlement_at`, `last_settlement_at` and `readings` cover all time.",
         params: [windowParam, asOf],
         example: EX_PUBLISHERS,
       },
@@ -569,7 +590,7 @@ export const GROUPS: Group[] = [
         id: "publisher",
         path: "/v1/publishers/{addr}",
         summary: "One publisher: fees, escrow, withdrawals, recent payments and blobs.",
-        desc: "`window` and `as_of` apply to the `publisher` object only; the rest of the answer is as of now.",
+        desc: "`window` and `as_of` apply to the `publisher` object only; the rest of the answer is as of now. Each of `windows` lists its namespaces as a row does.",
         params: [
           { name: "addr", in: "path", type: "string", required: true, desc: "The publisher's celestia1… account.", example: PUBLISHER },
           windowParam, asOf,
