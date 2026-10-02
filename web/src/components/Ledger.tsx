@@ -9,6 +9,7 @@ import { unit } from "@/components/Unit";
 import { Eye } from "@/components/Metrics";
 import { Frac } from "@/components/CurrentProviders";
 import Ident from "@/components/Ident";
+import Info from "@/components/Info";
 import { reducedMotion } from "@/components/RollNumber";
 import { age, monthDayTime } from "@/components/BlobsDeck";
 
@@ -319,7 +320,8 @@ const Row = memo(function Row({ b, age: ag, fresh, one, dec, onNs, onOpen }: Row
         )}
       </td>
       <td className="gap" aria-hidden="true" />
-      <td className="tn">{ln && <span className={ln.tier === "hold" ? "hold" : ln.tier === "kept" ? "ok" : undefined} title={ln.title}>{ln.word}</span>}</td>
+      <td className="tn">{ln && <Info label="Tensile" trigger={ln.word} title={ln.title}
+        className={`lw${ln.tier === "hold" ? " hold" : ln.tier === "kept" ? " ok" : ""}`}><p>{ln.title}</p></Info>}</td>
       <td className="c-m">
         <span className="nm">{name}</span><span className="sz"><span className="sep">·</span>{bytes(b.blob_size)}</span>
         {/* one publisher's list names the fee where the others name the publisher */}
