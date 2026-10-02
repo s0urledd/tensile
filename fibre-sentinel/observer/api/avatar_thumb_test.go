@@ -12,14 +12,17 @@ import (
 // A PNG, which can be transparent, comes back as a PNG square that keeps its
 // transparency; an original already that small comes back as it is.
 func TestAvatarThumbPNG(t *testing.T) {
+	// noise, as a photograph is to the encoder: a smooth test card compresses below any square made from it
 	src := image.NewNRGBA(image.Rect(0, 0, 240, 180))
+	seed := uint32(7)
 	for y := 0; y < 180; y++ {
 		for x := 0; x < 240; x++ {
+			seed = seed*1664525 + 1013904223
 			a := uint8(255)
 			if x < 120 {
 				a = 0
 			}
-			src.SetNRGBA(x, y, color.NRGBA{uint8(x), uint8(y), uint8(x ^ y), a})
+			src.SetNRGBA(x, y, color.NRGBA{uint8(seed >> 24), uint8(seed >> 16), uint8(seed >> 8), a})
 		}
 	}
 	var orig bytes.Buffer
