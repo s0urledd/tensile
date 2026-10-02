@@ -1470,7 +1470,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-list { margin-top: 38px; }
 /* room above the table for the pill that straddles its edge */
 .lg-list .list-head { margin-bottom: 30px; }
-.lg-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lg-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .lg-pick { position: relative; display: inline-flex; }
 .lg-chip { display: inline-flex; align-items: center; gap: 7px; height: 34px; max-width: 280px; padding: 0 12px 0 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--paper); box-shadow: var(--shadow-sm); color: var(--text-2); font-size: var(--t-cell); font-weight: 500; white-space: nowrap; cursor: pointer; transition: border-color var(--dur), color var(--dur), background var(--dur); }
 .lg-chip:hover, .lg-chip[aria-expanded="true"] { color: var(--text); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
@@ -2231,7 +2231,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; margin: -4px 0 12px; }
 .lg-bar-l { display: inline-flex; align-items: center; gap: 8px; }
 .pl-bar { justify-content: flex-end; margin: 0 0 12px; }
-.lg-findbox { display: inline-flex; align-items: center; gap: 8px; width: min(440px, 100%); height: 34px; padding: 0 12px 0 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--paper); box-shadow: var(--shadow-sm); color: var(--text-3); transition: border-color var(--dur), box-shadow var(--dur); }
+.lg-findbox { display: inline-flex; align-items: center; gap: 8px; width: 360px; max-width: 100%; height: 34px; padding: 0 12px 0 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--paper); box-shadow: var(--shadow-sm); color: var(--text-3); transition: border-color var(--dur), box-shadow var(--dur); }
 .lg-findbox:focus-within { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); box-shadow: 0 0 0 3px var(--accent-tint); }
 .lg-findbox.bad { border-color: color-mix(in srgb, var(--hold) 60%, var(--border)); }
 .lg-findbox svg { flex: none; }
