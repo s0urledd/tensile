@@ -1526,8 +1526,9 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-t tbody tr:first-child td { border-top: 0; }
 /* a column whose cells are always about as wide is as wide as they are (the time at its widest: "May 28 20:48:38 23 h 59 min",
    and the publisher's chip); the namespace takes the rest */
-.lg-t th.c-h { width: 100px; } .lg-t th.c-t { width: 206px; } .lg-t th.c-b { width: 116px; } .lg-t th.c-p { width: 148px; } .lg-t th.c-sz { width: 92px; } .lg-t th.c-fee { width: 92px; }
-.lg-t th.c-e { width: 132px; } .lg-t th.gap { width: 10px; } .lg-t th.tn { width: 116px; }
+/* the blob column holds the short hash and its copy button */
+.lg-t th.c-h { width: 96px; } .lg-t th.c-t { width: 206px; } .lg-t th.c-b { width: 128px; } .lg-t th.c-p { width: 148px; } .lg-t th.c-sz { width: 92px; } .lg-t th.c-fee { width: 92px; }
+.lg-t th.c-e { width: 132px; } .lg-t th.gap { width: 10px; } .lg-t th.tn { width: 112px; }
 .lg-t tr.row { position: relative; cursor: pointer; }
 .lg-t tr.row td { transition: background var(--dur); }
 .lg-t tr.row:hover td { background: color-mix(in srgb, var(--accent) 5%, var(--paper)); }
@@ -1547,6 +1548,11 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-t .c-t .ag { margin-left: 9px; font-size: var(--t-small); color: var(--text-3); }
 .lg-t .c-b a { font-family: var(--mono); font-size: 12.5px; font-weight: 500; letter-spacing: -.01em; color: var(--text); }
 .lg-t .c-b a:hover, .lg-t tr.row:hover .c-b a { color: var(--accent-ink); text-decoration: none; }
+/* the copy button after the hash: quiet until the row or the button is pointed at */
+.lg-t .c-b .cp { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: 2px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--text-3); opacity: .55; vertical-align: -3px; cursor: pointer; transition: opacity var(--dur), color var(--dur), background var(--dur); }
+.lg-t tr.row:hover .c-b .cp, .lg-t .c-b .cp:focus-visible { opacity: 1; }
+.lg-t .c-b .cp:hover { color: var(--accent-ink); background: var(--accent-tint); }
+.lg-t .c-b .cp.done { opacity: 1; color: var(--ok); }
 .lg-t .c-b .el { margin: 0 1px; font-weight: 400; color: var(--text-3); }
 .lg-t .c-b .ht { display: none; }
 .nsb { max-width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; cursor: pointer; }
@@ -2223,7 +2229,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 
 /* ---- over a list's table: the search on the left, the filters on the right, each over the columns it reaches ---- */
 .lg-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; margin: -4px 0 12px; }
-.lg-bar-r { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
+.lg-bar-l { display: inline-flex; align-items: center; gap: 8px; }
 .pl-bar { justify-content: flex-end; margin: 0 0 12px; }
 .lg-findbox { display: inline-flex; align-items: center; gap: 8px; width: min(440px, 100%); height: 34px; padding: 0 12px 0 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--paper); box-shadow: var(--shadow-sm); color: var(--text-3); transition: border-color var(--dur), box-shadow var(--dur); }
 .lg-findbox:focus-within { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); box-shadow: 0 0 0 3px var(--accent-tint); }
@@ -2237,5 +2243,4 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 @media (max-width: 720px) {
   .lg-bar { margin-top: -2px; }
   .lg-findbox { width: 100%; }
-  .lg-bar-r { margin-left: 0; }
 }

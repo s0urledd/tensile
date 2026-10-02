@@ -195,19 +195,21 @@ function Page() {
           </div>
         </div>
 
-        {/* over the table: the search over the blob columns, the publisher filter over Tensile's lane; a namespace
-            picked from a row shows its chip there, to clear it */}
+        {/* over the table: the publisher filter on the left (a namespace picked from a row shows its chip beside it,
+            to clear it), the search on the right */}
         {tab === "blobs" && (
           <div className="lg-bar">
+            {!found
+              ? (
+                <span className="lg-bar-l">
+                  <Picker name="Publisher" icon={PUB_ICON} value={pub} text={pub ? <><span className="pre">celestia </span>••• {pub.slice(-4)}</> : null} choices={pubChoices}
+                    accept={(s) => (/^celestia1[0-9a-z]{38}$/.test(s) ? s : null)} placeholder="Address" onPick={setPub} onOpen={() => setWantPubs(true)} />
+                  {ns && <Picker name="Namespace" icon={NS_ICON} value={ns} text={<NsName ns={ns} />} choices={nsChoices}
+                    accept={(s) => (/^[0-9a-f]{58}$/.test(s) ? s : null)} placeholder="Name or hex" onPick={setNs} />}
+                </span>
+              )
+              : <span />}
             <FindBlob value={found} onFind={setFound} />
-            {!found && (
-              <span className="lg-bar-r">
-                {ns && <Picker name="Namespace" icon={NS_ICON} value={ns} text={<NsName ns={ns} />} choices={nsChoices}
-                  accept={(s) => (/^[0-9a-f]{58}$/.test(s) ? s : null)} placeholder="Name or hex" onPick={setNs} />}
-                <Picker name="Publisher" icon={PUB_ICON} value={pub} text={pub ? <><span className="pre">celestia </span>••• {pub.slice(-4)}</> : null} choices={pubChoices}
-                  accept={(s) => (/^celestia1[0-9a-z]{38}$/.test(s) ? s : null)} placeholder="Address" onPick={setPub} onOpen={() => setWantPubs(true)} />
-              </span>
-            )}
           </div>
         )}
 
