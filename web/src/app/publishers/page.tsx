@@ -140,13 +140,7 @@ function Page() {
     <>
       <div className="page-head lg-head pl-head">
         <h1>Publishers</h1>
-        <div className="pl-ctl">
-          <span className="pl-find">
-            <Picker name="Find a publisher" icon={FIND_ICON} value="" text={null} choices={findChoices} find
-              accept={(s) => (/^celestia1[0-9a-z]{38}$/.test(s) ? s : null)} placeholder="Address" onPick={(a) => { if (a) router.push(`/publisher/?addr=${a}`); }} />
-          </span>
-          <WindowSwitch value={win} onChange={setWin} />
-        </div>
+        <WindowSwitch value={win} onChange={setWin} />
       </div>
       <PreLive meta={meta} />
 
@@ -177,6 +171,13 @@ function Page() {
             ].filter(Boolean).join("; ") : undefined} />
         </dl>
 
+        {/* the search over the table's right, above the escrow lane */}
+        <div className="lg-bar pl-bar">
+          <span className="pl-find">
+            <Picker name="Find a publisher" icon={FIND_ICON} value="" text={null} choices={findChoices} find
+              accept={(s) => (/^celestia1[0-9a-z]{38}$/.test(s) ? s : null)} placeholder="Address" onPick={(a) => { if (a) router.push(`/publisher/?addr=${a}`); }} />
+          </span>
+        </div>
         <div className="lg-tw">
           <table className={`lg-t pl-t${timeouts ? " has-to" : ""}${blobs ? " has-ns" : ""}`}>
             <thead>
