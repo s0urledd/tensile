@@ -4398,6 +4398,10 @@ func (s *Server) handleAvatar(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "no such avatar")
 		return
 	}
+	// ?s=72: the picture at the size the site draws it (avatar_thumb.go)
+	if side := thumbSide(r.URL.Query().Get("s")); side > 0 {
+		ct, data = avatarThumb(id, ct, data, checked, side)
+	}
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Content-Disposition", "inline; filename=avatar")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
