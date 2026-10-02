@@ -2103,3 +2103,104 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .vr-t .c-m .rs, .vr-t .c-m .rs-sep { display: inline; }
   .vr-t tr.row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "b t" "m m"; }
 }
+
+/* =============================================================================
+   A blob (app/blob): the publisher page's mast and light frame of facts, one framed panel of the chain's figures
+   beside Tensile's reading, and the validators by name in two groups, endorsed and not, with the voting power the
+   settlement gathered against the ⅔ it needs and Tensile's result marked on each name; the full table one switch away.
+   ========================================================================== */
+.bd-h1 .tl { font-weight: 500; }
+.bd-chips { margin-top: 14px; }
+.bd-meta .bd-ns { font-weight: 500; color: var(--text); }
+.bd-meta .bd-ns:hover { color: var(--accent-ink); text-decoration: none; }
+.bd-meta .mono { font-size: 12.5px; color: var(--text); }
+.bd-meta .copy { margin-left: 2px; }
+.bd-meta .lg-who .hd { font-size: var(--t-cell); }
+
+/* the panel: two groups side by side, each a head and three cells on the table's hairlines */
+.bd-pan { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin-top: 28px; }
+.bd-g { display: flex; flex-direction: column; min-width: 0; }
+.bd-g + .bd-g { border-left: 1px solid var(--border); }
+.bd-g .vp-cells { flex: 1; }
+.bd-pan .pan-c.na .pan-v { color: var(--text-3); }
+.bd-pan .pan-c.bad .pan-v { color: var(--fault); }
+.bd-pan .pan-v .u { margin-left: 0; }
+/* the rows that came back against the rows that reconstruct the blob: a slim bar and the line it has to pass */
+.bd-meter { position: relative; height: 4px; margin: 10px 0 0; border-radius: 2px; background: var(--seg-track); }
+.bd-meter i { display: block; height: 100%; border-radius: 2px; background: var(--accent); }
+.bd-meter span { position: absolute; top: -3px; width: 2px; height: 10px; margin-left: -1px; border-radius: 1px; background: var(--text-2); }
+
+/* the validators */
+.bd-vals { margin-top: 40px; }
+.bd-vh { display: inline-flex; align-items: center; gap: 8px; margin: 0; padding: 0 2px; font-size: 15px; font-weight: 600; line-height: 36px; color: var(--text); }
+.bd-vh .n { padding: 1px 8px; border-radius: 999px; background: var(--seg-track); font-size: var(--t-tiny); font-weight: 600; line-height: 18px; color: var(--text-2); }
+.bd-seg { margin-top: 0; border-color: var(--border); border-radius: 8px; }
+.bd-seg button { padding: 5px 12px; font-size: var(--t-small); }
+.bd-none { margin: 0; color: var(--text-2); }
+.bd-card { overflow: clip; background: var(--paper); border: 1px solid var(--border); border-radius: var(--r-card); box-shadow: var(--shadow-sm); }
+.bd-grp { padding: 18px 18px 20px; }
+.bd-grp + .bd-grp { border-top: 1px solid var(--border); }
+.bd-gh { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.bd-gh h3 { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-size: var(--t-cell); font-weight: 600; color: var(--text); }
+.bd-gh h3 .n { font-size: var(--t-small); font-weight: 500; color: var(--text-3); }
+.bd-vp { font-size: var(--t-small); color: var(--text-3); white-space: nowrap; }
+.bd-vp b { font-family: var(--font-table); font-size: var(--t-cell); font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
+/* the voting power endorsed, and the ⅔ a settlement needs as a mark on the track */
+.bd-bar { position: relative; height: 6px; margin: 12px 0 2px; border-radius: 3px; background: var(--seg-track); }
+.bd-bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+.bd-bar span { position: absolute; left: 66.667%; top: -4px; width: 2px; height: 14px; margin-left: -1px; border-radius: 1px; background: var(--text-2); }
+/* a validator's name: a dot that says whether it endorsed (filled) or not (a ring), and Tensile's result after it */
+.bd-pills { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 0; padding: 0; list-style: none; }
+.bd-pill { display: inline-flex; align-items: center; gap: 7px; height: 30px; max-width: 220px; padding: 0 12px 0 11px; border: 1px solid var(--border); border-radius: 999px; background: var(--paper); font-size: 13px; font-weight: 500; color: var(--text); white-space: nowrap; transition: border-color var(--dur), background var(--dur); }
+.bd-pill:hover { text-decoration: none; border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: color-mix(in srgb, var(--accent) 4%, var(--paper)); }
+.bd-pill .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pd { flex: none; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.bd-grp.off .pd, .pd.off { background: none; box-shadow: inset 0 0 0 1.5px var(--text-3); }
+.bd-grp.un .pd, .pd.un { background: var(--neutral); }
+.bd-grp.off .bd-pill { color: var(--text-2); }
+.bd-gh h3 .pd { width: 8px; height: 8px; }
+.bd-pill .rk { flex: none; margin-left: -1px; font-size: 12px; font-weight: 600; line-height: 1; }
+.bd-pill.ok .rk { color: var(--ok); }
+.bd-pill.fault { border-color: color-mix(in srgb, var(--fault) 45%, var(--border)); background: color-mix(in srgb, var(--fault) 6%, var(--paper)); }
+.bd-pill.fault .rk { color: var(--fault); }
+.bd-pill.hold .rk { width: 6px; height: 6px; margin-left: 1px; border-radius: 50%; background: var(--hold); }
+
+/* the table, for an operator's detail: the Blobs list's heads and rules, the result in Tensile's lane */
+.bd-tw { overflow-x: auto; }
+.bd-t { width: 100%; min-width: 760px; border-collapse: separate; border-spacing: 0; font-family: var(--font-table); font-size: 13.5px; font-variant-numeric: tabular-nums lining-nums; }
+.bd-t th { padding: 13px 12px 11px; border-bottom: 1px solid var(--border); font-family: var(--sans); font-size: var(--t-tiny); font-weight: 600; line-height: 18px; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); text-align: center; white-space: nowrap; }
+.bd-t td { padding: 9px 12px; border-top: 1px solid var(--border); line-height: 20px; color: var(--text); text-align: center; white-space: nowrap; }
+.bd-t tbody tr:first-child td { border-top: 0; }
+.bd-t th:first-child, .bd-t td:first-child { padding-left: 18px; text-align: left; }
+.bd-t td.mono { font-size: 12.5px; color: var(--text-2); }
+.bd-t .q { color: var(--text-3); }
+.bd-t .sans { font-family: var(--sans); }
+.bd-vn { display: inline-flex; align-items: center; gap: 8px; font-weight: 500; color: var(--text); }
+.bd-vn:hover { color: var(--accent-ink); text-decoration: none; }
+.bd-t .tn { padding-left: 14px; padding-right: 18px; background: var(--obs-bg); border-left: 1px dashed var(--line); font-family: var(--sans); font-size: var(--t-small); }
+.bd-t th.tn { background: color-mix(in srgb, var(--paper) 97.5%, var(--text)); }
+.bd-t th.tn svg { margin-right: 6px; vertical-align: -2px; color: var(--accent-ink); }
+.bd-t td.tn .ok { color: var(--ok); font-weight: 500; }
+.bd-t td.tn .fault { color: var(--fault); font-weight: 500; }
+.bd-t td.tn .hold { color: var(--hold-ink); font-weight: 500; }
+.bd-t td.tn .hold::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--hold); vertical-align: 1px; }
+.bd-t td.tn .quiet { color: var(--text-3); }
+
+@media (max-width: 900px) {
+  .bd-pan { grid-template-columns: minmax(0, 1fr); }
+  .bd-g + .bd-g { border-left: 0; border-top: 1px solid var(--border); }
+}
+@media (max-width: 720px) {
+  .bd-pan { margin-top: 22px; }
+  .bd-pan .vp-cells { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .bd-pan .vp-cells > :last-child:nth-child(odd) { grid-column: auto; }
+  .bd-pan .pan-c { padding-left: 14px; padding-right: 10px; }
+  .bd-pan .pan-c .pan-v { font-size: 20px; }
+  /* the rows of the blob in all are on hover there; the bar and its line say how far the reading got */
+  .bd-pan .pan-v .u { display: none; }
+  .bd-vals { margin-top: 32px; }
+  .bd-grp { padding: 16px 14px 18px; }
+  .bd-pills { gap: 6px; }
+  .bd-pill { height: 28px; padding: 0 10px 0 9px; font-size: 12.5px; max-width: 100%; }
+  .bd-meta { grid-template-columns: 112px minmax(0, max-content); }
+}
