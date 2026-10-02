@@ -1785,7 +1785,9 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 /* six cells on a regular grid, the hairlines the grid's 1 px gaps in the table's rule colour: the period's five
    figures, then the escrow held now, last as the escrow lane is last in the table, and at full width right over it */
 .pl-pan { --esc-w: 155px; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) var(--esc-w); gap: 1px; margin: 0 0 28px; background: linear-gradient(var(--border), var(--border)) padding-box, var(--paper) border-box; }
-.pl-pan > .pan-c { container-type: inline-size; }
+/* each cell keeps the room of one line under its figure, so the panel is as tall while its figures load, or in a
+   period with nothing to add under them, as it is with them */
+.pl-pan > .pan-c { container-type: inline-size; min-height: 110px; }
 /* in a narrow cell the timeout line's two halves stack, the dot between them dropped */
 .pl-pan .pan-s.to > span { white-space: nowrap; }
 @container (max-width: 236px) {
@@ -1875,6 +1877,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .pl-list { margin-top: 20px; }
   /* the panels a size smaller; the summary two figures a row, Deposited beside the escrow held now */
   .pl-pan { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 24px; }
+  .pl-pan > .pan-c { min-height: 98px; }
   .pan-c { padding: 14px 14px 15px; }
   .pan-c .pan-v { margin-top: 7px; font-size: 22px; line-height: 26px; letter-spacing: -.018em; }
   .pan-v .u { font-size: 13px; }
