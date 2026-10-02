@@ -254,6 +254,9 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 // the warm-up and the switch costs a recomputation, never a stale figure.
 func WarmSnapshots(ctx context.Context, st *store.Store, info VantageInfo, log *scan.Logger, opts ...Option) error {
 	s := newServer(st, info, log, opts...)
+	// Nothing is served meanwhile, so the readings' first computation may
+	// take its time and the files carry them (readings.go).
+	s.readings.slice = readingSliceWarm
 	dir := s.snapshotsIn()
 	if dir == "" {
 		return errors.New("no snapshot directory: set a data directory or a snapshot directory")

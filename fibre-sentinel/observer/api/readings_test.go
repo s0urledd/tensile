@@ -67,6 +67,13 @@ func TestPublisherReadingsAreTheBlobsLane(t *testing.T) {
 	for i, c := range cases {
 		hashes[i] = writeBlob(t, st, i, c)
 	}
+	// The second blob was read three days ago, so the prune below has a day
+	// of rows to take; the rest were read today.
+	old := time.Now().UTC().Add(-72 * time.Hour)
+	if _, err := db.Exec(`UPDATE probes SET scheduled_at = ?, started_at = ?, finished_at = ? WHERE promise_hash = ?`,
+		store.TS(old), store.TS(old), store.TS(old), hashes[1]); err != nil {
+		t.Fatal(err)
+	}
 	settle := func(i int, publisher string) {
 		t.Helper()
 		if _, err := st.UpsertPayment(scan.Payment{SchemaVersion: 1, DedupeKey: fmt.Sprintf("settle-%d-%s", i, publisher), Kind: "settlement",
@@ -139,9 +146,10 @@ func TestPublisherReadingsAreTheBlobsLane(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := s.attachReadings(ctx, rows, true); err != nil {
+		if err := s.readings.update(ctx, s, 0); err != nil {
 			t.Fatal(err)
 		}
+		s.attachReadings(rows)
 		got := map[string]readingCounts{}
 		for _, r := range rows {
 			if r.Readings == nil {
@@ -192,15 +200,32 @@ func TestPublisherReadingsAreTheBlobsLane(t *testing.T) {
 	settle(len(cases)-1, pubB)
 	check("a settlement recorded")
 
-	// The retention prune deletes rows and says so in raw_from: every status
-	// is computed again.
-	if _, err := db.Exec(`DELETE FROM probes WHERE promise_hash = ?`, hashes[1]); err != nil {
+	// The retention prune deletes whole days of rows and moves raw_from past
+	// them: the blob read three days ago is not read any more, and it is the
+	// only publication computed again, the one with a row before raw_from.
+	from := time.Now().UTC().Add(-48 * time.Hour).Truncate(24 * time.Hour)
+	if res, err := db.Exec(`DELETE FROM probes WHERE started_at < ?`, store.TS(from)); err != nil {
+		t.Fatal(err)
+	} else if n, _ := res.RowsAffected(); n != int64(len(cases[1].vals)) {
+		t.Fatalf("the prune took %d rows, want the old blob's %d", n, len(cases[1].vals))
+	}
+	if err := st.SetMeta("raw_from", from.Format("2006-01-02"), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetMeta("raw_from", "2026-09-30", time.Now()); err != nil {
+	if c := check("a prune"); c[pubB].NotRead == 0 {
+		t.Fatalf("the pruned blob is still read: %+v", c)
+	}
+	if s.readings.computed != 1 {
+		t.Errorf("a prune computed %d publications again, want the one with rows before raw_from", s.readings.computed)
+	}
+	// raw_from moved back (a store rebuilt from an export): every one.
+	if err := st.SetMeta("raw_from", from.Add(-24*time.Hour).Format("2006-01-02"), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	check("a prune")
+	check("raw_from moved back")
+	if s.readings.computed != len(cases) {
+		t.Errorf("raw_from moved back computed %d publications again, want all %d", s.readings.computed, len(cases))
+	}
 
 	// The newest probe row deleted and its rowid used again by another row,
 	// one that turns the blob with the missed request Unavailable: the
@@ -223,9 +248,8 @@ func TestPublisherReadingsAreTheBlobsLane(t *testing.T) {
 	check("a reused rowid")
 }
 
-// Before the memo's first computation a request does not wait for it: the
-// rows go out with no readings, and the market snapshot, which waits, fills
-// them.
+// A request does no reading work: before the memo's first computation its
+// rows go out with no readings, and after it with the memo's counts.
 func TestRequestsDoNotWaitForTheFirstReadingCount(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
@@ -234,16 +258,78 @@ func TestRequestsDoNotWaitForTheFirstReadingCount(t *testing.T) {
 	defer st.Close()
 	s := &Server{st: st}
 	rows := []publisherRow{{Publisher: "celestia1d3mmg652pxj776dyqwlsrc93y64088g6ux8deq"}}
-	if err := s.attachReadings(context.Background(), rows, false); err != nil || rows[0].Readings != nil {
-		t.Fatalf("a request before the first count: %v, readings %+v", err, rows[0].Readings)
+	if s.attachReadings(rows); rows[0].Readings != nil {
+		t.Fatalf("a request before the first count: readings %+v", rows[0].Readings)
 	}
-	if err := s.attachReadings(context.Background(), rows, true); err != nil || rows[0].Readings == nil {
-		t.Fatalf("the snapshot's count: %v, readings %+v", err, rows[0].Readings)
+	if err := s.readings.update(context.Background(), s, 0); err != nil {
+		t.Fatal(err)
 	}
-	rows[0].Readings = nil
-	if err := s.attachReadings(context.Background(), rows, false); err != nil || rows[0].Readings == nil || *rows[0].Readings != (readingCounts{}) {
-		t.Fatalf("a request after it: %v, readings %+v", err, rows[0].Readings)
+	if s.attachReadings(rows); rows[0].Readings == nil || *rows[0].Readings != (readingCounts{}) {
+		t.Fatalf("a request after it: readings %+v", rows[0].Readings)
 	}
+}
+
+// A full computation of the memo never holds a market computation up for
+// longer than its slice: it computes a batch at least, goes on at the next
+// update, and the rows carry no reading until it has landed. A later one (a
+// migration) leaves the counts the memo had while it runs.
+func TestReadingsFullComputationGoesBySlices(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := &Server{st: st}
+	s.readings.chunk = 2
+	ctx := context.Background()
+	db := st.DB()
+	const pub = "celestia1d3mmg652pxj776dyqwlsrc93y64088g6ux8deq"
+	full := make([]int, 20)
+	for i := range full {
+		full[i] = i
+	}
+	blob := func(i int) {
+		t.Helper()
+		h := writeBlob(t, st, i, blobCase{needed: 20, total: 80, points: 1, complete: true, over: true,
+			vals: []valRows{{addr: fmt.Sprintf("v%d", i), rows: full, attested: 1, served: true}}})
+		if _, err := st.UpsertPayment(scan.Payment{SchemaVersion: 1, DedupeKey: fmt.Sprintf("s%d", i), Kind: "settlement", Height: int64(i + 2),
+			Time: time.Now(), Publisher: pub, PromiseHash: h, Namespace: "ns", BlobSize: 1024, Denom: "utia", AmountUtia: 1}, []byte("{}")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 5; i++ {
+		blob(i)
+	}
+	available := func() int64 {
+		t.Helper()
+		rows := []publisherRow{{Publisher: pub}}
+		if s.attachReadings(rows); rows[0].Readings == nil {
+			return -1
+		}
+		return rows[0].Readings.Available
+	}
+	step := func(want int64, computed int) {
+		t.Helper()
+		if err := s.readings.update(ctx, s, time.Nanosecond); err != nil {
+			t.Fatal(err)
+		}
+		if got := available(); got != want || s.readings.computed != computed {
+			t.Fatalf("available %d after computing %d, want %d after %d (-1: no reading)", got, s.readings.computed, want, computed)
+		}
+	}
+	step(-1, 2)
+	step(-1, 2)
+	step(5, 1)
+	step(5, 0)
+
+	blob(5)
+	if _, err := db.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`, store.SchemaVersion+1, store.TS(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	step(5, 2)
+	step(5, 2)
+	step(6, 2)
+	step(6, 0)
 }
 
 // What the memo runs on every market computation must not walk a table
@@ -286,6 +372,7 @@ func TestReadingMemoQueriesUseIndexes(t *testing.T) {
 	}
 	plan("facts", readingFactsSQL, []any{"[]"}, []string{"json_each"},
 		"SEARCH pub USING INDEX sqlite_autoindex_publications_1 (promise_hash=?)", "SEARCH pay USING INDEX payments_promise (promise_hash=?)")
+	plan("oldest rows", readingOldestSQL, []any{"[]"}, []string{"json_each"}, "COVERING INDEX probes_promise (promise_hash=?)")
 	plan("batch selection", blobSel(readingSel, readingChunk)+`SELECT p.promise_hash, COUNT(*) FROM probes p JOIN sel ON sel.promise_hash = p.promise_hash GROUP BY p.promise_hash`,
 		[]any{"[]"}, []string{"json_each", "sel"},
 		"SEARCH publications USING INDEX sqlite_autoindex_publications_1 (promise_hash=?)", "probes_promise (promise_hash=?)")

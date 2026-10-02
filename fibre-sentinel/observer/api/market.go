@@ -241,7 +241,9 @@ type publisherRow struct {
 	FirstSettlement *string `json:"first_settlement_at"`
 	LastSettlement  *string `json:"last_settlement_at"`
 	// Readings is every blob it paid for, over the whole history, by the
-	// status Tensile's reading left it (readings.go), as of now.
+	// status Tensile's reading left it (readings.go), as of the market
+	// snapshot's last refresh; null until the API has counted them after a
+	// start.
 	Readings *readingCounts `json:"readings"`
 	Escrow   *escrowInfo    `json:"escrow"`
 	// PendingWithdrawals is the account's withdrawal queue as last read
@@ -751,9 +753,13 @@ func (s *Server) computePublishing(ctx context.Context, win Window) (*marketResp
 	if err := s.attachPending(ctx, rows); err != nil {
 		return nil, err
 	}
-	if err := s.attachReadings(ctx, rows, true); err != nil {
-		return nil, err
+	// Tensile's reading of every blob: the memo brought up to now first,
+	// its first computation (or a later full one) a slice at a time
+	// (readings.go).
+	if err := s.readings.update(ctx, s, s.readings.sliceFor()); err != nil {
+		return nil, fmt.Errorf("readings: %w", err)
 	}
+	s.attachReadings(rows)
 	r.Publishers, r.PublishersListed, r.PublisherRows = rows, true, publisherRowsVersion
 	return r, nil
 }
@@ -845,23 +851,22 @@ func (s *Server) publisherRows(ctx context.Context, win Window, only string) ([]
 }
 
 // attachReadings fills each row's Readings: Tensile's reading of every blob
-// the publisher paid for, over the whole history and as of now, whatever the
-// window (readings.go). The market snapshot waits for the memo's first
-// computation (wait); a request does not, and leaves Readings null until
-// that computation has landed.
-func (s *Server) attachReadings(ctx context.Context, rows []publisherRow, wait bool) error {
-	if len(rows) == 0 || (!wait && !s.readings.ready()) {
-		return nil
-	}
-	if err := s.readings.update(ctx, s); err != nil {
-		return fmt.Errorf("readings: %w", err)
+// the publisher paid for, over the whole history, whatever the window
+// (readings.go). It reads the memo as the market snapshot last brought it
+// up, seconds ago, and does no work of its own, so a request never waits on
+// it; Readings stays null until the memo's first computation has landed.
+func (s *Server) attachReadings(rows []publisherRow) {
+	if len(rows) == 0 {
+		return
 	}
 	read := s.readings.counts(s.now())
+	if read == nil {
+		return
+	}
 	for i := range rows {
 		c := read[rows[i].Publisher]
 		rows[i].Readings = &c
 	}
-	return nil
 }
 
 // paymentRow is one escrow movement as the API shows it. A settlement's or
@@ -1145,10 +1150,7 @@ func (s *Server) handlePublishers(w http.ResponseWriter, r *http.Request) {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
-	if err := s.attachReadings(r.Context(), rows, false); err != nil {
-		s.writeInternal(w, r.URL.Path, err)
-		return
-	}
+	s.attachReadings(rows)
 	writeJSON(w, 200, map[string]any{"window": win, "publishers": publisherList(rows), "count": len(rows), "as_of_note": publishersAsOfNote})
 }
 
@@ -1268,10 +1270,7 @@ func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
-	if err := s.attachReadings(ctx, rows, false); err != nil {
-		s.writeInternal(w, r.URL.Path, err)
-		return
-	}
+	s.attachReadings(rows)
 	withdrawals, err := s.publisherWithdrawalDetail(ctx, addr)
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)
