@@ -187,20 +187,21 @@ export type Reconstructable = {
  */
 export type Obligations = {
   total: number;
-  /** its rows came back and verified, at the reading or when asked again */
+  /** its own rows came back and verified, at the reading or when asked again */
   served: number;
   /**
    * not served: none of its answers served and none was Tensile's own gap, its last giving the reason (no shard, rows
-   * that do not verify or too few, a wrong or expired certificate, no registered endpoint, an endpoint that could not be
-   * reached, a timeout, a rate limit or a server error); at a reading before FULL_READ_SINCE, its rows did not come back
-   * and the blob could not be reconstructed
+   * that do not verify or fewer of its own than it holds, a wrong or expired certificate, no registered endpoint, an
+   * endpoint that could not be reached, a timeout, a rate limit or a server error); at a reading before
+   * FULL_READ_SINCE, its rows did not come back and the blob could not be reconstructed
    */
   broken: number;
   /**
    * counted neither way: one of its answers was Tensile's own gap (a request it could not make in time, or an error on
-   * its side), no request of the reading reached a server, or the blob was not read by Tensile; at a reading before
-   * FULL_READ_SINCE also a failure on a blob that was available (a validator such a reading did not ask has no
-   * obligation at all)
+   * its own side: its network, its resolver or its clock) or rows of the blob that are not its own, a request Tensile
+   * still owed it is not on record, no request of the reading reached a server, or the blob was not read by Tensile;
+   * at a reading before FULL_READ_SINCE also a failure on a blob that was available (a validator such a reading did
+   * not ask has no obligation at all)
    */
   not_counted: number;
   /** read, and the retention window has not ended (an endorsed shard not read yet has no obligation row) */
@@ -305,7 +306,7 @@ export type ValidatorReading = {
   promise_hash: string;
   /** true proven obliged, false unproven, null recorded before verification existed */
   attested: boolean | null;
-  /** "full" (every endorser asked for its own rows; so is "end" started at or after FULL_READ_SINCE), "end" (the one reading near the end of the window, before it), or the earlier schedule's w1…wN, grace, post */
+  /** "full" (every endorser asked for its own rows; so is "end" started at or after FULL_READ_SINCE), "enough" (a reading that stopped at enough rows, judged by the earlier rule), "end" (the one reading near the end of the window, before it), or the earlier schedule's w1…wN, grace, post */
   schedule_label: string;
   scheduled_at: string;
   started_at: string;
@@ -331,7 +332,11 @@ export type ValidatorReading = {
   service?: "served" | "not_served";
   /** a not-served reading younger than the settling period: counted, and an x/fibre params change can still withdraw it */
   provisional?: boolean;
-  /** which of the validator's requests at a full reading this is: absent (0) the reading's own, 1 and 2 asked again after an answer that did not serve */
+  /**
+   * which of the validator's requests at a full reading this is: absent (0) the reading's own, 1 and 2 asked again
+   * after an answer that did not serve; a later one can carry the answer of another request to the same endpoint, which
+   * failed before any blob was asked for (its raw_error names that request: sharedAnswer)
+   */
   attempt?: number;
 };
 
@@ -346,7 +351,7 @@ export type Probe = {
   /** true proven obliged, false unproven, null recorded before verification existed */
   attested: boolean | null;
   assigned_row_count: number;
-  /** "full" (every endorser asked for its own rows; so is "end" started at or after FULL_READ_SINCE), "end" (the one reading near the end of the window, before it), or the earlier schedule's w1…wN, grace, post */
+  /** "full" (every endorser asked for its own rows; so is "end" started at or after FULL_READ_SINCE), "enough" (a reading that stopped at enough rows, judged by the earlier rule), "end" (the one reading near the end of the window, before it), or the earlier schedule's w1…wN, grace, post */
   schedule_label: string;
   scheduled_at: string;
   started_at: string;
@@ -458,7 +463,7 @@ export type BlobReading = {
   validator_address: string;
   /** celestiavaloper1… from the staking set, when the collector has read one */
   operator_address?: string;
-  /** "full" (every endorser asked for its own rows; so is "end" started at or after FULL_READ_SINCE), "end" (the one reading near the end of the window, before it), or the earlier schedule's w1…wN, grace, post */
+  /** "full" (every endorser asked for its own rows; so is "end" started at or after FULL_READ_SINCE), "enough" (a reading that stopped at enough rows, judged by the earlier rule), "end" (the one reading near the end of the window, before it), or the earlier schedule's w1…wN, grace, post */
   schedule_label: string;
   started_at: string;
   phase: string;
@@ -483,17 +488,18 @@ export type BlobReading = {
  * the blob is asked for its own rows 10 minutes before the retention window ends, one that did not serve is asked
  * again, up to two more times, about 90 s apart, while the window is open, and each is judged on its own answers,
  * whatever the blob's reconstruction; the first such readings, labelled "end", asked each validator once. Readings
- * started before it (most of them asking validators in the client's order until the blob could be rebuilt) keep the
- * rule of their time: not served only when the blob was unavailable.
+ * started before it (most of them asking validators in the client's order until the blob could be rebuilt), and a
+ * reading made after it that stops at enough rows (labelled "enough"), keep the rule of their time: not served only
+ * when the blob was unavailable.
  */
 export const FULL_READ_SINCE = "2026-10-02T16:09:49Z";
 const FULL_READ_SINCE_MS = Date.parse(FULL_READ_SINCE);
 /** the same moment as the site writes it in a dated note */
 export const FULL_READ_SINCE_WORDS = "2 October 2026, 16:09 UTC";
 
-/** the one reading of a blob near the end of its retention window: "end", or "full" */
+/** the one reading of a blob near the end of its retention window: "end", "full", or "enough" (one that stopped at enough rows) */
 export function endOfWindow(label: string): boolean {
-  return label === "end" || label === "full";
+  return label === "end" || label === "full" || label === "enough";
 }
 
 /** whether a reading row belongs to a full reading: label "full", or "end" started at or after FULL_READ_SINCE */
@@ -501,9 +507,52 @@ export function fullReading(label: string, startedAt: string): boolean {
   return label === "full" || (label === "end" && Date.parse(startedAt) >= FULL_READ_SINCE_MS);
 }
 
-/** a request that was Tensile's own gap: not made in time, or failed on its own side; never counted against a validator */
+/**
+ * a request that was Tensile's own gap: not made in time, or failed on its own side (among them its network, its
+ * resolver or its clock: ownSide); never counted against a validator
+ */
 export function ownGap(classification: string): boolean {
   return classification === "NOT_PROBED" || classification === "PROBE_ERROR";
+}
+
+/**
+ * Which part of Tensile's own side a failure of a full reading rests on, from the raw error the observer wrote when it
+ * filed the answer as its own gap: its network (a connect that timed out while it reached no server), its resolver, or
+ * its clock (a certificate read at the edge of its validity); "" for any other.
+ */
+export function ownSide(raw?: string): "network" | "resolver" | "clock" | "" {
+  const m = /^this observer's own (network|resolver|clock):/.exec(raw ?? "");
+  return m ? (m[1] as "network" | "resolver" | "clock") : "";
+}
+
+/**
+ * A later attempt that carries the answer of another request to the same endpoint: the endpoint failed before any blob
+ * was asked for, while this attempt was due and waiting, so that answer is this attempt's too. blob is the other
+ * request's blob, wire what came back to it. Null for a request of its own.
+ */
+export function sharedAnswer(raw?: string): { blob: string; wire: string } | null {
+  const m = /^the validator's endpoint failed before any blob was asked for, on request (\S+) for blob ([0-9a-f]+), made while this attempt was due and waiting for it: ?([\s\S]*)$/.exec(raw ?? "");
+  if (!m) return null;
+  const key = m[1].split("|");
+  return { blob: key.length >= 4 && /^[0-9a-f]{64}$/.test(key[1]) ? key[1] : m[2], wire: m[3] };
+}
+
+/** a request's raw error as a page shows it: a shared answer names, in words, the request it repeats */
+export function rawErrorWords(p: { raw_error?: string; started_at: string }): string {
+  const sh = sharedAnswer(p.raw_error);
+  return sh
+    ? `the same answer as its request for blob ${sh.blob.slice(0, 6)}…${sh.blob.slice(-4)} at ${hhmm(p.started_at)}: its endpoint failed before any blob was asked for${sh.wire ? `; on the wire: ${sh.wire}` : ""}`
+    : p.raw_error ?? "";
+}
+
+/**
+ * Rows of the blob that verified and are not the validator's own, with no settled promise to explain them: under
+ * hash-order serving they show neither that it holds its rows nor that it does not, so at a full reading Tensile counts
+ * them neither way. Only rows other than its own are certain from the row alone; a short answer (PARTIAL) is either a
+ * part of its own rows, which is not served, or not.
+ */
+export function foreignRows(p: { classification: string; outcome: string }): boolean {
+  return p.classification === "UNMATCHED_GENUINE" && p.outcome === "WRONG_ROWS";
 }
 
 /**

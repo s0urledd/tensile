@@ -19,7 +19,8 @@ Source of truth:
   `fibre/validator/set_test.go`)
 - phases: `fibre-sentinel/internal/probe/schedule.go` (`PhaseAtWindow`)
 - the reading: `fibre-sentinel/internal/probe/blobread.go`, with
-  `fullread.go` (the full reading) and `retry.go` (the later attempts); what it comes to
+  `fullread.go` (the full reading), `retry.go` (the later attempts) and
+  `ownside.go` (failures on this observer's own side); what it comes to
   and what each row then counts as: `fibre-sentinel/observer/verdict/blobread.go`
   (`BlobReading`) and `verdict.CountedClass`, with their SQL twins in
   `fibre-sentinel/observer/rollup`
@@ -243,7 +244,7 @@ by `TestClassify_UnattestedIsNeverAFault`.
 | `NO_REGISTERED_HOST` | the validator has no fibre host in `x/valaddr`, so nobody can fetch its rows; treated as unreachable |
 | `PROBE_ERROR` (no coder) | the observer could not build the verifier for this blob's `(original_rows, total_rows)`, so no download was attempted |
 | `REACHABLE` | TCP, TLS and identity passed and the download was deliberately skipped (the reachability heartbeat); no retention verdict |
-| `PROBE_ERROR` | the observer's own probe failed (bug or config), not the target |
+| `PROBE_ERROR` | the observer's own probe failed (bug or config), not the target; at a full reading also a failure that rests on this observer's own network, resolver or clock (see "When a failure counts"), with the wire outcome kept in `raw_error` |
 | `MISSED` | the reading, or a request or later attempt of a full reading, could not start before its deadline (earlier rows: the scheduled point elapsed before the prober ran it) |
 
 ## Classifications (the verdict)
@@ -254,11 +255,11 @@ One sentence each, and what a reader should conclude.
 |---|---|---|
 | `HEALTHY` | assigned validator returned `SERVED_OK` in window or in grace | the validator kept its promise at this point in time |
 | `FAULT` | an identity-verified endpoint, for a shard the chain proves it stored, **said it has no such shard** (`NOT_FOUND` in window) or **returned bytes that do not verify against the commitment** (`INVALID_ROWS`, any phase). A third arm, rows outside this promise's assignment that verify against nothing (`WRONG_ROWS`/`PARTIAL` without `commitment_verified`, in window or grace), exists in the code as a guard but cannot be produced by the prober, which files rows that fail the commitment as `INVALID_ROWS` | the validator did not serve a shard the chain records it as obliged to hold, at a moment inside that obligation. That is what the row says, and it is the most it says: `x/fibre` calls this parameter a *minimum local retention* — upstream's own words are "the minimum local duration validators keep uploaded shards" (`x/fibre/types/params.go`) and "the on-chain local retention floor for uploaded shards" (`celestia/fibre/v1/query.proto`) — and the chain neither checks it nor penalises missing it. "Broke its promise" is a heavier sentence than the protocol supports; this row is the observation, not a verdict about intent. It counts against the validator when it is the validator's last answer at a full reading (see "When a failure counts"); at a reading before full readings, only when the blob could not be reconstructed. Two conditions, each reproducible by anyone who repeats the probe. At the reading, an answer no client can use (an empty shard, an RLC vector of the wrong length, a reply over the protocol's message bound) is `MALFORMED_SHARD`, filed `SERVER_ERROR`: the client skips such a shard, so it is the validator's rows not coming back. On rows of the earlier schedule the same parse failure was the observer's gap (`PROBE_ERROR`, `shard shape:` on the row). Neither is `INVALID_ROWS`: the commitment check is the only thing that turns bytes into that fault. Every request of a reading carries the phase the reading started in, so a request this observer's own limits held back is judged as if it had been made at once. One margin: a `NOT_FOUND` whose answer arrives within 30 s of `must_serve_until` is graded as grace (`TOLERATED`, counted neither way) and the row says `phase_note: not_found_at_deadline`, because the server prunes on a minute tick against its own clock; only a request held back to the deadline itself can meet it. The count beside a validator's name is `obligations.broken`: one per shard signed for and not handed over, at the reading and each time it was asked again (before full readings: from a blob that could not be reconstructed) |
-| `UNREACHABLE` | assigned and attested, in window, and the observer could not complete a conversation at all: `DNS_FAIL`, `TCP_REFUSED`, `TCP_TIMEOUT`, `TCP_UNREACHABLE`, `TLS_HANDSHAKE_FAIL`, `RPC_UNAVAILABLE`, `RPC_TIMEOUT`, `RPC_ERROR` | no answer within the client's 15 s (connect and TLS included), dialled twice (the client's re-dial). It is not served, as a reader using the client meets it, when it is the validator's last answer and none of its requests was this observer's gap (before full readings: only on a blob that could not be reconstructed). At the reading, "no route to host" is that validator's host not answering (`TCP_UNREACHABLE`); only a failure that never left this machine (no route out, no local address, a local socket error) is filed as the observer's own, `PROBE_ERROR` |
+| `UNREACHABLE` | assigned and attested, in window, and the observer could not complete a conversation at all: `DNS_FAIL`, `TCP_REFUSED`, `TCP_TIMEOUT`, `TCP_UNREACHABLE`, `TLS_HANDSHAKE_FAIL`, `RPC_UNAVAILABLE`, `RPC_TIMEOUT`, `RPC_ERROR` | no answer within the client's 15 s (connect and TLS included), dialled twice at the reading's own request (the client's re-dial) and once at a later attempt. It is not served, as a reader using the client meets it, when it is the validator's last answer and none of its requests was this observer's gap (before full readings: only on a blob that could not be reconstructed). At the reading, "no route to host" is that validator's host not answering (`TCP_UNREACHABLE`); only a failure that never left this machine (no route out, no local address, a local socket error) is filed as the observer's own, `PROBE_ERROR`, and at a full reading so is a connect that timed out or found no route while this observer reached no server and the other validators' endpoints it tried did not answer either |
 | `NOT_REGISTERED` | assigned validator with no Fibre host in `x/valaddr` at the time of the probe (`NO_REGISTERED_HOST`) | a registry state, not a refusal. Jailing and unbonding remove a provider from `AllBondedFibreProviders` while the chain keeps the entry: it is garbage-collected only once the validator is gone from staking state, or jailed and unbonded for longer than the unbonding time plus seven days |
 | `SHADOWED_SHARD` | assigned validator returned rows that **verify against the blob commitment**, are not this promise's assignment (`WRONG_ROWS` or `PARTIAL` with `commitment_verified`), and are **exactly the row set another settled promise over the same commitment assigns to this validator** (`shadowed_by` names it) | that promise answered in this one's place. `DownloadShard` is addressed by the commitment alone; the Fibre store keeps every promise's shard side by side (`Put` "stored independently without deduplication") and `Get(commitment)` returns the first readable one in promise-hash order, so the validator has no way to tell the two apart. Its rows came back verified, so at the reading it is served. Without a matching promise the same wire result is `UNMATCHED_GENUINE`, and that verdict is drawn late (see "Deferred verdicts"): the order is by hash, not by time, so a promise settled after the probe can be the one that answered |
-| `UNMATCHED_GENUINE` | assigned validator returned rows that verify against the blob commitment but match no settled promise's assignment for it, judged once every promise that could own them is on record | a shard uploaded for a promise that never settled is on disk until its prune and never on chain, and answers whenever its hash sorts first; the validator is serving genuine data of the blob. Its rows came back verified, so at the reading it is served, indices on the row; at a full reading only when they are no fewer than it holds (a short shard, `PARTIAL`, is not served) |
-| `IDENTITY_EXPIRED` | certificate endorsed by the right consensus key, but its signed validity window has lapsed or has not started | a renewal running late. Endpoint hygiene, not impersonation and not a retention failure. The client rejects the certificate all the same, so it is not served (before full readings: only on a blob that could not be reconstructed) |
+| `UNMATCHED_GENUINE` | assigned validator returned rows that verify against the blob commitment but match no settled promise's assignment for it, judged once every promise that could own them is on record | a shard uploaded for a promise that never settled is on disk until its prune and never on chain, and answers whenever its hash sorts first; the validator is serving genuine data of the blob. Before full readings its rows came back verified, so it was served, indices on the row. At a full reading only the validator's own rows serve: a short shard whose rows are all its own (`PARTIAL`, `rows_subset_of_assignment`) is not served, and other rows (`WRONG_ROWS`, or a `PARTIAL` that is not all its own) are this observer's gap, counted neither way, because under hash-order serving they show neither that it holds its rows nor that it does not |
+| `IDENTITY_EXPIRED` | certificate endorsed by the right consensus key, but its signed validity window has lapsed or has not started | a renewal running late. Endpoint hygiene, not impersonation and not a retention failure. The client rejects the certificate all the same, so it is not served (before full readings: only on a blob that could not be reconstructed). At a full reading, a window whose edge lies within this observer's measured clock offset and a minute of the request rests on this observer's clock, and is its gap (`PROBE_ERROR`) |
 | `IDENTITY_MISMATCH` | certificate not endorsed by this validator's consensus key, any validator, any phase (judged before attestation: a certificate is a property of the endpoint) | no client will download from this endpoint, so it is as unusable as one that does not answer. Shown as the endpoint's status; not served (before full readings: only on a blob that could not be reconstructed) |
 | `SERVER_ERROR` | assigned and attested, in window, and the endpoint answered with an application error instead of the shard (`SERVER_ERROR` outcome) | the server was reached and did not hand over the shard. Not served when it persists each time the validator is asked (before full readings: only on a blob that could not be reconstructed); a server that errors at every reading is visible as such on its own page. On earlier rows, in grace it is `TOLERATED`, after the window `UNREACHABLE_POST_WINDOW` |
 | `THROTTLED` | assigned and attested, in window, and the endpoint refused the download with a rate limit (`RPC_THROTTLED` outcome) | the server was reached and declined to serve. The client takes a rate limit as the server's answer and moves on without the rows, and so does the reading, so it is the validator not serving: not served when it persists each time the validator is asked (before full readings: only on a blob that could not be reconstructed) |
@@ -269,7 +270,7 @@ One sentence each, and what a reader should conclude.
 | `EXPECTED_UNASSIGNED` | validator not assigned this shard answered `NOT_FOUND` or was unreachable | normal; earlier records only, when `-probe-unassigned` was on |
 | `SERVING_UNASSIGNED` | validator not assigned this shard returned data for it (`SERVED_OK`, `PARTIAL`, `WRONG_ROWS` or `INVALID_ROWS`) | unexpected; either the observer's assignment is wrong or the validator over-serves. Shown for review, never as a fault |
 | `UNATTESTED` | assigned validator, any phase, where no verified signature from that validator appears on the settled promise and the probe reached the question of the shard at all (an observer-side outcome, a stale assignment pin, a missing registry entry or an unusable certificate is named first, as `PROBE_ERROR`, `NOT_REGISTERED` or `IDENTITY_MISMATCH`, none of which enters a rate) | nothing on chain proves this validator ever stored the shard, so no verdict is owed either way. Outside every rate, in both directions. A full reading does not ask such a validator; readings before it asked it like the rest, as the client does, and its verified rows counted toward the blob |
-| `PROBE_ERROR` | the request failed on this observer's side (a local resolver, no route out, no coder, an answer this build could not handle) or the observer gave up on it (`RPC_DEADLINE`, earlier rows) | an observer problem, shown as a gap, and never counted against the validator at a full reading (a later attempt that serves still makes it served). When no request of a reading reached a server, the reading did not happen and the blob was not read by Tensile; at a reading before full readings, when one did, this validator's rows did not come back |
+| `PROBE_ERROR` | the request failed on this observer's side (a local resolver, no route out, no coder, an answer this build could not handle) or the observer gave up on it (`RPC_DEADLINE`, earlier rows); at a full reading also a failure that looks like the validator's on the wire but rests on this observer's own network, resolver or clock (`internal/probe/ownside.go`; the wire outcome stays in `raw_error`) | an observer problem, shown as a gap, and never counted against the validator at a full reading (a later attempt that serves still makes it served). When no request of a reading reached a server, the reading did not happen and the blob was not read by Tensile; at a reading before full readings, when one did, this validator's rows did not come back |
 | `NOT_PROBED` | the reading, or a request or later attempt of a full reading, could not start in time (observer down or behind; `MISSED`), or on earlier records a publication the load policy sampled out, or a heartbeat (`REACHABLE`) | a gap in observation, never a zero |
 | `RETENTION_UNVERIFIED` | the publication's upload interval overlaps a range of heights over which an `x/fibre` params change landed with no event and this observer has not read the params at every height (see "Phases"). Applied over the stored row rather than returned by `Classify`: the measurement record says what happened on the wire and is append-only, while whether this observer trusts its own deadline is a judgement that has to be revisable | this observer cannot say when the obligation ended, so it publishes no serve verdict — **neither the fault nor the credit**. Withholding only the accusations would raise every rate it touched, which is the same argument this document makes for `UNATTESTED`. Replaces exactly `HEALTHY` and `FAULT`; `INVALID_ROWS` is carved out, because bytes that fail the commitment are a fault in every phase and no deadline rescues them. Never a statement about the validator |
 
@@ -287,17 +288,30 @@ One sentence each, and what a reader should conclude.
   against the commitment by one Reconstructor the whole reading shares. A
   validator that did not endorse is not asked. A validator whose answer did
   not serve is asked again, up to two more times, 90 s after its last
-  answer (`internal/probe/retry.go`). This observer's limits on requests
-  and bytes in flight only delay a request, and every request carries the
-  phase the reading started in, so a delay changes nothing; but no request
-  of a full reading, nor a later attempt, starts later than a minute before
-  `must_serve_until`, and one that cannot is this observer's gap
-  (`NOT_PROBED`). The reading's own requests have no limit per validator, as
-  the client has none; a later attempt waits while the same validator's
-  previous attempt is in flight.
+  answer (`internal/probe/retry.go`), when that is still before a minute
+  ahead of `must_serve_until`; an attempt that could not start by then is
+  not owed, and the answer before it is the validator's last. This
+  observer's limits on requests and bytes in flight only delay a request,
+  and every request carries the phase the reading started in, so a delay
+  changes nothing; but no request of a full reading, nor a later attempt,
+  starts later than a minute before `must_serve_until`, and one that was
+  owed and cannot is this observer's gap (`NOT_PROBED`). The reading's own
+  requests have no limit per validator, as the client has none; a later
+  attempt is one request with no re-dial, at most one is in flight to a
+  validator, and it goes to the host the registry names then. When a
+  request fails before the validator's identity is verified, so before any
+  blob was asked for (no such host, a connect refused, timed out or
+  unroutable, a failed handshake or certificate), its answer is also the
+  answer of every other attempt of that validator due and waiting at the
+  same host when it began: each gets a row of its own whose `raw_error`
+  names the request it repeats (`shared_from` in the record), so a
+  validator whose endpoint is down is judged on every blob it owed an
+  attempt on.
   The rows of a reading are written together, one per validator asked,
   each with where it sat in the reading and what the reading came to
-  (`read`); each later attempt writes its own (`attempt` 1 and 2). Most readings
+  (`read`); each later attempt writes its own (`attempt` 1 and 2), and a
+  row after which its validator is owed another attempt says when it is
+  due (`next_attempt_due`). Most readings
   started before 2 October 2026, 16:09 UTC asked the whole set and stopped
   at `original_rows` (4096 for blob v0) distinct verified rows.
 - **The result** (`verdict.BlobReading`) is the client's, three ways only:
@@ -320,18 +334,22 @@ One sentence each, and what a reader should conclude.
   (below); one that was not asked counts neither way.
 - **What a validator's row counts as** (`verdict.CountedClass`, one per
   endorsed (validator, blob); "When a failure counts" below):
-  - `served` — its rows came back verified at the reading, or when it was
-    asked again;
+  - `served` — its own rows came back verified at the reading, or when it
+    was asked again;
   - `broken` (not served) — its last answer did not serve and none of its
     answers was this observer's gap, whatever the client met: not found,
-    rows that do not verify or too few, a timeout, a rate limit, a server
-    error, a certificate the client rejects, no registered host; before
-    full readings, the blob was unavailable and its rows did not come back;
+    rows that do not verify or fewer of its own than it holds, a timeout, a
+    rate limit, a server error, a certificate the client rejects, no
+    registered host; before full readings, the blob was unavailable and its
+    rows did not come back;
   - `not_counted` — anything else once the window has closed: this
-    observer's gap among its answers, a reading in which no request reached
-    a server, or a blob not read by Tensile; before full readings also a
-    validator that failed while the blob was available all the same (one
-    the reading did not need to ask has no row and no obligation);
+    observer's gap among its answers (its own network, resolver or clock
+    included, and rows of the blob that are not the validator's own), an
+    attempt it was owed that is not on record, a reading in which no
+    request reached a server, or a blob not read by Tensile; before full
+    readings also a validator that failed while the blob was available all
+    the same (one the reading did not need to ask has no row and no
+    obligation);
   - `pending` — the window has not closed. The site shows a reading's
     result on the blob's page as soon as it is in; the obligation takes it
     when the window closes.
@@ -380,6 +398,11 @@ One sentence each, and what a reader should conclude.
   before the client's re-dial), `attempt` (which of a validator's requests
   at a full reading the row is: absent for the reading's own, 1 and 2 for
   the ones made again after an answer that did not serve),
+  `next_attempt_due` (when its validator is to be asked again),
+  `shared_from` (the request whose answer a later attempt repeats),
+  `download.rows_subset_of_assignment` (a short answer whose rows are all
+  the validator's own), `observer_load` (the requests and bytes in flight
+  when the request was let go, and how long it waited for room),
   `host_at_settlement` (the host registered when the promise
   settled, where the upload went, derived from the chain's own
   `set_fibre_provider_info` events as the scanner reads them in the same
@@ -483,15 +506,16 @@ validator's last answer:
 | no answer from the endpoint at all | `UNREACHABLE` | from one vantage, indistinguishable from the observer's own path failing |
 | no Fibre host in the registry | `NOT_REGISTERED` | jailing and unbonding remove the provider from the bonded list; the chain keeps the entry until the validator leaves staking state or has been jailed and unbonded a week past its unbonding time |
 | exactly another settled promise's rows for the same blob | `SHADOWED_SHARD` | `DownloadShard` takes a commitment, not a promise hash, and the store serves the first shard by promise-hash order; the validator cannot tell them apart |
-| genuine rows of the blob that match no settled promise | `UNMATCHED_GENUINE` | an upload whose promise never settled can answer under hash-order serving; served, as rows that came back verified; at a full reading a short one is not served |
+| genuine rows of the blob that match no settled promise | `UNMATCHED_GENUINE` | an upload whose promise never settled can answer under hash-order serving. At a full reading rows that are not the validator's own count neither way, and a short shard of its own rows is not served; before full readings, served, as rows that came back verified |
 | genuine rows matching no promise the observer has scanned | `PROBE_ERROR` at the probe, then the late verdict | the owning promise may settle after the probe; `download.shadow_gap` says so, and the collector judges the row once the scanner has read past probe time + `payment_promise_timeout`: `SHADOWED_SHARD` if a promise on record assigns the rows, `UNMATCHED_GENUINE` if none does, `PROBE_ERROR` for good if a scan gap covers the interval |
-| genuine rows matching no settled promise, judged late | `UNMATCHED_GENUINE` | a shard uploaded for a promise that never settled is on disk until its prune and never on chain, and answers when its hash sorts first; a validator serving it is serving a genuine piece of the blob. Not a fault the evidence supports: served, indices on the row; at a full reading only when no fewer than the validator holds |
+| genuine rows matching no settled promise, judged late | `UNMATCHED_GENUINE` | a shard uploaded for a promise that never settled is on disk until its prune and never on chain, and answers when its hash sorts first; a validator serving it is serving a genuine piece of the blob. Not a fault the evidence supports, and not evidence that it holds its own rows either: at a full reading counted neither way (a short shard of its own rows is not served), before full readings served, indices on the row |
 | a lapsed but correctly signed certificate | `IDENTITY_EXPIRED` | a late renewal, not someone else answering |
 | a certificate signed by the wrong consensus key | `IDENTITY_MISMATCH` | an unusable endpoint, which is a statement about the endpoint (its status says so), not about a shard |
 | an application error instead of the shard | `SERVER_ERROR` | the server did not say it lacks the shard; from one probe a hiccup and a loss look the same |
 | a rate limit instead of the shard | `THROTTLED` | the server declined this request; like every answer without rows it counts as not served when it persists each time the validator is asked |
 | an outcome the taxonomy does not recognise | `PROBE_ERROR` | "we have not taught the observer about this" is not evidence |
 | a local socket error, a probe this observer cancelled, a verification that timed out | `PROBE_ERROR` | the packets never left this machine |
+| at a full reading: a connect that timed out or found no route while this observer reached no server and the other validators' endpoints it tried did not answer either; a timeout after its own resolver took more than 5 s of the 15; a certificate read as outside its validity when the edge lies within the measured clock offset and a minute of the request | `PROBE_ERROR` (the wire outcome in `raw_error`) | the failure rests on this observer's own network, resolver or clock, and is not shown to be the validator's |
 | a `CANCELLED` status the server sends while the request is still live | `SERVER_ERROR` | the client takes it as the server's error and skips the shard; like every answer without rows it counts as not served when it persists each time the validator is asked |
 
 ### When a failure counts
@@ -499,35 +523,69 @@ validator's last answer:
 Every validator that endorsed the promise is asked for its own rows, and is
 judged on its own answers, whatever the blob came to:
 
-- **served** when an answer's rows came back and verified, no fewer than it
-  holds (a `SHADOWED_SHARD`, another settled promise's rows over the same
-  commitment, is served too; `probe.FullServed`);
+- **served** when an answer handed over its own rows, verified: exactly its
+  assignment (`SERVED_OK`), or exactly another settled promise's
+  assignment over the same commitment (`SHADOWED_SHARD`), which a validator
+  cannot tell apart from its own (`probe.FullServed`);
 - **not served** by its last answer, when none served and none was this
-  observer's gap: no such shard, rows that do not verify or too few of
-  them, a wrong or lapsed certificate, no registered host, an endpoint that
-  could not be reached, a timeout, a rate limit or a server error, every
-  time it was asked (`FAULT`, `UNREACHABLE`, `IDENTITY_MISMATCH`,
-  `IDENTITY_EXPIRED`, `SERVER_ERROR`, `THROTTLED`, `NOT_REGISTERED`, a
-  short `UNMATCHED_GENUINE`);
+  observer's gap: no such shard, rows that do not verify or fewer of its
+  own than it holds, a wrong or lapsed certificate, no registered host, an
+  endpoint that could not be reached, a timeout, a rate limit or a server
+  error, every time it was asked (`FAULT`, `UNREACHABLE`,
+  `IDENTITY_MISMATCH`, `IDENTITY_EXPIRED`, `SERVER_ERROR`, `THROTTLED`,
+  `NOT_REGISTERED`, and an `UNMATCHED_GENUINE` short shard whose rows are
+  all its own, `rows_subset_of_assignment`);
 - **counted neither way** when one of its answers was this observer's gap
-  (`NOT_PROBED`: a request or later attempt it could not make in time;
-  `PROBE_ERROR`: its own resolver, a request abandoned by a restart, a
-  verdict deferred on its own blindness; `probe.FullGap`), or when not a
+  (`probe.FullGap`): `NOT_PROBED`, a request or later attempt it owed and
+  could not make in time; `PROBE_ERROR`, its own resolver, a request
+  abandoned by a restart, a verdict deferred on its own blindness, or one
+  of the three failures below; or genuine rows of the blob that are not
+  the validator's own and that no settled promise explains (`WRONG_ROWS`,
+  or a `PARTIAL` that is not all its own; `probe.FullForeign`), which under
+  hash-order serving show neither that it holds its rows nor that it does
+  not. Also when its last answer still owed it another attempt
+  (`next_attempt_due`) that is not on record (a prober that stopped past
+  the cutoff, or a day's export read without the next day), and when not a
   single request of the reading reached a server.
 
+This observer's own side is checked at a full reading only, and the answer
+is rewritten to `PROBE_ERROR` with the wire outcome kept in `raw_error`
+(`internal/probe/ownside.go`):
+
+- **its network**: a connect that timed out or found no route, when no
+  request of this observer reached any server from 30 s before the request
+  began until it ended, and none of up to three endpoints of other
+  validators it reached most recently accepts a connect now (the check is
+  reused for 10 s);
+- **its resolver**: a timeout after a lookup that took more than 5 s of the
+  request's 15 s;
+- **its clock**: a certificate read as outside its signed window, when the
+  window's edge lies within the measured clock offset plus a minute of the
+  request.
+
 A validator whose answer did not serve is asked again, up to two more
-times, 90 s after its last answer, while a request can start a minute
-before `must_serve_until`. Every answer is a row of its own (`attempt` 0,
-1, 2), and the last carries the verdict and its reason. A validator that
-did not endorse is not asked and owes nothing. The row keeps its class;
-`verdict.CountedClass` and `rollup.CountedClass` say what it counts as.
+times, 90 s after its last answer, when that is still before a minute
+ahead of `must_serve_until`; one that could not start by then is not
+owed. Every answer is a row of its own (`attempt` 0, 1, 2), and the last
+carries the verdict and its reason. A shared answer (an endpoint that
+failed before any blob was asked for, answering every attempt of the
+validator waiting for it, `raw_error` naming the request) is a row and an
+answer like any other. A validator that did not endorse is not asked and
+owes nothing. The row keeps its class; `verdict.CountedClass` and
+`rollup.CountedClass` say what it counts as, in the same steps: served;
+`NOT_PROBED` or `PROBE_ERROR`; foreign rows; another of its answers
+served, was a gap, or started later; the reading reached no server; an
+owed attempt is not on record; not served.
 
 These are full readings (`probe.FullReading`): every reading labelled
 `full`, and every `end` reading started at or after 2026-10-02T16:09:49Z
 (`probe.FullReadSince`); the `end` readings made before the later attempts
 existed have one answer each. Readings started before then (most of them
 asking validators in the client's order until the blob could be rebuilt)
-keep the rule of their time, with nothing rewritten. A validator whose rows did
+keep the rule of their time, with nothing rewritten, and so does a reading
+made with `-end-read-all=false`, which stops at enough rows and is
+labelled `enough`: it is the end of the window's one reading, judged by
+that earlier rule. A validator whose rows did
 not come back counted as **not served** only when it endorsed the promise
 and the blob was unavailable: then a reader using celestia-app's client was
 left without the blob, and any answer that left it without the validator's
@@ -641,7 +699,10 @@ what the measurement cannot separate.
   rows failing the commitment). A validator that wanted to hide behind
   this would have to hold another shard of the same blob to serve, which
   is genuine data of the blob; the reading already counts the rows it
-  returned toward the blob.
+  returned toward the blob. Nor are they evidence that the validator holds
+  its own rows, which is what a full reading asks: there they count neither
+  way. Only a short answer whose rows are all its own says something about
+  its own shard, and that is not served.
 - **A protocol finding.** `DownloadShard` is addressed by commitment
   alone, and the store answers with the first shard in promise-hash
   order, so with several promises over one blob no client, the reference
@@ -662,7 +723,9 @@ what the measurement cannot separate.
 - **One vantage.** Every reading comes from a single network path, as one
   client's download does, and each validator is judged on its own answers
   from it: asking again, twice, 90 s apart, keeps a passing failure on that
-  path from counting. A second location runs the heartbeat, which says
+  path from counting, and a connect that timed out while this observer
+  reached no server and the other validators' endpoints it tried did not
+  answer either is its own gap. A second location runs the heartbeat, which says
   whether an endpoint this observer calls down answers from elsewhere; it
   adds no reading to any rate.
 

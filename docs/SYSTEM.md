@@ -60,6 +60,7 @@ chain block
   prober: re-derives the queue of readings every cycle from publications.jsonl
           + measurements.jsonl (never stored)
        ├─ ReadPoint(publication)  → must_serve_until - 10 min, label full
+       │                            (enough with -end-read-all=false)
        ├─ ClientOrder  → every validator that endorsed the promise, in validator.Set.Select order
        ├─ per request, probe.Run  → DNS · TCP · TLS 1.3 · consensus-key identity
        │                            · DownloadShard, 15 s in all, one re-dial
@@ -68,7 +69,9 @@ chain block
        ├─ Classify(Evidence) → one classification + a reason per validator asked
        ├─→ measurements.jsonl (a reading's rows together)
        └─ a validator whose answer did not serve: asked again up to twice,
-          90 s apart, while a request can start 60 s before must_serve_until
+          90 s after its last answer, while a request can start 60 s before
+          must_serve_until; one lane per validator, an endpoint failure
+          answering every attempt waiting in it
           └─→ measurements.jsonl (a row per attempt, attempt 1 and 2)
 
   heartbeat: every 5 min, every bonded provider's endpoint, layers 1-3 only
@@ -212,10 +215,12 @@ predicate rather than from a list repeated per call site. Which rows are
 (`probe.FullReading`: label `full`, or `end` started from
 2026-10-02T16:09:49Z on) each endorser is judged on its own answers,
 whatever the blob came to: its last answer, when none served, none was this
-observer's gap (`NOT_PROBED`, `PROBE_ERROR`) and some request of the reading
-reached a server. At a reading before it, on an unavailable blob every
-answer that left the reader without the validator's rows; on an available
-one none.
+observer's gap (`NOT_PROBED`, `PROBE_ERROR`, or rows of the blob that are
+not the validator's own, `probe.FullForeign`), it was owed no attempt that
+is missing from the record (`next_attempt_due`), and some request of the
+reading reached a server. At a reading before it, and at one labelled
+`enough`, on an unavailable blob every answer that left the reader without
+the validator's rows; on an available one none.
 
 **Blob reading** — `verdict.BlobReading`, one per publication, the Fibre
 client's result: **available** when the distinct verified rows reach
@@ -236,12 +241,14 @@ reading of its own.
 
 ```
 pending      must_serve_until > as_of
-served       its rows came back verified at the blob's reading, at the
+served       its own rows came back verified at the blob's reading, at the
              reading's own request or a later attempt
 broken       not served: at a full reading, its last answer did not serve
              and none of its answers was this observer's gap; before it, the
              blob was unavailable and its rows did not come back
-not_counted  the rest: this observer's gap among its answers, a reading in
+not_counted  the rest: this observer's gap among its answers (its network,
+             resolver or clock, and rows of the blob not its own, included),
+             an attempt it was owed that is not on record, a reading in
              which no request reached a server, a blob not read; before full
              readings also a failure on a blob that was available (a
              validator such a reading did not ask has no row and no bucket)
@@ -259,8 +266,9 @@ reference a Go constant.
 
 ## 7. The reading
 
-`internal/probe/blobread.go`, `fullread.go` and `retry.go`. Each blob is
-read once, and every validator that endorsed it is asked for its own rows,
+`internal/probe/blobread.go`, `fullread.go`, `retry.go` and `ownside.go`.
+Each blob is read once, and every validator that endorsed it is asked for
+its own rows,
 the way celestia-app's Fibre client asks for a shard (a full reading, label
 `full`, `probe.FullReading`):
 
@@ -277,23 +285,44 @@ the way celestia-app's Fibre client asks for a shard (a full reading, label
 - every row is verified against the commitment by one Reconstructor the
   reading shares, which gives the blob's result
 - a validator whose answer did not serve is asked again, up to twice
-  (`FullReadRetries`), 90 s after its last answer (`-retry-spacing`); each
-  attempt runs on its own (no blob slot, no shared Reconstructor, one in
-  flight per validator) and writes a row of its own (`attempt` 1 and 2),
-  and a restart makes or records the attempts the record still owes
+  (`FullReadRetries`), 90 s after its last answer (`-retry-spacing`), when
+  that is still before `must_serve_until - 1 min`; an attempt that could
+  not start by then is not owed, no row is written for it, and the answer
+  before it is the validator's last. A row that owes an attempt says when
+  it is due (`next_attempt_due`). Each attempt is one request with no
+  re-dial, runs on its own (no blob slot, no shared Reconstructor), goes to
+  the host the registry names then, and waits in its validator's lane (one
+  worker each, so one attempt in flight to a validator, the one whose
+  cutoff comes first); it writes a row of its own (`attempt` 1 and 2), and
+  a restart resolves each blob once for the attempts the record still
+  owes, then makes them or records them as abandoned
+- a request that fails before the validator's identity is verified (no
+  such host, a connect refused, timed out or unroutable, a failed
+  handshake or certificate) answers every other attempt of that validator
+  due and waiting at the same host when it began: each gets its own row,
+  `shared_from` naming the request and `raw_error` saying so
 - no request of the reading, nor a later attempt, starts later than
-  `must_serve_until - 1 min` (`-request-start-margin`); one that cannot is
-  not made, and its validator's row says so (`NOT_PROBED`): this observer's
-  gap
+  `must_serve_until - 1 min` (`-request-start-margin`); one that was owed
+  and cannot is not made, and its validator's row says so (`NOT_PROBED`):
+  this observer's gap
 - a rate limit, a `CANCELLED` the server sends, a timeout or "no route to
   host" from a validator is that validator's rows not coming back, as the
-  client sees it
-- load: 16 blobs and 64 requests at once, 512 MiB of shards in flight; a
-  request waits for room until its last start, its time starts once it is
-  let go, and it carries the phase the reading started in, so the wait
-  changes nothing. The reading's own requests have no limit per validator, as
-  the client has none; a later attempt waits while the same validator's
-  previous attempt is in flight
+  client sees it, unless it rests on this observer's own side: at a full
+  reading a connect that timed out or found no route while no request
+  reached any server from 30 s before it until it ended and none of up to
+  three other validators' endpoints reached last accepts a connect now, a
+  timeout after a lookup that took more than 5 s, or a certificate read as
+  outside its window within the clock offset and a minute of its edge, is
+  rewritten to `PROBE_ERROR` with the wire outcome in `raw_error`
+- load: 16 blobs (`-blob-concurrency`) and 256 requests (`-concurrency`)
+  at once, 512 MiB of shards in flight (`-in-flight-mib`), and with
+  `-link-mbps` set, no more shard bytes than the link moves in half a
+  request's time; a request waits for room until its last start, its time
+  starts once it is let go, and it carries the phase the reading started
+  in, so the wait changes nothing. Every row records `observer_load`. The
+  reading's own requests have no limit per validator, as the client has
+  none; a later attempt waits while the same validator's previous attempt
+  is in flight
 
 The reading ends as the client's `Download` does: available, or
 unavailable with the client's error. When not a single request reached a
@@ -309,7 +338,11 @@ attempt appends its own. Readings started before 2026-10-02T16:09:49Z
 client's order until the rows reconstructed the blob (the first ones, from 27
 September 2026, asked each endorsing validator once). An `end` row started
 from then on belongs to a full reading; the first full readings, labelled
-`end`, asked each validator once. Blobs settled before
+`end`, asked each validator once. No build writes `end` any more: a
+reading with `-end-read-all=false` stops once the rows reconstruct the
+blob, is labelled `enough`, and is judged by the earlier rule; `end`,
+`full` and `enough` are each the end of the window's one reading
+(`probe.EndOfWindowLabel`). Blobs settled before
 `-end-read-since` were read on the earlier schedule (four in-window points,
 grace and post) and are not read again. Both keep the rule of their time.
 
@@ -603,9 +636,10 @@ from outside the celestia-app module.
    rate — per row *and per obligation*.
 2. **A validator is judged only on its own answers.** At a full reading
    its last answer did not serve, none of its answers was this observer's
-   gap, and some request of the reading reached a server; at a reading
-   before it, the blob could not be reconstructed and its rows did not come
-   back.
+   gap (rows of the blob that are not its own are one), no attempt it was
+   owed is missing from the record, and some request of the reading
+   reached a server; at a reading before it, the blob could not be
+   reconstructed and its rows did not come back.
 3. **Absence of a signature is "unproven", never "absent".** The publisher
    stops collecting at the safety threshold.
 4. **Nothing is judged across the observer's own blindness**: a scan gap
@@ -700,10 +734,11 @@ Stated here because they are properties of the machine, not of any validator.
   ask). While the observer is blind it can withhold credit, never
   manufacture an accusation.
 - **Readings before 2026-10-02T16:09:49Z did not ask everyone.** Most of
-  them stopped at enough rows, so a validator later in the order was often
-  not asked at all, and an available blob said nothing about the validators
-  that failed in it; the failures are `not_counted`, and a validator not
-  asked has no obligation on that blob.
+  them stopped at enough rows, as a reading labelled `enough` does, so a
+  validator later in the order was often not asked at all, and an
+  available blob said nothing about the validators that failed in it; the
+  failures are `not_counted`, and a validator not asked has no obligation
+  on that blob.
 
 ---
 
@@ -717,5 +752,6 @@ Stated here because they are properties of the machine, not of any validator.
 | every validator failed in one reading | the blob's rows (`/v1/probes?blob=`): if no request reached a server (`PROBE_ERROR`, or a failed lookup or dial, everywhere) the blob reads not read and no one counts; otherwise it is unavailable, and at a full reading each validator is not served by its last answer |
 | the scanner stopped | scan gaps in `state.json`; `scanner_lag` and `chain_liveness` in `/v1/health` |
 | the prober records nothing | the prober's status `reads` block (queued, in progress, started late and missed in the last hour; `/v1/health` components), `BackfillMissed` horizon |
+| a validator is often counted neither way | the status `reads` block: `requests_not_started_last_hour`, `admit_wait_p95_ms`, the `retries_*` counts and `retries_not_made_by_validator_last_hour`; `observer_load` on its rows |
 | the build says `-dirty` | an untracked file in the working tree at build time |
 | the API refuses to start | schema older or newer than the binary; run the collector once |

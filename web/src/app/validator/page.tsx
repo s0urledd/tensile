@@ -3,7 +3,7 @@ import { Suspense, useCallback, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useApi, type ValidatorDetail, type ValidatorReading, type Window, type RecordThrough, type Obligations, type Meta, type EndpointCheck, int, pctOf, bytes, utcWord, dateUTC, whenUTC, shortMid, notFound, rateTone, notCountedText, badRequest, MIN_RATED, API_BASE, provisionalNow, type ProvisionalFaults, type NetworkReference,
-  endOfWindow, fullReading, ownGap, attemptsOf, judged, askedTimes, FULL_READ_SINCE_WORDS } from "@/lib/api";
+  endOfWindow, fullReading, ownGap, ownSide, sharedAnswer, rawErrorWords, foreignRows, hhmm, attemptsOf, judged, askedTimes, FULL_READ_SINCE_WORDS } from "@/lib/api";
 import { useWindow, WindowSwitch, windowLabel, periodName } from "@/lib/window";
 import StatusLine from "@/components/StatusLine";
 import { PanelFig, Eye } from "@/components/Metrics";
@@ -168,7 +168,10 @@ function linesOf(rows: ValidatorReading[]): Line[] {
 const answerWord = (p: ValidatorReading): string =>
   p.service === "served" || p.outcome === "SERVED_OK" ? "served"
   : p.classification === "NOT_PROBED" ? "not made in time"
-  : p.classification === "PROBE_ERROR" ? "Tensile's own error" : whatCame(p);
+  : p.classification === "PROBE_ERROR" ? `Tensile's own ${ownSide(p.raw_error) || "error"}`
+  // a later attempt answered by another request to the same endpoint, which failed before any blob was asked for
+  : sharedAnswer(p.raw_error) ? `same answer as its request for another blob at ${hhmm(p.started_at)}: ${whatCame(p)}`
+  : whatCame(p);
 /**
  * The lane's word for one reading, in the Blobs list's tones: served green,
  * not served red, a failure that did not count amber with its dot (the rows
@@ -258,9 +261,10 @@ function Page() {
   for (const r of held) { const w = resultOf(r.p, r.g).word; heldBy.set(w, (heldBy.get(w) ?? 0) + 1); }
   const heldWhy = [...heldBy].map(([w, n]) => `${w} (${int(n)})`).join(", ");
   const heldFull = held.filter((r) => r.full).length;
-  const heldText = heldFull === held.length ? "The rows did not come back, but one of Tensile’s own requests at the reading failed or was not made in time."
+  const gapText = "the reading had a gap of Tensile’s own: a request that failed on its side or was not made in time, rows of the blob that are not the validator’s own, no request that reached any server, or a request still owed and not on record";
+  const heldText = heldFull === held.length ? `The rows did not come back, but ${gapText}.`
     : heldFull === 0 ? "The rows did not come back, and the blob was available from other validators."
-    : `The rows did not come back, but one of Tensile’s own requests at the reading failed or was not made in time, or, before ${FULL_READ_SINCE_WORDS}, the blob was available from other validators.`;
+    : `The rows did not come back, but ${gapText}; or, before ${FULL_READ_SINCE_WORDS}, the blob was available from other validators.`;
   const tone = o && decided > 0 ? rateTone(o.served, decided) : undefined;
   const now = Date.now();
   const per = periodName(data.window.name ?? win);
@@ -330,7 +334,7 @@ function Page() {
               value={<>{notLive || !o || decided === 0 ? "—" : pctOf(o.served, decided)}{!notLive && held.length > 0 && <Warn text={`${plural(held.length, "reading")} in this period did not count: ${heldWhy}. ${heldText} The readings below show each one.`} />}</>}
               title={notLive ? undefined : !o || o.total === 0 ? ((v.signing?.signed ?? 0) > 0 ? "Not read yet." : "Nothing endorsed in this period.")
                 : decided === 0 ? (o.not_counted > 0 ? `Read, none counted: ${notCountedText(o)}.` : "Not read yet.")
-                : `${int(o.served)} of ${int(decided)} counted readings served${refText ? `; ${refText}` : ""}. Endorsed shards served, over served plus not served. A shard whose request failed on Tensile’s side or could not be made in time, or whose reading Tensile did not make or that reached no server, counts neither way; before ${FULL_READ_SINCE_WORDS}, so did a shard not asked for, or one that failed on a blob that was available.`} />
+                : `${int(o.served)} of ${int(decided)} counted readings served${refText ? `; ${refText}` : ""}. Endorsed shards served, over served plus not served. A shard whose request failed on Tensile’s side, could not be made in time, or is still owed and not on record, whose answer was rows of the blob that are not the validator’s own, or whose reading Tensile did not make or that reached no server, counts neither way; before ${FULL_READ_SINCE_WORDS}, so did a shard not asked for, or one that failed on a blob that was available.`} />
             <PanelFig label="Not served" className={notLive ? "na" : (o?.broken ?? 0) > 0 ? "bad" : undefined}
               value={<>{notLive ? "—" : int(o?.broken ?? 0)}{!notLive && prov > 0 && <Warn text={`${int(prov)} of these ${prov === 1 ? "is" : "are"} younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.`} />}</>}
               title={`Endorsed shards whose own rows did not come back, at the reading and each time they were asked again. Before ${FULL_READ_SINCE_WORDS}: rows that did not come back from a blob that could not be reconstructed.`} />
@@ -412,18 +416,22 @@ function Page() {
                 const ms = <>{int(p.total_duration_ms)}<span className="u"> ms</span></>;
                 // a validator asked more than once says so after the word (on a line of its own where the lane is narrow)
                 const at = made > 1 ? <span className="at">{askedTimes(made)}</span> : null;
+                // at a full reading, rows of the blob that are not the validator's own, among its answers, leave it
+                // counted neither way
+                const foreign = full && !judged(tries) && tries.some(foreignRows);
                 const notes = [
                   r.tone === "hold" && (full
                     ? (tries.some((x) => ownGap(x.classification))
-                      ? "not counted: the rows did not come back, but one of Tensile’s own requests at the reading failed or was not made in time"
-                      : "not counted: the rows did not come back, but one of Tensile’s own requests at the reading failed or was not made in time, or no request of the reading reached any server")
+                      ? "not counted: its own rows did not come back, but one of Tensile’s own requests at the reading failed or was not made in time"
+                      : foreign ? "not counted: rows of the blob came back that are not its own, which show neither that it holds its rows nor that it does not"
+                      : "not counted: its own rows did not come back, but one of Tensile’s own requests at the reading failed or was not made in time, no request of the reading reached any server, or a request Tensile still owed it is not on record")
                     : "not counted: the rows did not come back, and the blob was available from other validators"),
+                  r.tone !== "hold" && foreign && "not counted: rows of the blob came back that are not its own, which show neither that it holds its rows nor that it does not",
                   tries.length > 1 && `requests in order: ${tries.map(answerWord).join(", ")}${judged(tries) ? "; the last answer carries the result" : ""}`,
                   open && "the retention window is still open: final when it closes",
                   !endOfWindow(p.schedule_label) && "read on the earlier schedule",
                   `outcome: ${p.outcome.toLowerCase().replace(/_/g, " ")}`,
-                  g === "not served" && p.raw_error,
-                  r.tone === "hold" && p.raw_error,
+                  (g === "not served" || r.tone === "hold") && p.raw_error && rawErrorWords(p),
                   g === "not served" && p.provisional && !open && "provisional: counted, and can still be withdrawn",
                   p.attested === false && "not endorsed by this validator, so outside the rate",
                   p.retry_first_outcome && `first answer ${p.retry_first_outcome.toLowerCase().replace(/_/g, " ")}, dialled again at once`,

@@ -115,8 +115,9 @@ the tip, which the scan needs anyway (a block the node cannot serve is a
 recorded gap, and a registration inside a gap makes the hosts of later
 settlements unknown until the gap is re-scanned).
 
-The prober asks a validator only for a blob it was assigned rows of, in
-window, as the client asks, and stops once a blob's rows are enough. The
+The prober asks a validator only for a blob it endorsed, in window, for its
+own rows, as the client asks for a shard, and asks it again, up to twice,
+only when its answer did not serve. The
 read-path rate limiting Celestia is designing (forum
 topic 2295) treats requests for shards a validator was never assigned as
 illegitimate; reading only real, in-window, assigned commitments keeps the
@@ -124,32 +125,47 @@ observer's traffic on the right side of it.
 
 **What the prober sustains.** On 28 September mocha settled about 20 blobs
 a minute (1,200 an hour from 14:00 to 20:00 UTC, 22 in the busiest minute),
-nearly all of 16 MiB. A reading asks 12 to 20 validators (12 when every
-validator holds its rows, 20 when the third that did not endorse holds
-nothing) and moves about 19 MiB, the rows needed plus the requests already
-on their way: at 20 blobs a minute that is 240 to 400 requests and about
-380 MiB a minute, about 50 Mbit/s. The validator with the most stake is
-asked for nearly every blob; there is no limit per validator, as the client
-has none. A scheduler run on the observer (82 shared fake validators with
+nearly all of 16 MiB. A reading asks every validator that endorsed the blob
+for its own rows, so it moves the endorsers' share of the blob's encoded
+rows: two thirds or more of them by stake, which for blob version 0 are
+four times the blob's size. For a 16 MiB blob that is about 43 to 64 MiB
+of rows, and at 20 blobs a minute roughly 120 to 180 Mbit/s: arithmetic,
+not a measurement, and about three times what the earlier reading moved
+when it stopped at enough rows (12 to 20 validators and about 19 MiB a
+blob, about 50 Mbit/s). Every endorser is asked for every blob it
+endorsed; the reading's own requests have no limit per validator, as the
+client has none, and at most one later attempt is in flight to a
+validator. A scheduler run on the observer (82 shared fake validators with
 mocha's row shape scaled to 1/16, 1.0 to 1.8 s per shard, production
 timeouts, loopback) read 60 of 60 blobs at 20 a minute (reading p50 1.9 s,
 max 3.0 s, no start lag) and 180 of 180 at 60 a minute (p50 2.5 s, max
-4.3 s, no start lag) under the earlier one-request-per-validator pacing,
-which only slowed it; at 120 a minute every blob was still read but the
-start lag grew to 30 s in two minutes. So the prober keeps up at three times
-today's rate with nothing queued. The limits it keeps, 16 blobs and 64
-requests at once and 512 MiB of shards in flight (`-blob-concurrency`,
-`-concurrency`, `-in-flight-mib`), only delay a request: its 15 s start once
-it is let go, it is never dropped, and it carries the phase its reading
-started in, so a request held back past `must_serve_until` counts as the
-client, which asks at once, would have made it.
+4.3 s, no start lag) under the earlier reading, which stopped at enough
+rows, and the earlier one-request-per-validator pacing, which only slowed
+it; at 120 a minute every blob was still read but the start lag grew to
+30 s in two minutes. The limits it keeps, 16 blobs and 256 requests at
+once and 512 MiB of shards in flight (`-blob-concurrency`, `-concurrency`,
+`-in-flight-mib`), only delay a request: its 15 s start once it is let go,
+and it carries the phase its reading started in, so a request held back
+past `must_serve_until` counts as the client, which asks at once, would
+have made it. A request of a full reading, or a later attempt, that cannot
+start a minute before `must_serve_until` (`-request-start-margin`) is not
+made and is this observer's gap (`NOT_PROBED`); the prober's status `reads`
+block counts them (`requests_not_started_last_hour`, the `retries_*`
+counts, per validator) beside the admission wait (`admit_wait_p95_ms`).
+Measure the observer's link and set `-link-mbps` from it before blobs grow
+toward 128 MiB: it holds the shard bytes in flight to what the link moves
+in half a request's time, so a timeout is never the observer's own full
+link, and every row records the load it was let go under
+(`observer_load`).
 
-A validator that times out holds a request for 30 s (the request and the
-client's re-dial). The other readings go on beside it, as other clients'
+A validator that times out holds a request for 30 s at the reading (the
+request and the client's re-dial), and 15 s at a later attempt, which is
+one request. The other readings go on beside it, as other clients'
 would, so an unavailable blob is still read at 20 a minute beside a
 validator that hangs (`TestAnUnavailableBlobIsReadWhileAValidatorTimesOut`).
 Each blob being read also holds its verifier and the first shard it
-verified, up to about 11 MiB, beside the `-in-flight-mib` budget.
+verified, up to about 11 MiB, beside the `-in-flight-mib` budget; a later
+attempt's own verifier, about 4 MiB at K = 4096, is charged to it.
 
 ## 4. systemd
 
