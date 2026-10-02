@@ -169,10 +169,6 @@ function Page() {
     : null;
 
   const nsN = nss.data?.namespaces.length ?? 0;
-  const liveWord = !live || found || feed.refused ? null : feed.error ? "Not answering" : feed.loaded ? "Live" : "Connecting";
-  const liveTitle = feed.error
-    ? `The observer API did not answer (${feed.error}); the list shows the last read.`
-    : "New blobs come in as the chain moves, while this page is open.";
 
   return (
     <>
@@ -190,28 +186,18 @@ function Page() {
             <button type="button" aria-pressed={tab === "blobs"} onClick={() => setTab("blobs")}>Blobs</button>
             <button type="button" aria-pressed={tab === "namespaces"} onClick={() => setTab("namespaces")}>Namespaces{nsN ? <span className="n">{int(nsN)}{nss.data?.truncated ? "+" : ""}</span> : null}</button>
           </div>
-          <div className="lg-tools">
-            {tab === "blobs" && liveWord && <span className={`lg-live${feed.error ? " down" : ""}`} title={liveTitle}><i aria-hidden="true" />{liveWord}</span>}
-          </div>
+          {/* on the tabs line: the publisher filter right beside the search (a namespace picked from a row shows its
+              chip before them, to clear it) */}
+          {tab === "blobs" && (
+            <div className="lg-tools">
+              {!found && ns && <Picker name="Namespace" icon={NS_ICON} value={ns} text={<NsName ns={ns} />} choices={nsChoices}
+                accept={(s) => (/^[0-9a-f]{58}$/.test(s) ? s : null)} placeholder="Name or hex" onPick={setNs} />}
+              {!found && <Picker name="Publisher" icon={PUB_ICON} value={pub} text={pub ? <><span className="pre">celestia </span>••• {pub.slice(-4)}</> : null} choices={pubChoices}
+                accept={(s) => (/^celestia1[0-9a-z]{38}$/.test(s) ? s : null)} placeholder="Address" onPick={setPub} onOpen={() => setWantPubs(true)} />}
+              <FindBlob value={found} onFind={setFound} />
+            </div>
+          )}
         </div>
-
-        {/* over the table: the publisher filter on the left (a namespace picked from a row shows its chip beside it,
-            to clear it), the search on the right */}
-        {tab === "blobs" && (
-          <div className="lg-bar">
-            {!found
-              ? (
-                <span className="lg-bar-l">
-                  <Picker name="Publisher" icon={PUB_ICON} value={pub} text={pub ? <><span className="pre">celestia </span>••• {pub.slice(-4)}</> : null} choices={pubChoices}
-                    accept={(s) => (/^celestia1[0-9a-z]{38}$/.test(s) ? s : null)} placeholder="Address" onPick={setPub} onOpen={() => setWantPubs(true)} />
-                  {ns && <Picker name="Namespace" icon={NS_ICON} value={ns} text={<NsName ns={ns} />} choices={nsChoices}
-                    accept={(s) => (/^[0-9a-f]{58}$/.test(s) ? s : null)} placeholder="Name or hex" onPick={setNs} />}
-                </span>
-              )
-              : <span />}
-            <FindBlob value={found} onFind={setFound} />
-          </div>
-        )}
 
         {tab === "blobs"
           ? (foundFeed
