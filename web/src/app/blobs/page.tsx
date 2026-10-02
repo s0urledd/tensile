@@ -6,7 +6,7 @@ import { useApi, type Meta, type Market, type Blob, type NamespaceRow, type Publ
 import Pager, { usePage } from "@/components/Pager";
 import { useWindow, WindowSwitch } from "@/lib/window";
 import BlobsDeck, { age, dayTime } from "@/components/BlobsDeck";
-import Ledger, { useLedger } from "@/components/Ledger";
+import Ledger, { useLedger, type Feed } from "@/components/Ledger";
 import Picker, { type Choice } from "@/components/Picker";
 import Ident from "@/components/Ident";
 import { nsHex, NsName, NS_ICON } from "@/components/Namespace";
@@ -16,6 +16,39 @@ const SIZE = 25;
 
 /** the last page /v1/blobs serves: its offset stops at 100,000 */
 const MAX_PAGE = Math.floor(100000 / SIZE) + 1;
+
+const FIND_ICON = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.75" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="m10.5 10.5 3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>;
+/** a promise hash or a commitment as typed or pasted: 64 hex characters, with or without 0x */
+const hash64 = (s: string) => { const h = s.trim().toLowerCase().replace(/^0x/, ""); return /^[0-9a-f]{64}$/.test(h) ? h : null; };
+
+/**
+ * Find a blob: a promise hash or a commitment, pasted or typed whole. The list then shows only the blobs it names
+ * (one for a promise hash; every settlement of a commitment), until the search is cleared.
+ */
+function FindBlob({ value, onFind }: { value: string; onFind: (h: string) => void }) {
+  const [q, setQ] = useState("");
+  const [bad, setBad] = useState(false);
+  if (value) {
+    return (
+      <span className="lg-pick on lg-find">
+        <span className="lg-chip">{FIND_ICON}<span className="k">Blob</span><span className="v mono">{value.slice(0, 8)}…{value.slice(-6)}</span></span>
+        <button type="button" className="lg-x" aria-label="Show every blob" title="Show every blob" onClick={() => onFind("")}>
+          <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true"><path d="m1.5 1.5 5 5m0-5-5 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
+        </button>
+      </span>
+    );
+  }
+  const go = (s: string) => { const h = hash64(s); if (h) { setQ(""); setBad(false); onFind(h); } else setBad(!!s.trim()); };
+  return (
+    <label className={`lg-findbox${bad ? " bad" : ""}`} title={bad ? "A promise hash or a commitment is 64 hex characters" : undefined}>
+      {FIND_ICON}
+      <input type="search" placeholder="Find a blob · promise hash or commitment" aria-label="Find a blob by its promise hash or its commitment" value={q}
+        spellCheck={false} autoComplete="off"
+        onChange={(e) => { setQ(e.target.value); setBad(false); if (hash64(e.target.value)) go(e.target.value); }}
+        onKeyDown={(e) => { if (e.key === "Enter") go(q); }} />
+    </label>
+  );
+}
 
 const PUB_ICON = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5.6" r="2.7" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M2.8 13.6c.8-2.4 2.8-3.7 5.2-3.7s4.4 1.3 5.2 3.7" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>;
 
@@ -72,6 +105,7 @@ function Page() {
   const [tab, setTab] = useState<"blobs" | "namespaces">("blobs");
   const [ns, setNsRaw] = useState((params.get("namespace") ?? "").trim().toLowerCase());
   const [pub, setPubRaw] = useState((params.get("publisher") ?? "").trim().toLowerCase());
+  const [found, setFoundRaw] = useState(hash64(params.get("blob") ?? "") ?? "");
   // a new page opens at the list's top when the reader had scrolled past it
   const setPage = useCallback((p: number) => {
     setPageRaw(p);
@@ -90,6 +124,7 @@ function Page() {
   }, [setPageRaw]);
   const setNs = useCallback((v: string) => filterBy("namespace", setNsRaw, v), [filterBy]);
   const setPub = useCallback((v: string) => filterBy("publisher", setPubRaw, v), [filterBy]);
+  const setFound = useCallback((v: string) => filterBy("blob", setFoundRaw, v), [filterBy]);
   const showNs = useCallback((v: string) => { setNs(v); setTab("blobs"); }, [setNs]);
 
   const q = `${ns ? `&namespace=${encodeURIComponent(ns)}` : ""}${pub ? `&publisher=${encodeURIComponent(pub)}` : ""}`;
@@ -125,8 +160,16 @@ function Page() {
       find: `${p.publisher} ${p.label ?? ""}`.toLowerCase(),
     }))
     : null;
+  // a blob found by its promise hash, or the settlements of a commitment: the list shows only those, read once
+  const byHash = useApi<{ blob: Blob }>(found ? `/v1/blobs/${found}` : null, 0);
+  const byCommit = useApi<{ blobs: Blob[]; total: number }>(found ? `/v1/blobs?commitment=${found}&limit=${SIZE}` : null, 0);
+  const foundRows = found ? [...(byHash.data?.blob ? [byHash.data.blob] : []), ...(byCommit.data?.blobs ?? [])].filter((b, i, a) => a.findIndex((x) => x.promise_hash === b.promise_hash) === i) : [];
+  const foundFeed: Feed | null = found
+    ? { path: `find:${found}`, rows: foundRows, total: foundRows.length, loaded: (!!byHash.data || !!byHash.error) && (!!byCommit.data || !!byCommit.error), error: null, refused: false, lastNewAt: 0 }
+    : null;
+
   const nsN = nss.data?.namespaces.length ?? 0;
-  const liveWord = !live || feed.refused ? null : feed.error ? "Not answering" : feed.loaded ? "Live" : "Connecting";
+  const liveWord = !live || found || feed.refused ? null : feed.error ? "Not answering" : feed.loaded ? "Live" : "Connecting";
   const liveTitle = feed.error
     ? `The observer API did not answer (${feed.error}); the list shows the last read.`
     : "New blobs come in as the chain moves, while this page is open.";
@@ -148,23 +191,39 @@ function Page() {
             <button type="button" aria-pressed={tab === "namespaces"} onClick={() => setTab("namespaces")}>Namespaces{nsN ? <span className="n">{int(nsN)}{nss.data?.truncated ? "+" : ""}</span> : null}</button>
           </div>
           <div className="lg-tools">
-            {tab === "blobs" && <>
-              <Picker name="Namespace" icon={NS_ICON} value={ns} text={ns ? <NsName ns={ns} /> : null} choices={nsChoices}
-                accept={(s) => (/^[0-9a-f]{58}$/.test(s) ? s : null)} placeholder="Name or hex" onPick={setNs} />
-              <Picker name="Publisher" icon={PUB_ICON} value={pub} text={pub ? <><span className="pre">celestia </span>••• {pub.slice(-4)}</> : null} choices={pubChoices}
-                accept={(s) => (/^celestia1[0-9a-z]{38}$/.test(s) ? s : null)} placeholder="Address" onPick={setPub} onOpen={() => setWantPubs(true)} />
-            </>}
             {tab === "blobs" && liveWord && <span className={`lg-live${feed.error ? " down" : ""}`} title={liveTitle}><i aria-hidden="true" />{liveWord}</span>}
           </div>
         </div>
 
+        {/* over the table: the search over the blob columns, the publisher filter over Tensile's lane; a namespace
+            picked from a row shows its chip there, to clear it */}
+        {tab === "blobs" && (
+          <div className="lg-bar">
+            <FindBlob value={found} onFind={setFound} />
+            {!found && (
+              <span className="lg-bar-r">
+                {ns && <Picker name="Namespace" icon={NS_ICON} value={ns} text={<NsName ns={ns} />} choices={nsChoices}
+                  accept={(s) => (/^[0-9a-f]{58}$/.test(s) ? s : null)} placeholder="Name or hex" onPick={setNs} />}
+                <Picker name="Publisher" icon={PUB_ICON} value={pub} text={pub ? <><span className="pre">celestia </span>••• {pub.slice(-4)}</> : null} choices={pubChoices}
+                  accept={(s) => (/^celestia1[0-9a-z]{38}$/.test(s) ? s : null)} placeholder="Address" onPick={setPub} onOpen={() => setWantPubs(true)} />
+              </span>
+            )}
+          </div>
+        )}
+
         {tab === "blobs"
-          ? (
-            <Ledger feed={feed} size={SIZE} live={live} skew={skew} onNs={setNs}>
-              {(total) => (total === 0 && page === 1 ? null : <Pager total={total} page={page} size={SIZE} maxPages={MAX_PAGE} onPage={setPage}
-                noun={q ? (total === 1 ? "settlement with this filter" : "settlements with this filter") : total === 1 ? "settlement on record" : "settlements on record"} />)}
-            </Ledger>
-          )
+          ? (foundFeed
+            ? (
+              <Ledger feed={foundFeed} size={SIZE} live={false} skew={skew} onNs={(v) => { setFound(""); setNs(v); }}>
+                {() => null}
+              </Ledger>
+            )
+            : (
+              <Ledger feed={feed} size={SIZE} live={live} skew={skew} onNs={setNs}>
+                {(total) => (total === 0 && page === 1 ? null : <Pager total={total} page={page} size={SIZE} maxPages={MAX_PAGE} onPage={setPage}
+                  noun={q ? (total === 1 ? "settlement with this filter" : "settlements with this filter") : total === 1 ? "settlement on record" : "settlements on record"} />)}
+              </Ledger>
+            ))
           : <Namespaces rows={nss.data?.namespaces ?? null} truncated={!!nss.data?.truncated} onPick={showNs} />}
       </section>
     </>
