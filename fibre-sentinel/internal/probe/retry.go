@@ -659,7 +659,9 @@ func (p *Prober) resolveTarget(ctx context.Context, j *retryJob) (Target, error)
 	q.mu.Lock()
 	bt := q.targets[hash]
 	leader := false
-	if bt == nil || (bt.err != nil && isClosed(bt.done) && time.Since(bt.at) > resolveFailureTTL) {
+	// done is closed after the result is written, so the result is read
+	// only once done is seen closed.
+	if bt == nil || (isClosed(bt.done) && bt.err != nil && time.Since(bt.at) > resolveFailureTTL) {
 		bt = &blobTargets{done: make(chan struct{})}
 		q.targets[hash] = bt
 		leader = true
