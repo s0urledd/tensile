@@ -1,12 +1,19 @@
 "use client";
-import { Suspense } from "react";
-import { useWindow, WindowSwitch, windowLabel } from "@/lib/window";
-import Link from "next/link";
+import { Suspense, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { useSearchParams } from "next/navigation";
-import { useApi, notFound, badRequest, throttled, hhmm, type Payment, type RecentBlob, type Window, utc, ago, bytes, tia, shortHex, shortBech, nsDisplay, fmtShare } from "@/lib/api";
-import { Panel, Cell } from "@/components/Panel";
-import { WithdrawalQueue, pendingLine } from "@/components/Withdrawals";
-import type { PublisherWithQueue, PublisherWithdrawals } from "@/lib/withdrawals";
+import { API_BASE, useApi, notFound, badRequest, throttled, hhmm, ago, type Blob, type Payment, type RecentBlob, type Tip, type Window, blobFee, bytes, int, nsDisplay, span, tia, utcWord } from "@/lib/api";
+import type { Params, PublisherWithQueue, PublisherWithdrawals, WithdrawalRow } from "@/lib/withdrawals";
+import { useWindow, WindowSwitch, windowLabel } from "@/lib/window";
+import { lane } from "@/lib/status";
+import Ledger, { useLedger } from "@/components/Ledger";
+import Pager, { usePage } from "@/components/Pager";
+import Picker, { type Choice } from "@/components/Picker";
+import Ident from "@/components/Ident";
+import Copy from "@/components/Copy";
+import { unit } from "@/components/Unit";
+import { nsHex, NsName, NS_ICON } from "@/components/Namespace";
+import { PanelFig } from "@/components/Metrics";
+import { age, monthDayTime } from "@/components/BlobsDeck";
 
 type Detail = {
   window: Window;
@@ -14,138 +21,399 @@ type Detail = {
   /** the escrow withdrawal queue as last read from state; null until read */
   withdrawals: PublisherWithdrawals | null;
   windows: { window: Window; settlements: number; bytes: number; fees_utia: number; timeouts: number; paid_per_mib_utia: number | null }[];
+  /** the newest 100 escrow movements of every kind, blob fees included */
   recent_payments: Payment[];
   recent_blobs: RecentBlob[];
 };
 
-const KIND: Record<Payment["kind"], string> = {
-  settlement: "settled",
-  timeout: "timed out",
-  deposit: "deposit",
-  withdrawal_request: "withdrawal requested",
-  withdrawal_executed: "withdrawal paid",
-};
+/** rows per page of the blobs, and of the deposits and withdrawals */
+const SIZE = 25;
+/** the last page /v1/blobs serves: its offset stops at 100,000 */
+const MAX_OFFSET = 100000;
+const MAX_PAGE = Math.floor(MAX_OFFSET / SIZE) + 1;
+/** recent_payments stops at this many: a history that long may be missing its oldest movements */
+const PAYMENTS_CAP = 100;
+/** a publisher's blobs read at once to say things of every one of them */
+const AT_ONCE = 100;
+/** past that, the namespaces seen in its newest blobs are counted one by one, up to this many */
+const NS_CHECK = 8;
 
-function Page() {
-  const addr = useSearchParams().get("addr") ?? "";
-  // 7d like the publishers list this page is opened from, so the figures match the row that was clicked.
+/**
+ * How many of a publisher's blobs each of these namespaces holds: a page of
+ * one blob a namespace, whose total is the count. Read again when the
+ * publisher's total moves; null until every one has answered, and when one
+ * fails, so a partial count is never shown.
+ */
+function useNsTotals(addr: string, nss: string[] | null, total: number | null): Map<string, number> | null {
+  const key = nss ? `${total}|${nss.join(",")}` : "";
+  const [got, setGot] = useState<{ key: string; totals: Map<string, number> } | null>(null);
+  useEffect(() => {
+    if (!nss || nss.length === 0) return;
+    let gone = false;
+    Promise.all(nss.map(async (ns) => {
+      const r = await fetch(`${API_BASE}/v1/blobs?publisher=${addr}&namespace=${ns}&limit=1`, { cache: "no-store" });
+      if (!r.ok) throw new Error(String(r.status));
+      const j = await r.json();
+      return [ns, typeof j.total === "number" ? j.total : 0] as const;
+    })).then((t) => { if (!gone) setGot({ key, totals: new Map(t) }); }, () => { /* the namespaces go unsaid */ });
+    return () => { gone = true; };
+  }, [addr, key]); // eslint-disable-line react-hooks/exhaustive-deps
+  return got && got.key === key ? got.totals : null;
+}
+
+/**
+ * An amber dot beside a figure that needs attention, its reason in words on
+ * hover, on focus and on a tap. The words are placed from the dot in a box of
+ * their own on the screen, so the panel's frame, which clips, does not cut them.
+ */
+function Warn({ text }: { text: string }) {
+  const dot = useRef<HTMLButtonElement>(null);
+  const [at, setAt] = useState<{ top: number; left: number } | null>(null);
+  const show = useCallback(() => {
+    const r = dot.current?.getBoundingClientRect();
+    if (r) setAt({ top: r.bottom + 8, left: Math.max(12, Math.min(r.left - 12, window.innerWidth - 12 - 340)) });
+  }, []);
+  const hide = useCallback(() => setAt(null), []);
+  // closed rather than moved when the page scrolls or the window changes size
+  useEffect(() => {
+    if (!at) return;
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape") hide(); };
+    window.addEventListener("scroll", hide, true);
+    window.addEventListener("resize", hide);
+    window.addEventListener("keydown", key);
+    return () => { window.removeEventListener("scroll", hide, true); window.removeEventListener("resize", hide); window.removeEventListener("keydown", key); };
+  }, [at, hide]);
+  return (
+    <>
+      <button ref={dot} type="button" className="warn" aria-label={text}
+        onPointerEnter={(e) => { if (e.pointerType === "mouse") show(); }} onPointerLeave={(e) => { if (e.pointerType === "mouse") hide(); }}
+        onFocus={show} onBlur={hide} onClick={show} />
+      {at && <span className="warn-tip" role="tooltip" style={{ top: at.top, left: at.left }}>{text}</span>}
+    </>
+  );
+}
+
+/** "Oct 2 06:42": the minute is enough in a line; the second and UTC are on hover */
+const monthDayMin = (s: string) => monthDayTime(s).slice(0, -3);
+
+/** a column of amounts keeps one precision, the one tia() gives its largest, so the digits stack: never "1.000" under "1,127" */
+function decimals(amounts: number[]): number {
+  const v = Math.max(0, ...amounts.map((a) => Math.abs(a))) / 1e6;
+  return v >= 1000 ? 0 : v >= 100 ? 1 : v >= 10 ? 2 : 3;
+}
+const tiaAt = (utia: number, dec: number) => `${(utia / 1e6).toLocaleString("en-US", { minimumFractionDigits: dec, maximumFractionDigits: dec })} TIA`;
+const tiaExact = (utia: number) => `${(utia / 1e6).toLocaleString("en-US", { minimumFractionDigits: 6 })} TIA`;
+
+/**
+ * Deposits and withdrawals: the account's movements of money, newest first,
+ * each in plain words with a quiet qualifier (when a request becomes payable,
+ * how long a payout took), then a statement that adds up to the escrow now.
+ * The blob fees are the Blobs list's rows and are not repeated here.
+ */
+function Movements({ d, now }: { d: Detail; now: number }) {
+  const [page, setPage] = useState(1);
+  const money = d.recent_payments.filter((x) => x.kind !== "settlement");
+  const left = d.withdrawals?.left_queue ?? [];
+  const queue = [...left, ...(d.withdrawals?.pending ?? [])];
+  const e = d.publisher.escrow?.found ? d.publisher.escrow : null;
+  const all = d.windows.find((w) => w.window.name === "all");
+
+  // what went in, what the blobs and any timed-out promise cost, what went out, and the escrow that leaves;
+  // shown only when it closes exactly on the balance, a line only when something moved
+  const foot: { label: string; utia: number; sign: string; tot?: boolean }[] = [];
+  if (e && all) {
+    const sum = (k: Payment["kind"]) => money.filter((x) => x.kind === k).reduce((s, x) => s + x.amount_utia, 0);
+    const dep = sum("deposit"), out = sum("withdrawal_executed"), charged = sum("timeout");
+    if (dep - all.fees_utia - charged - out === e.balance_utia) {
+      foot.push({ label: "Deposited", utia: dep, sign: "+" });
+      if (all.fees_utia) foot.push({ label: `Fees paid for ${int(all.settlements)} settlement${all.settlements === 1 ? "" : "s"}`, utia: all.fees_utia, sign: "−" });
+      if (charged) foot.push({ label: "Charged for timed-out promises", utia: charged, sign: "−" });
+      if (out) foot.push({ label: "Withdrawn", utia: out, sign: "−" });
+      foot.push({ label: "Escrow now", utia: e.balance_utia, sign: "", tot: true });
+    }
+  }
+  const dec = decimals([...money.map((x) => x.amount_utia), ...foot.map((f) => f.utia)]);
+  const amt = (sign: string, utia: number) => <span title={tiaExact(utia)}>{unit(`${utia ? sign : ""}${tiaAt(utia, dec)}`)}</span>;
+
+  const shown = money.slice((page - 1) * SIZE, page * SIZE);
+  return (
+    <>
+      <div className="lg-tw">
+        <table className="lg-t pb-mv">
+          <thead>
+            <tr>
+              <th className="c-h">Height</th>
+              <th className="c-t">Time <span className="per">(UTC)</span></th>
+              <th className="c-k">Movement</th>
+              <th className="c-amt num">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {money.length === 0 && <tr className="lg-empty"><td colSpan={4}>No deposit or withdrawal on record.</td></tr>}
+            {shown.map((x, i) => {
+              const t = Date.parse(x.time);
+              let word: string = x.kind, qual = "", short = "", sign = "", cls = "";
+              if (x.kind === "deposit") { word = "Deposit"; sign = "+"; }
+              else if (x.kind === "withdrawal_request") {
+                const w: WithdrawalRow | undefined = queue.find((q) => Date.parse(q.requested_at) === t);
+                const at = w?.available_at ?? x.available_at;
+                word = "Withdrawal requested"; cls = "req";
+                if (at) { qual = `payable from ${monthDayTime(at)}`; short = `payable ${monthDayMin(at)}`; }
+                // a request the account's own settlements used up, whole or in part, before it could be paid out
+                if (w?.outcome === "consumed") { qual = "used by settlements, not paid out"; short = "used by settlements"; cls = "req hold"; }
+                else if (w && w.reduced_utia > 0) qual += ` · ${tia(w.reduced_utia)} of it used by settlements`;
+              } else if (x.kind === "withdrawal_executed") {
+                const w = left.find((q) => q.paid_height === x.height);
+                word = "Withdrawal paid out"; sign = "−";
+                if (w?.payout_delay_s != null) { qual = `${span(w.payout_delay_s)} after the request`; short = `${span(w.payout_delay_s)} after request`; }
+              } else if (x.kind === "timeout") { word = "Timed-out promise charged"; sign = "−"; cls = "fault"; }
+              return (
+                <tr key={`${x.height}-${x.tx_hash ?? ""}-${i}`} className={`row ${cls}`}>
+                  <td className="c-h">{int(x.height)}</td>
+                  <td className="c-t"><span title={utcWord(x.time)}><span className="tm">{monthDayTime(x.time)}</span><span className="ag">{age(now - t)}</span></span></td>
+                  <td className="c-k"><span className="k">{word}</span>{qual && <span className="q">{qual}</span>}</td>
+                  <td className="c-amt num" title={x.kind === "withdrawal_request" ? "Moved from available to the withdrawal queue; the balance changes when it is paid out." : undefined}>{amt(sign, x.amount_utia)}</td>
+                  <td className={`c-m2${short ? " hq" : ""}`}><span className="h">#{int(x.height)}</span>{short && <><span className="sep">·</span><span className="q">{short}</span></>}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+          {foot.length > 0 && page === Math.ceil(money.length / SIZE) && (
+            <tfoot>
+              {foot.map((f) => (
+                <tr key={f.label} className={f.tot ? "tot" : undefined}>
+                  <td colSpan={3} className="fl">{f.label}</td>
+                  <td className="c-amt num">{amt(f.sign, f.utia)}</td>
+                </tr>
+              ))}
+            </tfoot>
+          )}
+        </table>
+      </div>
+      {money.length > 0 && <Pager total={money.length} page={page} size={SIZE} onPage={setPage} noun={money.length === 1 ? "deposit or withdrawal" : "deposits and withdrawals"} />}
+    </>
+  );
+}
+
+/**
+ * One publisher: whose account it is, what it posted and when, then one
+ * framed panel with its escrow as it stands now and the period's activity,
+ * then its blobs as the Blobs list draws them, and its deposits and
+ * withdrawals.
+ */
+function Publisher({ addr }: { addr: string }) {
+  const params = useSearchParams();
   const [win, setWin] = useWindow("24h");
-  const pub = useApi<Detail>(addr ? `/v1/publishers/${addr}?window=${win}` : null);
+  const [page, setPageRaw] = usePage();
+  const [tabPick, setTab] = useState<"blobs" | "money" | null>(null);
+  const [ns, setNsRaw] = useState((params.get("namespace") ?? "").trim().toLowerCase());
+  // a new page opens at the list's top when the reader had scrolled past it
+  const setPage = useCallback((p: number) => {
+    setPageRaw(p);
+    const el = document.getElementById("list");
+    if (el && el.getBoundingClientRect().top < 0) el.scrollIntoView();
+  }, [setPageRaw]);
+  // a namespace starts from the first page, and lives in the address so a link keeps it
+  const setNs = useCallback((v: string) => {
+    setNsRaw(v);
+    setPageRaw(1);
+    try {
+      const u = new URL(window.location.href);
+      if (v) u.searchParams.set("namespace", v); else u.searchParams.delete("namespace");
+      window.history.replaceState(null, "", u.pathname + u.search + u.hash);
+    } catch { /* fine */ }
+  }, [setPageRaw]);
+
+  const pub = useApi<Detail>(`/v1/publishers/${addr}?window=${win}`);
+  const pf = useApi<Params>("/v1/params", 0).data?.price_formula;
+  const tip = useApi<Tip>("/v1/tip", 4000); // the header's stream: no request of its own
+  const skew = tip.data?.server_time && tip.fetchedAt ? Date.parse(tip.data.server_time) - Date.parse(tip.fetchedAt) : 0;
+  const now = Date.now() + skew;
+
+  // The history is whole while the API did not stop it at its cap: a busy account's deposits can fall out of that cap,
+  // and its Deposits and withdrawals wait for the API to page them. An account that never posted opens on them.
+  const wholeMoney = !!pub.data && pub.data.recent_payments.length < PAYMENTS_CAP;
+  const posted = !!pub.data?.windows.find((w) => w.window.name === "all")?.settlements;
+  const tab = !wholeMoney ? "blobs" : tabPick ?? (posted ? "blobs" : "money");
+  const offset = (Math.min(page, MAX_PAGE) - 1) * SIZE;
+  const live = page === 1;
+  const feed = useLedger(`/v1/blobs?limit=${SIZE}&offset=${offset}&publisher=${addr}${ns ? `&namespace=${encodeURIComponent(ns)}` : ""}`, live && tab === "blobs", tip.data?.height, skew);
+
+  // Its blobs read at once, to say things of all of them: the newest, the oldest, the namespaces with its settlements
+  // in each, and what Tensile read. Past AT_ONCE the oldest is a read of its own, the namespaces seen are counted one
+  // by one and named only when their counts add up to its total, and Tensile's readings go unsaid.
+  const head = useApi<{ blobs: Blob[]; total: number }>(`/v1/blobs?publisher=${addr}&limit=${AT_ONCE}`, 60000);
+  const total = head.data?.total ?? null;
+  const whole = head.data && head.data.blobs.length >= head.data.total ? head.data.blobs : null;
+  const oldestAt = head.data && !whole && head.data.total - 1 <= MAX_OFFSET ? head.data.total - 1 : null;
+  const oldest = useApi<{ blobs: Blob[]; total: number }>(oldestAt != null ? `/v1/blobs?publisher=${addr}&limit=1&offset=${oldestAt}` : null);
+  const seen = head.data && !whole ? [...new Set(head.data.blobs.map((b) => b.namespace))] : null;
+  const totals = useNsTotals(addr, seen && seen.length <= NS_CHECK ? seen : null, total);
+
   const { data, error, loading } = pub;
-  if (!addr) return <p className="notice err">No publisher address given.</p>;
   if (!data && error) return <p className="notice">{
     notFound(pub) ? <>No publisher with this address is on record.</>
     : badRequest(pub) ? <><span className="mono">{addr}</span> is not a publisher account address ({error}).</>
     : throttled(pub) ? <>The observer API is busy ({error}); the page retries every 30 seconds.</>
     : <>The observer API is not answering ({error}); the page retries every 30 seconds.</>}</p>;
   if (loading || !data) return <p className="muted">Loading…</p>;
+
   const p = data.publisher;
+  const all = data.windows.find((w) => w.window.name === "all");
+  // the newest blob: the ledger's, while it shows a newer one than the last read of all of them
+  const newest = [feed.loaded && !ns ? feed.rows[0] : undefined, head.data?.blobs[0]].filter((b): b is Blob => !!b)
+    .sort((a, b) => b.settlement_height - a.settlement_height)[0] ?? null;
+  const first = whole ? whole[whole.length - 1] ?? null
+    // the oldest only while the read's own total says the offset is its last row
+    : oldest.data && oldestAt != null && oldest.data.total === oldestAt + 1 ? oldest.data.blobs[0] ?? null : null;
+  let nss: { ns: string; n: number }[] | null = null;
+  if (whole) {
+    const m = new Map<string, number>();
+    for (const b of whole) m.set(b.namespace, (m.get(b.namespace) ?? 0) + 1);
+    nss = [...m].map(([ns, n]) => ({ ns, n }));
+  } else if (seen && totals && seen.reduce((s, x) => s + (totals.get(x) ?? 0), 0) === total) {
+    nss = seen.map((x) => ({ ns: x, n: totals.get(x)! }));
+  }
+  // Tensile's reading of each of its blobs, in the Blobs list's own words, while every one is in hand
+  const read = whole && whole.length > 0 ? whole.reduce((c, b) => { const w = lane(b).word; c[w] = (c[w] ?? 0) + 1; return c; }, {} as Record<string, number>) : null;
+
+  // the escrow now, and whether it pays for one more blob of the account's average size over every blob it posted
+  const e = p.escrow?.found ? p.escrow : null;
+  const avg = posted && all ? all.bytes / all.settlements : null;
+  const need = avg != null && pf ? blobFee(pf, avg) : null;
+  const short = !!e && need != null && e.available_utia < need;
+  const queued = e && p.pending_withdrawals && p.pending_withdrawals.count > 0 ? p.pending_withdrawals : null;
+  // the period's activity: the figures of the publisher row, which the API gives for the period asked
+  const active = p.settlements > 0 || p.timeouts > 0;
+  const actN = p.timeouts > 0 ? 4 : 3;
+  // a queued withdrawal or a timeout adds a cell: the escrow then sits over the activity, at every width
+  const stack = !!queued || p.timeouts > 0;
+  const moneyN = data.recent_payments.filter((x) => x.kind !== "settlement").length;
+
+  const nsChoices: Choice[] | null = nss
+    ? nss.map((x) => ({ value: x.ns, label: <NsName ns={x.ns} />, count: x.n, find: `${nsDisplay(x.ns)} ${nsHex(x.ns)}`.toLowerCase() }))
+    : seen ? seen.map((x) => ({ value: x, label: <NsName ns={x} />, find: `${nsDisplay(x)} ${nsHex(x)}`.toLowerCase() })) : null;
+  const liveWord = !live || feed.refused ? null : feed.error ? "Not answering" : feed.loaded ? "Live" : "Connecting";
+  const i = addr.indexOf("1");
+
   return (
     <>
       {/* A refresh that failed keeps the last answer on screen; say so, and
           from when, rather than let it pass for the current one. */}
       {error && <p className="notice">{throttled(pub) ? "The observer API is busy" : "The observer API is not answering"} ({error}). Showing the figures received at {pub.fetchedAt ? `${hhmm(pub.fetchedAt)} (${ago(pub.fetchedAt)})` : "the last refresh"}; the page retries every 30 seconds.</p>}
-      <div className="section-head">
-        <h1 className="mono" style={{ fontSize: "var(--t-h1)" }}>{p.label ?? shortBech(p.publisher)}</h1>
-        {p.label && <span className="chip" title={p.label_source ? `label source: ${p.label_source}` : undefined}>{p.label_source ?? "labelled"}</span>}
-        <span className="spacer" />
-        <WindowSwitch value={win} onChange={setWin} />
-      </div>
 
-      <section className="card kvcard">
-        <dl className="kv">
-          <dt>account</dt><dd className="mono">{p.publisher}</dd>
-          <dt>escrow</dt><dd className="mono">{p.escrow ? (p.escrow.found ? <>{tia(p.escrow.balance_utia)} <span className="muted">· {tia(p.escrow.available_utia)} available</span></> : <span className="muted">no escrow account on chain</span>) : <span className="muted">not polled yet</span>}</dd>
-          <dt>queued withdrawals</dt><dd className="mono">{pendingLine(p.pending_withdrawals)}</dd>
-          <dt>first seen</dt><dd className="mono">{utc(p.first_seen_at)} <span className="muted">({ago(p.first_seen_at)})</span></dd>
-          <dt>last seen</dt><dd className="mono">{utc(p.last_seen_at)} <span className="muted">({ago(p.last_seen_at)})</span></dd>
-          {p.label && <dt>label</dt>}{p.label && <dd>{p.label}{p.label_source && <span className="muted"> · {p.label_source}</span>}</dd>}
-        </dl>
+      <section className="pb-mast">
+        <p className="pb-kind">Publisher</p>
+        <div className="pb-id">
+          <Ident addr={addr} />
+          {p.label
+            ? <><h1 className="pb-h1 lab" title={p.label_source ? `label source: ${p.label_source}` : undefined}>{p.label}</h1><span className="pb-chip" title={addr}><span className="hd">{addr.slice(0, i)} •••</span><span className="tl">{addr.slice(-4)}</span></span></>
+            : <h1 className="pb-h1" title={addr} aria-label={addr}><span className="hd">{addr.slice(0, i)}</span><span className="dots" aria-hidden="true">•••</span><span className="tl">{addr.slice(-4)}</span></h1>}
+        </div>
+        <div className="pb-addr"><span className="mono">{addr}</span><Copy text={addr} label="the address" /></div>
+
+        {/* when it last and first posted, where, and what Tensile found: all-time, in a light frame of their own */}
+        {posted && newest && (
+          <dl className="pb-meta">
+            <dt>Last blob</dt>
+            <dd><b>{age(now - Date.parse(newest.settlement_time))} ago</b><em title={utcWord(newest.settlement_time)}>{monthDayTime(newest.settlement_time)} UTC</em></dd>
+            {first && <><dt>First blob</dt><dd><b title={`${utcWord(first.settlement_time)} · height ${int(first.settlement_height)}`}>{monthDayTime(first.settlement_time)}</b><em>UTC</em></dd></>}
+            {nss && nss.length > 0 && <>
+              <dt>Namespace{nss.length === 1 ? "" : "s"}</dt>
+              <dd className="pb-nss">
+                {nss.map((x) => (
+                  <button key={x.ns} type="button" className="nsb" title={`${x.ns} · ${int(x.n)} settlement${x.n === 1 ? "" : "s"} · show only these`}
+                    onClick={() => { setNs(x.ns); setTab("blobs"); document.getElementById("list")?.scrollIntoView({ block: "start" }); }}>{nsDisplay(x.ns)}</button>
+                ))}
+              </dd>
+            </>}
+            {read && <>
+              <dt>Tensile&rsquo;s reading</dt>
+              <dd className="pb-tally" title="Tensile reads each blob once, near the end of its retention window.">
+                {[
+                  read.unavailable ? <span className="hold"><b>{int(read.unavailable)}</b> unavailable</span> : null,
+                  read.available ? <span><b>{int(read.available)}</b> <span className="ok">available</span></span> : null,
+                  read["retention window"] ? <span><b>{int(read["retention window"])}</b> in retention window</span> : null,
+                  read["not read"] ? <span><b>{int(read["not read"])}</b> not read</span> : null,
+                ].filter(Boolean).map((x, k) => <span key={k} className="it">{k > 0 && <span className="sep">·</span>}{x}</span>)}
+              </dd>
+            </>}
+          </dl>
+        )}
       </section>
 
-      <Panel title="Activity" right={`${windowLabel(win)} window`}>
-      <div className="cells four">
-        <Cell label="Fees paid" value={tia(p.fees_utia, { unit: false })} unit="TIA"
-          tone={p.settlements === 0 ? "absent" : undefined}
-          sub={`${p.settlements.toLocaleString("en-US")} settlement${p.settlements === 1 ? "" : "s"} · ${fmtShare(p.fees_share)} of the window`} />
-        <Cell label="Blob size" value={bytes(p.bytes)} sub={`${fmtShare(p.bytes_share)} of the window`} />
-        <Cell label="Paid per MiB" value={p.paid_per_mib_utia != null ? tia(p.paid_per_mib_utia, { unit: false }) : "—"} unit={p.paid_per_mib_utia != null ? "TIA" : undefined}
-          tone={p.paid_per_mib_utia == null ? "absent" : undefined}
-          sub={p.avg_blob_bytes != null ? `average blob ${bytes(p.avg_blob_bytes)} · largest ${bytes(p.largest_blob_bytes)}` : "nothing settled"} />
-        <Cell label="Timed out" value={p.timeouts > 0 ? p.timeouts : "none"} tone={p.timeouts > 0 ? "fault" : "absent"}
-          sub={p.timeouts > 0 ? `${tia(p.timed_out_utia)} charged` : "none reported"}
-          detail={p.timeouts > 0 ? `${tia(p.timed_out_utia)} charged on promises this publisher abandoned.` : "No timeout reported. A floor, not a total: a promise nobody reports leaves no trace on chain."} />
-      </div>
-      </Panel>
-
-      <Panel title="By window">
-      <div className="tablewrap">
-        <table>
-          <thead><tr><th>window</th><th className="right">settlements</th><th className="right">blob size</th><th className="right">fees paid</th><th className="right">per MiB</th><th className="right">timed out</th></tr></thead>
-          <tbody>
-            {data.windows.map((w) => (
-              <tr key={w.window.name}>
-                <td className="mono">{windowLabel(w.window.name)}</td>
-                <td className="right mono">{w.settlements.toLocaleString("en-US")}</td>
-                <td className="right mono">{bytes(w.bytes)}</td>
-                <td className="right mono">{tia(w.fees_utia)}</td>
-                <td className="right mono">{w.paid_per_mib_utia != null ? tia(w.paid_per_mib_utia) : "—"}</td>
-                <td className={"right mono" + (w.timeouts > 0 ? " err" : " faint")}>{w.timeouts > 0 ? w.timeouts : "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      </Panel>
-
-      <WithdrawalQueue w={data.withdrawals ?? null} />
-
-      <Panel title="Escrow movements" right={`${data.recent_payments.length} most recent`}>
-      <div className="tablewrap">
-        <table>
-          <thead><tr><th>kind</th><th>time (UTC)</th><th className="right">height</th><th className="right">amount</th><th>promise</th><th className="right">size</th><th>by</th></tr></thead>
-          <tbody>
-            {data.recent_payments.length === 0 && <tr><td colSpan={7} className="muted">No escrow movement recorded.</td></tr>}
-            {data.recent_payments.map((x, i) => (
-              <tr key={`${x.height}-${x.tx_hash ?? ""}-${i}`}>
-                <td className={x.kind === "timeout" ? "err" : ""}>{KIND[x.kind] ?? x.kind}</td>
-                <td className="mono" title={ago(x.time)}>{utc(x.time)}</td>
-                <td className="right mono">{x.height.toLocaleString("en-US")}</td>
-                <td className="right mono">{x.kind === "deposit" || x.kind === "withdrawal_executed" ? "+" : "−"}{tia(x.amount_utia)}</td>
-                <td className="mono">{x.promise_hash ? <Link href={`/blob/?hash=${x.promise_hash}`}>{shortHex(x.promise_hash, 6)}</Link> : <span className="faint">—</span>}{x.namespace && <span className="faint"> {nsDisplay(x.namespace)}</span>}</td>
-                <td className="right mono">{x.blob_size ? bytes(x.blob_size) : <span className="faint">—</span>}</td>
-                <td className="mono faint" title={x.processor}>{x.processor && x.processor !== x.publisher ? shortHex(x.processor, 6) : x.processor ? "self" : "chain"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      </Panel>
-
-      {data.recent_blobs.length > 0 && (
-        <Panel title="Recent blobs" right={<>{data.recent_blobs.length} most recent · <Link href={`/blobs/`}>all blobs →</Link></>}>
-        <div className="tablewrap">
-          <table>
-            <thead><tr><th>blob</th><th>settled (UTC)</th><th>namespace</th><th className="right">blob size</th><th className="right">fee paid</th><th className="right">validators</th></tr></thead>
-            <tbody>
-              {data.recent_blobs.map((b) => (
-                <tr key={b.promise_hash}>
-                  <td className="mono"><Link href={`/blob/?hash=${b.promise_hash}`}>{shortHex(b.promise_hash, 6)}</Link></td>
-                  <td className="mono" title={ago(b.settlement_time)}>{utc(b.settlement_time)}</td>
-                  <td className="mono" title={b.namespace}>{nsDisplay(b.namespace)}</td>
-                  <td className="right mono">{bytes(b.blob_size)}</td>
-                  <td className="right mono">{b.charge ? tia(b.charge.fee_utia) : <span className="faint">—</span>}</td>
-                  <td className="right mono">{b.validators_with_rows}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {/* the escrow as it stands now, then the period's activity; the period switch sits in the activity's head and
+          drives its cells only */}
+      <section className={`pan pp${stack ? " stack" : ""}`} aria-label="Escrow and activity">
+        <div className="pp-g pp-esc" style={{ "--n": queued ? 2 : 1 } as CSSProperties}>
+          <div className="pp-h"><h2 className="pp-t">Escrow <span className="per">(now)</span></h2></div>
+          <dl className="pp-cells">
+            <PanelFig label="Available" title={e ? `Read from the chain at #${int(e.height)}, ${utcWord(e.updated_at)}` : p.escrow ? "No escrow account on the chain" : "Not read yet"}
+              value={e ? <>{unit(tia(e.available_utia))}{short && <Warn text={`Not enough for one more ${bytes(Math.round(avg!))} blob (${tia(need)})`} />}</> : "—"} />
+            {queued && e && (
+              <PanelFig label="Queued to withdraw" value={unit(tia(queued.utia))} title={`Balance ${tia(e.balance_utia)}: available plus queued`}>
+                {queued.next_available_at && <dd className="pan-s" title={utcWord(queued.next_available_at)}>Payable from <b>{monthDayMin(queued.next_available_at)}</b></dd>}
+                {queued.reduced_utia > 0 && <dd className="pan-s hold" title="Settlements took this from the queued amount; it will not be paid out.">{tia(queued.reduced_utia)} used by settlements</dd>}
+              </PanelFig>
+            )}
+          </dl>
         </div>
-        </Panel>
-      )}
+        <div className="pp-g pp-act" style={{ "--n": active ? actN : 3 } as CSSProperties}>
+          <div className="pp-h">
+            <h2 className="pp-t">Activity</h2>
+            {posted && <WindowSwitch value={win} onChange={setWin} />}
+          </div>
+          {active ? (
+            <dl className="pp-cells">
+              <PanelFig label="Settlements" value={int(p.settlements)} className={`c-set${p.timeouts > 0 ? "" : " wide"}`} />
+              <PanelFig label="Blob size" value={unit(bytes(p.bytes))} className="c-size"
+                title={p.avg_blob_bytes != null ? (p.avg_blob_bytes === p.largest_blob_bytes ? `${bytes(p.largest_blob_bytes)} each` : `${bytes(Math.round(p.avg_blob_bytes))} average · ${bytes(p.largest_blob_bytes)} largest`) : undefined} />
+              <PanelFig label="Fees paid" value={unit(tia(p.fees_utia))} className="c-fee" title={p.paid_per_mib_utia != null ? `${tia(p.paid_per_mib_utia)} per MiB` : undefined} />
+              {p.timeouts > 0 && (
+                <PanelFig label="Timed out" value={int(p.timeouts)} className="c-to fault" title="Payment promises not settled in time in the period; each is charged as a blob">
+                  <dd className="pan-s"><b>{tia(p.timed_out_utia)}</b> charged</dd>
+                </PanelFig>
+              )}
+            </dl>
+          ) : (
+            // a period with nothing in it, or an account that never posted: one quiet line across the group
+            <div className="pp-cells"><p className="pan-c pp-none">{posted ? `No blobs in ${windowLabel(win)}` : "No blobs"}</p></div>
+          )}
+        </div>
+      </section>
 
+      <section id="list" className="listing lg-list pb-list">
+        <div className="list-head">
+          <div className="tabs" role="group" aria-label="list">
+            <button type="button" aria-pressed={tab === "blobs"} onClick={() => setTab("blobs")}>Blobs</button>
+            {wholeMoney && <button type="button" aria-pressed={tab === "money"} onClick={() => setTab("money")}>Deposits and withdrawals{moneyN > 0 && <span className="n">{int(moneyN)}</span>}</button>}
+          </div>
+          {tab === "blobs" && posted && (
+            <div className="lg-tools">
+              <Picker name="Namespace" icon={NS_ICON} value={ns} text={ns ? <NsName ns={ns} /> : null} choices={nsChoices}
+                accept={(s) => (/^[0-9a-f]{58}$/.test(s) ? s : null)} placeholder="Name or hex" onPick={setNs} />
+              {liveWord && <span className={`lg-live${feed.error ? " down" : ""}`} title={feed.error ? `The observer API did not answer (${feed.error}); the list shows the last read.` : "New blobs come in as the chain moves, while this page is open."}><i aria-hidden="true" />{liveWord}</span>}
+            </div>
+          )}
+        </div>
+
+        {tab === "blobs"
+          ? (
+            <Ledger feed={feed} size={SIZE} live={live} skew={skew} onePublisher onNs={setNs}>
+              {(n) => (n === 0 && page === 1 ? null : <Pager total={n} page={page} size={SIZE} maxPages={MAX_PAGE} onPage={setPage}
+                noun={ns ? (n === 1 ? "settlement with this filter" : "settlements with this filter") : n === 1 ? "settlement" : "settlements"} />)}
+            </Ledger>
+          )
+          : <Movements d={data} now={now} />}
+      </section>
     </>
   );
+}
+
+function Page() {
+  const addr = (useSearchParams().get("addr") ?? "").trim().toLowerCase();
+  if (!addr) return <p className="notice err">No publisher address given.</p>;
+  return <Publisher key={addr} addr={addr} />;
 }
 
 export default function PublisherPage() {

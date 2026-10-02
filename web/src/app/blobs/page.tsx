@@ -9,6 +9,7 @@ import BlobsDeck, { age, dayTime } from "@/components/BlobsDeck";
 import Ledger, { useLedger } from "@/components/Ledger";
 import Picker, { type Choice } from "@/components/Picker";
 import Ident from "@/components/Ident";
+import { nsHex, NsName, NS_ICON } from "@/components/Namespace";
 
 /** rows per page of the blob list */
 const SIZE = 25;
@@ -16,16 +17,6 @@ const SIZE = 25;
 /** the last page /v1/blobs serves: its offset stops at 100,000 */
 const MAX_PAGE = Math.floor(100000 / SIZE) + 1;
 
-/** a namespace's significant hex, without the leading zero padding */
-const nsHex = (ns: string) => ns.replace(/^(00)+/, "");
-
-/** a namespace as a list names it: its text, or its hex in the mono face when it is not text */
-function NsName({ ns }: { ns: string }) {
-  const name = nsDisplay(ns);
-  return name === shortHex(nsHex(ns) || ns, 6) ? <span className="mono">{name}</span> : <>{name}</>;
-}
-
-const NS_ICON = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2.5" width="12" height="3.2" rx="1.2" fill="none" stroke="currentColor" strokeWidth="1.4" /><rect x="2" y="10.3" width="12" height="3.2" rx="1.2" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg>;
 const PUB_ICON = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5.6" r="2.7" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M2.8 13.6c.8-2.4 2.8-3.7 5.2-3.7s4.4 1.3 5.2 3.7" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>;
 
 /** the namespaces on record, newest settlement first; a row shows its blobs */

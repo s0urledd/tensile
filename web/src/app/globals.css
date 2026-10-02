@@ -1888,3 +1888,182 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   /* there the amber dot sits in the line, before the figure */
   .pl-t .low::before { position: static; display: inline-block; margin: 0 7px 0 0; vertical-align: 1px; }
 }
+
+/* =============================================================================
+   A publisher's page (app/publisher): whose account it is, then one framed
+   panel (.pan) with its escrow now and the period's activity, then its
+   blobs as the Blobs list draws them and its deposits and withdrawals.
+   ========================================================================== */
+/* ---- whose account it is ---- */
+.pb-mast { padding: 34px 0 0; min-width: 0; }
+.pb-kind { margin: 0 0 9px; font-size: var(--t-cell); font-weight: 500; color: var(--text-2); }
+/* the chip at title scale: the 30 px mark, the prefix quietly, the last four in the mono face */
+.pb-id { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.pb-id .ident { width: 30px; height: 30px; }
+.pb-h1 { min-width: 0; margin: 0; font-size: var(--t-h1); font-weight: 600; letter-spacing: -.028em; line-height: 36px; white-space: nowrap; }
+.pb-h1 .hd { font-weight: 400; color: var(--text-3); letter-spacing: -.02em; }
+/* the chip's "•••", smaller, so the three points sit at the letters' middle as they do in the table */
+.pb-h1 .dots { display: inline-block; margin: 0 .34em 0 .3em; font-size: .5em; letter-spacing: .14em; color: var(--text-3); vertical-align: .32em; }
+.pb-h1 .tl { font-family: var(--mono); font-weight: 500; letter-spacing: -.01em; }
+.pb-h1.lab { overflow: hidden; text-overflow: ellipsis; }
+/* with a label, the chip stands on the title's baseline */
+.pb-id .pb-h1.lab, .pb-id .pb-chip { align-self: baseline; }
+.pb-chip { display: inline-flex; align-items: baseline; gap: 6px; margin-left: 2px; font-size: 13px; white-space: nowrap; }
+.pb-chip .hd { color: var(--text-3); }
+.pb-chip .tl { font-family: var(--mono); font-weight: 500; color: var(--text-2); }
+/* the whole address, and a copy button with its mark */
+.pb-addr { --copy-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.4'%3E%3Crect x='5.5' y='5.5' width='8' height='8' rx='1.8'/%3E%3Cpath d='M10.5 3.6v-.2c0-.9-.7-1.6-1.6-1.6H4.1c-.9 0-1.6.7-1.6 1.6v4.8c0 .9.7 1.6 1.6 1.6h.2' stroke-linecap='round'/%3E%3C/svg%3E");
+  display: flex; align-items: center; gap: 10px; margin-top: 10px; min-width: 0; }
+.pb-addr .mono { font-size: var(--t-cell); color: var(--text-2); letter-spacing: .01em; }
+.pb-addr .copy { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 24px; margin: 0; padding: 0 9px 0 7px; border-radius: 999px; border: 1px solid var(--border); background: var(--paper); box-shadow: var(--shadow-sm); color: var(--text-2); font: 500 var(--t-small)/1 var(--sans); text-transform: capitalize; transition: color var(--dur), border-color var(--dur); }
+.pb-addr .copy::before { content: ""; width: 13px; height: 13px; background: var(--text-3); -webkit-mask: var(--copy-mark) center / contain no-repeat; mask: var(--copy-mark) center / contain no-repeat; }
+.pb-addr .copy:hover { color: var(--accent-ink); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.pb-addr .copy:hover::before { background: var(--accent-ink); }
+/* When it last and first posted, where, and what Tensile found: all-time facts, in a light frame of their own with
+   a hairline between them, quieter than the panel under it (no paper, no shadow). A label column of its own, so
+   every value starts at one x, on a wide screen and on a phone. */
+.pb-meta { display: grid; grid-template-columns: 104px minmax(0, max-content); column-gap: 14px; width: fit-content; max-width: 100%; margin: 22px 0 0; padding: 3px 16px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--paper) 40%, transparent); font-size: var(--t-cell); line-height: 18px; color: var(--text-2); }
+.pb-meta dt, .pb-meta dd { padding: 7px 0; border-top: 1px solid var(--line-soft); }
+.pb-meta dt:first-of-type, .pb-meta dt:first-of-type + dd { border-top: 0; }
+.pb-meta dt { color: var(--text-3); white-space: nowrap; }
+.pb-meta dd { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; margin: 0; min-width: 0; }
+.pb-meta b { font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
+.pb-meta em { font-style: normal; color: var(--text-3); }
+.pb-meta .pb-nss { column-gap: 14px; row-gap: 2px; }
+.pb-nss .nsb { color: var(--text); }
+.pb-meta .pb-tally { column-gap: 0; }
+.pb-tally .sep { margin: 0 8px; color: var(--text-3); }
+.pb-tally .ok { color: var(--ok); }
+.pb-tally .hold { color: var(--hold-ink); }
+.pb-tally .hold b { color: inherit; }
+.pb-tally .hold::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 7px; border-radius: 50%; background: var(--hold); vertical-align: 1px; }
+
+/* ---- the panel: its escrow now and the period's activity ---- */
+.pp { display: flex; margin-top: 30px; }
+.pp-g { display: flex; flex-direction: column; flex: var(--n) 1 0; min-width: 0; }
+/* two groups: a hairline from the panel's top to its foot sets them apart */
+.pp-g + .pp-g { border-left: 1px solid var(--border); }
+/* a queued withdrawal or a timeout adds a cell: the escrow then sits over the activity */
+.pp.stack { flex-direction: column; }
+.pp.stack .pp-g { flex: none; }
+.pp.stack .pp-g + .pp-g { border-left: 0; border-top: 1px solid var(--border); }
+/* a group's head names it and what scopes it: "(now)", or the period switch */
+.pp-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 48px; padding: 0 9px 0 18px; border-bottom: 1px solid var(--border); }
+.pp-t { margin: 0; font-size: var(--t-cell); font-weight: 600; letter-spacing: 0; line-height: 18px; color: var(--text); }
+.pp-t .per { margin-left: 1px; font-weight: 400; color: var(--text-3); }
+.pp-h .seg { padding: 2px; }
+.pp-h .seg button, .pp-h .seg button:first-child { height: 28px; padding: 0 12px; font-size: 12.5px; }
+:root[data-theme="dark"] .pp-h .seg button[aria-pressed="true"] { box-shadow: inset 0 0 0 1px rgb(51 179 191 / .45); }
+.pp-cells { flex: 1; display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: 1px; margin: 0; background: var(--border); }
+/* a period with no blob, or an account that never posted: one quiet line across the group */
+.pp-none { grid-column: 1 / -1; display: flex; align-items: center; margin: 0; font-size: var(--t-cell); line-height: 18px; color: var(--text-3); }
+/* an escrow that cannot pay for one more blob of the account's usual size: an amber dot beside the figure, its
+   reason on hover, on focus or on a tap */
+.warn { position: relative; display: inline-block; width: 19px; height: 19px; margin: 0 0 0 5px; padding: 0; border: 0; border-radius: 50%; background: none; vertical-align: 0; cursor: help; }
+.warn::before { content: ""; position: absolute; left: 6px; top: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--hold); transition: box-shadow var(--dur); }
+.warn:hover::before, .warn:focus-visible::before { box-shadow: 0 0 0 3px var(--hold-tint); }
+.warn:focus-visible { outline-offset: 0; }
+.warn-tip { position: fixed; z-index: 50; max-width: min(340px, calc(100vw - 24px)); padding: 7px 10px; border-radius: 8px; background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow-pop); font-family: var(--sans); font-size: var(--t-small); line-height: 17px; font-weight: 500; letter-spacing: 0; color: var(--hold-ink); white-space: normal; animation: tip-in var(--dur) ease-out; }
+
+/* ---- its records ---- */
+.pb-list { margin-top: 44px; }
+/* Its blobs: the Blobs list without the Publisher column. The namespace no longer takes the rest of the row, or it
+   would stretch into an empty gap before Blob size: it is as wide as the longest name on the page (--ns-w, which
+   the list measures; a long hex name until then), never narrower than its head, and the time, centred, takes what
+   is left, so that room falls evenly on both its sides. */
+.lg-one th.c-t { width: auto; }
+.lg-one th.c-b { width: 140px; }
+.lg-one th.c-ns { width: calc(max(var(--ns-w, 122px), 76px) + 30px); }
+.lg-one th.c-sz { width: 104px; }
+.lg-one th.c-fee { width: 110px; }
+.lg-one th.c-e { width: 158px; }
+/* deposits and withdrawals: the ledger's rows, the movement in words with its quiet qualifier, the amount on its digits */
+.pb-mv tr.row { cursor: default; }
+.pb-mv th.c-amt { width: 200px; }
+.pb-mv th.c-amt, .pb-mv td.c-amt { padding-right: 22px; }
+.pb-mv td.c-amt { font-weight: 500; }
+.pb-mv .c-k .k { font-weight: 500; }
+.pb-mv .c-k .q { margin-left: 9px; font-size: var(--t-small); color: var(--text-3); }
+.pb-mv .c-m2 { display: none; }
+.pb-mv tr.req td.c-amt { color: var(--text-2); font-weight: 400; }
+.pb-mv tr.hold .c-k .q { color: var(--hold-ink); }
+.pb-mv tr.fault .k, .pb-mv tr.fault td.c-amt { color: var(--fault); }
+/* the statement under it: what went in, what the blobs cost, what went out, the escrow it leaves */
+.pb-mv tfoot td { padding: 6px 12px; border-top: 0; line-height: 20px; background: var(--surface-2); }
+.pb-mv tfoot tr:first-child td { padding-top: 14px; border-top: 1px solid var(--border); }
+.pb-mv tfoot .fl { text-align: right; font-family: var(--sans); font-size: var(--t-cell); color: var(--text-2); }
+.pb-mv tfoot td.c-amt { font-weight: 500; }
+.pb-mv tfoot tr.tot td { padding-top: 10px; padding-bottom: 14px; }
+.pb-mv tfoot tr.tot td.c-amt { font-weight: 600; box-shadow: inset 0 1px 0 var(--line); }
+.pb-mv tfoot tr.tot .fl { color: var(--text); font-weight: 500; }
+
+/* ---- narrower ---- */
+/* its blobs without the time's age, as on Blobs: a little less room for each column, so the time keeps its own */
+@media (max-width: 1160px) {
+  .lg-one th.c-b { width: 128px; }
+  .lg-one th.c-fee { width: 104px; }
+  .lg-one th.c-e { width: 148px; }
+}
+/* deposits and withdrawals as two lines, like the blobs: the movement and its amount, then the height or its
+   qualifier, and the time */
+@media (max-width: 1080px) {
+  .pb-mv tr.row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "k a" "m t"; padding-right: 16px; }
+  .pb-mv tr.row td.c-k, .pb-mv tr.row td.c-m2, .pb-mv tr.row td.c-t { display: flex; align-items: center; height: 20px; }
+  .pb-mv tr.row td.c-amt { display: block; height: 20px; }
+  .pb-mv .c-k { grid-area: k; min-width: 0; }
+  .pb-mv .c-k .q { display: none; }
+  .pb-mv .c-amt { grid-area: a; text-align: right; padding-right: 0 !important; }
+  .pb-mv .c-m2 { grid-area: m; min-width: 0; font-size: var(--t-small); color: var(--text-3); }
+  .pb-mv .c-m2 .sep { margin: 0 6px; }
+  .pb-mv .c-t { grid-area: t; justify-content: flex-end; font-size: 13px; color: var(--text-2); }
+  .pb-mv .c-t .tm { font-weight: 400; }
+  .pb-mv tfoot { display: block; }
+  .pb-mv tfoot tr { display: flex; justify-content: space-between; gap: 16px; padding: 5px 16px; background: var(--surface-2); }
+  .pb-mv tfoot tr:first-child { padding-top: 14px; border-top: 1px solid var(--border); }
+  .lg-t.pb-mv tfoot td, .lg-t.pb-mv tfoot tr:first-child td, .lg-t.pb-mv tfoot tr.tot td { display: block; padding: 0; border: 0; background: none; box-shadow: none; }
+  /* the total under a rule inset to the figures' edges, as a statement draws it */
+  .pb-mv tfoot tr.tot { padding-top: 12px; padding-bottom: 14px; background: linear-gradient(var(--line), var(--line)) 16px 4px / calc(100% - 32px) 1px no-repeat, var(--surface-2); }
+  .pb-mv tfoot .fl { text-align: left; }
+}
+@media (max-width: 720px) {
+  .pb-mast { padding-top: 22px; }
+  .pb-id { gap: 10px; }
+  .pb-id .ident { width: 26px; height: 26px; }
+  .pb-h1 { font-size: 24px; line-height: 30px; }
+  /* the whole address on its own, wrapping anywhere over two lines, the copy button at its end */
+  .pb-addr { display: block; margin-top: 8px; }
+  .pb-addr .mono { font-size: 12.5px; line-height: 19px; overflow-wrap: anywhere; word-break: break-all; }
+  .pb-addr .copy { margin-left: 8px; vertical-align: -6px; }
+  .pb-meta { width: auto; margin-top: 18px; padding: 2px 14px; }
+  /* Tensile's reading: its counts one under the other, no separators to dangle */
+  .pb-meta .pb-tally { display: grid; row-gap: 2px; }
+  .pb-tally .sep { display: none; }
+  /* the panel: the escrow over the activity; the activity two a row, Settlements across the first unless a Timed
+     out cell sits beside it, then Blob size and Fees paid */
+  .pp { flex-direction: column; margin-top: 22px; }
+  .pp .pp-g { flex: none; }
+  .pp-g + .pp-g { border-left: 0; border-top: 1px solid var(--border); }
+  .pp-h { height: 46px; padding-left: 14px; padding-right: 7px; }
+  .pp-h .seg button, .pp-h .seg button:first-child { padding: 0 11px; }
+  .pp-cells { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pp-esc .pp-cells { grid-template-columns: minmax(0, 1fr); }
+  .pp-act .pan-c.wide { grid-column: 1 / -1; }
+  .pp-act .c-set { order: 1; }
+  .pp-act .c-to { order: 2; }
+  .pp-act .c-size { order: 3; }
+  .pp-act .c-fee { order: 4; }
+  .pb-list { margin-top: 34px; }
+  .pb-list .tabs button { font-size: 14px; padding: 0 10px; }
+  /* a phone keeps the ledger's own second line: the namespace and the size (the fee is on the blob's page) */
+  .lg-one .c-m .fe { display: none; }
+  .lg-t.pb-mv tr.row { padding-left: 14px; padding-right: 14px; }
+  .pb-mv tfoot tr { padding-left: 14px; padding-right: 14px; }
+  .pb-mv tfoot tr.tot { background: linear-gradient(var(--line), var(--line)) 14px 4px / calc(100% - 28px) 1px no-repeat, var(--surface-2); }
+}
+/* a small phone: a queued or paid-out withdrawal's line says when, the height stays on the wide table */
+@media (max-width: 440px) {
+  .pb-mv td.c-m2.hq .h, .pb-mv td.c-m2.hq .sep { display: none; }
+}
+@media (max-width: 400px) {
+  .pb-list .tabs { gap: 0; }
+}

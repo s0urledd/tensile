@@ -188,9 +188,9 @@ export function Who({ addr }: { addr: string }) {
   );
 }
 
-type RowProps = { b: Blob; age: string | null; fresh: boolean; onNs: (ns: string) => void; onOpen: (e: React.MouseEvent, href: string) => void };
+type RowProps = { b: Blob; age: string | null; fresh: boolean; one: boolean; onNs: (ns: string) => void; onOpen: (e: React.MouseEvent, href: string) => void };
 /** one blob: the cells of the table, and the second line a phone shows under the first */
-const Row = memo(function Row({ b, age: ag, fresh, onNs, onOpen }: RowProps) {
+const Row = memo(function Row({ b, age: ag, fresh, one, onNs, onOpen }: RowProps) {
   const href = `/blob/?hash=${b.promise_hash}`;
   const who = payer(b);
   const name = nsDisplay(b.namespace);
@@ -207,7 +207,7 @@ const Row = memo(function Row({ b, age: ag, fresh, onNs, onOpen }: RowProps) {
         <span className="ht">#{int(b.settlement_height)}</span>
       </td>
       <td className="c-ns"><button type="button" className="nsb" onClick={() => onNs(b.namespace)} title={`${b.namespace} · show only this namespace`}>{name}</button></td>
-      <td className="c-p">{who ? <Who addr={who} /> : "—"}</td>
+      {!one && <td className="c-p">{who ? <Who addr={who} /> : "—"}</td>}
       <td className="c-sz num">{unit(bytes(b.blob_size))}</td>
       <td className="c-fee num">{b.charge ? unit(tia(b.charge.fee_utia)) : "—"}</td>
       <td className="c-e num">
@@ -221,14 +221,16 @@ const Row = memo(function Row({ b, age: ag, fresh, onNs, onOpen }: RowProps) {
       <td className="gap" aria-hidden="true" />
       <td className="tn">{ln && <span className={ln.tier === "hold" ? "hold" : ln.tier === "kept" ? "ok" : undefined} title={ln.title}>{ln.word}</span>}</td>
       <td className="c-m">
-        <span className="nm">{name}</span><span className="sep">·</span>{bytes(b.blob_size)}{who && <><span className="sep">·</span><Who addr={who} /></>}
+        <span className="nm">{name}</span><span className="sep">·</span>{bytes(b.blob_size)}
+        {/* one publisher's list names the fee where the others name the publisher */}
+        {one ? b.charge && <span className="fe"><span className="sep">·</span>{tia(b.charge.fee_utia)}</span> : who && <><span className="sep">·</span><Who addr={who} /></>}
       </td>
     </tr>
   );
 });
 
 /** the first page's places while it loads: a page of rows, each cell's shape at its size */
-function Placeholders({ rows }: { rows: number }) {
+function Placeholders({ rows, one }: { rows: number; one: boolean }) {
   return (
     <>
       {Array.from({ length: rows }, (_, i) => (
@@ -237,20 +239,20 @@ function Placeholders({ rows }: { rows: number }) {
           <td className="c-t"><span className="wait">Sep 28 20:48:38</span></td>
           <td className="c-b"><span className="wait">36f68b…2417</span><span className="ht"><span className="wait">#1,204,085</span></span></td>
           <td className="c-ns"><span className="wait">sov-niko-a</span></td>
-          <td className="c-p"><span className="wait">celestia ••• 9snr</span></td>
+          {!one && <td className="c-p"><span className="wait">celestia ••• 9snr</span></td>}
           <td className="c-sz num"><span className="wait">16.0 MiB</span></td>
           <td className="c-fee num"><span className="wait">3.530 TIA</span></td>
           <td className="c-e num"><span className="wait">69.88%</span></td>
           <td className="gap" />
           <td className="tn" />
-          <td className="c-m"><span className="wait">sov-niko-a · 16.0 MiB · 9snr</span></td>
+          <td className="c-m"><span className="wait">sov-niko-a · 16.0 MiB · {one ? "3.530 TIA" : "9snr"}</span></td>
         </tr>
       ))}
     </>
   );
 }
 
-export default function Ledger({ feed, size, live, skew, onNs, children }: {
+export default function Ledger({ feed, size, live, skew, onePublisher = false, onNs, children }: {
   feed: Feed;
   /** the rows a page holds: as many places are kept while the first one loads */
   size: number;
@@ -258,6 +260,8 @@ export default function Ledger({ feed, size, live, skew, onNs, children }: {
   live: boolean;
   /** the observer's clock minus the reader's, for the ages */
   skew: number;
+  /** the list is one publisher's, on its page: no Publisher column, which would name it on every row */
+  onePublisher?: boolean;
   onNs: (ns: string) => void;
   /** the pager, under the table; it counts what the table shows */
   children?: (total: number) => React.ReactNode;
@@ -340,7 +344,23 @@ export default function Ledger({ feed, size, live, skew, onNs, children }: {
     router.push(href);
   }, [router]);
 
+  // ---- one publisher's list: the namespace column as wide as the longest name on the page, so no empty gap
+  // stretches before Blob size; the time, centred, takes what that leaves, and every column after it stays put ----
+  const tableRef = useRef<HTMLTableElement>(null);
+  useLayoutEffect(() => {
+    const t = tableRef.current;
+    if (!onePublisher || !t) return;
+    const fit = () => {
+      const w = Math.max(0, ...[...t.querySelectorAll<HTMLElement>("td.c-ns .nsb")].map((b) => b.scrollWidth));
+      if (w) t.style.setProperty("--ns-w", `${Math.ceil(w)}px`);
+    };
+    fit();
+    // again once the table's face has loaded: the names had the fallback's widths until then
+    document.fonts?.ready.then(fit);
+  }, [onePublisher, shown.rows]);
+
   const fresh = motion ? shown.move?.fresh : undefined;
+  const cols = onePublisher ? 9 : 10;
   return (
     <>
       <div className="lg-wrap" ref={wrapRef}
@@ -358,14 +378,14 @@ export default function Ledger({ feed, size, live, skew, onNs, children }: {
         </div>
         <div className={`lg-tw${waiting ? " is-waiting" : ""}`} aria-busy={waiting || !shown.loaded}>
           {!shown.loaded && !feed.error && <span className="sr-only">Loading…</span>}
-          <table className="lg-t">
+          <table ref={tableRef} className={`lg-t${onePublisher ? " lg-one" : ""}`}>
             <thead>
               <tr>
                 <th className="c-h">Height</th>
                 <th className="c-t">Settled <span className="per">(UTC)</span></th>
                 <th className="c-b">Blob</th>
                 <th className="c-ns">Namespace</th>
-                <th className="c-p">Publisher</th>
+                {!onePublisher && <th className="c-p">Publisher</th>}
                 <th className="c-sz num">Blob size</th>
                 <th className="c-fee num">Fee paid</th>
                 <th className="c-e num" title="Share of voting power whose signature on the settlement verified. A settlement needs ⅔.">Endorsed <Frac /></th>
@@ -375,11 +395,11 @@ export default function Ledger({ feed, size, live, skew, onNs, children }: {
             </thead>
             <tbody ref={bodyRef}>
               {!shown.loaded && (feed.error
-                ? <tr className="lg-empty"><td colSpan={10}>{feed.refused ? `${feed.error.charAt(0).toUpperCase()}${feed.error.slice(1)}.` : `The observer API is not answering (${feed.error}).`}</td></tr>
-                : <Placeholders rows={size} />)}
-              {shown.loaded && shown.rows.length === 0 && <tr className="lg-empty"><td colSpan={10}>No blob recorded{shown.path.includes("&namespace=") || shown.path.includes("&publisher=") ? " with this filter" : ""}.</td></tr>}
+                ? <tr className="lg-empty"><td colSpan={cols}>{feed.refused ? `${feed.error.charAt(0).toUpperCase()}${feed.error.slice(1)}.` : `The observer API is not answering (${feed.error}).`}</td></tr>
+                : <Placeholders rows={size} one={onePublisher} />)}
+              {shown.loaded && shown.rows.length === 0 && <tr className="lg-empty"><td colSpan={cols}>No blob recorded{shown.path.includes("&namespace=") || (!onePublisher && shown.path.includes("&publisher=")) ? " with this filter" : ""}.</td></tr>}
               {shown.rows.map((b) => (
-                <Row key={b.promise_hash} b={b} age={now ? age(now - Date.parse(b.settlement_time)) : null} fresh={!!fresh?.has(b.promise_hash)} onNs={onNs} onOpen={onOpen} />
+                <Row key={b.promise_hash} b={b} age={now ? age(now - Date.parse(b.settlement_time)) : null} fresh={!!fresh?.has(b.promise_hash)} one={onePublisher} onNs={onNs} onOpen={onOpen} />
               ))}
             </tbody>
           </table>
