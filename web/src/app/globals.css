@@ -1795,15 +1795,19 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 
 /* ---- the table: a publisher a row ---- */
 /* The publisher's chip and the time are as wide as they are, Settlements as wide as its head (its counts are
-   short); the other figures share the rest evenly, so each sits about as far from the one before it, and the
-   escrow keeps its lane at the end. */
+   short); the other figures share the rest, so each sits about as far from the one before it, and the escrow keeps
+   its lane at the end. A right-aligned figure stands its column's width less its own from the one before it, and
+   Share's are the row's shortest ("98.97%" beside "132.30 GiB"): its column is narrower by that much. Its width
+   follows the screen while the table does (82 px of gutters and frame, 682 px of fixed columns), so the three
+   stay even at every width. */
 .pl-t thead th { height: 44px; }
 .pl-t th.c-pub { width: 200px; }
 .pl-t th.c-t { width: 206px; }
 .pl-t th.gap { width: 10px; }
 .pl-t th.c-esc { width: 156px; }
 .pl-t th.c-n { width: 110px; }
-.pl-t th.c-sz, .pl-t th.c-sh, .pl-t th.c-fee, .pl-t th.c-to { width: auto; }
+.pl-t th.c-sz, .pl-t th.c-fee, .pl-t th.c-to { width: auto; }
+.pl-t th.c-sh { width: min(130px, calc((100vw - 764px) / 3 - 14px)); }
 .pl-t.has-to th.c-pub { width: 118px; }
 .pl-t.has-to .lg-who .hd { display: none; }
 .pl-t th.c-t, .pl-t td.c-t { text-align: center; }
@@ -1840,9 +1844,10 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 @media (min-width: 1081px) and (max-width: 1220px) {
   .pl-t:not(.has-to) .lg-who .hd { display: inline; }
 }
-/* the time without its age, as on Blobs */
+/* the time without its age, as on Blobs, and no wider than it then is (620 px of fixed columns) */
 @media (max-width: 1160px) {
-  .pl-t th.c-t { width: 160px; }
+  .pl-t th.c-t { width: 144px; }
+  .pl-t th.c-sh { width: calc((100vw - 702px) / 3 - 14px); }
 }
 /* a list before the columns would cut their figures: two lines a publisher, its escrow in the lane beside them.
    One slim head names the time and the lane once; the second line says what each figure is. */
