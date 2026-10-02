@@ -1917,9 +1917,11 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .pb-addr .copy:hover::before { background: var(--accent-ink); }
 /* When it last and first posted, where, and what Tensile found: all-time facts, in a light frame of their own with
    a hairline between them, quieter than the panel under it (no paper, no shadow). A label column of its own, so
-   every value starts at one x, on a wide screen and on a phone. */
-.pb-meta { display: grid; grid-template-columns: 104px minmax(0, max-content); column-gap: 14px; width: fit-content; max-width: 100%; margin: 22px 0 0; padding: 3px 16px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--paper) 40%, transparent); font-size: var(--t-cell); line-height: 18px; color: var(--text-2); }
+   every value starts at one x, on a wide screen and on a phone. The labels sit as far in as the panel's and the
+   table's, and the space after a label is its own padding, so each hairline runs unbroken from label to value. */
+.pb-meta { display: grid; grid-template-columns: 118px minmax(0, max-content); width: fit-content; max-width: 100%; margin: 22px 0 0; padding: 3px 18px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--paper) 40%, transparent); font-size: var(--t-cell); line-height: 18px; color: var(--text-2); }
 .pb-meta dt, .pb-meta dd { padding: 7px 0; border-top: 1px solid var(--line-soft); }
+.pb-meta dt { padding-right: 14px; }
 .pb-meta dt:first-of-type, .pb-meta dt:first-of-type + dd { border-top: 0; }
 .pb-meta dt { color: var(--text-3); white-space: nowrap; }
 .pb-meta dd { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; margin: 0; min-width: 0; }
