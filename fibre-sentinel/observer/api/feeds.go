@@ -19,8 +19,9 @@ package api
 //   - becoming unreachable after feedConfirmBeats consecutive failed
 //     heartbeats, and recovering; the certificate stopping being endorsed
 //     by the validator's key (expired, or not its key) and being put right;
-//   - the first reading on record that counts as not served (its rows did
-//     not come back, and the blob was Unavailable).
+//   - the first reading on record that counts as not served
+//     (rollup.CountedClass: at a full reading, none of its answers served;
+//     before it, its rows did not come back, and the blob was Unavailable).
 //
 // And for the network: every registration and host change, bonded-list
 // joins and departures after the observer's first poll, and each
@@ -43,6 +44,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/feed"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/rollup"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
@@ -688,9 +690,10 @@ func (s *Server) monikers(ctx context.Context) (map[string]string, error) {
 }
 
 // firstFaults finds each validator's first not-served reading on record
-// (addr's alone when addr is set): a reading whose rows did not come back on
-// a blob that was Unavailable (rollup.CountedClass, the same rule every
-// figure applies). The returned entries have no ID; Link holds the promise
+// (addr's alone when addr is set): a reading that counts as not served
+// (rollup.CountedClass, the same rule every figure applies: at a full
+// reading the validator's last answer, none having served; before it, rows
+// that did not come back on a blob that was Unavailable). The returned entries have no ID; Link holds the promise
 // hash for the caller to turn into a URL.
 //
 // The entry ID has no time in it, so it must name the same reading for good:
@@ -754,11 +757,27 @@ func (s *Server) firstFaults(ctx context.Context, addr string, now time.Time) (m
 			continue
 		}
 		out[a] = feed.Entry{Kind: "first-fault", At: t, Link: hash,
-			Title: "first not-served reading on record",
-			Summary: fmt.Sprintf("At the reading of blob %s (%s, %s) the validator did not hand over the rows it endorsed, "+
-				"and the blob could not be reconstructed from the rows the other validators returned.", hash, label, sched)}
+			Title: "first not-served reading on record", Summary: firstFaultSummary(hash, label, sched, t)}
 	}
 	return out, rows.Err()
+}
+
+// firstFaultSummary words a first not-served reading by the rule it was
+// judged by (rollup.CountedClass): at a full reading the validator's own
+// answers, whatever the blob came to, asked again when the reading was a
+// full one and once when it was an end reading from probe.FullReadSince on;
+// before full readings, its rows on a blob that could not be reconstructed.
+func firstFaultSummary(hash, label, sched string, started time.Time) string {
+	switch {
+	case label == probe.FullReadLabel:
+		return fmt.Sprintf("At the full reading of blob %s (%s, %s) the validator did not hand over the rows it endorsed, "+
+			"at the reading or when it was asked again.", hash, label, sched)
+	case probe.FullReading(label, started):
+		return fmt.Sprintf("At the reading of blob %s (%s, %s), which asked every endorser for its own rows, once, "+
+			"the validator did not hand over the rows it endorsed.", hash, label, sched)
+	}
+	return fmt.Sprintf("At the reading of blob %s (%s, %s) the validator did not hand over the rows it endorsed, "+
+		"and the blob could not be reconstructed from the rows the other validators returned.", hash, label, sched)
 }
 
 // networkFeed builds /v1/feed.atom.

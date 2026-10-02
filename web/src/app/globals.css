@@ -2126,6 +2126,8 @@ button.warn:focus-visible { outline-offset: 0; }
 .vr-t .c-m .rs.hold::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--hold); vertical-align: 1px; }
 .vr-t .c-m .rs.quiet { color: var(--text-3); }
 .vr-t .c-m .u { margin-left: 0; }
+/* a validator asked more than once at a reading: how many times, after the result */
+.vr-t .at::before { content: " · "; }
 
 @media (max-width: 1080px) {
   /* two lines a reading: the blob and when, then its rows and how long; the result in its lane beside them */
@@ -2133,6 +2135,11 @@ button.warn:focus-visible { outline-offset: 0; }
   .vr-t td.c-t > span { display: inline; }
   .vr-t .c-m .rs, .vr-t .c-m .rs-sep { display: none; }
   .vr-t .c-m { white-space: nowrap; }
+  /* the lane is narrow here: the times asked take a line of their own under the result, both lines on its left edge */
+  .vr-t td.tn .at { display: block; }
+  .vr-t td.tn .at::before { content: none; }
+  .vr-t td.tn > span:has(.at) { text-align: left; }
+  .vr-t td.tn > span.hold .at { padding-left: 12px; }
 }
 @media (max-width: 900px) {
   .vd-band { grid-template-columns: minmax(0, 1fr); }
@@ -2153,6 +2160,8 @@ button.warn:focus-visible { outline-offset: 0; }
   /* a phone has no lane: the result leads the second line, in its colour */
   .vr-t .c-m .rs, .vr-t .c-m .rs-sep { display: inline; }
   .vr-t tr.row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "b t" "m m"; }
+  /* one line has no room for the times asked; the blob's table lists every request's answer */
+  .vr-t .c-m .at { display: none; }
 }
 
 /* =============================================================================

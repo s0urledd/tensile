@@ -60,9 +60,13 @@ type Target struct {
 type Resolver struct {
 	chain *scan.Chain
 
-	mu            sync.Mutex
-	hostCacheAt   time.Time
-	hostCacheTTL  time.Duration
+	mu           sync.Mutex
+	hostCacheAt  time.Time
+	hostCacheTTL time.Duration
+	// hostRetryAt: after a refresh failed with a map on hand, the stale map
+	// is served until then, not tried again on every call (hostMap holds mu
+	// through the chain call, so every caller would wait out its timeout).
+	hostRetryAt   time.Time
 	hostByConsHex map[string]string // 20-byte hex -> host:port, bonded only
 	// lastKnown keeps the newest host this observer ever saw for a validator,
 	// with the time it was last confirmed. It is the fallback when a
@@ -78,6 +82,10 @@ type knownHost struct {
 	host string
 	at   time.Time
 }
+
+// hostRetryAfter is how long a failed refresh of the host registry serves
+// the map on hand before the chain is asked again.
+const hostRetryAfter = 10 * time.Second
 
 // maxLastKnownHosts bounds the fallback map. It is one entry per validator
 // that has ever registered, which is small, but it must still be bounded.
@@ -105,7 +113,7 @@ func NewResolver(chain *scan.Chain, hostCacheTTL time.Duration) *Resolver {
 func (r *Resolver) hostMap(ctx context.Context) (map[string]string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.hostByConsHex != nil && time.Since(r.hostCacheAt) < r.hostCacheTTL {
+	if r.hostByConsHex != nil && (time.Since(r.hostCacheAt) < r.hostCacheTTL || time.Now().Before(r.hostRetryAt)) {
 		return r.hostByConsHex, nil
 	}
 	providers, err := r.chain.BondedFibreProviders(ctx)
@@ -114,7 +122,9 @@ func (r *Resolver) hostMap(ctx context.Context) (map[string]string, error) {
 			// Serve stale rather than fail a probe. The staleness is bounded
 			// and every target carries the time behind its host, so a probe
 			// taken against an old registry says so rather than looking like
-			// a fresh observation.
+			// a fresh observation. The chain is asked again after
+			// hostRetryAfter, not by every caller meanwhile.
+			r.hostRetryAt = time.Now().Add(hostRetryAfter)
 			return r.hostByConsHex, nil
 		}
 		return nil, err

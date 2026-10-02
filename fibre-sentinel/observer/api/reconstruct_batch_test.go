@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
@@ -38,6 +39,10 @@ type valRows struct {
 	local    bool // its request failed on this observer's side at every point (PROBE_ERROR)
 	nohost   bool // no host to connect to (NO_REGISTERED_HOST): no request left
 	late     bool // its request started after must_serve_until (phase grace)
+	// retryNotMade: at the last point it failed, and a later attempt of it
+	// could not be made (a second row there, NOT_PROBED, as a full reading
+	// writes one): it was asked all the same.
+	retryNotMade bool
 }
 
 type blobCase struct {
@@ -50,6 +55,17 @@ type blobCase struct {
 	over     bool // the retention window has closed
 	want     string
 	err      string // the client's error on an Unavailable blob
+	// label is every point's schedule label; empty is the earlier
+	// schedule's w1, w2, ...
+	label string
+}
+
+// labelAt is the schedule label of point p.
+func (c blobCase) labelAt(p int) string {
+	if c.label != "" {
+		return c.label
+	}
+	return fmt.Sprintf("w%d", p+1)
 }
 
 func writeBlob(t *testing.T, st *store.Store, idx int, c blobCase) string {
@@ -161,10 +177,29 @@ func writeBlob(t *testing.T, st *store.Store, idx int, c blobCase) string {
 			) VALUES (?, 'v1', ?, ?, 0, ?, 1, ?, 'h:1', 1, ?, ?, ?, ?, ?, 0,
 				1,1,?,1,1,1,'TLS1.3','', 1,'', ?, 1, ?, ?, ?, ?,
 				?, ?, ?, '', '', 1, '{}', ?, ?)`,
-				key, hash, hash, msu, v.addr, len(v.rows), fmt.Sprintf("w%d", p+1),
+				key, hash, hash, msu, v.addr, len(v.rows), c.labelAt(p),
 				at, started, started, boolInt(!v.local && !v.missed && !v.nohost), boolInt(serves), returned, len(v.rows), verified, verified,
 				phase, outcome, class, v.attested, idx); err != nil {
 				t.Fatal(err)
+			}
+			if last && v.retryNotMade {
+				later := store.TS(now.Add(time.Duration(p)*time.Minute + 90*time.Second))
+				if _, err := db.Exec(`INSERT INTO probes (
+					dedupe_key, vantage, promise_hash, commitment, blob_version, must_serve_until,
+					validator_set_height, validator_address, validator_host, assigned,
+					assigned_row_count, schedule_label, scheduled_at, started_at, finished_at,
+					lateness_ms, dns_ok, dns_ms, tcp_ok, tcp_ms, tls_ok, tls_ms, tls_version,
+					peer_cert_sha256, identity_ok, identity_reason, download_ok, download_ms,
+					rows_returned, rows_expected, commitment_verified, assignment_verified,
+					phase, outcome, classification, classification_reason, raw_error,
+					total_duration_ms, raw_json, attested, row_indices
+				) VALUES (?, 'v1', ?, ?, 0, ?, 1, ?, 'h:1', 1, ?, ?, ?, ?, ?, 0,
+					0,0,0,0,0,0,'','', 0,'', 0, 0, 0, ?, 0, 0,
+					'in_window', 'MISSED', 'NOT_PROBED', '', '', 0, '{}', ?, NULL)`,
+					key+"|1", hash, hash, msu, v.addr, len(v.rows), c.labelAt(p),
+					at, later, later, len(v.rows), v.attested); err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
 	}
@@ -233,6 +268,24 @@ func TestReconstructBatchMatchesReference(t *testing.T) {
 		vals: []valRows{
 			{addr: "q1", rows: full[:20], attested: 1, served: true},
 			{addr: "q2", rows: full[20:], attested: 1, missed: true},
+		},
+	}, {
+		name:   "no: a full reading, short, and a validator's later attempt could not be made: it was asked all the same",
+		needed: 30, total: 160, points: 1, complete: true, over: true, want: "no", err: "not enough shards to reconstruct blob",
+		label: probe.FullReadLabel,
+		vals: []valRows{
+			{addr: "m1", rows: full[:20], attested: 1, served: true},
+			{addr: "m2", rows: full[20:], attested: 1, retryNotMade: true},
+		},
+	}, {
+		// An earlier schedule's reading keeps its rule: any NOT_PROBED row of
+		// an assigned validator in the window is a missed request, whatever
+		// else that validator has at the point (another vantage's answer).
+		name:   "not_read: the same rows at an earlier schedule's reading, which a missed request leaves not read",
+		needed: 30, total: 160, points: 1, complete: true, over: true, want: "not_read",
+		vals: []valRows{
+			{addr: "m1", rows: full[:20], attested: 1, served: true},
+			{addr: "m2", rows: full[20:], attested: 1, retryNotMade: true},
 		},
 	}, {
 		name:   "not_read: the same, once the window closed",

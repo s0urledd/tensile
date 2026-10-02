@@ -51,20 +51,20 @@ function state(v: ValidatorDetail, c: EndpointCheck | undefined, decided: number
   if (v.jailed) {
     return {
       tone: "none", title: "Jailed: out of the bonded set",
-      body: <>Publishers skip it and this observer does not dial it{v.last_host && <> (last host <span className="mono">{v.last_host}</span>)</>}. Shards it signed for before are still owed; checks resume once it is back in the bonded set.</>,
+      body: <>Publishers skip it and its endpoint is not checked{v.last_host && <> (last host <span className="mono">{v.last_host}</span>)</>}. Shards it endorsed before are still owed; checks resume once it is back in the bonded set.</>,
     };
   }
   if (v.bond_status && v.bond_status !== "BOND_STATUS_BONDED") {
     const word = v.bond_status.replace("BOND_STATUS_", "").toLowerCase();
     return {
       tone: "none", title: `${word[0].toUpperCase()}${word.slice(1)}: out of the bonded set`,
-      body: <>Only bonded validators are in the Fibre provider list, so nothing is checked. Shards it signed for while bonded are still owed.</>,
+      body: <>Only bonded validators are in the Fibre provider list, so nothing is checked. Shards it endorsed while bonded are still owed.</>,
     };
   }
   if (!v.host) {
     return {
       tone: "none", title: "No Fibre endpoint registered",
-      body: <>Nothing to check and nothing counted against it{v.last_host && <>; last host <span className="mono">{v.last_host}</span>{v.endpoint_closed_at && <> until {dateUTC(v.endpoint_closed_at)}</>}</>}. To register: <code>celestia-appd tx valaddr set-host &lt;host&gt;:7980 --from &lt;key&gt;</code> (<Docs href={REGISTER_DOCS}>guide</Docs>).</>,
+      body: <>Nothing to check{v.last_host && <>; last host <span className="mono">{v.last_host}</span>{v.endpoint_closed_at && <> until {dateUTC(v.endpoint_closed_at)}</>}</>}. Shards it endorsed before are still owed. To register: <code>celestia-appd tx valaddr set-host &lt;host&gt;:7980 --from &lt;key&gt;</code> (<Docs href={REGISTER_DOCS}>guide</Docs>).</>,
     };
   }
   const [name, port] = split(v.host);

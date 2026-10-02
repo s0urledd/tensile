@@ -252,7 +252,8 @@ var (
 	err500  = wire{probe.OutcomeServerError, true}
 	gone    = wire{probe.OutcomeNotFound, true}
 	refused = wire{probe.OutcomeTCPRefused, false}
-	skipped = wire{probe.OutcomeReachable, true} // backoff: handshake done, download deliberately skipped
+	skipped = wire{probe.OutcomeReachable, true}   // backoff: handshake done, download deliberately skipped
+	local   = wire{probe.OutcomeProbeError, false} // the request failed on this observer's side
 )
 
 // insertProbeSet writes one publication and, per validator, its in-window

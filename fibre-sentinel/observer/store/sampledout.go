@@ -83,12 +83,15 @@ const obligationRowsView = `CREATE VIEW IF NOT EXISTS obligation_rows AS
 
 // ObligationRowsVerified is obligation_rows with commitment_verified beside
 // it (0 for a sampled-out row, whose rows never came back), which the
-// obligation buckets count served from (rollup.CountedClass). It is written
-// inline rather than as a view so the schema does not move; the column sits
-// in the table row the view already reads tls_ok and must_serve_until from.
-const ObligationRowsVerified = `(SELECT ` + probeRowsCols + `, tls_ok, must_serve_until, commitment_verified FROM probes
+// obligation buckets count served from (rollup.CountedClass), and the two
+// columns a full reading's rule reads besides: rows_subset_of_assignment and
+// next_attempt_due (0 and NULL for a sampled-out row). It is written inline
+// rather than as a view so the schema does not move; the columns sit in the
+// table row the view already reads tls_ok and must_serve_until from.
+const ObligationRowsVerified = `(SELECT ` + probeRowsCols + `, tls_ok, must_serve_until, commitment_verified,
+	       rows_subset_of_assignment, next_attempt_due FROM probes
 	UNION ALL
-	SELECT ` + probeRowsCols + `, tls_ok, must_serve_until, 0 FROM sampled_out_rows)`
+	SELECT ` + probeRowsCols + `, tls_ok, must_serve_until, 0, 0, NULL FROM sampled_out_rows)`
 
 // collapseSampledOut turns the NOT_PROBED rows of a publication sampled out
 // whole, written before decisions had a record of their own, into the one

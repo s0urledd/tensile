@@ -114,7 +114,7 @@ type readingAgg struct {
 	endorsed int  // endorsing validators reached in the window
 	served   int  // whose rows verified
 	upper    int  // every verified row
-	missed   bool // the prober missed a request (a NOT_PROBED row of an assigned validator in the window)
+	missed   bool // the prober missed a request (a NOT_PROBED row of an assigned validator in the window; at a full reading, with no other row of it)
 }
 
 // reconstructBatch returns the status of every publication in the selection,
@@ -187,20 +187,26 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 	}
 
 	// 3. every reading: who was asked, who was reached, the verified rows,
-	// and whether the prober missed a request of it.
+	// and whether the prober missed a request of it (a NOT_PROBED row; at a
+	// full reading, of a validator with no other row there; as
+	// verdict.ReadingOf has it).
 	pb, pargs := pin.bound("p", args)
+	ob, oargs := pin.bound("po", nil)
 	reached := rollup.Reached("p")
 	points := map[string][]readingAgg{}
 	rows, err = db.QueryContext(ctx, sel+`
-		SELECT p.promise_hash, p.scheduled_at, MAX(p.schedule_label = '`+probe.EndReadLabel+`'),
+		SELECT p.promise_hash, p.scheduled_at, MAX(p.schedule_label IN `+rollup.EndLabelsSQL+`),
 		       COUNT(DISTINCT CASE WHEN p.classification NOT IN ('NOT_PROBED','PROBE_ERROR') THEN p.validator_address END),
 		       COUNT(DISTINCT CASE WHEN `+reached+` THEN p.validator_address END),
 		       COUNT(DISTINCT CASE WHEN `+reached+` AND p.phase = 'in_window' THEN p.validator_address END),
 		       COUNT(DISTINCT CASE WHEN p.commitment_verified = 1 THEN p.validator_address END),
 		       COALESCE(SUM(CASE WHEN p.commitment_verified = 1 THEN p.rows_returned END), 0),
-		       MAX(p.classification = 'NOT_PROBED' AND p.assigned = 1 AND p.phase = 'in_window')
+		       MAX(p.classification = 'NOT_PROBED' AND p.assigned = 1 AND p.phase = 'in_window'
+		           AND (NOT `+rollup.FullReadingSQL("p")+`
+		                OR NOT EXISTS (SELECT 1 FROM probes po WHERE po.promise_hash = p.promise_hash AND po.scheduled_at = p.scheduled_at
+		                               AND po.validator_address = p.validator_address AND po.classification <> 'NOT_PROBED'`+ob+`)))
 		FROM probes p JOIN sel ON sel.promise_hash = p.promise_hash`+pb+`
-		GROUP BY p.promise_hash, p.scheduled_at`, pargs...)
+		GROUP BY p.promise_hash, p.scheduled_at`, append(append(append([]any{}, args...), oargs...), pargs[len(args):]...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +333,7 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 
 // readingOf picks the reading a blob is judged at from its aggregated
 // readings, as verdict.ReadingPoint does from rows: the end-of-window
-// reading; or the newest point at which every one of the endorsers was
+// reading (end, or full); or the newest point at which every one of the endorsers was
 // reached in the window; or the newest point at which any validator was.
 func readingOf(pts []readingAgg, endorsers int) (readingAgg, bool) {
 	for _, pa := range pts {

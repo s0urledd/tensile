@@ -37,7 +37,7 @@ var schemaSQL string
 // an upgraded one — baseline, then every migration — so the two end up
 // identical in shape and the migration code is exercised by every test run
 // rather than only on upgrade day.
-const SchemaVersion = 24
+const SchemaVersion = 25
 
 // migration is one numbered step above the baseline. The statements run in a
 // single transaction: SQLite supports transactional DDL, so a failed step
@@ -699,6 +699,37 @@ var migrations = []migration{
 	// sampledout.go (sampledOutMigration): a publication the sampler drew
 	// out is one decision, not a NOT_PROBED row per validator per point.
 	sampledOutMigration,
+	{
+		version: 25,
+		note:    "full readings judge each endorser on its own answers: whether a short answer's rows are all the validator's own, and when a row's validator is owed another attempt",
+		stmts: []string{
+			// A short answer (PARTIAL) of the validator's own rows is not
+			// served at a full reading; a short answer of rows that are not
+			// its own is counted neither way (probe.FullForeign). Both were
+			// UNMATCHED_GENUINE, so the class cannot tell them apart and the
+			// row's own flag is kept beside it. 0 on every other row.
+			`ALTER TABLE probes ADD COLUMN rows_subset_of_assignment INTEGER NOT NULL DEFAULT 0`,
+			// Set on a row of a full reading after which its validator is
+			// owed another attempt (probe.Measurement.NextAttemptDue): not
+			// its last answer. NULL on every other row.
+			`ALTER TABLE probes ADD COLUMN next_attempt_due TEXT`,
+			// The full readings already stored (from probe.FullReadSince,
+			// asked once, with no attempt owed): their raw JSON is still
+			// kept, and says which short answers were of the validator's
+			// own rows. Only the rows whose flag the rule can read: a
+			// verified short answer of an endorser in the window is
+			// UNMATCHED_GENUINE, or PROBE_ERROR while its verdict waits on
+			// a scan gap (an amendment can make it UNMATCHED_GENUINE
+			// later); SHADOWED_SHARD never reads it. The class leads the
+			// index (probes_class_time), so the backfill reads those rows,
+			// not every row since FullReadSince.
+			`UPDATE probes SET rows_subset_of_assignment = 1
+			 WHERE classification IN ('UNMATCHED_GENUINE','PROBE_ERROR')
+			   AND started_at >= '` + TS(probe.FullReadSince) + `' AND outcome = 'PARTIAL'
+			   AND raw_json <> '' AND json_valid(raw_json)
+			   AND json_extract(raw_json, '$.download.rows_subset_of_assignment') = 1`,
+		},
+	},
 }
 
 // Store wraps one SQLite database.
@@ -905,6 +936,13 @@ func (s *Store) applyMigration(m migration) error {
 	defer tx.Rollback()
 	for _, stmt := range m.stmts {
 		if _, err := tx.Exec(stmt); err != nil {
+			// The column is already there: a database rolled back by
+			// deleting its schema_migrations row keeps the columns the
+			// migration gave it, and the migration runs again over them.
+			// Only that one statement failed; the transaction goes on.
+			if addsColumn(stmt) && strings.Contains(err.Error(), "duplicate column name") {
+				continue
+			}
 			return fmt.Errorf("migration %d (%s): %w\n%s", m.version, m.note, err, stmt)
 		}
 	}
@@ -913,6 +951,12 @@ func (s *Store) applyMigration(m migration) error {
 		return fmt.Errorf("migration %d: record: %w", m.version, err)
 	}
 	return tx.Commit()
+}
+
+// addsColumn reports an ALTER TABLE ... ADD COLUMN statement.
+func addsColumn(stmt string) bool {
+	s := strings.ToUpper(strings.Join(strings.Fields(stmt), " "))
+	return strings.HasPrefix(s, "ALTER TABLE ") && strings.Contains(s, " ADD COLUMN ")
 }
 
 // splitSQL turns a schema file into executable statements. Comments are
@@ -1355,9 +1399,10 @@ func (s *Store) InsertProbe(m probe.Measurement, raw []byte) (inserted bool, err
 		 assignment_verified, phase, outcome, classification, classification_reason, raw_error, total_duration_ms, raw_json,
 		 attested, bytes_returned, row_indices, rows_sha256, rpc_code, shadowed_by, observer_build, app_version,
 		 sampling_p, sampling_binding, sampling_commitment, retry_first_outcome, clock_offset_ms, shadow_gap,
-		 host_at_settlement, settlement_host_outcome, settlement_host_served, retention_unverified)
+		 host_at_settlement, settlement_host_outcome, settlement_host_served, rows_subset_of_assignment, next_attempt_due,
+		 retention_unverified)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-		        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+		        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 		-- Born withheld when this row must be: see ProbeHeldAtInsert for
 		-- the three cases and why each is needed. Deciding it here rather
 		-- than in the pass that follows is what makes the withholding a
@@ -1380,12 +1425,22 @@ func (s *Store) InsertProbe(m probe.Measurement, raw []byte) (inserted bool, err
 		samplingP(m), samplingField(m, func(d *probe.SamplingDecision) string { return d.Binding }),
 		samplingField(m, func(d *probe.SamplingDecision) string { return d.DayCommitment }), retryFirstOutcome(m), m.ClockOffsetMS,
 		nullIfEmpty(m.Download.ShadowGap), nullIfEmpty(m.HostAtSettlement), settlementOutcome(m), settlementServed(m),
+		b2i(m.Download.RowsSubsetOfAssignment), nextAttemptDue(m),
 		ts(m.MustServeUntil), m.PromiseHash)
 	if err != nil {
 		return false, fmt.Errorf("probe %s: %w", m.DedupeKey(), err)
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
+}
+
+// nextAttemptDue is the row's NextAttemptDue as stored: NULL when none is
+// owed.
+func nextAttemptDue(m probe.Measurement) any {
+	if m.NextAttemptDue == nil {
+		return nil
+	}
+	return ts(*m.NextAttemptDue)
 }
 
 func settlementOutcome(m probe.Measurement) any {

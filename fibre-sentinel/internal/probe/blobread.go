@@ -27,20 +27,27 @@ package probe
 // (Reached), because this observer's own network was down (ReadNotRead).
 //
 // This observer's limits on requests and shard bytes in flight
-// (Config.Concurrency, Config.InFlightBytes) only delay a request: its time
+// (Config.Concurrency, Config.InFlightBytes) and on the rate shard bytes are
+// let go at (Config.MaxReadMbps, ceiling.go) only delay a request: its time
 // starts once it is let go, it is never dropped, and it carries the phase
 // the reading started in (Input.ReadingPhase), so a request held back is
 // judged as the client, which asks at once, would have made it. The client
 // has no limit per validator, and neither has the reading.
 //
-// With Config.AskEveryEndorser the reading asks every endorsing validator
-// for its own rows, all of them, instead of stopping at enough: the same
-// request, the same checks, one per endorser. Validators that did not
-// endorse are not asked.
+// With Config.AskEveryEndorser the reading is a full one (FullReadLabel): it
+// asks every endorsing validator for its own rows, all of them, instead of
+// stopping at enough: the same request, the same checks, one per endorser.
+// Validators that did not endorse are not asked. A request of a full
+// reading that cannot start before must_serve_until less
+// Config.RequestStartMargin is not made, and its validator gets a
+// NOT_PROBED row: this observer's gap.
 //
 // Nothing is written until the reading ends: then one row per validator
 // asked, together (MeasurementStore.AppendReading). A validator the reading
-// did not need to ask has no row.
+// did not need to ask has no row. The reading's slot and its Reconstructor
+// are let go then: a validator of a full reading whose answer did not serve
+// is asked again later, on its own (retry.go), and each of those attempts
+// writes a row of its own.
 
 import (
 	"context"
@@ -110,6 +117,13 @@ type blobReading struct {
 	// phase is the reading's, taken when it started; every request carries
 	// it (Input.ReadingPhase).
 	phase Phase
+	// full: the reading asks every endorser (FullReadLabel), and no request
+	// of it starts after startBy (the client's re-dial follows its
+	// request). began is when the reading started: how late it started
+	// after its point is this observer's own delay (shiftOf).
+	full    bool
+	startBy time.Time
+	began   time.Time
 
 	mu      sync.Mutex
 	answers map[string]*answer
@@ -151,9 +165,26 @@ func (p *Prober) newBlobReading(ctx context.Context, pub scan.Publication, pt Sc
 	if err != nil {
 		return nil, fmt.Errorf("client order: %w", err)
 	}
-	return &blobReading{p: p, pub: pub, point: pt, coder: coder, commitment: commitment, rec: rec,
+	pt.Label = p.readLabel()
+	b := &blobReading{p: p, pub: pub, point: pt, coder: coder, commitment: commitment, rec: rec,
 		targets: ordered, shadowGap: p.shadowBlindness(pub), answers: map[string]*answer{},
-		phase: PhaseAt(time.Now().UTC(), pub, p.schedCfg())}, nil
+		phase: PhaseAt(time.Now().UTC(), pub, p.schedCfg())}
+	b.full, b.startBy, b.began = pt.Label == FullReadLabel, p.requestStartBy(pub), time.Now()
+	return b, nil
+}
+
+// shiftOf is this observer's own delay before a first-pass answer: how late
+// the reading started after its point (a restart, the blob slots, resolving
+// its validators), and the request's wait for room under this observer's
+// limits (LoadInfo.AdmitWaitMS). None of it is the validator's time, so
+// none of it may cost the validator an attempt it is owed
+// (Prober.nextAttemptDue).
+func (b *blobReading) shiftOf(m Measurement) time.Duration {
+	d := max(0, b.began.Sub(b.point.At))
+	if m.ObserverLoad != nil {
+		d += time.Duration(m.ObserverLoad.AdmitWaitMS) * time.Millisecond
+	}
+	return d
 }
 
 // have is how many distinct verified rows the reading holds.
@@ -244,24 +275,75 @@ func (b *blobReading) record(a *answer) {
 }
 
 // ask makes one validator's request, and the client's one re-dial. The
-// request waits for room under this observer's limits (admit), its time
-// starts once it is let go, and it carries the reading's phase.
+// request waits for room under this observer's limits and its reading-rate
+// ceiling (admitBy), its time starts once it is let go, and it carries the
+// reading's phase. In a full reading the wait ends at startBy: a request
+// that could not start by then is not made, and the validator's row says so
+// (NOT_PROBED). The re-dial is part of the request, as it is of the
+// client's: it is made whenever the request failed before an answer came
+// back, startBy or not (a request let go before startBy and its re-dial both
+// end well before must_serve_until). It is charged to the ceiling again
+// only when the first try had its session (TLS up), so its shard may have
+// begun to move; that wait is this observer's own, added to the row's load.
 func (b *blobReading) ask(ctx context.Context, v readTarget) *answer {
 	p := b.p
 	a := &answer{t: v}
 	in := p.inputFor(b.pub, v.Target, b.point, b.commitment, b.rec, b.shadowGap)
 	in.ReadingPhase = b.phase
-	release := p.admit(in.ExpectedShardBytes)
+	var by time.Time // a reading that stops at enough rows waits as long as it takes
+	if b.full {
+		by = b.startBy
+	}
+	release, load, err := p.admitBy(ctx, by, in.ExpectedShardBytes, in.ExpectedShardBytes)
+	if err != nil {
+		// Only a stopped run ends the wait of a reading without a cutoff;
+		// its rows are not written.
+		if ctx.Err() == nil {
+			p.counters.notStarted.add(time.Now())
+		}
+		a.m = p.notProbedRow(b.pub, b.point, v.Target, p.notStartedReason("request")+": "+err.Error())
+		return a
+	}
 	defer release()
 	m := Run(ctx, in, b.coder, p.cfg.Timeouts)
+	p.reach.note(m)
 	if redials(m) && ctx.Err() == nil {
+		if m.TLS.OK {
+			waited, ok := p.ceiling.wait(ctx, in.ExpectedShardBytes)
+			if !ok {
+				// Stopped while it waited: the reading writes nothing.
+				a.m = m
+				return a
+			}
+			if waited > 0 && load != nil {
+				load.AdmitWaitMS += waited.Milliseconds()
+				load.RateWaitMS += waited.Milliseconds()
+			}
+		}
 		first := m
 		a.first = &first
 		m = Run(ctx, in, b.coder, p.cfg.Timeouts)
+		p.reach.note(m)
 	}
+	m.ObserverLoad = load
 	a.m = m
 	a.served = m.Download.CommitmentVerified
 	return a
+}
+
+// ownSide rewrites, at a full reading whose answers are all in, every
+// answer whose failure this observer cannot pin on the validator into this
+// observer's gap (Prober.ownSide).
+func (b *blobReading) ownSide() {
+	b.mu.Lock()
+	as := make([]*answer, 0, len(b.answers))
+	for _, a := range b.answers {
+		as = append(as, a)
+	}
+	b.mu.Unlock()
+	for _, a := range as {
+		b.p.ownSide(context.Background(), &a.m)
+	}
 }
 
 // redials reports the requests after which the client drops the
@@ -318,6 +400,9 @@ func (b *blobReading) rows(result, clientErr string) []Measurement {
 				FirstStartedAt: f.StartedAt, FirstOutcome: f.Outcome, FirstError: f.RawError, FirstDurationMS: f.TotalDurationMS}
 		}
 		m.Read = &ReadInfo{Order: t.order, NovelRows: a.m.novel, BlobHaveAfter: a.haveAt, BlobResult: result, BlobError: clientErr}
+		if b.full {
+			m.NextAttemptDue = b.p.nextAttemptDue(m, b.startBy, b.shiftOf(m))
+		}
 		out = append(out, m)
 	}
 	return out

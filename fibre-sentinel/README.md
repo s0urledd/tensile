@@ -56,27 +56,37 @@ reads from the chain and recomputes itself (`fibre-assign`, `fibre-tlsverify`).
 ### Why one reading, as the client makes it
 
 What a Fibre blob promises its reader is that it can be downloaded until its
-deadline. So the Sentinel downloads it the way a reader does, with
-celestia-app's own rules (`fibre/download.go`): the whole validator set in
-the client's order (`validator.Set.Select`), the next one asked while the
-rows still wanted outnumber the rows on their way, 15 s per request
-(lookup, connect and TLS included), one re-dial after a request that
-failed before a server answered or timed out, every row verified against
-the commitment, and the download done at the rows that reconstruct the
-blob (4096 of 16384 for blob version 0). It reads **once, 10 minutes
-before the deadline**, where a validator that pruned early or moved on
-shows. The result is the client's: **available**, or
-**unavailable** with the client's error, "no shards retrieved" or "not
-enough shards to reconstruct blob". A reading in which not a single request
-reached a server (this observer's own network was down), or one the prober
-missed, did not happen: the blob was not read by Tensile, and nothing
-counts on it.
+deadline, and every validator that endorsed it owes its own rows until
+then. So the Sentinel reads each blob **once, 10 minutes before the
+deadline**, where a validator that pruned early or moved on shows, and asks
+every validator that endorsed it for its own rows the way celestia-app's
+client asks for a shard (`fibre/download.go`): in the client's order
+(`validator.Set.Select`), 15 s per request (lookup, connect and TLS
+included), one re-dial after a request that failed before a server answered
+or timed out, every row verified against the commitment. A validator whose
+answer did not serve is asked again, up to twice, 90 s after its last
+answer, while a request can still start a minute before the deadline. The
+blob's result is the client's: **available** (the rows reconstruct it, 4096
+of 16384 for blob version 0), or **unavailable** with the client's error,
+"no shards retrieved" or "not enough shards to reconstruct blob". A reading
+in which not a single request reached a server (this observer's own network
+was down), or one the prober missed, did not happen: the blob was not read
+by Tensile, and nothing counts on it.
 
-A validator counts as **not served** only when it endorsed the promise, the
-blob was unavailable, and its rows did not come back. On an available blob a
-validator that failed, or one the reading did not need to ask, counts
-neither way: the blob was there for any reader. A validator that did not
-endorse owes nothing and is never counted.
+Each validator that endorsed the promise is judged on its own answers,
+whatever the blob came to: **served** when its own rows came back and
+verified, **not served** when none of its answers served, its last giving
+the reason. This observer's own gaps count neither way: a request it could
+not make in time, a failure on its own side (its network, its resolver, its
+clock), rows of the blob that are not the validator's own (under hash-order
+serving they show neither that it holds its rows nor that it does not), or
+an attempt it owed that is not on record. A validator that did not endorse
+owes nothing, is not asked and is never counted. Most readings made before
+2026-10-02T16:09:49Z stopped at the rows that reconstruct the blob (the
+first end readings, from 27 September 2026, asked each endorser once), and
+a reading made with `-end-read-all=false` (labelled `enough`) still does;
+all of them keep that rule: a validator is not served only when the blob
+was unavailable and its rows did not come back.
 
 ### Why the tolerance is set from the *measured* prune lag
 
@@ -200,24 +210,52 @@ all (`-download-timeout`, the client's `RPCTimeout`):
 | L3 identity | `fibre-tlsverify` — the peer cert's extension must be endorsed by the validator's consensus key for this chain ID |
 | L4 retrievability | `DownloadShard`, then verify the returned rows against the commitment with the reading's shared `rsema1d` Reconstructor **and** against the recomputed `fibre-assign` assignment |
 
-A failed lookup or dial (whatever the cause), an unreachable peer or a
-timeout is asked again at once, as the client re-dials. Hosts come from `x/valaddr` `AllBondedFibreProviders`
+At the reading's own request, a failed lookup or dial (whatever the cause),
+an unreachable peer or a timeout is asked again at once, as the client
+re-dials, even when the re-dial starts past the request's start cutoff: it
+is part of the request; a later attempt is one request. Hosts come from `x/valaddr` `AllBondedFibreProviders`
 (latest height, cached); consensus keys from `/validators` at the promise
 height. The assignment is **recomputed** here and cross-checked against the
 row counts in the scan record — a mismatch is a hard error, not a silent
 divergence.
 
-**4. Enough.** The reading stops at `original_rows` distinct verified rows,
-or when every validator has been asked.
+**4. Every endorser, and again.** The reading (`-end-read-all`, the
+default; label `full`) asks every endorser, whatever the rows already held.
+A validator whose answer did not serve is asked again, up to twice, 90 s
+after its last answer (`-retry-spacing`), when that is still before
+`must_serve_until - 1 min` (`-request-start-margin`); an attempt that the
+validator's own time leaves no room for is not owed. This observer's own
+delays (a late reading, a wait for room, a lane, a restart) are taken out
+first: an attempt only they push past that point stays owed. Attempts wait
+in a lane per validator, one in flight to each, and read the validator's
+current host from the registry. A later attempt that fails before the
+validator's identity is verified (no such host, a connect refused, timed
+out or unroutable, a failed handshake or certificate) answers every attempt
+of that validator waiting at the same host (for a certificate, under the
+same key), each on a row of its own (`shared_from`). An owed attempt that
+cannot start in time is written `NOT_PROBED`, this observer's gap. At a full
+reading a failure that rests on this observer's own side is rewritten to
+`PROBE_ERROR`, the wire outcome kept in `raw_error` (`ownside.go`): a
+connect that timed out or found no route while nothing else reached a
+server and other validators' endpoints did not answer either, a timeout
+after a lookup that took more than 5 s, or a certificate read at the edge
+of its window within the measured clock offset and a minute. With
+`-end-read-all=false` the reading stops at `original_rows` distinct
+verified rows, or when every validator has been asked, and is labelled
+`enough`.
 
 **5. The record.** One raw `Measurement` per validator asked, all of a
 reading's rows in one write: vantage, scheduled/started/finished times, each
 layer's duration and result, the identity verdict, rows returned and both
-verification results, the raw error text, and `read` (the place in the
-order, the rows this answer added, what the reading came to and the
-client's error). **No scores** — the observer derives the blob's status and
-the obligation verdicts from these records (`observer/verdict`,
-`observer/rollup`).
+verification results (with `rows_subset_of_assignment` on a short answer
+whose rows are all the validator's own), the raw error text, `read` (the
+place in the order, the rows this answer added, what the reading came to
+and the client's error) and `observer_load` (the requests and bytes in
+flight when it was let go). Each later attempt is a row of its own
+(`attempt` 1 and 2); a row after which the validator is owed another
+attempt says when (`next_attempt_due`). **No scores** — the observer
+derives the blob's status and the obligation verdicts from these records
+(`observer/verdict`, `observer/rollup`).
 
 ### Error-class taxonomy
 
@@ -237,7 +275,8 @@ earlier schedule only:
 | any | any | any | certificate not endorsed by this validator's consensus key | **IDENTITY_MISMATCH** (an unusable endpoint, shown as its status; not a fault) |
 | yes | yes | in-window | `DNS_FAIL` / `TCP_*` / `TLS_HANDSHAKE_FAIL` / `RPC_UNAVAILABLE` / `RPC_TIMEOUT` / `RPC_ERROR` | **UNREACHABLE** (from one vantage this is our path too) |
 | yes | yes | any | `NO_REGISTERED_HOST` | **NOT_REGISTERED** (jailing and unbonding drop the bonded entry) |
-| yes | yes | any | `WRONG_ROWS` / `PARTIAL` whose rows verify against the commitment | **SHADOWED_SHARD** (another promise over the same blob answered) |
+| yes | yes | any | `WRONG_ROWS` / `PARTIAL` whose rows verify against the commitment and are exactly another settled promise's set | **SHADOWED_SHARD** (another promise over the same blob answered) |
+| yes | yes | in-window / grace | `WRONG_ROWS` / `PARTIAL` whose rows verify against the commitment and match no settled promise's set | **UNMATCHED_GENUINE** (at a full reading: a short shard whose rows are all its own is not served; other rows count neither way) |
 | yes | yes | any | lapsed but correctly signed certificate | **IDENTITY_EXPIRED** (a late renewal, not impersonation) |
 | yes | yes | in-window | `SERVED_OK` | **HEALTHY** |
 | yes | yes | grace (`msu` … `msu + prune-tolerance`) | `NOT_FOUND` / unreachable | **TOLERATED** |
@@ -247,14 +286,18 @@ earlier schedule only:
 | yes | yes | post | `SERVED_OK` | **SERVED_PAST_WINDOW** (fine; affects disk accounting) |
 | no | — | any | `NOT_FOUND` | **EXPECTED_UNASSIGNED** |
 | no | — | any | `SERVED_OK` | **SERVING_UNASSIGNED** (flagged for review) |
-| any | — | any | request could not run / reading not made in time | **PROBE_ERROR** / **NOT_PROBED** |
+| any | — | any | request could not run, or at a full reading failed on this observer's own network, resolver or clock / reading or owed attempt not made in time | **PROBE_ERROR** / **NOT_PROBED** |
 
 **Not served** is the only thing said against a validator: the chain *proves*
-it stored rows of a blob, the blob could *not be reconstructed* from what the
-reading brought back, and its rows did not come back — not found, bad rows,
-no answer, a rejected certificate, an error, a rate limit or no registered
-host, as a reader using the client meets them. On an available blob none of
-those counts either way. Only served and not served enter the service rate.
+it stored rows of a blob, and its own rows did not come back, at the reading
+and each time it was asked again — not found, bad rows or fewer of its own
+than it holds, no answer, a rejected certificate, an error, a rate limit or
+no registered host, as a reader using the client meets them. One gap of
+this observer's own among its answers, or an attempt it owed that is not on
+record, leaves it counted neither way. At a reading before full readings,
+or one labelled `enough`, it was said only when the blob could *not be
+reconstructed* from what the reading brought back. Only served and not
+served enter the service rate.
 
 "Attested" means the observer verified a signature from that validator over the
 settled promise against its consensus key. A Fibre server writes the shard to
@@ -266,15 +309,28 @@ than counting the entries the transaction carries.
 
 ### Load shape
 
-A reading asks only as many validators as it needs, so a validator is asked
-for some blobs, not all of them. At most 16 blobs (`-blob-concurrency`) and
-64 requests (`-concurrency`) are in flight at once, with 512 MiB of shards
-(`-in-flight-mib`). These only delay a request, never drop one, and there is
-no limit per validator, as the client has none. `publications.jsonl` is
-tailed incrementally and a publication is
-forgotten once its reading is on record. On a (re)start every reading that
-was not made gets its `NOT_PROBED` rows, however old;
-`-backfill-missed` (default 0, unbounded) caps how far back that goes. A
+A validator is asked for its own rows of every blob it endorsed, once at
+the reading and up to twice more when it did not serve. At most 16 blobs
+(`-blob-concurrency`) and 256 requests (`-concurrency`) are in flight at
+once, with 512 MiB of shards (`-in-flight-mib`); `-link-mbps`, set from the
+observer's measured link, also holds the shard bytes in flight to what the
+link moves in half a request's time, so a timeout is never this observer's
+own full link. Shard bytes are let go no faster than 400 Mbit/s
+(`-max-read-mbps`, a token bucket charged each request's whole expected
+shard, with a quarter of a second of burst; 0 turns it off), so the
+readings leave room on the observer's port: at the default, no more than
+62.5 MB in any second.
+These only delay a request until its last start, the wait is never part of
+the request's own time, and every row records the load it was let go
+under and its wait (`observer_load`). The reading's
+own requests have no limit per validator, as the client has none; a later
+attempt waits while the same validator's previous one is in flight.
+`publications.jsonl` is tailed incrementally and a publication is
+forgotten once its reading is on record and it owes no attempt. On a
+(re)start every reading that was not made gets its `NOT_PROBED` rows,
+however old, and every attempt the record still owes is made, or recorded
+as abandoned once its time is gone; `-backfill-missed` (default 0,
+unbounded) caps how far back the readings go. A
 publication whose settlement tx failed, or whose promise names another chain
 than the RPC's, is skipped with one log line.
 
@@ -299,7 +355,8 @@ The queue of readings is **never persisted** — it is re-derived every cycle
 from `publications.jsonl` + `measurements.jsonl`, so a restart resumes
 exactly; a reading under way when the process stopped is made again if its
 window allows. Each measurement's dedupe key is `(vantage, promise_hash,
-validator, scheduled_at)`. Every wait is bounded: the loop sleeps at most
+validator, scheduled_at)`, with the attempt number added for a later
+attempt. Every wait is bounded: the loop sleeps at most
 `-max-sleep` (30s) between cycles, every request has its own 15 s, and
 SIGINT/SIGTERM stops cleanly. `-once` reads everything currently due and
 exits; `-drain` runs until every known reading is in the past; `-deadline`

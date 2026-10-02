@@ -115,8 +115,9 @@ the tip, which the scan needs anyway (a block the node cannot serve is a
 recorded gap, and a registration inside a gap makes the hosts of later
 settlements unknown until the gap is re-scanned).
 
-The prober asks a validator only for a blob it was assigned rows of, in
-window, as the client asks, and stops once a blob's rows are enough. The
+The prober asks a validator only for a blob it endorsed, in window, for its
+own rows, as the client asks for a shard, and asks it again, up to twice,
+only when its answer did not serve. The
 read-path rate limiting Celestia is designing (forum
 topic 2295) treats requests for shards a validator was never assigned as
 illegitimate; reading only real, in-window, assigned commitments keeps the
@@ -124,32 +125,80 @@ observer's traffic on the right side of it.
 
 **What the prober sustains.** On 28 September mocha settled about 20 blobs
 a minute (1,200 an hour from 14:00 to 20:00 UTC, 22 in the busiest minute),
-nearly all of 16 MiB. A reading asks 12 to 20 validators (12 when every
-validator holds its rows, 20 when the third that did not endorse holds
-nothing) and moves about 19 MiB, the rows needed plus the requests already
-on their way: at 20 blobs a minute that is 240 to 400 requests and about
-380 MiB a minute, about 50 Mbit/s. The validator with the most stake is
-asked for nearly every blob; there is no limit per validator, as the client
-has none. A scheduler run on the observer (82 shared fake validators with
+nearly all of 16 MiB. A reading asks every validator that endorsed the blob
+for its own rows, so it moves the endorsers' share of the blob's encoded
+rows, which for blob version 0 are four times the blob's size: two thirds
+or more of them, by stake. For a 16 MiB blob that is about 43 to 64 MiB
+of rows, and at 20 blobs a minute roughly 120 to 180 Mbit/s: arithmetic,
+not a measurement, and about three times what the earlier reading moved
+when it stopped at enough rows (12 to 20 validators and about 19 MiB a
+blob, about 50 Mbit/s). Every endorser is asked for every blob it
+endorsed; the reading's own requests have no limit per validator, as the
+client has none, and at most one later attempt is in flight to a
+validator. A scheduler run on the observer (82 shared fake validators with
 mocha's row shape scaled to 1/16, 1.0 to 1.8 s per shard, production
 timeouts, loopback) read 60 of 60 blobs at 20 a minute (reading p50 1.9 s,
 max 3.0 s, no start lag) and 180 of 180 at 60 a minute (p50 2.5 s, max
-4.3 s, no start lag) under the earlier one-request-per-validator pacing,
-which only slowed it; at 120 a minute every blob was still read but the
-start lag grew to 30 s in two minutes. So the prober keeps up at three times
-today's rate with nothing queued. The limits it keeps, 16 blobs and 64
-requests at once and 512 MiB of shards in flight (`-blob-concurrency`,
-`-concurrency`, `-in-flight-mib`), only delay a request: its 15 s start once
-it is let go, it is never dropped, and it carries the phase its reading
-started in, so a request held back past `must_serve_until` counts as the
-client, which asks at once, would have made it.
+4.3 s, no start lag) under the earlier reading, which stopped at enough
+rows, and the earlier one-request-per-validator pacing, which only slowed
+it; at 120 a minute every blob was still read but the start lag grew to
+30 s in two minutes. The limits it keeps, 16 blobs and 256 requests at
+once, 512 MiB of shards in flight and a reading rate of 400 Mbit/s
+(`-blob-concurrency`, `-concurrency`, `-in-flight-mib`, `-max-read-mbps`),
+only delay a request: its 15 s start once it is let go, and it carries the
+phase its reading started in, so a request held back past
+`must_serve_until` counts as the client, which asks at once, would have
+made it. A request of a full reading, or a later attempt it owes, that
+then cannot start a minute before `must_serve_until`
+(`-request-start-margin`) is not made and is this observer's gap
+(`NOT_PROBED`). An attempt is owed unless the validator's own time leaves
+no room for it: this observer's own delays (a late reading, a wait for
+room, a lane, a restart) never cost a validator one. The prober's status `reads`
+block counts them (`requests_not_started_last_hour`, the `retries_*`
+counts, per validator) beside the admission wait (`admit_wait_p95_ms`).
+Measure the observer's link and set `-link-mbps` from it (in `PROBE_ARGS`,
+section 4) before blobs grow toward 128 MiB: it holds the shard bytes in flight to what the link moves
+in half a request's time, so a timeout is never the observer's own full
+link, and every row records the load it was let go under
+(`observer_load`).
 
-A validator that times out holds a request for 30 s (the request and the
-client's re-dial). The other readings go on beside it, as other clients'
+**The reading-rate ceiling.** A full reading of a large blob can fill the
+observer's port. Unpaced, a 128 MiB blob's full reading let its 62 to 67
+requests go at once and pulled 376 to 392 MB in about 3 s, nearly a
+1 Gbit/s port's line rate. `-max-read-mbps` (default 400; 0 turns it off;
+another value goes in `PROBE_ARGS`) paces what is let go. Each request,
+the reading's and every later attempt's, is charged its whole expected
+shard against a token bucket of that rate. The bucket holds a quarter of a
+second of the rate, 12.5 MB at the default, so no second lets go more than
+62.5 MB, half of a 1 Gbit/s port. A shard larger than that (mocha's largest
+validator holds 1,463 of 16,384 rows, 48.7 MB of a 128 MiB blob) waits
+until the bucket has refilled what it lacks, under a second. At 400 Mbit/s
+a 16 MiB blob's reading is let go over about 0.85 s and a 128 MiB blob's
+over about 7.5 s; today's load of 16 MiB blobs, about a third of the rate,
+is spread out but not held back. The client's re-dial after a first try
+that had its session is charged again; one after a failed dial moved no
+shard and is not.
+
+The ceiling's wait is like the other limits'. It only delays, it is never
+part of the request's 15 s, and it is recorded on the row
+(`observer_load.rate_wait_ms`) and in the status file (`rate_wait_p95_ms`).
+A full reading's request or later attempt whose turn would come after its
+start cutoff (`must_serve_until` less `-request-start-margin`) is not made:
+`NOT_PROBED`, this observer's gap, never the validator's. A request waiting
+for the ceiling keeps its request slot and its share of the byte budget, so
+the ceiling's own wait is at most the budget over the rate, about 11 s at
+the defaults. `-link-mbps` bounds the bytes in flight at once and the
+ceiling the rate they are let go at; with both set, keep the ceiling below
+the link.
+
+A validator that times out holds a request for 30 s at the reading (the
+request and the client's re-dial), and 15 s at a later attempt, which is
+one request. The other readings go on beside it, as other clients'
 would, so an unavailable blob is still read at 20 a minute beside a
 validator that hangs (`TestAnUnavailableBlobIsReadWhileAValidatorTimesOut`).
 Each blob being read also holds its verifier and the first shard it
-verified, up to about 11 MiB, beside the `-in-flight-mib` budget.
+verified, up to about 11 MiB, beside the `-in-flight-mib` budget; a later
+attempt's own verifier, about 4 MiB at K = 4096, is charged to it.
 
 ## 4. systemd
 
@@ -175,7 +224,10 @@ and `publishers-<network>.yaml`. They are hardened (`ProtectSystem=strict`,
 directory. The sampling secret must therefore sit under the data directory,
 not under `/etc`.
 
-Each unit runs one binary with the flags from its env file. Order does not
+Each unit runs one binary with the flags from its env file. The prober
+also takes any extra flags from `PROBE_ARGS` in it (for example
+`PROBE_ARGS=-max-read-mbps 600 -link-mbps 900`); a change there takes a
+`systemctl restart fibre-probe@mocha`. Order does not
 matter: the collector tolerates missing files, the API waits for the
 collector to create the database, and before Fibre is active on the chain
 the prober and heartbeat have nothing to do and say so in their logs.
@@ -237,7 +289,30 @@ which anything uses any more.
 
 The API also refuses a database **newer** than itself, so an API left on an
 old build after the collector moved on says so rather than serving columns
-it does not know.
+it does not know. A migration can take a while on a large store: start the
+new API only once `SELECT MAX(version) FROM schema_migrations` reads the
+new version, and give it minutes, not seconds. The prober never opens the
+database: restart it last, once, and never stop it for a copy of the data
+directory, since its time down is readings and attempts not made.
+
+**Going back.** Every binary refuses a database newer than itself, so an
+older build needs the database's version taken back too. When the newer
+migrations only added columns, as migration 25 does, that is one row, not a
+copy of the data directory:
+
+1. install the older prober and restart it;
+2. wait until the newer collector has read everything the newer prober
+   wrote: its cursor in `ingest_cursors` for `measurements.jsonl` equals
+   the file's size;
+3. stop the collector and the API;
+4. `sudo -u fibre-observer sqlite3 /var/lib/fibre-observer/mocha/observer.db 'DELETE FROM schema_migrations WHERE version = 25'`
+   (or the same statement through Python's `sqlite3`);
+5. install the older collector and API, and start them.
+
+The columns stay, unread, and the next upgrade runs the migration again over
+them. Never let an older collector read rows a newer prober wrote: it keys a
+row on the reading, not the attempt, so it keeps a validator's first answer
+and drops the later ones.
 
 Schema 5 adds a covering index over `probes`. On a store with 700,000 probes it
 takes a few seconds and about 200 bytes a probe; the collector logs it and the

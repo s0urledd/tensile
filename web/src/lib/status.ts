@@ -16,7 +16,7 @@ export function recon(b: Blob): { word: string; tier: Tier; title: string } {
   if (!r || (r.status !== "yes" && r.status !== "no")) {
     return !over
       ? { word: "in retention window", tier: "gap", title: "Read once, 10 minutes before the retention window ends." }
-      : { word: "not read by Tensile", tier: "gap", title: "Tensile did not read this blob: it missed the reading, its own network was down, or, before 27 September 2026, the load policy of the time did not draw it. Nothing is counted against a validator." };
+      : { word: "not read by Tensile", tier: "gap", title: "Tensile did not read this blob: it missed the reading, its own network was down, or, before 27 September 2026, the load policy of the time did not draw it. Tensile's own gaps count against no validator." };
   }
   const rows = `${int(r.served_distinct_rows)} distinct rows came back, ${int(r.needed_rows)} needed to reconstruct`;
   if (r.status === "yes") return { word: "available", tier: "kept", title: rows };

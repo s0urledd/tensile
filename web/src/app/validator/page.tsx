@@ -2,7 +2,8 @@
 import { Suspense, useCallback, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useApi, type ValidatorDetail, type ValidatorReading, type Window, type RecordThrough, type Obligations, type Meta, type EndpointCheck, int, pctOf, bytes, utcWord, dateUTC, whenUTC, shortMid, notFound, rateTone, notCountedText, badRequest, MIN_RATED, API_BASE, provisionalNow, type ProvisionalFaults, type NetworkReference } from "@/lib/api";
+import { useApi, type ValidatorDetail, type ValidatorReading, type Window, type RecordThrough, type Obligations, type Meta, type EndpointCheck, int, pctOf, bytes, utcWord, dateUTC, whenUTC, shortMid, notFound, rateTone, notCountedText, badRequest, MIN_RATED, API_BASE, provisionalNow, type ProvisionalFaults, type NetworkReference,
+  endOfWindow, fullReading, ownGap, ownSide, sharedAnswer, rawErrorWords, foreignRows, hhmm, attemptsOf, judged, askedTimes, FULL_READ_SINCE_WORDS } from "@/lib/api";
 import { useWindow, WindowSwitch, windowLabel, periodName } from "@/lib/window";
 import StatusLine from "@/components/StatusLine";
 import { PanelFig, Eye } from "@/components/Metrics";
@@ -84,17 +85,22 @@ function safeSite(raw?: string): string | null {
 const wordOf = (cls: string): [string, string] => WORDS[cls] ?? [cls.toLowerCase().replace(/_/g, " "), "other"];
 /** what came back, in a few words: the outcome of a FAULT, else the class */
 const whatCame = (p: ValidatorReading): string => {
+  if (foreignRows(p)) return "other rows of the blob";
   if (p.classification === "FAULT" || p.classification === "HEALTHY") {
     return ({ NOT_FOUND: "not found", INVALID_ROWS: "rows do not verify", PARTIAL: "short shard", WRONG_ROWS: "wrong rows", SERVED_OK: "served" } as Record<string, string>)[p.outcome]
       ?? p.outcome.toLowerCase().replace(/_/g, " ");
   }
+  if (p.outcome === "PARTIAL") return "short shard";
   return wordOf(p.classification)[0].toLowerCase();
 };
 /**
  * The word for one reading. The observer says what it counts as (service):
- * served, not served (the rows did not come back from a blob that could not
- * be reconstructed), or neither (a failure on a blob that was available all
- * the same, or a blob not read by Tensile); the page only words it.
+ * served; not served (at a full reading, its own rows did not come back, at
+ * the reading and each time it was asked again; at an earlier one, they did
+ * not come back from a blob that could not be reconstructed); or neither
+ * (Tensile's own gap, a blob not read by Tensile, and at an earlier reading
+ * a failure on a blob that was available all the same); the page only
+ * words it.
  */
 const probeWord = (p: ValidatorReading): [string, string] => {
   if (p.service === "not_served") return [`Not served · ${whatCame(p)}`, "fault"];
@@ -127,13 +133,51 @@ function groupOf(p: ValidatorReading): Group {
 }
 const plural = (n: number, w: string) => `${int(n)} ${w}${n === 1 ? "" : "s"}`;
 const lower = (w: string) => w.charAt(0).toLowerCase() + w.slice(1);
-/** groups where the validator's side failed while the blob was available from the others: counted neither way */
+/**
+ * groups where the validator's side failed and it counted neither way: at a full reading, beside a gap of Tensile's
+ * own; at an earlier one, while the blob was available from the others
+ */
 const HELD = new Set<Group>(["unreachable", "certificate rejected", "no endpoint", "not found", "answered with an error"]);
 type Tone = "ok" | "fault" | "hold" | "quiet";
 /**
+ * One line of the readings: a validator's requests at one reading of a blob (at a full reading the reading's own and
+ * any made again after an answer that did not serve), worded by the last that reached the validator, which gives the
+ * reason (a request of Tensile's own that failed never speaks for it). made: how many reached it; at: when the reading
+ * asked it first.
+ */
+type Line = { p: ValidatorReading; tries: ValidatorReading[]; made: number; g: Group; full: boolean; at: string };
+function linesOf(rows: ValidatorReading[]): Line[] {
+  const by = new Map<string, ValidatorReading[]>();
+  for (const p of rows) {
+    const k = `${p.vantage}|${p.promise_hash}|${p.scheduled_at}`;
+    by.set(k, [...(by.get(k) ?? []), p]);
+  }
+  const out: Line[] = [];
+  for (const group of by.values()) {
+    const { last, tries } = attemptsOf(group);
+    const made = tries.filter((t) => !ownGap(t.classification));
+    // what the requests count as together: a later answer replaces an earlier one, and a gap of Tensile's own among
+    // them leaves the validator counted neither way (the observer's service word on each says which)
+    const p: ValidatorReading = { ...(made[made.length - 1] ?? last), service: judged(tries) || undefined };
+    out.push({ p, tries, made: made.length, g: groupOf(p), full: fullReading(last.schedule_label, last.started_at), at: tries[0].started_at });
+  }
+  // the newest requests are a cut of 50: a reading whose own request fell outside it would show its later attempts
+  // alone, so it is left out (a later attempt never follows a request that was not made)
+  return out.filter((l) => (l.tries[0].attempt ?? 0) === 0).sort((a, b) => b.at.localeCompare(a.at));
+}
+/** one request's answer in a few words, for the list of a validator's requests at a reading */
+const answerWord = (p: ValidatorReading): string =>
+  p.service === "served" || p.outcome === "SERVED_OK" ? "served"
+  : p.classification === "NOT_PROBED" ? "not made in time"
+  : p.classification === "PROBE_ERROR" ? `Tensile's own ${ownSide(p.raw_error) || "error"}`
+  // a later attempt answered by another request to the same endpoint, which failed before any blob was asked for
+  : sharedAnswer(p.raw_error) ? `same answer as its request for another blob at ${hhmm(p.started_at)}: ${whatCame(p)}`
+  : whatCame(p);
+/**
  * The lane's word for one reading, in the Blobs list's tones: served green,
  * not served red, a failure that did not count amber with its dot (the rows
- * did not come back and the blob was available all the same), and the
+ * did not come back, beside a gap of Tensile's own at a full reading, or
+ * from a blob that was available all the same at an earlier one), and the
  * readings that count neither way for a reason of their own quiet.
  */
 function resultOf(p: ValidatorReading, g: Group): { word: string; tone: Tone } {
@@ -183,11 +227,12 @@ function Page() {
   const own = pageAddr(v.operator_address, v.address);
   const cons = v.cons_address || v.address;
   // Readings inside the retention window: the earlier schedule's checks after
-  // the deadline count in nothing and stay in the full history.
-  const probes = data.recent_probes.filter((p) => p.phase === "in_window").sort((a, b) => b.started_at.localeCompare(a.started_at));
-  // Each row with its outcome group, once: the summary counts them and the
-  // filter selects on the same judgement, so the two cannot disagree.
-  const grouped = probes.map((p) => ({ p, g: groupOf(p) }));
+  // the deadline count in nothing and stay in the full history. One line per
+  // reading of a blob, its requests together, with its outcome group, once:
+  // the summary counts them and the filter selects on the same judgement, so
+  // the two cannot disagree.
+  const grouped = linesOf(data.recent_probes.filter((p) => p.phase === "in_window"));
+  const probes = grouped.map((r) => r.p);
   const notServedRows = grouped.filter((r) => r.g === "not served");
   const shown = onlyNotServed ? notServedRows : grouped;
   const lastNotServed = notServedRows[0]?.p;
@@ -207,14 +252,20 @@ function Page() {
   const ref = data.network_reference;
   const refText = ref && ref.median_rate != null ? `network median ${pctFrac(ref.median_rate)}` : ref && ref.pooled_rate.den > 0 ? `network ${pctOf(ref.pooled_rate.num, ref.pooled_rate.den)}` : "";
 
-  // Readings in this period that did not count because something on the validator's side failed while the blob was
-  // available from the others (a wrong certificate, an endpoint that did not answer): the rate cannot show them, so
-  // its figure carries a dot that names them.
+  // Readings in this period that did not count although something on the validator's side failed (a wrong
+  // certificate, an endpoint that did not answer): beside a gap of Tensile's own at a full reading, or while the blob
+  // was available from the others at an earlier one. The rate cannot show them, so its figure carries a dot that names
+  // them.
   const since = data.window.start ? Date.parse(data.window.start) : 0;
   const held = grouped.filter((r) => resultOf(r.p, r.g).tone === "hold" && Date.parse(r.p.started_at) >= since);
   const heldBy = new Map<string, number>();
   for (const r of held) { const w = resultOf(r.p, r.g).word; heldBy.set(w, (heldBy.get(w) ?? 0) + 1); }
   const heldWhy = [...heldBy].map(([w, n]) => `${w} (${int(n)})`).join(", ");
+  const heldFull = held.filter((r) => r.full).length;
+  const gapText = "each counted neither way: one of Tensile’s requests failed on its side or was not made in time, rows of the blob came back that are not the validator’s own, no request reached any server, or a request Tensile still owed is not on record";
+  const heldText = heldFull === held.length ? `Its own rows did not come back, but ${gapText}.`
+    : heldFull === 0 ? "The rows did not come back, and the blob was available from other validators."
+    : `The rows did not come back, but ${gapText}; or, before ${FULL_READ_SINCE_WORDS}, the blob was available from other validators.`;
   const tone = o && decided > 0 ? rateTone(o.served, decided) : undefined;
   const now = Date.now();
   const per = periodName(data.window.name ?? win);
@@ -277,20 +328,20 @@ function Page() {
 
         <section className="pan vp" id="observed">
           <div className="vp-h">
-            <h2 className="vp-t" title="Each blob is read once, near the end of its retention window, as celestia-app’s client downloads it. A validator is not served only when its rows did not come back and the blob could not be reconstructed."><Eye />Observed by Tensile <span className="per">({per})</span></h2>
+            <h2 className="vp-t" title="Each blob is read once, 10 minutes before its retention window ends, and every validator that endorsed it is asked for its own rows. A validator is not served when its own rows did not come back, at the reading and each time it was asked again."><Eye />Observed by Tensile <span className="per">({per})</span></h2>
           </div>
           <dl className="vp-cells" style={{ "--n": 5 } as CSSProperties}>
             <PanelFig label="Service rate" className={notLive || decided === 0 ? "na" : tone === "r-bad" ? "bad" : tone === "r-warn" ? "warn" : undefined}
-              value={<>{notLive || !o || decided === 0 ? "—" : pctOf(o.served, decided)}{!notLive && held.length > 0 && <Warn text={`${plural(held.length, "reading")} in this period did not count: ${heldWhy}. The rows did not come back, and the blob was available from other validators. The readings below show each one.`} />}</>}
+              value={<>{notLive || !o || decided === 0 ? "—" : pctOf(o.served, decided)}{!notLive && held.length > 0 && <Warn text={`${plural(held.length, "reading")} in this period did not count: ${heldWhy}. ${heldText} The readings below show each one.`} />}</>}
               title={notLive ? undefined : !o || o.total === 0 ? ((v.signing?.signed ?? 0) > 0 ? "Not read yet." : "Nothing endorsed in this period.")
                 : decided === 0 ? (o.not_counted > 0 ? `Read, none counted: ${notCountedText(o)}.` : "Not read yet.")
-                : `${int(o.served)} of ${int(decided)} counted readings served${refText ? `; ${refText}` : ""}. Endorsed shards served, over served plus not served. Shards not asked for, that failed on a blob that was available, or that did not come back from a blob not read by Tensile, count neither way.`} />
+                : `${int(o.served)} of ${int(decided)} counted readings served${refText ? `; ${refText}` : ""}. Endorsed shards served, over served plus not served. A shard counts neither way when one of its requests failed on Tensile’s side or could not be made in time, an answer was rows of the blob that are not the validator’s own, a request Tensile still owed is not on record, or its reading was not made or reached no server; before ${FULL_READ_SINCE_WORDS}, so did a shard not asked for, or one that failed on a blob that was available.`} />
             <PanelFig label="Not served" className={notLive ? "na" : (o?.broken ?? 0) > 0 ? "bad" : undefined}
               value={<>{notLive ? "—" : int(o?.broken ?? 0)}{!notLive && prov > 0 && <Warn text={`${int(prov)} of these ${prov === 1 ? "is" : "are"} younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.`} />}</>}
-              title="Endorsed shards whose rows did not come back from a blob that could not be reconstructed." />
+              title={`Endorsed shards whose own rows did not come back, at the reading and each time they were asked again. Before ${FULL_READ_SINCE_WORDS}: rows that did not come back from a blob that could not be reconstructed.`} />
             <PanelFig label="In retention window" value={notLive || data.in_retention_window == null ? "—" : int(data.in_retention_window)}
               className={notLive || data.in_retention_window == null ? "na" : undefined}
-              title={`Endorsed shards whose retention window has not ended: each is read 10 minutes before its window ends.${!notLive && notCountedText(o) ? ` Not counted in the period: ${notCountedText(o)}.` : ""}`} />
+              title={`Endorsed shards whose retention window has not ended. Each is read 10 minutes before its window ends: the result shows in the readings below at once, and enters the counts when the window closes.${!notLive && notCountedText(o) ? ` Not counted in the period: ${notCountedText(o)}.` : ""}`} />
             <PanelFig label="Reachability" value={bonded && rw && rw.den > 0 ? pctOf(rw.num, rw.den) : "—"} className={bonded && rw && rw.den > 0 ? undefined : "na"}
               title={!bonded ? "Out of the bonded list: not checked." : rw && rw.den > 0 ? `${int(rw.num)} of ${int(rw.den)} handshakes completed with the registered endpoint. Not signing uptime.` : "No handshake yet."} />
             <PanelFig label="Throughput" value={v.serve_bytes_per_second == null ? "—" : unit(`${bytes(v.serve_bytes_per_second)}/s`)} className={v.serve_bytes_per_second == null ? "na" : undefined}
@@ -355,21 +406,36 @@ function Page() {
               {probes.length === 0 && <tr className="lg-empty"><td colSpan={6}>No reading of this validator on record yet.</td></tr>}
               {probes.length > 0 && shown.length === 0 && <tr className="lg-empty"><td colSpan={6}>
                 No not-served reading among the newest {int(probes.length)}.{(o?.broken ?? 0) > 0 && <> Older ones are <a href={notServedHref}>in the API →</a></>}</td></tr>}
-              {shown.map(({ p, g }) => {
-                const r = resultOf(p, g);
+              {shown.map(({ p, g, tries, made, full, at: readAt }) => {
+                // the end reading's result shows as soon as it is in; the record takes it when the window closes, and
+                // only then can a not-served one be provisional
+                const open = endOfWindow(p.schedule_label) && Date.parse(p.scheduled_at) + 10 * 60_000 > now;
+                const r = resultOf(open ? { ...p, provisional: false } : p, g);
                 const href = `/blob/?hash=${p.promise_hash}`;
-                const t = Date.parse(p.started_at);
+                const t = Date.parse(readAt);
                 const rows = p.rows_expected ? <><b>{int(p.rows_returned)}</b><span className="u"> / {int(p.rows_expected)}</span></> : "—";
                 const ms = <>{int(p.total_duration_ms)}<span className="u"> ms</span></>;
+                // a validator asked more than once says so after the word (on a line of its own where the lane is narrow)
+                const at = made > 1 ? <span className="at">{askedTimes(made)}</span> : null;
+                // at a full reading, rows of the blob that are not the validator's own, among its answers, leave it
+                // counted neither way
+                const foreign = full && !judged(tries) && tries.some(foreignRows);
                 const notes = [
-                  r.tone === "hold" && "not counted: the rows did not come back, and the blob was available from other validators",
-                  p.schedule_label !== "end" && "read on the earlier schedule",
+                  r.tone === "hold" && (full
+                    ? (tries.some((x) => ownGap(x.classification))
+                      ? "not counted: its own rows did not come back, but one of Tensile’s own requests at the reading failed or was not made in time"
+                      : foreign ? "not counted: rows of the blob came back that are not its own, which show neither that it holds its rows nor that it does not"
+                      : "not counted: its own rows did not come back, but one of Tensile’s own requests at the reading failed or was not made in time, no request of the reading reached any server, or a request Tensile still owed it is not on record")
+                    : "not counted: the rows did not come back, and the blob was available from other validators"),
+                  r.tone !== "hold" && foreign && "not counted: rows of the blob came back that are not its own, which show neither that it holds its rows nor that it does not",
+                  tries.length > 1 && `requests in order: ${tries.map(answerWord).join(", ")}${judged(tries) ? "; the last answer carries the result" : ""}`,
+                  open && "the retention window is still open: final when it closes",
+                  !endOfWindow(p.schedule_label) && "read on the earlier schedule",
                   `outcome: ${p.outcome.toLowerCase().replace(/_/g, " ")}`,
-                  g === "not served" && p.raw_error,
-                  r.tone === "hold" && p.raw_error,
-                  g === "not served" && p.provisional && "provisional: counted, and can still be withdrawn",
+                  (g === "not served" || r.tone === "hold") && p.raw_error && rawErrorWords(p),
+                  g === "not served" && p.provisional && !open && "provisional: counted, and can still be withdrawn",
                   p.attested === false && "not endorsed by this validator, so outside the rate",
-                  p.retry_first_outcome && `first answer ${p.retry_first_outcome.toLowerCase().replace(/_/g, " ")}, asked again`,
+                  p.retry_first_outcome && `first answer ${p.retry_first_outcome.toLowerCase().replace(/_/g, " ")}, dialled again at once`,
                   p.host_changed && `re-registered during the window: the upload went to ${p.host_at_settlement}`,
                   p.rpc_code && `gRPC ${p.rpc_code}`,
                   p.shadowed_by && `answered from promise ${p.shadowed_by.slice(0, 10)}…`,
@@ -377,13 +443,13 @@ function Page() {
                 return (
                   <tr key={`${p.vantage}|${p.promise_hash}|${p.scheduled_at}`} className="row"
                     onClick={(ev) => openRow(ev, href, onOpen)} onAuxClick={(ev) => openRow(ev, href, onOpen)}>
-                    <td className="c-t"><span title={utcWord(p.started_at)}><span className="tm">{monthDayTime(p.started_at)}</span><span className="ag">{age(now - t)}</span></span></td>
+                    <td className="c-t"><span title={utcWord(readAt)}><span className="tm">{monthDayTime(readAt)}</span><span className="ag">{age(now - t)}</span></span></td>
                     <td className="c-b"><Link href={href} title={p.promise_hash}>{p.promise_hash.slice(0, 6)}<span className="el">…</span>{p.promise_hash.slice(-4)}</Link></td>
                     <td className="c-r">{rows}</td>
                     <td className="c-d">{ms}</td>
                     <td className="gap" aria-hidden="true" />
-                    <td className="tn"><span className={r.tone} title={[p.classification_reason, notes].filter(Boolean).join(" · ")}>{r.word}</span></td>
-                    <td className="c-m"><span className={"rs " + r.tone}>{r.word}</span><span className="sep rs-sep">·</span><span>{rows}</span><span className="sep">·</span><span>{ms}</span></td>
+                    <td className="tn"><span className={r.tone} title={[p.classification_reason, notes].filter(Boolean).join(" · ")}>{r.word}{at}</span></td>
+                    <td className="c-m"><span className={"rs " + r.tone}>{r.word}{at}</span><span className="sep rs-sep">·</span><span>{rows}</span><span className="sep">·</span><span>{ms}</span></td>
                   </tr>
                 );
               })}

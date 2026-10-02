@@ -20,7 +20,8 @@ import (
 // that did, whatever the reader met (a timeout, no such shard, a server
 // error), at the one reading of a blob and at an earlier schedule's point
 // alike. A failure on a blob that was Available counts neither way and is
-// not listed, and neither are served rows.
+// not listed, and neither are served rows. These are readings from before
+// full readings (probe.FullReadSince), judged by the rule of their time.
 func TestProbesServedNoFollowsTheObligationRule(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
@@ -28,7 +29,7 @@ func TestProbesServedNoFollowsTheObligationRule(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	now := time.Now().UTC().Truncate(time.Second)
+	now := probe.FullReadSince.Add(-24 * time.Hour)
 	created, msu := now.Add(-5*time.Hour), now.Add(-time.Hour)
 	// Unavailable: the three validators that did not serve hold most of the
 	// rows.
