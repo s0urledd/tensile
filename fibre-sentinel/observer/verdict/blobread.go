@@ -36,10 +36,13 @@ import (
 //
 // A full reading (probe.FullReading) asks every endorser for its own rows,
 // and again when an answer did not serve: each endorser is judged on its
-// own answers, whatever the blob came to. Served when one of them served;
-// counted neither way when one was this observer's gap, or when not a
-// single request of the reading reached a server; otherwise not served, by
-// its last answer. The SQL twin is rollup.CountedClass.
+// own answers, whatever the blob came to. Served when one of them handed
+// over its own rows; counted neither way when one was this observer's gap
+// (probe.FullGap: NOT_PROBED, PROBE_ERROR, or rows that are not its own and
+// that no settled promise explains), when its last answer still owed an
+// attempt that is not on record, or when not a single request of the
+// reading reached a server; otherwise not served, by its last answer. The
+// SQL twin is rollup.CountedClass.
 
 // NotCounted is the class a row counts as when it left the reader without
 // rows on a blob that was not Unavailable, or, at a full reading, when it is
@@ -121,10 +124,11 @@ type Reading struct {
 	IndicesMissing bool
 	// Ran: a request reached a server (Reached).
 	Ran bool
-	// Missed: the prober missed a validator of this reading (an assigned
-	// validator's NOT_PROBED row in the window, and no other row of that
-	// validator at the reading: a later attempt of a full reading that
-	// could not be made leaves its validator asked all the same).
+	// Missed: the prober missed a request of this reading: an assigned
+	// validator's NOT_PROBED row in the window. At a full reading
+	// (probe.FullReading) only a validator with no other row there: a later
+	// attempt that could not be made leaves its validator asked all the
+	// same. Readings of earlier rules keep theirs, any such row.
 	Missed bool
 	// Asked is the validators the reading asked (a row other than this
 	// observer's own gap, NOT_PROBED or PROBE_ERROR); Served, those whose
@@ -168,13 +172,16 @@ func ReadingOf(point []Row, f BlobFacts) Reading {
 	other := map[string]bool{}
 	for _, r := range point {
 		rd.answers[r.Validator] = append(rd.answers[r.Validator], answerOf{started: r.StartedAt,
-			served: probe.FullServed(r.CommitmentVerified, r.Outcome, r.Classification), gap: probe.FullGap(r.Classification)})
-		if r.Classification == probe.ClassNotProbed {
-			if r.Assigned && r.Phase == probe.PhaseInWindow {
-				notProbed[r.Validator] = true
-			}
-		} else {
+			served: probe.FullServed(r.CommitmentVerified, r.Outcome, r.Classification),
+			gap:    probe.FullGap(r.CommitmentVerified, r.Outcome, r.Classification, r.RowsSubsetOfAssignment)})
+		switch {
+		case r.Classification != probe.ClassNotProbed:
 			other[r.Validator] = true
+		case !r.Assigned || r.Phase != probe.PhaseInWindow:
+		case probe.FullReading(r.ScheduleLabel, r.StartedAt):
+			notProbed[r.Validator] = true
+		default:
+			rd.Missed = true
 		}
 		if r.Classification != probe.ClassNotProbed && r.Classification != probe.ClassProbeError {
 			asked[r.Validator] = true

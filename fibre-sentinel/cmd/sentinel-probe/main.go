@@ -3,14 +3,15 @@
 // blob once, -end-read-offset before its must_serve_until, the way
 // celestia-app's Fibre client downloads it: in the client's order, 15 s
 // per request with the client's one re-dial, rows verified against the
-// commitment. With -end-read-all (the default) the reading is full: every
-// validator that endorsed the promise is asked for its own rows, and one
-// whose answer did not serve is asked again, up to twice, -retry-spacing
-// apart, while the request can start -request-start-margin before
-// must_serve_until; without it the reading stops once the rows reconstruct
-// the blob. Every reading ends with one Measurement per validator asked,
-// appended together to <data-dir>/measurements.jsonl, and each later
-// attempt appends its own.
+// commitment. With -end-read-all (the default) the reading is full
+// (schedule_label full): every validator that endorsed the promise is asked
+// for its own rows, and one whose answer did not serve is asked again, up
+// to twice, -retry-spacing after its last answer, while the request can
+// start -request-start-margin before must_serve_until (one request, no
+// re-dial, at most one in flight to a validator); without it the reading
+// stops once the rows reconstruct the blob (schedule_label enough). Every
+// reading ends with one Measurement per validator asked, appended together
+// to <data-dir>/measurements.jsonl, and each later attempt appends its own.
 //
 // The queue of readings is never persisted: it is re-derived from the
 // publications and the existing measurements every cycle, so a restart
@@ -59,7 +60,7 @@ func main() {
 		endRead   = flag.Bool("end-read", true, "accepted for the unit files that pass it; every blob is read this way")
 		endOffset = flag.Duration("end-read-offset", def.EndReadOffset, "how long before must_serve_until a blob is read")
 		endSince  = flag.String("end-read-since", "", "RFC 3339 time; publications settled before it were read on the schedule of their time and are not read again (empty = every publication)")
-		askAll    = flag.Bool("end-read-all", true, "ask every endorsing validator for its own rows, instead of stopping once the rows reconstruct the blob (a full reading, schedule_label full)")
+		askAll    = flag.Bool("end-read-all", true, "ask every endorsing validator for its own rows, and again when an answer did not serve (a full reading, schedule_label full); false stops once the rows reconstruct the blob (schedule_label enough, judged by the rule of such readings)")
 		startBy   = flag.Duration("request-start-margin", time.Minute, "no request of a full reading, nor a later attempt, starts later than this before must_serve_until (NOT_PROBED)")
 		spacing   = flag.Duration("retry-spacing", 90*time.Second, "how long after a validator's answer in a full reading did not serve it is asked again (up to twice)")
 		readDL    = flag.Duration("read-deadline", def.ReadDeadline, "a reading that cannot start this long before must_serve_until is not made (NOT_PROBED)")
@@ -67,9 +68,10 @@ func main() {
 
 		maxSleep    = flag.Duration("max-sleep", 30*time.Second, "longest sleep between cycles")
 		rpcTO       = flag.Duration("rpc-timeout", 15*time.Second, "per-RPC-call timeout")
-		concurrency = flag.Int("concurrency", 64, "requests in flight at once, across every reading; a request past it waits, it is never dropped")
+		concurrency = flag.Int("concurrency", probe.DefaultConcurrency, "requests in flight at once, across every reading; a request past it waits (a full reading's until -request-start-margin, then NOT_PROBED)")
 		blobs       = flag.Int("blob-concurrency", 16, "blobs being read at once")
 		inFlightMiB = flag.Int64("in-flight-mib", 512, "shard bytes in flight at once, MiB; a count of requests does not bound memory when one shard can be hundreds of MiB")
+		linkMbps    = flag.Int("link-mbps", 0, "this observer's measured receive rate, Mbit/s; when set, the shard bytes in flight are held to what it moves in half a request's time, so a timeout is never this observer's own full link (0 = not set)")
 		localHosts  = flag.Bool("allow-unroutable-hosts", false,
 			"dial registered hosts on loopback or a private range (a local devnet; never a public vantage)")
 		backfill = flag.Duration("backfill-missed", 0, "on (re)start, write NOT_PROBED rows only for readings newer than this that were not made; 0 (default) writes them for every one still on record")
@@ -96,6 +98,14 @@ func main() {
 	}
 	if *endOffset <= 0 || *readDL <= 0 {
 		log.Fatalf("-end-read-offset and -read-deadline must be positive")
+	}
+	if *askAll && (*startBy <= 0 || *spacing <= 0 || *startBy >= *readDL || *readDL >= *endOffset) {
+		// A request start margin at or past the reading's own deadline would
+		// make every request of a reading that starts late NOT_PROBED, and
+		// one at or past the reading's offset would leave no time for any
+		// attempt: the readings would quietly become gaps.
+		log.Fatalf("-request-start-margin (%s) must be below -read-deadline (%s), which must be below -end-read-offset (%s), and -retry-spacing (%s) positive",
+			*startBy, *readDL, *endOffset, *spacing)
 	}
 	sched := probe.ScheduleConfig{PruneTolerance: *pruneTol, EndReadOffset: *endOffset, ReadDeadline: *readDL}
 	if *endSince != "" {
@@ -148,6 +158,7 @@ func main() {
 		RequestStartMargin:   *startBy,
 		RetrySpacing:         *spacing,
 		InFlightBytes:        *inFlightMiB << 20,
+		LinkMbps:             *linkMbps,
 		AllowUnroutableHosts: *localHosts,
 		BackfillMissed:       *backfill,
 		RunConfig:            flagConfig(),

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
@@ -54,6 +55,17 @@ type blobCase struct {
 	over     bool // the retention window has closed
 	want     string
 	err      string // the client's error on an Unavailable blob
+	// label is every point's schedule label; empty is the earlier
+	// schedule's w1, w2, ...
+	label string
+}
+
+// labelAt is the schedule label of point p.
+func (c blobCase) labelAt(p int) string {
+	if c.label != "" {
+		return c.label
+	}
+	return fmt.Sprintf("w%d", p+1)
 }
 
 func writeBlob(t *testing.T, st *store.Store, idx int, c blobCase) string {
@@ -165,7 +177,7 @@ func writeBlob(t *testing.T, st *store.Store, idx int, c blobCase) string {
 			) VALUES (?, 'v1', ?, ?, 0, ?, 1, ?, 'h:1', 1, ?, ?, ?, ?, ?, 0,
 				1,1,?,1,1,1,'TLS1.3','', 1,'', ?, 1, ?, ?, ?, ?,
 				?, ?, ?, '', '', 1, '{}', ?, ?)`,
-				key, hash, hash, msu, v.addr, len(v.rows), fmt.Sprintf("w%d", p+1),
+				key, hash, hash, msu, v.addr, len(v.rows), c.labelAt(p),
 				at, started, started, boolInt(!v.local && !v.missed && !v.nohost), boolInt(serves), returned, len(v.rows), verified, verified,
 				phase, outcome, class, v.attested, idx); err != nil {
 				t.Fatal(err)
@@ -184,7 +196,7 @@ func writeBlob(t *testing.T, st *store.Store, idx int, c blobCase) string {
 				) VALUES (?, 'v1', ?, ?, 0, ?, 1, ?, 'h:1', 1, ?, ?, ?, ?, ?, 0,
 					0,0,0,0,0,0,'','', 0,'', 0, 0, 0, ?, 0, 0,
 					'in_window', 'MISSED', 'NOT_PROBED', '', '', 0, '{}', ?, NULL)`,
-					key+"|1", hash, hash, msu, v.addr, len(v.rows), fmt.Sprintf("w%d", p+1),
+					key+"|1", hash, hash, msu, v.addr, len(v.rows), c.labelAt(p),
 					at, later, later, len(v.rows), v.attested); err != nil {
 					t.Fatal(err)
 				}
@@ -258,8 +270,19 @@ func TestReconstructBatchMatchesReference(t *testing.T) {
 			{addr: "q2", rows: full[20:], attested: 1, missed: true},
 		},
 	}, {
-		name:   "no: short, and a validator's later attempt could not be made: it was asked all the same",
+		name:   "no: a full reading, short, and a validator's later attempt could not be made: it was asked all the same",
 		needed: 30, total: 160, points: 1, complete: true, over: true, want: "no", err: "not enough shards to reconstruct blob",
+		label: probe.FullReadLabel,
+		vals: []valRows{
+			{addr: "m1", rows: full[:20], attested: 1, served: true},
+			{addr: "m2", rows: full[20:], attested: 1, retryNotMade: true},
+		},
+	}, {
+		// An earlier schedule's reading keeps its rule: any NOT_PROBED row of
+		// an assigned validator in the window is a missed request, whatever
+		// else that validator has at the point (another vantage's answer).
+		name:   "not_read: the same rows at an earlier schedule's reading, which a missed request leaves not read",
+		needed: 30, total: 160, points: 1, complete: true, over: true, want: "not_read",
 		vals: []valRows{
 			{addr: "m1", rows: full[:20], attested: 1, served: true},
 			{addr: "m2", rows: full[20:], attested: 1, retryNotMade: true},

@@ -44,6 +44,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/feed"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/rollup"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
@@ -756,11 +757,27 @@ func (s *Server) firstFaults(ctx context.Context, addr string, now time.Time) (m
 			continue
 		}
 		out[a] = feed.Entry{Kind: "first-fault", At: t, Link: hash,
-			Title: "first not-served reading on record",
-			Summary: fmt.Sprintf("At the reading of blob %s (%s, %s) the validator did not hand over the rows it endorsed, "+
-				"and the blob could not be reconstructed from the rows the other validators returned.", hash, label, sched)}
+			Title: "first not-served reading on record", Summary: firstFaultSummary(hash, label, sched, t)}
 	}
 	return out, rows.Err()
+}
+
+// firstFaultSummary words a first not-served reading by the rule it was
+// judged by (rollup.CountedClass): at a full reading the validator's own
+// answers, whatever the blob came to, asked again when the reading was a
+// full one and once when it was an end reading from probe.FullReadSince on;
+// before full readings, its rows on a blob that could not be reconstructed.
+func firstFaultSummary(hash, label, sched string, started time.Time) string {
+	switch {
+	case label == probe.FullReadLabel:
+		return fmt.Sprintf("At the full reading of blob %s (%s, %s) the validator did not hand over the rows it endorsed, "+
+			"at the reading or when it was asked again.", hash, label, sched)
+	case probe.FullReading(label, started):
+		return fmt.Sprintf("At the reading of blob %s (%s, %s), which asked every endorser for its own rows, once, "+
+			"the validator did not hand over the rows it endorsed.", hash, label, sched)
+	}
+	return fmt.Sprintf("At the reading of blob %s (%s, %s) the validator did not hand over the rows it endorsed, "+
+		"and the blob could not be reconstructed from the rows the other validators returned.", hash, label, sched)
 }
 
 // networkFeed builds /v1/feed.atom.

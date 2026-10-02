@@ -4,30 +4,44 @@ package probe
 //
 // A validator whose answer in a full reading did not serve (FullServed) is
 // asked again, up to FullReadRetries more times, each RetrySpacing after
-// its last answer ended, while the attempt can still start before
-// must_serve_until less RequestStartMargin. A later answer that serves
-// makes it served; every attempt is its own row (Measurement.Attempt), so
-// the record keeps each failure and the reason shown is the last one.
+// its last answer ended, while the attempt can start before
+// must_serve_until less RequestStartMargin. An attempt that could not start
+// by then is not owed: the row before it carries no NextAttemptDue, no job
+// is queued and no row is written for it, and that row is the validator's
+// last answer. A later answer that serves makes the validator served; every
+// attempt is its own row (Measurement.Attempt), so the record keeps each
+// failure and the reason shown is the last one.
 //
 // The attempts live apart from the reading. The reading writes its rows
 // and gives back its blob slot (BlobConcurrency) and its Reconstructor when
 // its first pass ends, as any reading does; an attempt holds neither. It
-// is one request, made under this observer's request and byte limits
-// (admitBy), whose rows are verified against the commitment on their own
-// (a Reconstructor of that request alone, let go when it ends), and it
-// appends its own row. At most one attempt is in flight to a validator at
-// a time (retryQueue.slot): a validator busy with uploads is not asked
-// more while it is busy.
+// is one request, without the client's re-dial (the attempt is itself the
+// asking again), made under this observer's request and byte limits
+// (admitBy, charged its own verifier too), whose rows are verified against
+// the commitment on their own (a Reconstructor of that request alone, let
+// go when it ends), and it appends its own row.
 //
-// An attempt that cannot start in time (its validator's earlier attempt
-// still running, this observer's limits full, or the time already gone) is
-// not made, and its row says so: NOT_PROBED, this observer's gap, never
-// the validator's. So is one a restart abandoned: the queue of attempts is
-// not persisted, and a restarted prober finds the attempts its record
-// still owes (MeasurementStore.PendingAttempts) and makes them, or records
-// them as not made once their time is gone (recoverRetries).
+// At most one attempt is in flight to a validator at a time: the attempts
+// due wait in the validator's lane, and one worker per lane makes them, the
+// one whose time runs out first first. A validator whose endpoint fails
+// before any blob is asked for (no such host, a connect refused, timed out
+// or unroutable, a failed handshake or certificate: shareable) fails every
+// attempt waiting for it the same way at that moment, so the answer of that
+// one request is the answer of every attempt of the validator that was due
+// when it started (Measurement.SharedFrom): a validator whose endpoint is
+// down is judged on every blob it owes an attempt on, not on the few one
+// slow request at a time could reach.
+//
+// An attempt that was owed and could not be made (its cutoff passed while
+// it waited for the validator's earlier attempt or for this observer's
+// limits, the validator could not be resolved, or a restart abandoned it)
+// is written NOT_PROBED: this observer's gap, never the validator's. The
+// queue of attempts is not persisted: a restarted prober finds the
+// attempts its record still owes (MeasurementStore.PendingAttempts) and
+// makes them, or records them as not made once their time is gone.
 
 import (
+	"bytes"
 	"container/heap"
 	"context"
 	"encoding/hex"
@@ -49,7 +63,7 @@ type retryJob struct {
 	resolved bool
 	order    int
 	attempt  int
-	due      time.Time // RetrySpacing after the last answer ended
+	due      time.Time // the row before it: NextAttemptDue
 	cutoff   time.Time // the last moment the attempt may start
 	// result and clientErr are what the reading's first pass came to,
 	// repeated on the attempt's row.
@@ -60,8 +74,9 @@ type retryJob struct {
 }
 
 // wake is when the job is looked at: when it is due, or at its cutoff if
-// that comes first, so an attempt that cannot be made is recorded before
-// the window closes.
+// that comes first (only an attempt an earlier run owed under other
+// settings), so an attempt that cannot be made is recorded before the
+// window closes.
 func (j *retryJob) wake() time.Time {
 	if j.cutoff.Before(j.due) {
 		return j.cutoff
@@ -69,24 +84,36 @@ func (j *retryJob) wake() time.Time {
 	return j.due
 }
 
-// retryQueue holds the attempts waiting to be made, earliest first, and
-// which blobs still owe one.
+// retryLane is the attempts due to one validator, waiting for its one
+// attempt in flight, and whether a worker is making them.
+type retryLane struct {
+	jobs    []*retryJob
+	running bool
+}
+
+// retryQueue holds the attempts not yet due (h), the ones due waiting for
+// their validator (lanes), and which blobs still owe one.
 type retryQueue struct {
-	mu sync.Mutex
-	h  retryHeap
-	// pending counts, per blob, the attempts queued or under way and the
-	// readings writing their rows (hold); owned is every blob whose owed
-	// attempts this run has taken on, so a restart's are recovered once.
-	pending map[string]int
-	owned   map[string]bool
-	// slots allow one attempt in flight per validator.
-	slots map[string]chan struct{}
-	wakeC chan struct{}
+	mu    sync.Mutex
+	h     retryHeap
+	lanes map[string]*retryLane
+	// pending counts, per blob, the attempts queued, waiting or under way
+	// and the readings writing their rows (hold); owned is every blob whose
+	// owed attempts this run has taken on, so a restart's are recovered once.
+	pending  map[string]int
+	owned    map[string]bool
+	waiting  int // attempts in the lanes
+	inFlight int // attempts being made
+	// targets resolves each blob's validators once for the attempts an
+	// earlier run owed (resolveTarget), at most resolveSem at a time.
+	targets    map[string]*blobTargets
+	resolveSem chan struct{}
+	wakeC      chan struct{}
 }
 
 func newRetryQueue() *retryQueue {
-	return &retryQueue{pending: map[string]int{}, owned: map[string]bool{}, slots: map[string]chan struct{}{},
-		wakeC: make(chan struct{}, 1)}
+	return &retryQueue{lanes: map[string]*retryLane{}, pending: map[string]int{}, owned: map[string]bool{},
+		targets: map[string]*blobTargets{}, resolveSem: make(chan struct{}, 4), wakeC: make(chan struct{}, 1)}
 }
 
 func (q *retryQueue) push(j *retryJob) {
@@ -101,9 +128,9 @@ func (q *retryQueue) push(j *retryJob) {
 	}
 }
 
-// pop returns the job whose wake time has come first, or how long until
+// popDue returns the job whose wake time has come first, or how long until
 // the earliest one's.
-func (q *retryQueue) pop(now time.Time) (*retryJob, time.Duration) {
+func (q *retryQueue) popDue(now time.Time) (*retryJob, time.Duration) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if len(q.h) == 0 {
@@ -115,7 +142,116 @@ func (q *retryQueue) pop(now time.Time) (*retryJob, time.Duration) {
 	return heap.Pop(&q.h).(*retryJob), 0
 }
 
-// done ends a popped job.
+// enqueue puts a due job in its validator's lane, and reports whether the
+// lane needs a worker started.
+func (q *retryQueue) enqueue(j *retryJob) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	v := j.target.AddressHex
+	l := q.lanes[v]
+	if l == nil {
+		l = &retryLane{}
+		q.lanes[v] = l
+	}
+	l.jobs = append(l.jobs, j)
+	q.waiting++
+	if l.running {
+		return false
+	}
+	l.running = true
+	return true
+}
+
+// next takes the lane's job whose cutoff comes first (then the one due
+// first), or ends the lane's worker when none is left.
+func (q *retryQueue) next(v string) *retryJob {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	l := q.lanes[v]
+	if l == nil {
+		return nil
+	}
+	if len(l.jobs) == 0 {
+		delete(q.lanes, v)
+		return nil
+	}
+	best := 0
+	for i, j := range l.jobs {
+		b := l.jobs[best]
+		if j.cutoff.Before(b.cutoff) || (j.cutoff.Equal(b.cutoff) && j.due.Before(b.due)) {
+			best = i
+		}
+	}
+	j := l.jobs[best]
+	l.jobs = append(l.jobs[:best], l.jobs[best+1:]...)
+	q.waiting--
+	return j
+}
+
+// lane is a copy of the jobs waiting in a validator's lane.
+func (q *retryQueue) lane(v string) []*retryJob {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if l := q.lanes[v]; l != nil {
+		return append([]*retryJob(nil), l.jobs...)
+	}
+	return nil
+}
+
+// take removes these jobs from a validator's lane. Only the lane's worker
+// removes jobs, so every one is still there.
+func (q *retryQueue) take(v string, js []*retryJob) {
+	if len(js) == 0 {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	l := q.lanes[v]
+	if l == nil {
+		return
+	}
+	drop := map[*retryJob]bool{}
+	for _, j := range js {
+		drop[j] = true
+	}
+	kept := l.jobs[:0]
+	for _, j := range l.jobs {
+		if drop[j] {
+			q.waiting--
+			continue
+		}
+		kept = append(kept, j)
+	}
+	l.jobs = kept
+}
+
+// drain empties a stopped lane: its jobs are owed again after a restart.
+func (q *retryQueue) drain(v string) []*retryJob {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	l := q.lanes[v]
+	if l == nil {
+		return nil
+	}
+	delete(q.lanes, v)
+	q.waiting -= len(l.jobs)
+	return l.jobs
+}
+
+// started and ended count the attempts being made.
+func (q *retryQueue) started() {
+	q.mu.Lock()
+	q.inFlight++
+	q.mu.Unlock()
+}
+
+func (q *retryQueue) ended() {
+	q.mu.Lock()
+	q.inFlight--
+	q.mu.Unlock()
+}
+
+// done ends a job.
 func (q *retryQueue) done(hash string) { q.release(hash) }
 
 // hold marks a blob as owing attempts while its reading writes its rows
@@ -147,7 +283,7 @@ func (q *retryQueue) claim(hash string) bool {
 	return true
 }
 
-// owes reports whether a blob has an attempt queued or under way.
+// owes reports whether a blob has an attempt queued, waiting or under way.
 func (q *retryQueue) owes(hash string) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -160,33 +296,23 @@ func (q *retryQueue) forget(hash string) {
 	defer q.mu.Unlock()
 	if q.pending[hash] == 0 {
 		delete(q.owned, hash)
+		delete(q.targets, hash)
 	}
 }
 
-// queued is how many attempts wait to be made.
-func (q *retryQueue) queued() int {
+// counts is how many attempts are queued (not yet due), waiting for their
+// validator, and being made.
+func (q *retryQueue) counts() (queued, waiting, inFlight int) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return len(q.h)
+	return len(q.h), q.waiting, q.inFlight
 }
 
-// idle reports that no attempt is queued or under way.
+// idle reports that no attempt is queued, waiting or under way.
 func (q *retryQueue) idle() bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return len(q.h) == 0 && len(q.pending) == 0
-}
-
-// slot is the one attempt in flight a validator may have.
-func (q *retryQueue) slot(validator string) chan struct{} {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	s, ok := q.slots[validator]
-	if !ok {
-		s = make(chan struct{}, 1)
-		q.slots[validator] = s
-	}
-	return s
 }
 
 type retryHeap []*retryJob
@@ -210,22 +336,30 @@ func (h *retryHeap) Pop() any {
 	return j
 }
 
-// runRetries makes every queued attempt when it is due, each in its own
-// goroutine; the limits it runs under are admitBy's and the validator's
-// slot. A stopped run drops the queue: the record says what is owed.
+// runRetries moves every queued attempt to its validator's lane when it is
+// due and starts the lane's worker, and syncs the attempts' rows about once
+// a second (AppendDeferredRows). A stopped run drops the queue: the record
+// says what is owed.
 func (p *Prober) runRetries(ctx context.Context) {
 	var wg sync.WaitGroup
-	defer wg.Wait()
+	defer func() {
+		wg.Wait()
+		p.syncAttempts()
+	}()
 	for {
-		j, wait := p.retries.pop(time.Now())
+		j, wait := p.retries.popDue(time.Now())
 		if j != nil {
-			wg.Add(1)
-			go func(j *retryJob) {
-				defer wg.Done()
-				p.retry(ctx, j)
-			}(j)
+			if p.retries.enqueue(j) {
+				v := j.target.AddressHex
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					p.retryLane(ctx, v)
+				}()
+			}
 			continue
 		}
+		p.syncAttempts()
 		if wait <= 0 || wait > time.Second {
 			wait = time.Second
 		}
@@ -238,8 +372,50 @@ func (p *Prober) runRetries(ctx context.Context) {
 	}
 }
 
+// syncAttempts makes the attempts' rows written since the last sync durable.
+func (p *Prober) syncAttempts() {
+	if err := p.store.Sync(); err != nil {
+		p.log.Fatalf("sync attempts: %v", err)
+	}
+}
+
+// retryLane makes the attempts due to one validator, one at a time, until
+// its lane is empty.
+func (p *Prober) retryLane(ctx context.Context, v string) {
+	for {
+		if ctx.Err() != nil {
+			for _, j := range p.retries.drain(v) {
+				p.retries.done(j.pub.PromiseHash)
+			}
+			return
+		}
+		j := p.retries.next(v)
+		if j == nil {
+			return
+		}
+		p.retryOne(ctx, j)
+	}
+}
+
+// retryOne makes one attempt, gives its answer to every other attempt of
+// the validator it speaks for (shareable), and records them.
+func (p *Prober) retryOne(ctx context.Context, j *retryJob) {
+	m, ok := p.attempt(ctx, j)
+	if !ok {
+		p.retries.done(j.pub.PromiseHash)
+		return
+	}
+	jobs, rows := []*retryJob{j}, []Measurement{m}
+	if shareable(m) {
+		for _, o := range p.sharers(ctx, j, m) {
+			jobs, rows = append(jobs, o), append(rows, p.sharedRow(o, m))
+		}
+	}
+	p.recordAttempts(jobs, rows)
+}
+
 // retryAfterReading queues the next attempt of every validator of a full
-// reading whose answer did not serve.
+// reading whose row says it is owed one (NextAttemptDue).
 func (p *Prober) retryAfterReading(b *blobReading, ms []Measurement) {
 	result, clientErr := "", ""
 	if len(ms) > 0 && ms[0].Read != nil {
@@ -255,8 +431,7 @@ func (p *Prober) retryAfterReading(b *blobReading, ms []Measurement) {
 		}
 		t := byAddr[m.ValidatorAddress]
 		p.retries.push(&retryJob{pub: b.pub, point: b.point, target: t.Target, resolved: true, order: t.order,
-			attempt: m.Attempt + 1, due: m.FinishedAt.Add(p.cfg.RetrySpacing), cutoff: b.startBy,
-			result: result, clientErr: clientErr})
+			attempt: m.Attempt + 1, due: *m.NextAttemptDue, cutoff: b.startBy, result: result, clientErr: clientErr})
 	}
 }
 
@@ -273,36 +448,63 @@ func (p *Prober) retriesOwed(pub scan.Publication, pt SchedulePoint) bool {
 
 // recoverRetries queues the attempts an earlier run owed on pub's full
 // reading: those it made and could not follow, because it stopped. Each
-// is made at the point of the reading it follows, as the record has it.
+// is made at the point of the reading it follows, as the record has it,
+// and its validator is resolved again when it is made (resolveTarget), once
+// for the blob.
 func (p *Prober) recoverRetries(pub scan.Publication, pt SchedulePoint) {
 	for _, mk := range p.store.PendingAttempts(pub.PromiseHash) {
 		t := Target{AddressHex: mk.Validator, Host: mk.Host, HostAtSettlement: mk.HostAtSettlement, Assigned: mk.Assigned,
 			Attested: mk.Attested, AttestationUnknown: mk.AttestationUnknown, RowCount: mk.RowCount}
 		point := SchedulePoint{At: mk.ScheduledAt, Phase: pt.Phase, Label: FullReadLabel}
 		p.retries.push(&retryJob{pub: pub, point: point, target: t, order: mk.Order, attempt: mk.Attempt + 1,
-			due: mk.FinishedAt.Add(p.cfg.RetrySpacing), cutoff: p.requestStartBy(pub),
-			result: mk.BlobResult, clientErr: mk.BlobError, recovered: true})
+			due: mk.Due, cutoff: p.requestStartBy(pub), result: mk.BlobResult, clientErr: mk.BlobError, recovered: true})
 	}
 }
 
-// retry makes one attempt and records it, and queues the next one when it
-// did not serve. A stopped run records nothing: the restart owes it.
-func (p *Prober) retry(ctx context.Context, j *retryJob) {
-	defer p.retries.done(j.pub.PromiseHash)
-	m, ok := p.attempt(ctx, j)
-	if !ok {
-		return
+// recordAttempts writes the rows of these attempts together, without an
+// fsync of their own (runRetries syncs), and queues each validator's next
+// attempt when its row says one is owed.
+func (p *Prober) recordAttempts(jobs []*retryJob, rows []Measurement) {
+	for i := range rows {
+		rows[i].NextAttemptDue = p.nextAttemptDue(rows[i], jobs[i].cutoff)
 	}
-	if err := p.store.AppendReading([]Measurement{m}); err != nil {
+	if err := p.store.AppendDeferredRows(rows); err != nil {
 		p.log.Fatalf("append attempt: %v", err)
 	}
-	p.logMeasurement(m)
-	if !retryOpen(m) {
-		return
+	now := time.Now()
+	for i, m := range rows {
+		j := jobs[i]
+		p.logMeasurement(m)
+		switch {
+		case m.Outcome == OutcomeMissed:
+			p.counters.retryNotMade(now, j.target.AddressHex)
+		case m.SharedFrom != "":
+			p.counters.retriesShared.add(now)
+		default:
+			p.counters.retriesMade.add(now)
+		}
+		if m.NextAttemptDue != nil {
+			next := *j
+			next.attempt, next.due, next.index, next.recovered = m.Attempt+1, *m.NextAttemptDue, 0, false
+			p.retries.push(&next)
+		}
+		p.retries.done(j.pub.PromiseHash)
 	}
-	next := *j
-	next.attempt, next.due, next.index = j.attempt+1, m.FinishedAt.Add(p.cfg.RetrySpacing), 0
-	p.retries.push(&next)
+}
+
+// nextAttemptDue is when the validator of a row of a full reading is to be
+// asked again: RetrySpacing after the row's answer ended, for an answer
+// that did not serve and is not an attempt that could not be made, while an
+// attempt is left and it can start before cutoff. nil when none is owed.
+func (p *Prober) nextAttemptDue(m Measurement, cutoff time.Time) *time.Time {
+	if m.ScheduleLabel != FullReadLabel || m.Attempt >= FullReadRetries || m.Classification == ClassNotProbed || m.fullServed() {
+		return nil
+	}
+	due := m.FinishedAt.Add(p.cfg.RetrySpacing)
+	if !due.Before(cutoff) {
+		return nil
+	}
+	return &due
 }
 
 // attempt makes job j's request, or the row saying it could not be made.
@@ -312,15 +514,15 @@ func (p *Prober) attempt(ctx context.Context, j *retryJob) (Measurement, bool) {
 		m := p.notProbedRow(j.pub, j.point, j.target, reason)
 		return j.stamp(m), true
 	}
-	late := p.notStartedReason("retry")
-	if j.recovered {
-		late = "abandoned by a restart of this observer; " + late
-	}
 	if !time.Now().Before(j.cutoff) {
-		return notMade(late)
+		why := "its validator's earlier attempt was still under way"
+		if j.recovered {
+			why = "abandoned by a restart of this observer"
+		}
+		return notMade(p.notStartedReason("retry") + ": " + why)
 	}
 	if !j.resolved {
-		t, err := p.retryTarget(ctx, j)
+		t, err := p.resolveTarget(ctx, j)
 		if ctx.Err() != nil {
 			return Measurement{}, false
 		}
@@ -329,19 +531,7 @@ func (p *Prober) attempt(ctx context.Context, j *retryJob) (Measurement, bool) {
 		}
 		j.target, j.resolved = t, true
 	}
-	// One attempt in flight per validator, waited for until the cutoff.
-	slot := p.retries.slot(j.target.AddressHex)
-	wait := time.NewTimer(time.Until(j.cutoff))
-	select {
-	case slot <- struct{}{}:
-		wait.Stop()
-	case <-ctx.Done():
-		wait.Stop()
-		return Measurement{}, false
-	case <-wait.C:
-		return notMade(late)
-	}
-	defer func() { <-slot }()
+	j.target = p.currentHost(ctx, j.pub, j.target)
 
 	pp := j.pub.Assignment.ProtocolParams
 	coder, err := p.coderFor(pp.OriginalRows, pp.TotalRows)
@@ -355,30 +545,28 @@ func (p *Prober) attempt(ctx context.Context, j *retryJob) (Measurement, bool) {
 	}
 	copy(commitment[:], cb)
 	// No verifier is passed: the request checks its rows against the
-	// commitment with one of its own, let go when it ends.
+	// commitment with one of its own, let go when it ends, and charged to
+	// the byte budget with its shard.
 	in := p.inputFor(j.pub, j.target, j.point, commitment, nil, p.shadowBlindness(j.pub))
-	release, ok := p.admitBy(ctx, j.cutoff, in.ExpectedShardBytes)
+	release, load, ok := p.admitBy(ctx, j.cutoff, in.ExpectedShardBytes+verifierBytes(pp.OriginalRows, pp.TotalRows))
 	if !ok {
 		if ctx.Err() != nil {
 			return Measurement{}, false
 		}
-		return notMade(late)
+		return notMade(p.notStartedReason("retry") + ": this observer's own request limits were full")
 	}
 	defer release()
+	p.retries.started()
+	defer p.retries.ended()
+	// One request: the attempt is itself the asking again, so it carries no
+	// re-dial of its own.
 	m := Run(ctx, in, coder, p.cfg.Timeouts)
-	var first *Measurement
-	if redials(m) && ctx.Err() == nil && time.Now().Before(j.cutoff) {
-		f := m
-		first = &f
-		m = Run(ctx, in, coder, p.cfg.Timeouts)
-	}
 	if ctx.Err() != nil {
 		return Measurement{}, false
 	}
-	if first != nil {
-		m.Retry = &RetryInfo{Attempts: 2, DelayMS: m.StartedAt.Sub(first.StartedAt).Milliseconds(),
-			FirstStartedAt: first.StartedAt, FirstOutcome: first.Outcome, FirstError: first.RawError, FirstDurationMS: first.TotalDurationMS}
-	}
+	p.reach.note(m)
+	m.ObserverLoad = load
+	p.ownSide(ctx, &m)
 	return j.stamp(m), true
 }
 
@@ -391,19 +579,169 @@ func (j *retryJob) stamp(m Measurement) Measurement {
 	return m
 }
 
-// retryTarget resolves the validator of an attempt an earlier run owed.
-func (p *Prober) retryTarget(ctx context.Context, j *retryJob) (Target, error) {
-	targets, err := p.targetsFor(ctx, j.pub)
-	if err != nil {
-		return Target{}, err
+// shareable reports an answer that is about the validator's endpoint, not
+// about any blob: the validator's failure (not served, not this observer's
+// gap) before its identity was verified, so before any blob could be asked
+// for (DownloadShard rides the verified session): no such host, no host, a
+// connect refused, timed out or unroutable, a handshake that failed or did
+// not finish in time, a certificate not endorsed or out of its window.
+func shareable(m Measurement) bool {
+	return !m.Identity.OK && !m.fullServed() && !m.fullGap()
+}
+
+// sharers takes from j's validator's lane every attempt that m, the answer
+// of j's request, also answers: due when the request started and still
+// able to start then, its validator resolved, at the same host (and, for a
+// certificate, under the same consensus key).
+func (p *Prober) sharers(ctx context.Context, j *retryJob, m Measurement) []*retryJob {
+	v := j.target.AddressHex
+	var take []*retryJob
+	for _, o := range p.retries.lane(v) {
+		if !o.resolved || o.due.After(m.StartedAt) || !m.StartedAt.Before(o.cutoff) {
+			continue
+		}
+		o.target = p.currentHost(ctx, o.pub, o.target)
+		if o.target.Host != m.ValidatorHost {
+			continue
+		}
+		if m.Outcome == OutcomeIdentityFail && !bytes.Equal(o.target.PubKey, j.target.PubKey) {
+			continue
+		}
+		take = append(take, o)
 	}
-	for _, t := range targets {
-		if t.AddressHex == j.target.AddressHex {
-			if t.HostAtSettlement == "" {
-				t.HostAtSettlement = j.target.HostAtSettlement
+	p.retries.take(v, take)
+	return take
+}
+
+// sharedRow is attempt o's row from the answer m of another attempt's
+// request to the same endpoint (shareable): the endpoint's layers and
+// outcome as they were, o's blob, point and attempt, and SharedFrom naming
+// the request.
+func (p *Prober) sharedRow(o *retryJob, m Measurement) Measurement {
+	in := p.inputFor(o.pub, o.target, o.point, [32]byte{}, nil, "")
+	s := newMeasurement(in, m.StartedAt)
+	s.FinishedAt, s.TotalDurationMS = m.FinishedAt, m.TotalDurationMS
+	s.DNS, s.TCP, s.TLS, s.Identity = m.DNS, m.TCP, m.TLS, m.Identity
+	if d := m.Download; d.Attempted {
+		// The call that never got its session: no rows, and o's own count.
+		s.Download = DownloadResult{Attempted: true, DurationMS: d.DurationMS, RowsExpected: o.target.RowCount,
+			RPCCode: d.RPCCode, RPC: d.RPC, Error: d.Error}
+	}
+	s.Outcome = m.Outcome
+	s.SharedFrom = m.DedupeKey()
+	s.RawError = fmt.Sprintf("the validator's endpoint failed before any blob was asked for, on request %s for blob %s, made while this attempt was due and waiting for it: %s",
+		s.SharedFrom, short(m.PromiseHash), m.RawError)
+	s.ObserverLoad = m.ObserverLoad
+	classifyRow(&s)
+	return o.stamp(s)
+}
+
+// blobTargets is one blob's validators resolved once for the attempts an
+// earlier run owed, shared by every one of them.
+type blobTargets struct {
+	done   chan struct{}
+	at     time.Time
+	byAddr map[string]Target
+	err    error
+}
+
+// resolveFailureTTL is how long a blob's failed resolution answers its
+// owed attempts before it is tried again.
+const resolveFailureTTL = 30 * time.Second
+
+// resolveTarget resolves the validator of an attempt an earlier run owed:
+// the blob's targets once for every such attempt of it (not once each), at
+// most four blobs at a time, so a restart that owes many attempts does not
+// send the chain a burst of the same queries.
+func (p *Prober) resolveTarget(ctx context.Context, j *retryJob) (Target, error) {
+	q := p.retries
+	hash := j.pub.PromiseHash
+	q.mu.Lock()
+	bt := q.targets[hash]
+	leader := false
+	if bt == nil || (bt.err != nil && isClosed(bt.done) && time.Since(bt.at) > resolveFailureTTL) {
+		bt = &blobTargets{done: make(chan struct{})}
+		q.targets[hash] = bt
+		leader = true
+	}
+	q.mu.Unlock()
+	if leader {
+		func() {
+			defer close(bt.done)
+			select {
+			case q.resolveSem <- struct{}{}:
+			case <-ctx.Done():
+				bt.err, bt.at = ctx.Err(), time.Now()
+				return
 			}
-			return t, nil
+			defer func() { <-q.resolveSem }()
+			ts, err := p.targetsFor(ctx, j.pub)
+			bt.at = time.Now()
+			if err != nil {
+				bt.err = err
+				return
+			}
+			bt.byAddr = make(map[string]Target, len(ts))
+			for _, t := range ts {
+				bt.byAddr[t.AddressHex] = t
+			}
+		}()
+	} else {
+		select {
+		case <-bt.done:
+		case <-ctx.Done():
+			return Target{}, ctx.Err()
 		}
 	}
-	return Target{}, fmt.Errorf("validator %s is not among the promise's targets", j.target.AddressHex)
+	if bt.err != nil {
+		return Target{}, bt.err
+	}
+	t, ok := bt.byAddr[j.target.AddressHex]
+	if !ok {
+		return Target{}, fmt.Errorf("validator %s is not among the promise's targets", j.target.AddressHex)
+	}
+	if t.HostAtSettlement == "" {
+		t.HostAtSettlement = j.target.HostAtSettlement
+	}
+	return t, nil
+}
+
+func isClosed(c chan struct{}) bool {
+	select {
+	case <-c:
+		return true
+	default:
+		return false
+	}
+}
+
+// currentHost is t with the host the registry gives its validator now:
+// an attempt is made where a client would be sent at the time, not where
+// the reading found it minutes before. The registry is the resolver's
+// cached one (HostCacheTTL); t is kept as it is when there is no resolver
+// or no registry to read.
+func (p *Prober) currentHost(ctx context.Context, pub scan.Publication, t Target) Target {
+	if p.resolver == nil || p.resolver.chain == nil {
+		return t
+	}
+	hosts, err := p.resolver.hostMap(ctx)
+	if err != nil {
+		return t
+	}
+	host, source, at := p.resolver.hostFor(hosts, t.AddressHex)
+	t.Host, t.HostSource, t.HostSeenAt = withSettlementFallback(host, source, at, t.HostAtSettlement, pub.SettlementTime)
+	return t
+}
+
+// verifierBytes is what a request's own verifier holds while it checks the
+// rows (an rsema1d Reconstructor for one request: the RLC shards and the
+// decoder's work space, taken as four 64-byte words per row of the code,
+// and a root per original row: about 4.1 MiB at K = 4096, N = 12288),
+// charged to the byte budget beside the shard. A reading's requests share
+// one Reconstructor and are not charged it (defaultInFlightBytes).
+func verifierBytes(originalRows, totalRows int) int64 {
+	if totalRows <= 0 {
+		return 0
+	}
+	return int64(4*totalRows*64 + originalRows*32)
 }

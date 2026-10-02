@@ -20,6 +20,11 @@ type answer struct {
 	out probe.Outcome
 	cls probe.Classification // "" is probe.Classify's
 	got []uint32             // rows that came back verified
+	// subset: a short answer whose rows are all the validator's own.
+	subset bool
+	// owed: the last answer on record still owed another attempt, which
+	// is not on record (every earlier answer that was made says so).
+	owed bool
 }
 
 // fullVal is one endorser of a full reading and its answers, in order.
@@ -98,6 +103,16 @@ func (r *readings) fullBlob(needed, total int, label string, vals ...fullVal) st
 			m.Download.RowsExpected = len(v.holds)
 			if len(a.got) > 0 {
 				m.Download.RowIndices, m.Download.RowsReturned, m.Download.CommitmentVerified = a.got, len(a.got), true
+				m.Download.RowsSubsetOfAssignment = a.subset
+			}
+			// The prober writes on every answer that did not serve and was
+			// made when the validator's next attempt is due, while one is
+			// owed: on every answer but the last here, and on the last when
+			// it is owed and not on record.
+			if (k < len(v.answers)-1 || a.owed) && cls != probe.ClassNotProbed &&
+				!probe.FullServed(m.Download.CommitmentVerified, m.Outcome, cls) {
+				due := m.FinishedAt.Add(90 * time.Second)
+				m.NextAttemptDue = &due
 			}
 			raw, _ := json.Marshal(m)
 			if _, err := r.st.InsertProbe(m, raw); err != nil {
@@ -118,8 +133,17 @@ func fullFixture(t *testing.T) (*readings, map[string]string) {
 	nf, ok := probe.OutcomeNotFound, probe.OutcomeServedOK
 	short := fullVal{name: "short", holds: rowsFrom(20, 4)}
 	for i := 0; i < 3; i++ {
-		short.answers = append(short.answers, answer{out: probe.OutcomePartial, cls: probe.ClassUnmatchedGenuine, got: []uint32{20}})
+		short.answers = append(short.answers, answer{out: probe.OutcomePartial, cls: probe.ClassUnmatchedGenuine, got: []uint32{20}, subset: true})
 	}
+	// Genuine rows that are not the validator's own, and that no settled
+	// promise explains: more of them, or fewer.
+	foreign := fullVal{name: "foreign", holds: rowsFrom(40, 2), answers: []answer{
+		ans(nf), {out: probe.OutcomeWrongRows, cls: probe.ClassUnmatchedGenuine, got: []uint32{50, 51}}}}
+	shortForeign := fullVal{name: "shortforeign", holds: rowsFrom(42, 4), answers: []answer{
+		{out: probe.OutcomePartial, cls: probe.ClassUnmatchedGenuine, got: []uint32{52}}}}
+	// The next attempt was owed and is not on record.
+	owedGone := asked("owedgone", rowsFrom(46, 2), nf)
+	owedGone.answers[0].owed = true
 	shadowed := fullVal{name: "shadowed", holds: rowsFrom(24, 4),
 		answers: []answer{{out: probe.OutcomePartial, cls: probe.ClassShadowedShard, got: []uint32{24, 25}}}}
 	deferred := fullVal{name: "deferred", holds: rowsFrom(28, 2),
@@ -141,6 +165,9 @@ func fullFixture(t *testing.T) (*readings, map[string]string) {
 		asked("badcert", rowsFrom(34, 2), probe.OutcomeIdentityFail, probe.OutcomeIdentityFail, probe.OutcomeIdentityFail),
 		asked("nohost", rowsFrom(36, 2), probe.OutcomeNoHost, probe.OutcomeNoHost, probe.OutcomeNoHost),
 		asked("refused", rowsFrom(38, 2), probe.OutcomeTCPRefused, probe.OutcomeTCPRefused, probe.OutcomeTCPRefused),
+		foreign, shortForeign, owedGone,
+		// asked twice: the third attempt could not have started in time
+		asked("endsearly", rowsFrom(48, 2), nf, nf),
 		other)
 	// Unavailable: the rule is the same, whatever the blob came to.
 	hashes["unavailable"] = r.fullBlob(8, 32, probe.FullReadLabel,
@@ -215,6 +242,7 @@ func TestTheSQLAndTheGoTwinCountFullReadingsTheSame(t *testing.T) {
 		"whole1": {h}, "later": {nc, h}, "never": {nc, nc, f}, "busy": {nc, nc, h}, "toolate": {nc, "NOT_PROBED"},
 		"ourdns": {nc, pe, nc}, "mixed": {nc, nc, f}, "short": {nc, nc, f}, "shadowed": {h}, "deferred": {pe},
 		"corrupt": {nc, nc, f}, "badcert": {nc, nc, f}, "nohost": {nc, nc, f}, "refused": {nc, nc, f}, "other": {"UNATTESTED"},
+		"foreign": {nc, nc}, "shortforeign": {nc}, "owedgone": {nc}, "endsearly": {nc, f},
 		"u-some": {h}, "u-gone": {nc, nc, f}, "u-late": {nc, nc, h}, "u-ours": {pe, pe, pe}, "u-notmade": {nc, "NOT_PROBED"},
 		"n-down": {nc, nc, nc}, "n-nohost": {nc, nc, nc}, "n-ours": {pe}, "n-dns": {nc, nc, nc},
 		"e-whole": {h}, "e-gone": {f}, "e-slow": {f}, "e-ours": {pe},
@@ -272,10 +300,11 @@ func TestTheSQLAndTheGoTwinAgreeOnFullReadingObligations(t *testing.T) {
 	for _, v := range []string{"whole1", "whole2", "later", "busy", "shadowed", "u-some", "u-late", "e-whole"} {
 		want[v] = "served"
 	}
-	for _, v := range []string{"never", "mixed", "short", "corrupt", "badcert", "nohost", "refused", "u-gone", "e-gone", "e-slow"} {
+	for _, v := range []string{"never", "mixed", "short", "corrupt", "badcert", "nohost", "refused", "endsearly", "u-gone", "e-gone", "e-slow"} {
 		want[v] = "not served"
 	}
-	for _, v := range []string{"toolate", "ourdns", "deferred", "u-ours", "u-notmade", "n-down", "n-nohost", "n-ours", "n-dns", "e-ours"} {
+	for _, v := range []string{"toolate", "ourdns", "deferred", "foreign", "shortforeign", "owedgone", "u-ours", "u-notmade",
+		"n-down", "n-nohost", "n-ours", "n-dns", "e-ours"} {
 		want[v] = "counted neither way"
 	}
 	for v, w := range want {
@@ -300,8 +329,8 @@ func TestTheSQLAndTheGoTwinAgreeOnFullReadingObligations(t *testing.T) {
 	}
 }
 
-// Every cell of (classification, outcome, held, verified, endorsed, phase)
-// counts the same in SQL and in the Go twin at a full reading, under its
+// Every cell of (classification, outcome, held, verified, endorsed, phase,
+// short of its own rows, owed another attempt) counts the same in SQL and in the Go twin at a full reading, under its
 // own label and under the end label from probe.FullReadSince on: each row
 // a reading of its own, so the reading reached a server exactly when that
 // row did.
@@ -317,6 +346,7 @@ func TestTheSQLAndTheGoTwinCountEveryFullReadingCellTheSame(t *testing.T) {
 		held, verified     bool
 		assigned, attested bool
 		phase              probe.Phase
+		subset, owed       bool
 	}
 	var cells []cell
 	i := 0
@@ -327,9 +357,11 @@ func TestTheSQLAndTheGoTwinCountEveryFullReadingCellTheSame(t *testing.T) {
 					for _, o := range probe.AllOutcomes {
 						for _, held := range []bool{false, true} {
 							for _, verified := range []bool{false, true} {
-								i++
-								cells = append(cells, cell{key: "f" + strconv.Itoa(i), label: label, cls: c, out: o, held: held, verified: verified,
-									assigned: who[0], attested: who[1], phase: phase})
+								for _, more := range [][2]bool{{false, false}, {true, false}, {false, true}, {true, true}} {
+									i++
+									cells = append(cells, cell{key: "f" + strconv.Itoa(i), label: label, cls: c, out: o, held: held, verified: verified,
+										assigned: who[0], attested: who[1], phase: phase, subset: more[0], owed: more[1]})
+								}
 							}
 						}
 					}
@@ -345,6 +377,12 @@ func TestTheSQLAndTheGoTwinCountEveryFullReadingCellTheSame(t *testing.T) {
 	}
 	start := probe.FullReadSince.Add(time.Hour)
 	ts := start.UTC().Format("2006-01-02T15:04:05.000000000Z")
+	owedAt := func(owed bool) any {
+		if owed {
+			return start.Add(90 * time.Second).UTC().Format("2006-01-02T15:04:05.000000000Z")
+		}
+		return nil
+	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -355,13 +393,13 @@ func TestTheSQLAndTheGoTwinCountEveryFullReadingCellTheSame(t *testing.T) {
 			 validator_address, validator_host, assigned, attested, assigned_row_count, schedule_label, scheduled_at, started_at,
 			 finished_at, lateness_ms, dns_ok, dns_ms, tcp_ok, tcp_ms, tls_ok, tls_ms, identity_ok, download_ok,
 			 download_ms, rows_returned, rows_expected, commitment_verified, assignment_verified, phase, outcome,
-			 classification, total_duration_ms, raw_json, retention_unverified)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			 classification, total_duration_ms, raw_json, retention_unverified, rows_subset_of_assignment, next_attempt_due)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			c.key, "t", c.key, "c", 0, ts, 1,
 			"v", "h", b(c.assigned), b(c.attested), 2, c.label, ts, ts,
 			ts, 0, 1, 0, b(connected(c.out)), 0, 1, 0, 1, 1,
 			0, 2, 2, b(c.verified), b(c.verified), string(c.phase), string(c.out),
-			string(c.cls), 10, "{}", b(c.held)); err != nil {
+			string(c.cls), 10, "{}", b(c.held), b(c.subset), owedAt(c.owed)); err != nil {
 			t.Fatalf("insert %s: %v", c.key, err)
 		}
 	}
@@ -394,11 +432,11 @@ func TestTheSQLAndTheGoTwinCountEveryFullReadingCellTheSame(t *testing.T) {
 	for _, c := range cells {
 		r := verdict.Row{PromiseHash: c.key, Validator: "v", ScheduleLabel: c.label, ScheduledAt: start, StartedAt: start, Classification: c.cls,
 			Outcome: c.out, RetentionUnverified: c.held, CommitmentVerified: c.verified, Assigned: c.assigned, Attested: c.attested, Phase: c.phase,
-			TCPOK: connected(c.out), RowsReturned: 2, AssignedRowCount: 2}
+			TCPOK: connected(c.out), RowsReturned: 2, AssignedRowCount: 2, RowsSubsetOfAssignment: c.subset, NextAttemptOwed: c.owed}
 		want := r.CountedClass(verdict.ReadingOf([]verdict.Row{r}, verdict.BlobFacts{}))
 		if got[c.key] != string(want) {
-			t.Errorf("%s (%s, %s, held=%v, verified=%v, attested=%v, %s): SQL says %q, the Go twin says %q",
-				c.label, c.cls, c.out, c.held, c.verified, c.attested, c.phase, got[c.key], want)
+			t.Errorf("%s (%s, %s, held=%v, verified=%v, attested=%v, %s, subset=%v, owed=%v): SQL says %q, the Go twin says %q",
+				c.label, c.cls, c.out, c.held, c.verified, c.attested, c.phase, c.subset, c.owed, got[c.key], want)
 		}
 	}
 }

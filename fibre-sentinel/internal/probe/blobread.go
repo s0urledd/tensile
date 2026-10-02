@@ -161,9 +161,7 @@ func (p *Prober) newBlobReading(ctx context.Context, pub scan.Publication, pt Sc
 	if err != nil {
 		return nil, fmt.Errorf("client order: %w", err)
 	}
-	if p.cfg.AskEveryEndorser {
-		pt.Label = FullReadLabel
-	}
+	pt.Label = p.readLabel()
 	b := &blobReading{p: p, pub: pub, point: pt, coder: coder, commitment: commitment, rec: rec,
 		targets: ordered, shadowGap: p.shadowBlindness(pub), answers: map[string]*answer{},
 		phase: PhaseAt(time.Now().UTC(), pub, p.schedCfg())}
@@ -269,10 +267,14 @@ func (b *blobReading) ask(ctx context.Context, v readTarget) *answer {
 	in := p.inputFor(b.pub, v.Target, b.point, b.commitment, b.rec, b.shadowGap)
 	in.ReadingPhase = b.phase
 	var release func()
+	var load *LoadInfo
 	if b.full {
 		var ok bool
-		if release, ok = p.admitBy(ctx, b.startBy, in.ExpectedShardBytes); !ok {
-			a.m = p.notProbedRow(b.pub, b.point, v.Target, p.notStartedReason("request"))
+		if release, load, ok = p.admitBy(ctx, b.startBy, in.ExpectedShardBytes); !ok {
+			if ctx.Err() == nil {
+				p.counters.notStarted.add(time.Now())
+			}
+			a.m = p.notProbedRow(b.pub, b.point, v.Target, p.notStartedReason("request")+": this observer's own request limits were full")
 			return a
 		}
 	} else {
@@ -280,14 +282,32 @@ func (b *blobReading) ask(ctx context.Context, v readTarget) *answer {
 	}
 	defer release()
 	m := Run(ctx, in, b.coder, p.cfg.Timeouts)
+	p.reach.note(m)
 	if redials(m) && ctx.Err() == nil && (!b.full || time.Now().Before(b.startBy)) {
 		first := m
 		a.first = &first
 		m = Run(ctx, in, b.coder, p.cfg.Timeouts)
+		p.reach.note(m)
 	}
+	m.ObserverLoad = load
 	a.m = m
 	a.served = m.Download.CommitmentVerified
 	return a
+}
+
+// ownSide rewrites, at a full reading whose answers are all in, every
+// answer whose failure this observer cannot pin on the validator into this
+// observer's gap (Prober.ownSide).
+func (b *blobReading) ownSide() {
+	b.mu.Lock()
+	as := make([]*answer, 0, len(b.answers))
+	for _, a := range b.answers {
+		as = append(as, a)
+	}
+	b.mu.Unlock()
+	for _, a := range as {
+		b.p.ownSide(context.Background(), &a.m)
+	}
 }
 
 // redials reports the requests after which the client drops the
@@ -344,6 +364,9 @@ func (b *blobReading) rows(result, clientErr string) []Measurement {
 				FirstStartedAt: f.StartedAt, FirstOutcome: f.Outcome, FirstError: f.RawError, FirstDurationMS: f.TotalDurationMS}
 		}
 		m.Read = &ReadInfo{Order: t.order, NovelRows: a.m.novel, BlobHaveAfter: a.haveAt, BlobResult: result, BlobError: clientErr}
+		if b.full {
+			m.NextAttemptDue = b.p.nextAttemptDue(m, b.startBy)
+		}
 		out = append(out, m)
 	}
 	return out
