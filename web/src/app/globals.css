@@ -1527,8 +1527,8 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 /* a column whose cells are always about as wide is as wide as they are (the time at its widest: "May 28 20:48:38 23 h 59 min",
    and the publisher's chip); the namespace takes the rest */
 /* the blob column holds the short hash and its copy button */
-.lg-t th.c-h { width: 96px; } .lg-t th.c-t { width: 206px; } .lg-t th.c-b { width: 128px; } .lg-t th.c-p { width: 148px; } .lg-t th.c-sz { width: 92px; } .lg-t th.c-fee { width: 92px; }
-.lg-t th.c-e { width: 132px; } .lg-t th.gap { width: 10px; } .lg-t th.tn { width: 112px; }
+.lg-t th.c-h { width: 96px; } .lg-t th.c-t { width: 206px; } .lg-t th.c-b { width: 128px; } .lg-t th.c-p { width: 148px; } .lg-t th.c-sz { width: 88px; } .lg-t th.c-fee { width: 92px; }
+.lg-t th.c-e { width: 128px; } .lg-t th.gap { width: 10px; } .lg-t th.tn { width: 120px; }
 .lg-t tr.row { position: relative; cursor: pointer; }
 .lg-t tr.row td { transition: background var(--dur); }
 .lg-t tr.row:hover td { background: color-mix(in srgb, var(--accent) 5%, var(--paper)); }
@@ -1687,7 +1687,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
    The panel (.pan) is the table's own frame (paper, a hairline border, the
    card radius, the small shadow; no glow), its cells a label in the table
    heads' caps over a figure in the rows' face, the unit quieter, hairlines
-   between them. A publisher's page leads with one too.
+   between them. A validator's page has them too.
    ========================================================================== */
 /* ---- the panel ---- */
 .pan { background: var(--paper); border: 1px solid var(--border); border-radius: var(--r-card); box-shadow: var(--shadow-sm); overflow: clip; }
@@ -1875,9 +1875,11 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 }
 
 /* =============================================================================
-   A publisher's page (app/publisher): whose account it is, then one framed
-   panel (.pan) with its escrow now and the period's activity, then its
-   blobs as the Blobs list draws them and its deposits and withdrawals.
+   A publisher's page (app/publisher): whose account it is; then what it
+   posted and when beside four figures of its own, two light frames of the
+   same make and height, as a blob's page sets its own (.bd-top); then its
+   transactions, its blobs as the Blobs list draws them with its escrow
+   movements between them.
    ========================================================================== */
 /* ---- whose account it is ---- */
 .pb-mast { padding: 34px 0 0; min-width: 0; }
@@ -1905,9 +1907,9 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .pb-addr .copy:hover { color: var(--accent-ink); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 .pb-addr .copy:hover::before { background: var(--accent-ink); }
 /* When it last and first posted, and where: all-time facts, in a light frame of their own with
-   a hairline between them, quieter than the panel under it (no paper, no shadow). A label column of its own, so
-   every value starts at one x, on a wide screen and on a phone. The labels sit as far in as the panel's and the
-   table's, and the space after a label is its own padding, so each hairline runs unbroken from label to value. */
+   a hairline between them, quieter than the table (no paper, no shadow). A label column of its own, so
+   every value starts at one x, on a wide screen and on a phone. The labels sit as far in as the table's,
+   and the space after a label is its own padding, so each hairline runs unbroken from label to value. */
 .pb-meta { display: grid; grid-template-columns: 118px minmax(0, max-content); width: fit-content; max-width: 100%; margin: 22px 0 0; padding: 3px 18px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--paper) 40%, transparent); font-size: var(--t-cell); line-height: 18px; color: var(--text-2); }
 .pb-meta dt, .pb-meta dd { padding: 7px 0; border-top: 1px solid var(--line-soft); }
 .pb-meta dt { padding-right: 14px; }
@@ -1920,85 +1922,99 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .pb-nss .nsb { color: var(--text); }
 .pb-nss .more { color: var(--text-3); }
 
-/* ---- the panel: four figures of its own, on the Publishers list's grid: equal cells, the hairlines the grid's
-   1 px gaps in the table's rule colour ---- */
-.pb-pan { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin: 30px 0 0; background: linear-gradient(var(--border), var(--border)) padding-box, var(--paper) border-box; }
-/* a cell too narrow for "Escrow available (now)" whole (four a row on a tablet, two on a phone) drops the "(now)":
-   the escrow is the one figure there that is not all-time, and its hover says when the chain was read */
-.pb-pan > .pan-c { container-type: inline-size; }
-@container (max-width: 154px) { .pb-pan dt .per { display: none; } }
-/* "of 8,467" after a count, as quiet as a unit */
-.pan-v .of { font-size: 14px; line-height: 1; font-weight: 400; letter-spacing: 0; color: var(--text-3); }
 /* an escrow that cannot pay for one more blob of the account's usual size: an amber dot beside the figure, its
    reason on hover, on focus or on a tap */
-.warn { position: relative; display: inline-block; width: 19px; height: 19px; margin: 0 0 0 5px; padding: 0; border: 0; border-radius: 50%; background: none; vertical-align: 0; cursor: help; }
-.warn::before { content: ""; position: absolute; left: 6px; top: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--hold); transition: box-shadow var(--dur); }
-.warn:hover::before, .warn:focus-visible::before { box-shadow: 0 0 0 3px var(--hold-tint); }
-.warn.fault::before { background: var(--fault); }
-.warn.fault:hover::before, .warn.fault:focus-visible::before { box-shadow: 0 0 0 3px color-mix(in srgb, var(--fault) 16%, transparent); }
-.warn:focus-visible { outline-offset: 0; }
+/* the dot is a button: scoped to it, so a row or a cell that carries a warn class (a table row of an unreachable
+   validator, a rate cell in its amber tone) keeps its own box */
+button.warn { position: relative; display: inline-block; width: 19px; height: 19px; margin: 0 0 0 5px; padding: 0; border: 0; border-radius: 50%; background: none; vertical-align: 0; cursor: help; }
+button.warn::before { content: ""; position: absolute; left: 6px; top: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--hold); transition: box-shadow var(--dur); }
+button.warn:hover::before, button.warn:focus-visible::before { box-shadow: 0 0 0 3px var(--hold-tint); }
+button.warn.fault::before { background: var(--fault); }
+button.warn.fault:hover::before, button.warn.fault:focus-visible::before { box-shadow: 0 0 0 3px color-mix(in srgb, var(--fault) 16%, transparent); }
+button.warn:focus-visible { outline-offset: 0; }
 .warn-tip { position: fixed; z-index: 50; max-width: min(340px, calc(100vw - 24px)); padding: 7px 10px; border-radius: 8px; background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow-pop); font-family: var(--sans); font-size: var(--t-small); line-height: 17px; font-weight: 500; letter-spacing: 0; color: var(--hold-ink); white-space: normal; animation: tip-in var(--dur) ease-out; }
 .warn-tip.fault { color: var(--fault); }
 
-/* ---- its records ---- */
+/* ---- its facts beside its figures: .pb-top shares the blob page's .bd-top rules (below), the figures' rows its
+   .bd-figs rows, Tensile's with its eye ---- */
+
+/* ---- its transactions ---- */
 .pb-list { margin-top: 44px; }
-/* Its blobs: the Blobs list without the Publisher column. The namespace no longer takes the rest of the row, or it
-   would stretch into an empty gap before Blob size: it is as wide as the longest name on the page (--ns-w, which
-   the list measures; a long hex name until then), never narrower than its head, and the time, centred, takes what
-   is left, so that room falls evenly on both its sides. */
+/* the head: the title as the list's one pressed tab, with its count, the kinds beside it; the namespace and the live
+   word on the right */
+.pb-lh { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; min-width: 0; }
+.pb-th { position: relative; display: inline-flex; align-items: center; gap: 8px; height: 36px; margin: 0; padding: 0 12px; font-size: 15px; font-weight: 600; letter-spacing: 0; line-height: 36px; color: var(--text); white-space: nowrap; }
+.pb-th::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: -11px; height: 2px; border-radius: 2px; background: var(--accent); }
+.pb-th .n { padding: 1px 8px; border-radius: 999px; background: var(--accent-tint); font-size: var(--t-tiny); font-weight: 600; line-height: 18px; color: var(--accent-ink); }
+.pb-kinds button, .pb-kinds button:first-child { height: 28px; padding: 0 13px; font-size: var(--t-cell); }
+/* the pressed kind as a ring, without the glow */
+:root[data-theme="dark"] .pb-kinds button[aria-pressed="true"] { box-shadow: inset 0 0 0 1px rgb(51 179 191 / .45); }
+/* The Blobs list without the Publisher column. The namespace no longer takes the rest of the row, or it would stretch
+   into an empty gap before Blob size: it is as wide as the longest name on the page (--ns-w, which the list measures;
+   a long hex name until then), never narrower than its head, and the time, centred, takes what is left, so that room
+   falls evenly on both its sides. The blob column holds the longest kind of movement that stands in it ("Withdrawal
+   requested"), the amount a deposit of thousands with its decimals; narrower, the size and the endorsement give up
+   room first, so the time keeps its own. The escrow's own statement (.pb-st) is drawn in the same columns. */
 .lg-one th.c-t { width: auto; }
-.lg-one th.c-b { width: 140px; }
+.lg-one th.c-b { width: 168px; }
 .lg-one th.c-ns { width: calc(max(var(--ns-w, 122px), 76px) + 30px); }
 .lg-one th.c-sz { width: 104px; }
-.lg-one th.c-fee { width: 110px; }
+.lg-one th.c-fee { width: 124px; }
 .lg-one th.c-e { width: 158px; }
-/* deposits and withdrawals: the ledger's rows, the movement in words with its quiet qualifier, the amount on its digits */
-.pb-mv tr.row { cursor: default; }
-.pb-mv th.c-amt { width: 200px; }
-.pb-mv th.c-amt, .pb-mv td.c-amt { padding-right: 22px; }
-.pb-mv td.c-amt { font-weight: 500; }
-.pb-mv .c-k .k { font-weight: 500; }
-.pb-mv .c-k .q { margin-left: 9px; font-size: var(--t-small); color: var(--text-3); }
-.pb-mv .c-m2 { display: none; }
-.pb-mv tr.req td.c-amt { color: var(--text-2); font-weight: 400; }
-.pb-mv tr.hold .c-k .q { color: var(--hold-ink); }
-.pb-mv tr.fault .k, .pb-mv tr.fault td.c-amt { color: var(--fault); }
-/* the statement under it: what went in, what the blobs cost, what went out, the escrow it leaves */
-.pb-mv tfoot td { padding: 6px 12px; border-top: 0; line-height: 20px; background: var(--surface-2); }
-.pb-mv tfoot tr:first-child td { padding-top: 14px; border-top: 1px solid var(--border); }
-.pb-mv tfoot .fl { text-align: right; font-family: var(--sans); font-size: var(--t-cell); color: var(--text-2); }
-.pb-mv tfoot td.c-amt { font-weight: 500; }
-.pb-mv tfoot tr.tot td { padding-top: 10px; padding-bottom: 14px; }
-.pb-mv tfoot tr.tot td.c-amt { font-weight: 600; box-shadow: inset 0 1px 0 var(--line); }
-.pb-mv tfoot tr.tot .fl { color: var(--text); font-weight: 500; }
+/* an escrow movement among the blobs: its kind where a blob's hash is, what qualifies it quietly over the namespace
+   and the size, the amount on its digits; it opens nothing. A request only moves money into the queue: its amount is
+   quieter; a request settlements used up says so in amber; a timed-out promise is red */
+.lg-t tr.mv { cursor: default; }
+.lg-t tr.mv .c-b .k { font-weight: 500; }
+/* a blob's hash is set in the mono face, whose line stands a pixel taller: a movement's row keeps the same line */
+.lg-t tr.mv .c-b .k::after { content: "\200b"; font-family: var(--mono); font-size: 12.5px; }
+.lg-t td.c-q { font-family: var(--sans); font-size: var(--t-small); color: var(--text-3); }
+.lg-t tr.req td.c-fee { color: var(--text-2); font-weight: 400; }
+.lg-t tr.hold td.c-q { color: var(--hold-ink); }
+.lg-t tr.fault .c-b .k, .lg-t tr.fault td.c-fee { color: var(--fault); }
+/* a long account's escrow movements are not all here: where they are, in one quiet line under its blobs */
+.pb-more { margin: 12px 0 0; font-size: var(--t-cell); color: var(--text-2); }
+.pb-more a { font-weight: 500; color: var(--accent-ink); }
+/* under the statement's movements: what went in, what the blobs cost, what went out, and the escrow it leaves, the
+   labels up to the Amount column, the figures in it, Tensile's lane running down beside them */
+.pb-st tfoot td { padding: 6px 12px; border-top: 0; line-height: 20px; background: var(--surface-2); }
+.pb-st tfoot tr:first-child td { padding-top: 14px; border-top: 1px solid var(--border); }
+.pb-st tfoot .fl { text-align: right; font-family: var(--sans); font-size: var(--t-cell); color: var(--text-2); }
+.pb-st tfoot tr.tot td { padding-top: 10px; padding-bottom: 14px; }
+.pb-st tfoot tr.tot td.c-fee { font-weight: 600; box-shadow: inset 0 1px 0 var(--line); }
+.pb-st tfoot tr.tot .fl { color: var(--text); font-weight: 500; }
 
 /* ---- narrower ---- */
+@media (max-width: 1220px) {
+  .lg-one th.c-sz { width: 92px; }
+  .lg-one th.c-e { width: 140px; }
+}
 /* its blobs without the time's age, as on Blobs: a little less room for each column, so the time keeps its own */
 @media (max-width: 1160px) {
-  .lg-one th.c-b { width: 128px; }
-  .lg-one th.c-fee { width: 104px; }
-  .lg-one th.c-e { width: 148px; }
+  .lg-one th.c-h { width: 92px; }
+  .lg-one th.c-sz { width: 90px; }
+  .lg-one th.c-fee { width: 116px; }
+  .lg-one th.c-e { width: 128px; }
 }
-/* deposits and withdrawals as two lines, like the blobs: the movement and its amount, then the height or its
-   qualifier, and the time */
+/* an escrow movement in the list's two lines, as a blob's: its kind and when, then what qualifies it and its amount,
+   which closes the line as a blob's fee closes its own */
 @media (max-width: 1080px) {
-  .pb-mv tr.row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "k a" "m t"; padding-right: 16px; }
-  .pb-mv tr.row td.c-k, .pb-mv tr.row td.c-m2, .pb-mv tr.row td.c-t { display: flex; align-items: center; height: 20px; }
-  .pb-mv tr.row td.c-amt { display: block; height: 20px; }
-  .pb-mv .c-k { grid-area: k; min-width: 0; }
-  .pb-mv .c-k .q { display: none; }
-  .pb-mv .c-amt { grid-area: a; text-align: right; padding-right: 0 !important; }
-  .pb-mv .c-m2 { grid-area: m; min-width: 0; font-size: var(--t-small); color: var(--text-3); }
-  .pb-mv .c-m2 .sep { margin: 0 6px; }
-  .pb-mv .c-t { grid-area: t; justify-content: flex-end; font-size: 13px; color: var(--text-2); }
-  .pb-mv .c-t .tm { font-weight: 400; }
-  .pb-mv tfoot { display: block; }
-  .pb-mv tfoot tr { display: flex; justify-content: space-between; gap: 16px; padding: 5px 16px; background: var(--surface-2); }
-  .pb-mv tfoot tr:first-child { padding-top: 14px; border-top: 1px solid var(--border); }
-  .lg-t.pb-mv tfoot td, .lg-t.pb-mv tfoot tr:first-child td, .lg-t.pb-mv tfoot tr.tot td { display: block; padding: 0; border: 0; background: none; box-shadow: none; }
+  .lg-t tr.mv td.c-e { display: none; }
+  .lg-t tr.mv .c-b .k { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .lg-t tr.mv td.c-m .q { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-family: var(--sans); font-size: var(--t-small); color: var(--text-3); }
+  .lg-t tr.hold td.c-m .q { color: var(--hold-ink); }
+  .lg-t tr.req td.c-m .fe { color: var(--text-3); }
+  .lg-t tr.fault td.c-m .fe { color: var(--fault); }
+  /* the statement's lines under its rows: the label, the figure at the line's end, Tensile's lane beside them */
+  .pb-st tfoot { display: block; }
+  .pb-st tfoot tr { --pt: 5px; --pb: 5px; display: grid; grid-template-columns: minmax(0, 1fr) auto 104px; column-gap: 14px; padding: var(--pt) 0 var(--pb) 16px; background: var(--surface-2); }
+  .pb-st tfoot tr:first-child { --pt: 14px; border-top: 1px solid var(--border); }
+  .lg-t.pb-st tfoot td, .lg-t.pb-st tfoot tr:first-child td, .lg-t.pb-st tfoot tr.tot td { display: block; padding: 0; border: 0; background: none; box-shadow: none; }
+  .lg-t.pb-st tfoot tr td.c-e, .lg-t.pb-st tfoot tr td.gap { display: none; }
+  .lg-t.pb-st tfoot tr td.tn { margin: calc(-1 * var(--pt)) 0 calc(-1 * var(--pb)); background: var(--obs-bg); border-left: 1px dashed var(--line); }
   /* the total under a rule inset to the figures' edges, as a statement draws it */
-  .pb-mv tfoot tr.tot { padding-top: 12px; padding-bottom: 14px; background: linear-gradient(var(--line), var(--line)) 16px 4px / calc(100% - 32px) 1px no-repeat, var(--surface-2); }
-  .pb-mv tfoot .fl { text-align: left; }
+  .pb-st tfoot tr.tot { --pt: 12px; --pb: 14px; background: linear-gradient(var(--line), var(--line)) 16px 4px / calc(100% - 134px) 1px no-repeat, var(--surface-2); }
+  .pb-st tfoot .fl { text-align: left; }
 }
 @media (max-width: 720px) {
   .pb-mast { padding-top: 22px; }
@@ -2011,23 +2027,24 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .pb-addr .mono { font-size: 12.5px; line-height: 19px; overflow-wrap: anywhere; word-break: break-all; }
   .pb-addr .copy { margin-left: 8px; vertical-align: -6px; }
   .pb-meta { width: auto; margin-top: 18px; padding: 2px 14px; }
-  /* the panel: two a row */
-  .pb-pan { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 22px; }
-  .pan-v .of { font-size: 13px; }
   .pb-list { margin-top: 34px; }
-  .pb-list .tabs button { font-size: 14px; padding: 0 10px; }
-  /* a phone keeps the ledger's own second line: the namespace and the size (the fee is on the blob's page) */
-  .lg-one .c-m .fe { display: none; }
-  .lg-t.pb-mv tr.row { padding-left: 14px; padding-right: 14px; }
-  .pb-mv tfoot tr { padding-left: 14px; padding-right: 14px; }
-  .pb-mv tfoot tr.tot { background: linear-gradient(var(--line), var(--line)) 14px 4px / calc(100% - 28px) 1px no-repeat, var(--surface-2); }
+  /* the head in two rows: the title's rule clear of the namespace under it */
+  .pb-list .list-head { row-gap: 20px; }
+  .pb-th { font-size: 14px; padding: 0 10px; }
+  .pb-th::after { left: 10px; right: 10px; }
+  /* the statement's lines without the lane, as its rows */
+  .pb-st tfoot tr { grid-template-columns: minmax(0, 1fr) auto; padding-left: 14px; padding-right: 14px; }
+  .lg-t.pb-st tfoot tr td.tn { display: none; }
+  .pb-st tfoot tr.tot { background: linear-gradient(var(--line), var(--line)) 14px 4px / calc(100% - 28px) 1px no-repeat, var(--surface-2); }
 }
-/* a small phone: a queued or paid-out withdrawal's line says when, the height stays on the wide table */
+/* a small phone: a movement's first line says what and when, its height on the wide table; a blob's second line its
+   namespace and its fee, so every row keeps its amount, the size on the blob's page */
 @media (max-width: 440px) {
-  .pb-mv td.c-m2.hq .h, .pb-mv td.c-m2.hq .sep { display: none; }
+  .lg-t tr.mv .c-b .ht { display: none; }
+  .lg-one .c-m .sz { display: none; }
 }
 @media (max-width: 400px) {
-  .pb-list .tabs { gap: 0; }
+  .pb-kinds button, .pb-kinds button:first-child { padding: 0 11px; }
 }
 
 /* =============================================================================
@@ -2144,8 +2161,9 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
    ========================================================================== */
 .bd-h1 .tl { font-weight: 500; }
 .bd-chips { margin-top: 14px; }
-.bd-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: stretch; margin-top: 22px; }
-.bd-top .bd-meta { width: auto; grid-template-columns: 118px minmax(0, 1fr); margin: 0; align-content: start; }
+/* a publisher's page sets its facts and its figures the same way (.pb-top, .pb-figs) */
+.bd-top, .pb-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: stretch; margin-top: 22px; }
+.bd-top .bd-meta, .pb-top .pb-meta { width: auto; grid-template-columns: 118px minmax(0, 1fr); margin: 0; align-content: start; }
 .bd-meta .bd-ns { font-weight: 500; color: var(--text); }
 .bd-meta .bd-ns:hover { color: var(--accent-ink); text-decoration: none; }
 .bd-meta .mono { font-size: 12.5px; color: var(--text); }
@@ -2153,10 +2171,10 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .bd-meta .lg-who .hd { font-size: var(--t-cell); }
 .bd-meta .u { font-weight: 400; color: var(--text-3); }
 /* Tensile's three rows carry its eye */
-.bd-figs dt.tz { display: flex; align-items: center; gap: 6px; }
-.bd-figs dt.tz svg { flex: none; width: 13px; height: 13px; color: var(--accent-ink); }
+.bd-figs dt.tz, .pb-figs dt.tz { display: flex; align-items: center; gap: 6px; }
+.bd-figs dt.tz svg, .pb-figs dt.tz svg { flex: none; width: 13px; height: 13px; color: var(--accent-ink); }
 .bd-figs b.bad { color: var(--fault); }
-.bd-figs dd .warn { align-self: center; margin-left: -2px; }
+.bd-figs dd .warn, .pb-figs dd .warn { align-self: center; margin-left: -2px; }
 
 /* the endorsements, in the facts' light frame: a head, then a band each for endorsed and not endorsed */
 .bd-under { margin-top: 16px; }
@@ -2216,11 +2234,11 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .bd-t td.tn .sv { color: var(--text); font-weight: 500; }
 
 @media (max-width: 900px) {
-  .bd-top { grid-template-columns: minmax(0, 1fr); }
+  .bd-top, .pb-top { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 720px) {
-  .bd-top { margin-top: 18px; gap: 12px; }
-  .bd-top .bd-meta { grid-template-columns: 112px minmax(0, 1fr); }
+  .bd-top, .pb-top { margin-top: 18px; gap: 12px; }
+  .bd-top .bd-meta, .pb-top .pb-meta { grid-template-columns: 112px minmax(0, 1fr); }
   .bd-under { margin-top: 12px; }
   .bd-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 10px 12px; }
   .bd-bh { padding: 7px 14px; }
