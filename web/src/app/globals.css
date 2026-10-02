@@ -1394,22 +1394,23 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-deck { display: grid; grid-template-columns: 288px minmax(0, 1fr); margin: 18px 0 0; --bar-fade: 1; --glow-op: 0%; }
 .deck.lg-deck { border-radius: var(--r-card); box-shadow: var(--shadow-sm); }
 .deck.lg-deck::before { content: none; }
-.lg-lead { display: flex; flex-direction: column; min-width: 0; padding: 22px 28px 18px; border-right: 1px solid var(--border); }
+.lg-lead { display: flex; flex-direction: column; min-width: 0; padding: 16px 28px; border-right: 1px solid var(--border); }
+/* the lead's two windows, the period's count and its other figures: a light rounded frame each, reaching out into the
+   lead's padding so their words stay in the column they had; the count's head on the chart's head line */
+.lg-sum { margin: 0 -12px; padding: 10px 12px 14px; border: 1px solid var(--border); border-radius: var(--r-card); }
 .lg-deck .ov-eyebrow { min-height: 22px; color: var(--text-3); }
 .lg-deck .ov-eyebrow .per { margin-left: 5px; text-transform: none; letter-spacing: .03em; }
 .lg-fig { margin: 10px 0 0; font-size: 46px; font-weight: 600; letter-spacing: -.045em; line-height: 1; color: var(--text); white-space: nowrap; font-variant-numeric: tabular-nums lining-nums; }
 .lg-fig small { margin-left: 8px; font-size: 16px; font-weight: 500; letter-spacing: -.01em; color: var(--text-2); }
 .lg-help { margin: 9px 0 0; font-size: var(--t-cell); color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lg-help b { color: var(--text); font-weight: 600; }
-/* the period's other figures in a light rounded frame of their own, at the place and the size they had: the frame
-   reaches out into the lead's padding, so its words stay where they were */
-.lg-stats { display: grid; margin: 18px -12px 0; padding: 2px 12px; border: 1px solid var(--border); border-radius: var(--r-card); }
+.lg-stats { display: grid; margin: 12px -12px 0; padding: 2px 12px; border: 1px solid var(--border); border-radius: var(--r-card); }
 .lg-stats > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 8px 0 7px; border-top: 1px solid var(--border); }
 .lg-stats > div:first-child { border-top: 0; }
 .lg-stats dt { font-size: var(--t-cell); color: var(--text-2); }
 .lg-stats dd { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -.012em; color: var(--text); white-space: nowrap; font-variant-numeric: tabular-nums lining-nums; }
 .lg-stats dd .u, .lg-stats dd .of { font-size: var(--t-cell); font-weight: 400; letter-spacing: 0; color: var(--text-3); }
-.lg-plot { position: relative; min-width: 0; padding: 22px 26px 12px 24px; }
+.lg-plot { position: relative; min-width: 0; padding: 27px 26px 12px 24px; }
 .lg-plot-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 22px; margin-bottom: 14px; }
 /* the chain's rate, set as the overview's pills set their counts */
 .lg-pace { display: inline-flex; align-items: baseline; gap: 6px; font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
@@ -1439,10 +1440,11 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .lg-head { flex-wrap: nowrap; }
   .lg-head .seg button, .lg-head .seg button:first-child { padding: 0 12px; }
   .lg-deck, .lg-deck.is-quiet { grid-template-columns: minmax(0, 1fr); margin-top: 14px; }
-  .lg-lead { padding: 18px 16px 4px; border-right: 0; }
+  .lg-lead { padding: 16px 16px 0; border-right: 0; }
+  .lg-sum { margin: 0; }
   .lg-fig { font-size: 40px; }
-  .lg-stats { margin: 16px 0 0; }
-  .lg-plot { margin: 12px 0 0; padding: 16px 16px 12px; border-top: 1px solid var(--border); }
+  .lg-stats { margin: 12px 0 0; }
+  .lg-plot { margin: 16px 0 0; padding: 16px 16px 12px; border-top: 1px solid var(--border); }
   .lg-deck.is-quiet .lg-lead { padding-bottom: 16px; }
   .lg-deck.is-quiet .lg-plot { margin-top: 0; }
   .lg-flat em.alt { display: none; }
