@@ -28,15 +28,23 @@ import (
 // time), whatever phase each row carries: the rows that came back are the
 // client's result.
 //
-// What counts for a validator follows from it (Row.CountedClass): served
-// when its rows came back verified; not served when it endorsed the
-// promise, its rows did not come back, and the blob was Unavailable. On an
-// Available blob a validator that failed or was not asked counts neither
-// way. The SQL twin is rollup.CountedClass.
+// What counts for a validator follows from it (Row.CountedClass) at a
+// reading that stopped once the rows were enough: served when its rows came
+// back verified; not served when it endorsed the promise, its rows did not
+// come back, and the blob was Unavailable. On an Available blob a validator
+// that failed or was not asked counts neither way.
+//
+// A full reading (probe.FullReading) asks every endorser for its own rows,
+// and again when an answer did not serve: each endorser is judged on its
+// own answers, whatever the blob came to. Served when one of them served;
+// counted neither way when one was this observer's gap, or when not a
+// single request of the reading reached a server; otherwise not served, by
+// its last answer. The SQL twin is rollup.CountedClass.
 
 // NotCounted is the class a row counts as when it left the reader without
-// rows on a blob that was not Unavailable: counted neither for nor against
-// the validator.
+// rows on a blob that was not Unavailable, or, at a full reading, when it is
+// not the answer the validator is judged by: counted neither for nor
+// against the validator.
 const NotCounted probe.Classification = "NOT_COUNTED"
 
 // The blob statuses, as /v1/blobs publishes them.
@@ -113,27 +121,60 @@ type Reading struct {
 	IndicesMissing bool
 	// Ran: a request reached a server (Reached).
 	Ran bool
-	// Missed: the prober missed a request of this reading (a NOT_PROBED row
-	// of an assigned validator in the window).
+	// Missed: the prober missed a validator of this reading (an assigned
+	// validator's NOT_PROBED row in the window, and no other row of that
+	// validator at the reading: a later attempt of a full reading that
+	// could not be made leaves its validator asked all the same).
 	Missed bool
 	// Asked is the validators the reading asked (a row other than this
 	// observer's own gap, NOT_PROBED or PROBE_ERROR); Served, those whose
 	// rows verified.
 	Asked, Served int
 	Needed        int
+	// answers is every answer of each validator at the reading, which a
+	// full reading judges the validator by (Row.CountedClass).
+	answers map[string][]answerOf
+}
+
+// answerOf is what the rule needs of one of a validator's answers at a
+// full reading.
+type answerOf struct {
+	started     time.Time
+	served, gap bool
+}
+
+// settledElsewhere reports whether a row of a full reading that did not
+// serve is not the answer its validator is judged by: another answer of
+// the validator at this reading served, was this observer's gap, or
+// started later.
+func (rd Reading) settledElsewhere(r Row) bool {
+	for _, a := range rd.answers[r.Validator] {
+		if a.served || a.gap || a.started.After(r.StartedAt) {
+			return true
+		}
+	}
+	return false
 }
 
 // ReadingOf reduces the rows of one reading (one promise, one scheduled
 // time) with the publication's facts, whatever phase each row carries.
 func ReadingOf(point []Row, f BlobFacts) Reading {
-	rd := Reading{Needed: f.Needed}
+	rd := Reading{Needed: f.Needed, answers: map[string][]answerOf{}}
 	seen := map[uint32]struct{}{}
 	asked := map[string]bool{}
 	served := map[string]bool{}
 	servedOK := map[string]int{}
+	notProbed := map[string]bool{}
+	other := map[string]bool{}
 	for _, r := range point {
-		if r.Classification == probe.ClassNotProbed && r.Assigned && r.Phase == probe.PhaseInWindow {
-			rd.Missed = true
+		rd.answers[r.Validator] = append(rd.answers[r.Validator], answerOf{started: r.StartedAt,
+			served: probe.FullServed(r.CommitmentVerified, r.Outcome, r.Classification), gap: probe.FullGap(r.Classification)})
+		if r.Classification == probe.ClassNotProbed {
+			if r.Assigned && r.Phase == probe.PhaseInWindow {
+				notProbed[r.Validator] = true
+			}
+		} else {
+			other[r.Validator] = true
 		}
 		if r.Classification != probe.ClassNotProbed && r.Classification != probe.ClassProbeError {
 			asked[r.Validator] = true
@@ -157,6 +198,11 @@ func ReadingOf(point []Row, f BlobFacts) Reading {
 		}
 	}
 	rd.Have = len(seen)
+	for v := range notProbed {
+		if !other[v] {
+			rd.Missed = true
+		}
+	}
 	for _, n := range servedOK {
 		rd.Lower += n
 	}
@@ -230,15 +276,15 @@ func BlobOf(rows []Row, f BlobFacts, mustServeUntil, asOf time.Time) BlobResult 
 }
 
 // ReadingPoint picks the reading a blob is judged at from its rows: the
-// end-of-window reading when there is one. A blob read on the earlier
-// schedule was read at several points, each written a validator at a time,
-// some of them after its window: it is judged at the newest point in the
-// window every endorsing validator was reached at, or failing that the
-// newest point in the window any validator was reached at. ok is false when
-// there is none.
+// end-of-window reading (probe.EndOfWindowLabel: end, or full) when there
+// is one. A blob read on the earlier schedule was read at several points,
+// each written a validator at a time, some of them after its window: it is
+// judged at the newest point in the window every endorsing validator was
+// reached at, or failing that the newest point in the window any validator
+// was reached at. ok is false when there is none.
 func ReadingPoint(rows []Row, f BlobFacts) (at time.Time, ok bool) {
 	for _, r := range rows {
-		if r.ScheduleLabel == probe.EndReadLabel {
+		if probe.EndOfWindowLabel(r.ScheduleLabel) {
 			return r.ScheduledAt.UTC(), true
 		}
 	}

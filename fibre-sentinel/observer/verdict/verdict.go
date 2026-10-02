@@ -23,8 +23,8 @@ import (
 // obligation read that way counts as served only on a HEALTHY reading in
 // that tail, because an early reading says nothing about the hours an early
 // prune would take. A blob read once, 10 minutes before must_serve_until
-// (probe.EndReadLabel), is read inside the tail by construction and counts
-// wherever the reading fell.
+// (probe.EndReadLabel, probe.FullReadLabel), is read inside the tail by
+// construction and counts wherever the reading fell.
 //
 // The cut is expressed against the promise's own settlement time and
 // must_serve_until, both on the record, so a third party redraws the same
@@ -86,7 +86,28 @@ func (r Row) EffectiveClass() probe.Classification {
 }
 
 // CountedClass is what an endorsing validator's row counts as once its
-// blob's reading (rd, the row's own) is known (BlobReading), in the window:
+// blob's reading (rd, the row's own) is known (BlobReading), in the window.
+//
+// A row of a full reading (probe.FullReading: one that asked every
+// endorser for its own rows) counts on the validator's own answers, whatever
+// the blob came to:
+//
+//   - HEALTHY (served): this answer's rows came back and verified, no
+//     fewer than the validator holds (probe.FullServed);
+//   - NOT_PROBED, PROBE_ERROR: this observer's gap (probe.FullGap); never
+//     counted;
+//   - NotCounted: an answer that did not serve, when another answer of the
+//     same validator at the same reading served, was this observer's gap,
+//     or came later (the last answer decides, and a gap among them leaves
+//     the validator unjudged); and every answer of a reading in which not a
+//     single request reached a server;
+//   - FAULT (not served): the validator's last answer, when none served and
+//     none was this observer's gap: no such shard, rows that do not verify
+//     or too few of them, a wrong certificate, no registered host, an
+//     endpoint that could not be reached, a timeout, a rate limit or a
+//     server error, every time it was asked.
+//
+// Any other row counts as its blob's reading leaves it:
 //
 //   - HEALTHY (served): its rows came back verified against the commitment;
 //   - FAULT (not served): they did not, and the reading left the blob
@@ -107,6 +128,19 @@ func (r Row) CountedClass(rd Reading) probe.Classification {
 	switch {
 	case r.Phase != probe.PhaseInWindow || !r.Assigned || !r.Attested:
 		return r.Classification
+	case probe.FullReading(r.ScheduleLabel, r.StartedAt):
+		switch {
+		case probe.FullServed(r.CommitmentVerified, r.Outcome, r.Classification):
+			c = probe.ClassHealthy
+		case probe.FullGap(r.Classification):
+			return r.Classification
+		case rd.settledElsewhere(r):
+			return NotCounted
+		case !rd.Ran:
+			return NotCounted
+		default:
+			c = probe.ClassFault
+		}
 	case r.CommitmentVerified:
 		c = probe.ClassHealthy
 	case r.Classification == probe.ClassNotProbed:
@@ -186,8 +220,9 @@ func (w Window) holds(t time.Time) bool {
 // Obligations are the buckets one validator's (or the network's) proven
 // obligations in a window fall into. See docs/verdicts.md, "Obligations".
 // NotCounted is every obligation decided with no count either way: read,
-// and its failure did not leave the blob unreadable; or not read by this
-// observer.
+// and its failure did not leave the blob unreadable (a reading that was not
+// full); its answers at a full reading included this observer's own gap; or
+// not read by this observer.
 type Obligations struct {
 	Total               int64 `json:"total"`
 	Served              int64 `json:"served"`
@@ -256,7 +291,7 @@ func ComputeObligations(rows []Row, settled map[string]time.Time, w Window, blob
 			o.faults++
 		case probe.ClassHealthy:
 			o.healthy++
-			if r.ScheduleLabel == probe.EndReadLabel || !r.ScheduledAt.Before(EndSegment(st, r.MustServeUntil)) {
+			if probe.EndOfWindowLabel(r.ScheduleLabel) || !r.ScheduledAt.Before(EndSegment(st, r.MustServeUntil)) {
 				o.lateHealthy++
 			}
 		case probe.ClassRetentionUnverified:

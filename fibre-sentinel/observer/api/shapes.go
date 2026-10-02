@@ -348,6 +348,7 @@ type validatorReading struct {
 	HostChanged       bool   `json:"host_changed,omitempty"`
 	Service           string `json:"service,omitempty"`
 	Provisional       bool   `json:"provisional,omitempty"`
+	Attempt           int    `json:"attempt,omitempty"`
 }
 
 func validatorReadings(rows []probeRow) []validatorReading {
@@ -358,7 +359,7 @@ func validatorReadings(rows []probeRow) []validatorReading {
 			StartedAt: p.StartedAt, Phase: p.Phase, Outcome: p.Outcome, Classification: p.Classification, Reason: p.Reason,
 			RowsReturned: p.RowsReturned, RowsExpected: p.RowsExpected, TotalDurationMS: p.TotalDurationMS, RawError: p.RawError,
 			RetryFirstOutcome: p.RetryFirstOutcome, RPCCode: p.RPCCode, ShadowedBy: p.ShadowedBy, HostAtSettlement: p.HostAtSettlement,
-			HostChanged: p.HostChanged, Service: p.Service, Provisional: p.Provisional,
+			HostChanged: p.HostChanged, Service: p.Service, Provisional: p.Provisional, Attempt: p.Attempt,
 		}
 	}
 	return out
@@ -385,6 +386,7 @@ type blobReading struct {
 	RowsSHA256       string   `json:"rows_sha256,omitempty"`
 	RPCCode          string   `json:"rpc_code,omitempty"`
 	Service          string   `json:"service,omitempty"`
+	Attempt          int      `json:"attempt,omitempty"`
 }
 
 func blobReadings(rows []probeRow) []blobReading {
@@ -394,7 +396,7 @@ func blobReadings(rows []probeRow) []blobReading {
 			ValidatorAddress: p.ValidatorAddress, OperatorAddress: p.OperatorAddress, ScheduleLabel: p.ScheduleLabel, StartedAt: p.StartedAt, Phase: p.Phase,
 			Outcome: p.Outcome, Classification: p.Classification, RowsReturned: p.RowsReturned, RowsExpected: p.RowsExpected,
 			TotalDurationMS: p.TotalDurationMS, RawError: p.RawError, RowIndices: p.RowIndices, RowsSHA256: p.RowsSHA256,
-			RPCCode: p.RPCCode, Service: p.Service,
+			RPCCode: p.RPCCode, Service: p.Service, Attempt: p.Attempt,
 		}
 	}
 	return out

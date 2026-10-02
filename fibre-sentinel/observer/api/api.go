@@ -1227,28 +1227,41 @@ type attestationStats struct {
 // obligationStats counts one observation per (validator, blob): whether the
 // validator served the rows it endorsed when this observer read the blob.
 //
-// A blob is read the way celestia-app's Fibre client downloads one, and
-// what each endorsing validator's answer counts as depends on what the whole
-// reading came to (verdict.BlobReading):
+// A blob is read the way celestia-app's Fibre client downloads one. Since
+// 2026-10-02T16:09:49Z the reading is full: it asks every endorsing
+// validator for its own rows, and asks a validator again (up to twice, 90 s
+// apart, while a request can start a minute before must_serve_until) when
+// its answer did not serve. Each endorser is then judged on its own
+// answers, whatever the blob came to (verdict.Row.CountedClass):
 //
 //	served         its rows came back and verified against the commitment
-//	broken         its rows did not come back, and the blob could not be
-//	               reconstructed from the rows that did: Unavailable
-//	               (Not served on the site)
+//	               (no fewer than it holds), at the reading or when asked
+//	               again
+//	broken         none of its answers served and none was this observer's
+//	               gap: no such shard, rows that do not verify or too few, a
+//	               wrong certificate, no registered host, an endpoint that
+//	               could not be reached, a timeout, a rate limit or a server
+//	               error, every time it was asked (Not served on the site)
 //	held_param_unverified
 //	               its only readings sit inside an x/fibre params range this
 //	               observer has not read every height of, so neither the
 //	               failure nor the credit is published
-//	not_counted    decided, with no count either way: its answer failed on a
-//	               blob that was Available all the same, or the blob was not
-//	               read by Tensile
+//	not_counted    decided, with no count either way: one of its answers
+//	               was this observer's gap (a request that could not be made
+//	               in time, its own resolver or a restart), not a single
+//	               request of the reading reached a server, or the blob was
+//	               not read by Tensile
 //	pending        read, and the retention window has not ended at as_of
 //	               (an obligation not read yet has no row here; the
 //	               validator page counts those as in_retention_window)
 //
-// Only served and broken enter the rate. An endorsing validator the reading
-// never asked (the blob was whole before its turn) has no row and no
-// obligation here at all.
+// Readings from before then stopped once the rows reconstructed the blob,
+// and keep their rule: broken when its rows did not come back and the blob
+// was Unavailable; not_counted when its answer failed on a blob that was
+// Available all the same; an endorsing validator such a reading never asked
+// (the blob was whole before its turn) has no row and no obligation here.
+//
+// Only served and broken enter the rate.
 //
 // The population is obligations the settled promise proves (attested = 1):
 // an unattested one is nothing to keep or break, and a record from before
@@ -3208,9 +3221,9 @@ type reconstruct struct {
 	NeededRows int `json:"needed_rows"`
 	TotalRows  int `json:"total_rows"`
 	// ServedBy is how many validators' rows came back verified, and
-	// ProbedValidators how many the reading asked, endorsing or not. The
-	// reading stops once it has enough rows, so a validator it did not ask
-	// is no gap.
+	// ProbedValidators how many the reading asked. A full reading asks every
+	// endorsing validator, and only those; a reading from before it stopped
+	// once it had enough rows, so a validator it did not ask is no gap.
 	ServedBy         int `json:"served_by_validators"`
 	ProbedValidators int `json:"probed_validators"`
 }
@@ -3726,12 +3739,15 @@ type assignmentRow struct {
 	HostAtSettlement *string `json:"host_at_settlement"`
 	// Service is this validator's obligation on this blob, by the rule the
 	// obligation counts use (rollup.ObligationBuckets): served (its rows
-	// came back verified), not_served (they did not, and the blob was
-	// Unavailable), in_retention_window (the window is still open) or
-	// deadline_unverified (the deadline is held). Absent when there is no
-	// result either way: not endorsed, not asked because the reading had
-	// enough rows before its turn, a failure on a blob that was Available
-	// all the same, or a blob not read by Tensile.
+	// came back verified), not_served (at a full reading: none of its
+	// answers served and none was this observer's gap; before it: its rows
+	// did not come back, and the blob was Unavailable), in_retention_window
+	// (the window is still open) or deadline_unverified (the deadline is
+	// held). Absent when there is no result either way: not endorsed, this
+	// observer's gap among its answers, a reading that reached no server, a
+	// blob not read by Tensile, or, before full readings, not asked because
+	// the reading had enough rows before its turn, or a failure on a blob
+	// that was Available all the same.
 	Service string `json:"service,omitempty"`
 	// Provisional marks a not_served still younger than the settling period.
 	Provisional bool `json:"provisional,omitempty"`
@@ -4047,12 +4063,30 @@ type probeRow struct {
 	SettlementHostServed  *bool  `json:"settlement_host_served,omitempty"`
 	// Service is what this reading counts as for the validator, by the rule
 	// the obligations use (rollup.CountedClass): served (its rows came back
-	// verified, at a reading that speaks for the end of the window),
-	// not_served (they did not, and the blob was Unavailable), or empty: it
-	// counts neither way (a failure on a blob that was Available all the
-	// same, a blob not read by Tensile, an earlier schedule's early reading,
-	// a validator that did not endorse).
+	// verified, at a reading that speaks for the end of the window), or
+	// not_served, or empty: it counts neither way.
+	//
+	// At a full reading (schedule_label "full", or "end" from
+	// 2026-10-02T16:09:49Z on: every endorser asked for its own rows, and
+	// asked again when it did not serve) the validator is judged on its own
+	// answers: not_served is its last answer when none served and none was
+	// this observer's gap (no such shard, rows that do not verify or too few,
+	// a wrong certificate, no registered host, an endpoint that could not be
+	// reached, a timeout, a rate limit or a server error, every time);
+	// empty is an answer a later one replaced, one beside a served answer
+	// or this observer's gap, this observer's gap itself, and every answer of
+	// a reading that reached no server.
+	//
+	// At any other reading not_served is rows that did not come back on a
+	// blob that was Unavailable; empty is a failure on a blob that was
+	// Available all the same, a blob not read by Tensile, an earlier
+	// schedule's early reading. A validator that did not endorse is never
+	// judged.
 	Service string `json:"service,omitempty"`
+	// Attempt is which of the validator's requests at a full reading this
+	// row is: 0 (omitted) the reading's own, 1 and 2 the ones made again
+	// after an answer that did not serve.
+	Attempt int `json:"attempt,omitempty"`
 	// Provisional marks a not_served reading younger than
 	// verdict.FaultSettling: it counts, and an x/fibre params change not
 	// reconciled yet can still withdraw it (provisional.go).
@@ -4084,7 +4118,7 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 		COALESCE(shadow_gap, ''), COALESCE(classification_at_probe, ''), COALESCE(amended_at, ''),
 		COALESCE(host_at_settlement, ''), COALESCE(settlement_host_outcome, ''), settlement_host_served,
 		retention_unverified, COALESCE(phase_at_probe, ''), COALESCE(corrected_at, ''),
-		` + rollup.CountedClass("probes") + `, ` + lateSQL + `
+		` + rollup.CountedClass("probes") + `, ` + lateSQL + `, dedupe_key
 		FROM probes`
 	if where != "" {
 		q += " WHERE " + where
@@ -4106,16 +4140,17 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 		var att sql.NullInt64
 		var idxJSON string
 		var served sql.NullInt64
-		var counted string
+		var counted, key string
 		var late bool
 		if err := rows.Scan(&p.Vantage, &p.PromiseHash, &p.ValidatorAddress, &p.ValidatorHost, &assigned, &att, &p.AssignedRowCount, &p.ScheduleLabel,
 			&p.ScheduledAt, &p.StartedAt, &p.Phase, &p.Outcome, &p.Classification, &p.Reason, &p.RowsReturned, &p.RowsExpected,
 			&p.TotalDurationMS, &p.RawError, &p.RetryFirstOutcome,
 			&idxJSON, &p.RowsSHA256, &p.RPCCode, &p.ShadowedBy,
 			&p.ShadowGap, &p.ClassificationAtProbe, &p.AmendedAt, &p.HostAtSettlement, &p.SettlementHostOutcome, &served,
-			&held, &p.PhaseAtProbe, &p.CorrectedAt, &counted, &late); err != nil {
+			&held, &p.PhaseAtProbe, &p.CorrectedAt, &counted, &late, &key); err != nil {
 			return nil, err
 		}
+		p.Attempt = probe.AttemptOfKey(key)
 		p.RetentionUnverified = held == 1
 		p.Provisional = isProvisional(counted, p.StartedAt, now)
 		switch {
@@ -4157,6 +4192,8 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 // came back on the wire follows.
 func serviceReason(p probeRow) string {
 	switch {
+	case p.Service == "not_served" && fullReadingRow(p):
+		return "not served: this validator's own rows did not come back, at the reading and every time it was asked again; on the wire: " + p.Reason
 	case p.Service == "not_served":
 		return "not served: the rows did not come back, and the blob was Unavailable; on the wire: " + p.Reason
 	case p.Service == "served" && p.Classification != string(probe.ClassHealthy):
@@ -4165,11 +4202,21 @@ func serviceReason(p probeRow) string {
 	return p.Reason
 }
 
+// fullReadingRow reports whether a reading row is of a full reading
+// (probe.FullReading).
+func fullReadingRow(p probeRow) bool {
+	t, err := time.Parse(store.TimeLayout, p.StartedAt)
+	if err != nil {
+		t, _ = time.Parse(time.RFC3339Nano, p.StartedAt)
+	}
+	return probe.FullReading(p.ScheduleLabel, t)
+}
+
 // lateSQL says whether a reading of the probes table speaks for the end of
-// its promise's window: the one reading 10 minutes before must_serve_until,
-// or on the earlier schedule a reading in the tail of the window
-// (rollup.ObligationBuckets' late_healthy).
-const lateSQL = `(schedule_label = '` + probe.EndReadLabel + `' OR julianday(scheduled_at) >= julianday(must_serve_until) -
+// its promise's window: the one reading 10 minutes before must_serve_until
+// (end, or full), or on the earlier schedule a reading in the tail of the
+// window (rollup.ObligationBuckets' late_healthy).
+const lateSQL = `(schedule_label IN ` + rollup.EndLabelsSQL + ` OR julianday(scheduled_at) >= julianday(must_serve_until) -
 		(julianday(must_serve_until) - julianday(COALESCE((SELECT settlement_time FROM publications pl WHERE pl.promise_hash = probes.promise_hash), must_serve_until))) / 4.0)`
 
 // The most rows /v1/probes returns in one answer: without the row indices,
@@ -4230,8 +4277,9 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 		conds, args = append(conds, rollup.EffectiveClass("")+` = ?`), append(args, strings.ToUpper(c))
 	}
 	// served=no: the readings the obligations count as not served
-	// (rollup.CountedClass): no rows came back, on a blob that was
-	// Unavailable.
+	// (rollup.CountedClass): at a full reading, a validator's last answer
+	// when none served and none was this observer's gap; before it, no rows
+	// came back, on a blob that was Unavailable.
 	if q.Get("served") == "no" {
 		conds = append(conds, rollup.NotServedSQL("probes"))
 	}

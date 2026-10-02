@@ -1,11 +1,16 @@
 // Command sentinel-probe reads the blobs the scanner found. It reads
 // <data-dir>/publications.jsonl (written by sentinel-scan) and reads each
 // blob once, -end-read-offset before its must_serve_until, the way
-// celestia-app's Fibre client downloads it: the whole validator set in the
-// client's order, 15 s per request with the client's one re-dial, rows
-// verified against the commitment, until the rows reconstruct the blob or
-// every validator has been asked. Every reading ends with one Measurement
-// per validator asked, appended together to <data-dir>/measurements.jsonl.
+// celestia-app's Fibre client downloads it: in the client's order, 15 s
+// per request with the client's one re-dial, rows verified against the
+// commitment. With -end-read-all (the default) the reading is full: every
+// validator that endorsed the promise is asked for its own rows, and one
+// whose answer did not serve is asked again, up to twice, -retry-spacing
+// apart, while the request can start -request-start-margin before
+// must_serve_until; without it the reading stops once the rows reconstruct
+// the blob. Every reading ends with one Measurement per validator asked,
+// appended together to <data-dir>/measurements.jsonl, and each later
+// attempt appends its own.
 //
 // The queue of readings is never persisted: it is re-derived from the
 // publications and the existing measurements every cycle, so a restart
@@ -54,7 +59,9 @@ func main() {
 		endRead   = flag.Bool("end-read", true, "accepted for the unit files that pass it; every blob is read this way")
 		endOffset = flag.Duration("end-read-offset", def.EndReadOffset, "how long before must_serve_until a blob is read")
 		endSince  = flag.String("end-read-since", "", "RFC 3339 time; publications settled before it were read on the schedule of their time and are not read again (empty = every publication)")
-		askAll    = flag.Bool("end-read-all", true, "ask every endorsing validator for its own rows, instead of stopping once the rows reconstruct the blob")
+		askAll    = flag.Bool("end-read-all", true, "ask every endorsing validator for its own rows, instead of stopping once the rows reconstruct the blob (a full reading, schedule_label full)")
+		startBy   = flag.Duration("request-start-margin", time.Minute, "no request of a full reading, nor a later attempt, starts later than this before must_serve_until (NOT_PROBED)")
+		spacing   = flag.Duration("retry-spacing", 90*time.Second, "how long after a validator's answer in a full reading did not serve it is asked again (up to twice)")
 		readDL    = flag.Duration("read-deadline", def.ReadDeadline, "a reading that cannot start this long before must_serve_until is not made (NOT_PROBED)")
 		pruneTol  = flag.Duration("prune-tolerance", def.PruneTolerance, "NOT_FOUND is normal until must_serve_until + this (devnet prune lag ~1m45s)")
 
@@ -138,6 +145,8 @@ func main() {
 		Concurrency:          *concurrency,
 		BlobConcurrency:      *blobs,
 		AskEveryEndorser:     *askAll,
+		RequestStartMargin:   *startBy,
+		RetrySpacing:         *spacing,
 		InFlightBytes:        *inFlightMiB << 20,
 		AllowUnroutableHosts: *localHosts,
 		BackfillMissed:       *backfill,

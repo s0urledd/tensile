@@ -40,13 +40,14 @@ func excludeFixtureStore(t *testing.T) (*httptest.Server, *store.Store) {
 	now := time.Now().UTC().Truncate(time.Second)
 	created, msu := now.Add(-2*time.Hour), now.Add(-30*time.Minute)
 	at := msu.Add(-10 * time.Minute)
-	// One blob Available on kept's rows, beside two validators that failed
-	// and count neither way; one Unavailable, whose only validator did not
-	// serve.
+	// One blob Available on kept's rows, beside two validators whose
+	// answers were this observer's own gap and count neither way; one
+	// Unavailable, whose only validator did not serve. A full reading (the
+	// end label from probe.FullReadSince on) judges each on its own answer.
 	insertReading(t, st, "ex1", created, msu, 4, probe.EndReadLabel, at, []endVal{
 		{addr: selfAddrs["kept"], rows: 4, w: ok},
-		{addr: selfAddrs["earlyonly"], rows: 2, w: err500},
-		{addr: selfAddrs["silent"], rows: 2, w: refused},
+		{addr: selfAddrs["earlyonly"], rows: 2, w: local},
+		{addr: selfAddrs["silent"], rows: 2, w: skipped},
 	})
 	insertReading(t, st, "ex2", created, msu, 2, probe.EndReadLabel, at, []endVal{
 		{addr: selfAddrs["broke"], rows: 2, w: gone},

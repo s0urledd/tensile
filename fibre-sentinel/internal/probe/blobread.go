@@ -33,14 +33,20 @@ package probe
 // judged as the client, which asks at once, would have made it. The client
 // has no limit per validator, and neither has the reading.
 //
-// With Config.AskEveryEndorser the reading asks every endorsing validator
-// for its own rows, all of them, instead of stopping at enough: the same
-// request, the same checks, one per endorser. Validators that did not
-// endorse are not asked.
+// With Config.AskEveryEndorser the reading is a full one (FullReadLabel): it
+// asks every endorsing validator for its own rows, all of them, instead of
+// stopping at enough: the same request, the same checks, one per endorser.
+// Validators that did not endorse are not asked. A request of a full
+// reading that cannot start before must_serve_until less
+// Config.RequestStartMargin is not made, and its validator gets a
+// NOT_PROBED row: this observer's gap.
 //
 // Nothing is written until the reading ends: then one row per validator
 // asked, together (MeasurementStore.AppendReading). A validator the reading
-// did not need to ask has no row.
+// did not need to ask has no row. The reading's slot and its Reconstructor
+// are let go then: a validator of a full reading whose answer did not serve
+// is asked again later, on its own (retry.go), and each of those attempts
+// writes a row of its own.
 
 import (
 	"context"
@@ -110,6 +116,10 @@ type blobReading struct {
 	// phase is the reading's, taken when it started; every request carries
 	// it (Input.ReadingPhase).
 	phase Phase
+	// full: the reading asks every endorser (FullReadLabel), and no request
+	// of it starts after startBy.
+	full    bool
+	startBy time.Time
 
 	mu      sync.Mutex
 	answers map[string]*answer
@@ -151,9 +161,14 @@ func (p *Prober) newBlobReading(ctx context.Context, pub scan.Publication, pt Sc
 	if err != nil {
 		return nil, fmt.Errorf("client order: %w", err)
 	}
-	return &blobReading{p: p, pub: pub, point: pt, coder: coder, commitment: commitment, rec: rec,
+	if p.cfg.AskEveryEndorser {
+		pt.Label = FullReadLabel
+	}
+	b := &blobReading{p: p, pub: pub, point: pt, coder: coder, commitment: commitment, rec: rec,
 		targets: ordered, shadowGap: p.shadowBlindness(pub), answers: map[string]*answer{},
-		phase: PhaseAt(time.Now().UTC(), pub, p.schedCfg())}, nil
+		phase: PhaseAt(time.Now().UTC(), pub, p.schedCfg())}
+	b.full, b.startBy = pt.Label == FullReadLabel, p.requestStartBy(pub)
+	return b, nil
 }
 
 // have is how many distinct verified rows the reading holds.
@@ -245,16 +260,27 @@ func (b *blobReading) record(a *answer) {
 
 // ask makes one validator's request, and the client's one re-dial. The
 // request waits for room under this observer's limits (admit), its time
-// starts once it is let go, and it carries the reading's phase.
+// starts once it is let go, and it carries the reading's phase. In a full
+// reading the wait ends at startBy: a request that could not start by then
+// is not made, and the validator's row says so (NOT_PROBED).
 func (b *blobReading) ask(ctx context.Context, v readTarget) *answer {
 	p := b.p
 	a := &answer{t: v}
 	in := p.inputFor(b.pub, v.Target, b.point, b.commitment, b.rec, b.shadowGap)
 	in.ReadingPhase = b.phase
-	release := p.admit(in.ExpectedShardBytes)
+	var release func()
+	if b.full {
+		var ok bool
+		if release, ok = p.admitBy(ctx, b.startBy, in.ExpectedShardBytes); !ok {
+			a.m = p.notProbedRow(b.pub, b.point, v.Target, p.notStartedReason("request"))
+			return a
+		}
+	} else {
+		release = p.admit(in.ExpectedShardBytes)
+	}
 	defer release()
 	m := Run(ctx, in, b.coder, p.cfg.Timeouts)
-	if redials(m) && ctx.Err() == nil {
+	if redials(m) && ctx.Err() == nil && (!b.full || time.Now().Before(b.startBy)) {
 		first := m
 		a.first = &first
 		m = Run(ctx, in, b.coder, p.cfg.Timeouts)

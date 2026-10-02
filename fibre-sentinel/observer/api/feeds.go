@@ -19,8 +19,9 @@ package api
 //   - becoming unreachable after feedConfirmBeats consecutive failed
 //     heartbeats, and recovering; the certificate stopping being endorsed
 //     by the validator's key (expired, or not its key) and being put right;
-//   - the first reading on record that counts as not served (its rows did
-//     not come back, and the blob was Unavailable).
+//   - the first reading on record that counts as not served
+//     (rollup.CountedClass: at a full reading, none of its answers served;
+//     before it, its rows did not come back, and the blob was Unavailable).
 //
 // And for the network: every registration and host change, bonded-list
 // joins and departures after the observer's first poll, and each
@@ -688,9 +689,10 @@ func (s *Server) monikers(ctx context.Context) (map[string]string, error) {
 }
 
 // firstFaults finds each validator's first not-served reading on record
-// (addr's alone when addr is set): a reading whose rows did not come back on
-// a blob that was Unavailable (rollup.CountedClass, the same rule every
-// figure applies). The returned entries have no ID; Link holds the promise
+// (addr's alone when addr is set): a reading that counts as not served
+// (rollup.CountedClass, the same rule every figure applies: at a full
+// reading the validator's last answer, none having served; before it, rows
+// that did not come back on a blob that was Unavailable). The returned entries have no ID; Link holds the promise
 // hash for the caller to turn into a URL.
 //
 // The entry ID has no time in it, so it must name the same reading for good:

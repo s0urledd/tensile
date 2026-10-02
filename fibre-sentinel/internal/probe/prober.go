@@ -71,8 +71,20 @@ type Config struct {
 	// the rows reconstruct the blob: every endorser is asked on every blob,
 	// so none is left unasked by the order. Validators that did not endorse
 	// are not asked. The blob's slot is held until every answer is in, so
-	// BlobConcurrency still bounds the readings in progress.
+	// BlobConcurrency still bounds the readings in progress. Its readings
+	// are labelled FullReadLabel, and a validator whose answer did not serve
+	// is asked again later (retry.go).
 	AskEveryEndorser bool
+
+	// RequestStartMargin is how long before must_serve_until the last
+	// request of a full reading may start, the reading's own or a later
+	// attempt (default 60 s). One that cannot start by then is not made, and
+	// its validator's row says so (NOT_PROBED): this observer's gap.
+	RequestStartMargin time.Duration
+	// RetrySpacing is how long after a validator's answer in a full reading
+	// did not serve it is asked again (default 90 s), up to FullReadRetries
+	// times.
+	RetrySpacing time.Duration
 
 	// AllowUnroutableHosts dials a registered host that resolves to loopback
 	// or a private range. A local devnet needs it; a public vantage must not
@@ -124,6 +136,12 @@ func (c Config) withDefaults() Config {
 	}
 	if c.InFlightBytes <= 0 {
 		c.InFlightBytes = defaultInFlightBytes
+	}
+	if c.RequestStartMargin <= 0 {
+		c.RequestStartMargin = time.Minute
+	}
+	if c.RetrySpacing <= 0 {
+		c.RetrySpacing = 90 * time.Second
 	}
 	if c.Timeouts.Download <= 0 {
 		c.Timeouts.Download = ClientRPCTimeout
@@ -193,6 +211,8 @@ type Prober struct {
 	bytes    *byteSem
 	sched    *readQueue
 	counters readCounters
+	// retries are the later attempts of full readings (retry.go).
+	retries *retryQueue
 }
 
 // New builds a Prober.
@@ -229,6 +249,7 @@ func (p *Prober) initPace() {
 	p.reqs = make(chan struct{}, p.cfg.Concurrency)
 	p.bytes = newByteSem(p.cfg.InFlightBytes)
 	p.sched = newReadQueue()
+	p.retries = newRetryQueue()
 }
 
 func (p *Prober) schedCfg() ScheduleConfig { return p.cfg.Schedule.withDefaults() }
@@ -295,14 +316,19 @@ func (p *Prober) Run(parent context.Context) error {
 	p.log.Printf("prober up: vantage=%s chain_id=%s tip=%d rpc=%s pubs=%s data=%s concurrency=%d blobs=%d",
 		p.cfg.Vantage, id, tip, p.cfg.RPCURL, p.cfg.PublicationsPath, p.store.Path(), p.cfg.Concurrency, p.cfg.BlobConcurrency)
 
-	// The dispatcher starts every reading when it is due, while this loop
-	// keeps the queue and the chain state fresh.
+	// The dispatcher starts every reading when it is due, and the retry
+	// runner every later attempt of a full reading, while this loop keeps
+	// the queue and the chain state fresh.
 	dctx, stopDispatch := context.WithCancel(ctx)
 	var dispatched sync.WaitGroup
-	dispatched.Add(1)
+	dispatched.Add(2)
 	go func() {
 		defer dispatched.Done()
 		p.dispatch(dctx)
+	}()
+	go func() {
+		defer dispatched.Done()
+		p.runRetries(dctx)
 	}()
 	defer func() {
 		stopDispatch()
@@ -346,6 +372,7 @@ func (p *Prober) Run(parent context.Context) error {
 		for _, h := range finished {
 			p.feed.forget(h)
 			p.store.Forget(h)
+			p.retries.forget(h)
 		}
 		for _, j := range due {
 			p.sched.push(j)
@@ -357,11 +384,11 @@ func (p *Prober) Run(parent context.Context) error {
 		st.Set("clock_offset_ms", p.clockOffsetMS())
 		st.Set("reads", p.readStatus())
 
-		if (p.cfg.Once || p.cfg.ReadNow) && p.sched.quiet(time.Now()) {
+		if (p.cfg.Once || p.cfg.ReadNow) && p.sched.quiet(time.Now()) && p.retries.idle() {
 			p.log.Printf("done: %d readings this run", p.counters.done.Load())
 			return nil
 		}
-		if p.cfg.Drain && p.sched.idle() {
+		if p.cfg.Drain && p.sched.idle() && p.retries.idle() {
 			p.log.Printf("done (--drain): every known reading is in the past; %d readings this run", p.counters.done.Load())
 			return nil
 		}
@@ -660,10 +687,14 @@ func (p *Prober) planReads(pubs []scan.Publication, now time.Time) (due, missed 
 			finished = append(finished, pub.PromiseHash)
 			continue
 		}
-		pt := ReadPoint(pub, cfg)
+		pt := p.readPoint(pub)
 		if p.store.HandledPoint(p.cfg.Vantage, pub.PromiseHash, pt.At) || archivedFrom(pub, pt, p.liveSince) {
 			// The reading is on record (or may be, in the archive, which
-			// the restart index does not read): nothing to do again.
+			// the restart index does not read): nothing to do again, once
+			// every later attempt it owes is made or recorded as not made.
+			if p.retriesOwed(pub, pt) {
+				continue
+			}
 			finished = append(finished, pub.PromiseHash)
 			continue
 		}
@@ -792,15 +823,26 @@ func (p *Prober) readBlob(ctx context.Context, j *readJob, release func()) {
 }
 
 // finish writes a reading's rows, all together. The caller has taken the
-// reading off the queue (popDue); finish gives it back.
+// reading off the queue (popDue); finish gives it back. A full reading's
+// validators whose answer did not serve are then queued to be asked again
+// (retry.go): the rows are on record first, so the record stays in time
+// order, and the blob is held as owing retries meanwhile (retryQueue.hold),
+// so a cycle does not forget it in between.
 func (p *Prober) finish(b *blobReading) {
 	defer p.sched.done(b.pub.PromiseHash)
 	result, clientErr := b.result()
 	ms := b.rows(result, clientErr)
+	if b.full {
+		p.retries.hold(b.pub.PromiseHash)
+		defer p.retries.release(b.pub.PromiseHash)
+	}
 	if len(ms) > 0 {
 		if err := p.store.AppendReading(ms); err != nil {
 			p.log.Fatalf("append reading: %v", err)
 		}
+	}
+	if b.full {
+		p.retryAfterReading(b, ms)
 	}
 	p.counters.done.Add(1)
 	what := result
@@ -853,6 +895,55 @@ func (p *Prober) admit(shardBytes int64) func() {
 	}
 }
 
+// admitBy is admit with a bound: it waits for room only until by, or until
+// ctx ends, and reports false when room did not come in time (nothing is
+// held then).
+func (p *Prober) admitBy(ctx context.Context, by time.Time, shardBytes int64) (func(), bool) {
+	if !time.Now().Before(by) {
+		return nil, false
+	}
+	t := time.NewTimer(time.Until(by))
+	defer t.Stop()
+	select {
+	case p.reqs <- struct{}{}:
+	case <-ctx.Done():
+		return nil, false
+	case <-t.C:
+		return nil, false
+	}
+	if !p.bytes.acquireBy(ctx, shardBytes, by) {
+		<-p.reqs
+		return nil, false
+	}
+	return func() {
+		p.bytes.release(shardBytes)
+		<-p.reqs
+	}, true
+}
+
+// requestStartBy is the last moment a request of pub's full reading may
+// start: must_serve_until less RequestStartMargin.
+func (p *Prober) requestStartBy(pub scan.Publication) time.Time {
+	return pub.MustServeUntil.Add(-p.cfg.RequestStartMargin)
+}
+
+// notStartedReason is the NOT_PROBED reason of a request of a full reading
+// (what: "request" or "retry") that could not start in time.
+func (p *Prober) notStartedReason(what string) string {
+	return fmt.Sprintf("not read in time: the %s could not start %s before must_serve_until (this observer's own gap)",
+		what, p.cfg.RequestStartMargin)
+}
+
+// readPoint is when, and under which label, pub is read: ReadPoint, and a
+// full reading's label when this prober asks every endorser.
+func (p *Prober) readPoint(pub scan.Publication) SchedulePoint {
+	pt := ReadPoint(pub, p.schedCfg())
+	if p.cfg.AskEveryEndorser {
+		pt.Label = FullReadLabel
+	}
+	return pt
+}
+
 // defaultInFlightBytes is the shard-byte ceiling: half a gibibyte of shards
 // being transferred at once, which with the receive buffer and the
 // unmarshalled copy is about a gibibyte resident at the peak.
@@ -890,6 +981,33 @@ func (b *byteSem) acquire(nBytes int64) {
 		b.cond.Wait()
 	}
 	b.held += nBytes
+}
+
+// acquireBy is acquire bounded by a deadline and a context: false, with
+// nothing held, when the bytes were not free in time.
+func (b *byteSem) acquireBy(ctx context.Context, nBytes int64, by time.Time) bool {
+	if nBytes <= 0 {
+		nBytes = 1
+	}
+	wake := func() {
+		b.mu.Lock()
+		b.cond.Broadcast()
+		b.mu.Unlock()
+	}
+	t := time.AfterFunc(time.Until(by), wake)
+	defer t.Stop()
+	stop := context.AfterFunc(ctx, wake)
+	defer stop()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for b.held > 0 && b.held+nBytes > b.limit {
+		if ctx.Err() != nil || !time.Now().Before(by) {
+			return false
+		}
+		b.cond.Wait()
+	}
+	b.held += nBytes
+	return true
 }
 
 func (b *byteSem) release(nBytes int64) {

@@ -15,11 +15,15 @@
 // "synthetic", and the state file carries the generator's parameters. It is a
 // load and arithmetic fixture, never evidence about any validator.
 //
-// Each blob is read as the prober reads it: once, near the end of its window,
-// asking every validator with rows, endorsing or not, largest stake first
-// until the rows are enough. A share of the blobs (-lost) is served by
-// nobody, so they are Unavailable and their endorsing validators are not
-// served; a validator that did not endorse is never counted.
+// Each blob is read as the prober reads it: a full reading near the end of
+// its window (schedule_label full), asking every validator that endorsed the
+// promise for its own rows, largest stake first, and asking one whose answer
+// did not serve again, up to twice, 90 s after its last answer (each attempt
+// a row of its own, Measurement.Attempt). A validator that did not endorse
+// is not asked and never counted. Each endorser is judged on its own
+// answers: served when one served, not served when none did. A share of the
+// blobs (-lost) is served by nobody, so they are Unavailable and every
+// endorser of theirs is not served.
 //
 // Ground truth is printed at the end: how many obligations were served, not
 // served and not counted, so that the API's answers can be checked against
@@ -137,11 +141,12 @@ func main() {
 	ap := assign.ParamsV10BlobV0
 
 	cfg := probe.DefaultScheduleConfig()
+	const retrySpacing = 90 * time.Second
 	var (
 		nPubs, nRows, nObl int
 		nUnavailable       int
 		gt                 = map[string]int{} // ground truth: classification -> rows
-		oblBroken          = map[string]int{} // validator -> obligations not served on an Unavailable blob
+		oblBroken          = map[string]int{} // validator -> obligations not served: none of its answers served
 		oblServed          = map[string]int{}
 		oblTotal           = map[string]int{}
 	)
@@ -214,6 +219,7 @@ func main() {
 		nPubs++
 
 		pt := probe.ReadPoint(pub, cfg)
+		pt.Label = probe.FullReadLabel
 		// a reading the observer never made: a gap, not a verdict
 		if rng.Float64() < 0.004 {
 			for _, v := range vals {
@@ -237,20 +243,14 @@ func main() {
 		have := map[int]bool{}
 		var ms []probe.Measurement
 		var asked []synthVal
-		var endorses []bool
-		for _, v := range vals { // largest stake first, endorsing or not
+		for _, v := range vals { // every endorser, largest stake first
 			rows, _ := shards.Rows(mustAddr(v.addrHex))
-			if len(rows) == 0 {
-				continue
+			if len(rows) == 0 || !attested[v.addrHex] {
+				continue // no obligation: not asked
 			}
-			if attested[v.addrHex] {
-				nObl++
-				oblTotal[v.moniker]++
-			}
-			if len(have) >= ap.OriginalRows {
-				continue // not asked: the rows were enough
-			}
-			m := shape(*vantage, pub, v, rows, pt, cfg, lost, attested[v.addrHex], rng)
+			nObl++
+			oblTotal[v.moniker]++
+			m := shape(*vantage, pub, v, rows, pt, cfg, lost, true, rng)
 			if m.Download.CommitmentVerified {
 				for _, r := range rows {
 					have[r] = true
@@ -259,7 +259,6 @@ func main() {
 			m.Read = &probe.ReadInfo{Order: len(ms), BlobHaveAfter: len(have)}
 			ms = append(ms, m)
 			asked = append(asked, v)
-			endorses = append(endorses, attested[v.addrHex])
 		}
 		result, clientErr := probe.ReadAvailable, ""
 		if len(have) < ap.OriginalRows {
@@ -268,16 +267,32 @@ func main() {
 		}
 		for j, m := range ms {
 			m.Read.BlobResult, m.Read.BlobError = result, clientErr
-			served := m.Download.CommitmentVerified
-			switch {
-			case served && endorses[j]:
+			// An answer that did not serve is asked again, up to twice,
+			// each attempt its own row; the first that serves ends it.
+			served := probe.FullServed(m.Download.CommitmentVerified, m.Outcome, m.Classification)
+			attempt := m
+			for k := 1; !served && k <= probe.FullReadRetries; k++ {
+				rows, _ := shards.Rows(mustAddr(asked[j].addrHex))
+				next := shape(*vantage, pub, asked[j], rows, pt, cfg, lost, true, rng)
+				shift := attempt.FinishedAt.Add(retrySpacing).Sub(next.StartedAt)
+				next.StartedAt, next.FinishedAt = next.StartedAt.Add(shift), next.FinishedAt.Add(shift)
+				next.LatenessMS = next.StartedAt.Sub(pt.At).Milliseconds()
+				next.Attempt = k
+				next.Read = &probe.ReadInfo{Order: m.Read.Order, BlobResult: result, BlobError: clientErr}
+				writeJSON(measFile, attempt)
+				nRows++
+				gt[string(attempt.Classification)]++
+				attempt = next
+				served = probe.FullServed(next.Download.CommitmentVerified, next.Outcome, next.Classification)
+			}
+			if served {
 				oblServed[asked[j].moniker]++
-			case !served && result == probe.ReadUnavailable && endorses[j]:
+			} else {
 				oblBroken[asked[j].moniker]++
 			}
-			writeJSON(measFile, m)
+			writeJSON(measFile, attempt)
 			nRows++
-			gt[string(m.Classification)]++
+			gt[string(attempt.Classification)]++
 		}
 	}
 
@@ -349,7 +364,7 @@ func main() {
 	for _, k := range keys {
 		fmt.Printf("  %-24s %8d\n", k, gt[k])
 	}
-	fmt.Println("\nobligations not served, by validator (what the API must report as not served):")
+	fmt.Println("\nobligations not served, by validator (what the API must report as not served: none of its answers served):")
 	bk := make([]string, 0, len(oblBroken))
 	for k := range oblBroken {
 		bk = append(bk, k)
