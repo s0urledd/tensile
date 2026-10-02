@@ -1,9 +1,8 @@
 "use client";
-import { Suspense, useCallback, useEffect, useState, type CSSProperties } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { API_BASE, useApi, notFound, badRequest, throttled, hhmm, ago, type Blob, type Payment, type PublisherNamespace, type RecentBlob, type Tip, type Window, blobFee, bytes, int, nsDisplay, span, tia, utcWord } from "@/lib/api";
 import type { Params, PublisherWithQueue, PublisherWithdrawals, WithdrawalRow } from "@/lib/withdrawals";
-import { useWindow, WindowSwitch, windowLabel } from "@/lib/window";
 import { lane } from "@/lib/status";
 import Ledger, { useLedger } from "@/components/Ledger";
 import Pager, { usePage } from "@/components/Pager";
@@ -77,6 +76,8 @@ function useFirstBlob(addr: string, total: number | null): Blob | null | undefin
   }, [addr, ask]); // eslint-disable-line react-hooks/exhaustive-deps
   return first;
 }
+
+const plural = (n: number, w: string) => `${int(n)} ${w}${n === 1 ? "" : "s"}`;
 
 /** "Oct 2 06:42": the minute is enough in a line; the second and UTC are on hover */
 const monthDayMin = (s: string) => monthDayTime(s).slice(0, -3);
@@ -182,13 +183,13 @@ function Movements({ d, now }: { d: Detail; now: number }) {
 
 /**
  * One publisher: whose account it is, what it posted and when, then one
- * framed panel with its escrow as it stands now and the period's activity,
- * then its blobs as the Blobs list draws them, and its deposits and
- * withdrawals.
+ * framed panel of four figures of its own (the escrow it has left now, and
+ * over its whole record its blobs, what it paid, and how many of its blobs
+ * Tensile found available), then its blobs as the Blobs list draws them, and
+ * its deposits and withdrawals.
  */
 function Publisher({ addr }: { addr: string }) {
   const params = useSearchParams();
-  const [win, setWin] = useWindow("24h");
   const [page, setPageRaw] = usePage();
   const [tabPick, setTab] = useState<"blobs" | "money" | null>(null);
   const [ns, setNsRaw] = useState((params.get("namespace") ?? "").trim().toLowerCase());
@@ -209,7 +210,8 @@ function Publisher({ addr }: { addr: string }) {
     } catch { /* fine */ }
   }, [setPageRaw]);
 
-  const pub = useApi<Detail>(`/v1/publishers/${addr}?window=${win}`);
+  // the whole record: every figure on this page is the account's own over all of it, but its escrow, which is now
+  const pub = useApi<Detail>(`/v1/publishers/${addr}?window=all`);
   const pf = useApi<Params>("/v1/params", 0).data?.price_formula;
   const tip = useApi<Tip>("/v1/tip", 4000); // the header's stream: no request of its own
   const skew = tip.data?.server_time && tip.fetchedAt ? Date.parse(tip.data.server_time) - Date.parse(tip.fetchedAt) : 0;
@@ -265,7 +267,8 @@ function Publisher({ addr }: { addr: string }) {
     for (const b of whole) m.set(b.namespace, (m.get(b.namespace) ?? 0) + 1);
     nss = [...m].map(([ns, n]) => ({ ns, n }));
   }
-  // Tensile's reading of each of its blobs, in the Blobs list's own words (lane())
+  // Tensile's reading of each of its blobs, in the Blobs list's own words (lane()): the API's count, or while it has
+  // none, the page's own of every blob it read at once
   let read: Record<string, number> | null = null;
   if (apiRead) {
     const r = { unavailable: apiRead.unavailable, available: apiRead.available, "retention window": apiRead.in_retention_window, "not read": apiRead.not_read };
@@ -288,11 +291,16 @@ function Publisher({ addr }: { addr: string }) {
   const need = avg != null && pf ? blobFee(pf, avg) : null;
   const short = !!e && need != null && e.available_utia < need;
   const queued = e && p.pending_withdrawals && p.pending_withdrawals.count > 0 ? p.pending_withdrawals : null;
-  // the period's activity: the figures of the publisher row, which the API gives for the period asked
-  const active = p.settlements > 0 || p.timeouts > 0;
-  const actN = p.timeouts > 0 ? 4 : 3;
-  // a queued withdrawal or a timeout adds a cell: the escrow then sits over the activity, at every width
-  const stack = !!queued || p.timeouts > 0;
+  // what the escrow's amber dot says: it cannot pay for one more blob, or settlements took part of a queued withdrawal
+  const escWarn = [
+    short && `Not enough for one more ${bytes(Math.round(avg!))} blob (${tia(need)})`,
+    queued && queued.reduced_utia > 0 && `Settlements used ${tia(queued.reduced_utia)} of a queued withdrawal; that part will not be paid out`,
+  ].filter(Boolean).join(". ");
+  // its blobs: as many as Tensile's reading counts (a blob settled twice is one blob), or its settlements until it has
+  const readN = read ? Object.values(read).reduce((a, b) => a + b, 0) : 0;
+  const blobN = readN || p.settlements;
+  // what it paid: the fees of its settlements, and what any timed-out promise was charged as a blob
+  const paid = p.fees_utia + p.timed_out_utia;
   const moneyN = data.recent_payments.filter((x) => x.kind !== "settlement").length;
 
   const nsChoices: Choice[] | null = nss
@@ -317,8 +325,8 @@ function Publisher({ addr }: { addr: string }) {
         </div>
         <div className="pb-addr"><span className="mono">{addr}</span><Copy text={addr} label="the address" /></div>
 
-        {/* when it last and first posted, where, and what Tensile found: all-time, in a light frame of their own; a row
-            still being read holds its place under a placeholder */}
+        {/* when it last and first posted, and where: all-time, in a light frame of their own; a row still being read
+            holds its place under a placeholder */}
         {posted && (newest || reading) && (
           <dl className="pb-meta">
             <dt>Last blob</dt>
@@ -339,61 +347,46 @@ function Publisher({ addr }: { addr: string }) {
               </dd>
             </>}
             {!nss && nsWait && <><dt>Namespaces</dt><dd><span className="wait">sov-niko-a</span></dd></>}
-            {read && <>
-              <dt>Tensile&rsquo;s reading</dt>
-              <dd className="pb-tally" title="Tensile reads each blob once, near the end of its retention window.">
-                {[
-                  read.unavailable ? <span className="hold"><b>{int(read.unavailable)}</b> unavailable</span> : null,
-                  read.available ? <span><b>{int(read.available)}</b> <span className="ok">available</span></span> : null,
-                  read["retention window"] ? <span><b>{int(read["retention window"])}</b> in retention window</span> : null,
-                  read["not read"] ? <span><b>{int(read["not read"])}</b> not read</span> : null,
-                ].filter(Boolean).map((x, k) => <span key={k} className="it">{k > 0 && <span className="sep">·</span>}{x}</span>)}
-              </dd>
-            </>}
-            {readWait && <><dt>Tensile&rsquo;s reading</dt><dd><span className="wait">5 available</span></dd></>}
           </dl>
         )}
       </section>
 
-      {/* the escrow as it stands now, then the period's activity; the period switch sits in the activity's head and
-          drives its cells only */}
-      <section className={`pan pp${stack ? " stack" : ""}`} aria-label="Escrow and activity">
-        <div className="pp-g pp-esc" style={{ "--n": queued ? 2 : 1 } as CSSProperties}>
-          <div className="pp-h"><h2 className="pp-t">Escrow <span className="per">(now)</span></h2></div>
-          <dl className="pp-cells">
-            <PanelFig label="Available" title={e ? `Read from the chain at #${int(e.height)}, ${utcWord(e.updated_at)}` : p.escrow ? "No escrow account on the chain" : "Not read yet"}
-              value={e ? <>{unit(tia(e.available_utia))}{short && <Warn text={`Not enough for one more ${bytes(Math.round(avg!))} blob (${tia(need)})`} />}</> : "—"} />
-            {queued && e && (
-              <PanelFig label="Queued to withdraw" value={unit(tia(queued.utia))} title={`Balance ${tia(e.balance_utia)}: available plus queued`}>
-                {queued.next_available_at && <dd className="pan-s" title={utcWord(queued.next_available_at)}>Payable from <b>{monthDayMin(queued.next_available_at)}</b></dd>}
-                {queued.reduced_utia > 0 && <dd className="pan-s hold" title="Settlements took this from the queued amount; it will not be paid out.">{tia(queued.reduced_utia)} used by settlements</dd>}
-              </PanelFig>
-            )}
-          </dl>
-        </div>
-        <div className="pp-g pp-act" style={{ "--n": active ? actN : 3 } as CSSProperties}>
-          <div className="pp-h">
-            <h2 className="pp-t">Activity</h2>
-            {posted && <WindowSwitch value={win} onChange={setWin} />}
-          </div>
-          {active ? (
-            <dl className="pp-cells">
-              <PanelFig label="Settlements" value={int(p.settlements)} className={`c-set${p.timeouts > 0 ? "" : " wide"}`} />
-              <PanelFig label="Blob size" value={unit(bytes(p.bytes))} className="c-size"
-                title={p.avg_blob_bytes != null ? (p.avg_blob_bytes === p.largest_blob_bytes ? `${bytes(p.largest_blob_bytes)} each` : `${bytes(Math.round(p.avg_blob_bytes))} average · ${bytes(p.largest_blob_bytes)} largest`) : undefined} />
-              <PanelFig label="Fees paid" value={unit(tia(p.fees_utia))} className="c-fee" title={p.paid_per_mib_utia != null ? `${tia(p.paid_per_mib_utia)} per MiB` : undefined} />
-              {p.timeouts > 0 && (
-                <PanelFig label="Timed out" value={int(p.timeouts)} className="c-to fault" title="Payment promises not settled in time in the period; each is charged as a blob">
-                  <dd className="pan-s"><b>{tia(p.timed_out_utia)}</b> charged</dd>
-                </PanelFig>
-              )}
-            </dl>
-          ) : (
-            // a period with nothing in it, or an account that never posted: one quiet line across the group
-            <div className="pp-cells"><p className="pan-c pp-none">{posted ? `No blobs in ${windowLabel(win)}` : "No blobs"}</p></div>
-          )}
-        </div>
-      </section>
+      {/* Four figures of the account's own, each a label and a figure, what qualifies it on hover: the escrow it has
+          left now (an amber dot when it cannot pay for one more blob of its usual size, or settlements took part of a
+          queued withdrawal), then over its whole record its blobs, what it paid (a red dot for a timed-out promise),
+          and how many of its blobs Tensile found available (a red dot for one it did not). */}
+      <dl className="pan pb-pan" aria-label="The account at a glance">
+        <PanelFig label="Escrow available" period="now"
+          title={e ? [
+            queued ? `${tia(queued.utia)} queued to withdraw${queued.next_available_at ? `, payable from ${utcWord(queued.next_available_at)}` : ""}; balance ${tia(e.balance_utia)}` : "",
+            `read from the chain at #${int(e.height)}, ${utcWord(e.updated_at)}`,
+          ].filter(Boolean).join("; ") : p.escrow ? "No escrow account on the chain" : "Not read yet"}
+          value={e ? <>{unit(tia(e.available_utia))}{escWarn && <Warn text={escWarn} />}</> : "—"} />
+        <PanelFig label="Blobs"
+          title={posted && newest ? [
+            first ? `First ${utcWord(first)}` : "",
+            `last ${utcWord(newest)}`,
+            readN && readN !== p.settlements ? `${plural(p.settlements, "settlement")}: a blob settled twice is one blob` : "",
+          ].filter(Boolean).join("; ") : undefined}
+          value={int(blobN)} />
+        <PanelFig label="Total paid"
+          title={paid > 0 ? [
+            `${tia(p.fees_utia)} in fees for ${plural(p.settlements, "settlement")}`,
+            p.timeouts > 0 ? `${tia(p.timed_out_utia)} charged for ${plural(p.timeouts, "timed-out promise")}` : "",
+            p.paid_per_mib_utia != null ? `${tia(p.paid_per_mib_utia)} per MiB` : "",
+          ].filter(Boolean).join("; ") : undefined}
+          value={<>{unit(tia(paid))}{p.timeouts > 0 && <Warn tone="fault" text={`${plural(p.timeouts, "payment promise")} timed out; ${tia(p.timed_out_utia)} charged all the same`} />}</>} />
+        <PanelFig label="Available"
+          title={read ? `Tensile reads each blob once, near the end of its retention window. Of the ${plural(readN, "blob")} this account paid for: ${[
+            read.available ? `${int(read.available)} available` : "",
+            read.unavailable ? `${int(read.unavailable)} unavailable` : "",
+            read["retention window"] ? `${int(read["retention window"])} in the retention window` : "",
+            read["not read"] ? `${int(read["not read"])} not read` : "",
+          ].filter(Boolean).join(", ")}` : posted ? "Tensile's reading of its blobs is not counted yet" : undefined}
+          value={read
+            ? <>{int(read.available ?? 0)}<span className="of"> of {int(readN)}</span>{(read.unavailable ?? 0) > 0 && <Warn tone="fault" text={`${plural(read.unavailable, "blob")} unavailable: Tensile could not read ${read.unavailable === 1 ? "it" : "them"} back from the validators`} />}</>
+            : readWait ? <span className="wait">5 of 5</span> : "—"} />
+      </dl>
 
       <section id="list" className="listing lg-list pb-list">
         <div className="list-head">

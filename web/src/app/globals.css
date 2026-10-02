@@ -1898,7 +1898,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .pb-addr .copy::before { content: ""; width: 13px; height: 13px; background: var(--text-3); -webkit-mask: var(--copy-mark) center / contain no-repeat; mask: var(--copy-mark) center / contain no-repeat; }
 .pb-addr .copy:hover { color: var(--accent-ink); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 .pb-addr .copy:hover::before { background: var(--accent-ink); }
-/* When it last and first posted, where, and what Tensile found: all-time facts, in a light frame of their own with
+/* When it last and first posted, and where: all-time facts, in a light frame of their own with
    a hairline between them, quieter than the panel under it (no paper, no shadow). A label column of its own, so
    every value starts at one x, on a wide screen and on a phone. The labels sit as far in as the panel's and the
    table's, and the space after a label is its own padding, so each hairline runs unbroken from label to value. */
@@ -1913,32 +1913,16 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .pb-meta .pb-nss { column-gap: 14px; row-gap: 2px; }
 .pb-nss .nsb { color: var(--text); }
 .pb-nss .more { color: var(--text-3); }
-.pb-meta .pb-tally { column-gap: 0; }
-.pb-tally .sep { margin: 0 8px; color: var(--text-3); }
-.pb-tally .ok { color: var(--ok); }
-.pb-tally .hold { color: var(--hold-ink); }
-.pb-tally .hold b { color: inherit; }
-.pb-tally .hold::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 7px; border-radius: 50%; background: var(--hold); vertical-align: 1px; }
 
-/* ---- the panel: its escrow now and the period's activity ---- */
-.pp { display: flex; margin-top: 30px; }
-.pp-g { display: flex; flex-direction: column; flex: var(--n) 1 0; min-width: 0; }
-/* two groups: a hairline from the panel's top to its foot sets them apart */
-.pp-g + .pp-g { border-left: 1px solid var(--border); }
-/* a queued withdrawal or a timeout adds a cell: the escrow then sits over the activity */
-.pp.stack { flex-direction: column; }
-.pp.stack .pp-g { flex: none; }
-.pp.stack .pp-g + .pp-g { border-left: 0; border-top: 1px solid var(--border); }
-/* a group's head names it and what scopes it: "(now)", or the period switch */
-.pp-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 48px; padding: 0 9px 0 18px; border-bottom: 1px solid var(--border); }
-.pp-t { margin: 0; font-size: var(--t-cell); font-weight: 600; letter-spacing: 0; line-height: 18px; color: var(--text); }
-.pp-t .per { margin-left: 1px; font-weight: 400; color: var(--text-3); }
-.pp-h .seg { padding: 2px; }
-.pp-h .seg button, .pp-h .seg button:first-child { height: 28px; padding: 0 12px; font-size: 12.5px; }
-:root[data-theme="dark"] .pp-h .seg button[aria-pressed="true"] { box-shadow: inset 0 0 0 1px rgb(51 179 191 / .45); }
-.pp-cells { flex: 1; display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: 1px; margin: 0; background: var(--border); }
-/* a period with no blob, or an account that never posted: one quiet line across the group */
-.pp-none { grid-column: 1 / -1; display: flex; align-items: center; margin: 0; font-size: var(--t-cell); line-height: 18px; color: var(--text-3); }
+/* ---- the panel: four figures of its own, on the Publishers list's grid: equal cells, the hairlines the grid's
+   1 px gaps in the table's rule colour ---- */
+.pb-pan { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin: 30px 0 0; background: linear-gradient(var(--border), var(--border)) padding-box, var(--paper) border-box; }
+/* a cell too narrow for "Escrow available (now)" whole (four a row on a tablet, two on a phone) drops the "(now)":
+   the escrow is the one figure there that is not all-time, and its hover says when the chain was read */
+.pb-pan > .pan-c { container-type: inline-size; }
+@container (max-width: 154px) { .pb-pan dt .per { display: none; } }
+/* "of 8,467" after a count, as quiet as a unit */
+.pan-v .of { font-size: 14px; line-height: 1; font-weight: 400; letter-spacing: 0; color: var(--text-3); }
 /* an escrow that cannot pay for one more blob of the account's usual size: an amber dot beside the figure, its
    reason on hover, on focus or on a tap */
 .warn { position: relative; display: inline-block; width: 19px; height: 19px; margin: 0 0 0 5px; padding: 0; border: 0; border-radius: 50%; background: none; vertical-align: 0; cursor: help; }
@@ -2021,23 +2005,9 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .pb-addr .mono { font-size: 12.5px; line-height: 19px; overflow-wrap: anywhere; word-break: break-all; }
   .pb-addr .copy { margin-left: 8px; vertical-align: -6px; }
   .pb-meta { width: auto; margin-top: 18px; padding: 2px 14px; }
-  /* Tensile's reading: its counts one under the other, no separators to dangle */
-  .pb-meta .pb-tally { display: grid; row-gap: 2px; }
-  .pb-tally .sep { display: none; }
-  /* the panel: the escrow over the activity; the activity two a row, Settlements across the first unless a Timed
-     out cell sits beside it, then Blob size and Fees paid */
-  .pp { flex-direction: column; margin-top: 22px; }
-  .pp .pp-g { flex: none; }
-  .pp-g + .pp-g { border-left: 0; border-top: 1px solid var(--border); }
-  .pp-h { height: 46px; padding-left: 14px; padding-right: 7px; }
-  .pp-h .seg button, .pp-h .seg button:first-child { padding: 0 11px; }
-  .pp-cells { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .pp-esc .pp-cells { grid-template-columns: minmax(0, 1fr); }
-  .pp-act .pan-c.wide { grid-column: 1 / -1; }
-  .pp-act .c-set { order: 1; }
-  .pp-act .c-to { order: 2; }
-  .pp-act .c-size { order: 3; }
-  .pp-act .c-fee { order: 4; }
+  /* the panel: two a row */
+  .pb-pan { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 22px; }
+  .pan-v .of { font-size: 13px; }
   .pb-list { margin-top: 34px; }
   .pb-list .tabs button { font-size: 14px; padding: 0 10px; }
   /* a phone keeps the ledger's own second line: the namespace and the size (the fee is on the blob's page) */
