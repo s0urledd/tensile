@@ -34,7 +34,11 @@ import { createPortal } from "react-dom";
  * either edge, so a mark in the last column does not open a panel half off the
  * screen.
  */
-export default function Info({ label, children }: { label: string; children: React.ReactNode }) {
+export default function Info({ label, children, trigger, className, title }: {
+  label: string; children: React.ReactNode;
+  /** a word to open it by instead of the "i" mark, with its own class and hover title */
+  trigger?: React.ReactNode; className?: string; title?: string;
+}) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top: number; left: number; above: boolean } | null>(null);
   const btn = useRef<HTMLButtonElement>(null);
@@ -45,7 +49,7 @@ export default function Info({ label, children }: { label: string; children: Rea
     const el = btn.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    const W = 300, GUTTER = 12;
+    const W = panel.current?.offsetWidth ?? 320, GUTTER = 12;
     // Room below is measured against the panel's real height once it exists,
     // and against a conservative guess on the first frame.
     const h = panel.current?.offsetHeight ?? 180;
@@ -86,12 +90,13 @@ export default function Info({ label, children }: { label: string; children: Rea
 
   return (
     <>
-      <button ref={btn} type="button" className="info" aria-expanded={open} aria-controls={id}
-        aria-label={`what ${label} means`} onClick={() => setOpen((v) => !v)}>
-        i
+      <button ref={btn} type="button" className={trigger ? className : "info"} aria-expanded={open} aria-controls={id}
+        aria-label={trigger ? undefined : `what ${label} means`} title={title} onClick={() => setOpen((v) => !v)}>
+        {trigger ?? "i"}
       </button>
       {open && typeof document !== "undefined" && createPortal(
-        <div ref={panel} id={id} role="dialog" aria-label={label} className="info-pop"
+        // A click inside the panel stays in it: React carries a portal's events to the row that holds the trigger.
+        <div ref={panel} id={id} role="dialog" aria-label={label} className="info-pop" onClick={(e) => e.stopPropagation()}
           style={{ top: pos?.top ?? -9999, left: pos?.left ?? -9999,
                    transform: pos?.above ? "translateY(-100%)" : undefined }}>
           <span className="label">{label}</span>

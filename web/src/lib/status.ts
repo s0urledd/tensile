@@ -23,12 +23,22 @@ export function recon(b: Blob): { word: string; tier: Tier; title: string } {
   return { word: "unavailable", tier: "hold", title: r.error ? `${rows}: ${r.error}.` : `${rows}.` };
 }
 
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "Oct 1, 21:08 UTC" */
+function when(s: string): string {
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s;
+  return `${MON[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.toISOString().slice(11, 16)} UTC`;
+}
+
 /**
  * The same status for the Blobs list's Tensile lane, whose head already
  * names Tensile: "retention window" (Celestia's term for the time a
  * validator must keep a blob's shards) until Tensile has read it, with the
- * time of the reading on hover; then available or unavailable, or "not read"
- * once the window has closed without a reading.
+ * time of the reading on hover; then available or unavailable, with when
+ * Tensile checked it, or "not read" once the window has closed without a
+ * reading.
  */
 export function lane(b: Blob): { word: string; tier: Tier; title: string } {
   const r = b.reconstructable;
@@ -39,5 +49,9 @@ export function lane(b: Blob): { word: string; tier: Tier; title: string } {
     return { word: "retention window", tier: "gap", title: `Tensile reads it once at ${at} UTC, 10 minutes before the retention window ends.` };
   }
   const rc = recon(b);
-  return read ? rc : { ...rc, word: "not read" };
+  if (!read) return { ...rc, word: "not read" };
+  if (!r.point_at) return rc;
+  return r.status === "yes"
+    ? { ...rc, title: `Verified during retention · ${when(r.point_at)}` }
+    : { ...rc, title: `Checked during retention · ${when(r.point_at)}. ${rc.title}` };
 }

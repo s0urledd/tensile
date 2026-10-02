@@ -1584,6 +1584,8 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-t th.tn svg { margin-right: 6px; vertical-align: -2px; color: var(--accent-ink); }
 .lg-t td.tn { font-family: var(--sans); font-size: var(--t-small); color: var(--text-3); }
 .lg-t tr.row:hover td.tn { background: color-mix(in srgb, var(--accent) 5%, var(--paper)); }
+.lg-t td.tn .lw { appearance: none; border: 0; background: none; padding: 0; margin: 0; font: inherit; color: inherit; cursor: pointer; text-decoration: underline dotted color-mix(in srgb, currentColor 45%, transparent); text-underline-offset: 3px; }
+.lg-t td.tn .lw:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
 .lg-t td.tn .ok { color: var(--ok); font-weight: 500; }
 .lg-t td.tn .hold { color: var(--hold-ink); font-weight: 500; }
 .lg-t td.tn .hold::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--hold); vertical-align: 1px; }
