@@ -23,6 +23,8 @@ const NAV: [string, string][] = [
   ["/publishers/", "Publishers"],
   ["/api/", "API"],
 ];
+/** a page of one record marks the list it is a row of: a publisher's page is under Publishers */
+const LIST_OF: Record<string, string> = { "/publisher/": "/publishers/" };
 
 /**
  * The mark: a tensile specimen between the grips of a testing machine, its
@@ -178,7 +180,8 @@ function BlockTicker({ meta }: { meta: Meta | null }) {
 
 export function Header() {
   const { data: meta, error } = useApi<Meta>("/v1/meta", 30000);
-  const path = usePathname();
+  const at = usePathname();
+  const path = LIST_OF[at] ?? at;
   return (
     <header className="top">
       <div className="wrap">
