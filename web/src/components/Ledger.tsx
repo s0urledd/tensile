@@ -208,11 +208,17 @@ export type Move = {
   /** its place among the account's payments, newest first, which keeps a block's own order */
   idx: number;
 };
-/** the movements of the page a feed's path asks for, and each blob's place among the same payments (rank), to set them between the blobs */
-export type Moves = { at: (path: string) => Move[]; rank: Map<string, number> };
+/** the movements that stand among a page's rows, and the rows and movements that page shows, counted from the list's first */
+export type Placed = { list: Move[]; range: [number, number] };
+/**
+ * One publisher's movements against the rows on screen: place sets them by those rows (the page's path, its rows and
+ * the count of all of them, as one read gave them), so a page that holds still keeps its movements in step with its
+ * rows; rank is each blob's place among the same payments, which keeps a block's own order.
+ */
+export type Moves = { place: (path: string, rows: Blob[], total: number) => Placed; rank: Map<string, number> };
 
 /** the columns' heads; one publisher's list names no publisher, its rows are its transactions, and its fee column is the escrow's statement */
-function LedgerHead({ one }: { one: boolean }) {
+export function LedgerHead({ one }: { one: boolean }) {
   return (
     <thead>
       <tr>
@@ -235,19 +241,22 @@ function LedgerHead({ one }: { one: boolean }) {
 
 /**
  * An escrow movement as a row: its height and time as a blob's, its kind where the blob is, what qualifies it over the
- * namespace and the size, its amount signed; no endorsement, nothing for Tensile to read. Bare: the escrow's own
- * statement, which has none of a blob's columns, the qualifier in a column of its own.
+ * namespace and the size, its amount signed; no endorsement, nothing for Tensile to read. In the list's two lines, its
+ * qualifier and its amount close the second line, as a blob's fee closes its own.
  */
-export const MoveRow = memo(function MoveRow({ m, age: ag, dec, bare = false }: { m: Move; age: string | null; dec: number; bare?: boolean }) {
+export const MoveRow = memo(function MoveRow({ m, age: ag, dec }: { m: Move; age: string | null; dec: number }) {
   return (
     <tr className={`row mv${m.tone ? ` ${m.tone}` : ""}`} data-m={m.key}>
       <td className="c-h">{int(m.height)}</td>
       <td className="c-t"><span title={utcWord(m.time)}><span className="tm">{monthDayTime(m.time)}</span>{ag && <span className="ag">{ag}</span>}</span></td>
-      <td className="c-b"><span className="k">{m.word}</span><span className="ht">#{int(m.height)}</span></td>
-      <td className="c-q" colSpan={bare ? undefined : 2} title={m.qual || undefined}>{m.qual}</td>
+      <td className="c-b"><span className="k" title={m.word}>{m.word}</span><span className="ht">#{int(m.height)}</span></td>
+      <td className="c-q" colSpan={2} title={m.qual || undefined}>{m.qual}</td>
       <td className="c-fee num" title={m.note}><Signed sign={m.sign} utia={m.utia} dec={dec} /></td>
-      {!bare && <><td className="c-e" /><td className="gap" aria-hidden="true" /><td className="tn" /></>}
-      <td className="c-m">{m.short}</td>
+      <td className="c-e" /><td className="gap" aria-hidden="true" /><td className="tn" />
+      <td className="c-m">
+        {m.short && <><span className="q">{m.short}</span><span className="sep">·</span></>}
+        <span className="fe" title={m.note ?? tiaExact(m.utia)}>{m.utia ? m.sign : ""}{tiaAt(m.utia, dec)}</span>
+      </td>
     </tr>
   );
 });
@@ -312,7 +321,7 @@ const Row = memo(function Row({ b, age: ag, fresh, one, dec, onNs, onOpen }: Row
       <td className="gap" aria-hidden="true" />
       <td className="tn">{ln && <span className={ln.tier === "hold" ? "hold" : ln.tier === "kept" ? "ok" : undefined} title={ln.title}>{ln.word}</span>}</td>
       <td className="c-m">
-        <span className="nm">{name}</span><span className="sep">·</span>{bytes(b.blob_size)}
+        <span className="nm">{name}</span><span className="sz"><span className="sep">·</span>{bytes(b.blob_size)}</span>
         {/* one publisher's list names the fee where the others name the publisher */}
         {one ? b.charge && <span className="fe"><span className="sep">·</span>−{tiaAt(b.charge.fee_utia, dec)}</span> : who && <><span className="sep">·</span><Who addr={who} /></>}
       </td>
@@ -356,8 +365,8 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
   /** one publisher's escrow movements, set between its blobs by time */
   moves?: Moves;
   onNs: (ns: string) => void;
-  /** the pager, under the table; it counts what the table shows */
-  children?: (total: number) => React.ReactNode;
+  /** the pager, under the table; it counts what the table shows: its rows, and any movements placed among them */
+  children?: (total: number, placed?: Placed) => React.ReactNode;
 }) {
   const [motion, setMotion] = useState(true);
   useEffect(() => { setMotion(!reducedMotion()); }, []);
@@ -438,22 +447,26 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
   }, [router]);
 
   // ---- one publisher's list: the namespace column as wide as the longest name on the page, so no empty gap
-  // stretches before Blob size; the time, centred, takes what that leaves, and every column after it stays put ----
+  // stretches before Blob size; the time, centred, takes what that leaves, and every column after it stays put. The
+  // width is set on the list (.lg-list), so the escrow's own statement there keeps the same columns ----
   const tableRef = useRef<HTMLTableElement>(null);
   useLayoutEffect(() => {
     const t = tableRef.current;
     if (!onePublisher || !t) return;
+    const host = t.closest<HTMLElement>(".lg-list") ?? t;
     const fit = () => {
       const w = Math.max(0, ...[...t.querySelectorAll<HTMLElement>("td.c-ns .nsb")].map((b) => b.scrollWidth));
-      if (w) t.style.setProperty("--ns-w", `${Math.ceil(w)}px`);
+      if (w) host.style.setProperty("--ns-w", `${Math.ceil(w)}px`);
     };
     fit();
     // again once the table's face has loaded: the names had the fallback's widths until then
     document.fonts?.ready.then(fit);
   }, [onePublisher, shown.rows]);
 
-  // the rows on screen with the movements of the same page between them, newest first; a block's own order breaks a tie
-  const between = moves?.at(shown.path);
+  // the rows on screen with the movements of their own stretch of time between them, newest first; a block's own order
+  // breaks a tie. They are placed by the rows on screen, so rows held still keep the movements that stand among them.
+  const placed = useMemo(() => (moves && shown.loaded ? moves.place(shown.path, shown.rows, shown.total) : undefined), [moves, shown]);
+  const between = placed?.list;
   const items = useMemo(() => {
     const blobs = shown.rows.map((b) => ({ b, m: null, t: Date.parse(b.settlement_time), i: moves?.rank.get(b.promise_hash) ?? -1 }));
     if (!between?.length) return blobs;
@@ -496,7 +509,7 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
         </div>
       </div>
       {shown.loaded
-        ? children?.(shown.total)
+        ? children?.(shown.total, placed)
         : !feed.error && (
           <div className="pager" aria-hidden="true">
             <span className="count"><span className="wait">Showing 1–25 of 0,000 settlements on record</span></span>

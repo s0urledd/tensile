@@ -4,7 +4,7 @@ import { useSearchParams } from "next/navigation";
 import { API_BASE, useApi, notFound, badRequest, throttled, hhmm, ago, type Blob, type Payment, type PublisherNamespace, type RecentBlob, type Tip, type Window, blobFee, bytes, int, nsDisplay, span, tia, utcWord } from "@/lib/api";
 import type { Params, PublisherWithQueue, PublisherWithdrawals } from "@/lib/withdrawals";
 import { lane } from "@/lib/status";
-import Ledger, { useLedger, MoveRow, Signed, decimals, type Move, type Moves } from "@/components/Ledger";
+import Ledger, { useLedger, LedgerHead, MoveRow, Signed, decimals, type Move, type Moves, type Placed } from "@/components/Ledger";
 import Pager, { usePage } from "@/components/Pager";
 import Picker, { type Choice } from "@/components/Picker";
 import Ident from "@/components/Ident";
@@ -86,22 +86,37 @@ const plural = (n: number, w: string) => `${int(n)} ${w}${n === 1 ? "" : "s"}`;
 /** "Oct 2 06:42": the minute is enough in a line; the second and UTC are on hover */
 const monthDayMin = (s: string) => monthDayTime(s).slice(0, -3);
 
+/** a payment's place in time: when, and in the same second its place among the payments, newest first */
+type At = { t: number; i: number };
+const olderThan = (a: At, b: At) => a.t < b.t || (a.t === b.t && a.i > b.i);
+const atOf = (m: Move): At => ({ t: Date.parse(m.time), i: m.idx });
+
+type Money = {
+  /** the movements, newest first */
+  list: Move[];
+  /** each settlement's place among the payments, by its promise hash */
+  rank: Map<string, number>;
+  /** for each settlement, by its promise hash, the settlement just newer than it (null: none is) */
+  prev: Map<string, At | null>;
+};
+
 /**
  * The account's escrow movements, newest first, each in plain words with a quiet qualifier (when a request becomes
- * payable, how long a payout took), with the count of its settlements newer than it, which says the page of blobs it
- * stands among. The fee settlements are the blob rows and are not among them; rank is each one's place among the
- * payments, by its promise hash, so a movement in the same block as a blob keeps the chain's order.
+ * payable, how long a payout took). The fee settlements are the blob rows and are not among them; rank is each one's
+ * place among the payments, by its promise hash, so a movement in the same block as a blob keeps the chain's order,
+ * and prev the settlement before each, which bounds the movements a page of blobs takes from above.
  */
-function movesOf(d: Detail): { list: { m: Move; newer: number }[]; settlements: number; rank: Map<string, number> } {
+function movesOf(d: Detail): Money {
   const left = d.withdrawals?.left_queue ?? [];
   const queue = [...left, ...(d.withdrawals?.pending ?? [])];
-  const list: { m: Move; newer: number }[] = [];
+  const list: Move[] = [];
   const rank = new Map<string, number>();
-  let newer = 0;
+  const prev = new Map<string, At | null>();
+  let before: At | null = null;
   d.recent_payments.forEach((x, idx) => {
     if (x.kind === "settlement") {
-      if (x.promise_hash) rank.set(x.promise_hash, idx);
-      newer++;
+      if (x.promise_hash) { rank.set(x.promise_hash, idx); prev.set(x.promise_hash, before); }
+      before = { t: Date.parse(x.time), i: idx };
       return;
     }
     const t = Date.parse(x.time);
@@ -121,14 +136,32 @@ function movesOf(d: Detail): { list: { m: Move; newer: number }[]; settlements: 
       word = "Withdrawal paid out"; sign = "−";
       if (w?.payout_delay_s != null) { qual = `${span(w.payout_delay_s)} after the request`; short = `${span(w.payout_delay_s)} after request`; }
     } else if (x.kind === "timeout") { word = "Timed-out promise"; sign = "−"; tone = "fault"; }
-    list.push({ m: { key: `${x.height}-${x.tx_hash ?? ""}-${idx}`, height: x.height, time: x.time, word, qual, short, sign, utia: x.amount_utia, tone, note, idx }, newer });
+    list.push({ key: `${x.height}-${x.tx_hash ?? ""}-${idx}`, height: x.height, time: x.time, word, qual, short, sign, utia: x.amount_utia, tone, note, idx });
   });
-  return { list, settlements: newer, rank };
+  return { list, rank, prev };
 }
 
 /**
- * The escrow's own statement: its movements alone, newest first, a page at a time, then what went in, what the blobs
- * and any timed-out promise cost, what went out, and the escrow that leaves.
+ * The movements a page of blobs takes, by the rows on it: those older than the settlement just before its first row
+ * (the page before's oldest; the first page has none above it) and newer than its own oldest, the page that holds the
+ * last row every older one. range: the rows and movements the page shows, counted from the list's first.
+ */
+function placeMoves(money: Money, path: string, rows: Blob[], total: number): Placed {
+  const offset = Number(new URLSearchParams(path.slice(path.indexOf("?") + 1)).get("offset")) || 0;
+  const at = (b: Blob): At => ({ t: Date.parse(b.settlement_time), i: money.rank.get(b.promise_hash) ?? -1 });
+  // a first row the payments do not place (a blob newer than them) stands as its own bound
+  const top = offset > 0 && rows.length > 0 ? money.prev.get(rows[0].promise_hash) ?? at(rows[0]) : null;
+  const bottom = rows.length > 0 && offset + rows.length < total ? at(rows[rows.length - 1]) : null;
+  const list = money.list.filter((m) => (!top || olderThan(atOf(m), top)) && (!bottom || !olderThan(atOf(m), bottom)));
+  const before = top ? money.list.filter((m) => !olderThan(atOf(m), top)).length : 0;
+  const from = offset + before + 1;
+  return { list, range: [from, from + rows.length + list.length - 1] };
+}
+
+/**
+ * The escrow's own statement: its movements alone, newest first, a page at a time, in the list's own columns, so
+ * nothing moves when the kind changes; then what went in, what the blobs and any timed-out promise cost, what went
+ * out, and the escrow that leaves, the labels up to the Amount column and the figures in it.
  */
 function Statement({ d, moves, page, onPage, now }: { d: Detail; moves: Move[]; page: number; onPage: (p: number) => void; now: number }) {
   const e = d.publisher.escrow?.found ? d.publisher.escrow : null;
@@ -152,26 +185,19 @@ function Statement({ d, moves, page, onPage, now }: { d: Detail; moves: Move[]; 
   return (
     <>
       <div className="lg-tw">
-        <table className="lg-t pb-st">
-          <thead>
-            <tr>
-              <th className="c-h">Height</th>
-              <th className="c-t">Time <span className="per">(UTC)</span></th>
-              <th className="c-b">Movement</th>
-              <th className="c-q" aria-hidden="true" />
-              <th className="c-fee num">Amount</th>
-            </tr>
-          </thead>
+        <table className="lg-t lg-one pb-st">
+          <LedgerHead one />
           <tbody>
-            {moves.length === 0 && <tr className="lg-empty"><td colSpan={5}>No escrow movement on record.</td></tr>}
-            {shown.map((m) => <MoveRow key={m.key} m={m} age={age(now - Date.parse(m.time))} dec={dec} bare />)}
+            {moves.length === 0 && <tr className="lg-empty"><td colSpan={9}>No escrow movement on record.</td></tr>}
+            {shown.map((m) => <MoveRow key={m.key} m={m} age={age(now - Date.parse(m.time))} dec={dec} />)}
           </tbody>
           {foot.length > 0 && page === Math.ceil(moves.length / SIZE) && (
             <tfoot>
               {foot.map((f) => (
                 <tr key={f.label} className={f.tot ? "tot" : undefined}>
-                  <td colSpan={4} className="fl">{f.label}</td>
+                  <td colSpan={5} className="fl">{f.label}</td>
                   <td className="c-fee num"><Signed sign={f.sign} utia={f.utia} dec={dec} /></td>
+                  <td className="c-e" /><td className="gap" aria-hidden="true" /><td className="tn" />
                 </tr>
               ))}
             </tfoot>
@@ -236,22 +262,12 @@ function Publisher({ addr }: { addr: string }) {
   const blobsPath = useCallback((o: number) => `/v1/blobs?limit=${SIZE}&offset=${o}&publisher=${addr}${ns ? `&namespace=${encodeURIComponent(ns)}` : ""}`, [addr, ns]);
   const feed = useLedger(blobsPath(offset), live && !statement, tip.data?.height, skew);
 
-  // Under All, each page of blobs takes the movements of its own stretch of time: the first page those newer than its
-  // oldest blob, a page those between the page before's oldest blob and its own, the last page every older one. A
-  // namespace is a filter of blobs: the movements step aside while one is set.
+  // Under All, each page of blobs takes the movements of its own stretch of time (placeMoves), by the rows the list
+  // shows. A namespace is a filter of blobs: the movements step aside while one is set.
   const merging = kind === "all" && !ns && posted && moveN > 0;
-  const lastPage = Math.max(1, Math.ceil((money?.settlements ?? 0) / SIZE));
-  const pageOf = useCallback((newer: number) => Math.min(lastPage, Math.floor(newer / SIZE) + 1), [lastPage]);
-  const byPage = useMemo(() => {
-    const m = new Map<number, Move[]>();
-    for (const x of money?.list ?? []) { const p = pageOf(x.newer); m.set(p, [...(m.get(p) ?? []), x.m]); }
-    return m;
-  }, [money, pageOf]);
-  const moves = useMemo<Moves | undefined>(() => {
-    if (!merging || !money) return undefined;
-    const at = new Map(Array.from({ length: lastPage }, (_, i) => [blobsPath(i * SIZE), byPage.get(i + 1) ?? []] as const));
-    return { at: (path) => at.get(path) ?? [], rank: money.rank };
-  }, [merging, money, lastPage, blobsPath, byPage]);
+  const moves = useMemo<Moves | undefined>(() => (merging && money
+    ? { place: (path, rows, total) => placeMoves(money, path, rows, total), rank: money.rank }
+    : undefined), [merging, money]);
 
   // What the API says of all its blobs, whatever the period: its first and last blob, the namespaces of the whole
   // record (the "all" span's), and Tensile's reading of every one. An API from before them, or one that has not counted
@@ -458,22 +474,20 @@ function Publisher({ addr }: { addr: string }) {
         </div>
 
         {statement
-          ? <Statement d={data} moves={money?.list.map((x) => x.m) ?? []} page={page} onPage={setPage} now={now} />
+          ? <Statement d={data} moves={money?.list ?? []} page={page} onPage={setPage} now={now} />
           : (
             <Ledger feed={feed} size={SIZE} live={live} skew={skew} onePublisher moves={moves} onNs={setNs}>
-              {(n) => {
-                // under All, a page counts its blobs and the movements between them
-                const before = merging ? [...byPage].filter(([pg]) => pg < page).reduce((s, [, l]) => s + l.length, 0) : 0;
-                const here = merging ? byPage.get(page)?.length ?? 0 : 0;
-                const blobsHere = Math.max(0, Math.min(SIZE, n - (page - 1) * SIZE));
-                const from = (page - 1) * SIZE + before + 1;
+              {(n, placed) => {
+                // under All, the pages follow the blobs' and each counts its blobs and the movements between them, of
+                // every transaction; what they are on hover
+                const all = n + moveN;
                 return (
                   <>
                     {elsewhere}
                     {n === 0 && page === 1 ? null : <Pager total={n} page={page} size={SIZE} maxPages={MAX_PAGE} onPage={setPage}
-                      range={merging ? [from, from + blobsHere + here - 1] : undefined}
+                      range={merging ? placed?.range : undefined} of={merging ? all : undefined}
                       noun={ns ? (n === 1 ? "settlement with this filter" : "settlements with this filter")
-                        : merging ? <>{n === 1 ? "settlement" : "settlements"} and <b>{int(moveN)}</b> escrow movement{moveN === 1 ? "" : "s"}</>
+                        : merging ? <span title={`${plural(n, "blob settlement")} and ${plural(moveN, "escrow movement")}`}>{all === 1 ? "transaction" : "transactions"}</span>
                         : n === 1 ? "settlement" : "settlements"} />}
                   </>
                 );
