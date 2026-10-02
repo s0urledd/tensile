@@ -259,7 +259,8 @@ function Band({ label, list, marks, share, avatars, off, vp: given }: { label: s
             <li key={a.validator_address}>
               <Link className={"bd-tile" + (m.tone ? " " + m.tone : "")} href={validatorHref(a.operator_address, a.validator_address)}
                 title={[`${nameOf(a)} · ${pct(share(a.voting_power))} of voting power · ${int(a.row_count)} rows`, m.word, a.host_at_settlement ? `host ${a.host_at_settlement}` : ""].filter(Boolean).join("\n")}>
-                <Avatar v={{ avatar_url: avatars.get(a.validator_address), moniker: a.moniker, address: a.validator_address }} />
+                {/* a logo for the validators that endorsed; the rest carry the struck circle alone, and their pictures are not fetched */}
+                {!off && <Avatar v={{ avatar_url: avatars.get(a.validator_address), moniker: a.moniker, address: a.validator_address }} />}
                 <span className="tx">
                   <span className="nm">{off && <Ban />}<span className="t">{nameOf(a)}</span>{m.tone && <i className="mk" aria-label={m.res} />}</span>
                   <span className="vp">{pct(share(a.voting_power))}</span>

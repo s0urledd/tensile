@@ -2161,7 +2161,8 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .bd-tbl { height: 26px; padding: 0 11px; border: 1px solid var(--border); border-radius: 999px; background: var(--paper); font-size: 12px; font-weight: 500; color: var(--text-2); cursor: pointer; transition: color var(--dur), border-color var(--dur), background var(--dur); }
 .bd-tbl:hover { color: var(--text); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
 .bd-tbl[aria-pressed="true"] { color: var(--accent-ink); background: var(--accent-tint); border-color: transparent; }
-.bd-bh { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 16px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--paper) 55%, var(--seg-track)); font-family: var(--mono); font-size: 11.5px; letter-spacing: .01em; color: var(--text-3); }
+.bd-bh { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 16px; border-bottom: 1px solid var(--border); background: var(--paper); font-family: var(--mono); font-size: 11.5px; font-weight: 500; letter-spacing: .01em; color: var(--text); }
+:root[data-theme="dark"] .bd-bh { background: color-mix(in srgb, var(--paper) 55%, var(--seg-track)); }
 .bd-band + .bd-band .bd-bh { border-top: 1px solid var(--border); }
 .bd-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(144px, 1fr)); gap: 8px; margin: 0; padding: 12px 14px; list-style: none; }
 /* a tile: the logo, then the name over the share; a mark only where something went wrong */
@@ -2174,8 +2175,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .bd-tile .nm svg { flex: none; color: var(--text-3); }
 .bd-tile .vp { font-family: var(--mono); font-size: 11px; line-height: 14px; color: var(--text-3); }
 .bd-band.off .bd-tile .nm { color: var(--text-2); }
-/* a validator that did not endorse wears its logo in grey */
-.bd-band.off .bd-tile .avatar { filter: grayscale(1); opacity: .6; }
+.bd-band.off .bd-tile { padding-left: 10px; }
 .bd-tile .mk { flex: none; width: 6px; height: 6px; margin-left: 1px; border-radius: 50%; }
 .bd-tile.hold .mk { background: var(--hold); }
 .bd-tile.fault { border-color: color-mix(in srgb, var(--fault) 50%, var(--border)); background: color-mix(in srgb, var(--fault) 6%, var(--paper)); }
