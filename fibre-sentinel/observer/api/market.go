@@ -191,7 +191,18 @@ type marketResponse struct {
 	// build's, which never carried one; this can. Not part of /v1/market
 	// either.
 	PublishersListed bool `json:"publishers_listed,omitempty"`
+	// PublisherRows is the shape of the Publishers rows this file carries
+	// (publisherRowsVersion); an older build's file has none. Not part of
+	// /v1/market either.
+	PublisherRows int `json:"publisher_rows,omitempty"`
 }
+
+// publisherRowsVersion is the shape of the publisher rows computePublishing
+// fills: 1 added namespaces, namespaces_total, first_settlement_at,
+// last_settlement_at and readings. A file from before them would publish
+// every row with no namespace, no settlement and no reading until its
+// window's first refresh, so it is not served (marketSnapshotCurrent).
+const publisherRowsVersion = 1
 
 // escrowInfo is a publisher's current escrow as the chain holds it.
 type escrowInfo struct {
@@ -218,12 +229,106 @@ type publisherRow struct {
 	TimedOut    int64    `json:"timed_out_utia"`
 	// FirstSeen and LastSeen are the first and last escrow movement of any
 	// kind, over the whole history rather than the window.
-	FirstSeen string      `json:"first_seen_at"`
-	LastSeen  string      `json:"last_seen_at"`
-	Escrow    *escrowInfo `json:"escrow"`
+	FirstSeen string `json:"first_seen_at"`
+	LastSeen  string `json:"last_seen_at"`
+	// Namespaces are the namespaces its settlements in the window used, the
+	// most settlements first (topNamespaces), at most publisherNamespacesTop
+	// of them, and NamespacesTotal how many there were.
+	Namespaces      []publisherNamespace `json:"namespaces"`
+	NamespacesTotal int64                `json:"namespaces_total"`
+	// FirstSettlement and LastSettlement are its first and last settlement,
+	// over the whole history rather than the window; null when it has none.
+	FirstSettlement *string `json:"first_settlement_at"`
+	LastSettlement  *string `json:"last_settlement_at"`
+	// Readings is every blob it paid for, over the whole history, by the
+	// status Tensile's reading left it (readings.go), as of now.
+	Readings *readingCounts `json:"readings"`
+	Escrow   *escrowInfo    `json:"escrow"`
 	// PendingWithdrawals is the account's withdrawal queue as last read
 	// from state (withdrawals.go); null until the queue has been read.
 	PendingWithdrawals *pendingSummary `json:"pending_withdrawals"`
+}
+
+// publisherNamespace is one namespace a publisher's settlements used.
+type publisherNamespace struct {
+	Namespace   string `json:"namespace"`
+	Settlements int64  `json:"settlements"`
+	Bytes       int64  `json:"bytes"`
+	// last is its newest settlement, which orders namespaces used as often.
+	last string
+}
+
+// publisherNamespacesTop bounds a row's namespaces, so a row stays small
+// whatever an account posts to; namespaces_total says how many there were.
+const publisherNamespacesTop = 10
+
+// topNamespaces orders one publisher's namespaces by settlements, then the
+// most recently used, then the namespace, and keeps the first
+// publisherNamespacesTop.
+func topNamespaces(v []publisherNamespace) []publisherNamespace {
+	sort.Slice(v, func(i, j int) bool {
+		if v[i].Settlements != v[j].Settlements {
+			return v[i].Settlements > v[j].Settlements
+		}
+		if v[i].last != v[j].last {
+			return v[i].last > v[j].last
+		}
+		return v[i].Namespace < v[j].Namespace
+	})
+	if len(v) > publisherNamespacesTop {
+		v = v[:publisherNamespacesTop]
+	}
+	if v == nil {
+		v = []publisherNamespace{}
+	}
+	return v
+}
+
+// publisherNamespacesSQL is each publisher's namespaces over a window (start
+// and end), with filter narrowing to one publisher (" AND publisher = ?").
+// The window's settlements are found by payments_kind_time, or for one
+// publisher by payments_publisher_time (the unary + keeps kind off the
+// index choice), as publisherRowsSQL finds them.
+func publisherNamespacesSQL(filter string) string {
+	kind := "kind"
+	if filter != "" {
+		kind = "+kind"
+	}
+	return `SELECT publisher, namespace, COUNT(*), COALESCE(SUM(blob_size), 0), MAX(time) FROM payments
+		WHERE ` + kind + ` = 'settlement' AND time >= ? AND time <= ? AND namespace <> ''` + filter + `
+		GROUP BY publisher, namespace`
+}
+
+// namespacesBy is each publisher's namespaces over the window, ordered and
+// bounded (topNamespaces), with how many there were.
+func (s *Server) namespacesBy(ctx context.Context, start, end, only string) (map[string][]publisherNamespace, map[string]int64, error) {
+	filter, args := "", []any{start, end}
+	if only != "" {
+		filter, args = " AND publisher = ?", append(args, only)
+	}
+	rows, err := s.st.DB().QueryContext(ctx, publisherNamespacesSQL(filter), args...)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	all := map[string][]publisherNamespace{}
+	for rows.Next() {
+		var pub string
+		var n publisherNamespace
+		if err := rows.Scan(&pub, &n.Namespace, &n.Settlements, &n.Bytes, &n.last); err != nil {
+			return nil, nil, err
+		}
+		all[pub] = append(all[pub], n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	total := make(map[string]int64, len(all))
+	for pub, v := range all {
+		total[pub] = int64(len(v))
+		all[pub] = topNamespaces(v)
+	}
+	return all, total, nil
 }
 
 // ---- label registry ----
@@ -557,9 +662,12 @@ func (s *Server) splitByPublisher(ctx context.Context, keyLen int, start, end st
 // replaced it. Likewise a day's file from before the hours carried fees and
 // a publisher split: its hours would chart no fees and no publisher. Any
 // settlement in an hour puts that hour in the split, so hours with no split
-// are such a file.
+// are such a file. And a file whose rows are of an older shape
+// (publisherRowsVersion) would publish their new fields as empty: null where
+// a publisher has settled, no reading where Tensile read its blobs.
 func marketSnapshotCurrent(r *marketResponse) bool {
-	return r != nil && r.PublishersListed && (len(r.Hourly) == 0 || len(r.HourlyByPub) > 0)
+	return r != nil && r.PublishersListed && r.PublisherRows >= publisherRowsVersion &&
+		(len(r.Hourly) == 0 || len(r.HourlyByPub) > 0)
 }
 
 // computePublishing is the market snapshot: computeMarket and the publisher
@@ -585,7 +693,10 @@ func (s *Server) computePublishing(ctx context.Context, win Window) (*marketResp
 	if err := s.attachPending(ctx, rows); err != nil {
 		return nil, err
 	}
-	r.Publishers, r.PublishersListed = rows, true
+	if err := s.attachReadings(ctx, rows, true); err != nil {
+		return nil, err
+	}
+	r.Publishers, r.PublishersListed, r.PublisherRows = rows, true, publisherRowsVersion
 	return r, nil
 }
 
@@ -611,7 +722,9 @@ func (s *Server) publisherRows(ctx context.Context, win Window, only string) ([]
 	// stay unbounded on purpose, because they are facts about the
 	// publisher rather than about the window; they are asked per listed
 	// publisher of payments_publisher_time, where MIN and MAX are one seek
-	// each.
+	// each. So are the first and last settlement: the same index walked
+	// from either end to the first settlement, which is a deposit or two
+	// away from the start and usually the very end.
 	//
 	// The first cut grouped every payment ever recorded and filtered
 	// afterwards, so a 24h view cost the whole history and grew by one row
@@ -626,10 +739,16 @@ func (s *Server) publisherRows(ctx context.Context, win Window, only string) ([]
 		var p publisherRow
 		var inWindow int64
 		var found, bal, avail, height sql.NullInt64
-		var updated sql.NullString
+		var updated, firstSettled, lastSettled sql.NullString
 		if err := rows.Scan(&p.Publisher, &p.Settlements, &p.Bytes, &p.FeesUtia, &p.LargestBlob, &p.Timeouts, &p.TimedOut,
-			&p.FirstSeen, &p.LastSeen, &inWindow, &found, &bal, &avail, &height, &updated); err != nil {
+			&p.FirstSeen, &p.LastSeen, &firstSettled, &lastSettled, &inWindow, &found, &bal, &avail, &height, &updated); err != nil {
 			return nil, err
+		}
+		if firstSettled.Valid {
+			p.FirstSettlement = &firstSettled.String
+		}
+		if lastSettled.Valid {
+			p.LastSettlement = &lastSettled.String
 		}
 		p.Label, p.LabelSource = s.label(p.Publisher)
 		p.BytesShare = share(p.Bytes, totalBytes)
@@ -644,7 +763,47 @@ func (s *Server) publisherRows(ctx context.Context, win Window, only string) ([]
 		}
 		out = append(out, p)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if len(out) == 0 {
+		return out, nil
+	}
+	// The namespaces of each row's settlements in the window, one grouped
+	// pass over the same rows the window's figures were taken from.
+	nss, nsTotal, err := s.namespacesBy(ctx, start, end, only)
+	if err != nil {
+		return nil, fmt.Errorf("namespaces: %w", err)
+	}
+	for i := range out {
+		p := &out[i]
+		p.Namespaces, p.NamespacesTotal = nss[p.Publisher], nsTotal[p.Publisher]
+		if p.Namespaces == nil {
+			p.Namespaces = []publisherNamespace{}
+		}
+	}
+	return out, nil
+}
+
+// attachReadings fills each row's Readings: Tensile's reading of every blob
+// the publisher paid for, over the whole history and as of now, whatever the
+// window (readings.go). The market snapshot waits for the memo's first
+// computation (wait); a request does not, and leaves Readings null until
+// that computation has landed.
+func (s *Server) attachReadings(ctx context.Context, rows []publisherRow, wait bool) error {
+	if len(rows) == 0 || (!wait && !s.readings.ready()) {
+		return nil
+	}
+	if err := s.readings.update(ctx, s); err != nil {
+		return fmt.Errorf("readings: %w", err)
+	}
+	read := s.readings.counts(s.now())
+	for i := range rows {
+		c := read[rows[i].Publisher]
+		rows[i].Readings = &c
+	}
+	return nil
 }
 
 // paymentRow is one escrow movement as the API shows it. A settlement's or
@@ -831,8 +990,8 @@ func accountKey(bech string) string {
 // the ones its page shows today.
 const (
 	marketAsOfNote     = "payments after as_of are left out; escrow_held_utia, escrow_accounts and escrow_total_utia are balances as of now, not as_of, and withdrawal_queue is not given, since past states of the queue are not kept"
-	publishersAsOfNote = "payments after as_of are left out of every row's figures; first_seen_at and last_seen_at span the whole record, and escrow and pending_withdrawals are as of now, not as_of"
-	publisherAsOfNote  = "only publisher is pinned: payments after as_of are left out of its figures, while its first_seen_at, last_seen_at, escrow and pending_withdrawals are as of now; windows, withdrawals, recent_payments and recent_blobs are as of now, not as_of"
+	publishersAsOfNote = "payments after as_of are left out of every row's figures and namespaces; first_seen_at, last_seen_at, first_settlement_at and last_settlement_at span the whole record, and readings, escrow and pending_withdrawals are as of now, not as_of"
+	publisherAsOfNote  = "only publisher is pinned: payments after as_of are left out of its figures and namespaces, while its first_seen_at, last_seen_at, first_settlement_at, last_settlement_at, readings, escrow and pending_withdrawals are as of now; windows, withdrawals, recent_payments and recent_blobs are as of now, not as_of"
 )
 
 func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
@@ -876,7 +1035,7 @@ func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 	}
 	cp := *resp
 	cp.ComputedAt = at.UTC().Format(time.RFC3339)
-	cp.Publishers, cp.PublishersListed = nil, false // /v1/publishers' half of the snapshot
+	cp.Publishers, cp.PublishersListed, cp.PublisherRows = nil, false, 0 // /v1/publishers' half of the snapshot
 	writeJSON(w, 200, cp)
 }
 
@@ -925,6 +1084,10 @@ func (s *Server) handlePublishers(w http.ResponseWriter, r *http.Request) {
 		rows = []publisherRow{}
 	}
 	if err := s.attachPending(r.Context(), rows); err != nil {
+		s.writeInternal(w, r.URL.Path, err)
+		return
+	}
+	if err := s.attachReadings(r.Context(), rows, false); err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
@@ -979,15 +1142,20 @@ func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
 		p := rows[0]
 		p.Settlements, p.Bytes, p.FeesUtia, p.LargestBlob, p.Timeouts, p.TimedOut = 0, 0, 0, 0, 0, 0
 		p.BytesShare, p.FeesShare, p.PaidPerMiB, p.AvgBlob = nil, nil, nil, nil
+		p.Namespaces, p.NamespacesTotal = []publisherNamespace{}, 0
 		rows = []publisherRow{p}
 	}
+	// A span is the publisher's figures over one of the windows, the
+	// namespaces of its settlements in it as a row gives them.
 	type span struct {
-		Window      Window   `json:"window"`
-		Settlements int64    `json:"settlements"`
-		Bytes       int64    `json:"bytes"`
-		FeesUtia    int64    `json:"fees_utia"`
-		Timeouts    int64    `json:"timeouts"`
-		PaidPerMiB  *float64 `json:"paid_per_mib_utia"`
+		Window          Window               `json:"window"`
+		Settlements     int64                `json:"settlements"`
+		Bytes           int64                `json:"bytes"`
+		FeesUtia        int64                `json:"fees_utia"`
+		Timeouts        int64                `json:"timeouts"`
+		PaidPerMiB      *float64             `json:"paid_per_mib_utia"`
+		Namespaces      []publisherNamespace `json:"namespaces"`
+		NamespacesTotal int64                `json:"namespaces_total"`
 	}
 	var spans []span
 	for _, name := range []string{"24h", "7d", "30d", "all"} {
@@ -1008,6 +1176,16 @@ func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sp.PaidPerMiB = perMiB(sp.FeesUtia, sp.Bytes)
+		// bounded below only, as the span's sums are
+		nss, total, err := s.namespacesBy(ctx, sw.startArg(), "9999", addr)
+		if err != nil {
+			s.writeInternal(w, r.URL.Path, err)
+			return
+		}
+		sp.Namespaces, sp.NamespacesTotal = nss[addr], total[addr]
+		if sp.Namespaces == nil {
+			sp.Namespaces = []publisherNamespace{}
+		}
 		spans = append(spans, sp)
 	}
 	payments, err := s.paymentRows(ctx, `publisher = ?`, 100, addr)
@@ -1030,6 +1208,10 @@ func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
 	}
 	blobs, moreBlobs := trim(blobs, 50)
 	if err := s.attachPending(ctx, rows); err != nil {
+		s.writeInternal(w, r.URL.Path, err)
+		return
+	}
+	if err := s.attachReadings(ctx, rows, false); err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
@@ -1079,6 +1261,8 @@ func publisherRowsSQL(filter string) string {
 		SELECT w.publisher, w.settlements, w.bytes, w.fees, w.largest, w.timeouts, w.timed_out,
 			(SELECT MIN(x.time) FROM payments x WHERE x.publisher = w.publisher),
 			(SELECT MAX(x.time) FROM payments x WHERE x.publisher = w.publisher),
+			(SELECT x.time FROM payments x WHERE x.publisher = w.publisher AND +x.kind = 'settlement' ORDER BY x.time LIMIT 1),
+			(SELECT x.time FROM payments x WHERE x.publisher = w.publisher AND +x.kind = 'settlement' ORDER BY x.time DESC LIMIT 1),
 			w.in_window,
 			e.found, e.balance_utia, e.available_utia, e.height, e.updated_at
 		FROM w

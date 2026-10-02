@@ -111,6 +111,9 @@ type Server struct {
 	origRows originalRowsMemo
 	// recent keeps each validator's newest endorsements (see signing.go).
 	recent endorsementLedger
+	// readings keeps each publication's reading status for the publisher
+	// rows (see readings.go).
+	readings readingMemo
 	// lanes is the keepers' pace, and keepers the schedule they run (see
 	// snapshot.go).
 	lanes   lanes
