@@ -188,6 +188,19 @@ export function Who({ addr }: { addr: string }) {
   );
 }
 
+/** a small button after a blob's short hash that copies the whole of it; a tick for a moment once it has */
+function CopyHash({ hash }: { hash: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button type="button" className={`cp${done ? " done" : ""}`} aria-label="Copy the promise hash" title={done ? "Copied" : "Copy the promise hash"}
+      onClick={async () => { try { await navigator.clipboard.writeText(hash); setDone(true); window.setTimeout(() => setDone(false), 1200); } catch { /* clipboard unavailable */ } }}>
+      {done
+        ? <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        : <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.8" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M10.5 3.6v-.2c0-.9-.7-1.6-1.6-1.6H4.1c-.9 0-1.6.7-1.6 1.6v4.8c0 .9.7 1.6 1.6 1.6h.2" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>}
+    </button>
+  );
+}
+
 type RowProps = { b: Blob; age: string | null; fresh: boolean; one: boolean; onNs: (ns: string) => void; onOpen: (e: React.MouseEvent, href: string) => void };
 /** one blob: the cells of the table, and the second line a phone shows under the first */
 const Row = memo(function Row({ b, age: ag, fresh, one, onNs, onOpen }: RowProps) {
@@ -204,6 +217,7 @@ const Row = memo(function Row({ b, age: ag, fresh, one, onNs, onOpen }: RowProps
       <td className="c-t"><span title={utcWord(b.settlement_time)}><span className="tm">{monthDayTime(b.settlement_time)}</span>{ag && <span className="ag">{ag}</span>}</span></td>
       <td className="c-b">
         <Link href={href} title={b.promise_hash} aria-label={`Blob ${b.promise_hash.slice(0, 10)}, height ${int(b.settlement_height)}`}>{b.promise_hash.slice(0, 6)}<span className="el">…</span>{b.promise_hash.slice(-4)}</Link>
+        <CopyHash hash={b.promise_hash} />
         <span className="ht">#{int(b.settlement_height)}</span>
       </td>
       <td className="c-ns"><button type="button" className="nsb" onClick={() => onNs(b.namespace)} title={`${b.namespace} · show only this namespace`}>{name}</button></td>
