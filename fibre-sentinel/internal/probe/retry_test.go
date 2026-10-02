@@ -279,6 +279,128 @@ func TestAFailureOnThisObserversSideIsItsOwnGap(t *testing.T) {
 	}
 }
 
+// After a restart, the attempts a blob still owes resolve its validators
+// once between them, not once each: three validators owed an attempt on
+// one blob cost one resolution, and every attempt is made.
+func TestARestartResolvesEachBlobOnce(t *testing.T) {
+	var vals []fakeVal
+	for i := 0; i < 4; i++ {
+		serve := firstThen(1, fakeNotFound, fakeServes)
+		if i == 0 {
+			serve = fakeServes
+		}
+		vals = append(vals, fakeVal{rows: rowsOf(i, 2), serve: serve})
+	}
+	f := newReadFixture(t, 4, 16, vals)
+	before := readProber(t, f)
+	before.cfg.AskEveryEndorser = true
+	before.cfg.RetrySpacing = 50 * time.Millisecond
+	if ms := readNow(t, before, f.pub); len(ms) != 4 {
+		t.Fatalf("first run: %d rows", len(ms))
+	}
+	dir := before.cfg.DataDir
+	if err := before.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	p := readProber(t, f)
+	_ = p.store.Close()
+	st, err := OpenMeasurementStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	p.store, p.cfg.DataDir = st, dir
+	p.cfg.AskEveryEndorser = true
+	var resolutions atomic.Int32
+	resolve := p.targetsFor
+	p.targetsFor = func(ctx context.Context, pub scan.Publication) ([]Target, error) {
+		resolutions.Add(1)
+		return resolve(ctx, pub)
+	}
+	if owed := st.PendingAttempts(f.pub.PromiseHash); len(owed) != 3 {
+		t.Fatalf("owed after the restart: %+v", owed)
+	}
+	p.planReads([]scan.Publication{f.pub}, time.Now())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.runRetries(ctx)
+	}()
+	waitFor(t, 30*time.Second, p.retries.idle)
+	cancel()
+	<-done
+	if n := resolutions.Load(); n != 1 {
+		t.Fatalf("%d resolutions for one blob's three owed attempts, want 1", n)
+	}
+	ms, err := LoadMeasurements(st.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	made := 0
+	for _, m := range ms {
+		if m.Attempt == 1 && m.Download.CommitmentVerified {
+			made++
+		}
+	}
+	if made != 3 {
+		t.Fatalf("%d owed attempts made and served, want 3", made)
+	}
+}
+
+// The rows of later attempts are written at once and made durable by the
+// next sync, not one fsync each: they are on record (and owed attempts
+// with them) before the sync, and the sync leaves nothing pending.
+func TestAttemptRowsAreWrittenAndSyncedTogether(t *testing.T) {
+	dir := t.TempDir()
+	st, err := OpenMeasurementStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	at := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	due := at.Add(2 * time.Minute)
+	var ms []Measurement
+	for i := 0; i < 3; i++ {
+		m := Measurement{Vantage: "v1", PromiseHash: "p1", ValidatorAddress: fmt.Sprintf("v%d", i), ScheduleLabel: FullReadLabel,
+			ScheduledAt: at, StartedAt: at, FinishedAt: at, Attempt: 1, Outcome: OutcomeNotFound, Classification: ClassFault}
+		if i == 0 {
+			m.NextAttemptDue = &due
+		}
+		ms = append(ms, m)
+	}
+	if err := st.AppendDeferredRows(ms); err != nil {
+		t.Fatal(err)
+	}
+	st.mu.Lock()
+	dirty := st.dirty
+	st.mu.Unlock()
+	if !dirty {
+		t.Fatal("deferred rows were synced at once")
+	}
+	if got, err := LoadMeasurements(st.Path()); err != nil || len(got) != 3 {
+		t.Fatalf("%d rows on record before the sync (%v), want 3", len(got), err)
+	}
+	if owed := st.PendingAttempts("p1"); len(owed) != 1 || owed[0].Validator != "v0" || owed[0].Attempt != 1 || !owed[0].Due.Equal(due) {
+		t.Fatalf("owed %+v", owed)
+	}
+	if err := st.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	st.mu.Lock()
+	dirty = st.dirty
+	st.mu.Unlock()
+	if dirty {
+		t.Fatal("rows still pending after the sync")
+	}
+	if err := st.AppendDeferredRows(ms); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := LoadMeasurements(st.Path()); len(got) != 3 {
+		t.Fatalf("%d rows after writing the same attempts again, want 3", len(got))
+	}
+}
+
 // With the observer's link rate set, the shard bytes in flight are held to
 // what it moves in half a request's time; without it the default stands.
 func TestTheLinkBoundsTheBytesInFlight(t *testing.T) {
@@ -293,5 +415,10 @@ func TestTheLinkBoundsTheBytesInFlight(t *testing.T) {
 	}
 	if c := (Config{}).withDefaults(); c.InFlightBytes != defaultInFlightBytes || c.Concurrency != DefaultConcurrency {
 		t.Fatalf("defaults: %d bytes, %d requests", c.InFlightBytes, c.Concurrency)
+	}
+	// A later attempt's own verifier is charged beside its shard: about
+	// 4 MiB at K = 4096 and 16384 rows of code.
+	if b := verifierBytes(4096, 16384); b < 4<<20 || b > 5<<20 {
+		t.Fatalf("a verifier at K = 4096 charged %d bytes", b)
 	}
 }
