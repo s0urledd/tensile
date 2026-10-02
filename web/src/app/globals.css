@@ -1763,7 +1763,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .pan-c dt .per { text-transform: none; letter-spacing: .03em; }
 .pan-c dd { margin: 0; font-family: var(--font-table); font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
 .pan-c .pan-v { margin-top: 9px; font-size: 24px; line-height: 28px; font-weight: 500; letter-spacing: -.02em; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
-.pan-v .u { margin-left: 1px; font-size: 14px; font-weight: 400; letter-spacing: 0; color: var(--text-3); }
+.pan-v .u { margin-left: 1px; font-size: 14px; line-height: 1; font-weight: 400; letter-spacing: 0; color: var(--text-3); }
 /* a line under a figure, only when it has something to say; its figure in the stronger grey */
 .pan-c .pan-s { margin-top: 6px; font-size: 12.5px; line-height: 18px; color: var(--text-3); }
 .pan-c .pan-s + .pan-s { margin-top: 1px; }
