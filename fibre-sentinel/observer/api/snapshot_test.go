@@ -3,8 +3,11 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -385,13 +388,49 @@ func TestMarketSnapshotWithoutTheHourlySplitIsRefused(t *testing.T) {
 		defer c.mu.Unlock()
 		return c.entries["24h"] != nil
 	}
-	if loads(&marketResponse{PublishersListed: true, Hourly: hours}) {
+	if loads(&marketResponse{PublishersListed: true, PublisherRows: publisherRowsVersion, Hourly: hours}) {
 		t.Fatal("an older build's day, hours without the split, was loaded")
 	}
-	if !loads(&marketResponse{PublishersListed: true, Hourly: hours, HourlyByPub: split}) {
+	if !loads(&marketResponse{PublishersListed: true, PublisherRows: publisherRowsVersion, Hourly: hours, HourlyByPub: split}) {
 		t.Fatal("this build's day was not read back")
 	}
-	if !loads(&marketResponse{PublishersListed: true, Hourly: []hourBucket{}}) {
+	if !loads(&marketResponse{PublishersListed: true, PublisherRows: publisherRowsVersion, Hourly: []hourBucket{}}) {
 		t.Fatal("a day with no settlement was not read back")
+	}
+	// A file whose rows are from before namespaces, the settlement times and
+	// the readings would publish every row without them: refused.
+	if loads(&marketResponse{PublishersListed: true, Hourly: hours, HourlyByPub: split}) {
+		t.Fatal("an older build's file, rows without namespaces, settlements and readings, was loaded")
+	}
+}
+
+// A market snapshot file carries the shape of its publisher rows, and
+// /v1/market, which is not the publisher list, does not.
+func TestMarketSnapshotSaysWhichPublisherRows(t *testing.T) {
+	s := newSnapshotServer(t)
+	dir := t.TempDir()
+	s.market = newSnapshotCache("market", s.computePublishing)
+	s.market.accept = marketSnapshotCurrent
+	s.market.persistTo(dir, nil)
+	if _, _, _, err := s.market.get(context.Background(), nil, testWindow("24h")); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(s.market.file("24h"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Value map[string]json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(b, &file); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(file.Value["publisher_rows"]); got != strconv.Itoa(publisherRowsVersion) {
+		t.Fatalf("the file says publisher_rows %q, want %d", got, publisherRowsVersion)
+	}
+	rec := httptest.NewRecorder()
+	s.handleMarket(rec, httptest.NewRequest("GET", "/v1/market?window=24h", nil))
+	if strings.Contains(rec.Body.String(), "publisher_rows") {
+		t.Fatal("/v1/market publishes the snapshot's publisher_rows")
 	}
 }

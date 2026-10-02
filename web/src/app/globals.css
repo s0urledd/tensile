@@ -1757,12 +1757,39 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .pl-t .tox { color: var(--fault); }
 .pl-t td .kp { display: none; }
 
+/* With the Namespaces column (has-ns: an API that gives namespaces and the newest blob). The chip, the namespace
+   (as wide as "74656e ••• 6c6501 +12") and the time keep their widths: the chip's column as wide as the chip, so the
+   namespace sits close to it; the time's as wide as its widest ("Oct 12 20:48:38 23 h 59 min"). Settlements is as
+   wide as its counts need, not its head, which runs on to its left over the time's head (centred, with room to
+   spare), so no wide gap opens before a count of a few blobs. Blob size and Fees paid share the rest, and Share is
+   narrower by the difference of their figures ("132.30 GiB" against "98.97%"), so each right-aligned figure stands
+   about as far from the one before it. --fx is the fixed columns, 82 px the gutters and the frame. */
+.pl-t.has-ns { --fx: 784px; }
+.pl-t.has-ns th.c-pub { width: 156px; }
+.pl-t.has-ns th.c-ns { width: 170px; }
+.pl-t.has-ns th.c-t { width: 204px; }
+.pl-t.has-ns th.c-n { width: 88px; direction: rtl; overflow: visible; }
+.pl-t.has-ns th.c-n .sort { direction: ltr; unicode-bidi: isolate; }
+.pl-t.has-ns th.c-sh { width: calc((min(100vw, 1200px) - 82px - var(--fx)) / 3 - 19px); }
+/* a Timed out column shares the rest too, and the chip drops its prefix (its column as wide as its head) */
+.pl-t.has-ns.has-to { --fx: 720px; }
+.pl-t.has-ns.has-to th.c-pub { width: 100px; }
+.pl-t.has-ns.has-to th.c-ns { width: 162px; }
+.pl-t.has-ns.has-to th.c-sh { width: calc((min(100vw, 1200px) - 82px - var(--fx)) / 4 - 18px); }
+/* the most used namespace, linked to its blobs, and how many more; a long name gives way before the count */
+.pl-t .nsw { display: inline-flex; align-items: baseline; max-width: 100%; vertical-align: bottom; }
+.pl-t .nsl { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.pl-t .nsl:hover { color: var(--accent-ink); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.pl-t .more { flex: none; margin-left: 7px; font-size: var(--t-small); font-weight: 400; color: var(--text-3); }
+.pl-t td.c-pub .nsw { display: none; }
+
 /* ---- narrower ---- */
 /* the summary three a row below the width where six cells hold their figures */
 @media (max-width: 1219.98px) {
   .pl-pan { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
-/* the chip stays whole where the Blobs list drops its prefix: this row has the room */
+/* the chip stays whole where the Blobs list drops its prefix: this row has the room (with the Namespaces column,
+   down to 1161 px) */
 @media (min-width: 1081px) and (max-width: 1220px) {
   .pl-t:not(.has-to) .lg-who .hd { display: inline; }
 }
@@ -1771,6 +1798,26 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .pl-t th.c-t { width: 144px; }
   .pl-t th.c-sh { width: calc((100vw - 702px) / 3 - 14px); }
   .pl-t.has-to th.c-sh { width: calc((100vw - 599px) / 4 - 21px); }
+  /* with namespaces the chip drops its prefix, and the time's head fills its column: Settlements is as wide as its
+     own head again */
+  .pl-t.has-ns .lg-who .hd { display: none; }
+  .pl-t.has-ns { --fx: 692px; }
+  .pl-t.has-ns th.c-pub { width: 116px; }
+  .pl-t.has-ns th.c-t { width: 136px; }
+  .pl-t.has-ns th.c-n { width: 104px; }
+  .pl-t.has-ns th.c-sh { width: calc((100vw - 82px - var(--fx)) / 3 - 19px); }
+  /* and with a Timed out column nine columns share the row: the chip's, the time's and Settlements' a little
+     narrower, and every cell's padding 10 px, so that no figure, head or namespace is cut down to 1081 px */
+  .pl-t.has-ns.has-to { --fx: 656px; }
+  .pl-t.has-ns.has-to th.c-pub { width: 98px; }
+  .pl-t.has-ns.has-to th.c-ns { width: 162px; }
+  .pl-t.has-ns.has-to th.c-t { width: 130px; }
+  .pl-t.has-ns.has-to th.c-n { width: 100px; }
+  .pl-t.has-ns.has-to th.c-sh { width: calc((100vw - 82px - var(--fx)) / 4 - 16px); }
+}
+@media (min-width: 1081px) and (max-width: 1160px) {
+  .lg-t.pl-t.has-ns.has-to :is(th, td):not(.gap):not(.c-esc) { padding-right: 10px; }
+  .lg-t.pl-t.has-ns.has-to :is(th, td):not(:first-child):not(.gap):not(.c-esc) { padding-left: 10px; }
 }
 /* a list before the columns would cut their figures: two lines a publisher, its escrow in the lane beside them.
    One slim head names the time and the lane once; the second line says what each figure is. */
@@ -1785,6 +1832,11 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .pl-t tr.row td.c-pub, .pl-t tr.row td.c-m { display: flex; align-items: center; height: 20px; }
   .pl-t .c-pub { grid-area: a; min-width: 0; }
   .pl-t .c-pub .lg-who .hd { display: none; }
+  /* the most used namespace after the chip, the column being gone; "No blobs" is the second line's to say */
+  .pl-t td.c-pub .nsw { display: inline-flex; min-width: 0; margin-left: 10px; }
+  .pl-t td.c-pub .nsl { color: var(--text-2); font-weight: 400; }
+  .pl-t td.c-pub .more { margin-left: 6px; }
+  .pl-t .c-t .none { display: none; }
   .pl-t .c-m { grid-area: m; font-weight: 400; }
   .pl-t .c-m .w { margin-left: 4px; color: var(--text-3); }
   .pl-t tr.row td.c-esc { display: flex; align-items: center; justify-content: center; grid-area: l; margin: calc(-1 * var(--pt)) 0 calc(-1 * var(--pb)); padding: 0 14px; border-left: 1px solid var(--border); }
@@ -1804,10 +1856,13 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .pan-c .pan-s { margin-top: 5px; font-size: var(--t-small); line-height: 17px; }
   /* a phone keeps two lines and no head: who and when, then what it posted and paid beside the escrow it holds */
   .pl-t thead { display: none; }
-  .pl-t tr.row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "a t" "m l"; }
+  /* the escrow line is often wider than the time: the first line's chip and namespace run on over its column, up
+     to the time, so a namespace is not cut short beside room left empty (the 14 px gaps are the cells' padding) */
+  .pl-t tr.row { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "a a t" "m l l"; column-gap: 0; }
+  .pl-t tr.row td.c-t { padding-left: 14px; }
   .pl-t .c-m .n-set { display: none; }
   .pl-t tr.to .c-m .n-sz { display: none; }
-  .pl-t tr.row td.c-esc { justify-content: flex-end; height: 20px; margin: 0; padding: 0; border: 0; }
+  .pl-t tr.row td.c-esc { justify-content: flex-end; height: 20px; margin: 0; padding: 0 0 0 14px; border: 0; }
   .pl-t td.c-esc .kp { display: inline; margin: 0 6px 0 0; font-size: 13px; font-weight: 400; color: var(--text-3); }
   /* there the amber dot sits in the line, before the figure */
   .pl-t .low::before { position: static; display: inline-block; margin: 0 7px 0 0; vertical-align: 1px; }
@@ -1843,7 +1898,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .pb-addr .copy::before { content: ""; width: 13px; height: 13px; background: var(--text-3); -webkit-mask: var(--copy-mark) center / contain no-repeat; mask: var(--copy-mark) center / contain no-repeat; }
 .pb-addr .copy:hover { color: var(--accent-ink); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 .pb-addr .copy:hover::before { background: var(--accent-ink); }
-/* When it last and first posted, where, and what Tensile found: all-time facts, in a light frame of their own with
+/* When it last and first posted, and where: all-time facts, in a light frame of their own with
    a hairline between them, quieter than the panel under it (no paper, no shadow). A label column of its own, so
    every value starts at one x, on a wide screen and on a phone. The labels sit as far in as the panel's and the
    table's, and the space after a label is its own padding, so each hairline runs unbroken from label to value. */
@@ -1857,32 +1912,17 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .pb-meta em { font-style: normal; color: var(--text-3); }
 .pb-meta .pb-nss { column-gap: 14px; row-gap: 2px; }
 .pb-nss .nsb { color: var(--text); }
-.pb-meta .pb-tally { column-gap: 0; }
-.pb-tally .sep { margin: 0 8px; color: var(--text-3); }
-.pb-tally .ok { color: var(--ok); }
-.pb-tally .hold { color: var(--hold-ink); }
-.pb-tally .hold b { color: inherit; }
-.pb-tally .hold::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 7px; border-radius: 50%; background: var(--hold); vertical-align: 1px; }
+.pb-nss .more { color: var(--text-3); }
 
-/* ---- the panel: its escrow now and the period's activity ---- */
-.pp { display: flex; margin-top: 30px; }
-.pp-g { display: flex; flex-direction: column; flex: var(--n) 1 0; min-width: 0; }
-/* two groups: a hairline from the panel's top to its foot sets them apart */
-.pp-g + .pp-g { border-left: 1px solid var(--border); }
-/* a queued withdrawal or a timeout adds a cell: the escrow then sits over the activity */
-.pp.stack { flex-direction: column; }
-.pp.stack .pp-g { flex: none; }
-.pp.stack .pp-g + .pp-g { border-left: 0; border-top: 1px solid var(--border); }
-/* a group's head names it and what scopes it: "(now)", or the period switch */
-.pp-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 48px; padding: 0 9px 0 18px; border-bottom: 1px solid var(--border); }
-.pp-t { margin: 0; font-size: var(--t-cell); font-weight: 600; letter-spacing: 0; line-height: 18px; color: var(--text); }
-.pp-t .per { margin-left: 1px; font-weight: 400; color: var(--text-3); }
-.pp-h .seg { padding: 2px; }
-.pp-h .seg button, .pp-h .seg button:first-child { height: 28px; padding: 0 12px; font-size: 12.5px; }
-:root[data-theme="dark"] .pp-h .seg button[aria-pressed="true"] { box-shadow: inset 0 0 0 1px rgb(51 179 191 / .45); }
-.pp-cells { flex: 1; display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: 1px; margin: 0; background: var(--border); }
-/* a period with no blob, or an account that never posted: one quiet line across the group */
-.pp-none { grid-column: 1 / -1; display: flex; align-items: center; margin: 0; font-size: var(--t-cell); line-height: 18px; color: var(--text-3); }
+/* ---- the panel: four figures of its own, on the Publishers list's grid: equal cells, the hairlines the grid's
+   1 px gaps in the table's rule colour ---- */
+.pb-pan { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin: 30px 0 0; background: linear-gradient(var(--border), var(--border)) padding-box, var(--paper) border-box; }
+/* a cell too narrow for "Escrow available (now)" whole (four a row on a tablet, two on a phone) drops the "(now)":
+   the escrow is the one figure there that is not all-time, and its hover says when the chain was read */
+.pb-pan > .pan-c { container-type: inline-size; }
+@container (max-width: 154px) { .pb-pan dt .per { display: none; } }
+/* "of 8,467" after a count, as quiet as a unit */
+.pan-v .of { font-size: 14px; line-height: 1; font-weight: 400; letter-spacing: 0; color: var(--text-3); }
 /* an escrow that cannot pay for one more blob of the account's usual size: an amber dot beside the figure, its
    reason on hover, on focus or on a tap */
 .warn { position: relative; display: inline-block; width: 19px; height: 19px; margin: 0 0 0 5px; padding: 0; border: 0; border-radius: 50%; background: none; vertical-align: 0; cursor: help; }
@@ -1965,23 +2005,9 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .pb-addr .mono { font-size: 12.5px; line-height: 19px; overflow-wrap: anywhere; word-break: break-all; }
   .pb-addr .copy { margin-left: 8px; vertical-align: -6px; }
   .pb-meta { width: auto; margin-top: 18px; padding: 2px 14px; }
-  /* Tensile's reading: its counts one under the other, no separators to dangle */
-  .pb-meta .pb-tally { display: grid; row-gap: 2px; }
-  .pb-tally .sep { display: none; }
-  /* the panel: the escrow over the activity; the activity two a row, Settlements across the first unless a Timed
-     out cell sits beside it, then Blob size and Fees paid */
-  .pp { flex-direction: column; margin-top: 22px; }
-  .pp .pp-g { flex: none; }
-  .pp-g + .pp-g { border-left: 0; border-top: 1px solid var(--border); }
-  .pp-h { height: 46px; padding-left: 14px; padding-right: 7px; }
-  .pp-h .seg button, .pp-h .seg button:first-child { padding: 0 11px; }
-  .pp-cells { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .pp-esc .pp-cells { grid-template-columns: minmax(0, 1fr); }
-  .pp-act .pan-c.wide { grid-column: 1 / -1; }
-  .pp-act .c-set { order: 1; }
-  .pp-act .c-to { order: 2; }
-  .pp-act .c-size { order: 3; }
-  .pp-act .c-fee { order: 4; }
+  /* the panel: two a row */
+  .pb-pan { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 22px; }
+  .pan-v .of { font-size: 13px; }
   .pb-list { margin-top: 34px; }
   .pb-list .tabs button { font-size: 14px; padding: 0 10px; }
   /* a phone keeps the ledger's own second line: the namespace and the size (the fee is on the blob's page) */
