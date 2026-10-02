@@ -1527,8 +1527,8 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 /* a column whose cells are always about as wide is as wide as they are (the time at its widest: "May 28 20:48:38 23 h 59 min",
    and the publisher's chip); the namespace takes the rest */
 /* the blob column holds the short hash and its copy button */
-.lg-t th.c-h { width: 96px; } .lg-t th.c-t { width: 206px; } .lg-t th.c-b { width: 128px; } .lg-t th.c-p { width: 148px; } .lg-t th.c-sz { width: 92px; } .lg-t th.c-fee { width: 92px; }
-.lg-t th.c-e { width: 132px; } .lg-t th.gap { width: 10px; } .lg-t th.tn { width: 112px; }
+.lg-t th.c-h { width: 96px; } .lg-t th.c-t { width: 206px; } .lg-t th.c-b { width: 128px; } .lg-t th.c-p { width: 148px; } .lg-t th.c-sz { width: 88px; } .lg-t th.c-fee { width: 92px; }
+.lg-t th.c-e { width: 128px; } .lg-t th.gap { width: 10px; } .lg-t th.tn { width: 120px; }
 .lg-t tr.row { position: relative; cursor: pointer; }
 .lg-t tr.row td { transition: background var(--dur); }
 .lg-t tr.row:hover td { background: color-mix(in srgb, var(--accent) 5%, var(--paper)); }
@@ -1924,12 +1924,14 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 
 /* an escrow that cannot pay for one more blob of the account's usual size: an amber dot beside the figure, its
    reason on hover, on focus or on a tap */
-.warn { position: relative; display: inline-block; width: 19px; height: 19px; margin: 0 0 0 5px; padding: 0; border: 0; border-radius: 50%; background: none; vertical-align: 0; cursor: help; }
-.warn::before { content: ""; position: absolute; left: 6px; top: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--hold); transition: box-shadow var(--dur); }
-.warn:hover::before, .warn:focus-visible::before { box-shadow: 0 0 0 3px var(--hold-tint); }
-.warn.fault::before { background: var(--fault); }
-.warn.fault:hover::before, .warn.fault:focus-visible::before { box-shadow: 0 0 0 3px color-mix(in srgb, var(--fault) 16%, transparent); }
-.warn:focus-visible { outline-offset: 0; }
+/* the dot is a button: scoped to it, so a row or a cell that carries a warn class (a table row of an unreachable
+   validator, a rate cell in its amber tone) keeps its own box */
+button.warn { position: relative; display: inline-block; width: 19px; height: 19px; margin: 0 0 0 5px; padding: 0; border: 0; border-radius: 50%; background: none; vertical-align: 0; cursor: help; }
+button.warn::before { content: ""; position: absolute; left: 6px; top: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--hold); transition: box-shadow var(--dur); }
+button.warn:hover::before, button.warn:focus-visible::before { box-shadow: 0 0 0 3px var(--hold-tint); }
+button.warn.fault::before { background: var(--fault); }
+button.warn.fault:hover::before, button.warn.fault:focus-visible::before { box-shadow: 0 0 0 3px color-mix(in srgb, var(--fault) 16%, transparent); }
+button.warn:focus-visible { outline-offset: 0; }
 .warn-tip { position: fixed; z-index: 50; max-width: min(340px, calc(100vw - 24px)); padding: 7px 10px; border-radius: 8px; background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow-pop); font-family: var(--sans); font-size: var(--t-small); line-height: 17px; font-weight: 500; letter-spacing: 0; color: var(--hold-ink); white-space: normal; animation: tip-in var(--dur) ease-out; }
 .warn-tip.fault { color: var(--fault); }
 
