@@ -1107,6 +1107,9 @@ func (p *Prober) logMeasurement(m Measurement) {
 	if m.Download.Attempted {
 		tail = fmt.Sprintf(" rows=%d/%d commit=%v assign=%v", m.Download.RowsReturned, m.Download.RowsExpected, m.Download.CommitmentVerified, m.Download.AssignmentVerified)
 	}
+	if m.Attempt > 0 {
+		tail += fmt.Sprintf(" attempt=%d", m.Attempt)
+	}
 	p.log.Printf("PROBE %s val=%s %s[%s] -> %s / %s (%dms)%s",
 		short(m.PromiseHash), short(m.ValidatorAddress), m.ScheduleLabel, m.Phase,
 		m.Outcome, m.Classification, m.TotalDurationMS, tail)
@@ -1299,12 +1302,14 @@ func (r *recentEvents) lastHour(now time.Time) int {
 }
 
 // readStatus is the status file's reads block: what is queued and under
-// way, and how the last hour went.
+// way, the later attempts of full readings owed, and how the last hour
+// went.
 func (p *Prober) readStatus() map[string]any {
 	now := time.Now()
 	return map[string]any{
 		"queued":           p.sched.len(),
 		"in_progress":      p.sched.running(),
+		"retries_queued":   p.retries.queued(),
 		"started_late":     p.counters.late.lastHour(now),
 		"missed_last_hour": p.counters.missed.lastHour(now),
 	}

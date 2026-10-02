@@ -163,6 +163,13 @@ func (q *retryQueue) forget(hash string) {
 	}
 }
 
+// queued is how many attempts wait to be made.
+func (q *retryQueue) queued() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.h)
+}
+
 // idle reports that no attempt is queued or under way.
 func (q *retryQueue) idle() bool {
 	q.mu.Lock()

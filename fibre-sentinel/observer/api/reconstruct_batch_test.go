@@ -38,6 +38,10 @@ type valRows struct {
 	local    bool // its request failed on this observer's side at every point (PROBE_ERROR)
 	nohost   bool // no host to connect to (NO_REGISTERED_HOST): no request left
 	late     bool // its request started after must_serve_until (phase grace)
+	// retryNotMade: at the last point it failed, and a later attempt of it
+	// could not be made (a second row there, NOT_PROBED, as a full reading
+	// writes one): it was asked all the same.
+	retryNotMade bool
 }
 
 type blobCase struct {
@@ -166,6 +170,25 @@ func writeBlob(t *testing.T, st *store.Store, idx int, c blobCase) string {
 				phase, outcome, class, v.attested, idx); err != nil {
 				t.Fatal(err)
 			}
+			if last && v.retryNotMade {
+				later := store.TS(now.Add(time.Duration(p)*time.Minute + 90*time.Second))
+				if _, err := db.Exec(`INSERT INTO probes (
+					dedupe_key, vantage, promise_hash, commitment, blob_version, must_serve_until,
+					validator_set_height, validator_address, validator_host, assigned,
+					assigned_row_count, schedule_label, scheduled_at, started_at, finished_at,
+					lateness_ms, dns_ok, dns_ms, tcp_ok, tcp_ms, tls_ok, tls_ms, tls_version,
+					peer_cert_sha256, identity_ok, identity_reason, download_ok, download_ms,
+					rows_returned, rows_expected, commitment_verified, assignment_verified,
+					phase, outcome, classification, classification_reason, raw_error,
+					total_duration_ms, raw_json, attested, row_indices
+				) VALUES (?, 'v1', ?, ?, 0, ?, 1, ?, 'h:1', 1, ?, ?, ?, ?, ?, 0,
+					0,0,0,0,0,0,'','', 0,'', 0, 0, 0, ?, 0, 0,
+					'in_window', 'MISSED', 'NOT_PROBED', '', '', 0, '{}', ?, NULL)`,
+					key+"|1", hash, hash, msu, v.addr, len(v.rows), fmt.Sprintf("w%d", p+1),
+					at, later, later, len(v.rows), v.attested); err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
 	}
 	return hash
@@ -233,6 +256,13 @@ func TestReconstructBatchMatchesReference(t *testing.T) {
 		vals: []valRows{
 			{addr: "q1", rows: full[:20], attested: 1, served: true},
 			{addr: "q2", rows: full[20:], attested: 1, missed: true},
+		},
+	}, {
+		name:   "no: short, and a validator's later attempt could not be made: it was asked all the same",
+		needed: 30, total: 160, points: 1, complete: true, over: true, want: "no", err: "not enough shards to reconstruct blob",
+		vals: []valRows{
+			{addr: "m1", rows: full[:20], attested: 1, served: true},
+			{addr: "m2", rows: full[20:], attested: 1, retryNotMade: true},
 		},
 	}, {
 		name:   "not_read: the same, once the window closed",

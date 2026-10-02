@@ -14,6 +14,15 @@
 // or Unavailable with the client's error ("no shards retrieved", "not
 // enough shards to reconstruct blob").
 //
+// With Config.AskEveryEndorser (sentinel-probe -end-read-all, the default)
+// the reading is a full one (FullReadLabel, fullread.go): every validator
+// that endorsed the promise is asked for its own rows, whatever the rows
+// already held, and one whose answer did not serve is asked again, up to
+// FullReadRetries times, Config.RetrySpacing after its last answer, while
+// the request can start Config.RequestStartMargin before must_serve_until
+// (retry.go). The later attempts hold neither the reading's blob slot nor
+// its Reconstructor, and each writes a row of its own (Measurement.Attempt).
+//
 // The queue of readings is never stored. The Prober re-derives it every cycle
 // from publications.jsonl and the existing measurements.jsonl, so a restart
 // resumes exactly. Every wait is bounded, and a SIGINT/SIGTERM stops it
@@ -33,7 +42,8 @@
 // together to measurements.jsonl: the vantage, the time, every layer's
 // duration and result, the identity verdict, the rows returned and their
 // verification, the raw error text, and where the answer sat in the reading
-// (ReadInfo). A validator the reading did not need to ask has no row.
+// (ReadInfo). A validator the reading did not need to ask has no row; a
+// later attempt of a full reading appends its own.
 //
 // # Taxonomy
 //
@@ -41,9 +51,13 @@
 // whose identity verified and that answers NOT_FOUND (or returns rows that do
 // not verify) before must_serve_until is a FAULT; unreachable is UNREACHABLE
 // and an identity failure is IDENTITY_MISMATCH or IDENTITY_EXPIRED. The
-// class says what happened on the wire. What counts is simpler and decided
-// from the whole reading (observer/verdict): a validator whose rows came
-// back verified served; an endorsing validator whose rows did not come back
-// is not served only when the blob was Unavailable. A validator that did not
-// endorse is asked like the rest and is never counted (UNATTESTED).
+// class says what happened on the wire. What counts is decided in
+// observer/verdict. At a full reading each endorser is judged on its own
+// answers: served when one of them served (FullServed), this observer's gap
+// when one was NOT_PROBED or PROBE_ERROR or the reading reached no server,
+// not served otherwise, by its last answer. At a reading that stopped once
+// the rows were enough, a validator whose rows came back verified served,
+// and an endorsing validator whose rows did not come back is not served only
+// when the blob was Unavailable. A validator that did not endorse is never
+// counted (UNATTESTED), and a full reading does not ask it.
 package probe
