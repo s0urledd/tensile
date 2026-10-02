@@ -54,6 +54,7 @@ func main() {
 		endRead   = flag.Bool("end-read", true, "accepted for the unit files that pass it; every blob is read this way")
 		endOffset = flag.Duration("end-read-offset", def.EndReadOffset, "how long before must_serve_until a blob is read")
 		endSince  = flag.String("end-read-since", "", "RFC 3339 time; publications settled before it were read on the schedule of their time and are not read again (empty = every publication)")
+		askAll    = flag.Bool("end-read-all", true, "ask every endorsing validator for its own rows, instead of stopping once the rows reconstruct the blob")
 		readDL    = flag.Duration("read-deadline", def.ReadDeadline, "a reading that cannot start this long before must_serve_until is not made (NOT_PROBED)")
 		pruneTol  = flag.Duration("prune-tolerance", def.PruneTolerance, "NOT_FOUND is normal until must_serve_until + this (devnet prune lag ~1m45s)")
 
@@ -136,6 +137,7 @@ func main() {
 		RPCTimeout:           *rpcTO,
 		Concurrency:          *concurrency,
 		BlobConcurrency:      *blobs,
+		AskEveryEndorser:     *askAll,
 		InFlightBytes:        *inFlightMiB << 20,
 		AllowUnroutableHosts: *localHosts,
 		BackfillMissed:       *backfill,

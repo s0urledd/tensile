@@ -66,6 +66,14 @@ type Config struct {
 	Concurrency     int
 	BlobConcurrency int
 
+	// AskEveryEndorser reads every validator the settled promise names as a
+	// signer (Prober.wants), each for its own rows, instead of stopping once
+	// the rows reconstruct the blob: every endorser is asked on every blob,
+	// so none is left unasked by the order. Validators that did not endorse
+	// are not asked. The blob's slot is held until every answer is in, so
+	// BlobConcurrency still bounds the readings in progress.
+	AskEveryEndorser bool
+
 	// AllowUnroutableHosts dials a registered host that resolves to loopback
 	// or a private range. A local devnet needs it; a public vantage must not
 	// have it, because the host is whatever a validator put on chain and
