@@ -4118,6 +4118,16 @@ type probeRow struct {
 	// (the endpoint failed before any blob was asked for); its raw error
 	// names that request.
 	Attempt int `json:"attempt,omitempty"`
+	// NextAttemptDue, on a row of a full reading that did not serve, is
+	// when its validator is to be asked again: the row is not its last
+	// answer, and until the attempt is on record (made, or recorded as not
+	// made) the validator counts neither way. Absent when none is owed.
+	NextAttemptDue string `json:"next_attempt_due,omitempty"`
+	// RowsSubsetOfAssignment, on a short answer (outcome PARTIAL) only:
+	// true when every row that came back is one this promise assigns the
+	// validator (at a full reading, not served), false when some are not
+	// (rows of the blob that are not its own: counted neither way).
+	RowsSubsetOfAssignment *bool `json:"rows_subset_of_assignment,omitempty"`
 	// Provisional marks a not_served reading younger than
 	// verdict.FaultSettling: it counts, and an x/fibre params change not
 	// reconciled yet can still withdraw it (provisional.go).
@@ -4149,7 +4159,8 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 		COALESCE(shadow_gap, ''), COALESCE(classification_at_probe, ''), COALESCE(amended_at, ''),
 		COALESCE(host_at_settlement, ''), COALESCE(settlement_host_outcome, ''), settlement_host_served,
 		retention_unverified, COALESCE(phase_at_probe, ''), COALESCE(corrected_at, ''),
-		` + rollup.CountedClass("probes") + `, ` + lateSQL + `, dedupe_key
+		` + rollup.CountedClass("probes") + `, ` + lateSQL + `, dedupe_key,
+		COALESCE(next_attempt_due, ''), rows_subset_of_assignment
 		FROM probes`
 	if where != "" {
 		q += " WHERE " + where
@@ -4173,15 +4184,20 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 		var served sql.NullInt64
 		var counted, key string
 		var late bool
+		var subset int
 		if err := rows.Scan(&p.Vantage, &p.PromiseHash, &p.ValidatorAddress, &p.ValidatorHost, &assigned, &att, &p.AssignedRowCount, &p.ScheduleLabel,
 			&p.ScheduledAt, &p.StartedAt, &p.Phase, &p.Outcome, &p.Classification, &p.Reason, &p.RowsReturned, &p.RowsExpected,
 			&p.TotalDurationMS, &p.RawError, &p.RetryFirstOutcome,
 			&idxJSON, &p.RowsSHA256, &p.RPCCode, &p.ShadowedBy,
 			&p.ShadowGap, &p.ClassificationAtProbe, &p.AmendedAt, &p.HostAtSettlement, &p.SettlementHostOutcome, &served,
-			&held, &p.PhaseAtProbe, &p.CorrectedAt, &counted, &late, &key); err != nil {
+			&held, &p.PhaseAtProbe, &p.CorrectedAt, &counted, &late, &key, &p.NextAttemptDue, &subset); err != nil {
 			return nil, err
 		}
 		p.Attempt = probe.AttemptOfKey(key)
+		if p.Outcome == string(probe.OutcomePartial) {
+			b := subset == 1
+			p.RowsSubsetOfAssignment = &b
+		}
 		p.RetentionUnverified = held == 1
 		p.Provisional = isProvisional(counted, p.StartedAt, now)
 		switch {

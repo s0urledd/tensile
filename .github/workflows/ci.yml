@@ -82,6 +82,9 @@ jobs:
       - name: test
         working-directory: fibre-sentinel
         run: go test -shuffle=on ./...
+      - name: test the prober's concurrent code (with -race)
+        working-directory: fibre-sentinel
+        run: go test -race ./internal/probe/ ./internal/record/
 
   # ---- devnet + test scripts ----
   scripts:

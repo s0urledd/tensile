@@ -716,9 +716,16 @@ var migrations = []migration{
 			// The full readings already stored (from probe.FullReadSince,
 			// asked once, with no attempt owed): their raw JSON is still
 			// kept, and says which short answers were of the validator's
-			// own rows.
+			// own rows. Only the rows whose flag the rule can read: a
+			// verified short answer of an endorser in the window is
+			// UNMATCHED_GENUINE, or PROBE_ERROR while its verdict waits on
+			// a scan gap (an amendment can make it UNMATCHED_GENUINE
+			// later); SHADOWED_SHARD never reads it. The class leads the
+			// index (probes_class_time), so the backfill reads those rows,
+			// not every row since FullReadSince.
 			`UPDATE probes SET rows_subset_of_assignment = 1
-			 WHERE started_at >= '` + TS(probe.FullReadSince) + `' AND outcome = 'PARTIAL'
+			 WHERE classification IN ('UNMATCHED_GENUINE','PROBE_ERROR')
+			   AND started_at >= '` + TS(probe.FullReadSince) + `' AND outcome = 'PARTIAL'
 			   AND raw_json <> '' AND json_valid(raw_json)
 			   AND json_extract(raw_json, '$.download.rows_subset_of_assignment') = 1`,
 		},
@@ -929,6 +936,13 @@ func (s *Store) applyMigration(m migration) error {
 	defer tx.Rollback()
 	for _, stmt := range m.stmts {
 		if _, err := tx.Exec(stmt); err != nil {
+			// The column is already there: a database rolled back by
+			// deleting its schema_migrations row keeps the columns the
+			// migration gave it, and the migration runs again over them.
+			// Only that one statement failed; the transaction goes on.
+			if addsColumn(stmt) && strings.Contains(err.Error(), "duplicate column name") {
+				continue
+			}
 			return fmt.Errorf("migration %d (%s): %w\n%s", m.version, m.note, err, stmt)
 		}
 	}
@@ -937,6 +951,12 @@ func (s *Store) applyMigration(m migration) error {
 		return fmt.Errorf("migration %d: record: %w", m.version, err)
 	}
 	return tx.Commit()
+}
+
+// addsColumn reports an ALTER TABLE ... ADD COLUMN statement.
+func addsColumn(stmt string) bool {
+	s := strings.ToUpper(strings.Join(strings.Fields(stmt), " "))
+	return strings.HasPrefix(s, "ALTER TABLE ") && strings.Contains(s, " ADD COLUMN ")
 }
 
 // splitSQL turns a schema file into executable statements. Comments are

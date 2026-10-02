@@ -15,7 +15,7 @@
 //
 // Every request waits for room under this observer's limits, and its shard
 // bytes are let go no faster than -max-read-mbps (default 400 Mbit/s), so
-// the readings leave room on a port they share. A wait is never part of a
+// the readings leave room on the observer's port. A wait is never part of a
 // request's time; one that would pass the request's start cutoff makes it
 // NOT_PROBED, this observer's gap.
 //
@@ -78,7 +78,7 @@ func main() {
 		blobs       = flag.Int("blob-concurrency", 16, "blobs being read at once")
 		inFlightMiB = flag.Int64("in-flight-mib", 512, "shard bytes in flight at once, MiB; a count of requests does not bound memory when one shard can be hundreds of MiB")
 		linkMbps    = flag.Int("link-mbps", 0, "this observer's measured receive rate, Mbit/s; when set, the shard bytes in flight are held to what it moves in half a request's time, so a timeout is never this observer's own full link (0 = not set)")
-		maxRead     = flag.Int("max-read-mbps", probe.DefaultMaxReadMbps, "reading-rate ceiling, Mbit/s: every request is charged its shard's bytes against a bucket of this rate (about a second of it as burst) and waits for them before it is let go, so the readings never take the port from what shares it; the wait is not the request's time, and one that would pass the request's start cutoff is NOT_PROBED (0 = no ceiling)")
+		maxRead     = flag.Int("max-read-mbps", probe.DefaultMaxReadMbps, "reading-rate ceiling, Mbit/s: every request is charged its shard's bytes against a bucket of this rate (a quarter of a second of it as burst) and waits for them before it is let go, so the readings leave room on the observer's port; the wait is not the request's time, and one that would pass the request's start cutoff is NOT_PROBED (0 = no ceiling)")
 		localHosts  = flag.Bool("allow-unroutable-hosts", false,
 			"dial registered hosts on loopback or a private range (a local devnet; never a public vantage)")
 		backfill = flag.Duration("backfill-missed", 0, "on (re)start, write NOT_PROBED rows only for readings newer than this that were not made; 0 (default) writes them for every one still on record")

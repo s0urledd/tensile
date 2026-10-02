@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,5 +79,69 @@ func TestTheFullReadingColumnsAreStoredAndBackfilled(t *testing.T) {
 	}
 	if subset, _ := read("v-before"); subset != 0 {
 		t.Fatalf("an earlier row after the backfill: subset %d", subset)
+	}
+}
+
+// A database rolled back by deleting its schema_migrations row 25 keeps the
+// two columns the migration added. The migration runs again over them when a
+// build at version 25 opens it: an ADD COLUMN whose column is there is
+// skipped, the backfill runs again, and the version is recorded.
+func TestMigration25RunsAgainAfterItsVersionRowIsDeleted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "o.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`DELETE FROM schema_migrations WHERE version = 25`); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen after the version row was deleted: %v", err)
+	}
+	defer st.Close()
+	var v int
+	if err := st.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	if v != SchemaVersion {
+		t.Fatalf("schema version %d after the migration ran again, want %d", v, SchemaVersion)
+	}
+	if _, err := st.db.Exec(`SELECT rows_subset_of_assignment, next_attempt_due FROM probes`); err != nil {
+		t.Fatalf("the columns after the migration ran again: %v", err)
+	}
+}
+
+// The backfill reads the rows whose flag the rule can read through the
+// class index, not every row since FullReadSince.
+func TestMigration25BackfillUsesTheClassIndex(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "o.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	var m25 migration
+	for _, m := range migrations {
+		if m.version == 25 {
+			m25 = m
+		}
+	}
+	rows, err := st.db.Query(`EXPLAIN QUERY PLAN ` + m25.stmts[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	if len(plan) == 0 || !strings.Contains(strings.Join(plan, "; "), "probes_class_time") {
+		t.Fatalf("the backfill's plan: %q, want a search of probes_class_time", plan)
 	}
 }

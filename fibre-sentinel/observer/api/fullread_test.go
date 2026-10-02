@@ -163,10 +163,21 @@ func TestTheAPIJudgesAFullReadingOnEachEndorsersAnswers(t *testing.T) {
 			ValidatorAddress string `json:"validator_address"`
 			Attempt          int    `json:"attempt"`
 			Service          string `json:"service"`
+			NextAttemptDue   string `json:"next_attempt_due"`
 		} `json:"probes"`
 	}
 	if code := get(t, ts, "/v1/blobs/fr1", &blob); code != 200 {
 		t.Fatalf("blob: %d", code)
+	}
+	// A row after which an attempt is still owed says when it is due; the
+	// last answer of a validator asked three times owes none.
+	for _, p := range blob.Probes {
+		owes := (p.ValidatorAddress == "never" && p.Attempt < 2) || p.ValidatorAddress == "owedgone" ||
+			(p.Attempt == 0 && (p.ValidatorAddress == "later" || p.ValidatorAddress == "toolate" || p.ValidatorAddress == "foreign")) ||
+			(p.ValidatorAddress == "ourside" && p.Attempt < 2)
+		if (p.NextAttemptDue != "") != owes {
+			t.Errorf("reading of %s, attempt %d: next_attempt_due %q, want one: %v", p.ValidatorAddress, p.Attempt, p.NextAttemptDue, owes)
+		}
 	}
 	if blob.Blob.Reconstructable.Status != "yes" {
 		t.Errorf("blob status %q, want yes", blob.Blob.Reconstructable.Status)

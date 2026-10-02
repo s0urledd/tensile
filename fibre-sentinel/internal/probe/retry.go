@@ -6,11 +6,16 @@ package probe
 // asked again, up to FullReadRetries more times, each RetrySpacing after
 // its last answer ended, while the attempt can start before
 // must_serve_until less RequestStartMargin. An attempt that could not start
-// by then is not owed: the row before it carries no NextAttemptDue, no job
-// is queued and no row is written for it, and that row is the validator's
-// last answer. A later answer that serves makes the validator served; every
-// attempt is its own row (Measurement.Attempt), so the record keeps each
-// failure and the reason shown is the last one.
+// by then because of the validator's own time is not owed: the row before
+// it carries no NextAttemptDue, no job is queued and no row is written for
+// it, and that row is the validator's last answer. This observer's own
+// delays before that answer (a late reading, the waits for room, a lane,
+// a restart: the job's shift) are taken out first: an attempt they alone
+// push past the cutoff stays owed and is recorded as not made, this
+// observer's gap, never the validator's last answer. A later answer that
+// serves makes the validator served; every attempt is its own row
+// (Measurement.Attempt), so the record keeps each failure and the reason
+// shown is the last one.
 //
 // The attempts live apart from the reading. The reading writes its rows
 // and gives back its blob slot (BlobConcurrency) and its Reconstructor when
@@ -35,9 +40,10 @@ package probe
 //
 // An attempt that was owed and could not be made (its cutoff passed while
 // it waited for the validator's earlier attempt or for this observer's
-// limits or reading-rate ceiling, the validator could not be resolved, or a
-// restart abandoned it)
-// is written NOT_PROBED: this observer's gap, never the validator's. The
+// limits or reading-rate ceiling, this observer's own delays before the
+// earlier answer left no time, the validator could not be resolved, or a
+// restart abandoned it) is written NOT_PROBED: this observer's gap, never
+// the validator's. The
 // queue of attempts is not persisted: a restarted prober finds the
 // attempts its record still owes (MeasurementStore.PendingAttempts) and
 // makes them, or records them as not made once their time is gone.
@@ -72,7 +78,13 @@ type retryJob struct {
 	result, clientErr string
 	// recovered: the attempt was owed by a reading an earlier run made.
 	recovered bool
-	index     int
+	// shift is this observer's own delay before the answer this attempt
+	// follows, summed over the validator's answers so far: how late the
+	// reading started and each request waited for room, and how late each
+	// earlier attempt started after it was due (its lane, its limits, a
+	// restart). Owed-ness is decided with it taken out (nextAttemptDue).
+	shift time.Duration
+	index int
 }
 
 // wake is when the job is looked at: when it is due, or at its cutoff if
@@ -433,7 +445,8 @@ func (p *Prober) retryAfterReading(b *blobReading, ms []Measurement) {
 		}
 		t := byAddr[m.ValidatorAddress]
 		p.retries.push(&retryJob{pub: b.pub, point: b.point, target: t.Target, resolved: true, order: t.order,
-			attempt: m.Attempt + 1, due: *m.NextAttemptDue, cutoff: b.startBy, result: result, clientErr: clientErr})
+			attempt: m.Attempt + 1, due: *m.NextAttemptDue, cutoff: b.startBy, result: result, clientErr: clientErr,
+			shift: b.shiftOf(m)})
 	}
 }
 
@@ -467,8 +480,10 @@ func (p *Prober) recoverRetries(pub scan.Publication, pt SchedulePoint) {
 // fsync of their own (runRetries syncs), and queues each validator's next
 // attempt when its row says one is owed.
 func (p *Prober) recordAttempts(jobs []*retryJob, rows []Measurement) {
+	shifts := make([]time.Duration, len(rows))
 	for i := range rows {
-		rows[i].NextAttemptDue = p.nextAttemptDue(rows[i], jobs[i].cutoff)
+		shifts[i] = jobs[i].shiftAfter(rows[i])
+		rows[i].NextAttemptDue = p.nextAttemptDue(rows[i], jobs[i].cutoff, shifts[i])
 	}
 	if err := p.store.AppendDeferredRows(rows); err != nil {
 		p.log.Fatalf("append attempt: %v", err)
@@ -488,22 +503,35 @@ func (p *Prober) recordAttempts(jobs []*retryJob, rows []Measurement) {
 		if m.NextAttemptDue != nil {
 			next := *j
 			next.attempt, next.due, next.index, next.recovered = m.Attempt+1, *m.NextAttemptDue, 0, false
+			next.shift = shifts[i]
 			p.retries.push(&next)
 		}
 		p.retries.done(j.pub.PromiseHash)
 	}
 }
 
+// shiftAfter is this observer's own delay before m, the answer of job j's
+// attempt: the delay before the answer it follows, and how late its request
+// started after it was due (its lane, this observer's limits, a restart).
+func (j *retryJob) shiftAfter(m Measurement) time.Duration {
+	return j.shift + max(0, m.StartedAt.Sub(j.due))
+}
+
 // nextAttemptDue is when the validator of a row of a full reading is to be
 // asked again: RetrySpacing after the row's answer ended, for an answer
 // that did not serve and is not an attempt that could not be made, while an
-// attempt is left and it can start before cutoff. nil when none is owed.
-func (p *Prober) nextAttemptDue(m Measurement, cutoff time.Time) *time.Time {
+// attempt is left and it can start before cutoff, or could have but for
+// shift, this observer's own delay before the answer (blobReading.shiftOf,
+// retryJob.shiftAfter). An attempt only those delays push past the cutoff
+// stays owed: it is recorded as not made (NOT_PROBED, this observer's gap)
+// when its cutoff comes, never left out so that the answer before it is the
+// validator's last. nil when none is owed.
+func (p *Prober) nextAttemptDue(m Measurement, cutoff time.Time, shift time.Duration) *time.Time {
 	if m.ScheduleLabel != FullReadLabel || m.Attempt >= FullReadRetries || m.Classification == ClassNotProbed || m.fullServed() {
 		return nil
 	}
 	due := m.FinishedAt.Add(p.cfg.RetrySpacing)
-	if !due.Before(cutoff) {
+	if !due.Add(-max(0, shift)).Before(cutoff) {
 		return nil
 	}
 	return &due
@@ -518,8 +546,11 @@ func (p *Prober) attempt(ctx context.Context, j *retryJob) (Measurement, bool) {
 	}
 	if !time.Now().Before(j.cutoff) {
 		why := "its validator's earlier attempt was still under way"
-		if j.recovered {
+		switch {
+		case j.recovered:
 			why = "abandoned by a restart of this observer"
+		case !j.due.Before(j.cutoff):
+			why = "this observer's own delays before the earlier answer left no time before the cutoff"
 		}
 		return notMade(p.notStartedReason("retry") + ": " + why)
 	}

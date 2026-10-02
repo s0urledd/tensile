@@ -470,12 +470,12 @@ func TestTheStoreKnowsTheAttemptsStillOwed(t *testing.T) {
 			StartedAt: at.Add(time.Duration(attempt) * time.Minute), FinishedAt: at.Add(time.Duration(attempt)*time.Minute + time.Second),
 			Attempt: attempt, Outcome: o, Classification: c, Phase: PhaseInWindow, Read: &ReadInfo{Order: 3, BlobResult: ReadAvailable}}
 		m.Download.CommitmentVerified = verified
-		m.NextAttemptDue = p.nextAttemptDue(m, cutoff)
+		m.NextAttemptDue = p.nextAttemptDue(m, cutoff, 0)
 		return m
 	}
 	late := row("late", FullReadLabel, 0, OutcomeNotFound, ClassFault, false)
 	late.FinishedAt = cutoff.Add(-time.Second) // 90 s on is past the cutoff
-	late.NextAttemptDue = p.nextAttemptDue(late, cutoff)
+	late.NextAttemptDue = p.nextAttemptDue(late, cutoff, 0)
 	ms := []Measurement{
 		row("open", FullReadLabel, 0, OutcomeNotFound, ClassFault, false),
 		row("served", FullReadLabel, 0, OutcomeNotFound, ClassFault, false),

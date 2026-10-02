@@ -87,7 +87,9 @@ type Config struct {
 	// RequestStartMargin is how long before must_serve_until the last
 	// request of a full reading may start, the reading's own or a later
 	// attempt (default 60 s). One that cannot start by then is not made, and
-	// its validator's row says so (NOT_PROBED): this observer's gap.
+	// its validator's row says so (NOT_PROBED): this observer's gap. The
+	// client's re-dial within a request is part of it and follows it, past
+	// the margin or not.
 	RequestStartMargin time.Duration
 	// RetrySpacing is how long after a validator's answer in a full reading
 	// did not serve it is asked again (default 90 s), up to FullReadRetries
@@ -118,8 +120,8 @@ type Config struct {
 	// ceiling; sentinel-probe sets DefaultMaxReadMbps): every request, the
 	// first pass's and every later attempt's, is charged its shard's
 	// expected bytes against a token bucket of this rate (ceiling.go) and
-	// let go once the bucket has them, so this observer never takes its
-	// shared port from the work beside it. The wait only delays, up to the
+	// let go once the bucket has them, so the readings leave room on the
+	// observer's port. The wait only delays, up to the
 	// request's start cutoff, and is not part of the request's time.
 	// LinkMbps bounds the bytes in flight at once and this the rate they
 	// are let go at; with both set, this belongs below the link.
@@ -1074,11 +1076,33 @@ const defaultInFlightBytes = 512 << 20
 // byteSem admits work by weight as well as by count. A single item heavier
 // than the whole budget is admitted alone rather than deadlocking, which is
 // the case that matters: one validator holding every row of a large blob.
+// Waiters are admitted first come, first served: only the one at the head
+// of the queue may take room, so a large shard (the validators that hold
+// the most rows) is not passed over by smaller ones until its cutoff. A
+// waiter that gives up leaves the queue.
 type byteSem struct {
 	mu    sync.Mutex
 	cond  *sync.Cond
 	limit int64
 	held  int64
+	queue []*byte // the waiters, in arrival order; each is a ticket of its own
+}
+
+// leave takes ticket w out of the queue. The caller holds mu.
+func (b *byteSem) leave(w *byte) {
+	for i, q := range b.queue {
+		if q == w {
+			b.queue = append(b.queue[:i], b.queue[i+1:]...)
+			return
+		}
+	}
+}
+
+// blocked reports whether ticket w must still wait for nBytes: it is not at
+// the head of the queue, or the room is not free (an item heavier than the
+// budget goes once nothing else is held). The caller holds mu.
+func (b *byteSem) blocked(w *byte, nBytes int64) bool {
+	return b.queue[0] != w || (b.held > 0 && b.held+nBytes > b.limit)
 }
 
 func newByteSem(limit int64) *byteSem {
@@ -1100,10 +1124,15 @@ func (b *byteSem) acquire(nBytes int64) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for b.held > 0 && b.held+nBytes > b.limit {
+	w := new(byte)
+	b.queue = append(b.queue, w)
+	for b.blocked(w, nBytes) {
 		b.cond.Wait()
 	}
+	b.leave(w)
 	b.held += nBytes
+	// the next in line may fit too
+	b.cond.Broadcast()
 }
 
 // acquireBy is acquire bounded by a deadline (a zero by is none) and a
@@ -1126,13 +1155,21 @@ func (b *byteSem) acquireBy(ctx context.Context, nBytes int64, by time.Time) boo
 	defer stop()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for b.held > 0 && b.held+nBytes > b.limit {
+	w := new(byte)
+	b.queue = append(b.queue, w)
+	for b.blocked(w, nBytes) {
 		if ctx.Err() != nil || (bounded && !time.Now().Before(by)) {
+			// out of line: the one behind may be at the head now
+			b.leave(w)
+			b.cond.Broadcast()
 			return false
 		}
 		b.cond.Wait()
 	}
+	b.leave(w)
 	b.held += nBytes
+	// the next in line may fit too
+	b.cond.Broadcast()
 	return true
 }
 

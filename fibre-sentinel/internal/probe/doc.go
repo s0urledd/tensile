@@ -19,8 +19,10 @@
 // that endorsed the promise is asked for its own rows, whatever the rows
 // already held, and one whose answer did not serve is asked again, up to
 // FullReadRetries times, Config.RetrySpacing after its last answer, while
-// the request can start Config.RequestStartMargin before must_serve_until
-// (retry.go; the row says when, Measurement.NextAttemptDue). The later
+// the request can start Config.RequestStartMargin before must_serve_until,
+// or could have but for this observer's own delays, which leave an attempt
+// owed and then not made, its own gap (retry.go; the row says when,
+// Measurement.NextAttemptDue). The later
 // attempts hold neither the reading's blob slot nor its Reconstructor, are
 // one request each with at most one in flight to a validator, and each
 // writes a row of its own (Measurement.Attempt); an endpoint that fails
@@ -33,8 +35,8 @@
 //
 // Every request waits for room under this observer's own limits: requests
 // and shard bytes in flight, and the rate shard bytes are let go at
-// (Config.MaxReadMbps, ceiling.go), so the observer never takes its shared
-// port from the work beside it. The wait only delays a request, up to its
+// (Config.MaxReadMbps, ceiling.go), so the readings leave room on the
+// observer's port. The wait only delays a request, up to its
 // start cutoff (past it the request is not made: NOT_PROBED, this
 // observer's gap), and is recorded on the row (LoadInfo), never in the
 // request's own time.

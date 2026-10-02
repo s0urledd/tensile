@@ -182,12 +182,12 @@ func TestAWaitPastTheCutoffIsNotProbed(t *testing.T) {
 	})
 }
 
-// A request larger than the bucket's burst still runs: it is charged the
-// burst and let go once the bucket is full, as the byte budget lets a shard
-// larger than itself go alone. A request whose turn would come at or after
-// its cutoff is refused and charged nothing, and a charge given back (the
-// run stopped while it waited) is the bucket's again.
-func TestARequestLargerThanTheBurstStillRuns(t *testing.T) {
+// A request larger than the bucket's burst is charged in full and waits for
+// the bucket to refill what it lacks, so the rate holds for it too; the
+// requests charged after it wait behind it. A request whose turn would come
+// at or after its cutoff is refused and charged nothing, and a charge given
+// back (the run stopped while it waited) is the bucket's again.
+func TestARequestLargerThanTheBurstWaitsForWhatItLacks(t *testing.T) {
 	c := newReadCeiling(1000, 1000)
 	clock := time.Unix(1_000_000, 0)
 	c.now = func() time.Time { return clock }
@@ -200,23 +200,47 @@ func TestARequestLargerThanTheBurstStillRuns(t *testing.T) {
 		}
 		return charged
 	}
-	if charged := step(5000, time.Time{}, 0, true); charged != 1000 {
-		t.Fatalf("an oversize request charged %.0f, want the burst", charged)
+	if charged := step(5000, time.Time{}, 4*time.Second, true); charged != 5000 {
+		t.Fatalf("an oversize request charged %.0f, want all of it", charged)
 	}
-	step(500, time.Time{}, 500*time.Millisecond, true)
-	step(5000, time.Time{}, 1500*time.Millisecond, true) // once the bucket is full again
-	step(100, clock.Add(time.Second), 0, false)          // its turn would be 1.6 s away
-	charged := step(100, time.Time{}, 1600*time.Millisecond, true)
+	step(500, time.Time{}, 4500*time.Millisecond, true) // behind it
+	step(100, clock.Add(time.Second), 0, false)         // its turn would be 4.6 s away
+	charged := step(100, time.Time{}, 4600*time.Millisecond, true)
 	c.refund(charged)
-	step(100, time.Time{}, 1600*time.Millisecond, true)
+	step(100, time.Time{}, 4600*time.Millisecond, true)
 	clock = clock.Add(time.Minute) // the bucket fills, to its burst and no more
 	step(1000, time.Time{}, 0, true)
 	step(1, time.Time{}, time.Millisecond, true)
 }
 
+// The client's re-dial after a first try that had its session waits for
+// the ceiling with no cutoff, and gives its charge back when the run stops
+// while it waits.
+func TestTheRedialsWaitForTheCeiling(t *testing.T) {
+	c := newReadCeiling(1000, 100)
+	if waited, ok := c.wait(context.Background(), 150); !ok || waited < 40*time.Millisecond || waited > 60*time.Millisecond {
+		t.Fatalf("150 bytes against a 100-byte bucket at 1000 B/s: waited %s ok %v, want about 50 ms", waited, ok)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, ok := c.wait(ctx, 10_000); ok {
+		t.Fatal("a stopped run's re-dial was let go")
+	}
+	c.mu.Lock()
+	tokens := c.tokens
+	c.mu.Unlock()
+	if tokens < -10 {
+		t.Fatalf("the stopped re-dial's charge was kept: %.0f tokens", tokens)
+	}
+	var none *readCeiling
+	if waited, ok := none.wait(context.Background(), 1<<30); !ok || waited != 0 {
+		t.Fatalf("no ceiling: waited %s ok %v", waited, ok)
+	}
+}
+
 // 0 is no ceiling: nothing is paced, and a gigabyte is let go at once. The
-// default is 400 Mbit/s, 50 MB a second, with a burst of about a second of
-// it and at least readBurstFloor.
+// default is 400 Mbit/s, 50 MB a second, with a burst of a quarter of a
+// second of it.
 func TestNoCeilingAtZero(t *testing.T) {
 	if rate, burst := ReadCeiling(0); rate != 0 || burst != 0 || newReadCeiling(rate, burst) != nil {
 		t.Fatalf("0 Mbit/s: rate %.0f, burst %.0f", rate, burst)
@@ -236,11 +260,11 @@ func TestNoCeilingAtZero(t *testing.T) {
 	if took := time.Since(start); took > 500*time.Millisecond {
 		t.Fatalf("three gigabytes took %s to let go without a ceiling", took)
 	}
-	if rate, burst := ReadCeiling(DefaultMaxReadMbps); rate != 50e6 || burst != readBurstFloor {
+	if rate, burst := ReadCeiling(DefaultMaxReadMbps); rate != 50e6 || burst != 12.5e6 {
 		t.Fatalf("the default: rate %.0f, burst %.0f", rate, burst)
 	}
-	if rate, burst := ReadCeiling(4000); rate != 500e6 || burst != rate {
-		t.Fatalf("4000 Mbit/s: rate %.0f, burst %.0f, want a second of the rate", rate, burst)
+	if rate, burst := ReadCeiling(4000); rate != 500e6 || burst != rate/4 {
+		t.Fatalf("4000 Mbit/s: rate %.0f, burst %.0f, want a quarter of a second of the rate", rate, burst)
 	}
 	p.cfg.MaxReadMbps = DefaultMaxReadMbps
 	p.initPace()

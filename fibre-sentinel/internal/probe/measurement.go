@@ -92,7 +92,9 @@ type Measurement struct {
 	// NextAttemptDue, on a row of a full reading that did not serve, is when
 	// its validator is to be asked again (retry.go): set only while an
 	// attempt is left and it can start before must_serve_until less the
-	// request start margin. A row that carries it is not the validator's
+	// request start margin, or could have but for this observer's own
+	// delays (then it may lie past that cutoff, and the attempt is recorded
+	// as not made when the cutoff comes). A row that carries it is not the validator's
 	// last answer: until the attempt is on record (made, or recorded as not
 	// made) the validator is judged on neither (observer/verdict), so an
 	// attempt this observer owed and never recorded is never read as the
@@ -502,14 +504,44 @@ func (s *MeasurementStore) loadSeen() error {
 		if len(sc.Bytes()) == 0 {
 			continue
 		}
-		var m Measurement
-		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
+		var r seenRow
+		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
 			return fmt.Errorf("%s line %d: %w", s.path, n+1, err)
 		}
-		s.remember(m)
+		s.remember(r.measurement())
 		n++
 	}
 	return sc.Err()
+}
+
+// seenRow is the part of a row that remember reads, and all loadSeen
+// decodes: a restart reads every row of the live file, days of full
+// readings, and decoding each whole row (its layers, its download, its
+// observer) took more than twice as long. Each field has the name, type
+// and JSON key of Measurement's (TestSeenRowMatchesMeasurement).
+type seenRow struct {
+	Vantage            string     `json:"vantage"`
+	PromiseHash        string     `json:"promise_hash"`
+	ValidatorAddress   string     `json:"validator_address"`
+	ValidatorHost      string     `json:"validator_host"`
+	HostAtSettlement   string     `json:"host_at_settlement,omitempty"`
+	Assigned           bool       `json:"assigned"`
+	Attested           bool       `json:"attested"`
+	AttestationUnknown bool       `json:"attestation_unknown,omitempty"`
+	AssignedRowCount   int        `json:"assigned_row_count"`
+	ScheduleLabel      string     `json:"schedule_label"`
+	ScheduledAt        time.Time  `json:"scheduled_at"`
+	Attempt            int        `json:"attempt,omitempty"`
+	NextAttemptDue     *time.Time `json:"next_attempt_due,omitempty"`
+	Read               *ReadInfo  `json:"read,omitempty"`
+}
+
+// measurement is the row as remember reads it.
+func (r seenRow) measurement() Measurement {
+	return Measurement{Vantage: r.Vantage, PromiseHash: r.PromiseHash, ValidatorAddress: r.ValidatorAddress,
+		ValidatorHost: r.ValidatorHost, HostAtSettlement: r.HostAtSettlement, Assigned: r.Assigned, Attested: r.Attested,
+		AttestationUnknown: r.AttestationUnknown, AssignedRowCount: r.AssignedRowCount, ScheduleLabel: r.ScheduleLabel,
+		ScheduledAt: r.ScheduledAt, Attempt: r.Attempt, NextAttemptDue: r.NextAttemptDue, Read: r.Read}
 }
 
 func (s *MeasurementStore) remember(m Measurement) {
