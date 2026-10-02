@@ -1,7 +1,7 @@
 "use client";
 import { Suspense, useCallback, useEffect, useState, type CSSProperties } from "react";
 import { useSearchParams } from "next/navigation";
-import { API_BASE, useApi, notFound, badRequest, throttled, hhmm, ago, type Blob, type Payment, type RecentBlob, type Tip, type Window, blobFee, bytes, int, nsDisplay, span, tia, utcWord } from "@/lib/api";
+import { API_BASE, useApi, notFound, badRequest, throttled, hhmm, ago, type Blob, type Payment, type PublisherNamespace, type RecentBlob, type Tip, type Window, blobFee, bytes, int, nsDisplay, span, tia, utcWord } from "@/lib/api";
 import type { Params, PublisherWithQueue, PublisherWithdrawals, WithdrawalRow } from "@/lib/withdrawals";
 import { useWindow, WindowSwitch, windowLabel } from "@/lib/window";
 import { lane } from "@/lib/status";
@@ -16,12 +16,18 @@ import { PanelFig } from "@/components/Metrics";
 import { age, monthDayTime } from "@/components/BlobsDeck";
 import Warn from "@/components/Warn";
 
+/** the publisher's figures over one of the periods, with the namespaces of its settlements in it (the most used first, at most 10) */
+type Span = {
+  window: Window; settlements: number; bytes: number; fees_utia: number; timeouts: number; paid_per_mib_utia: number | null;
+  namespaces?: PublisherNamespace[]; namespaces_total?: number;
+};
+
 type Detail = {
   window: Window;
   publisher: PublisherWithQueue;
   /** the escrow withdrawal queue as last read from state; null until read */
   withdrawals: PublisherWithdrawals | null;
-  windows: { window: Window; settlements: number; bytes: number; fees_utia: number; timeouts: number; paid_per_mib_utia: number | null }[];
+  windows: Span[];
   /** the newest 100 escrow movements of every kind, blob fees included */
   recent_payments: Payment[];
   recent_blobs: RecentBlob[];
@@ -34,44 +40,14 @@ const MAX_OFFSET = 100000;
 const MAX_PAGE = Math.floor(MAX_OFFSET / SIZE) + 1;
 /** recent_payments stops at this many: a history that long may be missing its oldest movements */
 const PAYMENTS_CAP = 100;
-/** a publisher's blobs read at once to say things of every one of them */
+/** a publisher's blobs read at once to say things of every one of them, where the API does not say them */
 const AT_ONCE = 100;
-/** past that, the namespaces seen in its newest blobs are counted one by one, up to this many */
-const NS_CHECK = 8;
 
 /** a page of /v1/blobs, newest first, with the count of every blob its filter matches */
 async function blobsAt(query: string): Promise<{ blobs: Blob[]; total: number }> {
   const r = await fetch(`${API_BASE}/v1/blobs?${query}`, { cache: "no-store" });
   if (!r.ok) throw new Error(String(r.status));
   return r.json();
-}
-
-/**
- * How many of a publisher's blobs each of these namespaces holds: a page of
- * one blob a namespace, whose total is the count, beside the count of all of
- * them read at the same moment. Counted again when the publisher's total
- * moves. Only counts that add up to all of them are taken, and they stay
- * while the next are read, so the namespaces never blink: undefined while
- * the first count of these namespaces is read, null when it did not add up
- * or a read failed, so a partial count is never shown.
- */
-function useNsTotals(addr: string, nss: string[] | null, total: number | null): Map<string, number> | null | undefined {
-  const set = nss?.join(",") ?? "";
-  const [got, setGot] = useState<{ set: string; totals: Map<string, number> | null } | null>(null);
-  useEffect(() => {
-    if (!nss || nss.length === 0) return;
-    let gone = false;
-    // a count that does not add up, or fails, takes no count already shown away
-    const keep = () => { if (!gone) setGot((g) => (g?.set === set && g.totals ? g : { set, totals: null })); };
-    Promise.all([blobsAt(`publisher=${addr}&limit=1`), ...nss.map((ns) => blobsAt(`publisher=${addr}&namespace=${ns}&limit=1`))])
-      .then(([every, ...each]) => {
-        if (each.reduce((s, x) => s + x.total, 0) !== every.total) return keep();
-        if (!gone) setGot({ set, totals: new Map(nss.map((ns, i) => [ns, each[i].total])) });
-      }, keep);
-    return () => { gone = true; };
-  }, [addr, set, total]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (!nss || nss.length === 0) return null;
-  return got && got.set === set ? got.totals : undefined;
 }
 
 /**
@@ -248,16 +224,20 @@ function Publisher({ addr }: { addr: string }) {
   const live = page === 1;
   const feed = useLedger(`/v1/blobs?limit=${SIZE}&offset=${offset}&publisher=${addr}${ns ? `&namespace=${encodeURIComponent(ns)}` : ""}`, live && tab === "blobs", tip.data?.height, skew);
 
-  // Its blobs read at once, to say things of all of them: the newest, the oldest, the namespaces with its settlements
-  // in each, and what Tensile read. Past AT_ONCE the oldest is a read of its own, the namespaces seen are counted one
-  // by one and named only when their counts add up to its total, and Tensile's readings go unsaid.
-  const head = useApi<{ blobs: Blob[]; total: number }>(`/v1/blobs?publisher=${addr}&limit=${AT_ONCE}`, 60000);
-  const total = head.data?.total ?? null;
+  // What the API says of all its blobs, whatever the period: its first and last blob, the namespaces of the whole
+  // record (the "all" span's), and Tensile's reading of every one. An API from before them, or one that has not counted
+  // the readings since it started, leaves the page to read its blobs at once as it used to: the newest, the oldest
+  // (past AT_ONCE a read of its own), the namespaces with its settlements in each and what Tensile read, while every
+  // one is in hand.
+  const firstAt = pub.data?.publisher.first_settlement_at;
+  const allSpan = pub.data?.windows.find((w) => w.window.name === "all");
+  const apiNs = allSpan?.namespaces;
+  const apiRead = pub.data?.publisher.readings ?? null;
+  const ask = !!pub.data && (firstAt === undefined || apiNs === undefined || !apiRead);
+  const head = useApi<{ blobs: Blob[]; total: number }>(ask ? `/v1/blobs?publisher=${addr}&limit=${AT_ONCE}` : null, 60000);
   const whole = head.data && head.data.blobs.length >= head.data.total ? head.data.blobs : null;
-  const oldest = useFirstBlob(addr, head.data && !whole ? head.data.total : null);
-  const seen = head.data && !whole ? [...new Set(head.data.blobs.map((b) => b.namespace))] : null;
-  const counted = seen && seen.length <= NS_CHECK ? seen : null;
-  const totals = useNsTotals(addr, counted, total);
+  const oldest = useFirstBlob(addr, firstAt === undefined && head.data && !whole ? head.data.total : null);
+  const seen = apiNs === undefined && head.data && !whole ? [...new Set(head.data.blobs.map((b) => b.namespace))] : null;
 
   const { data, error, loading } = pub;
   if (!data && error) return <p className="notice">{
@@ -269,28 +249,38 @@ function Publisher({ addr }: { addr: string }) {
 
   const p = data.publisher;
   const all = data.windows.find((w) => w.window.name === "all");
-  // the newest blob: the ledger's, while it shows a newer one than the last read of all of them
-  const newest = [feed.loaded && !ns ? feed.rows[0] : undefined, head.data?.blobs[0]].filter((b): b is Blob => !!b)
-    .sort((a, b) => b.settlement_height - a.settlement_height)[0] ?? null;
-  const first = whole ? whole[whole.length - 1] ?? null : oldest ?? null;
+  // the newest blob: the ledger's, while it shows a newer one than the API's last settlement (or the last read of all of them)
+  const newest = [feed.loaded && !ns ? feed.rows[0]?.settlement_time : undefined, head.data?.blobs[0]?.settlement_time, p.last_settlement_at ?? undefined]
+    .filter((t): t is string => !!t).sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
+  // the first blob: its time, and the height where the blob itself was read
+  const firstBlob = firstAt !== undefined ? null : whole ? whole[whole.length - 1] ?? null : oldest ?? null;
+  const first = firstAt !== undefined ? firstAt : firstBlob?.settlement_time ?? null;
   let nss: { ns: string; n: number }[] | null = null;
-  if (whole) {
+  let nsMore = 0;
+  if (apiNs) {
+    nss = apiNs.map((x) => ({ ns: x.namespace, n: x.settlements }));
+    nsMore = Math.max(0, (allSpan?.namespaces_total ?? apiNs.length) - apiNs.length);
+  } else if (whole) {
     const m = new Map<string, number>();
     for (const b of whole) m.set(b.namespace, (m.get(b.namespace) ?? 0) + 1);
     nss = [...m].map(([ns, n]) => ({ ns, n }));
-  } else if (seen && totals) {
-    nss = seen.map((x) => ({ ns: x, n: totals.get(x)! }));
   }
-  // Tensile's reading of each of its blobs, in the Blobs list's own words, while every one is in hand
-  const read = whole && whole.length > 0 ? whole.reduce((c, b) => { const w = lane(b).word; c[w] = (c[w] ?? 0) + 1; return c; }, {} as Record<string, number>) : null;
-  // Until those reads land, each row they will fill keeps its place under a placeholder, so nothing below the block
-  // moves when they do. Which rows will come, its count of settlements says before its blobs are read: all four up to
-  // AT_ONCE blobs; past that no reading, and no first blob past the last offset the API serves.
+  // Tensile's reading of each of its blobs, in the Blobs list's own words (lane())
+  let read: Record<string, number> | null = null;
+  if (apiRead) {
+    const r = { unavailable: apiRead.unavailable, available: apiRead.available, "retention window": apiRead.in_retention_window, "not read": apiRead.not_read };
+    read = Object.values(r).some((v) => v > 0) ? r : null;
+  } else if (whole && whole.length > 0) {
+    read = whole.reduce((c, b) => { const w = lane(b).word; c[w] = (c[w] ?? 0) + 1; return c; }, {} as Record<string, number>);
+  }
+  // Until the reads of an API from before these land, each row they will fill keeps its place under a placeholder, so
+  // nothing below the block moves when they do. Which rows will come, its count of settlements says before its blobs
+  // are read: all four up to AT_ONCE blobs; past that no reading, and no first blob past the last offset the API serves.
   const n = all?.settlements ?? 0;
-  const reading = !head.data && !head.error;
-  const firstWait = !first && (reading ? n - 1 <= MAX_OFFSET : !whole && oldest === undefined);
-  const nsWait = !nss && (reading || (!!counted && totals === undefined));
-  const readWait = !read && reading && n <= AT_ONCE;
+  const reading = ask && !head.data && !head.error;
+  const firstWait = !first && firstAt === undefined && (reading ? n - 1 <= MAX_OFFSET : !whole && oldest === undefined);
+  const nsWait = !nss && apiNs === undefined && reading;
+  const readWait = !read && !apiRead && reading && n <= AT_ONCE;
 
   // the escrow now, and whether it pays for one more blob of the account's average size over every blob it posted
   const e = p.escrow?.found ? p.escrow : null;
@@ -333,18 +323,19 @@ function Publisher({ addr }: { addr: string }) {
           <dl className="pb-meta">
             <dt>Last blob</dt>
             <dd>{newest
-              ? <><b>{age(now - Date.parse(newest.settlement_time))} ago</b><em title={utcWord(newest.settlement_time)}>{monthDayTime(newest.settlement_time)} UTC</em></>
+              ? <><b>{age(now - Date.parse(newest))} ago</b><em title={utcWord(newest)}>{monthDayTime(newest)} UTC</em></>
               : <span className="wait">2 d 21 h ago Sep 28 20:48:38 UTC</span>}</dd>
             {(first || firstWait) && <><dt>First blob</dt><dd>{first
-              ? <><b title={`${utcWord(first.settlement_time)} · height ${int(first.settlement_height)}`}>{monthDayTime(first.settlement_time)}</b><em>UTC</em></>
+              ? <><b title={firstBlob ? `${utcWord(first)} · height ${int(firstBlob.settlement_height)}` : utcWord(first)}>{monthDayTime(first)}</b><em>UTC</em></>
               : <span className="wait">Sep 28 12:47:32 UTC</span>}</dd></>}
             {nss && nss.length > 0 && <>
-              <dt>Namespace{nss.length === 1 ? "" : "s"}</dt>
+              <dt>Namespace{nss.length + nsMore === 1 ? "" : "s"}</dt>
               <dd className="pb-nss">
                 {nss.map((x) => (
                   <button key={x.ns} type="button" className="nsb" title={`${x.ns} · ${int(x.n)} settlement${x.n === 1 ? "" : "s"} · show only these`}
                     onClick={() => { setNs(x.ns); setTab("blobs"); document.getElementById("list")?.scrollIntoView({ block: "start" }); }}>{nsDisplay(x.ns)}</button>
                 ))}
+                {nsMore > 0 && <span className="more">+{int(nsMore)} more</span>}
               </dd>
             </>}
             {!nss && nsWait && <><dt>Namespaces</dt><dd><span className="wait">sov-niko-a</span></dd></>}

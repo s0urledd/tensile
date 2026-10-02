@@ -1892,6 +1892,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .pb-meta em { font-style: normal; color: var(--text-3); }
 .pb-meta .pb-nss { column-gap: 14px; row-gap: 2px; }
 .pb-nss .nsb { color: var(--text); }
+.pb-nss .more { color: var(--text-3); }
 .pb-meta .pb-tally { column-gap: 0; }
 .pb-tally .sep { margin: 0 8px; color: var(--text-3); }
 .pb-tally .ok { color: var(--ok); }
