@@ -396,16 +396,3 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
     </div>
   );
 }
-
-/** Every UTC day from start to end inclusive, as YYYY-MM-DD. */
-export function calendar(start: Date, end: Date): string[] {
-  const out: string[] = [];
-  const t0 = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
-  const t1 = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
-  for (let t = t0; t <= t1; t += 86400_000) out.push(new Date(t).toISOString().slice(0, 10));
-  return out;
-}
-
-/** The categorical slots, in fixed order, plus the fold-in for the rest. */
-export const CATEGORICAL = ["var(--cat-1)", "var(--cat-2)", "var(--cat-3)", "var(--cat-4)", "var(--cat-5)"];
-export const OTHER_COLOR = "var(--cat-other)";
