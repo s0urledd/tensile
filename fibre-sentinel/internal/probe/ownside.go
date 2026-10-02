@@ -13,11 +13,11 @@ package probe
 //   - its network was down: a connect that timed out or found no route,
 //     while no request of this observer reached any server from
 //     OwnSideWindow before the request began until it ended, and none of
-//     the endpoints this observer reached last answers a connect now
-//     (networkUp). A whole reading that reached no server is already this
-//     observer's gap (verdict Reading.Ran); this is the same for an answer
-//     whose own minutes saw this observer reach no one, however its
-//     reading went;
+//     the endpoints of other validators this observer reached last answers
+//     a connect now (networkUp). A whole reading that reached no server is
+//     already this observer's gap (verdict Reading.Ran); this is the same
+//     for an answer whose own minutes saw this observer reach no one,
+//     however its reading went;
 //   - its resolver was slow: the lookup took more than SlowLookup of the
 //     request's time, and the request then ran out of time;
 //   - its clock: a certificate read as outside its signed window, when the
@@ -62,8 +62,9 @@ type reachLog struct {
 }
 
 type reachEvent struct {
-	at       time.Time // when the connection opened, or was refused
-	endpoint string    // the address it connected to; "" when refused
+	at        time.Time // when the connection opened, or was refused
+	endpoint  string    // the address it connected to; "" when refused
+	validator string    // whose endpoint it was
 }
 
 // note records a request that reached a server (Reached by its connection).
@@ -80,7 +81,7 @@ func (l *reachLog) note(m Measurement) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.ev = append(l.ev, reachEvent{at: at, endpoint: ep})
+	l.ev = append(l.ev, reachEvent{at: at, endpoint: ep, validator: m.ValidatorAddress})
 	cut := time.Now().Add(-reachKeep)
 	i := 0
 	for i < len(l.ev) && l.ev[i].at.Before(cut) {
@@ -104,15 +105,15 @@ func (l *reachLog) reachedBetween(from, to time.Time) bool {
 }
 
 // recentEndpoints is up to n of the addresses connected to last, newest
-// first, each once.
-func (l *reachLog) recentEndpoints(n int) []string {
+// first, each once, none of them except's.
+func (l *reachLog) recentEndpoints(n int, except string) []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	seen := map[string]bool{}
 	var out []string
 	for i := len(l.ev) - 1; i >= 0 && len(out) < n; i-- {
 		ep := l.ev[i].endpoint
-		if ep == "" || seen[ep] {
+		if ep == "" || seen[ep] || (except != "" && l.ev[i].validator == except) {
 			continue
 		}
 		seen[ep] = true
@@ -126,17 +127,18 @@ const networkCheckTTL = 10 * time.Second
 
 // networkUp reports whether this observer can reach the servers it reached
 // last: a TCP connect, closed at once, to up to three of the addresses it
-// connected to most recently, three seconds each, at once. One that
-// connects says the network is up. With none to try (nothing reached in
-// half an hour) it is not shown up. One check answers for ten seconds.
-func (p *Prober) networkUp(ctx context.Context) bool {
+// connected to most recently, other than the failing validator's (except),
+// three seconds each, at once. One that connects says the network is up.
+// With none to try (nothing reached in half an hour) it is not shown up.
+// One check answers for ten seconds.
+func (p *Prober) networkUp(ctx context.Context, except string) bool {
 	l := &p.reach
 	l.checkMu.Lock()
 	defer l.checkMu.Unlock()
 	if !l.checkedAt.IsZero() && time.Since(l.checkedAt) < networkCheckTTL {
 		return l.up
 	}
-	eps := l.recentEndpoints(3)
+	eps := l.recentEndpoints(3, except)
 	up := false
 	if len(eps) > 0 {
 		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -178,9 +180,9 @@ func (p *Prober) ownSide(ctx context.Context, m *Measurement) {
 		why = "this observer's own resolver: the lookup took " + (time.Duration(m.DNS.DurationMS) * time.Millisecond).String() +
 			" of the request's time, and the request then ran out of it"
 	case (m.Outcome == OutcomeTCPTimeout || m.Outcome == OutcomeTCPUnreachable) &&
-		!p.reach.reachedBetween(m.StartedAt.Add(-OwnSideWindow), m.FinishedAt) && !p.networkUp(ctx):
+		!p.reach.reachedBetween(m.StartedAt.Add(-OwnSideWindow), m.FinishedAt) && !p.networkUp(ctx, m.ValidatorAddress):
 		why = "this observer's own network: no request of this observer reached any server from " + OwnSideWindow.String() +
-			" before this one began until it ended, and none of the servers it reached last answered a connect after it"
+			" before this one began until it ended, and none of the other servers it reached last answered a connect after it"
 	}
 	if why == "" {
 		return

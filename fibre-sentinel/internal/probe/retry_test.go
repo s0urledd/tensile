@@ -196,7 +196,7 @@ func TestAFailureOnThisObserversSideIsItsOwnGap(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	row := func(label string, o Outcome) Measurement {
-		m := Measurement{ScheduleLabel: label, Phase: PhaseInWindow, Assigned: true, Attested: true,
+		m := Measurement{ValidatorAddress: "v9", ScheduleLabel: label, Phase: PhaseInWindow, Assigned: true, Attested: true,
 			StartedAt: now.Add(-15 * time.Second), FinishedAt: now, Outcome: o, RawError: "dial tcp: i/o timeout"}
 		m.TCP = StepResult{Attempted: true}
 		classifyRow(&m)
@@ -214,7 +214,7 @@ func TestAFailureOnThisObserversSideIsItsOwnGap(t *testing.T) {
 	goneAddr := gone.Addr().String()
 	gone.Close()
 	reached := func(at time.Time, ep string) Measurement {
-		return Measurement{StartedAt: at, TCP: StepResult{OK: true, Detail: "-> " + ep}}
+		return Measurement{ValidatorAddress: "v1", StartedAt: at, TCP: StepResult{OK: true, Detail: "-> " + ep}}
 	}
 
 	for _, c := range []struct {
@@ -231,6 +231,11 @@ func TestAFailureOnThisObserversSideIsItsOwnGap(t *testing.T) {
 			func() Measurement { return row(FullReadLabel, OutcomeTCPTimeout) }, false},
 		{"the servers reached earlier do not answer", []Measurement{reached(now.Add(-10*time.Minute), goneAddr)},
 			func() Measurement { return row(FullReadLabel, OutcomeTCPTimeout) }, true},
+		{"only the failing validator's own endpoint was reached earlier", []Measurement{func() Measurement {
+			m := reached(now.Add(-10*time.Minute), up.Addr().String())
+			m.ValidatorAddress = "v9"
+			return m
+		}()}, func() Measurement { return row(FullReadLabel, OutcomeTCPTimeout) }, true},
 		{"not a full reading", nil, func() Measurement { return row(EnoughReadLabel, OutcomeTCPTimeout) }, false},
 		{"refused: a server answered", nil, func() Measurement { return row(FullReadLabel, OutcomeTCPRefused) }, false},
 		{"slow lookup, then out of time", nil, func() Measurement {
