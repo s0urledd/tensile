@@ -506,7 +506,6 @@ input[type=search]:focus { border-color: var(--accent); outline: none; }
 .note ul { margin: 0; padding-left: 1.2em; color: var(--text-2); }
 .coverage { font-size: var(--t-cell); color: var(--text-2); margin: 12px 0 0; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .card { padding: 0; }
-.kvcard { margin-bottom: 28px; }
 dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 24px; margin: 0; font-size: var(--t-cell); }
 dl.kv dt { color: var(--text-2); }
 dl.kv dd { margin: 0; word-break: break-all; }
@@ -833,9 +832,6 @@ body { background: var(--canvas); }
 .tablewrap.framed tbody tr:hover td { background: color-mix(in srgb, var(--accent) 5%, var(--paper)); }
 .tablewrap.framed tbody tr:hover .col-pin { background: color-mix(in srgb, var(--accent) 5%, var(--paper)); }
 .tablewrap.framed .muted { padding-top: 20px; padding-bottom: 20px; }
-/* the publishers table: figures in the text face with even digits, the address monospaced */
-.pt td.mono:not(:first-child) { font-family: inherit; font-variant-numeric: tabular-nums; }
-.pt td:first-child a { font-weight: 500; }
 
 /* numbered pages: the count, then pill buttons */
 .pager { margin-top: 16px; font-size: var(--t-cell); }
