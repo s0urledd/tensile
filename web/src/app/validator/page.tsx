@@ -1,11 +1,15 @@
 "use client";
-import { Suspense, useState } from "react";
+import { Suspense, useCallback, useState, type CSSProperties } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import { useApi, type ValidatorDetail, type ValidatorReading, type Window, type RecordThrough, type Obligations, type Meta, type EndpointCheck, int, pctOf, bytes, utcWord, hhmmss, dateUTC, whenUTC, shortMid, notFound, rateTone, notCountedText, badRequest, MIN_RATED, API_BASE, provisionalNow, type ProvisionalFaults, type NetworkReference } from "@/lib/api";
-import { useWindow, WindowSwitch, windowLabel } from "@/lib/window";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useApi, type ValidatorDetail, type ValidatorReading, type Window, type RecordThrough, type Obligations, type Meta, type EndpointCheck, int, pctOf, bytes, utcWord, dateUTC, whenUTC, shortMid, notFound, rateTone, notCountedText, badRequest, MIN_RATED, API_BASE, provisionalNow, type ProvisionalFaults, type NetworkReference } from "@/lib/api";
+import { useWindow, WindowSwitch, windowLabel, periodName } from "@/lib/window";
 import StatusLine from "@/components/StatusLine";
-import { Metric, Metrics } from "@/components/Metrics";
+import { PanelFig, Eye } from "@/components/Metrics";
+import Warn from "@/components/Warn";
+import { unit } from "@/components/Unit";
+import { age, monthDayTime } from "@/components/BlobsDeck";
+import { openRow } from "@/lib/row";
 import Copy from "@/components/Copy";
 import Avatar from "@/components/Avatar";
 import { endpoint } from "@/components/Validators";
@@ -103,18 +107,10 @@ const probeWord = (p: ValidatorReading): [string, string] => {
 const identityWord: Record<string, string> = { verified: "verified", expired: "expired", mismatch: "not this validator’s key", no_tls: "no TLS", unverified: "unverified", unreachable: "unreachable" };
 
 /**
- * What the newest readings add up to, by what came back.
- *
- * This replaced a line that read "No failed probe among the newest 50 rows"
- * over fifty rows of "tcp refused", next to a Broken figure of six. Both were
- * true in the narrow sense, and together they told an operator their endpoint
- * was fine when it had not answered in a day. So the rows are counted by
- * outcome group, every group that occurs is named, and "not served" is always
- * named, zero included.
- *
- * The groups are read off the observer's own service word, classification
- * and wire outcome, never re-judged: not served is what the obligations
- * count as not served, and nothing else.
+ * What came back, in groups, read off the observer's own service word,
+ * classification and wire outcome and never re-judged: not served is what the
+ * obligations count as not served, and nothing else. The Not served tab selects
+ * on the same judgement as the lane's word, so the two cannot disagree.
  */
 const REACH_FAIL = new Set(["DNS_FAIL", "TCP_REFUSED", "TCP_TIMEOUT", "TCP_UNREACHABLE", "TLS_HANDSHAKE_FAIL", "RPC_UNAVAILABLE", "RPC_ERROR", "RPC_TIMEOUT"]);
 const GROUPS = ["served", "unreachable", "certificate rejected", "no endpoint", "not found", "answered with an error", "not counted", "other", "not served"] as const;
@@ -129,18 +125,36 @@ function groupOf(p: ValidatorReading): Group {
   if (p.classification === "SERVER_ERROR" || p.classification === "THROTTLED") return "answered with an error";
   return "other";
 }
-/** "Newest 50 readings: 43 served, 7 unreachable, 0 not served" */
-function evidenceSummary(rows: { g: Group }[]): string {
-  const n = new Map<Group, number>();
-  for (const r of rows) n.set(r.g, (n.get(r.g) ?? 0) + 1);
-  const parts = GROUPS.filter((g) => g === "not served" || (n.get(g) ?? 0) > 0).map((g) => `${int(n.get(g) ?? 0)} ${g}`);
-  return `Newest ${int(rows.length)} reading${rows.length === 1 ? "" : "s"}: ${parts.join(", ")}`;
+const plural = (n: number, w: string) => `${int(n)} ${w}${n === 1 ? "" : "s"}`;
+const lower = (w: string) => w.charAt(0).toLowerCase() + w.slice(1);
+/** groups where the validator's side failed while the blob was available from the others: counted neither way */
+const HELD = new Set<Group>(["unreachable", "certificate rejected", "no endpoint", "not found", "answered with an error"]);
+type Tone = "ok" | "fault" | "hold" | "quiet";
+/**
+ * The lane's word for one reading, in the Blobs list's tones: served green,
+ * not served red, a failure that did not count amber with its dot (the rows
+ * did not come back and the blob was available all the same), and the
+ * readings that count neither way for a reason of their own quiet.
+ */
+function resultOf(p: ValidatorReading, g: Group): { word: string; tone: Tone } {
+  if (g === "not served") return { word: `not served · ${whatCame(p)}${p.provisional ? " · provisional" : ""}`, tone: "fault" };
+  if (p.service === "served") return { word: "served", tone: "ok" };
+  const [w, mk] = probeWord(p);
+  if (mk === "unsigned" || p.classification === "NOT_PROBED" || p.classification === "PROBE_ERROR") return { word: lower(w), tone: "quiet" };
+  if (HELD.has(g)) return { word: g === "certificate rejected" || g === "answered with an error" ? lower(wordOf(p.classification)[0]) : g, tone: "hold" };
+  return { word: lower(w.replace(/ · not counted$/, "")), tone: "quiet" };
 }
 
 function Page() {
   const addr = useSearchParams().get("addr") ?? "";
   const [win, setWin] = useWindow("24h");
   const [onlyNotServed, setOnlyNotServed] = useState(false);
+  const router = useRouter();
+  const onOpen = useCallback((e: React.MouseEvent, href: string) => {
+    // a plain click stays in the app; a modified or middle click is the browser's
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    router.push(href);
+  }, [router]);
   const { data: meta, error: metaErr } = useApi<Meta>("/v1/meta");
   const d = useApi<Detail>(addr ? `/v1/validators/${addr}?window=${win}` : null);
   const notLive = !!meta?.app_version && !meta.fibre_active;
@@ -193,6 +207,19 @@ function Page() {
   const ref = data.network_reference;
   const refText = ref && ref.median_rate != null ? `network median ${pctFrac(ref.median_rate)}` : ref && ref.pooled_rate.den > 0 ? `network ${pctOf(ref.pooled_rate.num, ref.pooled_rate.den)}` : "";
 
+  // Readings in this period that did not count because something on the validator's side failed while the blob was
+  // available from the others (a wrong certificate, an endpoint that did not answer): the rate cannot show them, so
+  // its figure carries a dot that names them.
+  const since = data.window.start ? Date.parse(data.window.start) : 0;
+  const held = grouped.filter((r) => resultOf(r.p, r.g).tone === "hold" && Date.parse(r.p.started_at) >= since);
+  const heldBy = new Map<string, number>();
+  for (const r of held) { const w = resultOf(r.p, r.g).word; heldBy.set(w, (heldBy.get(w) ?? 0) + 1); }
+  const heldWhy = [...heldBy].map(([w, n]) => `${w} (${int(n)})`).join(", ");
+  const tone = o && decided > 0 ? rateTone(o.served, decided) : undefined;
+  const now = Date.now();
+  const per = periodName(data.window.name ?? win);
+  const cells = 4 + ((v.timeouts_enforced ?? 0) > 0 ? 1 : 0);
+
   return (
     <>
       <div className="head">
@@ -207,140 +234,140 @@ function Page() {
         </div>
         <WindowSwitch value={win} onChange={setWin} />
       </div>
-      <dl className="facts">
+
+      {/* who and where: the publisher page's light frame of facts, one row each */}
+      <dl className="pb-meta vd-meta">
         {v.host
-          ? <div><dt>Endpoint</dt><dd><span className="mono">{v.host}</span>{v.endpoint_since && <span className="soft"> · since {shortDate(v.endpoint_since)}</span>}</dd></div>
-          : v.last_host && <div title="The registration stays on chain; the validator left the bonded provider list."><dt>Last endpoint</dt><dd><span className="mono">{v.last_host}</span>{v.endpoint_closed_at && <span className="soft"> · left {dateUTC(v.endpoint_closed_at)}</span>}</dd></div>}
-        {v.host && v.hosting && <div><dt>Hosting</dt><dd><HostingFact h={v.hosting} /></dd></div>}
-        {/* One fact: the operator address, and the consensus address under it as the second. Each is an .addr line, so a narrow card shortens the address and never hides its copy button. */}
-        <div><dt>{v.operator_address ? "Operator address" : "Consensus address"}</dt>
-          {v.operator_address && <dd className="addr" title={v.operator_address}><MidAddr s={v.operator_address} /><Copy text={v.operator_address} label="operator address" /></dd>}
-          <dd className={v.operator_address ? "addr second" : "addr"} title={[v.cons_address && `consensus ${v.cons_address}`, `hex ${v.address}`].filter(Boolean).join(" · ")}>{v.operator_address && <span className="addr-k">consensus</span>}<MidAddr s={cons} /><Copy text={cons} label="consensus address" /></dd>
-        </div>
-        <div><dt>Links</dt><dd>
-          {site && <><a href={site} rel="nofollow noopener noreferrer" target="_blank">{site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</a><span className="soft"> · </span></>}
+          ? <><dt>Endpoint</dt><dd><span className="mono">{v.host}</span>{v.endpoint_since && <em>since {shortDate(v.endpoint_since)}</em>}</dd></>
+          : v.last_host && <><dt>Last endpoint</dt><dd title="The registration stays on chain; the validator left the bonded provider list."><span className="mono">{v.last_host}</span>{v.endpoint_closed_at && <em>left {dateUTC(v.endpoint_closed_at)}</em>}</dd></>}
+        {v.host && v.hosting && <><dt>Hosting</dt><dd><HostingFact h={v.hosting} /></dd></>}
+        {v.operator_address && <><dt>Operator</dt><dd className="vd-addr" title={v.operator_address}><MidAddr s={v.operator_address} /><Copy text={v.operator_address} label="operator address" /></dd></>}
+        <dt>Consensus</dt><dd className="vd-addr" title={[v.cons_address && `consensus ${v.cons_address}`, `hex ${v.address}`].filter(Boolean).join(" · ")}><MidAddr s={cons} /><Copy text={cons} label="consensus address" /></dd>
+        <dt>Links</dt><dd>
+          {site && <><a href={site} rel="nofollow noopener noreferrer" target="_blank">{site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</a><em>·</em></>}
           <a href={`${API_BASE}/v1/validators/${own}/feed.atom`} type="application/atom+xml" title="Endpoint changes of this validator, as an Atom feed">Atom feed</a>
-        </dd></div>
+        </dd>
       </dl>
       <PreLive meta={meta} />
       <StatusLine meta={meta} metaError={metaErr} snap={{ record_through: data.record_through, window: data.window }} client={{ error: d.error, fetchedAt: d.fetchedAt, status: d.status }} measuring={measuring} />
+      {/* the conclusion before the figures; before activation there is nothing to conclude, and StatusLine says so */}
+      {!notLive && <Diagnosis v={v} check={data.last_endpoint_check} meta={meta} decided={decided} />}
 
-      <section className="group" id="chain">
-        <div className="vhead"><div><h2>On chain</h2><p className="sub">Read from the chain, nothing measured.</p></div></div>
-        <Metrics>
-          {sig && sig.assigned > 0
-            ? <Metric label="Endorsements" value={pctOf(sig.signed, sig.assigned)} help={`${int(sig.signed)} of ${int(sig.assigned)} settlements`} title={ENDORSE_TITLE} />
-            : att && att.blob_coverage.den > 0
-              ? <Metric label="Endorsements" value={pctOf(att.attested_blobs, att.blob_coverage.den)} help={`${int(att.attested_blobs)} of ${int(att.blob_coverage.den)} blobs`} title={ENDORSE_TITLE} />
-              : <Metric label="Endorsements" value="—" tone="absent" help="no settlement assigned it rows" title={ENDORSE_TITLE} />}
-          {load && <>
-            <Metric label="Rows per blob" value={int(load.rows_per_blob)} help="of every settled blob, by stake"
-              title="Rows the assignment gives this validator on the newest settled blob. Rows follow stake, not blob size." />
-            <Metric label="Shard data" value={notLive ? "—" : bytes(load.bytes)} tone={notLive ? "absent" : undefined}
-              help={`${int(load.promises)} endorsed blobs in the period`}
-              title="Row data of the shards this validator stored and endorsed over the period's settled blobs: blob_size / 4096 per row, padding included. The row proofs stored beside them are not counted." />
-            <Metric label="Held now" value={bytes(load.stored_bytes)} help="retention window still running"
+      {/* the period's figures in two framed panels, as the publisher pages frame theirs: a label and a figure in each
+          cell, what qualifies a figure on hover, a dot where something needs a look */}
+      <div className="vd-figs">
+        <section className="pan vp" id="chain">
+          <div className="vp-h"><h2 className="vp-t" title="Read from the chain, nothing measured.">On chain <span className="per">({per})</span></h2></div>
+          <dl className="vp-cells" style={{ "--n": cells } as CSSProperties}>
+            {sig && sig.assigned > 0
+              ? <PanelFig label="Endorsements" value={pctOf(sig.signed, sig.assigned)} title={`${int(sig.signed)} of ${int(sig.assigned)} settlements. ${ENDORSE_TITLE}`} />
+              : att && att.blob_coverage.den > 0
+                ? <PanelFig label="Endorsements" value={pctOf(att.attested_blobs, att.blob_coverage.den)} title={`${int(att.attested_blobs)} of ${int(att.blob_coverage.den)} blobs. ${ENDORSE_TITLE}`} />
+                : <PanelFig label="Endorsements" value="—" className="na" title={`No settlement assigned it rows. ${ENDORSE_TITLE}`} />}
+            <PanelFig label="Rows per blob" value={load ? int(load.rows_per_blob) : "—"} className={load ? undefined : "na"}
+              title="Rows the assignment gives this validator on the newest settled blob, of every settled blob, by stake. Rows follow stake, not blob size." />
+            <PanelFig label="Shard data" value={load && !notLive ? unit(bytes(load.bytes)) : "—"} className={load && !notLive ? undefined : "na"}
+              title={`${load ? `${int(load.promises)} endorsed blobs in the period. ` : ""}Row data of the shards this validator stored and endorsed over the period's settled blobs: blob_size / 4096 per row, padding included. The row proofs stored beside them are not counted.`} />
+            <PanelFig label="Held now" value={load ? unit(bytes(load.stored_bytes)) : "—"} className={load ? undefined : "na"}
               title="Shard data this validator must hold at this moment: endorsed blobs whose retention window has not ended." />
-          </>}
-          {(v.timeouts_enforced ?? 0) > 0 && <Metric label="Timeouts reported" value={int(v.timeouts_enforced)} help="payment promise timeouts"
-            title="MsgPaymentPromiseTimeout submitted by this validator’s operator account in the period." />}
-        </Metrics>
-      </section>
+            {(v.timeouts_enforced ?? 0) > 0 && <PanelFig label="Timeouts reported" value={int(v.timeouts_enforced)}
+              title="MsgPaymentPromiseTimeout submitted by this validator’s operator account in the period." />}
+          </dl>
+        </section>
 
-      <section className="group" id="observed">
-        <div className="vhead"><div><h2>Observed by Tensile</h2><p className="sub">Each blob is read once, near the end of its retention window, as celestia-app’s client downloads it. A validator is not served only when its rows did not come back and the blob could not be reconstructed.</p></div></div>
-        {/* the conclusion before the figures; before activation there is nothing to conclude, and StatusLine says so */}
-        {!notLive && <Diagnosis v={v} check={data.last_endpoint_check} meta={meta} decided={decided} />}
-        <Metrics>
-          <Metric label="Service rate"
-            value={notLive || !o || o.total === 0 || decided === 0 ? "—" : pctOf(o.served, decided)}
-            tone={notLive || !o || decided === 0 ? "absent" : rateTone(o.served, decided)}
-            help={notLive ? " " : !o || o.total === 0 ? ((v.signing?.signed ?? 0) > 0 ? "not read yet" : "nothing endorsed in this period") : decided === 0 ? "not read yet" : `${int(o.served)} / ${int(decided)} read${refText ? ` · ${refText}` : ""}`}
-            title="Endorsed shards served, over served plus not served. Shards not asked for, that failed on a blob that was available, or that did not come back from a blob not read by Tensile, count neither way." />
-          <Metric label="Not served"
-            value={notLive ? "—" : int(o?.broken ?? 0)} tone={notLive ? "absent" : (o?.broken ?? 0) > 0 ? "fault" : !o || o.total === 0 ? "absent" : undefined}
-            help={notLive ? " " : (o?.broken ?? 0) > 0 ? (prov > 0 ? `${int(prov)} provisional` : "of blobs that could not be reconstructed") : "none in this period"}
-            title={prov > 0 ? `${int(prov)} of these are younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.` : "Endorsed shards whose rows did not come back from a blob that could not be reconstructed."} />
-          <Metric label="In retention window" value={notLive || data.in_retention_window == null ? "—" : int(data.in_retention_window)}
-            tone={notLive || data.in_retention_window == null ? "absent" : undefined}
-            help={notLive ? " " : (notCountedText(o) || "read at the end of the window")} title="Endorsed shards whose retention window has not ended: each is read 10 minutes before its window ends. Not counted: shards the reading did not need, that failed on a blob that was available, or of a blob not read by Tensile." />
-          <Metric label="Reachability"
-            value={!bonded ? "—" : rw && rw.den > 0 ? pctOf(rw.num, rw.den) : "—"}
-            tone={!bonded || !rw || rw.den === 0 ? "absent" : undefined}
-            help={!bonded ? "out of the bonded list" : rw && rw.den > 0 ? `${int(rw.num)} / ${int(rw.den)} checks` : "no handshake yet"}
-            title="Completed handshakes with the registered endpoint, over attempts. Not signing uptime." />
-          <Metric label="Throughput"
-            value={v.serve_bytes_per_second == null ? "—" : `${bytes(v.serve_bytes_per_second)}/s`} tone={v.serve_bytes_per_second == null ? "absent" : undefined}
-            help={v.serve_bytes_per_second == null ? (v.serve_throughput_sample > 0 ? `${int(v.serve_throughput_sample)} of 3 large-shard downloads` : "no large-shard download yet") : `${int(v.serve_throughput_sample)} shards ≥ 2 MiB`}
-            title="Median download speed over shards of 2 MiB or more, shown from three." />
-        </Metrics>
+        <section className="pan vp" id="observed">
+          <div className="vp-h">
+            <h2 className="vp-t" title="Each blob is read once, near the end of its retention window, as celestia-app’s client downloads it. A validator is not served only when its rows did not come back and the blob could not be reconstructed."><Eye />Observed by Tensile <span className="per">({per})</span></h2>
+          </div>
+          <dl className="vp-cells" style={{ "--n": 5 } as CSSProperties}>
+            <PanelFig label="Service rate" className={notLive || decided === 0 ? "na" : tone === "r-bad" ? "bad" : tone === "r-warn" ? "warn" : undefined}
+              value={<>{notLive || !o || decided === 0 ? "—" : pctOf(o.served, decided)}{!notLive && held.length > 0 && <Warn text={`${plural(held.length, "reading")} in this period did not count: ${heldWhy}. The rows did not come back, and the blob was available from other validators. The readings below show each one.`} />}</>}
+              title={notLive ? undefined : !o || o.total === 0 ? ((v.signing?.signed ?? 0) > 0 ? "Not read yet." : "Nothing endorsed in this period.")
+                : decided === 0 ? (o.not_counted > 0 ? `Read, none counted: ${notCountedText(o)}.` : "Not read yet.")
+                : `${int(o.served)} of ${int(decided)} counted readings served${refText ? `; ${refText}` : ""}. Endorsed shards served, over served plus not served. Shards not asked for, that failed on a blob that was available, or that did not come back from a blob not read by Tensile, count neither way.`} />
+            <PanelFig label="Not served" className={notLive ? "na" : (o?.broken ?? 0) > 0 ? "bad" : undefined}
+              value={<>{notLive ? "—" : int(o?.broken ?? 0)}{!notLive && prov > 0 && <Warn text={`${int(prov)} of these ${prov === 1 ? "is" : "are"} younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.`} />}</>}
+              title="Endorsed shards whose rows did not come back from a blob that could not be reconstructed." />
+            <PanelFig label="In retention window" value={notLive || data.in_retention_window == null ? "—" : int(data.in_retention_window)}
+              className={notLive || data.in_retention_window == null ? "na" : undefined}
+              title={`Endorsed shards whose retention window has not ended: each is read 10 minutes before its window ends.${!notLive && notCountedText(o) ? ` Not counted in the period: ${notCountedText(o)}.` : ""}`} />
+            <PanelFig label="Reachability" value={bonded && rw && rw.den > 0 ? pctOf(rw.num, rw.den) : "—"} className={bonded && rw && rw.den > 0 ? undefined : "na"}
+              title={!bonded ? "Out of the bonded list: not checked." : rw && rw.den > 0 ? `${int(rw.num)} of ${int(rw.den)} handshakes completed with the registered endpoint. Not signing uptime.` : "No handshake yet."} />
+            <PanelFig label="Throughput" value={v.serve_bytes_per_second == null ? "—" : unit(`${bytes(v.serve_bytes_per_second)}/s`)} className={v.serve_bytes_per_second == null ? "na" : undefined}
+              title={v.serve_bytes_per_second == null
+                ? (v.serve_throughput_sample > 0 ? `${int(v.serve_throughput_sample)} of the 3 large-shard downloads it is shown from.` : "No large-shard download yet.")
+                : `Median download speed over ${int(v.serve_throughput_sample)} shards of 2 MiB or more.`} />
+          </dl>
+        </section>
+      </div>
 
-        <div className="band">
-          <div>
-            <table className="periods">
-              <thead><tr><th>Period</th><th>Service rate</th><th>Not served</th></tr></thead>
-              <tbody>
-                {data.windows.map((w) => {
-                  const wo = w.obligations, wd = wo.served + wo.broken;
-                  const name = w.window.name;
-                  const wp = provisionalNow(w.provisional_faults);
-                  return (
-                    <tr key={name} className={name === win ? "on" : undefined}>
-                      <td><button type="button" className="rowlink" aria-pressed={name === win} onClick={() => setWin(name as typeof win)} title={`show the ${windowLabel(name)} period`}>{windowLabel(name)}</button></td>
-                      <td>{notLive || wd === 0 ? "—" : <><span className={rateTone(wo.served, wd)}>{pctOf(wo.served, wd)}</span><span className="den"> · {int(wo.served)}/{int(wd)}</span></>}</td>
-                      <td>{notLive ? "—" : wo.broken > 0 ? <><span className="word fault">{int(wo.broken)}</span>{wp > 0 && <span className="den" title="Counted, and still settling."> · {int(wp)} provisional</span>}</> : "0"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            {data.rolled_up && <p className="rolled">Before {data.rolled_up.raw_from}, from the daily rollup.</p>}
-          </div>
-          <div>
-            {data.last_endpoint_check ? <EndpointCheckLine c={data.last_endpoint_check} /> : <p className="errs">No endpoint check yet.</p>}
-            <p className="errs">
-              Last served <b>{lastServed ? whenUTC(lastServed.started_at) : "—"}</b>
-              <br />Last not served {lastNotServed
-                ? <><b>{whenUTC(lastNotServed.started_at)}</b> · blob <Link className="mono" href={`/blob/?hash=${lastNotServed.promise_hash}`}>{lastNotServed.promise_hash.slice(0, 10)}…</Link></>
-                : (o?.broken ?? 0) > 0 ? <>older than the readings below · <a href={notServedHref}>in the API →</a></> : <b>none on record</b>}
-              <br />Last failed handshake <b>{v.last_unreachable_at ? whenUTC(v.last_unreachable_at) : "none on record"}</b>
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <section id="evidence">
-        <div className="vhead">
-          <div><h2>Readings</h2><p className="sub">{probes.length > 0 ? evidenceSummary(grouped) : "No reading yet"}{data.recent_probes_truncated ? " · the rest in the API" : ""}</p></div>
-          <div className="tools">
-            {probes.length > 0 && (
-              <div className="seg" role="group" aria-label="show rows">
-                <button type="button" aria-pressed={!onlyNotServed} onClick={() => setOnlyNotServed(false)}>All <span className="n">{int(probes.length)}</span></button>
-                <button type="button" aria-pressed={onlyNotServed} onClick={() => setOnlyNotServed(true)}>Not served <span className="n">{int(notServedRows.length)}</span></button>
-              </div>
-            )}
-            <a className="dis" href={onlyNotServed ? notServedHref : `${API_BASE}/v1/probes?validator=${own}&limit=1000`}>Full history →</a>
-          </div>
-        </div>
-        <div className="tablewrap">
-          <table className="marks">
-            <thead><tr><th>Time</th><th>Blob</th><th>Result</th><th className="num">Rows</th><th className="num">ms</th><th className="go" /></tr></thead>
+      {/* every period at once, beside the endpoint as the newest handshake found it */}
+      <div className="vd-band">
+        <div className="lg-tw vd-per">
+          <table className="vd-pt">
+            <thead><tr><th className="p-n">Period</th><th>Served</th><th>Not served</th><th>Service rate</th></tr></thead>
             <tbody>
-              {probes.length === 0 && <tr className="empty"><td colSpan={6}>No reading of this validator on record yet.</td></tr>}
-              {probes.length > 0 && shown.length === 0 && <tr className="empty"><td colSpan={6}>
+              {data.windows.map((w) => {
+                const wo = w.obligations, wd = wo.served + wo.broken;
+                const name = w.window.name;
+                const wp = provisionalNow(w.provisional_faults);
+                const wt = wd > 0 ? rateTone(wo.served, wd) : undefined;
+                return (
+                  <tr key={name} className={name === win ? "on" : undefined} onClick={() => setWin(name as typeof win)}
+                    title={name === "all" && data.rolled_up ? `Before ${data.rolled_up.raw_from}, from the daily rollup.` : undefined}>
+                    <td className="p-n"><button type="button" aria-pressed={name === win} onClick={() => setWin(name as typeof win)} title={`show the ${windowLabel(name)} period`}>{windowLabel(name)}</button></td>
+                    <td>{notLive ? "—" : int(wo.served)}</td>
+                    <td className={!notLive && wo.broken > 0 ? "bad" : undefined}>{notLive ? "—" : int(wo.broken)}{!notLive && wp > 0 && <Warn text={`${int(wp)} of these ${wp === 1 ? "is" : "are"} still settling: counted, and can still be withdrawn.`} />}</td>
+                    <td className={wt === "r-bad" ? "bad" : wt === "r-warn" ? "warn" : undefined}>{notLive || wd === 0 ? "—" : pctOf(wo.served, wd)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <EndpointBox v={v} c={data.last_endpoint_check} lastServed={lastServed} lastNotServed={lastNotServed} olderNotServed={(o?.broken ?? 0) > 0 ? notServedHref : null} />
+      </div>
+
+      {/* the readings in the Blobs list's own rows: the whole row opens the blob, and what Tensile found sits in its
+          lane at the end */}
+      <section id="evidence" className="listing lg-list vd-list">
+        <div className="list-head">
+          <div className="tabs" role="group" aria-label="readings">
+            <button type="button" aria-pressed={!onlyNotServed} onClick={() => setOnlyNotServed(false)}>Readings{probes.length > 0 && <span className="n">{int(probes.length)}</span>}</button>
+            {probes.length > 0 && <button type="button" aria-pressed={onlyNotServed} onClick={() => setOnlyNotServed(true)}>Not served <span className="n">{int(notServedRows.length)}</span></button>}
+          </div>
+          <a className="vd-api" href={onlyNotServed ? notServedHref : `${API_BASE}/v1/probes?validator=${own}&limit=1000`}
+            title={data.recent_probes_truncated ? "The newest readings are here; every one is in the API." : "Every reading, in the API."}>Full history →</a>
+        </div>
+        <div className="lg-tw">
+          <table className="lg-t vr-t">
+            <thead>
+              <tr>
+                <th className="c-t">Read <span className="per">(UTC)</span></th>
+                <th className="c-b">Blob</th>
+                <th className="c-r">Rows</th>
+                <th className="c-d">Duration</th>
+                <th className="gap" aria-hidden="true" />
+                <th className="tn" title="What came back when Tensile read this validator's rows of the blob."><span><Eye />Result</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {probes.length === 0 && <tr className="lg-empty"><td colSpan={6}>No reading of this validator on record yet.</td></tr>}
+              {probes.length > 0 && shown.length === 0 && <tr className="lg-empty"><td colSpan={6}>
                 No not-served reading among the newest {int(probes.length)}.{(o?.broken ?? 0) > 0 && <> Older ones are <a href={notServedHref}>in the API →</a></>}</td></tr>}
               {shown.map(({ p, g }) => {
-                const [word0, mk] = probeWord(p);
-                // a not-served reading younger than the settling period counts, and can still be withdrawn
-                const provisional = g === "not served" && !!p.provisional;
-                const word = provisional ? `${word0} · provisional` : word0;
-                const earlier = p.schedule_label !== "end";
+                const r = resultOf(p, g);
+                const href = `/blob/?hash=${p.promise_hash}`;
+                const t = Date.parse(p.started_at);
+                const rows = p.rows_expected ? <><b>{int(p.rows_returned)}</b><span className="u"> / {int(p.rows_expected)}</span></> : "—";
+                const ms = <>{int(p.total_duration_ms)}<span className="u"> ms</span></>;
                 const notes = [
-                  earlier && "read on the earlier schedule",
+                  r.tone === "hold" && "not counted: the rows did not come back, and the blob was available from other validators",
+                  p.schedule_label !== "end" && "read on the earlier schedule",
                   `outcome: ${p.outcome.toLowerCase().replace(/_/g, " ")}`,
-                  !p.service && mk === "gone" && p.attested !== false && "counted neither way",
                   g === "not served" && p.raw_error,
-                  provisional && "provisional: counted, and can still be withdrawn",
+                  r.tone === "hold" && p.raw_error,
+                  g === "not served" && p.provisional && "provisional: counted, and can still be withdrawn",
                   p.attested === false && "not endorsed by this validator, so outside the rate",
                   p.retry_first_outcome && `first answer ${p.retry_first_outcome.toLowerCase().replace(/_/g, " ")}, asked again`,
                   p.host_changed && `re-registered during the window: the upload went to ${p.host_at_settlement}`,
@@ -348,13 +375,15 @@ function Page() {
                   p.shadowed_by && `answered from promise ${p.shadowed_by.slice(0, 10)}…`,
                 ].filter(Boolean).join(" · ");
                 return (
-                  <tr key={`${p.vantage}|${p.promise_hash}|${p.scheduled_at}`} className={g === "not served" ? "fault-row" : undefined} title={notes}>
-                    <td title={utcWord(p.started_at)}>{hhmmss(p.started_at)}<span className="soft"> · {dateUTC(p.started_at)}</span></td>
-                    <td><Link className="mono" href={`/blob/?hash=${p.promise_hash}`}>{p.promise_hash.slice(0, 10)}…</Link></td>
-                    <td title={p.classification_reason || undefined}><span className={"mk " + mk} /> <span className={"word" + (mk === "fault" ? " fault" : "")}>{word}</span>{earlier && <span className="soft"> · earlier schedule</span>}</td>
-                    <td className="num">{p.rows_expected ? `${int(p.rows_returned)} / ${int(p.rows_expected)}` : "—"}</td>
-                    <td className="num">{int(p.total_duration_ms)}</td>
-                    <td className="go"><Link href={`/blob/?hash=${p.promise_hash}`} aria-label="open the blob">→</Link></td>
+                  <tr key={`${p.vantage}|${p.promise_hash}|${p.scheduled_at}`} className="row"
+                    onClick={(ev) => openRow(ev, href, onOpen)} onAuxClick={(ev) => openRow(ev, href, onOpen)}>
+                    <td className="c-t"><span title={utcWord(p.started_at)}><span className="tm">{monthDayTime(p.started_at)}</span><span className="ag">{age(now - t)}</span></span></td>
+                    <td className="c-b"><Link href={href} title={p.promise_hash}>{p.promise_hash.slice(0, 6)}<span className="el">…</span>{p.promise_hash.slice(-4)}</Link></td>
+                    <td className="c-r">{rows}</td>
+                    <td className="c-d">{ms}</td>
+                    <td className="gap" aria-hidden="true" />
+                    <td className="tn"><span className={r.tone} title={[p.classification_reason, notes].filter(Boolean).join(" · ")}>{r.word}</span></td>
+                    <td className="c-m"><span className={"rs " + r.tone}>{r.word}</span><span className="sep rs-sep">·</span><span>{rows}</span><span className="sep">·</span><span>{ms}</span></td>
                   </tr>
                 );
               })}
@@ -374,27 +403,46 @@ export default function ValidatorPage() {
  * The newest handshake with this validator's Fibre host, stage by stage:
  * what an operator setting up a server needs, and cannot see from their own
  * machine — whether the name resolves, the port opens, TLS completes and the
- * certificate carries this validator's key, and the error it stopped on.
+ * certificate carries this validator's key, and the error it stopped on —
+ * with the last served, not served and failed handshake under it, in a framed
+ * box of facts beside the periods.
  */
-function EndpointCheckLine({ c }: { c: EndpointCheck }) {
-  const stages: [string, boolean, string][] = [
+function EndpointBox({ v, c, lastServed, lastNotServed, olderNotServed }: {
+  v: ValidatorDetail; c?: EndpointCheck; lastServed?: ValidatorReading; lastNotServed?: ValidatorReading; olderNotServed: string | null;
+}) {
+  const stages: [string, boolean, string][] = c ? [
     ["DNS", c.dns_ok, ""],
     ["TCP", c.tcp_ok, c.tcp_ok ? `${c.tcp_ms} ms` : ""],
     ["TLS", c.tls_ok, c.tls_ok ? `${c.tls_ms} ms` : ""],
-    ["identity", c.identity_ok, c.identity_ok ? "" : c.identity_reason ?? ""],
-  ];
+    ["Identity", c.identity_ok, c.identity_ok ? "" : c.identity_reason ?? ""],
+  ] : [];
   // stages after the first failure were never reached; say so rather than "failed"
   const first = stages.findIndex(([, ok]) => !ok);
   return (
-    <p className="errs endpoint-check">
-      Endpoint check <b>{whenUTC(c.at)}</b> · <span className="mono">{c.host}</span>
-      <br />
-      {stages.map(([name, ok, note], i) => (
-        <span key={name} className={"stage " + (ok ? "ok" : first >= 0 && i > first ? "skip" : "bad")}>
-          {name} {ok ? "✓" : first >= 0 && i > first ? "–" : "✗"}{note && <> {note}</>}{i < stages.length - 1 && " · "}
-        </span>
-      ))}
-      {c.raw_error && <><br /><code>{c.raw_error}</code></>}
-    </p>
+    <section className="pan vp vd-chk">
+      <div className="vp-h">
+        <h2 className="vp-t">Endpoint check</h2>
+        {c && <span className="vp-at" title={utcWord(c.at)}>{whenUTC(c.at)}</span>}
+      </div>
+      <dl className="vd-kv">
+        {c
+          ? <>
+            {c.host !== v.host && <><dt>Host</dt><dd><span className="mono">{c.host}</span></dd></>}
+            <dt>Handshake</dt>
+            <dd className="vd-stages">{stages.map(([name, ok, note], i) => {
+              const skip = first >= 0 && i > first;
+              return <span key={name} className={ok ? "ok" : skip ? "skip" : "bad"}>{name} <i aria-hidden="true">{ok ? "✓" : skip ? "–" : "✗"}</i>{note && <em>{note}</em>}</span>;
+            })}</dd>
+            {c.raw_error && <><dt>Error</dt><dd><code>{c.raw_error}</code></dd></>}
+          </>
+          : <><dt>Handshake</dt><dd><em>no check yet</em></dd></>}
+        <dt>Last served</dt><dd>{lastServed ? <b title={utcWord(lastServed.started_at)}>{whenUTC(lastServed.started_at)}</b> : <em>none among the readings below</em>}</dd>
+        <dt>Last not served</dt>
+        <dd>{lastNotServed
+          ? <><b title={utcWord(lastNotServed.started_at)}>{whenUTC(lastNotServed.started_at)}</b><Link className="mono" href={`/blob/?hash=${lastNotServed.promise_hash}`}>{lastNotServed.promise_hash.slice(0, 6)}…{lastNotServed.promise_hash.slice(-4)}</Link></>
+          : olderNotServed ? <><em>older than the readings below</em><a href={olderNotServed}>in the API →</a></> : <em>none on record</em>}</dd>
+        <dt>Last failed handshake</dt><dd>{v.last_unreachable_at ? <b title={utcWord(v.last_unreachable_at)}>{whenUTC(v.last_unreachable_at)}</b> : <em>none on record</em>}</dd>
+      </dl>
+    </section>
   );
 }
