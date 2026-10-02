@@ -1,10 +1,11 @@
 "use client";
-import { Suspense, useState, type CSSProperties } from "react";
+import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useApi, type Blob, type BlobReading, type Meta, int, bytes, tia, utcWord, hhmm, dur, shortMid, nsDisplay, notFound, pctOf, API_BASE } from "@/lib/api";
 import StatusLine from "@/components/StatusLine";
-import { PanelFig, Eye } from "@/components/Metrics";
+import { Eye } from "@/components/Metrics";
+import Avatar from "@/components/Avatar";
 import Copy from "@/components/Copy";
 import Warn from "@/components/Warn";
 import { unit } from "@/components/Unit";
@@ -81,6 +82,9 @@ function Page() {
   const [table, setTable] = useState(false);
   const { data: meta, error: metaErr } = useApi<Meta>("/v1/meta");
   const d = useApi<Detail>(hash ? `/v1/blobs/${hash}` : null);
+  // each validator's logo: the Keybase picture its operator set, which the validator list carries and a blob's assignments
+  // do not; asked once, after the blob, so it never holds the page up (the pictures are the overview's, cached a day)
+  const vl = useApi<{ validators: { address: string; avatar_url?: string }[] }>(hash && d.data ? "/v1/validators?window=24h" : null, 0);
   if (!hash) return <p className="notice">Open a blob from the <Link href="/blobs/">list</Link>, or add <code>?hash=&lt;promise hash&gt;</code> to the address.</p>;
   const data = d.data;
   if (!data) {
@@ -135,8 +139,42 @@ function Page() {
   const winLen = dur(b.settlement_time, b.must_serve_until);
   // the rows of a reading still in progress, never of one the window closed on
   const shown = !!rc && rc.total_rows > 0 && (judged || (rc.status === "pending" && !over));
-  const fill = shown ? Math.min(100, rc!.served_distinct_rows / rc!.total_rows * 100) : 0;
-  const tick = shown ? Math.min(100, rc!.needed_rows / rc!.total_rows * 100) : 0;
+  const avatars = new Map((vl.data?.validators ?? []).filter((v) => v.avatar_url).map((v) => [v.address, v.avatar_url!]));
+
+  // who paid, where it went and when: the publisher page's light frame of facts, one row each
+  const facts = (
+    <dl className="pb-meta bd-meta">
+      <dt>Publisher</dt>
+      <dd>{pub ? <Who addr={pub} /> : "—"}{b.signer && pub && b.signer !== pub && <em title={`Sent by ${b.signer}; the escrow it settled from is the publisher's`}>sent by {b.signer.slice(0, b.signer.indexOf("1") + 1)}…{b.signer.slice(-4)}</em>}</dd>
+      <dt>Namespace</dt>
+      <dd><Link className="bd-ns" href={`/blobs/?namespace=${b.namespace}`} title={`${b.namespace} · every blob in it`}>{nsDisplay(b.namespace)}</Link><Copy text={b.namespace} label="namespace" /></dd>
+      <dt>Commitment</dt>
+      <dd title={b.commitment}><span className="mono">{shortMid(b.commitment, 10, 6)}</span><Copy text={b.commitment} label="commitment" /></dd>
+      <dt>Settled</dt>
+      <dd><b title={utcWord(b.settlement_time)}>{monthDayTime(b.settlement_time)}</b><em>UTC · height {int(b.settlement_height)}</em></dd>
+      <dt>Created</dt>
+      <dd><b title={utcWord(b.creation_timestamp)}>{monthDayTime(b.creation_timestamp)}</b><em>UTC</em></dd>
+      <dt>Retention window</dt>
+      <dd><b>{winLen}</b><em>until {hhmm(b.must_serve_until)}{over ? " · over" : ""}</em></dd>
+      {b.assignment_error && <><dt>Assignment</dt><dd>{b.assignment_error}</dd></>}
+    </dl>
+  );
+  const notServedDot = judged && held.length > 0 && <Warn text={`${int(held.length)} validator${held.length === 1 ? "'s" : "s'"} rows did not come back: ${heldWhy}. ${available ? "Not counted: the blob was available from the others." : "Counted neither way."}`} />;
+  const readTitle = endRead ? "Read once, 10 minutes before the retention window ends, as celestia-app’s client downloads it: the validators in its order, until enough rows came back." : probes.length > 0 ? "Read on the earlier schedule, at several points in the retention window, and judged by the same rule." : "Not read by Tensile.";
+  // the figures, in the facts' own rows: the chain's three, then Tensile's three, marked with its eye
+  const figs = (
+    <dl className="pb-meta bd-meta bd-figs">
+      <dt>Blob size</dt><dd title="The size the blob paid for: Celestia's upload size, with header and padding, without parity."><b>{unit(bytes(b.blob_size))}</b></dd>
+      <dt>Fee paid</dt><dd title="Charged to the publisher's escrow; not the settlement transaction's own fee.">{b.charge ? <><b>{unit(tia(b.charge.fee_utia))}</b><em>{b.charge.timed_out ? "timed out" : b.charge.settled ? "settled" : "not settled yet"}</em></> : <em>not recorded</em>}</dd>
+      <dt>Endorsed</dt><dd title="Voting power whose signature on the settlement verified. A settlement needs ⅔.">{stake != null ? <><b>{pctOf(b.attested_voting_power ?? 0, b.total_voting_power ?? 0)}</b><em>of voting power</em></> : <em>not recorded</em>}</dd>
+      <dt className="tz" title={readTitle}><Eye />Rows back</dt><dd title={shown ? `Distinct rows retrieved and verified against the commitment; ${int(rc!.needed_rows)} of the ${int(rc!.total_rows)} reconstruct the blob.` : undefined}>{shown ? <><b>{int(rc!.served_distinct_rows)}</b><em>of {int(rc!.total_rows)} · {int(rc!.needed_rows)} needed</em></> : <em>{!over ? `read before ${hhmm(b.must_serve_until)}` : "no reading"}</em>}</dd>
+      <dt className="tz" title={readTitle}><Eye />Served</dt><dd title={judged ? `The reading asks validators in the client's order until it has enough rows: it asked ${int(asked)}, and ${int(served)} endorsing validators' rows came back and verified. The rest were not asked.` : undefined}>{judged ? <><b>{int(served)}</b><em>of {int(asked)} asked</em></> : <em>—</em>}</dd>
+      <dt className="tz" title={readTitle}><Eye />Not served</dt><dd title="Endorsing validators whose rows did not come back from a blob that could not be reconstructed. On an available blob a validator that failed counts neither way.">{judged ? <><b className={notServed > 0 ? "bad" : undefined}>{int(notServed)}</b>{notServedDot}{rc?.point_at && <em title={utcWord(rc.point_at)}>read {hhmm(rc.point_at)}</em>}</> : <em>—</em>}</dd>
+    </dl>
+  );
+  const sig = rows.length === 0
+    ? <section className="bd-sig"><div className="bd-sh"><h2><Pen />Endorsements</h2></div><p className="bd-none">No assignment recorded{b.assignment_error ? `: ${b.assignment_error}` : ""}.</p></section>
+    : <Signers rows={rows} marks={marks} share={share} stake={stake} avatars={avatars} table={table} onTable={() => setTable((t) => !t)} />;
 
   return (
     <>
@@ -155,64 +193,10 @@ function Page() {
       </section>
       <StatusLine meta={meta} metaError={metaErr} snap={null} client={{ error: d.error, fetchedAt: d.fetchedAt }} />
 
-      <div className="bd-body">
-        <div className="bd-main">
-            {/* who paid, where it went and when: the publisher page's light frame of facts, one row each */}
-            <dl className="pb-meta bd-meta">
-              <dt>Publisher</dt>
-              <dd>{pub ? <Who addr={pub} /> : "—"}{b.signer && pub && b.signer !== pub && <em title={`Sent by ${b.signer}; the escrow it settled from is the publisher's`}>sent by {b.signer.slice(0, b.signer.indexOf("1") + 1)}…{b.signer.slice(-4)}</em>}</dd>
-              <dt>Namespace</dt>
-              <dd><Link className="bd-ns" href={`/blobs/?namespace=${b.namespace}`} title={`${b.namespace} · every blob in it`}>{nsDisplay(b.namespace)}</Link><Copy text={b.namespace} label="namespace" /></dd>
-              <dt>Commitment</dt>
-              <dd title={b.commitment}><span className="mono">{shortMid(b.commitment, 10, 6)}</span><Copy text={b.commitment} label="commitment" /></dd>
-              <dt>Settled</dt>
-              <dd><b title={utcWord(b.settlement_time)}>{monthDayTime(b.settlement_time)}</b><em>UTC · height {int(b.settlement_height)}</em></dd>
-              <dt>Created</dt>
-              <dd><b title={utcWord(b.creation_timestamp)}>{monthDayTime(b.creation_timestamp)}</b><em>UTC</em></dd>
-              <dt>Retention window</dt>
-              <dd><b>{winLen}</b><em>until {hhmm(b.must_serve_until)}{over ? " · over" : ""}</em></dd>
-              {b.assignment_error && <><dt>Assignment</dt><dd>{b.assignment_error}</dd></>}
-            </dl>
-
-          {/* the chain's figures beside Tensile's reading, in one frame, the chain's over Tensile's: a label and a figure in each cell, the rest on hover */}
-          <section className="pan bd-pan">
-            <div className="bd-g" id="chain">
-              <div className="vp-h"><h2 className="vp-t" title="Read from the chain, nothing measured.">On chain</h2></div>
-              <dl className="vp-cells" style={{ "--n": 3 } as CSSProperties}>
-                <PanelFig label="Blob size" value={unit(bytes(b.blob_size))} title="The size the blob paid for: Celestia's upload size, with header and padding, without parity." />
-                <PanelFig label="Fee paid" value={b.charge ? unit(tia(b.charge.fee_utia)) : "—"} className={b.charge ? undefined : "na"}
-                  title={b.charge ? `${int(b.charge.gas_units)} gas · ${b.charge.timed_out ? "timed out" : b.charge.settled ? "settled" : "not settled yet"}. Charged to the publisher's escrow; not the settlement transaction's own fee.` : "Recorded before payments were kept."} />
-                <PanelFig label="Endorsed" value={stake != null ? pctOf(b.attested_voting_power ?? 0, b.total_voting_power ?? 0) : "—"} className={stake != null ? undefined : "na"}
-                  title="Voting power whose signature on the settlement verified. A settlement needs ⅔." />
-              </dl>
-            </div>
-            <div className="bd-g" id="observed">
-              <div className="vp-h">
-                <h2 className="vp-t" title={endRead ? "Read once, 10 minutes before the retention window ends, as celestia-app’s client downloads it: the validators in its order, until enough rows came back." : probes.length > 0 ? "Read on the earlier schedule, at several points in the retention window, and judged by the same rule." : "Not read by Tensile."}><Eye />Observed by Tensile</h2>
-                {rc?.point_at ? <span className="vp-at" title={utcWord(rc.point_at)}>read {hhmm(rc.point_at)}</span> : !over && <span className="vp-at">reads before {hhmm(b.must_serve_until)}</span>}
-              </div>
-              <dl className="vp-cells" style={{ "--n": 3 } as CSSProperties}>
-                <PanelFig label="Rows back" value={shown ? <>{int(rc!.served_distinct_rows)}<span className="u"> / {int(rc!.total_rows)}</span></> : "—"} className={shown ? undefined : "na"}
-                  title={shown ? `Distinct rows retrieved and verified against the commitment; ${int(rc!.needed_rows)} of the ${int(rc!.total_rows)} reconstruct the blob.` : "No reading completed."}>
-                  {shown && <dd className="bd-meter" aria-hidden="true"><i style={{ width: `${fill.toFixed(1)}%` }} /><span style={{ left: `${tick.toFixed(1)}%` }} /></dd>}
-                </PanelFig>
-                <PanelFig label="Served" value={judged ? <>{int(served)}<span className="u"> of {int(asked)} asked</span></> : "—"} className={judged ? undefined : "na"}
-                  title={judged ? `The reading asks validators in the client's order until it has enough rows: it asked ${int(asked)}, and ${int(served)} endorsing validators' rows came back and verified. The rest were not asked.` : "Read at the end of the retention window."} />
-                <PanelFig label="Not served" className={!judged ? "na" : notServed > 0 ? "bad" : undefined}
-                  value={<>{judged ? int(notServed) : "—"}{judged && held.length > 0 && <Warn text={`${int(held.length)} validator${held.length === 1 ? "'s" : "s'"} rows did not come back: ${heldWhy}. ${available ? "Not counted: the blob was available from the others." : "Counted neither way."}`} />}</>}
-                  title="Endorsing validators whose rows did not come back from a blob that could not be reconstructed. On an available blob a validator that failed counts neither way." />
-              </dl>
-            </div>
-          </section>
-        </div>
-        {/* the validators assigned rows of the blob, as a DA explorer sets its signers beside the batch: endorsed and not,
-            by name, the voting power endorsed against the ⅔ a settlement needs; the table one switch away */}
-        <aside className="bd-side" id="validators">
-          {rows.length === 0
-            ? <section className="bd-sig"><div className="bd-sh"><h2><Pen />Endorsements</h2></div><p className="bd-none">No assignment recorded{b.assignment_error ? `: ${b.assignment_error}` : ""}.</p></section>
-            : <Signers rows={rows} marks={marks} share={share} stake={stake} table={table} onTable={() => setTable((t) => !t)} />}
-        </aside>
-      </div>
+      {/* who and where beside what it weighed and what Tensile found: two light frames of the same make and height */}
+      <div className="bd-top">{facts}{figs}</div>
+      {/* the endorsements under them at the page width, every validator shown, as a DA explorer sets a batch's signers */}
+      <div className="bd-under" id="validators">{sig}</div>
       {table && rows.length > 0 && (
         <section className="bd-full" id="table">
           <div className="list-head">
@@ -227,6 +211,7 @@ function Page() {
 }
 
 type ListProps = { rows: Assignment[]; marks: Map<string, Mark>; share: (vp: number) => number };
+type Logos = Map<string, string>;
 const nameOf = (a: Assignment) => a.moniker || (a.operator_address ? shortMid(a.operator_address, 18, 4) : shortMid(a.validator_address, 12, 4));
 const pct = (f: number) => (f >= 0.0995 ? `${(f * 100).toFixed(1)}%` : f >= 0.001 ? `${(f * 100).toFixed(2)}%` : "<0.1%");
 /** the card's mark: a pen, as a signature */
@@ -237,15 +222,13 @@ const Pen = () => (
 const Ban = () => (
   <svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><circle cx="6" cy="6" r="4.6" fill="none" stroke="currentColor" strokeWidth="1.2" /><path d="M2.8 9.2l6.4-6.4" stroke="currentColor" strokeWidth="1.2" /></svg>
 );
-/** how many tiles a band shows before Show more: whole rows of two, three or four */
-const FOLD = 12;
 
 /**
- * The endorsements, set as a DA explorer sets a batch's signers: the voting power endorsed against the ⅔ a
- * settlement needs, then a band for the validators that endorsed and one for those that did not, each a grid of small
- * tiles (the name, its share of the voting power under it) folded after three rows.
+ * The endorsements, set as a DA explorer sets a batch's signers: a band for the validators that endorsed and one for
+ * those that did not, each a grid of small tiles (the logo, the name, its share of the voting power under it), every
+ * validator shown. The voting power endorsed is in the figures above, so the card does not say it twice.
  */
-function Signers({ rows, marks, share, stake, table, onTable }: ListProps & { stake: number | null; table: boolean; onTable: () => void }) {
+function Signers({ rows, marks, share, stake, avatars, table, onTable }: ListProps & { stake: number | null; avatars: Logos; table: boolean; onTable: () => void }) {
   const on = rows.filter((a) => a.attested === true), off = rows.filter((a) => a.attested === false), un = rows.filter((a) => a.attested == null);
   const f = stake ?? on.reduce((s, a) => s + share(a.voting_power), 0);
   return (
@@ -254,42 +237,38 @@ function Signers({ rows, marks, share, stake, table, onTable }: ListProps & { st
         <h2><Pen />Endorsements</h2>
         <button type="button" className="bd-tbl" aria-pressed={table} onClick={onTable} aria-controls="table">Table</button>
       </div>
-      <div className="bd-rate" title="Voting power whose signature on the settlement verified, against the ⅔ a settlement needs.">
-        <div className="bd-rt"><b>{(f * 100).toFixed(2)}%</b><span>of voting power · ⅔ needed</span></div>
-        <div className="bd-bar" role="img" aria-label={`${(f * 100).toFixed(2)}% of voting power endorsed; a settlement needs two thirds`}>
-          <i style={{ width: `${Math.min(100, f * 100).toFixed(2)}%` }} /><span />
-        </div>
+      <div className="bd-bands">
+        <Band label="Endorsed" list={on} marks={marks} share={share} avatars={avatars} vp={f} />
+        <Band label="Not endorsed" list={off} marks={marks} share={share} avatars={avatars} off vp={un.length === 0 && stake != null ? 1 - stake : undefined} />
+        {un.length > 0 && <Band label="Signature not recorded" list={un} marks={marks} share={share} avatars={avatars} />}
       </div>
-      <Band label="Endorsed" list={on} marks={marks} share={share} vp={f} />
-      <Band label="Not endorsed" list={off} marks={marks} share={share} off vp={un.length === 0 && stake != null ? 1 - stake : undefined} />
-      {un.length > 0 && <Band label="Signature not recorded" list={un} marks={marks} share={share} />}
     </section>
   );
 }
 
-function Band({ label, list, marks, share, off, vp: given }: { label: string; list: Assignment[]; marks: Map<string, Mark>; share: (vp: number) => number; off?: boolean; vp?: number }) {
-  const [all, setAll] = useState(false);
+function Band({ label, list, marks, share, avatars, off, vp: given }: { label: string; list: Assignment[]; marks: Map<string, Mark>; share: (vp: number) => number; avatars: Logos; off?: boolean; vp?: number }) {
   if (list.length === 0) return null;
   const vp = given ?? list.reduce((s, a) => s + share(a.voting_power), 0);
-  const shown = all ? list : list.slice(0, FOLD);
   return (
     <div className={"bd-band" + (off ? " off" : "")}>
       <div className="bd-bh"><span>{label} · {int(list.length)}</span><span>{(vp * 100).toFixed(2)}%</span></div>
       <ul className="bd-tiles">
-        {shown.map((a) => {
+        {list.map((a) => {
           const m = marks.get(a.validator_address)!;
           return (
             <li key={a.validator_address}>
               <Link className={"bd-tile" + (m.tone ? " " + m.tone : "")} href={validatorHref(a.operator_address, a.validator_address)}
                 title={[`${nameOf(a)} · ${pct(share(a.voting_power))} of voting power · ${int(a.row_count)} rows`, m.word, a.host_at_settlement ? `host ${a.host_at_settlement}` : ""].filter(Boolean).join("\n")}>
-                <span className="nm">{off && <Ban />}<span className="t">{nameOf(a)}</span>{m.tone && <i className="mk" aria-label={m.res} />}</span>
-                <span className="vp">{pct(share(a.voting_power))}</span>
+                <Avatar v={{ avatar_url: avatars.get(a.validator_address), moniker: a.moniker, address: a.validator_address }} />
+                <span className="tx">
+                  <span className="nm">{off && <Ban />}<span className="t">{nameOf(a)}</span>{m.tone && <i className="mk" aria-label={m.res} />}</span>
+                  <span className="vp">{pct(share(a.voting_power))}</span>
+                </span>
               </Link>
             </li>
           );
         })}
       </ul>
-      {list.length > FOLD && <button type="button" className="bd-more" onClick={() => setAll((x) => !x)}>{all ? "Show less" : `Show ${int(list.length - FOLD)} more`}</button>}
     </div>
   );
 }

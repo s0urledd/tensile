@@ -2131,78 +2131,62 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 }
 
 /* =============================================================================
-   A blob (app/blob): the publisher page's mast, then its light frame of facts and one framed panel (the chain's
-   figures over Tensile's reading) beside an endorsements card set as a DA explorer sets a batch's signers: the voting
-   power against the ⅔ a settlement needs, then endorsed and not endorsed, each validator a small tile; the full table
-   one switch away.
+   A blob (app/blob): the publisher page's mast; then two light frames of the same make and height, who paid and
+   where beside what the blob weighed and what Tensile found; then the endorsements at the page width, set as a DA
+   explorer sets a batch's signers: endorsed and not endorsed, each validator a small tile of its logo, its name and
+   its share, every one shown. The full table one switch away.
    ========================================================================== */
 .bd-h1 .tl { font-weight: 500; }
 .bd-chips { margin-top: 14px; }
+.bd-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: stretch; margin-top: 22px; }
+.bd-top .bd-meta { width: auto; grid-template-columns: 118px minmax(0, 1fr); margin: 0; align-content: start; }
 .bd-meta .bd-ns { font-weight: 500; color: var(--text); }
 .bd-meta .bd-ns:hover { color: var(--accent-ink); text-decoration: none; }
 .bd-meta .mono { font-size: 12.5px; color: var(--text); }
 .bd-meta .copy { margin-left: 2px; }
 .bd-meta .lg-who .hd { font-size: var(--t-cell); }
+.bd-meta .u { font-weight: 400; color: var(--text-3); }
+/* Tensile's three rows carry its eye */
+.bd-figs dt.tz { display: flex; align-items: center; gap: 6px; }
+.bd-figs dt.tz svg { flex: none; width: 13px; height: 13px; color: var(--accent-ink); }
+.bd-figs b.bad { color: var(--fault); }
+.bd-figs dd .warn { align-self: center; margin-left: -2px; }
 
-/* the body: the facts and the panel on the left, the endorsements card on the right, as a DA explorer sets a batch's
-   signers beside it */
-.bd-body { display: grid; grid-template-columns: minmax(0, 1fr) 404px; gap: 20px; align-items: start; margin-top: 22px; }
-.bd-main { min-width: 0; }
-/* the facts take the column, so their frame and the panel under it share both edges */
-.bd-main .bd-meta { width: auto; grid-template-columns: 118px minmax(0, 1fr); margin-top: 0; }
-
-/* the panel: the chain's figures over Tensile's, each a head and three cells on the table's hairlines */
-.bd-pan { display: grid; grid-template-columns: minmax(0, 1fr); margin-top: 16px; }
-.bd-g { display: flex; flex-direction: column; min-width: 0; }
-.bd-g + .bd-g { border-top: 1px solid var(--border); }
-.bd-pan .pan-c.na .pan-v { color: var(--text-3); }
-.bd-pan .pan-c.bad .pan-v { color: var(--fault); }
-.bd-pan .pan-v .u { margin-left: 0; }
-/* the rows that came back against the rows that reconstruct the blob: a slim bar and the line it has to pass */
-.bd-meter { position: relative; height: 4px; margin: 10px 0 0; border-radius: 2px; background: var(--seg-track); }
-.bd-meter i { display: block; height: 100%; border-radius: 2px; background: var(--accent); }
-.bd-meter span { position: absolute; top: -3px; width: 2px; height: 10px; margin-left: -1px; border-radius: 1px; background: var(--text-2); }
-
-/* the endorsements card: a head, the voting power against ⅔, then a band each for endorsed and not endorsed, every
-   validator a small tile of its name over its share; a mark only where something went wrong */
-.bd-sig { overflow: clip; background: var(--paper); border: 1px solid var(--border); border-radius: var(--r-card); box-shadow: var(--shadow-sm); }
+/* the endorsements, in the facts' light frame: a head, then a band each for endorsed and not endorsed */
+.bd-under { margin-top: 16px; }
+.bd-sig { overflow: clip; background: color-mix(in srgb, var(--paper) 40%, transparent); border: 1px solid var(--border); border-radius: 10px; }
 .bd-sh { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 46px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--border); }
 .bd-sh h2 { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-size: 14.5px; font-weight: 600; letter-spacing: -.005em; color: var(--text); }
 .bd-sh h2 svg { color: var(--text-3); }
 .bd-tbl { height: 26px; padding: 0 11px; border: 1px solid var(--border); border-radius: 999px; background: var(--paper); font-size: 12px; font-weight: 500; color: var(--text-2); cursor: pointer; transition: color var(--dur), border-color var(--dur), background var(--dur); }
 .bd-tbl:hover { color: var(--text); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
 .bd-tbl[aria-pressed="true"] { color: var(--accent-ink); background: var(--accent-tint); border-color: transparent; }
-.bd-rate { padding: 14px 16px 16px; }
-.bd-rt { display: flex; align-items: baseline; gap: 8px; }
-.bd-rt b { font-family: var(--font-table); font-size: 20px; font-weight: 500; letter-spacing: -.02em; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
-.bd-rt span { font-size: var(--t-small); color: var(--text-3); }
-.bd-bar { position: relative; height: 6px; margin: 10px 0 0; border-radius: 3px; background: var(--seg-track); }
-.bd-bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
-.bd-bar span { position: absolute; left: 66.667%; top: -4px; width: 2px; height: 14px; margin-left: -1px; border-radius: 1px; background: var(--text-2); }
-.bd-band + .bd-band { margin-top: 0; }
-.bd-bh { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 16px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--paper) 94%, var(--text)); font-family: var(--mono); font-size: 11.5px; letter-spacing: .01em; color: var(--text-3); }
-.bd-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; margin: 0; padding: 12px 14px; list-style: none; }
-.bd-tile { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 7px 10px 8px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); transition: border-color var(--dur), background var(--dur); }
+.bd-bh { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 16px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--paper) 55%, var(--seg-track)); font-family: var(--mono); font-size: 11.5px; letter-spacing: .01em; color: var(--text-3); }
+.bd-band + .bd-band .bd-bh { border-top: 1px solid var(--border); }
+.bd-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(144px, 1fr)); gap: 8px; margin: 0; padding: 12px 14px; list-style: none; }
+/* a tile: the logo, then the name over the share; a mark only where something went wrong */
+.bd-tile { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 7px 10px 7px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--paper); color: var(--text); transition: border-color var(--dur), background var(--dur); }
 .bd-tile:hover { text-decoration: none; border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: color-mix(in srgb, var(--accent) 4%, var(--paper)); }
+.bd-tile .avatar { width: 26px; height: 26px; font-size: 9.5px; }
+.bd-tile .tx { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .bd-tile .nm { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 12.5px; font-weight: 600; line-height: 16px; }
 .bd-tile .nm .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bd-tile .nm svg { flex: none; color: var(--text-3); }
 .bd-tile .vp { font-family: var(--mono); font-size: 11px; line-height: 14px; color: var(--text-3); }
 .bd-band.off .bd-tile .nm { color: var(--text-2); }
+/* a validator that did not endorse wears its logo in grey */
+.bd-band.off .bd-tile .avatar { filter: grayscale(1); opacity: .6; }
 .bd-tile .mk { flex: none; width: 6px; height: 6px; margin-left: 1px; border-radius: 50%; }
 .bd-tile.hold .mk { background: var(--hold); }
 .bd-tile.fault { border-color: color-mix(in srgb, var(--fault) 50%, var(--border)); background: color-mix(in srgb, var(--fault) 6%, var(--paper)); }
 .bd-tile.fault .nm { color: var(--fault); }
 .bd-tile.fault .mk { background: var(--fault); }
-.bd-more { display: block; margin: -4px 0 0; padding: 0 16px 12px; border: 0; background: none; font-size: 12.5px; font-weight: 500; color: var(--text-3); cursor: pointer; }
-.bd-more:hover { color: var(--accent-ink); }
 .bd-none { margin: 0; padding: 14px 16px 16px; color: var(--text-2); }
 
 /* the table one switch away, at the page's full width */
 .bd-full { margin-top: 32px; }
 .bd-vh { display: inline-flex; align-items: center; gap: 8px; margin: 0; padding: 0 2px; font-size: 15px; font-weight: 600; line-height: 36px; color: var(--text); }
 .bd-vh .n { padding: 1px 8px; border-radius: 999px; background: var(--seg-track); font-size: var(--t-tiny); font-weight: 600; line-height: 18px; color: var(--text-2); }
-
 /* the table, for an operator's detail: the Blobs list's heads and rules, the result in Tensile's lane */
 .bd-tw { overflow-x: auto; }
 .bd-t { width: 100%; min-width: 760px; border-collapse: separate; border-spacing: 0; font-family: var(--font-table); font-size: 13.5px; font-variant-numeric: tabular-nums lining-nums; }
@@ -2225,23 +2209,13 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .bd-t td.tn .quiet { color: var(--text-3); }
 .bd-t td.tn .sv { color: var(--text); font-weight: 500; }
 
-@media (max-width: 1080px) {
-  .bd-body { grid-template-columns: minmax(0, 1fr); }
-  /* the card at the page width: whole rows of the twelve a band shows folded */
-  .bd-tiles { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-}
-@media (max-width: 860px) {
-  .bd-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 900px) {
+  .bd-top { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 720px) {
-  .bd-body { margin-top: 18px; gap: 16px; }
-  .bd-pan .vp-cells { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .bd-pan .vp-cells > :last-child:nth-child(odd) { grid-column: auto; }
-  .bd-pan .pan-c { padding-left: 14px; padding-right: 10px; }
-  .bd-pan .pan-c .pan-v { font-size: 20px; }
-  /* what a figure is out of is on hover there; the bar and its line say how far the reading got */
-  .bd-pan .pan-v .u { display: none; }
-  .bd-main .bd-meta { grid-template-columns: 112px minmax(0, 1fr); }
+  .bd-top { margin-top: 18px; gap: 12px; }
+  .bd-top .bd-meta { grid-template-columns: 112px minmax(0, 1fr); }
+  .bd-under { margin-top: 12px; }
   .bd-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 10px 12px; }
   .bd-bh { padding: 7px 14px; }
   .bd-full { margin-top: 26px; }
