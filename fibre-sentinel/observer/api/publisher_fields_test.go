@@ -160,7 +160,7 @@ func TestPublisherRowsNameNamespacesAndSettlements(t *testing.T) {
 	for _, w := range one.Windows {
 		spans[w.Window.Name] = fmt.Sprintf("%v/%d", w.Namespaces, w.NamespacesTotal)
 	}
-	if spans["24h"] != "[{ns1 2 250} {ns2 1 300}]/2" || spans["all"] != "[{ns1 3 350} {ns2 1 300}]/2" {
+	if spans["24h"] != "[{ns1 2 250} {ns2 1 300}]/2" || spans["7d"] != spans["24h"] || spans["30d"] != "[{ns1 3 350} {ns2 1 300}]/2" || spans["all"] != spans["30d"] {
 		t.Errorf("the spans' namespaces: %v", spans)
 	}
 	// Nothing in the period: the row is the whole record's with the period's

@@ -74,6 +74,8 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 		c{"publisher namespaces", publisherNamespacesSQL(""), []any{lo, hi}, []string{"payments_kind_time (kind=? AND time>? AND time<?)"}},
 		c{"one publisher's namespaces", publisherNamespacesSQL(" AND publisher = ?"), []any{lo, hi, "celestia1x"},
 			[]string{"payments_publisher_time (publisher=? AND time>? AND time<?)"}},
+		c{"a publisher's namespaces in each span", spanNamespacesSQL, []any{"celestia1x", hi, lo, lo},
+			[]string{"payments_publisher_time (publisher=?)"}},
 		c{"class tally", `SELECT ` + cls + `, COUNT(*) FROM probes WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window' GROUP BY 1`,
 			[]any{lo, hi}, []string{"COVERING INDEX probes_"}},
 		c{"per-validator class tally", `SELECT validator_address, ` + cls + `, COUNT(*) FROM probes WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window' GROUP BY 1, 2`,

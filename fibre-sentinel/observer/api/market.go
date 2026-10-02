@@ -331,6 +331,64 @@ func (s *Server) namespacesBy(ctx context.Context, start, end, only string) (map
 	return all, total, nil
 }
 
+// spanNamespacesSQL is one publisher's namespaces in every span of its page
+// at once: each settlement goes in the shortest span it falls in (?2, ?3 and
+// ?4 are the starts of the bounded spans, the shortest first), and a span is
+// its bucket and the shorter ones'. Bounded below only, as the spans' sums
+// are.
+const spanNamespacesSQL = `SELECT namespace,
+		CASE WHEN time >= ?2 THEN 0 WHEN time >= ?3 THEN 1 WHEN time >= ?4 THEN 2 ELSE 3 END AS b,
+		COUNT(*), COALESCE(SUM(blob_size), 0), MAX(time)
+	FROM payments WHERE publisher = ?1 AND +kind = 'settlement' AND namespace <> ''
+	GROUP BY namespace, b`
+
+// spanNamespaces is one publisher's namespaces over each of the spans
+// starts begins (the shortest first) and over its whole record, ordered and
+// bounded as a row's (topNamespaces), with how many there were: one pass
+// over its settlements rather than one per span.
+func (s *Server) spanNamespaces(ctx context.Context, addr string, starts [3]string) ([4][]publisherNamespace, [4]int64, error) {
+	var out [4][]publisherNamespace
+	var total [4]int64
+	rows, err := s.st.DB().QueryContext(ctx, spanNamespacesSQL, addr, starts[0], starts[1], starts[2])
+	if err != nil {
+		return out, total, err
+	}
+	defer rows.Close()
+	var acc [4]map[string]*publisherNamespace
+	for k := range acc {
+		acc[k] = map[string]*publisherNamespace{}
+	}
+	for rows.Next() {
+		var n publisherNamespace
+		var b int
+		if err := rows.Scan(&n.Namespace, &b, &n.Settlements, &n.Bytes, &n.last); err != nil {
+			return out, total, err
+		}
+		for k := b; k < len(acc); k++ {
+			a := acc[k][n.Namespace]
+			if a == nil {
+				a = &publisherNamespace{Namespace: n.Namespace}
+				acc[k][n.Namespace] = a
+			}
+			a.Settlements += n.Settlements
+			a.Bytes += n.Bytes
+			a.last = max(a.last, n.last)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return out, total, err
+	}
+	for k := range acc {
+		v := make([]publisherNamespace, 0, len(acc[k]))
+		for _, a := range acc[k] {
+			v = append(v, *a)
+		}
+		total[k] = int64(len(v))
+		out[k] = topNamespaces(v)
+	}
+	return out, total, nil
+}
+
 // ---- label registry ----
 
 // PublisherLabel is one entry of the operator-maintained registry: a name
@@ -1158,11 +1216,19 @@ func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
 		NamespacesTotal int64                `json:"namespaces_total"`
 	}
 	var spans []span
-	for _, name := range []string{"24h", "7d", "30d", "all"} {
-		sw := Window{Name: name, Span: windows[name], End: now}
-		if sw.Span > 0 {
-			sw.Start = now.Add(-sw.Span)
+	var sws [4]Window
+	for i, name := range []string{"24h", "7d", "30d", "all"} {
+		sws[i] = Window{Name: name, Span: windows[name], End: now}
+		if sws[i].Span > 0 {
+			sws[i].Start = now.Add(-sws[i].Span)
 		}
+	}
+	spanNss, spanNsTotal, err := s.spanNamespaces(ctx, addr, [3]string{sws[0].startArg(), sws[1].startArg(), sws[2].startArg()})
+	if err != nil {
+		s.writeInternal(w, r.URL.Path, err)
+		return
+	}
+	for i, sw := range sws {
 		var sp span
 		sp.Window = sw
 		if err := s.st.DB().QueryRowContext(ctx, `SELECT
@@ -1176,16 +1242,7 @@ func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sp.PaidPerMiB = perMiB(sp.FeesUtia, sp.Bytes)
-		// bounded below only, as the span's sums are
-		nss, total, err := s.namespacesBy(ctx, sw.startArg(), "9999", addr)
-		if err != nil {
-			s.writeInternal(w, r.URL.Path, err)
-			return
-		}
-		sp.Namespaces, sp.NamespacesTotal = nss[addr], total[addr]
-		if sp.Namespaces == nil {
-			sp.Namespaces = []publisherNamespace{}
-		}
+		sp.Namespaces, sp.NamespacesTotal = spanNss[i], spanNsTotal[i]
 		spans = append(spans, sp)
 	}
 	payments, err := s.paymentRows(ctx, `publisher = ?`, 100, addr)
