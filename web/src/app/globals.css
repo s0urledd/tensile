@@ -1730,6 +1730,8 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .pl-t th.c-n { width: 110px; }
 .pl-t th.c-sz, .pl-t th.c-fee, .pl-t th.c-to { width: auto; }
 .pl-t th.c-sh { width: min(130px, calc((100vw - 764px) / 3 - 14px)); }
+/* with a Timed out column the chip is narrower and a fourth figure shares the rest: the same 21 px less than each */
+.pl-t.has-to th.c-sh { width: min(114px, calc((100vw - 661px) / 4 - 21px)); }
 .pl-t.has-to th.c-pub { width: 118px; }
 .pl-t.has-to .lg-who .hd { display: none; }
 .pl-t th.c-t, .pl-t td.c-t { text-align: center; }
@@ -1770,6 +1772,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 @media (max-width: 1160px) {
   .pl-t th.c-t { width: 144px; }
   .pl-t th.c-sh { width: calc((100vw - 702px) / 3 - 14px); }
+  .pl-t.has-to th.c-sh { width: calc((100vw - 599px) / 4 - 21px); }
 }
 /* a list before the columns would cut their figures: two lines a publisher, its escrow in the lane beside them.
    One slim head names the time and the lane once; the second line says what each figure is. */
