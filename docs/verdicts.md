@@ -402,7 +402,9 @@ One sentence each, and what a reader should conclude.
   `shared_from` (the request whose answer a later attempt repeats),
   `download.rows_subset_of_assignment` (a short answer whose rows are all
   the validator's own), `observer_load` (the requests and bytes in flight
-  when the request was let go, and how long it waited for room),
+  when the request was let go, how long it waited for room, and how much of
+  that the reading-rate ceiling held it, `rate_wait_ms`; none of it is the
+  request's own time),
   `host_at_settlement` (the host registered when the promise
   settled, where the upload went, derived from the chain's own
   `set_fibre_provider_info` events as the scanner reads them in the same

@@ -143,11 +143,12 @@ max 3.0 s, no start lag) and 180 of 180 at 60 a minute (p50 2.5 s, max
 rows, and the earlier one-request-per-validator pacing, which only slowed
 it; at 120 a minute every blob was still read but the start lag grew to
 30 s in two minutes. The limits it keeps, 16 blobs and 256 requests at
-once and 512 MiB of shards in flight (`-blob-concurrency`, `-concurrency`,
-`-in-flight-mib`), only delay a request: its 15 s start once it is let go,
-and it carries the phase its reading started in, so a request held back
-past `must_serve_until` counts as the client, which asks at once, would
-have made it. A request of a full reading, or a later attempt, that cannot
+once, 512 MiB of shards in flight and a reading rate of 400 Mbit/s
+(`-blob-concurrency`, `-concurrency`, `-in-flight-mib`, `-max-read-mbps`),
+only delay a request: its 15 s start once it is let go, and it carries the
+phase its reading started in, so a request held back past
+`must_serve_until` counts as the client, which asks at once, would have
+made it. A request of a full reading, or a later attempt, that cannot
 start a minute before `must_serve_until` (`-request-start-margin`) is not
 made and is this observer's gap (`NOT_PROBED`); the prober's status `reads`
 block counts them (`requests_not_started_last_hour`, the `retries_*`
@@ -157,6 +158,31 @@ toward 128 MiB: it holds the shard bytes in flight to what the link moves
 in half a request's time, so a timeout is never the observer's own full
 link, and every row records the load it was let go under
 (`observer_load`).
+
+**The reading-rate ceiling.** The observer shares its 1 Gbit/s port and
+its disk with a validator. Unpaced, a 128 MiB blob's full reading let its
+62 to 67 requests go at once and pulled 376 to 392 MB in about 3 s, nearly
+the port's line rate. `-max-read-mbps` (default 400, so the unit needs no
+change; 0 turns it off) paces what is let go. Each request, the reading's
+and every later attempt's, is charged its shard's expected bytes against a
+token bucket of that rate. The bucket holds about a second of the rate and
+at least 64 MiB, above the largest shard today (mocha's largest validator
+holds 1,463 of 16,384 rows, 48.7 MB of a 128 MiB blob); a shard larger than
+that is charged the whole bucket and let go once the bucket is full. At
+400 Mbit/s a 128 MiB blob's reading is let go over about 6.5 s, and
+today's load of 16 MiB blobs, under half the rate, is not slowed.
+
+The ceiling's wait is like the other limits'. It only delays, it is never
+part of the request's 15 s, and it is recorded on the row
+(`observer_load.rate_wait_ms`) and in the status file (`rate_wait_p95_ms`).
+A full reading's request or later attempt whose turn would come after its
+start cutoff (`must_serve_until` less `-request-start-margin`) is not made:
+`NOT_PROBED`, this observer's gap, never the validator's. A request waiting
+for the ceiling keeps its request slot and its share of the byte budget, so
+the ceiling's own wait is at most the budget over the rate, about 11 s at
+the defaults. `-link-mbps` bounds the bytes in flight at once and the
+ceiling the rate they are let go at; with both set, keep the ceiling below
+the link.
 
 A validator that times out holds a request for 30 s at the reading (the
 request and the client's re-dial), and 15 s at a later attempt, which is

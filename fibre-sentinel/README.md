@@ -310,8 +310,12 @@ the reading and up to twice more when it did not serve. At most 16 blobs
 once, with 512 MiB of shards (`-in-flight-mib`); `-link-mbps`, set from the
 observer's measured link, also holds the shard bytes in flight to what the
 link moves in half a request's time, so a timeout is never this observer's
-own full link. These only delay a request until its last start, and every
-row records the load it was let go under (`observer_load`). The reading's
+own full link. Shard bytes are let go no faster than 400 Mbit/s
+(`-max-read-mbps`, a token bucket charged each request's expected shard
+bytes; 0 turns it off), so the readings leave room on a port they share.
+These only delay a request until its last start, the wait is never part of
+the request's own time, and every row records the load it was let go
+under and its wait (`observer_load`). The reading's
 own requests have no limit per validator, as the client has none; a later
 attempt waits while the same validator's previous one is in flight.
 `publications.jsonl` is tailed incrementally and a publication is

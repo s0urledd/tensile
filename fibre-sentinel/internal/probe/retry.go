@@ -16,8 +16,9 @@ package probe
 // and gives back its blob slot (BlobConcurrency) and its Reconstructor when
 // its first pass ends, as any reading does; an attempt holds neither. It
 // is one request, without the client's re-dial (the attempt is itself the
-// asking again), made under this observer's request and byte limits
-// (admitBy, charged its own verifier too), whose rows are verified against
+// asking again), made under this observer's request and byte limits and
+// its reading-rate ceiling (admitBy; the byte budget is charged its own
+// verifier too, the ceiling its shard alone), whose rows are verified against
 // the commitment on their own (a Reconstructor of that request alone, let
 // go when it ends), and it appends its own row.
 //
@@ -34,7 +35,8 @@ package probe
 //
 // An attempt that was owed and could not be made (its cutoff passed while
 // it waited for the validator's earlier attempt or for this observer's
-// limits, the validator could not be resolved, or a restart abandoned it)
+// limits or reading-rate ceiling, the validator could not be resolved, or a
+// restart abandoned it)
 // is written NOT_PROBED: this observer's gap, never the validator's. The
 // queue of attempts is not persisted: a restarted prober finds the
 // attempts its record still owes (MeasurementStore.PendingAttempts) and
@@ -548,12 +550,14 @@ func (p *Prober) attempt(ctx context.Context, j *retryJob) (Measurement, bool) {
 	// commitment with one of its own, let go when it ends, and charged to
 	// the byte budget with its shard.
 	in := p.inputFor(j.pub, j.target, j.point, commitment, nil, p.shadowBlindness(j.pub))
-	release, load, ok := p.admitBy(ctx, j.cutoff, in.ExpectedShardBytes+verifierBytes(pp.OriginalRows, pp.TotalRows))
-	if !ok {
+	// The verifier is charged to the byte budget, not to the reading-rate
+	// ceiling: it is memory, not bytes on the wire.
+	release, load, err := p.admitBy(ctx, j.cutoff, in.ExpectedShardBytes+verifierBytes(pp.OriginalRows, pp.TotalRows), in.ExpectedShardBytes)
+	if err != nil {
 		if ctx.Err() != nil {
 			return Measurement{}, false
 		}
-		return notMade(p.notStartedReason("retry") + ": this observer's own request limits were full")
+		return notMade(p.notStartedReason("retry") + ": " + err.Error())
 	}
 	defer release()
 	p.retries.started()

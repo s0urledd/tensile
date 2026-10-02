@@ -27,7 +27,8 @@ package probe
 // (Reached), because this observer's own network was down (ReadNotRead).
 //
 // This observer's limits on requests and shard bytes in flight
-// (Config.Concurrency, Config.InFlightBytes) only delay a request: its time
+// (Config.Concurrency, Config.InFlightBytes) and on the rate shard bytes are
+// let go at (Config.MaxReadMbps, ceiling.go) only delay a request: its time
 // starts once it is let go, it is never dropped, and it carries the phase
 // the reading started in (Input.ReadingPhase), so a request held back is
 // judged as the client, which asks at once, would have made it. The client
@@ -257,28 +258,30 @@ func (b *blobReading) record(a *answer) {
 }
 
 // ask makes one validator's request, and the client's one re-dial. The
-// request waits for room under this observer's limits (admit), its time
-// starts once it is let go, and it carries the reading's phase. In a full
-// reading the wait ends at startBy: a request that could not start by then
-// is not made, and the validator's row says so (NOT_PROBED).
+// request waits for room under this observer's limits and its reading-rate
+// ceiling (admitBy), its time starts once it is let go, and it carries the
+// reading's phase. In a full reading the wait ends at startBy: a request
+// that could not start by then is not made, and the validator's row says so
+// (NOT_PROBED). The re-dial is not charged to the ceiling again: it follows
+// a request that failed before an answer came back, so the shard moves once.
 func (b *blobReading) ask(ctx context.Context, v readTarget) *answer {
 	p := b.p
 	a := &answer{t: v}
 	in := p.inputFor(b.pub, v.Target, b.point, b.commitment, b.rec, b.shadowGap)
 	in.ReadingPhase = b.phase
-	var release func()
-	var load *LoadInfo
+	var by time.Time // a reading that stops at enough rows waits as long as it takes
 	if b.full {
-		var ok bool
-		if release, load, ok = p.admitBy(ctx, b.startBy, in.ExpectedShardBytes); !ok {
-			if ctx.Err() == nil {
-				p.counters.notStarted.add(time.Now())
-			}
-			a.m = p.notProbedRow(b.pub, b.point, v.Target, p.notStartedReason("request")+": this observer's own request limits were full")
-			return a
+		by = b.startBy
+	}
+	release, load, err := p.admitBy(ctx, by, in.ExpectedShardBytes, in.ExpectedShardBytes)
+	if err != nil {
+		// Only a stopped run ends the wait of a reading without a cutoff;
+		// its rows are not written.
+		if ctx.Err() == nil {
+			p.counters.notStarted.add(time.Now())
 		}
-	} else {
-		release = p.admit(in.ExpectedShardBytes)
+		a.m = p.notProbedRow(b.pub, b.point, v.Target, p.notStartedReason("request")+": "+err.Error())
+		return a
 	}
 	defer release()
 	m := Run(ctx, in, b.coder, p.cfg.Timeouts)

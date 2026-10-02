@@ -317,9 +317,12 @@ the way celestia-app's Fibre client asks for a shard (a full reading, label
 - load: 16 blobs (`-blob-concurrency`) and 256 requests (`-concurrency`)
   at once, 512 MiB of shards in flight (`-in-flight-mib`), and with
   `-link-mbps` set, no more shard bytes than the link moves in half a
-  request's time; a request waits for room until its last start, its time
-  starts once it is let go, and it carries the phase the reading started
-  in, so the wait changes nothing. Every row records `observer_load`. The
+  request's time; shard bytes let go no faster than 400 Mbit/s
+  (`-max-read-mbps`: a token bucket charged each request's expected shard
+  bytes, with about a second of burst, so the readings leave room on the
+  port the observer shares); a request waits for room until its last
+  start, its time starts once it is let go, and it carries the phase the
+  reading started in, so the wait changes nothing. Every row records `observer_load`. The
   reading's own requests have no limit per validator, as the client has
   none; a later attempt waits while the same validator's previous attempt
   is in flight
@@ -752,6 +755,6 @@ Stated here because they are properties of the machine, not of any validator.
 | every validator failed in one reading | the blob's rows (`/v1/probes?blob=`): if no request reached a server (`PROBE_ERROR`, or a failed lookup or dial, everywhere) the blob reads not read and no one counts; otherwise it is unavailable, and at a full reading each validator is not served by its last answer |
 | the scanner stopped | scan gaps in `state.json`; `scanner_lag` and `chain_liveness` in `/v1/health` |
 | the prober records nothing | the prober's status `reads` block (queued, in progress, started late and missed in the last hour; `/v1/health` components), `BackfillMissed` horizon |
-| a validator is often counted neither way | the status `reads` block: `requests_not_started_last_hour`, `admit_wait_p95_ms`, the `retries_*` counts and `retries_not_made_by_validator_last_hour`; `observer_load` on its rows |
+| a validator is often counted neither way | the status `reads` block: `requests_not_started_last_hour`, `admit_wait_p95_ms` and the reading-rate ceiling's part of it (`rate_wait_p95_ms`), the `retries_*` counts and `retries_not_made_by_validator_last_hour`; `observer_load` on its rows |
 | the build says `-dirty` | an untracked file in the working tree at build time |
 | the API refuses to start | schema older or newer than the binary; run the collector once |
