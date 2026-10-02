@@ -33,6 +33,11 @@ package probe
 // judged as the client, which asks at once, would have made it. The client
 // has no limit per validator, and neither has the reading.
 //
+// With Config.AskEveryEndorser the reading asks every endorsing validator
+// for its own rows, all of them, instead of stopping at enough: the same
+// request, the same checks, one per endorser. Validators that did not
+// endorse are not asked.
+//
 // Nothing is written until the reading ends: then one row per validator
 // asked, together (MeasurementStore.AppendReading). A validator the reading
 // did not need to ask has no row.
@@ -134,7 +139,7 @@ func (p *Prober) newBlobReading(ctx context.Context, pub scan.Publication, pt Sc
 	}
 	var assigned []Target
 	for _, t := range targets {
-		if t.Assigned {
+		if t.Assigned && (!p.cfg.AskEveryEndorser || p.wants(t)) {
 			assigned = append(assigned, t)
 		}
 	}
@@ -160,8 +165,10 @@ func (b *blobReading) enough() bool { return b.rec.Want() == 0 }
 // run is the client's dispatch over the whole ordered set. It returns once
 // no request is in flight and either the rows are enough or every
 // validator has been asked (or the reading was stopped). onEnough is called
-// once, the moment the rows suffice.
+// once, the moment the rows suffice. With Config.AskEveryEndorser every
+// target is asked whatever the rows, and onEnough waits for the last answer.
 func (b *blobReading) run(ctx context.Context, onEnough func()) {
+	all := b.p.cfg.AskEveryEndorser
 	var (
 		mu       sync.Mutex
 		inflight int
@@ -180,16 +187,16 @@ func (b *blobReading) run(ctx context.Context, onEnough func()) {
 	for {
 		mu.Lock()
 		want := b.rec.Want()
-		if want == 0 {
+		if want == 0 && !all {
 			once.Do(onEnough)
 		}
 		stopped := ctx.Err() != nil
-		if running == 0 && (want == 0 || next >= len(b.targets) || stopped) {
+		if running == 0 && ((want == 0 && !all) || next >= len(b.targets) || stopped) {
 			mu.Unlock()
 			break
 		}
 		launched := false
-		if want > inflight && next < len(b.targets) && !stopped {
+		if (all || want > inflight) && next < len(b.targets) && !stopped {
 			v := b.targets[next]
 			next++
 			inflight += v.expected
