@@ -489,7 +489,7 @@ export const GROUPS: Group[] = [
         id: "validator",
         path: "/v1/validators/{addr}",
         summary: "One validator's service, endorsements, load and newest readings.",
-        desc: "`windows` repeats the service counts for 24h, 7d, 30d and all; `recent_probes` holds the newest 50 readings, not-probed ones left out.",
+        desc: "`windows` repeats the service counts for 24h, 7d, 30d and all. `recent_probes` holds the newest 50 requests, not-probed ones left out; `attempt` 1 or 2 is a request made again after an answer that did not serve.",
         params: [validatorAddr, windowParam, asOf],
         errors: "404 when no validator is on record at the address.",
         example: EX_VALIDATOR,
@@ -516,6 +516,7 @@ export const GROUPS: Group[] = [
         id: "probes",
         path: "/v1/probes",
         summary: "Tensile's readings, newest first, by validator, blob, class or time.",
+        desc: "One row per request: `attempt` 1 or 2 is a validator asked again after an answer that did not serve. `service` says what a request counts as; the last answer carries it.",
         params: [
           { name: "validator", in: "query", type: "string", desc: "A validator's operator address (celestiavaloper1…), or its consensus or account address.", example: HUGINN },
           { name: "blob", in: "query", type: "string", desc: "A promise hash, 64 hex characters." },
@@ -555,7 +556,7 @@ export const GROUPS: Group[] = [
         id: "blob",
         path: "/v1/blobs/{hash}",
         summary: "One blob: availability, charge, validators with rows, and readings.",
-        desc: "`reconstructable.status` is yes (Available), no (Unavailable), pending, not_read or unknown. Each assignment's `service` is served, not_served, in_retention_window or deadline_unverified.",
+        desc: "`reconstructable.status` is yes (Available), no (Unavailable), pending, not_read or unknown. Each assignment's `service` is served, not_served, in_retention_window (until the window closes; `probes` carry the reading's result once it is in) or deadline_unverified.",
         params: [
           { name: "hash", in: "path", type: "string", required: true, desc: "The blob's promise hash, 64 hex characters.", example: BLOB },
           rows,

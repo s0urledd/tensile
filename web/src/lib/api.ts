@@ -142,7 +142,7 @@ export type Network = {
   reachability: Rate;
   /** every heartbeat in the window that completed TLS, over every one sent */
   reachability_window: Rate;
-  /** one per (validator, blob) endorsed, judged by the blob's reading; the headline */
+  /** one per (validator, blob) endorsed, judged on the validator's own answers at the blob's reading; the headline */
   obligations: Obligations;
   /** the part of obligations.broken whose faults are all still settling; absent when none (see ProvisionalFaults) */
   provisional_faults?: ProvisionalFaults;
@@ -181,15 +181,26 @@ export type Reconstructable = {
 
 /**
  * One per (validator, blob) the settled promise proves the validator owes,
- * judged by the blob's reading. Only served and broken enter the rate.
+ * judged on the validator's own answers at the blob's reading (readings
+ * before FULL_READ_SINCE keep the rule of their time). Only served and
+ * broken enter the rate.
  */
 export type Obligations = {
   total: number;
-  /** its rows came back and verified */
+  /** its rows came back and verified, at the reading or when asked again */
   served: number;
-  /** not served: the blob could not be reconstructed, and its rows did not come back */
+  /**
+   * not served: its own rows did not come back, at the reading and each time it was asked again (no shard, rows that do
+   * not verify or too few, a wrong certificate, an endpoint that could not be reached, a timeout, a rate limit or a
+   * server error); at a reading before FULL_READ_SINCE, its rows did not come back and the blob could not be reconstructed
+   */
   broken: number;
-  /** counted neither way: not asked because the rows were already enough, a failure on a blob that was available, or a blob not read by Tensile */
+  /**
+   * counted neither way: one of its answers was Tensile's own gap (a request it could not make in time, or an error on
+   * its side), no request of the reading reached a server, or the blob was not read by Tensile; at a reading before
+   * FULL_READ_SINCE also a validator not asked because the rows were already enough, or a failure on a blob that was
+   * available
+   */
   not_counted: number;
   /** read, and the retention window has not ended (an endorsed shard not read yet has no obligation row) */
   pending: number;
@@ -250,7 +261,7 @@ export type Validator = {
    */
   reachability_window: Rate;
   last_reachable_at: string | null;
-  /** one per (validator, blob) endorsed, judged by the blob's reading; the headline */
+  /** one per (validator, blob) endorsed, judged on the validator's own answers at the blob's reading; the headline */
   obligations: Obligations;
   /** the part of obligations.broken whose faults are all still settling; absent when none (see ProvisionalFaults) */
   provisional_faults?: ProvisionalFaults;
@@ -310,10 +321,16 @@ export type ValidatorReading = {
   /** where the upload went; host_changed when the host read differs (the validator re-registered during the window) */
   host_at_settlement?: string;
   host_changed?: boolean;
-  /** what the reading counts as for the validator: served, not_served (the blob was unavailable), or absent when it counts neither way */
+  /**
+   * what this request counts as for the validator: served; not_served (at a full reading, its last answer when none
+   * served and none was Tensile's own gap; at an earlier one, rows that did not come back from a blob that was
+   * unavailable); absent when it counts neither way, among them an answer a later one replaced
+   */
   service?: "served" | "not_served";
   /** a not-served reading younger than the settling period: counted, and an x/fibre params change can still withdraw it */
   provisional?: boolean;
+  /** which of the validator's requests at a full reading this is: absent (0) the reading's own, 1 and 2 asked again after an answer that did not serve */
+  attempt?: number;
 };
 
 /** one reading row of /v1/probes */
@@ -354,10 +371,12 @@ export type Probe = {
   /** the evidence probe of the settlement host, run when the current host did not serve; never the verdict */
   settlement_host_outcome?: string;
   settlement_host_served?: boolean;
-  /** what the reading counts as for the validator: served, not_served (the blob was unavailable), or absent when it counts neither way */
+  /** what this request counts as for the validator; see ValidatorReading.service */
   service?: "served" | "not_served";
   /** a not-served reading younger than the settling period: counted, and an x/fibre params change can still withdraw it */
   provisional?: boolean;
+  /** see ValidatorReading.attempt */
+  attempt?: number;
 };
 
 // Below this many rated probes a percentage is noise dressed as a
@@ -397,7 +416,10 @@ export type Reconstruct = {
   total_rows: number;
   /** validators whose rows came back verified */
   served_by_validators: number;
-  /** validators the reading asked, endorsing or not; it stops once the rows are enough */
+  /**
+   * validators the reading asked: at a full reading every endorsing validator, and only those; at a reading before
+   * FULL_READ_SINCE, endorsing or not, in the client's order until the rows were enough
+   */
   probed_validators: number;
 };
 
@@ -445,8 +467,62 @@ export type BlobReading = {
   row_indices?: number[];
   rows_sha256?: string;
   rpc_code?: string;
+  /** what this request counts as for the validator; see ValidatorReading.service */
   service?: "served" | "not_served";
+  /** see ValidatorReading.attempt */
+  attempt?: number;
 };
+
+/**
+ * When Tensile began reading every blob in full (probe.FullReadSince on the observer): every validator that endorsed
+ * the blob is asked for its own rows 10 minutes before the retention window ends, one that did not serve is asked
+ * again, up to two more times, about 90 s apart, while the window is open, and each is judged on its own answers,
+ * whatever the blob's reconstruction. Readings started before it asked validators in the client's order until the
+ * blob could be rebuilt, and keep the rule of their time: not served only when the blob was unavailable.
+ */
+export const FULL_READ_SINCE = "2026-10-02T16:09:49Z";
+const FULL_READ_SINCE_MS = Date.parse(FULL_READ_SINCE);
+/** the same moment as the site writes it in a dated note */
+export const FULL_READ_SINCE_WORDS = "2 October 2026, 16:09 UTC";
+
+/** the one reading of a blob near the end of its retention window: "end", or "full" */
+export function endOfWindow(label: string): boolean {
+  return label === "end" || label === "full";
+}
+
+/** whether a reading row belongs to a full reading: label "full", or "end" started at or after FULL_READ_SINCE */
+export function fullReading(label: string, startedAt: string): boolean {
+  return label === "full" || (label === "end" && Date.parse(startedAt) >= FULL_READ_SINCE_MS);
+}
+
+/** a request that was Tensile's own gap: not made in time, or failed on its own side; never counted against a validator */
+export function ownGap(classification: string): boolean {
+  return classification === "NOT_PROBED" || classification === "PROBE_ERROR";
+}
+
+/**
+ * One validator's requests at one reading, in the order they were made (attempt, then start), and the last of them,
+ * which carries the result and its reason: the attempts stop once one serves.
+ */
+export function attemptsOf<T extends { attempt?: number; started_at: string }>(rows: T[]): { last: T; tries: T[] } {
+  const tries = [...rows].sort((a, b) => (a.attempt ?? 0) - (b.attempt ?? 0) || a.started_at.localeCompare(b.started_at));
+  return { last: tries[tries.length - 1], tries };
+}
+
+/**
+ * What a validator's requests at one reading count as, read off the service word the observer put on each: served when
+ * one served, not served when one is the not-served answer, otherwise neither ("").
+ */
+export function judged(tries: { service?: "served" | "not_served" }[]): "served" | "not_served" | "" {
+  if (tries.some((t) => t.service === "served")) return "served";
+  if (tries.some((t) => t.service === "not_served")) return "not_served";
+  return "";
+}
+
+/** "asked 3 times", or "" for a single request */
+export function askedTimes(n: number): string {
+  return n > 1 ? `asked ${n} times` : "";
+}
 
 /**
  * The fee side of one promise, from the payments table. Null when the

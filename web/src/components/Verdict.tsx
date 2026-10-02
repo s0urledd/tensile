@@ -17,9 +17,11 @@
  *           cannot say when the obligation ended    RETENTION_UNVERIFIED
  *   gap     not observed at all — a gap, never a verdict    NOT_PROBED, PROBE_ERROR
  *
- * Whether a reading counts against the validator is not its class alone: a
- * failure counts as not served only when the blob could not be
- * reconstructed (observer/verdict).
+ * Whether a reading counts against the validator is not its class alone
+ * (observer/verdict): every endorser is judged on its own answers, a later
+ * answer replaces one that did not serve, and Tensile's own gap counts
+ * neither way. Readings before 2 October 2026, 16:09 UTC counted a failure
+ * as not served only when the blob could not be reconstructed.
  *
  * FAULT owns the only pointed shape in the system and the only status colour
  * allowed to touch a word, so an accusation is pre-attentive and survives total
@@ -38,35 +40,35 @@ const VERDICTS: Record<string, Def> = {
   },
   FAULT: {
     label: "not found or bad rows", tier: "fault",
-    def: "Not found, or rows that do not verify against the blob commitment. Not served when the blob could not be reconstructed; otherwise counted neither way.",
+    def: "Not found, or rows that do not verify against the blob commitment. Not served, unless the validator serves when asked again.",
   },
   UNREACHABLE: {
     label: "unreachable", tier: "hold",
-    def: "No answer within 15 s, or no route to its host, asked twice (the client's re-dial). Not served when the blob could not be reconstructed; otherwise counted neither way.",
+    def: "No answer within 15 s, or no route to its host, asked twice (the client's re-dial). Not served, unless the validator serves when asked again.",
   },
   IDENTITY_EXPIRED: {
     label: "certificate expired", tier: "hold",
-    def: "The right key signed the certificate, but outside its validity window. Not served when the blob could not be reconstructed; otherwise counted neither way.",
+    def: "The right key signed the certificate, but outside its validity window. Not served, unless the validator serves when asked again.",
   },
   IDENTITY_MISMATCH: {
     label: "wrong certificate", tier: "hold",
-    def: "The certificate is not signed by this validator's consensus key. Not served when the blob could not be reconstructed; otherwise counted neither way.",
+    def: "The certificate is not signed by this validator's consensus key. Not served, unless the validator serves when asked again.",
   },
   SERVER_ERROR: {
     label: "server error", tier: "hold",
-    def: "An error, or an answer no client accepts, instead of the shard. Not served when the blob could not be reconstructed; otherwise counted neither way.",
+    def: "An error, or an answer no client accepts, instead of the shard. Not served, unless the validator serves when asked again.",
   },
   THROTTLED: {
     label: "rate limited", tier: "hold",
-    def: "Refused with a rate limit instead of the shard. Not served when the blob could not be reconstructed; otherwise counted neither way.",
+    def: "Refused with a rate limit instead of the shard. Not served, unless the validator serves when asked again.",
   },
   UNATTESTED: {
     label: "not endorsed", tier: "held",
-    def: "No verified endorsement from this validator on the settled promise, so nothing proves it stored the shard. Asked like the rest; its rows count toward the blob. Not rated.",
+    def: "No verified endorsement from this validator on the settled promise, so nothing proves it stored the shard. Nothing owed, so not asked, and not rated.",
   },
   NOT_REGISTERED: {
     label: "no endpoint", tier: "held",
-    def: "No Fibre host in x/valaddr at the reading, so no client could fetch its rows. Not served when the blob could not be reconstructed; otherwise counted neither way.",
+    def: "No Fibre host in x/valaddr at the reading, so no client could fetch its rows. Not served, unless the validator serves when asked again.",
   },
   SHADOWED_SHARD: {
     label: "shadowed", tier: "held",
@@ -74,7 +76,7 @@ const VERDICTS: Record<string, Def> = {
   },
   UNMATCHED_GENUINE: {
     label: "unmatched genuine rows", tier: "held",
-    def: "Genuine rows of the blob that match no settled promise's set. The rows came back verified, so served.",
+    def: "Genuine rows of the blob that match no settled promise's set. They verified, so served, unless they are fewer than the validator holds.",
   },
   TOLERATED: {
     label: "tolerated", tier: "held",
@@ -102,11 +104,11 @@ const VERDICTS: Record<string, Def> = {
   },
   PROBE_ERROR: {
     label: "read failed", tier: "gap",
-    def: "Tensile's own request failed before it reached the validator. When no request of a reading reached a validator, the blob was not read by Tensile; otherwise it is this validator's rows not coming back.",
+    def: "Tensile's own request failed before it reached the validator. A gap of Tensile's own: never counted against the validator. When no request of a reading reached a validator, the blob was not read by Tensile.",
   },
   NOT_PROBED: {
     label: "not read by Tensile", tier: "gap",
-    def: "Tensile did not read this blob in time. A gap, not a verdict.",
+    def: "Tensile could not make this request in time. A gap, not a verdict.",
   },
   RETENTION_UNVERIFIED: {
     label: "deadline unverified", tier: "held",
