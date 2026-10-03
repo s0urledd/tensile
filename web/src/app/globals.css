@@ -203,7 +203,7 @@ button { font: inherit; color: inherit; }
    filled rather than outlined until it has focus. Under 1120 px that space is too narrow for it, so it takes a row of
    its own under the header line. */
 .top .hs { flex: 1; min-width: 0; display: flex; justify-content: center; margin: 0 -16px; }
-.hs-box { position: relative; width: 100%; max-width: 440px; }
+.hs-box { position: relative; width: 100%; max-width: 360px; }
 .hs-field { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 8px 0 12px; border: 1px solid transparent; border-radius: 9px; background: var(--wash); color: var(--text-3); cursor: text; transition: background var(--dur), border-color var(--dur), box-shadow var(--dur); }
 .hs-field:hover { border-color: var(--border); }
 .hs.on .hs-field { background: var(--paper); border-color: color-mix(in srgb, var(--accent) 60%, transparent); box-shadow: 0 0 0 3px var(--accent-tint); }
@@ -218,17 +218,30 @@ button { font: inherit; color: inherit; }
 .hs.on .hs-key { display: none; }
 .hs-dd { position: absolute; top: 40px; left: 50%; z-index: 40; width: 380px; max-width: calc(100vw - 32px); transform: translateX(-50%); padding: 12px 14px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--paper); box-shadow: 0 12px 32px rgb(0 0 0 / .22); font-size: 13px; color: var(--text-2); }
 .hs-dd .hs-h { margin: 0 0 8px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
-.hs-dd ul { margin: 0; padding: 0; list-style: none; }
-.hs-dd li { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 28px; }
-.hs-dd code { padding: 0; background: none; font-size: 12px; color: var(--text-3); white-space: nowrap; }
-.hs-dd .hs-ft { margin: 8px -14px 0; padding: 8px 14px 0; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-3); }
-.hs.bad .hs-dd .hs-ft { color: var(--hold); }
+.hs-kinds { margin: 0; padding: 0; list-style: none; }
+.hs-kinds li { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 28px; }
+.hs-kinds code { padding: 0; background: none; font-size: 12px; color: var(--text-3); white-space: nowrap; }
+/* what a search found: one row per record, saying what it is, the whole row a link to its page */
+.hs-dd.res { padding: 8px; }
+.hs-items { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; max-height: min(60vh, 520px); overflow-y: auto; overscroll-behavior: contain; }
+.hs-item { display: flex; align-items: center; gap: 10px; min-width: 0; height: 40px; padding: 0 10px; border-radius: 8px; color: var(--text); font-size: 13.5px; font-weight: 500; }
+.hs-item:hover, .hs-item.on { text-decoration: none; background: var(--wash); }
+.hs-item.on { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
+.hs-ic { flex: none; display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; background: var(--wash); color: var(--accent-ink); }
+.hs-item:hover .hs-ic, .hs-item.on .hs-ic { background: var(--paper); }
+.hs-k { flex: none; width: 72px; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--text-3); }
+.hs-item .mono, .hs-item .hs-nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hs-dd .hs-note { margin: 6px 10px 4px; font-size: 12.5px; line-height: 18px; color: var(--text-2); }
+.hs-wait { color: var(--text-3); }
 @media (hover: none) { .hs-key { display: none; } }
+/* the block, the network and the theme nearer the edge than the page under them, for the search's room: 48 px out
+   where the page has a margin to take it from, never closer than 16 px to the window's edge */
+@media (min-width: 1120px) { .top .right { margin-right: calc(-1 * min(48px, 24px + max(0px, (100vw - var(--page)) / 2))); } }
 @media (max-width: 1119px) {
   .top .wrap { flex-wrap: wrap; height: auto; min-height: 56px; row-gap: 0; }
   .top .hs { order: 4; flex-basis: 100%; margin: 0; padding: 2px 0 12px; }
   .hs-box { max-width: none; }
-  .hs-dd { left: 0; width: 380px; transform: none; }
+  .hs-dd { left: 0; transform: none; }
 }
 .net.menu { position: relative; }
 .net.menu summary { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; }
