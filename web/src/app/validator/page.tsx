@@ -61,16 +61,6 @@ function shortDate(ts: string): string {
 }
 
 /**
- * An address shortened in the middle, as shortMid(s, 18, 6) prints it, in two
- * parts: in a narrow card the head gives way first, so the tail that tells
- * two addresses apart stays in view.
- */
-function MidAddr({ s }: { s: string }) {
-  if (s.length <= 18 + 6 + 1) return <span className="mono">{s}</span>;
-  return <span className="mono mid"><span>{s.slice(0, 18)}</span><span>…{s.slice(-6)}</span></span>;
-}
-
-/**
  * The website a validator put in its staking description, as a link we are
  * willing to render: anyone can write anything there, so only http(s) URLs
  * pass, and a bare domain ("example.io") gets https:// in front.
@@ -232,23 +222,43 @@ function legendOf(cells: Cell[]): { cls: string; word: string }[] {
   ].filter(Boolean) as { cls: string; word: string }[];
 }
 
+/** the strip's tooltip width, so it can be centred on its cell */
+const TIP_W = 216;
+
 /**
- * The latest checks, oldest to newest: one equal cell per check, coloured by its result. Not a timeline: the cells
- * are evenly spaced whatever the time between the checks, and nothing marks time along it. A cell names its check
- * (when, which blob, what came back) on hover, on focus and on a tap; the arrow keys move along the strip.
+ * The latest checks, oldest to newest: one equal square per check, coloured by its result, in rows of 25. Not a
+ * timeline: the cells are evenly spaced whatever the time between the checks, and nothing marks time along it. A cell
+ * names its check (when, which blob, what came back) on hover, on focus and on a tap; a finger can slide along the
+ * strip to move from check to check, and the arrow keys do the same.
  */
 function Strip({ cells }: { cells: Cell[] }) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const box = useRef<HTMLDivElement>(null);
   // the tooltip names its check by key, so a refresh that shifts the strip never puts another check's words on it
-  const [tip, setTip] = useState<{ k: string; top: number; left: number } | null>(null);
+  const [tip, setTip] = useState<{ k: string; top: number; left: number; below: boolean } | null>(null);
   const [focusK, setFocusK] = useState<string | null>(null);
+  // when a finger last slid to another cell: the focus and the click that can end the slide land on the cell it started
+  // on, and are dropped
+  const slidAt = useRef(0);
+  const sliding = () => performance.now() - slidAt.current < 700;
   const tabK = focusK && cells.some((x) => x.k === focusK) ? focusK : cells[cells.length - 1]?.k;
   const show = useCallback((i: number) => {
     const r = refs.current[i]?.getBoundingClientRect();
-    // above the cell, so the caption and the figures under the strip stay in view
-    if (r) setTip({ k: cells[i].k, top: r.top - 8, left: Math.max(12, Math.min(r.left + r.width / 2 - 120, window.innerWidth - 12 - 240)) });
+    if (!r) return;
+    // above the cell, so the caption and the figures under the strip stay in view; under it when the strip is near the
+    // top of the window and there is no room above
+    const below = r.top < 110;
+    setTip({ k: cells[i].k, top: below ? r.bottom + 8 : r.top - 8, below,
+      left: Math.max(12, Math.min(r.left + r.width / 2 - TIP_W / 2, window.innerWidth - 12 - TIP_W)) });
   }, [cells]);
+  const scrub = (e: React.PointerEvent) => {
+    if (e.pointerType === "mouse") return;
+    const el = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest(".vd-c");
+    const i = refs.current.findIndex((b) => b === el);
+    if (i < 0 || cells[i].k === tip?.k) return;
+    slidAt.current = performance.now();
+    show(i);
+  };
   const hide = useCallback(() => setTip(null), []);
   // closed rather than moved when the page scrolls or the window changes size; a tap elsewhere closes it too
   useEffect(() => {
@@ -273,18 +283,20 @@ function Strip({ cells }: { cells: Cell[] }) {
   const c = tip ? cells.find((x) => x.k === tip.k) : undefined;
   return (
     <div ref={box}>
-      <div className="vd-strip" role="group" aria-label="Latest checks, oldest to newest">
+      <div className="vd-strip" role="group" aria-label="Latest checks, oldest to newest"
+        onPointerMove={scrub}>
         {cells.map((x, i) => (
           <button key={x.k} ref={(el) => { refs.current[i] = el; }} type="button"
             className={"vd-c " + x.tone + (x.open ? " open" : "") + (tip?.k === x.k ? " on" : "")} tabIndex={x.k === tabK ? 0 : -1}
             aria-label={`${monthDayTime(x.at)} UTC, blob ${shortHash(x.hash)}: ${x.word}${x.made > 1 ? `, ${askedTimes(x.made)}` : ""}${x.open ? ", retention window still open" : ""}`}
             onPointerEnter={(e) => { if (e.pointerType === "mouse") show(i); }}
             onPointerLeave={(e) => { if (e.pointerType === "mouse") hide(); }}
-            onFocus={() => { setFocusK(x.k); show(i); }} onBlur={hide} onClick={() => show(i)} onKeyDown={(e) => move(e, i)} />
+            onFocus={() => { setFocusK(x.k); if (!sliding()) show(i); }} onBlur={() => { if (!sliding()) hide(); }}
+            onClick={() => { if (!sliding()) show(i); }} onKeyDown={(e) => move(e, i)} />
         ))}
       </div>
       {c && tip && (
-        <div className="vd-tip" role="tooltip" style={{ top: tip.top, left: tip.left }}>
+        <div className={"vd-tip" + (tip.below ? " below" : "")} role="tooltip" style={{ top: tip.top, left: tip.left }}>
           <span className="tip-x">{monthDayTime(c.at)} UTC</span>
           <span className="tip-b">Blob <span className="mono">{shortHash(c.hash)}</span></span>
           <span className={"tip-r " + c.tone}>{cap(c.word)}{c.made > 1 && <span className="tip-q"> · {askedTimes(c.made)}</span>}</span>
@@ -356,6 +368,8 @@ function Page() {
   const sig = v.signing;
   const load = v.load && v.load.rows_per_blob > 0 ? v.load : null;
   const site = safeSite(v.website);
+  // the endpoint's date only when it says something the provider date beside the name does not: a re-registration
+  const endpointSince = v.endpoint_since && (!v.provider_since || shortDate(v.endpoint_since) !== shortDate(v.provider_since)) ? v.endpoint_since : null;
   // Not-served obligations whose readings are all younger than the settling
   // period: counted, and still able to be withdrawn. provisionalNow drops
   // them once `until` passes, so a cached answer does not keep the badge.
@@ -383,6 +397,9 @@ function Page() {
   // the end reading's result shows as soon as it is in; the record takes it when the window closes, and only then can
   // a not-served one be provisional
   const isOpen = (p: ValidatorReading) => endOfWindow(p.schedule_label) && Date.parse(p.scheduled_at) + 10 * 60_000 > now;
+  // the not-served checks this page carries that the period's count holds: when the count is larger, the rest are
+  // older than these checks, and the Not served tab says where they are
+  const nsInPeriod = notServedRows.filter((r) => !isOpen(r.p) && Date.parse(r.at) >= since).length;
 
   // the strip: every check this page carries, oldest to newest, worded as its row
   const cells: Cell[] = [...grouped].reverse().map(({ p, g, made, at }) => {
@@ -415,6 +432,12 @@ function Page() {
     document.getElementById("evidence")?.scrollIntoView({ block: "start" });
   };
   const setFilter = (only: boolean) => { setOnlyNotServed(only); setRowsShown(PAGE); };
+  // a page more; focus moves to the first row it adds, so it is not lost when the button goes with the last page
+  const showMore = () => {
+    const first = Math.min(rowsShown, shown.length);
+    setRowsShown((n) => n + PAGE);
+    requestAnimationFrame(() => document.querySelectorAll<HTMLButtonElement>("#evidence tr.row .c-x button")[first]?.focus({ preventScroll: true }));
+  };
 
   // signing participation, as the chain records it: settlements signed of those assigned, or before signing was
   // counted per settlement, blobs endorsed
@@ -473,7 +496,7 @@ function Page() {
           </div>
           <dl className="vd-facts">
             {v.host
-              ? <><dt>Endpoint</dt><dd><span className="vd-id"><Host s={v.host} /><CopyMark text={v.host} label="the endpoint" /></span>{v.endpoint_since && <em title={`Registered ${utcWord(v.endpoint_since)}`}>since {shortDate(v.endpoint_since)}</em>}</dd></>
+              ? <><dt>Endpoint</dt><dd><span className="vd-id"><Host s={v.host} /><CopyMark text={v.host} label="the endpoint" /></span>{endpointSince && <em title={`Registered ${utcWord(endpointSince)}`}>since {shortDate(endpointSince)}</em>}</dd></>
               : v.last_host
                 ? <><dt>Last endpoint</dt><dd title="The registration stays on chain; the validator left the bonded provider list."><span className="vd-id"><Host s={v.last_host} /></span>{v.endpoint_closed_at && <em>left {dateUTC(v.endpoint_closed_at)}</em>}</dd></>
                 : <><dt>Endpoint</dt><dd className="vd-none" title={noEndpoint && diag ? diag.text : undefined}><em>none registered</em>
@@ -491,7 +514,6 @@ function Page() {
                     })}
                   </span>
                   {c.host !== v.host && <em title={c.host}>on the earlier endpoint</em>}
-                  {c.raw_error && <code className="vd-err">{c.raw_error}</code>}
                 </>
                 : <em>no check yet</em>}</dd>
             </>}
@@ -501,8 +523,8 @@ function Page() {
           <details className="vd-addrs">
             <summary><Chevron />Addresses</summary>
             <dl>
-              {v.operator_address && <><dt>Operator</dt><dd className="vd-addr" title={v.operator_address}><MidAddr s={v.operator_address} /><CopyMark text={v.operator_address} label="the operator address" /></dd></>}
-              <dt>Consensus</dt><dd className="vd-addr" title={[v.cons_address && `consensus ${v.cons_address}`, `hex ${v.address}`].filter(Boolean).join(" · ")}><MidAddr s={cons} /><CopyMark text={cons} label="the consensus address" /></dd>
+              {v.operator_address && <><dt>Operator</dt><dd className="vd-addr"><span className="mono">{v.operator_address}</span><CopyMark text={v.operator_address} label="the operator address" /></dd></>}
+              <dt>Consensus</dt><dd className="vd-addr" title={v.cons_address ? `hex ${v.address}` : undefined}><span className="mono">{cons}</span><CopyMark text={cons} label="the consensus address" /></dd>
             </dl>
           </details>
           <a className="vd-feed" href={`${API_BASE}/v1/validators/${own}/feed.atom`} type="application/atom+xml" title="Endpoint changes of this validator, as an Atom feed">Atom feed</a>
@@ -516,20 +538,23 @@ function Page() {
           cell each, and under them what was not served, what waits for its check, reachability and throughput */}
       <section className="pan vd-svc" id="observed" aria-labelledby="vd-observed">
         <div className="vp-h">
-          <h2 className="vp-t" id="vd-observed" title="Each blob is read once, 10 minutes before its retention window ends, and every validator that endorsed it is asked for its own rows. A validator is not served when its own rows did not come back, at the reading and each time it was asked again."><Eye />Observed by Tensile <span className="per">({per})</span></h2>
+          <h2 className="vp-t" id="vd-observed" title="Each blob is read once, 10 minutes before its retention window ends, and every validator that endorsed it is asked for its own rows. A validator is not served when its own rows did not come back, at the reading and each time it was asked again."><Eye />Observed by Tensile</h2>
         </div>
+        {/* the period's rate, and beside it the latest checks whatever the period: each label says which */}
         <div className="vd-svc-main">
           <div className={"vd-rate" + (rateCls ? " " + rateCls : "")} title={rateTitle}>
-            <p className="vd-lbl">Service rate</p>
+            <p className="vd-lbl">Service rate <span className="vd-per">· {per}</span></p>
             <p className="vd-rate-v">
               {notLive || !o || decided === 0 ? "—" : pctOf(o.served, decided)}
               {!notLive && held.length > 0 && <Warn text={`${plural(held.length, "reading")} in this period did not count: ${heldWhy}. ${heldText} The checks below show each one.`} />}
             </p>
             {!notLive && o && decided > 0 && <p className="vd-rate-s"><b>{int(o.served)}</b> / {int(decided)}</p>}
-            {!notLive && (!o || decided === 0) && <p className="vd-rate-s">{noRate}</p>}
+            {/* why there is no rate, under the dash only when no check sits beside it to say otherwise; the dash's title
+                keeps the words */}
+            {!notLive && (!o || decided === 0) && cells.length === 0 && <p className="vd-rate-s">{noRate}</p>}
           </div>
           <div className="vd-latest">
-            <p className="vd-lbl">Latest {plural(cells.length, "check")}</p>
+            <p className="vd-lbl">{cells.length > 0 ? `Latest ${plural(cells.length, "check")}` : "Latest checks"} <span className="vd-per">· any period</span></p>
             {cells.length > 0
               ? <>
                 <Strip key={addr} cells={cells} />
@@ -548,7 +573,9 @@ function Page() {
             <span className={"vd-fi" + (!notLive && broken > 0 ? " bad" : "")} title={`Endorsed shards whose own rows did not come back, at the reading and each time they were asked again. Before ${FULL_READ_SINCE_WORDS}: rows that did not come back from a blob that could not be reconstructed.`}>
               {notLive
                 ? <>Not served <b>—</b></>
-                : <button type="button" className="vd-go" onClick={showNotServed} aria-label={`${int(broken)} not served: show them in the checks below`}>Not served <b>{int(broken)}</b></button>}
+                : broken > 0
+                  ? <button type="button" className="vd-go" onClick={showNotServed} aria-label={`${int(broken)} not served: show them in the checks below`}>Not served <b>{int(broken)}</b></button>
+                  : <>Not served <b>0</b></>}
               {!notLive && prov > 0 && <Warn text={`${int(prov)} of these ${prov === 1 ? "is" : "are"} younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.`} />}
             </span>
             <span className="vd-fi" title={`Endorsed shards whose retention window has not ended. Each is read 10 minutes before its window ends: the result shows in the checks below at once, and enters the counts when the window closes.${!notLive && notCountedText(o) ? ` Not counted in the period: ${notCountedText(o)}.` : ""}`}>
@@ -611,8 +638,9 @@ function Page() {
               </div>
             )}
           </div>
-          <p className="vd-scope">The newest checks, whatever the period selected. The period sets the figures above.</p>
         </div>
+        <p className="vd-scope">The newest checks, whatever the period selected. The period sets the figures above.
+          {onlyNotServed && broken > nsInPeriod && <> {int(broken)} not served in the period ({per}), {int(nsInPeriod)} of them among these checks. <a href={notServedHref}>Every one in the API →</a></>}</p>
         <div className="lg-tw">
           <table className="lg-t vr-t">
             <thead>
@@ -627,9 +655,9 @@ function Page() {
               </tr>
             </thead>
             <tbody>
-              {probes.length === 0 && <tr className="lg-empty"><td colSpan={7}>No reading of this validator on record yet.</td></tr>}
+              {probes.length === 0 && <tr className="lg-empty"><td colSpan={7}>No check of this validator on record yet.</td></tr>}
               {probes.length > 0 && shown.length === 0 && <tr className="lg-empty"><td colSpan={7}>
-                No not-served reading among the newest {int(probes.length)}.{broken > 0 && <> Older ones are <a href={notServedHref}>in the API →</a></>}</td></tr>}
+                No not-served check among the newest {int(probes.length)}.{broken > 0 && <> Older ones are <a href={notServedHref}>in the API →</a></>}</td></tr>}
               {visible.map(({ p, g, tries, made, full, at: readAt }, idx) => {
                 const op = isOpen(p);
                 const r = resultOf(op ? { ...p, provisional: false } : p, g);
@@ -701,8 +729,8 @@ function Page() {
         <div className="pager vd-pager">
           <span className="count">{shown.length > 0 && <>Showing <b>{int(visible.length)}</b> of {int(shown.length)}</>}</span>
           <span className="ctl">
-            {visible.length < shown.length && <button type="button" className="btn" onClick={() => setRowsShown((n) => n + PAGE)}>Show more</button>}
-            <a className="btn vd-api" href={onlyNotServed ? notServedHref : `${API_BASE}/v1/probes?validator=${own}&limit=1000`}
+            {visible.length < shown.length && <button type="button" className="btn" onClick={showMore}>Show more</button>}
+            <a className="btn" href={onlyNotServed ? notServedHref : `${API_BASE}/v1/probes?validator=${own}&limit=1000`}
               title={data.recent_probes_truncated ? "The newest readings are here; every one is in the API." : "Every reading, in the API."}>Full history →</a>
           </span>
         </div>
