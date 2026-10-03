@@ -429,10 +429,7 @@ function Page() {
   return (
     <>
       <section className="pb-mast bd-mast">
-        <p className="pb-kind">Blob</p>
-        <div className="pb-id">
-          <h1 className="pb-h1 bd-h1" title={b.promise_hash} aria-label={`Blob ${b.promise_hash}`}><span className="tl">{b.promise_hash.slice(0, 8)}</span><span className="dots" aria-hidden="true">•••</span><span className="tl">{b.promise_hash.slice(-6)}</span></h1>
-        </div>
+        <h1 className="bd-title">Blob</h1>
         <div className="pb-addr"><span className="mono">{b.promise_hash}</span><Copy text={b.promise_hash} label="the promise hash" /></div>
         <div className="chips bd-chips">
           {/* Tensile's reading, with its eye as its figures carry it: the chips after it are the chain's settlement */}
