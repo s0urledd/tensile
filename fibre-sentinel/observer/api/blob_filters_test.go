@@ -300,3 +300,66 @@ func TestBlobsByPublisher(t *testing.T) {
 		}
 	}
 }
+
+// The example in Celestia's Fibre docs, as the developer holds it: the
+// transaction hash the client prints (upper case), the commitment under its
+// blob ID, and the promise hash all reach the one record. The blob ID in hex
+// is 66 characters, a version byte before the commitment: no route reads it
+// as a commitment or a transaction, which are 64.
+func TestBlobsDocsExample(t *testing.T) {
+	const (
+		promise    = "481498948d4e9ee30ad214ab22d1d2005c7c218e9db95dabfd5b4e42d5e88a95"
+		commitment = "9fb4fe5726f1880bff4e8414a1cc9e731a41f269fc284342c90c93bae477c150"
+		tx         = "ADD4C5190131D0AFB55AF3341B347700B2ADEC2B128FAF3C7CA06495852C5C16"
+	)
+	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	at := time.Date(2026, 9, 25, 20, 42, 56, 0, time.UTC)
+	pub := scan.Publication{
+		SchemaVersion: scan.AttestationSchemaVersion, PromiseHash: promise, SettlementHeight: 1113071, SettlementTxIndex: 2, SettlementTime: at,
+		SettlementTxHash: strings.ToLower(tx), MustServeUntil: at.Add(4 * time.Hour), RecordedAt: at, Signer: samplePublisher,
+		Promise: scan.PromiseFields{ChainID: "mocha-5", Height: 1113065, Commitment: commitment, CreationTimestamp: at.Add(-24 * time.Second),
+			BlobSize: 134217728, Namespace: fixtureNS},
+		Assignment: scan.AssignmentTable{
+			ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: 4096, TotalRows: 16384},
+			ValidatorSetHeight: 1113065, TotalVotingPower: 10, Sigma: 148, Distinct: 148, ValidatorsWithRows: 1,
+			Validators: []scan.ValidatorAssignment{{Address: sampleValidator, VotingPower: 10, RowCount: 148}},
+		},
+	}
+	raw, err := json.Marshal(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertPublication(pub, raw); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(api.NewWithVantage(st, api.VantageInfo{Name: "test"}, nil))
+	t.Cleanup(ts.Close)
+
+	var one struct {
+		Blob struct {
+			PromiseHash      string `json:"promise_hash"`
+			Commitment       string `json:"commitment"`
+			SettlementTxHash string `json:"settlement_tx_hash"`
+			BlobVersion      *int   `json:"blob_version"`
+		} `json:"blob"`
+	}
+	if code := get(t, ts, "/v1/blobs/"+promise, &one); code != 200 || one.Blob.Commitment != commitment || one.Blob.SettlementTxHash != strings.ToLower(tx) ||
+		one.Blob.BlobVersion == nil || *one.Blob.BlobVersion != 0 {
+		t.Fatalf("by promise hash: %d %+v", code, one.Blob)
+	}
+	for _, q := range []string{"tx=" + tx, "tx=0x" + strings.ToLower(tx), "commitment=" + commitment, "commitment=" + strings.ToUpper(commitment)} {
+		var page filteredPage
+		if code := get(t, ts, "/v1/blobs?"+q, &page); code != 200 || page.hashes() != promise || page.Total != 1 {
+			t.Errorf("%s: %d %s total %d", q, code, page.hashes(), page.Total)
+		}
+	}
+	for _, q := range []string{"commitment=00" + commitment, "tx=00" + commitment, "commitment=0x00" + commitment} {
+		if code := get(t, ts, "/v1/blobs?"+q, nil); code != 400 {
+			t.Errorf("%s: %d, want 400 (a hex blob ID is 66 characters)", q, code)
+		}
+	}
+}

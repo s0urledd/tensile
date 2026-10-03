@@ -113,6 +113,9 @@ jobs:
       - name: install
         working-directory: web
         run: npm ci --no-audit --no-fund
+      - name: unit tests
+        working-directory: web
+        run: npm test
       - name: build (static export)
         working-directory: web
         run: npm run build

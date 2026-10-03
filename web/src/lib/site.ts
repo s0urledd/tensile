@@ -18,6 +18,24 @@ export const SOURCE_URL = (process.env.NEXT_PUBLIC_SOURCE_URL ?? "https://github
 export const API_URL_FIXED = !!process.env.NEXT_PUBLIC_API_URL;
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "https://tensile.huginn.tech/api/v1").replace(/\/$/, "");
 
+/**
+ * Where a reader sees a settlement transaction in the chain's own record: a block explorer for the network the API
+ * names (/v1/meta's chain_id), since one export serves every network's site. Celenium, which Celestia's docs list for
+ * Mocha, shows the transaction's MsgPayForFibre and its blob, and takes the hash in either case. An operator sets
+ * NEXT_PUBLIC_TX_EXPLORER, a URL with {hash} in it, for a network not here.
+ */
+const TX_EXPLORERS: [RegExp, string][] = [
+  [/^mocha-\d+$/, "https://mocha.celenium.io/tx/{hash}"],
+  [/^celestia$/, "https://celenium.io/tx/{hash}"],
+];
+const TX_EXPLORER = (process.env.NEXT_PUBLIC_TX_EXPLORER ?? "").trim();
+
+/** the explorer's page for a transaction on the network chainId, or "" where none is known */
+export function txExplorerUrl(chainId: string | null | undefined, hash: string): string {
+  const url = TX_EXPLORER || TX_EXPLORERS.find(([re]) => re.test(chainId ?? ""))?.[1];
+  return url && hash ? url.replace("{hash}", hash.toUpperCase()) : "";
+}
+
 /** The dispute route: what to do about a verdict you think is wrong. */
 export const DISPUTE_URL = `${SOURCE_URL}/blob/main/docs/verdicts.md#disputing-a-verdict`;
 
