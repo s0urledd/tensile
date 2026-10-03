@@ -199,10 +199,11 @@ button { font: inherit; color: inherit; }
 .net { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-size: var(--t-cell); font-weight: 500; height: 32px; padding: 0 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--wash); white-space: nowrap; }
 .net .dot { margin-right: 0; }
 
-/* The site search (HeaderSearch.tsx): centered in the space between the nav and the block, 24 px clear of each,
-   filled rather than outlined until it has focus. Under 1120 px that space is too narrow for it, so it takes a row of
+/* The site search (HeaderSearch.tsx): 48 px after the nav, so nothing that loads to its right (the network chip says
+   "connecting…" until the API answers) moves it; at least 16 px clear of the block, filled rather than outlined until
+   it has focus. Under 1120 px that space is too narrow for it, so it takes a row of
    its own under the header line. */
-.top .hs { flex: 1; min-width: 0; display: flex; justify-content: center; margin: 0 -16px; }
+.top .hs { flex: 1; min-width: 0; display: flex; justify-content: flex-start; margin: 0 -24px 0 8px; }
 .hs-box { position: relative; width: 100%; max-width: 360px; }
 .hs-field { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 8px 0 12px; border: 1px solid transparent; border-radius: 9px; background: var(--wash); color: var(--text-3); cursor: text; transition: background var(--dur), border-color var(--dur), box-shadow var(--dur); }
 .hs-field:hover { border-color: var(--border); }
