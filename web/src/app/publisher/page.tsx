@@ -1,7 +1,7 @@
 "use client";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { API_BASE, useApi, notFound, badRequest, throttled, hhmm, ago, type Blob, type Payment, type PublisherNamespace, type RecentBlob, type Tip, type Window, blobFee, bytes, int, nsDisplay, span, tia, utcWord } from "@/lib/api";
+import { API_BASE, useApi, notFound, badRequest, throttled, hhmm, ago, type Blob, type Payment, type PublisherNamespace, type RecentBlob, type Tip, type Window, blobFee, bytes, int, nsDisplay, span, tia, utcWord, TIP_MS } from "@/lib/api";
 import type { Params, PublisherWithQueue, PublisherWithdrawals } from "@/lib/withdrawals";
 import { lane } from "@/lib/status";
 import Ledger, { useLedger, LedgerHead, MoveRow, Signed, decimals, type Move, type Moves, type Placed } from "@/components/Ledger";
@@ -243,7 +243,7 @@ function Publisher({ addr }: { addr: string }) {
   // the whole record: every figure on this page is the account's own over all of it, but its escrow, which is now
   const pub = useApi<Detail>(`/v1/publishers/${addr}?window=all`);
   const pf = useApi<Params>("/v1/params", 0).data?.price_formula;
-  const tip = useApi<Tip>("/v1/tip", 4000); // the header's stream: no request of its own
+  const tip = useApi<Tip>("/v1/tip", TIP_MS); // the header's stream: no request of its own
   const skew = tip.data?.server_time && tip.fetchedAt ? Date.parse(tip.data.server_time) - Date.parse(tip.fetchedAt) : 0;
   const now = Date.now() + skew;
 

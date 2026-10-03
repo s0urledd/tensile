@@ -2,7 +2,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import PreLive from "@/components/PreLive";
-import { useApi, type Meta, type Market, type Blob, type NamespaceRow, type Publisher, type Tip, int, bytes, nsDisplay, shortHex, shortMid, utcWord } from "@/lib/api";
+import { useApi, type Meta, type Market, type Blob, type NamespaceRow, type Publisher, type Tip, int, bytes, nsDisplay, shortHex, shortMid, utcWord, TIP_MS } from "@/lib/api";
 import Pager, { usePage } from "@/components/Pager";
 import { useWindow, WindowSwitch } from "@/lib/window";
 import BlobsDeck, { age, dayTime } from "@/components/BlobsDeck";
@@ -231,7 +231,7 @@ function Page() {
   const q = `${ns ? `&namespace=${encodeURIComponent(ns)}` : ""}${pub ? `&publisher=${encodeURIComponent(pub)}` : ""}`;
   const offset = (Math.min(page, MAX_PAGE) - 1) * SIZE;
   const live = page === 1;
-  const tip = useApi<Tip>("/v1/tip", 4000); // the header's stream: no request of its own
+  const tip = useApi<Tip>("/v1/tip", TIP_MS); // the header's stream: no request of its own
   const skew = tip.data?.server_time && tip.fetchedAt ? Date.parse(tip.data.server_time) - Date.parse(tip.fetchedAt) : 0;
   const feed = useLedger(`/v1/blobs?limit=${SIZE}&offset=${offset}${q}`, live, tip.data?.height, skew);
   // the chain's newest blobs, for the deck's rate and last blob: the list's own while it shows them, else a read of their own;

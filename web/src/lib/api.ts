@@ -896,6 +896,13 @@ function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<u
   };
 }
 
+/**
+ * How often the site asks for the newest block (/v1/tip): every second, so the header's block moves with the chain's
+ * own pace (a block about every 3 s). Every reader of the tip asks with this one interval, so a page shares one stream;
+ * the API keeps one answer for a second, so a reader costs it a small cached reply, never a database read.
+ */
+export const TIP_MS = 1000;
+
 export function useApi<T>(path: string | null, refreshMs = 30000): Fetch<T> {
   const [state, setState] = useState<Fetch<T>>({ data: null, error: null, loading: !!path, fetchedAt: null });
   useEffect(() => {

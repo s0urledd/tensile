@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { useApi, type Meta, type Tip, int, ago, since, span, utcWord } from "@/lib/api";
+import { useApi, type Meta, type Tip, int, ago, since, span, utcWord, TIP_MS } from "@/lib/api";
 import { SOURCE_URL, DISPUTE_URL } from "@/lib/site";
 import HeaderSearch from "@/components/HeaderSearch";
 
@@ -156,7 +156,7 @@ function NetworkChip({ meta, error }: { meta: Meta | null; error: string | null 
  * live it also counts down to the upgrade that brings it.
  */
 function BlockTicker({ meta }: { meta: Meta | null }) {
-  const { data: tip, error, fetchedAt } = useApi<Tip>("/v1/tip", 4000);
+  const { data: tip, error, fetchedAt } = useApi<Tip>("/v1/tip", TIP_MS);
   const [now, setNow] = useState(0);
   useEffect(() => {
     setNow(Date.now());
