@@ -1,7 +1,7 @@
 "use client";
 import { Fragment, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useApi, type ValidatorDetail, type ValidatorReading, type Window, type RecordThrough, type Obligations, type Meta, type EndpointCheck, int, pctOf, bytes, utcWord, dateUTC, whenUTC, shortMid, notFound, rateTone, notCountedText, badRequest, MIN_RATED, API_BASE, provisionalNow, type ProvisionalFaults, type NetworkReference,
   endOfWindow, fullReading, ownGap, ownSide, sharedAnswer, rawErrorWords, foreignRows, hhmm, attemptsOf, judged, askedTimes, FULL_READ_SINCE_WORDS } from "@/lib/api";
 import { useWindow, WindowSwitch, periodName } from "@/lib/window";
@@ -10,6 +10,7 @@ import { Eye } from "@/components/Metrics";
 import Warn from "@/components/Warn";
 import { unit } from "@/components/Unit";
 import { age, monthDayTime } from "@/components/BlobsDeck";
+import { openRow } from "@/lib/row";
 import { CopyMark } from "@/components/Ledger";
 import Avatar from "@/components/Avatar";
 import { endpoint } from "@/components/Validators";
@@ -194,7 +195,7 @@ function Host({ s }: { s: string }) {
   return <span className="mono">{parts.map((part, i) => <Fragment key={i}>{i > 0 && <wbr />}{part}{i < parts.length - 1 && "."}</Fragment>)}</span>;
 }
 
-/** the open-row and the addresses' mark: a chevron that turns when what it opens shows */
+/** the addresses' mark: a chevron that turns when they show */
 const Chevron = () => (
   <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="m4.5 6.5 3.5 3.5 3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
 );
@@ -209,25 +210,29 @@ const PAGE = 12;
  */
 type Cell = { k: string; at: string; hash: string; tone: Tone; word: string; made: number; open: boolean };
 
-/** the legend's word for each kind of cell present, in this order */
-function legendOf(cells: Cell[]): { cls: string; word: string }[] {
-  const has = (f: (c: Cell) => boolean) => cells.some(f);
-  const quietWords = [...new Set(cells.filter((c) => !c.open && c.tone === "quiet").map((c) => c.word))];
+/**
+ * The strip's key: each kind of cell it holds, in this order, with how many. Counted neither way takes the amber of a
+ * failure on the validator's side and the grey of a reason of its own; a cell whose window is open is drawn hollow,
+ * whatever its colour.
+ */
+function keyOf(cells: Cell[]): { sw: string[]; word: string; n: number }[] {
+  const n = (f: (c: Cell) => boolean) => cells.filter(f).length;
+  const hold = n((c) => !c.open && c.tone === "hold"), quiet = n((c) => !c.open && c.tone === "quiet");
   return [
-    has((c) => !c.open && c.tone === "ok") && { cls: "ok", word: "Served" },
-    has((c) => !c.open && c.tone === "fault") && { cls: "fault", word: "Not served" },
-    has((c) => !c.open && c.tone === "hold") && { cls: "hold", word: "Counted neither way" },
-    quietWords.length > 0 && { cls: "quiet", word: quietWords.length === 1 ? cap(quietWords[0]) : "Other, counted neither way" },
-    has((c) => c.open) && { cls: "open", word: "In retention window" },
-  ].filter(Boolean) as { cls: string; word: string }[];
+    { sw: ["ok"], word: "Served", n: n((c) => !c.open && c.tone === "ok") },
+    { sw: ["fault"], word: "Not served", n: n((c) => !c.open && c.tone === "fault") },
+    { sw: [hold > 0 ? "hold" : "", quiet > 0 ? "quiet" : ""].filter(Boolean), word: "Counted neither way", n: hold + quiet },
+    { sw: ["quiet open"], word: "In retention window", n: n((c) => c.open) },
+  ].filter((k) => k.n > 0);
 }
 
 /** the strip's tooltip width, so it can be centred on its cell */
 const TIP_W = 216;
 
 /**
- * The latest checks, oldest to newest: one equal square per check, coloured by its result, in rows of 25. Not a
- * timeline: the cells are evenly spaced whatever the time between the checks, and nothing marks time along it. A cell
+ * The latest checks, oldest to newest: one small square of a fixed size per check, coloured by its result, in one row
+ * across the frame where there is room for them and wrapped where there is not. Not a timeline: the cells are evenly
+ * spaced whatever the time between the checks, and nothing marks time along it. A cell
  * names its check (when, which blob, what came back) on hover, on focus and on a tap; a finger can slide along the
  * strip to move from check to check, and the arrow keys do the same.
  */
@@ -245,8 +250,8 @@ function Strip({ cells }: { cells: Cell[] }) {
   const show = useCallback((i: number) => {
     const r = refs.current[i]?.getBoundingClientRect();
     if (!r) return;
-    // above the cell, so the caption and the figures under the strip stay in view; under it when the strip is near the
-    // top of the window and there is no room above
+    // above the cell, clear of the finger that taps it; under it when the strip is near the top of the window and there
+    // is no room above
     const below = r.top < 110;
     setTip({ k: cells[i].k, top: below ? r.bottom + 8 : r.top - 8, below,
       left: Math.max(12, Math.min(r.left + r.width / 2 - TIP_W / 2, window.innerWidth - 12 - TIP_W)) });
@@ -314,15 +319,14 @@ function Page() {
   const [onlyNotServed, setOnlyNotServed] = useState(false);
   // how many rows of the checks table show: a page at first, a page more at each "Show more"
   const [rowsShown, setRowsShown] = useState(PAGE);
-  // the checks whose details are open, by their key; a click on the row opens and closes them
-  const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set());
-  const toggle = useCallback((k: string) => setOpen((s) => {
-    const n = new Set(s);
-    if (n.has(k)) n.delete(k); else n.add(k);
-    return n;
-  }), []);
+  const router = useRouter();
+  const onOpen = useCallback((e: React.MouseEvent, href: string) => {
+    // a plain click stays in the app; a modified or middle click is the browser's
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    router.push(href);
+  }, [router]);
   // another validator starts at the top of its own list
-  useEffect(() => { setRowsShown(PAGE); setOpen(new Set()); setOnlyNotServed(false); }, [addr]);
+  useEffect(() => { setRowsShown(PAGE); setOnlyNotServed(false); }, [addr]);
   const { data: meta, error: metaErr } = useApi<Meta>("/v1/meta");
   const d = useApi<Detail>(addr ? `/v1/validators/${addr}?window=${win}` : null);
   const notLive = !!meta?.app_version && !meta.fibre_active;
@@ -407,7 +411,7 @@ function Page() {
     const r = resultOf(op ? { ...p, provisional: false } : p, g);
     return { k: `${p.vantage}|${p.promise_hash}|${p.scheduled_at}`, at, hash: p.promise_hash, tone: r.tone, word: r.word, made, open: op };
   });
-  const legend = legendOf(cells);
+  const key = keyOf(cells);
 
   // the endpoint as the newest handshake found it, stage by stage; stages after the first failure were never reached
   const c = data.last_endpoint_check;
@@ -432,11 +436,12 @@ function Page() {
     document.getElementById("evidence")?.scrollIntoView({ block: "start" });
   };
   const setFilter = (only: boolean) => { setOnlyNotServed(only); setRowsShown(PAGE); };
-  // a page more; focus moves to the first row it adds, so it is not lost when the button goes with the last page
+  // a page more; focus moves to the blob link of the first row it adds, so it is not lost when the button goes with the
+  // last page
   const showMore = () => {
     const first = Math.min(rowsShown, shown.length);
     setRowsShown((n) => n + PAGE);
-    requestAnimationFrame(() => document.querySelectorAll<HTMLButtonElement>("#evidence tr.row .c-x button")[first]?.focus({ preventScroll: true }));
+    requestAnimationFrame(() => document.querySelectorAll<HTMLAnchorElement>("#evidence tr.row .c-b a")[first]?.focus({ preventScroll: true }));
   };
 
   // signing participation, as the chain records it: settlements signed of those assigned, or before signing was
@@ -534,14 +539,14 @@ function Page() {
       <PreLive meta={meta} />
       <StatusLine meta={meta} metaError={metaErr} snap={{ record_through: data.record_through, window: data.window }} client={{ error: d.error, fetchedAt: d.fetchedAt, status: d.status }} measuring={measuring} />
 
-      {/* what Tensile found when it read this validator's rows: the period's service rate beside the latest checks, one
-          cell each, and under them what was not served, what waits for its check, reachability and throughput */}
+      {/* what Tensile found when it read this validator's rows: the period's service rate and its fraction on the left,
+          what was not served, what waits for its check, reachability and throughput on the same line to the right, and
+          under them, across the frame, the latest checks whatever the period, one cell each */}
       <section className="pan vd-svc" id="observed" aria-labelledby="vd-observed">
         <div className="vp-h">
           <h2 className="vp-t" id="vd-observed" title="Each blob is read once, 10 minutes before its retention window ends, and every validator that endorsed it is asked for its own rows. A validator is not served when its own rows did not come back, at the reading and each time it was asked again."><Eye />Observed by Tensile</h2>
         </div>
-        {/* the period's rate, and beside it the latest checks whatever the period: each label says which */}
-        <div className="vd-svc-main">
+        <div className="vd-svc-top">
           <div className={"vd-rate" + (rateCls ? " " + rateCls : "")} title={rateTitle}>
             <p className="vd-lbl">Service rate <span className="vd-per">· {per}</span></p>
             <p className="vd-rate-v">
@@ -549,27 +554,11 @@ function Page() {
               {!notLive && held.length > 0 && <Warn text={`${plural(held.length, "reading")} in this period did not count: ${heldWhy}. ${heldText} The checks below show each one.`} />}
             </p>
             {!notLive && o && decided > 0 && <p className="vd-rate-s"><b>{int(o.served)}</b> / {int(decided)}</p>}
-            {/* why there is no rate, under the dash only when no check sits beside it to say otherwise; the dash's title
+            {/* why there is no rate, under the dash only when no check shows below to say otherwise; the dash's title
                 keeps the words */}
             {!notLive && (!o || decided === 0) && cells.length === 0 && <p className="vd-rate-s">{noRate}</p>}
           </div>
-          <div className="vd-latest">
-            <p className="vd-lbl">{cells.length > 0 ? `Latest ${plural(cells.length, "check")}` : "Latest checks"} <span className="vd-per">· any period</span></p>
-            {cells.length > 0
-              ? <>
-                <Strip key={addr} cells={cells} />
-                <div className="vd-cap">
-                  <span>One cell per check, oldest to newest</span>
-                  <ul className="vd-legend" aria-label="legend">
-                    {legend.map((l) => <li key={l.cls}><i className={"vd-c " + (l.cls === "open" ? "ok open" : l.cls)} aria-hidden="true" />{l.word}</li>)}
-                  </ul>
-                </div>
-              </>
-              : <p className="vd-none-yet">No check of this validator on record yet.</p>}
-          </div>
-        </div>
-        <div className="vd-foot">
-          <div className="vd-foot-g">
+          <div className="vd-more">
             <span className={"vd-fi" + (!notLive && broken > 0 ? " bad" : "")} title={`Endorsed shards whose own rows did not come back, at the reading and each time they were asked again. Before ${FULL_READ_SINCE_WORDS}: rows that did not come back from a blob that could not be reconstructed.`}>
               {notLive
                 ? <>Not served <b>—</b></>
@@ -581,8 +570,6 @@ function Page() {
             <span className="vd-fi" title={`Endorsed shards whose retention window has not ended. Each is read 10 minutes before its window ends: the result shows in the checks below at once, and enters the counts when the window closes.${!notLive && notCountedText(o) ? ` Not counted in the period: ${notCountedText(o)}.` : ""}`}>
               Awaiting check <b>{notLive || data.in_retention_window == null ? "—" : int(data.in_retention_window)}</b>
             </span>
-          </div>
-          <div className="vd-foot-g">
             <span className="vd-fi" title={!bonded ? "Out of the bonded list: not checked." : reach ? `${int(reach.num)} of ${int(reach.den)} handshakes completed with the registered endpoint over the period. Not signing uptime.${v.last_unreachable_at ? ` Last failed handshake ${utcWord(v.last_unreachable_at)}.` : ""}` : "No handshake yet."}>
               Reachability <b>{reach ? pctOf(reach.num, reach.den) : "—"}</b>
             </span>
@@ -592,6 +579,20 @@ function Page() {
               Throughput <b>{v.serve_bytes_per_second == null ? "—" : unit(`${bytes(v.serve_bytes_per_second)}/s`)}</b>
             </span>
           </div>
+        </div>
+        {/* the latest checks whatever the period, across the frame: what they are and the key over the cells */}
+        <div className="vd-latest">
+          {cells.length > 0
+            ? <>
+              <div className="vd-cap">
+                <span className="vd-ttl">Latest {plural(cells.length, "check")} whatever the period, oldest to newest</span>
+                <ul className="vd-key" aria-label="key">
+                  {key.map((k) => <li key={k.word}>{k.sw.map((s) => <i key={s} className={"vd-c " + s} aria-hidden="true" />)}{k.word} <b>{int(k.n)}</b></li>)}
+                </ul>
+              </div>
+              <Strip key={addr} cells={cells} />
+            </>
+            : <p className="vd-none-yet">No check of this validator on record yet.</p>}
         </div>
       </section>
 
@@ -625,8 +626,8 @@ function Page() {
         </dl>
       </section>
 
-      {/* the latest checks in the Blobs list's own rows, newest first, whatever the period: a row opens to say why, its
-          blob link opens the blob */}
+      {/* the latest checks in the Blobs list's own rows, newest first, whatever the period: the whole row opens the blob,
+          and what Tensile found sits in its lane at the end */}
       <section id="evidence" className="listing lg-list vd-list">
         <div className="list-head">
           <div className="pb-lh">
@@ -651,18 +652,15 @@ function Page() {
                 <th className="c-d">Duration</th>
                 <th className="gap" aria-hidden="true" />
                 <th className="tn" title="What came back when Tensile read this validator's rows of the blob."><span><Eye />Result</span></th>
-                <th className="c-x"><span className="sr-only">Details</span></th>
               </tr>
             </thead>
             <tbody>
-              {probes.length === 0 && <tr className="lg-empty"><td colSpan={7}>No check of this validator on record yet.</td></tr>}
-              {probes.length > 0 && shown.length === 0 && <tr className="lg-empty"><td colSpan={7}>
+              {probes.length === 0 && <tr className="lg-empty"><td colSpan={6}>No check of this validator on record yet.</td></tr>}
+              {probes.length > 0 && shown.length === 0 && <tr className="lg-empty"><td colSpan={6}>
                 No not-served check among the newest {int(probes.length)}.{broken > 0 && <> Older ones are <a href={notServedHref}>in the API →</a></>}</td></tr>}
-              {visible.map(({ p, g, tries, made, full, at: readAt }, idx) => {
-                const op = isOpen(p);
-                const r = resultOf(op ? { ...p, provisional: false } : p, g);
-                const k = `${p.vantage}|${p.promise_hash}|${p.scheduled_at}`;
-                const on = open.has(k);
+              {visible.map(({ p, g, tries, made, full, at: readAt }) => {
+                const open = isOpen(p);
+                const r = resultOf(open ? { ...p, provisional: false } : p, g);
                 const href = `/blob/?hash=${p.promise_hash}`;
                 const t = Date.parse(readAt);
                 const rows = p.rows_expected ? <><b>{int(p.rows_returned)}</b><span className="u"> / {int(p.rows_expected)}</span></> : "—";
@@ -681,45 +679,28 @@ function Page() {
                     : "not counted: the rows did not come back, and the blob was available from other validators"),
                   r.tone !== "hold" && foreign && "not counted: rows of the blob came back that are not its own, which show neither that it holds its rows nor that it does not",
                   tries.length > 1 && `requests in order: ${tries.map(answerWord).join(", ")}${judged(tries) ? "; the last answer carries the result" : ""}`,
-                  op && "the retention window is still open: final when it closes",
+                  open && "the retention window is still open: final when it closes",
                   !endOfWindow(p.schedule_label) && "read on the earlier schedule",
                   `outcome: ${p.outcome.toLowerCase().replace(/_/g, " ")}`,
                   (g === "not served" || r.tone === "hold") && p.raw_error && rawErrorWords(p),
-                  g === "not served" && p.provisional && !op && "provisional: counted, and can still be withdrawn",
+                  g === "not served" && p.provisional && !open && "provisional: counted, and can still be withdrawn",
                   p.attested === false && "not endorsed by this validator, so outside the rate",
                   p.retry_first_outcome && `first answer ${p.retry_first_outcome.toLowerCase().replace(/_/g, " ")}, dialled again at once`,
                   p.host_changed && `re-registered during the window: the upload went to ${p.host_at_settlement}`,
                   p.rpc_code && `gRPC ${p.rpc_code}`,
                   p.shadowed_by && `answered from promise ${p.shadowed_by.slice(0, 10)}…`,
-                ].filter(Boolean) as string[];
-                const id = `vr-${idx}`;
+                ].filter(Boolean).join(" · ");
                 return (
-                  <Fragment key={k}>
-                    <tr className={"row" + (on ? " open" : "")}
-                      onClick={(ev) => { if ((ev.target as HTMLElement).closest("a, button") || window.getSelection()?.toString()) return; toggle(k); }}>
-                      <td className="c-t"><span title={utcWord(readAt)}><span className="tm">{monthDayTime(readAt)}</span><span className="ag">{age(now - t)}</span></span></td>
-                      <td className="c-b"><Link href={href} title={p.promise_hash}>{p.promise_hash.slice(0, 6)}<span className="el">…</span>{p.promise_hash.slice(-4)}</Link></td>
-                      <td className="c-r">{rows}</td>
-                      <td className="c-d">{ms}</td>
-                      <td className="gap" aria-hidden="true" />
-                      <td className="tn"><span className={r.tone} title={[p.classification_reason, notes.join(" · ")].filter(Boolean).join(" · ")}>{r.word}{at}</span></td>
-                      <td className="c-x"><button type="button" aria-expanded={on} aria-controls={on ? id : undefined}
-                        aria-label={`${on ? "Hide" : "Show"} the details of the check of ${shortHash(p.promise_hash)}, ${monthDayTime(readAt)}`} onClick={() => toggle(k)}><Chevron /></button></td>
-                      <td className="c-m"><span className={"rs " + r.tone}>{r.word}{at}</span><span className="sep rs-sep">·</span><span>{rows}</span><span className="sep">·</span><span>{ms}</span></td>
-                    </tr>
-                    {on && (
-                      <tr className="vr-x" id={id}>
-                        <td colSpan={7}>
-                          <div className="vr-why">
-                            <p className={"vr-r " + r.tone}>{cap(r.word)}{made > 1 && <span className="vr-q"> · {askedTimes(made)}</span>}</p>
-                            {p.classification_reason && <p>{cap(p.classification_reason)}</p>}
-                            {notes.map((n) => <p key={n}>{cap(n)}</p>)}
-                            <p className="vr-go"><Link href={href}>Open the blob →</Link></p>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
+                  <tr key={`${p.vantage}|${p.promise_hash}|${p.scheduled_at}`} className="row"
+                    onClick={(ev) => openRow(ev, href, onOpen)} onAuxClick={(ev) => openRow(ev, href, onOpen)}>
+                    <td className="c-t"><span title={utcWord(readAt)}><span className="tm">{monthDayTime(readAt)}</span><span className="ag">{age(now - t)}</span></span></td>
+                    <td className="c-b"><Link href={href} title={p.promise_hash}>{p.promise_hash.slice(0, 6)}<span className="el">…</span>{p.promise_hash.slice(-4)}</Link></td>
+                    <td className="c-r">{rows}</td>
+                    <td className="c-d">{ms}</td>
+                    <td className="gap" aria-hidden="true" />
+                    <td className="tn"><span className={r.tone} title={[p.classification_reason, notes].filter(Boolean).join(" · ")}>{r.word}{at}</span></td>
+                    <td className="c-m"><span className={"rs " + r.tone}>{r.word}{at}</span><span className="sep rs-sep">·</span><span>{rows}</span><span className="sep">·</span><span>{ms}</span></td>
+                  </tr>
                 );
               })}
             </tbody>
