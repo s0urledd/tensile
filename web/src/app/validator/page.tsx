@@ -582,7 +582,7 @@ function Page() {
       </section>
 
       {/* what the chain records, as a quiet list in the same frame, so signing is never read as serving: the period's
-          figures, a rule, then what holds now */}
+          figures, a step of space, then what holds now */}
       <section className="vd-oc" id="chain" aria-labelledby="vd-chain">
         <h2 id="vd-chain" title="Read from the chain, nothing measured.">On chain</h2>
         <dl className="vd-oc-l">
@@ -594,8 +594,8 @@ function Page() {
             <dt>Shard data <span className="per">· {per}</span></dt>
             <dd className={load && !notLive ? undefined : "na"}><b>{load && !notLive ? unit(bytes(load.bytes)) : "—"}</b></dd>
           </div>
-          {timeouts > 0 && <div title="MsgPaymentPromiseTimeout submitted by this validator’s operator account in the period.">
-            <dt>Timeouts reported <span className="per">· {per}</span></dt>
+          {timeouts > 0 && <div title="Timeouts this validator reported: MsgPaymentPromiseTimeout submitted by its operator account in the period.">
+            <dt>Timeouts <span className="per">· {per}</span></dt>
             <dd><b>{int(timeouts)}</b></dd>
           </div>}
           <div className="now" title="Shard data this validator must hold at this moment: endorsed blobs whose retention window has not ended.">

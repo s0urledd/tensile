@@ -55,6 +55,8 @@
   --shadow-sm: 0 1px 2px rgb(16 24 32 / .05);
   --shadow: 0 1px 2px rgb(16 24 32 / .04), 0 12px 32px -16px rgb(16 24 32 / .16);
   --shadow-pop: 0 14px 34px -10px rgb(16 24 32 / .24), 0 2px 6px rgb(16 24 32 / .06);
+  /* a short shadow for a tip over small marks, so the marks under it keep their colour */
+  --shadow-tip: 0 6px 16px -8px rgb(16 24 32 / .18);
   /* the chain panel: a white surface lit from its top corners, teal then violet */
   --stage-bg: #ffffff;
   --stage-glow: radial-gradient(720px 300px at 0% 0%, rgb(0 106 116 / .085), transparent 70%), radial-gradient(560px 260px at 100% 0%, rgb(91 79 209 / .055), transparent 70%);
@@ -116,6 +118,7 @@
   --shadow-sm: inset 0 1px 0 rgb(255 255 255 / .03), 0 1px 2px rgb(0 0 0 / .45);
   --shadow: inset 0 1px 0 rgb(255 255 255 / .045), 0 24px 48px -28px rgb(0 0 0 / .9);
   --shadow-pop: 0 18px 40px -12px rgb(0 0 0 / .75), 0 0 0 1px rgb(255 255 255 / .07);
+  --shadow-tip: 0 6px 16px -8px rgb(0 0 0 / .6), 0 0 0 1px rgb(255 255 255 / .07);
   --stage-bg: linear-gradient(180deg, #131a1f 0%, #0e1316 100%);
   --stage-glow: radial-gradient(760px 320px at 0% 0%, rgb(51 179 191 / .18), transparent 70%), radial-gradient(640px 300px at 100% 0%, rgb(163 155 255 / .10), transparent 70%);
   --accent-2: #a39bff;
@@ -2189,6 +2192,8 @@ button.warn:focus-visible { outline-offset: 0; }
 .vd-feed { position: absolute; top: 12px; right: 24px; font-size: var(--t-cell); line-height: 18px; font-weight: 500; color: var(--accent-ink); }
 .vd-facts .vd-addr { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
 .vd-facts .vd-addr .mono { min-width: 0; overflow-wrap: anywhere; }
+/* the time and its age one group, the stages another */
+.vd-facts .vd-chk { column-gap: 20px; }
 
 /* one frame: what Tensile observed on the left, sized to its content (the rate, a 32px gap and the strip at its fixed
    size, 736px, in 24px of padding a side); what the chain records in the rest, after a rule; their headings on one line
@@ -2196,34 +2201,44 @@ button.warn:focus-visible { outline-offset: 0; }
 .vd-stat { display: grid; grid-template-columns: 784px minmax(0, 1fr); margin-top: 16px; }
 .vd-stat > .vd-svc { display: block; margin-top: 0; padding: 16px 24px; }
 .vd-stat .vp-h { padding: 0; }
-/* the rate and the strip side by side, both from the top, 12px under the heading */
-.vd-stat .vd-svc-top { display: grid; grid-template-columns: 232px 472px; column-gap: 32px; align-items: start; margin-top: 12px; padding: 0; }
+/* the rate and the strip side by side, both from the top, 12px under the heading; the rate's column wide enough for its
+   count line with 5- and 6-digit counts */
+.vd-stat .vd-svc-top { display: grid; grid-template-columns: 240px 472px; column-gap: 24px; align-items: start; margin-top: 12px; padding: 0; }
+/* the rate's label on the caption's 16px line, so SERVICE RATE, the strip's caption and On chain's first row share a
+   baseline, and the count line sits level with the strip's end times */
+.vd-stat .vd-lbl { line-height: 16px; }
 .vd-stat .vd-rate-v { margin-top: 6px; font-size: 32px; line-height: 38px; }
 .vd-stat .vd-rate-s { margin-top: 4px; font-size: 12.5px; line-height: 18px; white-space: nowrap; }
 .vd-stat .vd-latest { grid-area: auto; align-self: start; width: 472px; padding: 0; }
 /* how many and the key on one line over the cells, the key at the strip's right end */
 .vd-stat .vd-cap { justify-content: space-between; gap: 4px 16px; margin-bottom: 8px; }
-/* a fixed strip: 25 cells of 16px a line with 3px between them, two lines, 472 x 35 whatever the count; fewer checks
-   keep the same pitch from the first cell */
-.vd-stat .vd-strip { grid-template-columns: repeat(25, 16px); grid-template-rows: repeat(2, 16px); gap: 3px; justify-content: start; max-width: none; }
+/* a fixed strip: 25 cells of 16px a line with 3px between them, 472 x 35 when full; fewer checks keep the same pitch
+   from the first cell, and 25 or fewer take one line, so the end times stay 6px under the cells they date */
+.vd-stat .vd-strip { grid-template-columns: repeat(25, 16px); grid-template-rows: none; grid-auto-rows: 16px; gap: 3px; justify-content: start; max-width: none; }
 /* the oldest check's time under the first cell, the newest's and its age ending under the first line's last cell */
 .vd-ends { display: flex; justify-content: space-between; gap: 16px; width: calc(var(--n1, 25) * 19px - 3px); min-width: max-content; margin: 6px 0 0; font-family: var(--font-table); font-size: var(--t-small); line-height: 16px; color: var(--text-3); font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
 /* the period's other figures in one line across the column, over a hairline */
 .vd-stat .vd-more { display: flex; flex-wrap: wrap; column-gap: 28px; row-gap: 2px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft); line-height: 20px; }
 .vd-fi > em { margin-left: 6px; font-style: normal; font-family: var(--font-table); line-height: 1; color: var(--text-3); font-variant-numeric: tabular-nums lining-nums; }
 .vd-stat .vd-fi b { line-height: 1; }
-/* the chain's column: its name, then a label column and the values from one edge, one rule between the period's figures
-   and what holds now */
+/* the chain's column: its name, then a fixed label column, so the values start at one x whatever the period, and a
+   step of space between the period's figures and what holds now */
 .vd-stat > .vd-oc { display: block; margin-top: 0; padding: 16px 24px; border: 0; border-left: 1px solid var(--border); border-radius: 0; background: none; }
 .vd-stat > .vd-oc h2 { margin: 0; font-size: var(--t-cell); font-weight: 600; line-height: 18px; letter-spacing: 0; color: var(--text); white-space: nowrap; }
-.vd-stat .vd-oc-l { display: grid; grid-template-columns: minmax(120px, max-content) minmax(0, 1fr); gap: 0; margin: 9px 0 0; padding: 0; }
+.vd-stat .vd-oc-l { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 0; margin: 7px 0 0; padding: 0; }
 .vd-stat .vd-oc-l > div { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; grid-template-rows: 24px; align-items: baseline; }
 .vd-stat .vd-oc-l dt { padding-right: 12px; font-size: var(--t-cell); line-height: 24px; overflow: visible; }
 .vd-stat .vd-oc-l dd { margin: 0; line-height: 24px; }
 .vd-stat .vd-oc-l b { font-size: 14px; line-height: 24px; letter-spacing: 0; }
 .vd-stat .vd-oc-l em { font-size: var(--t-cell); line-height: 1; }
 .vd-stat .vd-oc-l b .u { line-height: 1; }
-.vd-stat .vd-oc-l .now { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line-soft); }
+/* 11px, so the last row stays level with the period's figures under the hairline on the left */
+.vd-stat .vd-oc-l .now { margin-top: 11px; }
+/* between 961 and 1199px the two columns stay side by side, Observed by Tensile taking the rest and the rate over the strip */
+@media (min-width: 961px) and (max-width: 1199px) {
+  .vd-stat { grid-template-columns: minmax(0, 1fr) 334px; }
+  .vd-stat .vd-svc-top { grid-template-columns: 472px; row-gap: 12px; }
+}
 @media (max-width: 960px) {
   .vd-stat { grid-template-columns: minmax(0, 1fr); }
   .vd-stat > .vd-oc { border-left: 0; border-top: 1px solid var(--border); }
@@ -2300,7 +2315,7 @@ button.warn:focus-visible { outline-offset: 0; }
 .vd-strip .vd-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .vd-none-yet { margin: 0; font-size: var(--t-cell); color: var(--text-3); }
 /* a cell's check, in the charts' tooltip surface */
-.vd-tip { position: fixed; z-index: 50; transform: translateY(-100%); display: flex; flex-direction: column; gap: 2px; width: 216px; padding: 9px 12px 10px; border-radius: 10px; background: color-mix(in srgb, var(--paper) 94%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); border: 1px solid var(--border); box-shadow: var(--shadow-pop); font-size: var(--t-small); line-height: 16px; color: var(--text-2); pointer-events: none; animation: tip-in var(--dur) ease-out; }
+.vd-tip { position: fixed; z-index: 50; transform: translateY(-100%); display: flex; flex-direction: column; gap: 2px; width: 216px; padding: 9px 12px 10px; border-radius: 10px; background: color-mix(in srgb, var(--paper) 94%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); border: 1px solid var(--border); box-shadow: var(--shadow-tip); font-size: var(--t-small); line-height: 16px; color: var(--text-2); pointer-events: none; animation: tip-in var(--dur) ease-out; }
 .vd-tip.below { transform: none; }
 .vd-tip .tip-x { margin-bottom: 2px; font-size: var(--t-tiny); line-height: 14px; letter-spacing: .02em; color: var(--text-3); }
 .vd-tip .mono { font-size: 11.5px; color: var(--text); }
