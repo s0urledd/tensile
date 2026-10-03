@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { API_BASE, type Blob, type Validator, type Publisher, int } from "@/lib/api";
+import { API_BASE, type Blob, type Validator, type Publisher, int, whenUTC, utcWord } from "@/lib/api";
 import { blobKey } from "@/lib/blobkey";
 import { useFind } from "@/lib/blobfind";
 import { siteTarget, type SiteTarget } from "@/lib/sitefind";
@@ -72,8 +72,11 @@ function useRecord<T>(path: string | null): Got<T> | null {
   return path && st && st.path === path ? st.got : null;
 }
 
-/** one record the search found, as a row of its panel that opens the record's page: what it is, in one word, and which */
-type Item = { href: string; glyph: ReactNode; kind: string; title: ReactNode; label: string };
+/**
+ * one record the search found, as a row of its panel that opens the record's page: what it is, in one word, and which;
+ * a blob also says when it settled, so the several settlements of one blob ID tell apart
+ */
+type Item = { href: string; glyph: ReactNode; kind: string; title: ReactNode; label: string; at?: string };
 
 const short = (s: string, head = 8, tail = 4) => (s.length > head + tail + 1 ? `${s.slice(0, head)}…${s.slice(-tail)}` : s);
 /** an address as the lists print it: its prefix, then its last four */
@@ -84,7 +87,7 @@ const plain = (e: React.MouseEvent) => !(e.metaKey || e.ctrlKey || e.shiftKey ||
 const blobItem = (b: Blob): Item => ({
   href: `/blob/?hash=${b.promise_hash}`,
   label: `Blob ${b.promise_hash.slice(0, 10)}, block ${int(b.settlement_height)}`,
-  glyph: BLOB, kind: "Blob",
+  glyph: BLOB, kind: "Blob", at: b.settlement_time,
   title: <span className="mono" title={b.promise_hash}>{short(b.promise_hash, 10, 6)}</span>,
 });
 
@@ -235,6 +238,7 @@ export default function HeaderSearch() {
                         <span className="hs-ic">{it.glyph}</span>
                         <span className="hs-k">{it.kind}</span>
                         {it.title}
+                        {it.at && <span className="hs-at" title={`Settled ${utcWord(it.at)}`}>{whenUTC(it.at)}</span>}
                       </Link>
                     </li>
                   ))}
