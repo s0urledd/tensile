@@ -2201,16 +2201,14 @@ button.warn:focus-visible { outline-offset: 0; }
 .bd-band + .bd-band .bd-bh { border-top: 1px solid var(--border); }
 .bd-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(144px, 1fr)); gap: 8px; margin: 0; padding: 12px 14px; list-style: none; }
 /* a tile: the logo, then the name over the share; a mark only where something went wrong */
-.bd-tile { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 7px 10px 7px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--paper); color: var(--text); transition: border-color var(--dur), background var(--dur); }
+.bd-tile { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--paper); color: var(--text); transition: border-color var(--dur), background var(--dur); }
 .bd-tile:hover { text-decoration: none; border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: color-mix(in srgb, var(--accent) 4%, var(--paper)); }
-.bd-tile .avatar { width: 26px; height: 26px; font-size: 9.5px; }
 .bd-tile .tx { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .bd-tile .nm { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 12.5px; font-weight: 600; line-height: 16px; }
 .bd-tile .nm .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bd-tile .nm svg { flex: none; color: var(--text-3); }
 .bd-tile .vp { font-family: var(--mono); font-size: 11px; line-height: 14px; color: var(--text-3); }
 .bd-band.off .bd-tile .nm { color: var(--text-2); }
-.bd-band.off .bd-tile { padding-left: 10px; }
 .bd-tile .mk { flex: none; width: 6px; height: 6px; margin-left: 1px; border-radius: 50%; }
 .bd-tile.hold .mk { background: var(--hold); }
 .bd-tile.fault { border-color: color-mix(in srgb, var(--fault) 50%, var(--border)); background: color-mix(in srgb, var(--fault) 6%, var(--paper)); }
