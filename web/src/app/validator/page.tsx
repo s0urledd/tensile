@@ -1,24 +1,25 @@
 "use client";
-import { Suspense, useCallback, useState, type CSSProperties } from "react";
+import { Fragment, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useApi, type ValidatorDetail, type ValidatorReading, type Window, type RecordThrough, type Obligations, type Meta, type EndpointCheck, int, pctOf, bytes, utcWord, dateUTC, whenUTC, shortMid, notFound, rateTone, notCountedText, badRequest, MIN_RATED, API_BASE, provisionalNow, type ProvisionalFaults, type NetworkReference,
   endOfWindow, fullReading, ownGap, ownSide, sharedAnswer, rawErrorWords, foreignRows, hhmm, attemptsOf, judged, askedTimes, FULL_READ_SINCE_WORDS } from "@/lib/api";
-import { useWindow, WindowSwitch, windowLabel, periodName } from "@/lib/window";
+import { useWindow, WindowSwitch, periodName } from "@/lib/window";
 import StatusLine from "@/components/StatusLine";
-import { PanelFig, Eye } from "@/components/Metrics";
+import { Eye } from "@/components/Metrics";
 import Warn from "@/components/Warn";
 import { unit } from "@/components/Unit";
 import { age, monthDayTime } from "@/components/BlobsDeck";
 import { openRow } from "@/lib/row";
-import Copy from "@/components/Copy";
+import { CopyMark } from "@/components/Ledger";
 import Avatar from "@/components/Avatar";
 import { endpoint } from "@/components/Validators";
 import { HostingFact } from "@/components/Hosting";
 import { SELF_VALIDATOR } from "@/lib/site";
 import PreLive from "@/components/PreLive";
-import Diagnosis from "@/components/Diagnosis";
+import { diagnose } from "@/components/Diagnosis";
 import { pageAddr } from "@/lib/addr";
+
 
 type Span = { window: Window; obligations: Obligations; provisional_faults?: ProvisionalFaults };
 type Detail = {
@@ -58,16 +59,6 @@ const WORDS: Record<string, [string, string]> = {
 function shortDate(ts: string): string {
   const d = dateUTC(ts);
   return d.endsWith(`, ${new Date().getUTCFullYear()}`) ? d.slice(0, d.lastIndexOf(",")) : d;
-}
-
-/**
- * An address shortened in the middle, as shortMid(s, 18, 6) prints it, in two
- * parts: in a narrow card the head gives way first, so the tail that tells
- * two addresses apart stays in view.
- */
-function MidAddr({ s }: { s: string }) {
-  if (s.length <= 18 + 6 + 1) return <span className="mono">{s}</span>;
-  return <span className="mono mid"><span>{s.slice(0, 18)}</span><span>…{s.slice(-6)}</span></span>;
 }
 
 /**
@@ -190,6 +181,136 @@ function resultOf(p: ValidatorReading, g: Group): { word: string; tone: Tone } {
   return { word: lower(w.replace(/ · not counted$/, "")), tone: "quiet" };
 }
 
+
+const cap = (w: string) => w.charAt(0).toUpperCase() + w.slice(1);
+/** a blob's hash as the lists print it: the first six and the last four */
+const shortHash = (h: string) => `${h.slice(0, 6)}…${h.slice(-4)}`;
+
+/**
+ * A host as registered, free to wrap after each dot: a long name breaks
+ * between its parts, and the port stays with the last one.
+ */
+function Host({ s }: { s: string }) {
+  const parts = s.split(".");
+  return <span className="mono">{parts.map((part, i) => <Fragment key={i}>{i > 0 && <wbr />}{part}{i < parts.length - 1 && "."}</Fragment>)}</span>;
+}
+
+/** the addresses' mark: a chevron that turns when they show */
+const Chevron = () => (
+  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="m4.5 6.5 3.5 3.5 3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+);
+
+
+/**
+ * One cell of the latest-checks strip: one reading of a blob, its requests together, worded and toned as its row in
+ * the table below (resultOf), so the two cannot disagree. open: the retention window is still open, so the result is
+ * not final yet.
+ */
+type Cell = { k: string; at: string; hash: string; tone: Tone; word: string; made: number; open: boolean };
+
+/**
+ * The strip's key: each kind of cell it holds, in this order, with how many. Counted neither way takes the amber of a
+ * failure on the validator's side and the grey of a reason of its own; a cell whose window is open is drawn hollow,
+ * whatever its colour.
+ */
+function keyOf(cells: Cell[]): { sw: string[]; word: string; n: number }[] {
+  const n = (f: (c: Cell) => boolean) => cells.filter(f).length;
+  const hold = n((c) => !c.open && c.tone === "hold"), quiet = n((c) => !c.open && c.tone === "quiet");
+  return [
+    { sw: ["ok"], word: "Served", n: n((c) => !c.open && c.tone === "ok") },
+    { sw: ["fault"], word: "Not served", n: n((c) => !c.open && c.tone === "fault") },
+    { sw: [hold > 0 ? "hold" : "", quiet > 0 ? "quiet" : ""].filter(Boolean), word: "Counted neither way", n: hold + quiet },
+    { sw: ["quiet open"], word: "In retention window", n: n((c) => c.open) },
+  ].filter((k) => k.n > 0);
+}
+
+/** the strip's tooltip width, so it can be centred on its cell */
+const TIP_W = 216;
+
+/**
+ * The latest checks, oldest to newest: one small square per check, coloured by its result, in one line across the
+ * frame where there is room for it and in lines of a fixed count where there is not. Not a timeline: the cells are
+ * evenly spaced whatever the time between the checks, and nothing marks time along it. A cell names its check (when,
+ * which blob, what came back) on hover, on focus and on a tap; a finger can slide along the strip to move from check
+ * to check, and the arrow keys do the same.
+ */
+function Strip({ cells }: { cells: Cell[] }) {
+  const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  const box = useRef<HTMLDivElement>(null);
+  // the tooltip names its check by key, so a refresh that shifts the strip never puts another check's words on it
+  const [tip, setTip] = useState<{ k: string; top: number; left: number; below: boolean } | null>(null);
+  const [focusK, setFocusK] = useState<string | null>(null);
+  // when a finger last slid to another cell: the focus and the click that can end the slide land on the cell it started
+  // on, and are dropped
+  const slidAt = useRef(0);
+  const sliding = () => performance.now() - slidAt.current < 700;
+  const tabK = focusK && cells.some((x) => x.k === focusK) ? focusK : cells[cells.length - 1]?.k;
+  const show = useCallback((i: number) => {
+    const r = refs.current[i]?.getBoundingClientRect();
+    if (!r) return;
+    // above the cell, clear of the finger that taps it; under it when the strip is near the top of the window and there
+    // is no room above
+    const below = r.top < 110;
+    setTip({ k: cells[i].k, top: below ? r.bottom + 8 : r.top - 8, below,
+      left: Math.max(12, Math.min(r.left + r.width / 2 - TIP_W / 2, window.innerWidth - 12 - TIP_W)) });
+  }, [cells]);
+  const scrub = (e: React.PointerEvent) => {
+    if (e.pointerType === "mouse") return;
+    const el = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest(".vd-c");
+    const i = refs.current.findIndex((b) => b === el);
+    if (i < 0 || cells[i].k === tip?.k) return;
+    slidAt.current = performance.now();
+    show(i);
+  };
+  const hide = useCallback(() => setTip(null), []);
+  // closed rather than moved when the page scrolls or the window changes size; a tap elsewhere closes it too
+  useEffect(() => {
+    if (!tip) return;
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape") hide(); };
+    const away = (e: PointerEvent) => { if (!box.current?.contains(e.target as Node)) hide(); };
+    window.addEventListener("scroll", hide, true);
+    window.addEventListener("resize", hide);
+    window.addEventListener("keydown", key);
+    window.addEventListener("pointerdown", away);
+    return () => {
+      window.removeEventListener("scroll", hide, true); window.removeEventListener("resize", hide);
+      window.removeEventListener("keydown", key); window.removeEventListener("pointerdown", away);
+    };
+  }, [tip, hide]);
+  const move = (e: React.KeyboardEvent, i: number) => {
+    const to = e.key === "ArrowLeft" ? i - 1 : e.key === "ArrowRight" ? i + 1 : e.key === "Home" ? 0 : e.key === "End" ? cells.length - 1 : null;
+    if (to == null || to < 0 || to >= cells.length) return;
+    e.preventDefault();
+    refs.current[to]?.focus();
+  };
+  const c = tip ? cells.find((x) => x.k === tip.k) : undefined;
+  return (
+    <div ref={box}>
+      <div className="vd-strip" role="group" aria-label="Latest checks, oldest to newest"
+        onPointerMove={scrub}>
+        {cells.map((x, i) => (
+          <button key={x.k} ref={(el) => { refs.current[i] = el; }} type="button"
+            className={"vd-c " + x.tone + (x.open ? " open" : "") + (tip?.k === x.k ? " on" : "")} tabIndex={x.k === tabK ? 0 : -1}
+            aria-label={`${monthDayTime(x.at)} UTC, blob ${shortHash(x.hash)}: ${x.word}${x.made > 1 ? `, ${askedTimes(x.made)}` : ""}${x.open ? ", retention window still open" : ""}`}
+            onPointerEnter={(e) => { if (e.pointerType === "mouse") show(i); }}
+            onPointerLeave={(e) => { if (e.pointerType === "mouse") hide(); }}
+            onFocus={() => { setFocusK(x.k); if (!sliding()) show(i); }} onBlur={() => { if (!sliding()) hide(); }}
+            onClick={() => { if (!sliding()) show(i); }} onKeyDown={(e) => move(e, i)} />
+        ))}
+      </div>
+      {c && tip && (
+        <div className={"vd-tip" + (tip.below ? " below" : "")} role="tooltip" style={{ top: tip.top, left: tip.left }}>
+          <span className="tip-x">{monthDayTime(c.at)} UTC</span>
+          <span className="tip-b">Blob <span className="mono">{shortHash(c.hash)}</span></span>
+          <span className={"tip-r " + c.tone}>{cap(c.word)}{c.made > 1 && <span className="tip-q"> · {askedTimes(c.made)}</span>}</span>
+          {(c.tone === "hold" || c.tone === "quiet") && !c.open && <span className="tip-n">Counted neither way</span>}
+          {c.open && <span className="tip-n">The retention window is still open: final when it closes</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Page() {
   const addr = useSearchParams().get("addr") ?? "";
   const [win, setWin] = useWindow("24h");
@@ -200,6 +321,8 @@ function Page() {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     router.push(href);
   }, [router]);
+  // another validator starts at the top of its own list
+  useEffect(() => { setOnlyNotServed(false); }, [addr]);
   const { data: meta, error: metaErr } = useApi<Meta>("/v1/meta");
   const d = useApi<Detail>(addr ? `/v1/validators/${addr}?window=${win}` : null);
   const notLive = !!meta?.app_version && !meta.fibre_active;
@@ -218,26 +341,25 @@ function Page() {
   const v = data.validator;
   const o = v.obligations;
   const decided = o ? o.served + o.broken : 0;
+  const broken = o?.broken ?? 0;
   const e = endpoint(v);
   const bonded = !v.jailed && (!v.bond_status || v.bond_status === "BOND_STATUS_BONDED");
   const rw = v.reachability_window;
   const self = !!SELF_VALIDATOR && [v.address, v.cons_address, v.operator_address].some((a) => !!a && a.toLowerCase() === SELF_VALIDATOR);
   // The address the page names the validator by, and its API links carry: the
   // operator address when the staking set names one, with the consensus
-  // address under it in the same fact.
+  // address beside it under Addresses.
   const own = pageAddr(v.operator_address, v.address);
   const cons = v.cons_address || v.address;
   // Readings inside the retention window: the earlier schedule's checks after
   // the deadline count in nothing and stay in the full history. One line per
   // reading of a blob, its requests together, with its outcome group, once:
-  // the summary counts them and the filter selects on the same judgement, so
-  // the two cannot disagree.
+  // the strip, the summary and the filter all read the same judgement, so
+  // they cannot disagree.
   const grouped = linesOf(data.recent_probes.filter((p) => p.phase === "in_window"));
   const probes = grouped.map((r) => r.p);
   const notServedRows = grouped.filter((r) => r.g === "not served");
   const shown = onlyNotServed ? notServedRows : grouped;
-  const lastNotServed = notServedRows[0]?.p;
-  const lastServed = grouped.find((r) => r.g === "served")?.p;
   // Every not-served row of the period, for when they are older than the
   // newest rows this page carries: served=no is the obligations' own rule.
   const notServedHref = `${API_BASE}/v1/probes?validator=${own}&served=no${data.window.start ? `&since=${encodeURIComponent(data.window.start)}` : ""}&limit=1000`;
@@ -246,6 +368,8 @@ function Page() {
   const sig = v.signing;
   const load = v.load && v.load.rows_per_blob > 0 ? v.load : null;
   const site = safeSite(v.website);
+  // the endpoint's date only when it says something the provider date beside the name does not: a re-registration
+  const endpointSince = v.endpoint_since && (!v.provider_since || shortDate(v.endpoint_since) !== shortDate(v.provider_since)) ? v.endpoint_since : null;
   // Not-served obligations whose readings are all younger than the settling
   // period: counted, and still able to be withdrawn. provisionalNow drops
   // them once `until` passes, so a cached answer does not keep the badge.
@@ -270,127 +394,242 @@ function Page() {
   const tone = o && decided > 0 ? rateTone(o.served, decided) : undefined;
   const now = Date.now();
   const per = periodName(data.window.name ?? win);
-  const cells = 4 + ((v.timeouts_enforced ?? 0) > 0 ? 1 : 0);
+  // the end reading's result shows as soon as it is in; the record takes it when the window closes, and only then can
+  // a not-served one be provisional
+  const isOpen = (p: ValidatorReading) => endOfWindow(p.schedule_label) && Date.parse(p.scheduled_at) + 10 * 60_000 > now;
+  // the not-served checks this page carries that the period's count holds: when the count is larger, the rest are
+  // older than these checks, and the Not served tab says where they are
+  const nsInPeriod = notServedRows.filter((r) => !isOpen(r.p) && Date.parse(r.at) >= since).length;
+
+  // the strip: every check this page carries, oldest to newest, worded as its row
+  const cells: Cell[] = [...grouped].reverse().map(({ p, g, made, at }) => {
+    const op = isOpen(p);
+    const r = resultOf(op ? { ...p, provisional: false } : p, g);
+    return { k: `${p.vantage}|${p.promise_hash}|${p.scheduled_at}`, at, hash: p.promise_hash, tone: r.tone, word: r.word, made, open: op };
+  });
+  const key = keyOf(cells);
+
+  // the endpoint as the newest handshake found it, stage by stage; stages after the first failure were never reached
+  const c = data.last_endpoint_check;
+  const stages: [string, boolean, string][] = c ? [
+    ["DNS", c.dns_ok, ""],
+    ["TCP", c.tcp_ok, c.tcp_ok ? `${c.tcp_ms} ms` : ""],
+    ["TLS", c.tls_ok, c.tls_ok ? `${c.tls_ms} ms` : ""],
+    ["Identity", c.identity_ok, c.identity_ok ? "" : c.identity_reason ?? ""],
+  ] : [];
+  const firstFail = stages.findIndex(([, ok]) => !ok);
+  // what state the endpoint is in, in words, when it needs a look: before activation there is nothing to conclude,
+  // and StatusLine says so
+  const diag = notLive ? null : diagnose(v, c, decided);
+  // a bonded validator that never registered an endpoint: the state chip already says so, and the Endpoint fact carries
+  // the words on hover and the guide link
+  const noEndpoint = !v.host && !v.last_host && bonded;
+
+  // the not-served figure opens its records: the checks table, filtered to them
+  const showNotServed = () => {
+    setOnlyNotServed(true);
+    document.getElementById("evidence")?.scrollIntoView({ block: "start" });
+  };
+  const setFilter = (only: boolean) => setOnlyNotServed(only);
+
+  // signing participation, as the chain records it: settlements signed of those assigned, or before signing was
+  // counted per settlement, blobs endorsed
+  const endorse = sig && sig.assigned > 0
+    ? { n: sig.signed, of: sig.assigned, title: `${int(sig.signed)} of ${int(sig.assigned)} settlements. ${ENDORSE_TITLE}` }
+    : att && att.blob_coverage.den > 0
+      ? { n: att.attested_blobs, of: att.blob_coverage.den, title: `${int(att.attested_blobs)} of ${int(att.blob_coverage.den)} blobs. ${ENDORSE_TITLE}` }
+      : null;
+  const timeouts = v.timeouts_enforced ?? 0;
+  const reach = bonded && rw && rw.den > 0 ? rw : null;
+
+  const rateCls = notLive || decided === 0 ? "na" : tone === "r-bad" ? "bad" : tone === "r-warn" ? "warn" : "";
+  // why the period has no rate, when it has none: under the dash, in the words its title starts with
+  const noRate = !o || o.total === 0 ? ((v.signing?.signed ?? 0) > 0 ? "Not read yet" : "Nothing endorsed in this period")
+    : o.not_counted > 0 ? "Read, none counted" : "Not read yet";
+  const rateTitle = notLive ? undefined : (!o || o.total === 0 ? ((v.signing?.signed ?? 0) > 0 ? "Not read yet." : "Nothing endorsed in this period.")
+    : decided === 0 ? (o.not_counted > 0 ? `Read, none counted: ${notCountedText(o)}.` : "Not read yet.")
+    : `${int(o.served)} of ${int(decided)} counted readings served${refText ? `; ${refText}` : ""}. Endorsed shards served, over served plus not served. A shard counts neither way when one of its requests failed on Tensile’s side or could not be made in time, an answer was rows of the blob that are not the validator’s own, a request Tensile still owed is not on record, or its reading was not made or reached no server; before ${FULL_READ_SINCE_WORDS}, so did a shard not asked for, or one that failed on a blob that was available.`)
+    + (data.rolled_up ? ` Before ${data.rolled_up.raw_from}, from the daily rollup.` : "");
+  const visible = shown;
 
   return (
     <>
-      <div className="head">
-        <div>
-          <p className="crumb"><Link href={win === "24h" ? "/" : `/?window=${win}`}>Validators</Link> › {v.moniker || shortMid(v.operator_address || cons, 18, 4)}</p>
-          <h1><Avatar v={v} />{v.moniker || <span className="mono">{shortMid(v.operator_address || cons, 22, 6)}</span>}{self && <span className="ours" title="Huginn Tech runs both this validator and Tensile. It is measured by the same code as every other validator, never filtered or adjusted.">runs Tensile</span>}</h1>
-          <div className="chips">
-            <span className="state" title={e.title}><i className={"dot " + e.dot} />{e.word}</span>
-            {v.host && <span title={v.identity_reason || "The consensus-key check on the newest handshake."}>TLS identity <b className="word">{identityWord[v.identity_status] ?? v.identity_status}</b></span>}
-            {v.provider_since && <span title={`When this validator first appeared as a Fibre provider, whatever endpoint it had then: ${utcWord(v.provider_since)}`}>Fibre provider since <b className="word">{shortDate(v.provider_since)}</b></span>}
-          </div>
-        </div>
+      <div className="vd-head">
+        <p className="crumb"><Link href={win === "24h" ? "/" : `/?window=${win}`}>Validators</Link> › {v.moniker || shortMid(v.operator_address || cons, 18, 4)}</p>
         <WindowSwitch value={win} onChange={setWin} />
       </div>
 
-      {/* who and where: the publisher page's light frame of facts, one row each */}
-      <dl className="pb-meta vd-meta">
-        {v.host
-          ? <><dt>Endpoint</dt><dd><span className="mono">{v.host}</span>{v.endpoint_since && <em>since {shortDate(v.endpoint_since)}</em>}</dd></>
-          : v.last_host && <><dt>Last endpoint</dt><dd title="The registration stays on chain; the validator left the bonded provider list."><span className="mono">{v.last_host}</span>{v.endpoint_closed_at && <em>left {dateUTC(v.endpoint_closed_at)}</em>}</dd></>}
-        {v.host && v.hosting && <><dt>Hosting</dt><dd><HostingFact h={v.hosting} /></dd></>}
-        {v.operator_address && <><dt>Operator</dt><dd className="vd-addr" title={v.operator_address}><MidAddr s={v.operator_address} /><Copy text={v.operator_address} label="operator address" /></dd></>}
-        <dt>Consensus</dt><dd className="vd-addr" title={[v.cons_address && `consensus ${v.cons_address}`, `hex ${v.address}`].filter(Boolean).join(" · ")}><MidAddr s={cons} /><Copy text={cons} label="consensus address" /></dd>
-        <dt>Links</dt><dd>
-          {site && <><a href={site} rel="nofollow noopener noreferrer" target="_blank">{site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</a><em>·</em></>}
-          <a href={`${API_BASE}/v1/validators/${own}/feed.atom`} type="application/atom+xml" title="Endpoint changes of this validator, as an Atom feed">Atom feed</a>
-        </dd>
-      </dl>
+      {/* who it is and where it serves from, in one frame: the name and its state on the left, the endpoint, its
+          hosting and the newest check on the right, the addresses folded away under them */}
+      <section className="pan vd-pf" aria-label="Validator">
+        <div className="vd-pf-main">
+          <div className="vd-who">
+            <Avatar v={v} />
+            <div className="vd-who-t">
+              <h1>{v.moniker || <span className="mono">{shortMid(v.operator_address || cons, 22, 6)}</span>}{self && <span className="ours" title="Huginn Tech runs both this validator and Tensile. It is measured by the same code as every other validator, never filtered or adjusted.">runs Tensile</span>}</h1>
+              <div className="chips vd-chips">
+                <span className="state" title={e.title}><i className={"dot " + e.dot} />{e.word}</span>
+                {v.host && <span title={v.identity_reason || "The consensus-key check on the newest handshake."}>TLS identity <b className="word">{identityWord[v.identity_status] ?? v.identity_status}</b></span>}
+              </div>
+              {/* a state to act on carries the amber dot with its words; one that is not a fault (jailed, unbonded,
+                  not checked yet) says its words on hover, without the dot */}
+              {diag && diag.tone !== "ok" && !noEndpoint && (
+                <p className={"vd-diag " + diag.tone} title={diag.tone === "none" ? diag.text : undefined}>
+                  <span>{diag.title}</span>{diag.tone === "hold" && <Warn text={diag.text} />}
+                  {diag.docs && <a href={diag.docs.href} rel="noopener noreferrer" target="_blank">{diag.docs.word} →</a>}
+                </p>
+              )}
+              {(v.provider_since || site) && (
+                <p className="vd-sub">
+                  {v.provider_since && <span title={`When this validator first appeared as a Fibre provider, whatever endpoint it had then: ${utcWord(v.provider_since)}`}>Fibre provider since <b>{shortDate(v.provider_since)}</b></span>}
+                  {site && <a href={site} title={site} rel="nofollow noopener noreferrer" target="_blank">{site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</a>}
+                </p>
+              )}
+            </div>
+          </div>
+          <dl className="vd-facts">
+            {v.host
+              ? <><dt>Endpoint</dt><dd><span className="vd-id"><Host s={v.host} /><CopyMark text={v.host} label="the endpoint" /></span>{endpointSince && <em title={`Registered ${utcWord(endpointSince)}`}>since {shortDate(endpointSince)}</em>}</dd></>
+              : v.last_host
+                ? <><dt>Last endpoint</dt><dd title="The registration stays on chain; the validator left the bonded provider list."><span className="vd-id"><Host s={v.last_host} /></span>{v.endpoint_closed_at && <em>left {dateUTC(v.endpoint_closed_at)}</em>}</dd></>
+                : <><dt>Endpoint</dt><dd className="vd-none" title={noEndpoint && diag ? diag.text : undefined}><em>none registered</em>
+                  {noEndpoint && diag?.docs && <a href={diag.docs.href} rel="noopener noreferrer" target="_blank">{diag.docs.word} →</a>}</dd></>}
+            {v.host && v.hosting && <><dt>Hosting</dt><dd><HostingFact h={v.hosting} /></dd></>}
+            {(v.host || c) && <>
+              <dt>Last check</dt>
+              <dd className="vd-chk">{c
+                ? <>
+                  <b title={utcWord(c.at)}>{whenUTC(c.at)}</b>
+                  <span className="vd-stages" title={[c.host !== v.host && `checked ${c.host}`, c.raw_error].filter(Boolean).join(" · ") || "The newest handshake with the registered endpoint, stage by stage."}>
+                    {stages.map(([name, ok, note], i) => {
+                      const skip = firstFail >= 0 && i > firstFail;
+                      return <span key={name} className={ok ? "ok" : skip ? "skip" : "bad"}>{name} <i aria-hidden="true">{ok ? "✓" : skip ? "–" : "✗"}</i>{note && <em>{note}</em>}</span>;
+                    })}
+                  </span>
+                  {c.host !== v.host && <em title={c.host}>on the earlier endpoint</em>}
+                </>
+                : <em>no check yet</em>}</dd>
+            </>}
+          </dl>
+        </div>
+        <div className="vd-pf-foot">
+          <details className="vd-addrs">
+            <summary><Chevron />Addresses</summary>
+            <dl>
+              {v.operator_address && <><dt>Operator</dt><dd className="vd-addr"><span className="mono">{v.operator_address}</span><CopyMark text={v.operator_address} label="the operator address" /></dd></>}
+              <dt>Consensus</dt><dd className="vd-addr" title={v.cons_address ? `hex ${v.address}` : undefined}><span className="mono">{cons}</span><CopyMark text={cons} label="the consensus address" /></dd>
+            </dl>
+          </details>
+          <a className="vd-feed" href={`${API_BASE}/v1/validators/${own}/feed.atom`} type="application/atom+xml" title="Endpoint changes of this validator, as an Atom feed">Atom feed</a>
+        </div>
+      </section>
+
       <PreLive meta={meta} />
       <StatusLine meta={meta} metaError={metaErr} snap={{ record_through: data.record_through, window: data.window }} client={{ error: d.error, fetchedAt: d.fetchedAt, status: d.status }} measuring={measuring} />
-      {/* the conclusion before the figures; before activation there is nothing to conclude, and StatusLine says so */}
-      {!notLive && <Diagnosis v={v} check={data.last_endpoint_check} meta={meta} decided={decided} />}
 
-      {/* the period's figures in two framed panels, as the publisher pages frame theirs: a label and a figure in each
-          cell, what qualifies a figure on hover, a dot where something needs a look */}
-      <div className="vd-figs">
-        <section className="pan vp" id="chain">
-          <div className="vp-h"><h2 className="vp-t" title="Read from the chain, nothing measured.">On chain <span className="per">({per})</span></h2></div>
-          <dl className="vp-cells" style={{ "--n": cells } as CSSProperties}>
-            {sig && sig.assigned > 0
-              ? <PanelFig label="Endorsements" value={pctOf(sig.signed, sig.assigned)} title={`${int(sig.signed)} of ${int(sig.assigned)} settlements. ${ENDORSE_TITLE}`} />
-              : att && att.blob_coverage.den > 0
-                ? <PanelFig label="Endorsements" value={pctOf(att.attested_blobs, att.blob_coverage.den)} title={`${int(att.attested_blobs)} of ${int(att.blob_coverage.den)} blobs. ${ENDORSE_TITLE}`} />
-                : <PanelFig label="Endorsements" value="—" className="na" title={`No settlement assigned it rows. ${ENDORSE_TITLE}`} />}
-            <PanelFig label="Rows per blob" value={load ? int(load.rows_per_blob) : "—"} className={load ? undefined : "na"}
-              title="Rows the assignment gives this validator on the newest settled blob, of every settled blob, by stake. Rows follow stake, not blob size." />
-            <PanelFig label="Shard data" value={load && !notLive ? unit(bytes(load.bytes)) : "—"} className={load && !notLive ? undefined : "na"}
-              title={`${load ? `${int(load.promises)} endorsed blobs in the period. ` : ""}Row data of the shards this validator stored and endorsed over the period's settled blobs: blob_size / 4096 per row, padding included. The row proofs stored beside them are not counted.`} />
-            <PanelFig label="Held now" value={load ? unit(bytes(load.stored_bytes)) : "—"} className={load ? undefined : "na"}
-              title="Shard data this validator must hold at this moment: endorsed blobs whose retention window has not ended." />
-            {(v.timeouts_enforced ?? 0) > 0 && <PanelFig label="Timeouts reported" value={int(v.timeouts_enforced)}
-              title="MsgPaymentPromiseTimeout submitted by this validator’s operator account in the period." />}
-          </dl>
-        </section>
-
-        <section className="pan vp" id="observed">
-          <div className="vp-h">
-            <h2 className="vp-t" title="Each blob is read once, 10 minutes before its retention window ends, and every validator that endorsed it is asked for its own rows. A validator is not served when its own rows did not come back, at the reading and each time it was asked again."><Eye />Observed by Tensile <span className="per">({per})</span></h2>
-          </div>
-          <dl className="vp-cells" style={{ "--n": 5 } as CSSProperties}>
-            <PanelFig label="Service rate" className={notLive || decided === 0 ? "na" : tone === "r-bad" ? "bad" : tone === "r-warn" ? "warn" : undefined}
-              value={<>{notLive || !o || decided === 0 ? "—" : pctOf(o.served, decided)}{!notLive && held.length > 0 && <Warn text={`${plural(held.length, "reading")} in this period did not count: ${heldWhy}. ${heldText} The readings below show each one.`} />}</>}
-              title={notLive ? undefined : !o || o.total === 0 ? ((v.signing?.signed ?? 0) > 0 ? "Not read yet." : "Nothing endorsed in this period.")
-                : decided === 0 ? (o.not_counted > 0 ? `Read, none counted: ${notCountedText(o)}.` : "Not read yet.")
-                : `${int(o.served)} of ${int(decided)} counted readings served${refText ? `; ${refText}` : ""}. Endorsed shards served, over served plus not served. A shard counts neither way when one of its requests failed on Tensile’s side or could not be made in time, an answer was rows of the blob that are not the validator’s own, a request Tensile still owed is not on record, or its reading was not made or reached no server; before ${FULL_READ_SINCE_WORDS}, so did a shard not asked for, or one that failed on a blob that was available.`} />
-            <PanelFig label="Not served" className={notLive ? "na" : (o?.broken ?? 0) > 0 ? "bad" : undefined}
-              value={<>{notLive ? "—" : int(o?.broken ?? 0)}{!notLive && prov > 0 && <Warn text={`${int(prov)} of these ${prov === 1 ? "is" : "are"} younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.`} />}</>}
-              title={`Endorsed shards whose own rows did not come back, at the reading and each time they were asked again. Before ${FULL_READ_SINCE_WORDS}: rows that did not come back from a blob that could not be reconstructed.`} />
-            <PanelFig label="In retention window" value={notLive || data.in_retention_window == null ? "—" : int(data.in_retention_window)}
-              className={notLive || data.in_retention_window == null ? "na" : undefined}
-              title={`Endorsed shards whose retention window has not ended. Each is read 10 minutes before its window ends: the result shows in the readings below at once, and enters the counts when the window closes.${!notLive && notCountedText(o) ? ` Not counted in the period: ${notCountedText(o)}.` : ""}`} />
-            <PanelFig label="Reachability" value={bonded && rw && rw.den > 0 ? pctOf(rw.num, rw.den) : "—"} className={bonded && rw && rw.den > 0 ? undefined : "na"}
-              title={!bonded ? "Out of the bonded list: not checked." : rw && rw.den > 0 ? `${int(rw.num)} of ${int(rw.den)} handshakes completed with the registered endpoint. Not signing uptime.` : "No handshake yet."} />
-            <PanelFig label="Throughput" value={v.serve_bytes_per_second == null ? "—" : unit(`${bytes(v.serve_bytes_per_second)}/s`)} className={v.serve_bytes_per_second == null ? "na" : undefined}
-              title={v.serve_bytes_per_second == null
-                ? (v.serve_throughput_sample > 0 ? `${int(v.serve_throughput_sample)} of the 3 large-shard downloads it is shown from.` : "No large-shard download yet.")
-                : `Median download speed over ${int(v.serve_throughput_sample)} shards of 2 MiB or more.`} />
-          </dl>
-        </section>
-      </div>
-
-      {/* every period at once, beside the endpoint as the newest handshake found it */}
-      <div className="vd-band">
-        <div className="lg-tw vd-per">
-          <table className="vd-pt">
-            <thead><tr><th className="p-n">Period</th><th>Served</th><th>Not served</th><th>Service rate</th></tr></thead>
-            <tbody>
-              {data.windows.map((w) => {
-                const wo = w.obligations, wd = wo.served + wo.broken;
-                const name = w.window.name;
-                const wp = provisionalNow(w.provisional_faults);
-                const wt = wd > 0 ? rateTone(wo.served, wd) : undefined;
-                return (
-                  <tr key={name} className={name === win ? "on" : undefined} onClick={() => setWin(name as typeof win)}
-                    title={name === "all" && data.rolled_up ? `Before ${data.rolled_up.raw_from}, from the daily rollup.` : undefined}>
-                    <td className="p-n"><button type="button" aria-pressed={name === win} onClick={() => setWin(name as typeof win)} title={`show the ${windowLabel(name)} period`}>{windowLabel(name)}</button></td>
-                    <td>{notLive ? "—" : int(wo.served)}</td>
-                    <td className={!notLive && wo.broken > 0 ? "bad" : undefined}>{notLive ? "—" : int(wo.broken)}{!notLive && wp > 0 && <Warn text={`${int(wp)} of these ${wp === 1 ? "is" : "are"} still settling: counted, and can still be withdrawn.`} />}</td>
-                    <td className={wt === "r-bad" ? "bad" : wt === "r-warn" ? "warn" : undefined}>{notLive || wd === 0 ? "—" : pctOf(wo.served, wd)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+      {/* what Tensile found when it read this validator's rows: the period's service rate and its fraction on the left,
+          what was not served, what waits for its check, reachability and throughput on the same line to the right, and
+          under them, across the frame, the latest checks whatever the period, one cell each */}
+      <section className="pan vd-svc" id="observed" aria-labelledby="vd-observed">
+        <div className="vp-h">
+          <h2 className="vp-t" id="vd-observed" title="Each blob is read once, 10 minutes before its retention window ends, and every validator that endorsed it is asked for its own rows. A validator is not served when its own rows did not come back, at the reading and each time it was asked again."><Eye />Observed by Tensile</h2>
         </div>
-        <EndpointBox v={v} c={data.last_endpoint_check} lastServed={lastServed} lastNotServed={lastNotServed} olderNotServed={(o?.broken ?? 0) > 0 ? notServedHref : null} />
-      </div>
+        <div className="vd-svc-top">
+          <div className={"vd-rate" + (rateCls ? " " + rateCls : "")} title={rateTitle}>
+            <p className="vd-lbl">Service rate <span className="vd-per">· {per}</span></p>
+            <p className="vd-rate-v">
+              {notLive || !o || decided === 0 ? "—" : pctOf(o.served, decided)}
+              {!notLive && held.length > 0 && <Warn text={`${plural(held.length, "reading")} in this period did not count: ${heldWhy}. ${heldText} The checks below show each one.`} />}
+            </p>
+            {!notLive && o && decided > 0 && <p className="vd-rate-s"><b>{int(o.served)}</b> / {int(decided)}</p>}
+            {/* why there is no rate, under the dash only when no check shows below to say otherwise; the dash's title
+                keeps the words */}
+            {!notLive && (!o || decided === 0) && cells.length === 0 && <p className="vd-rate-s">{noRate}</p>}
+          </div>
+          <div className="vd-more">
+            <span className={"vd-fi" + (!notLive && broken > 0 ? " bad" : "")} title={`Endorsed shards whose own rows did not come back, at the reading and each time they were asked again. Before ${FULL_READ_SINCE_WORDS}: rows that did not come back from a blob that could not be reconstructed.`}>
+              {notLive
+                ? <>Not served <b>—</b></>
+                : broken > 0
+                  ? <button type="button" className="vd-go" onClick={showNotServed} aria-label={`${int(broken)} not served: show them in the checks below`}>Not served <b>{int(broken)}</b></button>
+                  : <>Not served <b>0</b></>}
+              {!notLive && prov > 0 && <Warn text={`${int(prov)} of these ${prov === 1 ? "is" : "are"} younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.`} />}
+            </span>
+            <span className="vd-fi" title={`Endorsed shards whose retention window has not ended. Each is read 10 minutes before its window ends: the result shows in the checks below at once, and enters the counts when the window closes.${!notLive && notCountedText(o) ? ` Not counted in the period: ${notCountedText(o)}.` : ""}`}>
+              Awaiting check <b>{notLive || data.in_retention_window == null ? "—" : int(data.in_retention_window)}</b>
+            </span>
+            <span className="vd-fi" title={!bonded ? "Out of the bonded list: not checked." : reach ? `${int(reach.num)} of ${int(reach.den)} handshakes completed with the registered endpoint over the period. Not signing uptime.${v.last_unreachable_at ? ` Last failed handshake ${utcWord(v.last_unreachable_at)}.` : ""}` : "No handshake yet."}>
+              Reachability <b>{reach ? pctOf(reach.num, reach.den) : "—"}</b>
+            </span>
+            <span className="vd-fi" title={v.serve_bytes_per_second == null
+              ? (v.serve_throughput_sample > 0 ? `${int(v.serve_throughput_sample)} of the 3 large-shard downloads it is shown from.` : "No large-shard download yet.")
+              : `Median download speed over ${int(v.serve_throughput_sample)} shards of 2 MiB or more.`}>
+              Throughput <b>{v.serve_bytes_per_second == null ? "—" : unit(`${bytes(v.serve_bytes_per_second)}/s`)}</b>
+            </span>
+          </div>
+        </div>
+        {/* the latest checks whatever the period, across the frame: what they are and the key over the cells */}
+        <div className="vd-latest">
+          {cells.length > 0
+            ? <>
+              <div className="vd-cap">
+                <span className="vd-ttl">Latest {plural(cells.length, "check")} whatever the period, oldest to newest</span>
+                <ul className="vd-key" aria-label="key">
+                  {key.map((k) => <li key={k.word}>{k.sw.map((s) => <i key={s} className={"vd-c " + s} aria-hidden="true" />)}{k.word} <b>{int(k.n)}</b></li>)}
+                </ul>
+              </div>
+              <Strip key={addr} cells={cells} />
+            </>
+            : <p className="vd-none-yet">No check of this validator on record yet.</p>}
+        </div>
+      </section>
 
-      {/* the readings in the Blobs list's own rows: the whole row opens the blob, and what Tensile found sits in its
-          lane at the end */}
+      {/* what the chain records: one compact frame, calmer than Tensile's, so signing is never read as serving */}
+      <section className="vd-oc" id="chain" aria-labelledby="vd-chain">
+        <div className="vd-oc-h">
+          <h2 id="vd-chain">On chain <span className="per">({per})</span></h2>
+          <p>Read from the chain, nothing measured</p>
+        </div>
+        <dl className="vd-oc-l" style={{ "--n": timeouts > 0 ? 5 : 4 } as CSSProperties}>
+          <div title={endorse ? endorse.title : `No settlement assigned it rows. ${ENDORSE_TITLE}`}>
+            <dt>Endorsements</dt>
+            <dd className={endorse ? undefined : "na"}><b>{endorse ? pctOf(endorse.n, endorse.of) : "—"}</b>{endorse && <em>{int(endorse.n)} / {int(endorse.of)}</em>}</dd>
+          </div>
+          <div title={`${load ? `${int(load.promises)} endorsed blobs in the period. ` : ""}Row data of the shards this validator stored and endorsed over the period's settled blobs: blob_size / 4096 per row, padding included. The row proofs stored beside them are not counted.`}>
+            <dt>Shard data</dt>
+            <dd className={load && !notLive ? undefined : "na"}><b>{load && !notLive ? unit(bytes(load.bytes)) : "—"}</b></dd>
+          </div>
+          <div title="Shard data this validator must hold at this moment: endorsed blobs whose retention window has not ended.">
+            <dt>Held now</dt>
+            <dd className={load ? undefined : "na"}><b>{load ? unit(bytes(load.stored_bytes)) : "—"}</b></dd>
+          </div>
+          <div title="Rows the assignment gives this validator on the newest settled blob, of every settled blob, by stake. Rows follow stake, not blob size.">
+            <dt>Rows per blob</dt>
+            <dd className={load ? undefined : "na"}><b>{load ? int(load.rows_per_blob) : "—"}</b></dd>
+          </div>
+          {timeouts > 0 && <div title="MsgPaymentPromiseTimeout submitted by this validator’s operator account in the period.">
+            <dt>Timeouts reported</dt>
+            <dd><b>{int(timeouts)}</b></dd>
+          </div>}
+        </dl>
+      </section>
+
+      {/* the latest checks in the Blobs list's own rows, newest first, whatever the period: the whole row opens the blob,
+          and what Tensile found sits in its lane at the end */}
       <section id="evidence" className="listing lg-list vd-list">
         <div className="list-head">
-          <div className="tabs" role="group" aria-label="readings">
-            <button type="button" aria-pressed={!onlyNotServed} onClick={() => setOnlyNotServed(false)}>Readings{probes.length > 0 && <span className="n">{int(probes.length)}</span>}</button>
-            {probes.length > 0 && <button type="button" aria-pressed={onlyNotServed} onClick={() => setOnlyNotServed(true)}>Not served <span className="n">{int(notServedRows.length)}</span></button>}
+          <div className="pb-lh">
+            <h2 className="pb-th">Latest checks</h2>
+            {probes.length > 0 && (
+              <div className="seg pb-kinds" role="group" aria-label="filter">
+                <button type="button" aria-pressed={!onlyNotServed} onClick={() => setFilter(false)}>All{" "}<span className="n">{int(probes.length)}</span></button>
+                <button type="button" aria-pressed={onlyNotServed} onClick={() => setFilter(true)}>Not served{" "}<span className="n">{int(notServedRows.length)}</span></button>
+              </div>
+            )}
           </div>
-          <a className="vd-api" href={onlyNotServed ? notServedHref : `${API_BASE}/v1/probes?validator=${own}&limit=1000`}
-            title={data.recent_probes_truncated ? "The newest readings are here; every one is in the API." : "Every reading, in the API."}>Full history →</a>
         </div>
+        <p className="vd-scope">The newest checks, whatever the period selected. The period sets the figures above.
+          {onlyNotServed && broken > nsInPeriod && <> {int(broken)} not served in the period ({per}), {int(nsInPeriod)} of them among these checks. <a href={notServedHref}>Every one in the API →</a></>}</p>
         <div className="lg-tw">
           <table className="lg-t vr-t">
             <thead>
@@ -404,13 +643,11 @@ function Page() {
               </tr>
             </thead>
             <tbody>
-              {probes.length === 0 && <tr className="lg-empty"><td colSpan={6}>No reading of this validator on record yet.</td></tr>}
+              {probes.length === 0 && <tr className="lg-empty"><td colSpan={6}>No check of this validator on record yet.</td></tr>}
               {probes.length > 0 && shown.length === 0 && <tr className="lg-empty"><td colSpan={6}>
-                No not-served reading among the newest {int(probes.length)}.{(o?.broken ?? 0) > 0 && <> Older ones are <a href={notServedHref}>in the API →</a></>}</td></tr>}
-              {shown.map(({ p, g, tries, made, full, at: readAt }) => {
-                // the end reading's result shows as soon as it is in; the record takes it when the window closes, and
-                // only then can a not-served one be provisional
-                const open = endOfWindow(p.schedule_label) && Date.parse(p.scheduled_at) + 10 * 60_000 > now;
+                No not-served check among the newest {int(probes.length)}.{broken > 0 && <> Older ones are <a href={notServedHref}>in the API →</a></>}</td></tr>}
+              {visible.map(({ p, g, tries, made, full, at: readAt }) => {
+                const open = isOpen(p);
                 const r = resultOf(open ? { ...p, provisional: false } : p, g);
                 const href = `/blob/?hash=${p.promise_hash}`;
                 const t = Date.parse(readAt);
@@ -457,6 +694,14 @@ function Page() {
             </tbody>
           </table>
         </div>
+        {/* every reading, in the API */}
+        <div className="pager vd-pager">
+          <span className="count">{shown.length > 0 && <>{int(visible.length)} {visible.length === 1 ? "check" : "checks"}</>}</span>
+          <span className="ctl">
+            <a className="btn" href={onlyNotServed ? notServedHref : `${API_BASE}/v1/probes?validator=${own}&limit=1000`}
+              title={data.recent_probes_truncated ? "The newest readings are here; every one is in the API." : "Every reading, in the API."}>Full history →</a>
+          </span>
+        </div>
       </section>
     </>
   );
@@ -466,50 +711,3 @@ export default function ValidatorPage() {
   return <Suspense fallback={<p className="crumb" style={{ paddingTop: 22 }}>Loading…</p>}><Page /></Suspense>;
 }
 
-/**
- * The newest handshake with this validator's Fibre host, stage by stage:
- * what an operator setting up a server needs, and cannot see from their own
- * machine — whether the name resolves, the port opens, TLS completes and the
- * certificate carries this validator's key, and the error it stopped on —
- * with the last served, not served and failed handshake under it, in a framed
- * box of facts beside the periods.
- */
-function EndpointBox({ v, c, lastServed, lastNotServed, olderNotServed }: {
-  v: ValidatorDetail; c?: EndpointCheck; lastServed?: ValidatorReading; lastNotServed?: ValidatorReading; olderNotServed: string | null;
-}) {
-  const stages: [string, boolean, string][] = c ? [
-    ["DNS", c.dns_ok, ""],
-    ["TCP", c.tcp_ok, c.tcp_ok ? `${c.tcp_ms} ms` : ""],
-    ["TLS", c.tls_ok, c.tls_ok ? `${c.tls_ms} ms` : ""],
-    ["Identity", c.identity_ok, c.identity_ok ? "" : c.identity_reason ?? ""],
-  ] : [];
-  // stages after the first failure were never reached; say so rather than "failed"
-  const first = stages.findIndex(([, ok]) => !ok);
-  return (
-    <section className="pan vp vd-chk">
-      <div className="vp-h">
-        <h2 className="vp-t">Endpoint check</h2>
-        {c && <span className="vp-at" title={utcWord(c.at)}>{whenUTC(c.at)}</span>}
-      </div>
-      <dl className="vd-kv">
-        {c
-          ? <>
-            {c.host !== v.host && <><dt>Host</dt><dd><span className="mono">{c.host}</span></dd></>}
-            <dt>Handshake</dt>
-            <dd className="vd-stages">{stages.map(([name, ok, note], i) => {
-              const skip = first >= 0 && i > first;
-              return <span key={name} className={ok ? "ok" : skip ? "skip" : "bad"}>{name} <i aria-hidden="true">{ok ? "✓" : skip ? "–" : "✗"}</i>{note && <em>{note}</em>}</span>;
-            })}</dd>
-            {c.raw_error && <><dt>Error</dt><dd><code>{c.raw_error}</code></dd></>}
-          </>
-          : <><dt>Handshake</dt><dd><em>no check yet</em></dd></>}
-        <dt>Last served</dt><dd>{lastServed ? <b title={utcWord(lastServed.started_at)}>{whenUTC(lastServed.started_at)}</b> : <em>none among the readings below</em>}</dd>
-        <dt>Last not served</dt>
-        <dd>{lastNotServed
-          ? <><b title={utcWord(lastNotServed.started_at)}>{whenUTC(lastNotServed.started_at)}</b><Link className="mono" href={`/blob/?hash=${lastNotServed.promise_hash}`}>{lastNotServed.promise_hash.slice(0, 6)}…{lastNotServed.promise_hash.slice(-4)}</Link></>
-          : olderNotServed ? <><em>older than the readings below</em><a href={olderNotServed}>in the API →</a></> : <em>none on record</em>}</dd>
-        <dt>Last failed handshake</dt><dd>{v.last_unreachable_at ? <b title={utcWord(v.last_unreachable_at)}>{whenUTC(v.last_unreachable_at)}</b> : <em>none on record</em>}</dd>
-      </dl>
-    </section>
-  );
-}
