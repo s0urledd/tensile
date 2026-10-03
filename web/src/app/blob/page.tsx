@@ -2,7 +2,7 @@
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useApi, type Blob, type BlobReading, type Meta, int, bytes, tia, utcWord, hhmm, dur, shortMid, nsDisplay, notFound, pctOf, API_BASE,
+import { useApi, type Blob, type BlobReading, type Meta, int, bytes, tia, utcWord, hhmm, shortMid, nsDisplay, notFound, pctOf, API_BASE,
   endOfWindow, fullReading, ownGap, ownSide, sharedAnswer, rawErrorWords, foreignRows, asksAgain, attemptsOf, judged as judgedBy, askedTimes, FULL_READ_SINCE, FULL_READ_SINCE_WORDS } from "@/lib/api";
 import StatusLine from "@/components/StatusLine";
 import { Eye } from "@/components/Metrics";
@@ -357,7 +357,6 @@ function Page() {
   }, new Map<string, number>())]
     .map(([w, n]) => `${w} (${int(n)})`).join(", ");
   const stake = b.total_voting_power ? (b.attested_voting_power ?? 0) / b.total_voting_power : null;
-  const winLen = dur(b.settlement_time, b.must_serve_until);
   // the rows of a reading still in progress, or of one that counts, never of one the window closed on uncounted
   const shown = !!rc && rc.total_rows > 0 && (counted || (rc.status === "pending" && !over));
   // the endorsers an earlier reading that asked each of them once could not ask: Tensile's own gaps
@@ -390,8 +389,6 @@ function Page() {
       </>}
       <dt>Created</dt>
       <dd><b title={utcWord(b.creation_timestamp)}>{monthDayTime(b.creation_timestamp)}</b><em>UTC</em></dd>
-      <dt>Retention window</dt>
-      <dd><b>{winLen}</b><em>until {hhmm(b.must_serve_until)}{over ? " · over" : ""}</em></dd>
       {b.assignment_error && <><dt>Assignment</dt><dd>{b.assignment_error}</dd></>}
     </dl>
   );
