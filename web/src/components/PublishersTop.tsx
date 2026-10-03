@@ -21,9 +21,13 @@ import { Lbl, ShowPeriod, age, dayTime, holding } from "@/components/BlobsDeck";
  * held now.
  *
  * Every figure is one /v1/market answer, labelled with that answer's period:
- * while another period loads, the last answer stays whole and the top
- * changes in one step. The list's count is read only for a hover, and the
- * last blob on record only for a quiet period.
+ * while another period loads, the last answer stays whole, a step back, and
+ * the top changes in one step. The list's count is read only for a hover, and
+ * the last blob on record only for a quiet period.
+ *
+ * A period with no blob and no deposit folds the top to one band on the same
+ * grid: the 0, when the last blob settled and who posted it (with the shortest
+ * longer period that holds it), and the escrow held now.
  */
 
 const plural = (n: number, w: string) => `${int(n)} ${w}${n === 1 ? "" : "s"}`;
@@ -92,10 +96,46 @@ export default function PublishersTop({ m, win, list, all, now, pre, onWin }: {
   const held = m ? m.escrow_total_utia ?? m.escrow_held_utia : 0;
   const queued = m?.withdrawal_queue?.pending;
   const accounts = !!m && (m.escrow_total_utia == null || m.escrow_total_utia === m.escrow_held_utia);
+  // on hover: any queued withdrawal, and when the chain was read
+  const heldTitle = m ? [
+    queued && queued.count > 0 ? `${tia(queued.utia)} queued to withdraw${queued.next_available_at ? `, the next payable from ${utcWord(queued.next_available_at)}` : ""}` : "",
+    m.escrow_total_at ? `Read at ${utcWord(m.escrow_total_at)}` : "",
+  ].filter(Boolean).join("; ") || undefined : undefined;
   const z = (v: number) => (v === 0 ? " zero" : "");
+  // another period is on its way: what is shown stays, a step back, until it lands
+  const pending = !!m && m.window.name !== win;
+  const cls = (more: string) => `pan tp tp-p${more}${pending ? " is-pending" : ""}`;
+
+  // ---- a period with no blob and no deposit: one band, the 0, when the last blob was, and the escrow held now ----
+  if (m && quiet && m.deposits.count === 0) {
+    return (
+      <section className={cls(" is-quiet")} aria-label="The period's publishers" aria-busy={pending || undefined}>
+        <div className="tp-g">
+          <Lbl name="Publishers" per={per} />
+          <p className="tp-fig zero"><span title="Accounts that paid for at least one blob in the period.">0<span className="u"> active</span></span></p>
+        </div>
+        <div className="tp-g">
+          <h2 className="tp-lbl">Last blob</h2>
+          <p className="tp-fig tp-quiet">
+            {newest
+              ? <span className="say">settled {now ? <span className="age" title={dayTime(newest.last_settlement_at!)}>{age(now - newestAt)} ago</span> : <span className="wait">0 d 00 h ago</span>} by <Name p={newest} short /></span>
+              : <span className="say">{all ? "None on record" : <span className="wait">settled 0 d 00 h ago by 0000</span>}</span>}
+            {next && <ShowPeriod to={next} onWin={onWin} />}
+          </p>
+        </div>
+        <div className="tp-g">
+          <Lbl name="Escrow held" per="now" />
+          <p className="tp-fig">
+            <span title={heldTitle}>{unit(tia(held))}</span>
+            {accounts && <span className="beside"><b>{int(m.escrow_accounts)}</b> {m.escrow_accounts === 1 ? "account" : "accounts"}</span>}
+          </p>
+        </div>
+      </section>
+    );
+  }
 
   return (
-    <section className="pan tp tp-p" aria-label="The period's publishers">
+    <section className={cls("")} aria-label="The period's publishers" aria-busy={pending || undefined}>
       {/* Activity */}
       <div className="tp-g">
         <Lbl name="Publishers" per={per} />
@@ -170,11 +210,7 @@ export default function PublishersTop({ m, win, list, all, now, pre, onWin }: {
             <dt>Deposited <span className="per">· {per}</span></dt>
             <dd className={m && m.deposits.utia === 0 ? "zero" : undefined}>{m ? <>{unit(tia(m.deposits.utia))}{m.deposits.count > 0 && <em>{plural(m.deposits.count, "deposit")}</em>}</> : ph("00,000 TIA")}</dd>
           </div>
-          {/* on hover: any queued withdrawal, and when the chain was read */}
-          <div title={m ? [
-            queued && queued.count > 0 ? `${tia(queued.utia)} queued to withdraw${queued.next_available_at ? `, the next payable from ${utcWord(queued.next_available_at)}` : ""}` : "",
-            m.escrow_total_at ? `Read at ${utcWord(m.escrow_total_at)}` : "",
-          ].filter(Boolean).join("; ") || undefined : undefined}>
+          <div title={heldTitle}>
             <dt>Escrow held <span className="per">· now</span></dt>
             <dd>{m ? <>{unit(tia(held))}{accounts && <em>{plural(m.escrow_accounts, "account")}</em>}</> : ph("00,000 TIA")}</dd>
           </div>

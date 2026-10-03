@@ -141,10 +141,10 @@ function Page() {
 
       {error && <div className="note hold"><span className="label">Observer</span><p>Cannot reach the observer API: {error}. Nothing below is current.</p></div>}
 
-      <section id="list" className="listing pl-list">
-        {/* the period's three ledgers: activity, blob size with the largest publisher's part, fees and escrow */}
-        <PublishersTop m={pre ? null : m} win={win} list={list} all={all} now={now} pre={pre} onWin={setWin} />
+      {/* the period's three ledgers: activity, blob size with the largest publisher's part, fees and escrow */}
+      <PublishersTop m={pre ? null : m} win={win} list={list} all={all} now={now} pre={pre} onWin={setWin} />
 
+      <section id="list" className="listing pl-list">
         {/* the search over the table's right, above the escrow lane */}
         <div className="lg-bar pl-bar">
           <span className="pl-find">

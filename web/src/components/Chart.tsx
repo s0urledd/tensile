@@ -217,13 +217,17 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
   // The axis names: every bucket in full if they fit; else every bucket in
   // its short form (the first, and the first of a month, in full); else every
   // k-th bucket in full, the smallest k that fits.
+  // Bare: every k-th bucket in full, at least 80px apart centre to centre,
+  // counted from the tallest bar (the earliest on a tie), so it is always
+  // named and the axis keeps one even step through it.
   const full = rows.map((r) => r.label ?? r.x);
   const canShort = n > 0 && rows.every((r, i) => !!r.short && full[i].endsWith(r.short));
   const month = (i: number) => full[i].slice(0, full[i].length - (rows[i].short ?? "").length);
-  const plan = (k: number, short: boolean): Map<number, string> | null => {
+  const peak = bare && hasData ? totals.indexOf(max) : -1;
+  const plan = (k: number, short: boolean, from = 0): Map<number, string> | null => {
     const out = new Map<number, string>();
     let prev = -1;
-    for (let i = 0; i < n; i += k) {
+    for (let i = from; i < n; i += k) {
       const s = !short || prev < 0 || month(i) !== month(prev) ? full[i] : (rows[i].short as string);
       if (prev >= 0 && slot * (i - prev) < (tw(out.get(prev) as string) + tw(s)) / 2 + (short ? SHORT_GAP : LABEL_GAP)) return null;
       out.set(i, s);
@@ -231,20 +235,14 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
     }
     return out;
   };
-  let names = plan(1, false) ?? (canShort ? plan(1, true) : null);
-  // every how many buckets a name stands
-  let every = 1;
-  for (let k = 2; !names && k <= n; k++) { names = plan(k, false); every = k; }
-  names = names ?? new Map<number, string>();
-  // bare: the tallest bar (the earliest on a tie) is always named, in full; the names that would touch it give way, and
-  // so do those nearer to it than the names are to each other, so the axis keeps its even step
-  const peak = bare && hasData ? totals.indexOf(max) : -1;
-  if (peak >= 0) {
-    const named = names;
-    const pw = tw(full[peak]);
-    named.forEach((s, i) => { if (i !== peak && (Math.abs(i - peak) < every || Math.abs(i - peak) * slot < (tw(s) + pw) / 2 + 6)) named.delete(i); });
-    named.set(peak, full[peak]);
+  let names: Map<number, string> | null = null;
+  if (bare) {
+    for (let k = Math.max(1, Math.ceil(80 / slot)); !names && k <= n; k++) names = plan(k, false, peak >= 0 ? peak % k : 0);
+  } else {
+    names = plan(1, false) ?? (canShort ? plan(1, true) : null);
+    for (let k = 2; !names && k <= n; k++) names = plan(k, false);
   }
+  names = names ?? new Map<number, string>();
   // the hovered bucket is named in full; the names that would touch it make room
   const onW = on !== null ? tw(full[on], 600) : 0;
   const showName = (i: number) => i === on || (names.has(i) && (on === null || Math.abs(i - on) * slot >= (tw(names.get(i) as string) + onW) / 2 + 6));

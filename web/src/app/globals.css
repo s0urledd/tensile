@@ -1457,7 +1457,9 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .tp-b { display: grid; grid-template-columns: 280px minmax(0, 1fr); }
 .tp-b .tp-lead { min-width: 0; padding: 20px 24px; }
 .tp-b .tp-plot { min-width: 0; padding: 20px 24px; border-left: 1px solid var(--border); }
-.tp-p { display: grid; grid-template-columns: 232px minmax(0, 1fr) minmax(0, 1fr); column-gap: 48px; margin: 0 0 28px; padding: 20px 24px; }
+.tp-p { display: grid; grid-template-columns: 232px minmax(0, 1fr) minmax(0, 1fr); column-gap: 48px; margin: 18px 0 28px; padding: 20px 24px; }
+/* the list under it keeps the top's own margin, so both tops stand 18 px under the head */
+.tp-p + .pl-list { margin-top: 0; }
 .tp-g { min-width: 0; }
 
 /* the label names the figure and carries the period of the answer shown */
@@ -1484,7 +1486,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .tp-rows dd em { margin-left: 8px; font-style: normal; font-size: var(--t-cell); font-weight: 400; color: var(--text-3); }
 .tp-rows dd.zero { color: var(--text-3); }
 .tp-rows button.warn { vertical-align: -4px; }
-.tp-p .tp-g:nth-child(3) .tp-rows { --lc: 120px; }
+.tp-p .tp-g:nth-child(3) .tp-rows { --lc: 136px; }
 
 /* the largest publisher's part: a bar with no track, its rest a dot at least, never reading as a finished one */
 /* its own block, so the bar keeps its margin under the hairline */
@@ -1505,12 +1507,18 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .tp-lab .nm { max-width: 170px; overflow: hidden; text-overflow: ellipsis; font-size: var(--t-cell); color: var(--text); }
 .tp-lab:hover .nm { color: var(--accent-ink); }
 
-/* a quiet period: when the last blob settled, and the period that holds it */
-.tp-quiet { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 14px; line-height: 20px; color: var(--text-2); }
-.tp-quiet p { margin: 0; }
-.tp-b.is-quiet .tp-quiet { min-height: 42px; margin-top: 22px; }
+/* a quiet period: one band, a label over one line, every line on the figures' baseline. Under "Last blob", when it
+   settled (and on Publishers who posted it), then the period that holds it, a short step after the words */
+.tp-quiet { white-space: normal; }
+.tp-quiet .say { font-family: var(--sans); font-size: 14px; line-height: 1; font-weight: 400; letter-spacing: 0; color: var(--text-2); white-space: nowrap; }
+.tp-quiet .tp-go { margin-left: 16px; white-space: nowrap; }
+.tp-quiet .tp-who, .tp-quiet .tp-lab { vertical-align: -3px; }
 .tp-last { margin: 0; height: 28px; font-size: 14px; line-height: 28px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tp-quiet .age, .tp-last .age { font-weight: 500; color: var(--text); }
+
+/* another period on its way: what is shown steps back until it lands (only when the wait is long enough to see) */
+.tp :is(.tp-fig, .tp-rows, .tp-share, .tp-plot svg) { transition: opacity 120ms ease-out; }
+.tp.is-pending :is(.tp-fig, .tp-rows, .tp-share, .tp-plot svg) { opacity: .5; transition-delay: 150ms; }
 .tp-go { display: inline-flex; flex: none; align-items: center; gap: 6px; padding: 0; border: 0; background: none; font: 500 var(--t-cell)/20px var(--sans); color: var(--accent-ink); cursor: pointer; }
 .tp-go:hover { text-decoration: underline; text-underline-offset: 3px; }
 .tp-go svg { transition: transform var(--dur) ease-out; }
@@ -1525,6 +1533,8 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 @media (min-width: 961px) and (max-width: 1199px) {
   .tp-b { grid-template-columns: 240px minmax(0, 1fr); }
   .tp-b .tp-lead { padding: 20px; }
+  /* half the Publishers gutter after the divider, so what follows it starts where the second Publishers ledger does */
+  .tp-b .tp-plot { padding-left: 16px; }
   .tp-b .tp-rows, .tp-p .tp-g:first-child .tp-rows { --lc: 92px; }
   .tp-p { grid-template-columns: 200px minmax(0, 1fr) minmax(0, 1fr); column-gap: 32px; }
   /* "on 3 days" moves into the Settlements hover */
@@ -1539,9 +1549,9 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .tp-b .tp-lead > .tp-rule { display: none; }
   .tp-b .tp-lead > .tp-rows { grid-area: 1 / 2 / 3 / 3; }
   .tp-b .tp-plot { padding: 16px 24px 20px; border-left: 0; border-top: 1px solid var(--border); }
-  .tp-b.is-quiet .tp-lead { display: block; padding-bottom: 0; }
-  .tp-b.is-quiet .tp-plot { padding-top: 10px; border-top: 0; }
-  .tp-b.is-quiet .tp-quiet { flex-direction: column; align-items: flex-start; gap: 8px; min-height: 0; margin-top: 0; }
+  .tp-b.is-quiet { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
+  .tp-b.is-quiet .tp-lead { display: block; }
+  .tp-b.is-quiet .tp-plot { padding: 20px 24px 20px 0; border-top: 0; }
 
   .tp-p { grid-template-columns: minmax(0, 1fr); padding: 4px 24px; }
   .tp-p .tp-g { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); grid-template-rows: auto 1fr; column-gap: 24px; padding: 16px 0; }
@@ -1550,6 +1560,11 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .tp-p .tp-g > .tp-fig { grid-area: 2 / 1; }
   .tp-p .tp-g > .tp-rule { display: none; }
   .tp-p .tp-g > .tp-rows, .tp-p .tp-g > .tp-share { grid-area: 1 / 2 / 3 / 3; align-self: center; }
+  /* quiet: the 0 and the escrow side by side, the last blob under them */
+  .tp-p.is-quiet { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 24px; }
+  .tp-p.is-quiet .tp-g { display: block; }
+  .tp-p.is-quiet .tp-g:nth-child(2) { grid-area: 2 / 1 / 3 / 3; }
+  .tp-p.is-quiet .tp-g:nth-child(3) { grid-area: 1 / 2; border-top: 0; }
 }
 /* a phone (to be settled once the desktop is): each ledger as on a desktop, one under the other */
 @media (max-width: 720px) {
@@ -1560,18 +1575,22 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .tp-b .tp-lead { display: block; padding: 18px 16px 0; }
   .tp-b .tp-lead > .tp-rule { display: block; }
   .tp-b .tp-plot { padding: 16px; border-top: 0; }
+  .tp-b.is-quiet { grid-template-columns: minmax(0, 1fr); }
   .tp-b.is-quiet .tp-lead { padding-bottom: 0; }
-  .tp-b.is-quiet .tp-plot { padding-top: 10px; }
+  .tp-b.is-quiet .tp-plot { padding: 16px 16px 18px; }
   .tp-p { margin-bottom: 24px; padding: 18px 16px; }
   .tp-p .tp-g { display: block; padding: 0; }
   .tp-p .tp-g + .tp-g { margin-top: 24px; border-top: 0; }
   .tp-p .tp-g > .tp-rule { display: block; }
+  .tp-p.is-quiet { grid-template-columns: minmax(0, 1fr); }
+  .tp-p.is-quiet .tp-g:nth-child(n) { grid-area: auto; }
+  .tp-p.is-quiet .tp-g + .tp-g { margin-top: 20px; }
 }
 @media (max-width: 400px) {
   .lg-head .seg button, .lg-head .seg button:first-child { padding: 0 10px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .tp-go svg { transition: none; }
+  .tp-go svg, .tp :is(.tp-fig, .tp-rows, .tp-share, .tp-plot svg) { transition: none; }
 }
 
 /* =============================================================================

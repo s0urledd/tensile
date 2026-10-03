@@ -17,8 +17,8 @@ import Warn from "@/components/Warn";
  * so the figure and the chart read as one piece.
  *
  * Everything in it is one /v1/market answer: while another period loads, the
- * last answer stays whole under its own period, and the top changes in one
- * step when the new one lands.
+ * last answer stays whole under its own period, a step back, and the top
+ * changes in one step when the new one lands.
  *
  * A period with no settlement folds the top to one band: the 0, when the last
  * blob settled (from the newest rows of /v1/blobs, which the page passes in),
@@ -135,24 +135,29 @@ export default function BlobsDeck({ win, onWin, market, newest, skew }: {
   const last = newest?.[0] ?? null;
   const lastAt = last ? Date.parse(last.settlement_time) : 0;
 
+  // another period is on its way: what is shown stays, a step back, until it lands
+  const pending = !!m && m.window.name !== win;
+  const cls = (more: string) => `pan tp tp-b${more}${pending ? " is-pending" : ""}`;
+
   // ---- a period with no settlement: the 0, when the last one was, and the period that holds it ----
   if (m && m.settlements === 0) {
     const next = last && now ? holding(shownWin, lastAt, now) : null;
     return (
-      <section className="pan tp tp-b is-quiet" aria-label="The period's settlements">
+      <section className={cls(" is-quiet")} aria-label="The period's settlements" aria-busy={pending || undefined}>
         <div className="tp-lead">
           <Lbl name="Settlements" per={per} />
           <p className="tp-fig zero">0</p>
         </div>
         <div className="tp-plot">
-          <div className="tp-quiet">
-            {last
-              ? <p>Last blob settled {now
+          <h2 className="tp-lbl">Last blob</h2>
+          <p className="tp-fig tp-quiet">
+            <span className="say">{last
+              ? <>settled {now
                 ? <Link className="age" href={`/blob/?hash=${last.promise_hash}`} title={`#${int(last.settlement_height)} · ${dayTime(last.settlement_time)}`}>{age(now - lastAt)} ago</Link>
-                : <span className="wait">0 d 00 h ago</span>}</p>
-              : <p>{newest ? "No blob on record" : <span className="wait">Last blob settled 0 d 00 h ago</span>}</p>}
+                : <span className="wait">0 d 00 h ago</span>}</>
+              : newest ? "None on record" : <span className="wait">settled 0 d 00 h ago</span>}</span>
             {next && <ShowPeriod to={next} onWin={onWin} />}
-          </div>
+          </p>
         </div>
       </section>
     );
@@ -162,7 +167,7 @@ export default function BlobsDeck({ win, onWin, market, newest, skew }: {
   const series = m ? buckets(m, shownWin) : [];
   const unitWord = shownWin === "24h" ? "hour" : "day";
   return (
-    <section className="pan tp tp-b" aria-label="The period's settlements">
+    <section className={cls("")} aria-label="The period's settlements" aria-busy={pending || undefined}>
       <div className="tp-lead">
         <Lbl name="Settlements" per={per} />
         <p className="tp-fig">
