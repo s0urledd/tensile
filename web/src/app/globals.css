@@ -71,6 +71,8 @@
   --seg-on-ink: var(--accent-ink);
   --seg-on-shadow: 0 1px 2px rgb(16 24 32 / .14), 0 0 0 1px rgb(var(--ink) / .05);
   --hold-ink: #8a5a00;
+  /* Celestia's purple, for its mark in the network chip; lighter on the dark ground */
+  --celestia: #7b2bf9;
   --obs-bg: rgb(var(--ink) / .035);
   --obs-edge: inset 0 0 0 1px rgb(var(--ink) / .04);
   --r-panel: 18px;
@@ -126,6 +128,7 @@
   --seg-on-ink: #8ae0e8;
   --seg-on-shadow: inset 0 0 0 1px rgb(51 179 191 / .5), 0 0 18px -6px rgb(51 179 191 / .7);
   --hold-ink: #d3a24a;
+  --celestia: #a57cff;
   --obs-bg: rgb(255 255 255 / .022);
   --obs-edge: inset 0 0 0 1px rgb(255 255 255 / .05);
   --text: rgb(var(--ink) / .92);
@@ -1344,6 +1347,18 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .bt-dot { flex: none; width: 6px; height: 6px; margin-right: 1px; border-radius: 50%; background: var(--neutral); opacity: .8; }
 .bt-dot.ok { background: var(--ok); } .bt-dot.hold { background: var(--hold); } .bt-dot.none { background: var(--neutral); }
 .bt-dot.beat { animation: bt-breathe 1.8s ease-in-out 1; }
+/* the block: a small cube in the muted grey that lights in the accent once on each new block; amber when the newest
+   block is over thirty seconds old, grey when the API does not answer */
+.bt-ic { flex: none; display: inline-flex; color: var(--text-3); }
+.bt-ic.hold { color: var(--hold); }
+.bt-ic.none { color: var(--neutral); }
+.bt-ic.beat { animation: bt-light 1.8s ease-out 1; }
+@keyframes bt-light { 0%, 25% { color: var(--accent); } 100% { color: var(--text-3); } }
+/* the network chip: Celestia's mark, with a small dot on it only while the observer is not known healthy */
+.net-mark { position: relative; display: inline-flex; flex: none; color: var(--celestia); }
+.net-st { position: absolute; right: -2px; bottom: -2px; width: 7px; height: 7px; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--paper); }
+.net-st.hold { background: var(--hold); }
+.net-st.none { background: var(--neutral); }
 @keyframes bt-breathe { 0% { opacity: .8; box-shadow: 0 0 0 0 transparent; } 30% { opacity: 1; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); } 100% { opacity: .8; box-shadow: 0 0 0 0 transparent; } }
 .blocktick .soon { color: var(--text-3); border-left: 1px solid var(--line); padding-left: 8px; }
 
@@ -1414,7 +1429,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .cm-land path, .cm-badge, .cm-pin, .cm-tools button, .rb-c, .ov-links a span { transition: none; }
   .cm-pop, .cm-ev { animation: none; }
   .cm-pin.live .cm-badge::after { animation: none; opacity: .7; transform: scale(1.35); }
-  .cp-strip svg, .rb-glow, .bt-dot.beat, .rn-roll .rn-in, .rn-roll .rn-out { animation: none; }
+  .cp-strip svg, .rb-glow, .bt-dot.beat, .bt-ic.beat, .rn-roll .rn-in, .rn-roll .rn-out { animation: none; }
   .rn-roll .rn-out { display: none; }
 }
 
