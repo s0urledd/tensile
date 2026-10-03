@@ -2142,7 +2142,7 @@ button.warn:focus-visible { outline-offset: 0; }
 .vd-sub a { max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--accent-ink); }
 
 /* the endpoint, where it is hosted and the newest check: a label column of its own, hairlines between */
-.vd-facts { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-content: center; margin: 0; padding: 12px 24px; font-size: var(--t-cell); line-height: 18px; color: var(--text-2); }
+.vd-facts { display: grid; grid-template-columns: 124px minmax(0, 1fr); align-content: center; margin: 0; padding: 12px 24px; font-size: var(--t-cell); line-height: 18px; color: var(--text-2); }
 .vd-facts dt, .vd-facts dd { padding: 10px 0; border-top: 1px solid var(--line-soft); }
 .vd-facts dt:first-of-type, .vd-facts dt:first-of-type + dd { border-top: 0; }
 .vd-facts dt { padding-right: 12px; color: var(--text-3); white-space: nowrap; }
@@ -2187,6 +2187,25 @@ button.warn:focus-visible { outline-offset: 0; }
 /* opened to be read and copied: the whole address, breaking anywhere where the frame is narrow, the copy mark after it */
 .vd-addrs .mono { min-width: 0; overflow-wrap: anywhere; }
 .vd-feed { position: absolute; top: 12px; right: 24px; font-size: var(--t-cell); line-height: 18px; font-weight: 500; color: var(--accent-ink); }
+.vd-facts .vd-addr { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
+.vd-facts .vd-addr .mono { min-width: 0; overflow-wrap: anywhere; }
+
+/* one frame: what Tensile observed on the left, what the chain records on the right, their headings on one line */
+.vd-stat { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 330px); margin-top: 16px; }
+.vd-stat > .vd-svc { margin-top: 0; grid-template-columns: 276px minmax(0, 1fr); column-gap: 24px; }
+.vd-stat .vd-svc-top { gap: 12px; padding: 12px 0 18px 24px; }
+.vd-stat .vd-rate-v { margin-top: 6px; font-size: 32px; line-height: 38px; }
+.vd-stat .vd-more { grid-template-columns: repeat(2, max-content); gap: 2px 18px; }
+.vd-stat .vd-latest { padding: 12px 24px 18px 0; }
+.vd-stat .vd-cap { margin-bottom: 8px; }
+.vd-stat .vd-strip { gap: 3px; max-width: 560px; }
+.vd-stat > .vd-oc { display: block; margin-top: 0; border: 0; border-left: 1px solid var(--border); border-radius: 0; background: none; }
+.vd-stat .vd-oc-h { display: block; padding: 18px 24px 0; }
+.vd-stat .vd-oc-l { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 20px; padding: 16px 24px 18px; }
+@media (max-width: 960px) {
+  .vd-stat { grid-template-columns: minmax(0, 1fr); }
+  .vd-stat > .vd-oc { border-left: 0; border-top: 1px solid var(--border); }
+}
 
 /* ---- what Tensile found: the rate and the period's other figures on one line, the latest checks across the frame ---- */
 /* one surface with no rule inside it: the name; the rate and its fraction on the left, what was not served, what waits

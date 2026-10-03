@@ -195,11 +195,6 @@ function Host({ s }: { s: string }) {
   return <span className="mono">{parts.map((part, i) => <Fragment key={i}>{i > 0 && <wbr />}{part}{i < parts.length - 1 && "."}</Fragment>)}</span>;
 }
 
-/** the addresses' mark: a chevron that turns when they show */
-const Chevron = () => (
-  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="m4.5 6.5 3.5 3.5 3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
-);
-
 
 /**
  * One cell of the latest-checks strip: one reading of a blob, its requests together, worded and toned as its row in
@@ -479,12 +474,11 @@ function Page() {
                   {diag.docs && <a href={diag.docs.href} rel="noopener noreferrer" target="_blank">{diag.docs.word} →</a>}
                 </p>
               )}
-              {(v.provider_since || site) && (
-                <p className="vd-sub">
-                  {v.provider_since && <span title={`When this validator first appeared as a Fibre provider, whatever endpoint it had then: ${utcWord(v.provider_since)}`}>Fibre provider since <b>{shortDate(v.provider_since)}</b></span>}
-                  {site && <a href={site} title={site} rel="nofollow noopener noreferrer" target="_blank">{site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</a>}
-                </p>
-              )}
+              <p className="vd-sub">
+                {v.provider_since && <span title={`When this validator first appeared as a Fibre provider, whatever endpoint it had then: ${utcWord(v.provider_since)}`}>Fibre provider since <b>{shortDate(v.provider_since)}</b></span>}
+                {site && <a href={site} title={site} rel="nofollow noopener noreferrer" target="_blank">{site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</a>}
+                <a href={`${API_BASE}/v1/validators/${own}/feed.atom`} type="application/atom+xml" title="Endpoint changes of this validator, as an Atom feed">Atom feed</a>
+              </p>
             </div>
           </div>
           <dl className="vd-facts">
@@ -495,6 +489,7 @@ function Page() {
                 : <><dt>Endpoint</dt><dd className="vd-none" title={noEndpoint && diag ? diag.text : undefined}><em>none registered</em>
                   {noEndpoint && diag?.docs && <a href={diag.docs.href} rel="noopener noreferrer" target="_blank">{diag.docs.word} →</a>}</dd></>}
             {v.host && v.hosting && <><dt>Hosting</dt><dd><HostingFact h={v.hosting} /></dd></>}
+            {v.operator_address && <><dt>Valoper address</dt><dd className="vd-addr"><span className="mono">{v.operator_address}</span><CopyMark text={v.operator_address} label="the valoper address" /></dd></>}
             {(v.host || c) && <>
               <dt>Last check</dt>
               <dd className="vd-chk">{c
@@ -512,16 +507,6 @@ function Page() {
             </>}
           </dl>
         </div>
-        <div className="vd-pf-foot">
-          <details className="vd-addrs">
-            <summary><Chevron />Addresses</summary>
-            <dl>
-              {v.operator_address && <><dt>Operator</dt><dd className="vd-addr"><span className="mono">{v.operator_address}</span><CopyMark text={v.operator_address} label="the operator address" /></dd></>}
-              <dt>Consensus</dt><dd className="vd-addr" title={v.cons_address ? `hex ${v.address}` : undefined}><span className="mono">{cons}</span><CopyMark text={cons} label="the consensus address" /></dd>
-            </dl>
-          </details>
-          <a className="vd-feed" href={`${API_BASE}/v1/validators/${own}/feed.atom`} type="application/atom+xml" title="Endpoint changes of this validator, as an Atom feed">Atom feed</a>
-        </div>
       </section>
 
       <PreLive meta={meta} />
@@ -530,7 +515,8 @@ function Page() {
       {/* what Tensile found when it read this validator's rows: the period's service rate and its fraction on the left,
           what was not served, what waits for its check, reachability and throughput on the same line to the right, and
           under them, across the frame, the latest checks whatever the period, one cell each */}
-      <section className="pan vd-svc" id="observed" aria-labelledby="vd-observed">
+      <div className="pan vd-stat">
+      <section className="vd-svc" id="observed" aria-labelledby="vd-observed">
         <div className="vp-h">
           <h2 className="vp-t" id="vd-observed" title="Each blob is read once, 10 minutes before its retention window ends, and every validator that endorsed it is asked for its own rows. A validator is not served when its own rows did not come back, at the reading and each time it was asked again."><Eye />Observed by Tensile</h2>
         </div>
@@ -613,6 +599,7 @@ function Page() {
           </div>}
         </dl>
       </section>
+      </div>
 
       {/* the latest checks in the Blobs list's own rows, newest first, whatever the period: the whole row opens the blob,
           and what Tensile found sits in its lane at the end */}
