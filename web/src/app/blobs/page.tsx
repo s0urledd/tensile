@@ -1,6 +1,6 @@
 "use client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import PreLive from "@/components/PreLive";
 import { useApi, type Meta, type Market, type Blob, type NamespaceRow, type Publisher, type Tip, int, bytes, nsDisplay, shortHex, shortMid, utcWord } from "@/lib/api";
 import Pager, { usePage } from "@/components/Pager";
@@ -56,7 +56,7 @@ const FORMATS = (
 
 /**
  * The one search for a blob: a transaction hash, a blob ID, a commitment or a promise hash, pasted or typed whole,
- * with no choice of which. One match opens the blob; several show here as the list of them, until the search is
+ * with no choice of which. What it finds shows here as the list of it, one row or several, until the search is
  * cleared (value, with label for what it matched).
  */
 function FindBlob({ value, label, upper, onFind }: { value: string; label: string; upper: boolean; onFind: (h: string) => void }) {
@@ -93,7 +93,7 @@ function FindBlob({ value, label, upper, onFind }: { value: string; label: strin
           onChange={(e) => { setQ(e.target.value); setBad(false); if (whole(e.target.value)) go(e.target.value); pasted.current = false; }}
           onKeyDown={(e) => { pasted.current = false; if (e.key === "Enter") go(q); }} />
       </label>
-      <Info label="Search formats">{FORMATS}<p>Hex in either case, with or without 0x. One match opens the blob; several show here as a list. Typed hex starting 00 waits for Enter, since it may be a blob ID in hex.</p></Info>
+      <Info label="Search formats">{FORMATS}<p>Hex in either case, with or without 0x. What matches shows in the list. Typed hex starting 00 waits for Enter, since it may be a blob ID in hex.</p></Info>
     </span>
   );
 }
@@ -183,10 +183,9 @@ function Page() {
   const [pub, setPubRaw] = useState((params.get("publisher") ?? "").trim().toLowerCase());
   // the address reads a raw + as a space, which base64 never holds: each goes back before blobKey trims a last one away
   const [found, setFoundRaw] = useState(findText((params.get("blob") ?? "").replace(/ /g, "+")));
-  // the search came from the field, not the address: its one match opens as a page of its own, its several or none
-  // go into the address once they are known (so a Back from the blob it opened returns to the list, not to it)
+  // the search came from the field, not the address: what it found goes into the address once it is known, so a link
+  // opens on the same list
   const typed = useRef(false);
-  const router = useRouter();
   // a new page opens at the list's top when the reader had scrolled past it
   const setPage = useCallback((p: number) => {
     setPageRaw(p);
@@ -246,26 +245,20 @@ function Page() {
     }))
     : null;
   // The search: 64 hex characters asked as a promise hash, a commitment and a transaction hash, a blob ID as its
-  // commitment, read once. One match opens the blob; the list shows several, or says none matched. One match opens only
-  // when every lookup answered: one that failed might have found more, so the list shows it and says so.
+  // commitment, read once. The list shows what it found, one row or several, or says none matched; a lookup that failed
+  // might have found more, so the list says so.
   const key = blobKey(found);
   const hit = useFind(key, { limit: SIZE });
-  const one = hit && !hit.error && !hit.partial && hit.total === 1 ? hit.rows[0].promise_hash : "";
   useEffect(() => {
     if (!hit) return;
-    if (one) {
-      const href = `/blob/?hash=${one}`;
-      if (typed.current) router.push(href); else router.replace(href);
-    } else if (typed.current) {
-      // several, or none: the address keeps the search, so a link opens on the same list
-      setFound(found);
-    }
+    // the address keeps the search, so a link opens on the same list
+    if (typed.current) setFound(found);
     typed.current = false;
   }, [hit]); // eslint-disable-line react-hooks/exhaustive-deps
   const tx = !!hit && hit.by.length === 1 && hit.by[0] === "tx";
   const foundLabel = key?.kind === "id" ? "Blob ID" : !hit?.by.length || hit.by.length > 1 ? "Search" : tx ? "Tx" : hit.by[0] === "commitment" ? "Commitment" : "Blob";
   const foundFeed: Feed | null = key
-    ? { path: `find:${found}`, rows: one ? [] : hit?.rows ?? [], total: hit?.rows.length ?? 0, loaded: !!hit && !one && !hit.error, error: hit?.error ?? null, refused: false, lastNewAt: 0 }
+    ? { path: `find:${found}`, rows: hit?.rows ?? [], total: hit?.rows.length ?? 0, loaded: !!hit && !hit.error, error: hit?.error ?? null, refused: false, lastNewAt: 0 }
     : null;
   // nothing matched: Tensile has not indexed it yet, or the transaction carries no blob; never that the chain refused it
   const none = key && hit && !hit.error && hit.total === 0 && (key.kind === "id"

@@ -1873,6 +1873,8 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 /* ---- whose account it is ---- */
 .pb-mast { padding: 34px 0 0; min-width: 0; }
 .pb-kind { margin: 0 0 9px; font-size: var(--t-cell); font-weight: 500; color: var(--text-2); }
+/* the blob page names itself plainly; the full promise hash with its copy button is right under it */
+.bd-title { margin: 0 0 8px; font-size: 24px; font-weight: 500; line-height: 30px; letter-spacing: -.01em; color: var(--text); }
 /* the chip at title scale: the 30 px mark, the prefix quietly, the last four in the mono face */
 .pb-id { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .pb-id .ident { width: 30px; height: 30px; }
