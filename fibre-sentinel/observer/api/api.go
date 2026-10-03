@@ -92,6 +92,9 @@ type Server struct {
 	// dataDir holds the status files the processes write (internal/status);
 	// empty means liveness is not reported.
 	dataDir string
+	// tipRPC is the CometBFT RPC /v1/tip asks for the newest block (WithTipRPC);
+	// empty means the scanner's status file answers.
+	tipRPC string
 	// snapshotDir is where the snapshots are kept across restarts: this
 	// when set (WithSnapshotDir), <dataDir>/snapshots otherwise, nowhere
 	// when both are empty.
@@ -156,6 +159,9 @@ func WithPublisherLabels(m map[string]PublisherLabel) Option {
 
 // WithDataDir tells the server where the processes' status files live.
 func WithDataDir(dir string) Option { return func(s *Server) { s.dataDir = dir } }
+
+// WithTipRPC has /v1/tip ask this CometBFT RPC for the newest block.
+func WithTipRPC(url string) Option { return func(s *Server) { s.tipRPC = url } }
 
 // WithSnapshotDir keeps the snapshots in dir rather than under the data
 // directory: observer-api -snapshot-dir, for a warm-up into a directory the

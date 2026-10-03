@@ -77,3 +77,42 @@ func TestTipFallsBackToTheCollector(t *testing.T) {
 		t.Errorf("tip %+v", b)
 	}
 }
+
+// With a node to ask, the ticker reads the node's newest committed block, not
+// the scanner's file; a node that does not answer leaves the file to answer.
+func TestTipAsksTheNode(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := os.MkdirAll(filepath.Join(dir, "status"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"component":"scanner","updated_at":"2026-10-03T17:00:01Z","height":1351480,"detail":{"chain_tip":1351480,"tip_block_time":"2026-10-03T17:00:00Z"}}`
+	if err := os.WriteFile(filepath.Join(dir, "status", "scanner.json"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":-1,"result":{"sync_info":{"latest_block_height":"1351482","latest_block_time":"2026-10-03T17:00:05.943Z"}}}`))
+	}))
+	defer node.Close()
+	srv := api.NewWithVantage(st, api.VantageInfo{Name: "test"}, nil, api.WithDataDir(dir), api.WithTipRPC(node.URL))
+	defer srv.Close()
+	b, _ := getTip(t, srv)
+	want := time.Date(2026, 10, 3, 17, 0, 5, 943000000, time.UTC)
+	if b.Height != 1351482 || b.BlockTime == nil || !b.BlockTime.Equal(want) {
+		t.Errorf("tip from the node %+v", b)
+	}
+
+	down := api.NewWithVantage(st, api.VantageInfo{Name: "test"}, nil, api.WithDataDir(dir), api.WithTipRPC("http://127.0.0.1:1"))
+	defer down.Close()
+	if b, _ := getTip(t, down); b.Height != 1351480 {
+		t.Errorf("a node that does not answer should leave the scanner's file to answer: %+v", b)
+	}
+}

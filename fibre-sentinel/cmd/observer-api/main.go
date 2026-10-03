@@ -24,6 +24,7 @@ func main() {
 		listen  = flag.String("listen", "127.0.0.1:8080", "HTTP listen address")
 		check   = flag.String("check", "", "health check: GET this URL, exit 0 on HTTP 200 (for container healthchecks; the image has no curl)")
 		vantage = flag.String("vantage", "local", "vantage name: whose rows the figures count, the one /v1/meta marks primary, and the snapshot files' owner")
+		tipRPC  = flag.String("tip-rpc", os.Getenv("RPC"), "CometBFT RPC the block ticker (/v1/tip) asks for the newest block; default $RPC, the scanner's node in the unit's env file; empty: the scanner's status file")
 		// Where this observer watches from. Every reachability observation is
 		// a statement about a network path and half that path is ours. Both
 		// are operator-declared, and the API no longer publishes them: they
@@ -113,7 +114,7 @@ func main() {
 	if len(reg) > 0 {
 		log.Printf("publisher labels: %d from %s", len(reg), *labels)
 	}
-	opts := []api.Option{api.WithPublisherLabels(reg), api.WithDataDir(*dataDir), api.WithSnapshotDir(*snapDir)}
+	opts := []api.Option{api.WithPublisherLabels(reg), api.WithDataDir(*dataDir), api.WithSnapshotDir(*snapDir), api.WithTipRPC(*tipRPC)}
 	if *warmOnly {
 		// The live API keeps serving meanwhile; this only reads. Every
 		// snapshot depends on the vantage (its heartbeats) and the market
