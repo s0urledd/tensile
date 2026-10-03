@@ -2190,21 +2190,51 @@ button.warn:focus-visible { outline-offset: 0; }
 .vd-facts .vd-addr { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
 .vd-facts .vd-addr .mono { min-width: 0; overflow-wrap: anywhere; }
 
-/* one frame: what Tensile observed on the left, what the chain records on the right, their headings on one line */
-.vd-stat { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 330px); margin-top: 16px; }
-.vd-stat > .vd-svc { margin-top: 0; grid-template-columns: 276px minmax(0, 1fr); column-gap: 24px; }
-.vd-stat .vd-svc-top { gap: 12px; padding: 12px 0 18px 24px; }
+/* one frame: what Tensile observed on the left, sized to its content (the rate, a 32px gap and the strip at its fixed
+   size, 736px, in 24px of padding a side); what the chain records in the rest, after a rule; their headings on one line
+   and both columns as tall as the taller */
+.vd-stat { display: grid; grid-template-columns: 784px minmax(0, 1fr); margin-top: 16px; }
+.vd-stat > .vd-svc { display: block; margin-top: 0; padding: 16px 24px; }
+.vd-stat .vp-h { padding: 0; }
+/* the rate and the strip side by side, both from the top, 12px under the heading */
+.vd-stat .vd-svc-top { display: grid; grid-template-columns: 232px 472px; column-gap: 32px; align-items: start; margin-top: 12px; padding: 0; }
 .vd-stat .vd-rate-v { margin-top: 6px; font-size: 32px; line-height: 38px; }
-.vd-stat .vd-more { grid-template-columns: repeat(2, max-content); gap: 2px 18px; }
-.vd-stat .vd-latest { padding: 12px 24px 18px 0; }
-.vd-stat .vd-cap { margin-bottom: 8px; }
-.vd-stat .vd-strip { gap: 3px; max-width: 560px; }
-.vd-stat > .vd-oc { display: block; margin-top: 0; border: 0; border-left: 1px solid var(--border); border-radius: 0; background: none; }
-.vd-stat .vd-oc-h { display: block; padding: 18px 24px 0; }
-.vd-stat .vd-oc-l { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 20px; padding: 16px 24px 18px; }
+.vd-stat .vd-rate-s { margin-top: 4px; font-size: 12.5px; line-height: 18px; white-space: nowrap; }
+.vd-stat .vd-latest { grid-area: auto; align-self: start; width: 472px; padding: 0; }
+/* how many and the key on one line over the cells, the key at the strip's right end */
+.vd-stat .vd-cap { justify-content: space-between; gap: 4px 16px; margin-bottom: 8px; }
+/* a fixed strip: 25 cells of 16px a line with 3px between them, two lines, 472 x 35 whatever the count; fewer checks
+   keep the same pitch from the first cell */
+.vd-stat .vd-strip { grid-template-columns: repeat(25, 16px); grid-template-rows: repeat(2, 16px); gap: 3px; justify-content: start; max-width: none; }
+/* the oldest check's time under the first cell, the newest's and its age ending under the first line's last cell */
+.vd-ends { display: flex; justify-content: space-between; gap: 16px; width: calc(var(--n1, 25) * 19px - 3px); min-width: max-content; margin: 6px 0 0; font-family: var(--font-table); font-size: var(--t-small); line-height: 16px; color: var(--text-3); font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
+/* the period's other figures in one line across the column, over a hairline */
+.vd-stat .vd-more { display: flex; flex-wrap: wrap; column-gap: 28px; row-gap: 2px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft); line-height: 20px; }
+.vd-fi > em { margin-left: 6px; font-style: normal; font-family: var(--font-table); line-height: 1; color: var(--text-3); font-variant-numeric: tabular-nums lining-nums; }
+.vd-stat .vd-fi b { line-height: 1; }
+/* the chain's column: its name, then a label column and the values from one edge, one rule between the period's figures
+   and what holds now */
+.vd-stat > .vd-oc { display: block; margin-top: 0; padding: 16px 24px; border: 0; border-left: 1px solid var(--border); border-radius: 0; background: none; }
+.vd-stat > .vd-oc h2 { margin: 0; font-size: var(--t-cell); font-weight: 600; line-height: 18px; letter-spacing: 0; color: var(--text); white-space: nowrap; }
+.vd-stat .vd-oc-l { display: grid; grid-template-columns: minmax(120px, max-content) minmax(0, 1fr); gap: 0; margin: 9px 0 0; padding: 0; }
+.vd-stat .vd-oc-l > div { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; grid-template-rows: 24px; align-items: baseline; }
+.vd-stat .vd-oc-l dt { padding-right: 12px; font-size: var(--t-cell); line-height: 24px; overflow: visible; }
+.vd-stat .vd-oc-l dd { margin: 0; line-height: 24px; }
+.vd-stat .vd-oc-l b { font-size: 14px; line-height: 24px; letter-spacing: 0; }
+.vd-stat .vd-oc-l em { font-size: var(--t-cell); line-height: 1; }
+.vd-stat .vd-oc-l b .u { line-height: 1; }
+.vd-stat .vd-oc-l .now { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line-soft); }
 @media (max-width: 960px) {
   .vd-stat { grid-template-columns: minmax(0, 1fr); }
   .vd-stat > .vd-oc { border-left: 0; border-top: 1px solid var(--border); }
+  .vd-stat .vd-svc-top { grid-template-columns: minmax(0, 1fr); row-gap: 16px; }
+  .vd-stat .vd-latest { width: auto; max-width: 472px; }
+  .vd-stat .vd-strip { grid-template-columns: repeat(25, minmax(0, 1fr)); grid-template-rows: none; }
+  .vd-stat .vd-ends { width: auto; }
+}
+@container (max-width: 420px) { .vd-stat .vd-strip { grid-template-columns: repeat(10, minmax(0, 1fr)); grid-template-rows: none; max-width: 256px; } }
+@media (max-width: 720px) {
+  .vd-stat > .vd-svc, .vd-stat > .vd-oc { padding: 16px; }
 }
 
 /* ---- what Tensile found: the rate and the period's other figures on one line, the latest checks across the frame ---- */
