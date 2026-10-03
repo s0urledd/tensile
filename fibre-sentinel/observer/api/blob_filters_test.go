@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"net/http/httptest"
@@ -48,7 +49,7 @@ func filterFixture(t *testing.T) (ts *httptest.Server, owner, twice string) {
 	} {
 		pub := scan.Publication{
 			SchemaVersion: scan.AttestationSchemaVersion, PromiseHash: p.hash, SettlementHeight: int64(100 + i), SettlementTime: at.Add(time.Duration(i) * time.Minute),
-			SettlementTxHash: "tx" + p.hash, MustServeUntil: at.Add(time.Hour), RecordedAt: at, Signer: samplePublisher,
+			SettlementTxHash: txOf(p.hash), MustServeUntil: at.Add(time.Hour), RecordedAt: at, Signer: samplePublisher,
 			Promise: scan.PromiseFields{ChainID: "t", Height: int64(99 + i), Commitment: p.commitment, CreationTimestamp: at, BlobSize: 262144,
 				SignerPublicKey: hex.EncodeToString(p.key.Key)},
 			Assignment: scan.AssignmentTable{
@@ -79,11 +80,23 @@ func filterFixture(t *testing.T) (ts *httptest.Server, owner, twice string) {
 	return ts, owner, twice
 }
 
+// txOf is the settlement transaction hash the fixture gives a promise: 64 hex
+// characters, in lower case as the scanner writes it, except p4's, in upper
+// case as sentinel-synth writes it.
+func txOf(hash string) string {
+	h := sha256.Sum256([]byte("tx" + hash))
+	if hash == "p4" {
+		return strings.ToUpper(hex.EncodeToString(h[:]))
+	}
+	return hex.EncodeToString(h[:])
+}
+
 type filteredPage struct {
 	Blobs []struct {
-		PromiseHash string `json:"promise_hash"`
-		Commitment  string `json:"commitment"`
-		Publisher   string `json:"publisher"`
+		PromiseHash      string `json:"promise_hash"`
+		Commitment       string `json:"commitment"`
+		Publisher        string `json:"publisher"`
+		SettlementTxHash string `json:"settlement_tx_hash"`
 	} `json:"blobs"`
 	Total             int64  `json:"total"`
 	Truncated         bool   `json:"truncated"`
@@ -91,6 +104,7 @@ type filteredPage struct {
 	NextBeforeTxIndex *int64 `json:"next_before_tx_index"`
 	Commitment        string `json:"commitment"`
 	Publisher         string `json:"publisher"`
+	Tx                string `json:"tx"`
 }
 
 func (p filteredPage) hashes() string {
@@ -134,6 +148,80 @@ func TestBlobsByCommitment(t *testing.T) {
 	}
 	if _, ok := plain["publisher"]; ok {
 		t.Error("an unfiltered page echoes a publisher")
+	}
+}
+
+// A developer who submitted a blob holds the settlement's transaction hash,
+// as the client returns it: ?tx= finds the blob by it in either case, with
+// or without 0x, and says what it filtered on. Every blob row, on the list
+// and on the blob's own route, carries its hash in lower case, whatever case
+// the store holds it in.
+func TestBlobsByTx(t *testing.T) {
+	ts, _, twice := filterFixture(t)
+	p3 := txOf("p3")
+	for _, q := range []string{p3, strings.ToUpper(p3), "0x" + p3, "0X" + strings.ToUpper(p3)} {
+		var page filteredPage
+		if code := get(t, ts, "/v1/blobs?tx="+q, &page); code != 200 {
+			t.Fatalf("tx %s: %d", q, code)
+		}
+		if page.hashes() != "p3" || page.Total != 1 || page.Truncated || page.Tx != p3 || page.Blobs[0].SettlementTxHash != p3 {
+			t.Fatalf("tx %s: %s, total %d, echo %q, row's hash %q", q, page.hashes(), page.Total, page.Tx, page.Blobs[0].SettlementTxHash)
+		}
+	}
+	// a hash the store holds in upper case is found by either and published in lower
+	p4 := strings.ToLower(txOf("p4"))
+	for _, q := range []string{p4, txOf("p4")} {
+		var page filteredPage
+		if code := get(t, ts, "/v1/blobs?tx="+q, &page); code != 200 || page.hashes() != "p4" || page.Blobs[0].SettlementTxHash != p4 {
+			t.Fatalf("tx stored in upper case, asked as %s: %d %+v", q, code, page)
+		}
+	}
+	var none filteredPage
+	if code := get(t, ts, "/v1/blobs?tx="+strings.Repeat("00", 32), &none); code != 200 || len(none.Blobs) != 0 || none.Total != 0 {
+		t.Fatalf("unknown tx: %d %+v", code, none)
+	}
+	for _, bad := range []string{"zz", "txp1", strings.Repeat("ab", 31), strings.Repeat("ab", 33), "0x" + strings.Repeat("zz", 32)} {
+		if code := get(t, ts, "/v1/blobs?tx="+bad, nil); code != 400 {
+			t.Errorf("tx %q: %d, want 400", bad, code)
+		}
+	}
+	// the filters combine: p1's transaction did settle the commitment paid
+	// for twice, p3's did not
+	var both, neither filteredPage
+	if code := get(t, ts, "/v1/blobs?tx="+txOf("p1")+"&commitment="+twice, &both); code != 200 || both.hashes() != "p1" {
+		t.Fatalf("p1's tx and its commitment: %d %s", code, both.hashes())
+	}
+	if code := get(t, ts, "/v1/blobs?tx="+p3+"&commitment="+twice, &neither); code != 200 || len(neither.Blobs) != 0 {
+		t.Fatalf("p3's tx and another commitment: %d %s", code, neither.hashes())
+	}
+	// the commitment is read the same way: 0x and upper case
+	var commit filteredPage
+	if code := get(t, ts, "/v1/blobs?commitment=0X"+strings.ToUpper(twice), &commit); code != 200 || commit.hashes() != "p2,p1" || commit.Commitment != twice {
+		t.Fatalf("0x commitment: %d %s echo %q", code, commit.hashes(), commit.Commitment)
+	}
+	// every row carries its own transaction hash
+	var all filteredPage
+	get(t, ts, "/v1/blobs", &all)
+	if len(all.Blobs) != 4 {
+		t.Fatalf("unfiltered: %s", all.hashes())
+	}
+	for _, b := range all.Blobs {
+		if want := strings.ToLower(txOf(b.PromiseHash)); b.SettlementTxHash != want {
+			t.Errorf("%s carries tx %q, want %q", b.PromiseHash, b.SettlementTxHash, want)
+		}
+	}
+	var one struct {
+		Blob struct {
+			SettlementTxHash string `json:"settlement_tx_hash"`
+		} `json:"blob"`
+	}
+	if code := get(t, ts, "/v1/blobs/p1", &one); code != 200 || one.Blob.SettlementTxHash != txOf("p1") {
+		t.Fatalf("the blob's own route: %d, tx %q, want %q", code, one.Blob.SettlementTxHash, txOf("p1"))
+	}
+	var plain map[string]json.RawMessage
+	get(t, ts, "/v1/blobs", &plain)
+	if _, ok := plain["tx"]; ok {
+		t.Error("an unfiltered page echoes a tx")
 	}
 }
 

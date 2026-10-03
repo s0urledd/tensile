@@ -3174,7 +3174,12 @@ type blobRow struct {
 	// SettlementTxIndex is the other half of this route's cursor, published
 	// so a caller paging with before_height/before_tx_index does not have to
 	// guess it.
-	SettlementTxIndex  int    `json:"settlement_tx_index"`
+	SettlementTxIndex int `json:"settlement_tx_index"`
+	// SettlementTxHash is the hash of the transaction that carried the
+	// MsgPayForFibre, in lower-case hex: the hash the submitting client
+	// returns (the chain's tools print it in upper case), and what ?tx=
+	// looks the blob up by.
+	SettlementTxHash   string `json:"settlement_tx_hash"`
 	SettlementTime     string `json:"settlement_time"`
 	CreationTimestamp  string `json:"creation_timestamp"`
 	MustServeUntil     string `json:"must_serve_until"`
@@ -3255,19 +3260,25 @@ func (s *Server) blobRows(ctx context.Context, where string, limit int, args ...
 	return s.blobRowsAt(ctx, where, limit, 0, args...)
 }
 
-// blobRowsAt is blobRows from the offset-th row of the same order.
-func (s *Server) blobRowsAt(ctx context.Context, where string, limit, offset int, args ...any) ([]blobRow, error) {
-	q := `SELECT promise_hash, commitment, namespace, blob_size, signer, signer_public_key, settlement_height, settlement_tx_index, settlement_time, creation_timestamp,
+// blobRowsSQL is the statement blobRowsAt runs: the rows where selects,
+// newest first, one more than limit (see probeRows; the caller trims and
+// reports it), from the offset-th.
+func blobRowsSQL(where string, limit, offset int) string {
+	q := `SELECT promise_hash, commitment, namespace, blob_size, signer, signer_public_key, settlement_height, settlement_tx_index, settlement_tx_hash, settlement_time, creation_timestamp,
 		must_serve_until, validators_with_rows, sigma_rows, distinct_rows, assignment_error, attested_voting_power, total_voting_power, attested_with_rows FROM publications`
 	if where != "" {
 		q += " WHERE " + where
 	}
-	// One more than asked: see probeRows. The caller trims and reports it.
 	q += " ORDER BY settlement_height DESC, settlement_tx_index DESC LIMIT " + strconv.Itoa(limit+1)
 	if offset > 0 {
 		q += " OFFSET " + strconv.Itoa(offset)
 	}
-	rows, err := s.st.DB().QueryContext(ctx, q, args...)
+	return q
+}
+
+// blobRowsAt is blobRows from the offset-th row of the same order.
+func (s *Server) blobRowsAt(ctx context.Context, where string, limit, offset int, args ...any) ([]blobRow, error) {
+	rows, err := s.st.DB().QueryContext(ctx, blobRowsSQL(where, limit, offset), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -3276,10 +3287,12 @@ func (s *Server) blobRowsAt(ctx context.Context, where string, limit, offset int
 	for rows.Next() {
 		var b blobRow
 		var key sql.NullString
-		if err := rows.Scan(&b.PromiseHash, &b.Commitment, &b.Namespace, &b.BlobSize, &b.Signer, &key, &b.SettlementHeight, &b.SettlementTxIndex, &b.SettlementTime,
+		if err := rows.Scan(&b.PromiseHash, &b.Commitment, &b.Namespace, &b.BlobSize, &b.Signer, &key, &b.SettlementHeight, &b.SettlementTxIndex, &b.SettlementTxHash, &b.SettlementTime,
 			&b.CreationTimestamp, &b.MustServeUntil, &b.ValidatorsWithRows, &b.SigmaRows, &b.DistinctRows, &b.AssignmentError, &b.AttestedPower, &b.TotalPower, &b.AttestedWithRows); err != nil {
 			return nil, err
 		}
+		// the scanner writes it in lower case; a store sentinel-synth filled, in upper
+		b.SettlementTxHash = strings.ToLower(b.SettlementTxHash)
 		// Who paid, from the promise's own key. A row whose key cannot be
 		// read keeps the submitter, the only account on record for it.
 		b.Publisher = b.Signer
@@ -3620,6 +3633,31 @@ func (s *Server) reconstructableCount(ctx context.Context, win Window) (reconstr
 // not ask for one, and the size the startup warm-up fills the verdict cache to.
 const blobPageDefault = 50
 
+// The commitment and tx filters of /v1/blobs, kept as constants so the plan
+// test reads the conditions the route runs. blobByTxSQL takes the hash
+// twice: in lower case, as the scanner writes it, and in upper, as
+// sentinel-synth does; each is a seek of publications_tx.
+const (
+	blobByCommitmentSQL = `commitment = ?`
+	blobByTxSQL         = `settlement_tx_hash IN (?, ?)`
+)
+
+// hash32 reads a 32-byte hash as a caller may write it: 64 hex characters
+// in either case, with or without 0x. It answers the hash in lower case, ""
+// for an empty parameter, and ok false for anything else.
+func hash32(s string) (hash string, ok bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", true
+	}
+	s = strings.ToLower(s)
+	s = strings.TrimPrefix(s, "0x")
+	if b, err := hex.DecodeString(s); err != nil || len(b) != 32 {
+		return "", false
+	}
+	return s, true
+}
+
 func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 	limit, err := parseLimit(r, blobPageDefault, 500)
 	if err != nil {
@@ -3633,21 +3671,29 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 		conds, args = append(conds, `namespace = ?`), append(args, strings.ToLower(ns))
 	}
 	// commitment: the blobs with this commitment, which a DA team holds where
-	// it does not hold the promise hash. One blob can be paid for and
-	// settled more than once, so this is a list.
-	//
-	// Nothing indexes publications.commitment yet, so the page and its count
-	// each walk every publication: 45-65 ms at 8,600 publications, and they
-	// are never pruned. The index (and the collector's lookup of a
-	// commitment's other promises, which walks the same way) wants the next
-	// schema change, and has to land before mainnet volumes.
-	commitment := strings.ToLower(q.Get("commitment"))
+	// it does not hold the promise hash (the client's blob ID is the
+	// commitment behind a version byte). One blob can be paid for and
+	// settled more than once, so this is a list. publications_commitment
+	// seeks it (migration 26).
+	commitment, ok := hash32(q.Get("commitment"))
+	if !ok {
+		writeErr(w, 400, "commitment must be 64 hex characters")
+		return
+	}
 	if commitment != "" {
-		if b, err := hex.DecodeString(commitment); err != nil || len(b) != 32 {
-			writeErr(w, 400, "commitment must be 64 hex characters")
-			return
-		}
-		conds, args = append(conds, `commitment = ?`), append(args, commitment)
+		conds, args = append(conds, blobByCommitmentSQL), append(args, commitment)
+	}
+	// tx: the blob a settlement transaction settled, by the hash the client
+	// that submitted it returns, in either case and with or without 0x. The
+	// scanner records one publication per transaction; this is a list like
+	// the other filters all the same. publications_tx seeks it.
+	tx, ok := hash32(q.Get("tx"))
+	if !ok {
+		writeErr(w, 400, "tx must be 64 hex characters")
+		return
+	}
+	if tx != "" {
+		conds, args = append(conds, blobByTxSQL), append(args, tx, strings.ToUpper(tx))
 	}
 	// publisher: the blobs this account paid for, as each blob row names its
 	// publisher (paidBy). Bech32 may be written in upper case; the store holds
@@ -3725,6 +3771,9 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 	// the other filters are echoed when they were asked for
 	if commitment != "" {
 		out["commitment"] = commitment
+	}
+	if tx != "" {
+		out["tx"] = tx
 	}
 	if publisher != "" {
 		out["publisher"] = publisher

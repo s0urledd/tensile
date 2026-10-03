@@ -467,6 +467,8 @@ export type Blob = {
   settlement_height: number;
   /** the other half of the list's cursor, with settlement_height */
   settlement_tx_index: number;
+  /** the transaction that carried the MsgPayForFibre, in lower-case hex; absent from an API before it was published */
+  settlement_tx_hash?: string;
   settlement_time: string;
   creation_timestamp: string;
   must_serve_until: string;

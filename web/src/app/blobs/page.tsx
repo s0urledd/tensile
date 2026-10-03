@@ -1,5 +1,5 @@
 "use client";
-import { Suspense, useCallback, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import PreLive from "@/components/PreLive";
 import { useApi, type Meta, type Market, type Blob, type NamespaceRow, type Publisher, type Tip, int, bytes, nsDisplay, shortHex, utcWord } from "@/lib/api";
@@ -10,6 +10,7 @@ import Ledger, { useLedger, type Feed } from "@/components/Ledger";
 import Picker, { type Choice } from "@/components/Picker";
 import Ident from "@/components/Ident";
 import { nsHex, NsName, NS_ICON } from "@/components/Namespace";
+import { blobKey, keyText } from "@/lib/blobkey";
 
 /** rows per page of the blob list */
 const SIZE = 25;
@@ -17,34 +18,62 @@ const SIZE = 25;
 /** the last page /v1/blobs serves: its offset stops at 100,000 */
 const MAX_PAGE = Math.floor(100000 / SIZE) + 1;
 
+/**
+ * What the search takes, in words that fit its field: about 270 px of 13 px text, where the field leaves 283 px or more
+ * (360 px and wider), and 230 px on a narrower phone, where it leaves 243.
+ */
+const FIND_PLACEHOLDER = "Promise hash, commitment, blob ID or tx hash";
+const FIND_PLACEHOLDER_NARROW = "Promise hash, commitment, blob ID, tx";
+const FIND_NARROW = "(max-width: 359px)";
+function useFindPlaceholder(): string {
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const q = window.matchMedia(FIND_NARROW);
+    const on = () => setNarrow(q.matches);
+    on();
+    q.addEventListener("change", on);
+    return () => q.removeEventListener("change", on);
+  }, []);
+  return narrow ? FIND_PLACEHOLDER_NARROW : FIND_PLACEHOLDER;
+}
+
 const FIND_ICON = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.75" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="m10.5 10.5 3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>;
-/** a promise hash or a commitment as typed or pasted: 64 hex characters, with or without 0x */
-const hash64 = (s: string) => { const h = s.trim().toLowerCase().replace(/^0x/, ""); return /^[0-9a-f]{64}$/.test(h) ? h : null; };
+/** what the search and the address keep of a blob identifier (blobKey), or "" for anything that is none */
+const findText = (s: string | null) => { const k = blobKey(s); return k ? keyText(k) : ""; };
 
 /**
- * Find a blob: a promise hash or a commitment, pasted or typed whole. The list then shows only the blobs it names
- * (one for a promise hash; every settlement of a commitment), until the search is cleared.
+ * Find a blob: a promise hash, a commitment, the hash of the transaction that settled it, or the client's blob ID,
+ * pasted or typed whole. The list then shows only the blobs it names (one for a promise hash or a transaction; every
+ * settlement of a commitment or a blob ID), until the search is cleared.
  */
 function FindBlob({ value, onFind }: { value: string; onFind: (h: string) => void }) {
   const [q, setQ] = useState("");
   const [bad, setBad] = useState(false);
+  const placeholder = useFindPlaceholder();
   if (value) {
+    const id = blobKey(value)?.kind === "id";
     return (
       <span className="lg-pick on lg-find">
-        <span className="lg-chip">{FIND_ICON}<span className="k">Blob</span><span className="v mono">{value.slice(0, 8)}…{value.slice(-6)}</span></span>
+        <span className="lg-chip" title={value}>{FIND_ICON}<span className="k">{id ? "Blob ID" : "Blob"}</span><span className="v mono">{value.slice(0, 8)}…{value.slice(-6)}</span></span>
         <button type="button" className="lg-x" aria-label="Show every blob" title="Show every blob" onClick={() => onFind("")}>
           <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true"><path d="m1.5 1.5 5 5m0-5-5 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
         </button>
       </span>
     );
   }
-  const go = (s: string) => { const h = hash64(s); if (h) { setQ(""); setBad(false); onFind(h); } else setBad(!!s.trim()); };
+  const go = (s: string) => { const v = findText(s); if (v) { setQ(""); setBad(false); onFind(v); } else setBad(!!s.trim()); };
+  // a paste finds at once; hex being typed waits for its 64th character (or Enter), so 44 characters of it are never
+  // read as a blob ID in base64 on the way
+  const whole = (s: string) => {
+    const k = blobKey(s), t = s.trim();
+    return !!k && (k.kind === "hash" || /[^0-9a-f]/i.test(t) || t.length >= 66);
+  };
   return (
-    <label className={`lg-findbox${bad ? " bad" : ""}`} title={bad ? "A promise hash or a commitment is 64 hex characters" : undefined}>
+    <label className={`lg-findbox${bad ? " bad" : ""}`} title={bad ? "A promise hash, a commitment or a transaction hash is 64 hex characters; a blob ID is the client's, in base64" : undefined}>
       {FIND_ICON}
-      <input type="search" placeholder="Find a blob · promise hash or commitment" aria-label="Find a blob by its promise hash or its commitment" value={q}
+      <input type="search" placeholder={placeholder} aria-label="Find a blob by its promise hash, commitment, blob ID or transaction hash" value={q}
         spellCheck={false} autoComplete="off"
-        onChange={(e) => { setQ(e.target.value); setBad(false); if (hash64(e.target.value)) go(e.target.value); }}
+        onChange={(e) => { setQ(e.target.value); setBad(false); if (whole(e.target.value)) go(e.target.value); }}
         onKeyDown={(e) => { if (e.key === "Enter") go(q); }} />
     </label>
   );
@@ -105,7 +134,7 @@ function Page() {
   const [tab, setTab] = useState<"blobs" | "namespaces">("blobs");
   const [ns, setNsRaw] = useState((params.get("namespace") ?? "").trim().toLowerCase());
   const [pub, setPubRaw] = useState((params.get("publisher") ?? "").trim().toLowerCase());
-  const [found, setFoundRaw] = useState(hash64(params.get("blob") ?? "") ?? "");
+  const [found, setFoundRaw] = useState(findText(params.get("blob")));
   // a new page opens at the list's top when the reader had scrolled past it
   const setPage = useCallback((p: number) => {
     setPageRaw(p);
@@ -160,12 +189,24 @@ function Page() {
       find: `${p.publisher} ${p.label ?? ""}`.toLowerCase(),
     }))
     : null;
-  // a blob found by its promise hash, or the settlements of a commitment: the list shows only those, read once
-  const byHash = useApi<{ blob: Blob }>(found ? `/v1/blobs/${found}` : null, 0);
-  const byCommit = useApi<{ blobs: Blob[]; total: number }>(found ? `/v1/blobs?commitment=${found}&limit=${SIZE}` : null, 0);
-  const foundRows = found ? [...(byHash.data?.blob ? [byHash.data.blob] : []), ...(byCommit.data?.blobs ?? [])].filter((b, i, a) => a.findIndex((x) => x.promise_hash === b.promise_hash) === i) : [];
-  const foundFeed: Feed | null = found
-    ? { path: `find:${found}`, rows: foundRows, total: foundRows.length, loaded: (!!byHash.data || !!byHash.error) && (!!byCommit.data || !!byCommit.error), error: null, refused: false, lastNewAt: 0 }
+  // A blob found by its promise hash, the blob a transaction settled, or the settlements of a commitment: the list shows
+  // only those, read once. 64 hex characters are asked as all three; a blob ID is its commitment.
+  const key = blobKey(found);
+  const hex = key?.kind === "hash" ? key.hex : "";
+  const byHash = useApi<{ blob: Blob }>(hex ? `/v1/blobs/${hex}` : null, 0);
+  const byCommit = useApi<{ blobs: Blob[]; total: number; commitment?: string }>(key ? `/v1/blobs?commitment=${key.hex}&limit=${SIZE}` : null, 0);
+  const byTx = useApi<{ blobs: Blob[]; tx?: string }>(hex ? `/v1/blobs?tx=${hex}&limit=${SIZE}` : null, 0);
+  // an answer counts only when it says it filtered on this hash: an API from before ?tx= ignores it and answers the
+  // newest blobs, and a search just changed still holds the last one's answer
+  const commitRows = key && byCommit.data?.commitment === key.hex ? byCommit.data.blobs : [];
+  const txRows = hex && byTx.data?.tx === hex ? byTx.data.blobs : [];
+  const hashRow = hex && byHash.data?.blob?.promise_hash === hex ? [byHash.data.blob] : [];
+  const foundRows = key ? [...hashRow, ...commitRows, ...txRows].filter((b, i, a) => a.findIndex((x) => x.promise_hash === b.promise_hash) === i) : [];
+  // in once each answers this search (an API from before ?tx= answers without saying what it filtered on), or fails
+  const loaded = (byCommit.data?.commitment === key?.hex || (!!byCommit.error && !byCommit.data))
+    && (!hex || ((!!hashRow.length || !!byHash.error) && (byTx.data?.tx === hex || (!!byTx.data && byTx.data.tx === undefined) || !!byTx.error)));
+  const foundFeed: Feed | null = key
+    ? { path: `find:${found}`, rows: foundRows, total: foundRows.length, loaded, error: null, refused: false, lastNewAt: 0 }
     : null;
 
   const nsN = nss.data?.namespaces.length ?? 0;

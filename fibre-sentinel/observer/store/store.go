@@ -37,7 +37,7 @@ var schemaSQL string
 // an upgraded one — baseline, then every migration — so the two end up
 // identical in shape and the migration code is exercised by every test run
 // rather than only on upgrade day.
-const SchemaVersion = 25
+const SchemaVersion = 26
 
 // migration is one numbered step above the baseline. The statements run in a
 // single transaction: SQLite supports transactional DDL, so a failed step
@@ -728,6 +728,23 @@ var migrations = []migration{
 			   AND started_at >= '` + TS(probe.FullReadSince) + `' AND outcome = 'PARTIAL'
 			   AND raw_json <> '' AND json_valid(raw_json)
 			   AND json_extract(raw_json, '$.download.rows_subset_of_assignment') = 1`,
+		},
+	},
+	{
+		version: 26,
+		note:    "publications by settlement transaction and by commitment: the hashes a developer holds after submitting a blob, which /v1/blobs looks a blob up by",
+		stmts: []string{
+			// /v1/blobs?tx= finds the publication a MsgPayForFibre settled
+			// by the transaction hash the submitting client returns. Nothing
+			// indexed settlement_tx_hash, so each lookup, and the page's
+			// count beside it, read every publication, which are never
+			// pruned.
+			`CREATE INDEX IF NOT EXISTS publications_tx ON publications (settlement_tx_hash)`,
+			// The same for ?commitment= (and the blob ID, which is the
+			// commitment behind a version byte), and for the collector's
+			// lookup of a commitment's other promises when it settles a
+			// deferred shadow verdict (LateShadowVerdicts).
+			`CREATE INDEX IF NOT EXISTS publications_commitment ON publications (commitment)`,
 		},
 	},
 }

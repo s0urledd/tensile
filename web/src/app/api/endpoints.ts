@@ -539,11 +539,12 @@ export const GROUPS: Group[] = [
       {
         id: "blobs",
         path: "/v1/blobs",
-        summary: "Settled blobs, newest first, by namespace, commitment or publisher.",
-        desc: "Filters combine. `total` counts every blob the filters and the cursor select.",
+        summary: "Settled blobs, newest first, by namespace, commitment, transaction or publisher.",
+        desc: "Filters combine, and `total` counts every blob the filters and the cursor select. Each blob carries `settlement_tx_hash`, the transaction that settled it.",
         params: [
           { name: "namespace", in: "query", type: "string", desc: "A namespace, 58 hex characters.", example: NAMESPACE },
-          { name: "commitment", in: "query", type: "string", desc: "A blob commitment, 64 hex characters." },
+          { name: "commitment", in: "query", type: "string", desc: "A blob commitment, 64 hex characters: the client's blob ID without its version byte." },
+          { name: "tx", in: "query", type: "string", desc: "The hash of the transaction that settled the blob, 64 hex characters in either case." },
           { name: "publisher", in: "query", type: "string", desc: "The celestia1… account whose escrow paid." },
           { name: "limit", in: "query", type: "integer", range: "1–500", default: "50", desc: "Blobs per page.", example: "2" },
           { name: "before_height", in: "query", type: "integer", desc: "Blobs settled before this height: pass `next_before_height`." },
