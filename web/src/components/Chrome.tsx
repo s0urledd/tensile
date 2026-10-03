@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useApi, type Meta, type Tip, int, ago, since, span, utcWord } from "@/lib/api";
 import { SOURCE_URL, DISPUTE_URL } from "@/lib/site";
+import HeaderSearch from "@/components/HeaderSearch";
 
 /**
  * Sibling deployments of this observer on other networks, from
@@ -190,6 +191,7 @@ export function Header() {
             <Link key={href} href={href} className={(href === "/" ? path === "/" : path.startsWith(href)) ? "on" : ""}>{name}</Link>
           ))}
         </nav>
+        <HeaderSearch />
         <div className="right">
           <BlockTicker meta={meta} />
           <NetworkChip meta={meta} error={error} />
