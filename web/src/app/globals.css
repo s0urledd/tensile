@@ -2300,6 +2300,9 @@ button.warn:focus-visible { outline-offset: 0; }
    ========================================================================== */
 .bd-h1 .tl { font-weight: 500; }
 .bd-chips { margin-top: 14px; }
+/* the state chip is Tensile's reading, not the chain's: it carries Tensile's eye, as its figures do */
+.bd-chips .state .dot { margin-right: 2px; }
+.bd-chips .state svg { flex: none; width: 13px; height: 13px; color: var(--accent-ink); }
 /* a publisher's page sets its facts and its figures the same way (.pb-top, .pb-figs) */
 .bd-top, .pb-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: stretch; margin-top: 22px; }
 .bd-top .bd-meta, .pb-top .pb-meta { width: auto; grid-template-columns: 118px minmax(0, 1fr); margin: 0; align-content: start; }
@@ -2307,9 +2310,10 @@ button.warn:focus-visible { outline-offset: 0; }
 .bd-meta .bd-ns:hover { color: var(--accent-ink); text-decoration: none; }
 .bd-meta .mono { font-size: 12.5px; color: var(--text); }
 .bd-meta .copy { margin-left: 2px; }
-/* the transaction in a block explorer, after its copy button; under the hash where a phone wraps it */
-.bd-meta .bd-ext { margin-left: 6px; font-weight: 500; color: var(--accent-ink); white-space: nowrap; }
-@media (max-width: 720px) { .bd-meta .bd-ext { margin-left: 0; } }
+/* the transaction in a block explorer, after its copy button; flush under the hash where the row wraps it (its space
+   on the line is the copy button's right margin, which a wrap leaves at the line's end) */
+.bd-meta .bd-tx .copy { margin-right: 6px; }
+.bd-meta .bd-ext { font-weight: 500; color: var(--accent-ink); white-space: nowrap; }
 .bd-meta .lg-who .hd { font-size: var(--t-cell); }
 .bd-meta .u { font-weight: 400; color: var(--text-3); }
 /* Tensile's three rows carry its eye */

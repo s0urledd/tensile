@@ -532,8 +532,8 @@ Every page's header and footer read `/v1/meta` and `/v1/tip`.
 |---|---|
 | `/` | `/v1/network` (the period, and `all` for Available), `/v1/validators` (the map's "served last" line is the rows' `last_served_at`), `/v1/blobs?limit=1` |
 | `/validator/?addr=` | `/v1/validators/{addr}` |
-| `/blobs/` | `/v1/blobs` (the first page again as the chain moves), `/v1/namespaces`, `/v1/market` (the period), `/v1/publishers` (once its filter opens) |
-| `/blob/?hash=` | `/v1/blobs/{hash}` |
+| `/blobs/` | `/v1/blobs` (the first page again as the chain moves), `/v1/namespaces`, `/v1/market` (the period), `/v1/publishers` (once its filter opens); its search (`?blob=`) asks 64 hex as `/v1/blobs/{hash}`, `?commitment=` and `?tx=`, and a blob ID as `?commitment=` |
+| `/blob/?hash=`, `?id=`, `?tx=` | `/v1/blobs/{hash}`; a blob ID (`?id=`) or a settlement transaction (`?tx=`) is found first with `/v1/blobs?commitment=` or `?tx=`, and several matches open the Blobs list of them |
 | `/publishers/` | `/v1/market`, `/v1/publishers` |
 | `/publisher/?addr=` | `/v1/publishers/{addr}` |
 | `/methodology/` | `/v1/params` (the protocol-parameters section; the rest is static) |
@@ -556,6 +556,10 @@ this observer exists to publish.
 `NEXT_PUBLIC_SELF_VALIDATOR` marks the row belonging to this observer's own
 operator. It marks and nothing else — no filter, no exclusion, no adjustment.
 Default empty.
+
+`NEXT_PUBLIC_TX_EXPLORER` (a URL with `{hash}`) links a blob's settlement
+transaction on a network with no built-in explorer; Mocha and mainnet use
+Celenium (`txExplorerUrl` in `lib/site.ts`). Default empty: no link.
 
 ---
 

@@ -247,7 +247,7 @@ function Page() {
   const via = named ? null : viaOf(sp.get("id")?.replace(/ /g, "+") ?? null, sp.get("tx"));
   // its settlements, asked again every 30 s while there are none (a blob the scanner has not read yet)
   const hit = useFind(via && via.kind !== "bad" ? via.key : null, { as: [via?.kind === "tx" ? "tx" : "commitment"], limit: 1, refreshMs: 30000 });
-  const picked = hit && !hit.error && hit.total === 1 ? hit.rows[0].promise_hash : "";
+  const picked = hit && !hit.error && !hit.partial && hit.total === 1 ? hit.rows[0].promise_hash : "";
   const many = !!hit && !hit.error && hit.total > 1;
   const router = useRouter();
   useEffect(() => {
@@ -274,11 +274,13 @@ function Page() {
     // nothing on record: Tensile has not indexed it yet, or the transaction carries no Fibre blob; the chain's own
     // record of the transaction is the explorer's, never a word of Tensile's
     const none = !!hit && !hit.error && hit.total === 0;
+    // an observer that cannot look a transaction up has not said the blob is missing: its heading claims nothing
+    const unasked = none && via.kind === "tx" && hit.noTx;
     const explore = via.kind === "tx" ? txExplorerUrl(meta?.chain_id, via.text) : "";
     const ext = explore && <> The chain&apos;s own record of it: <a href={explore} target="_blank" rel="noopener noreferrer">View transaction ↗</a></>;
     return (
       <>
-        <div className="head"><div><p className="crumb"><Link href="/blobs/">Blobs</Link> › {via.text.slice(0, 10)}…</p><h1>{none ? "Not indexed yet" : via.kind === "bad" || hit?.error ? "Blob" : "Loading…"}</h1></div></div>
+        <div className="head"><div><p className="crumb"><Link href="/blobs/">Blobs</Link> › {via.text.slice(0, 10)}…</p><h1>{none && !unasked ? "Not indexed yet" : unasked || via.kind === "bad" || hit?.error ? "Blob" : "Loading…"}</h1></div></div>
         <StatusLine meta={meta} metaError={metaErr} snap={null} client={{ error: hit?.error ?? null, fetchedAt: hit && !hit.error ? hit.at : null }} />
         {via.kind === "bad" && <p className="notice"><span className="mono">{shortMid(via.text, 10, 6)}</span> is not a {name}: {via.of === "id" ? "the client's blob ID is a version byte, 0, then the 32-byte commitment, in base64, or 66 hex characters" : "one is 64 hex characters"}.</p>}
         {none && (via.kind === "tx"
@@ -389,7 +391,7 @@ function Page() {
       <dd><b title={utcWord(b.settlement_time)}>{monthDayTime(b.settlement_time)}</b><em>UTC · height {int(b.settlement_height)}</em></dd>
       {txHash && <>
         <dt title="The transaction that carried the MsgPayForFibre settling this blob">Transaction</dt>
-        <dd><span className="mono" title={txHash}>{shortMid(txHash, 10, 6)}</span><Copy text={txHash} label="transaction hash" />
+        <dd className="bd-tx"><span className="mono" title={txHash}>{shortMid(txHash, 10, 6)}</span><Copy text={txHash} label="transaction hash" />
           {explore && <a className="bd-ext" href={explore} target="_blank" rel="noopener noreferrer" title="This transaction in a block explorer: the chain's own record">View transaction ↗</a>}</dd>
       </>}
       <dt>Created</dt>
@@ -442,7 +444,8 @@ function Page() {
         </div>
         <div className="pb-addr"><span className="mono">{b.promise_hash}</span><Copy text={b.promise_hash} label="the promise hash" /></div>
         <div className="chips bd-chips">
-          <span className="state" title={state[2]}><i className={"dot " + state[0]} />{state[1]}</span>
+          {/* Tensile's reading, with its eye as its figures carry it: the chips after it are the chain's settlement */}
+          <span className="state" title={`Tensile's reading: ${state[2]}`}><i className={"dot " + state[0]} /><Eye />{state[1]}</span>
           <span title={utcWord(b.settlement_time)}>Settled <b className="word">#{int(b.settlement_height)}</b></span>
           <span title={`${utcWord(b.settlement_time)} → ${utcWord(b.must_serve_until)}`}>{over ? <>Retention window over <b className="word">{hhmm(b.must_serve_until)}</b></> : <>In retention window until <b className="word">{hhmm(b.must_serve_until)}</b></>}</span>
         </div>

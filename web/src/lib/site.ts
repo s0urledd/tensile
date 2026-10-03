@@ -22,7 +22,7 @@ export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "https://tensile.hugi
  * Where a reader sees a settlement transaction in the chain's own record: a block explorer for the network the API
  * names (/v1/meta's chain_id), since one export serves every network's site. Celenium, which Celestia's docs list for
  * Mocha, shows the transaction's MsgPayForFibre and its blob, and takes the hash in either case. An operator sets
- * NEXT_PUBLIC_TX_EXPLORER, a URL with {hash} in it, for a network not here.
+ * NEXT_PUBLIC_TX_EXPLORER, a URL with {hash} in it, for a network not here; the networks here keep their own.
  */
 const TX_EXPLORERS: [RegExp, string][] = [
   [/^mocha-\d+$/, "https://mocha.celenium.io/tx/{hash}"],
@@ -30,9 +30,9 @@ const TX_EXPLORERS: [RegExp, string][] = [
 ];
 const TX_EXPLORER = (process.env.NEXT_PUBLIC_TX_EXPLORER ?? "").trim();
 
-/** the explorer's page for a transaction on the network chainId, or "" where none is known */
+/** the explorer's page for a transaction on the network chainId, or "" where none is known (or the network is not yet) */
 export function txExplorerUrl(chainId: string | null | undefined, hash: string): string {
-  const url = TX_EXPLORER || TX_EXPLORERS.find(([re]) => re.test(chainId ?? ""))?.[1];
+  const url = chainId ? TX_EXPLORERS.find(([re]) => re.test(chainId))?.[1] || TX_EXPLORER : "";
   return url && hash ? url.replace("{hash}", hash.toUpperCase()) : "";
 }
 

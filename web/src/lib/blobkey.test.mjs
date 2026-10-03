@@ -65,15 +65,28 @@ test("anything else is no identifier", () => {
   assert.equal(blobKey(undefined), null);
 });
 
-test("blob IDs round-trip through every base64 spelling", () => {
-  for (let i = 0; i < 500; i++) {
-    const c = randomBytes(32);
-    const want = Buffer.concat([Buffer.from([0]), c]).toString("base64");
-    assert.equal(blobIdOf(c.toString("hex")), want);
-    // an address reads each + as a space, the last one too: the pages put every one back before they read it
-    const addr = want.replace(/\+/g, " ").replace(/ /g, "+");
-    for (const s of [want, want.replace(/\+/g, "-").replace(/\//g, "_"), addr, `00${c.toString("hex")}`]) {
-      assert.equal(blobKey(s)?.hex, c.toString("hex"), s);
-    }
+// what a page reads of a parameter in its address, as /blob/ and /blobs/ do: the browser's own parsing reads a raw + as a
+// space, and the page puts every one back
+const fromAddress = (query, name) => new URL(`https://tensile.example/blob/?${query}`).searchParams.get(name).replace(/ /g, "+");
+
+test("blob IDs round-trip through every base64 spelling and through an address", () => {
+  // the docs' ID holds + and /; this one ends in a +, which a raw link's parsing would trim as a space
+  const fixed = [ID, "AGG8g2eiXraOHNhNriWaWf/Q2BiNMIKgYnpEVAuvQHm+"];
+  const random = Array.from({ length: 500 }, () => Buffer.concat([Buffer.from([0]), randomBytes(32)]).toString("base64"));
+  let plus = 0, slash = 0;
+  for (const want of [...fixed, ...random]) {
+    const hex = Buffer.from(want, "base64").subarray(1).toString("hex");
+    assert.equal(blobIdOf(hex), want);
+    if (want.includes("+")) plus++;
+    if (want.includes("/")) slash++;
+    for (const s of [
+      want,
+      want.replace(/\+/g, "-").replace(/\//g, "_"), // URL-safe
+      fromAddress(`id=${want}`, "id"), // a raw link: /blob/?id=AJ+0/…
+      fromAddress(`id=${encodeURIComponent(want)}`, "id"), // an encoded one, as the pages write it
+      fromAddress(`blob=${encodeURIComponent(want)}`, "blob"), // /blob/?id= with several settlements opens /blobs/?blob=
+      `00${hex}`,
+    ]) assert.equal(blobKey(s)?.hex, hex, `${want} as ${s}`);
   }
+  assert.ok(plus > 100 && slash > 100, "the IDs tried hold + and /");
 });

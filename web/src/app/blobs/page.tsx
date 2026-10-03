@@ -60,14 +60,14 @@ const FORMATS = (
  * with no choice of which. One match opens the blob; several show here as the list of them, until the search is
  * cleared (value, with label for what it matched).
  */
-function FindBlob({ value, label, onFind }: { value: string; label: string; onFind: (h: string) => void }) {
+function FindBlob({ value, label, upper, onFind }: { value: string; label: string; upper: boolean; onFind: (h: string) => void }) {
   const [q, setQ] = useState("");
   const [bad, setBad] = useState(false);
   const pasted = useRef(false);
   const placeholder = useFindPlaceholder();
   if (value) {
-    // a transaction hash in upper case, as the client prints it
-    const shown = label === "Tx" ? value.toUpperCase() : value;
+    // a transaction hash in upper case, as the client prints it, and so a hash that matched nothing, as the list names it
+    const shown = upper ? value.toUpperCase() : value;
     return (
       <span className="lg-pick on lg-find">
         <span className="lg-chip" title={shown}>{FIND_ICON}<span className="k">{label}</span><span className="v mono">{shown.slice(0, 8)}…{shown.slice(-6)}</span></span>
@@ -94,7 +94,7 @@ function FindBlob({ value, label, onFind }: { value: string; label: string; onFi
           onChange={(e) => { setQ(e.target.value); setBad(false); if (whole(e.target.value)) go(e.target.value); pasted.current = false; }}
           onKeyDown={(e) => { pasted.current = false; if (e.key === "Enter") go(q); }} />
       </label>
-      <Info label="Search formats">{FORMATS}<p>Hex in either case, with or without 0x. One match opens the blob; several show here as a list.</p></Info>
+      <Info label="Search formats">{FORMATS}<p>Hex in either case, with or without 0x. One match opens the blob; several show here as a list. Typed hex starting 00 waits for Enter, since it may be a blob ID in hex.</p></Info>
     </span>
   );
 }
@@ -105,14 +105,26 @@ function Ident8({ text, tx }: { text: string; tx?: boolean }) {
   return <span className="mono" title={t}>{shortMid(t, 10, 6)}</span>;
 }
 
-/** what a search with several matches matched, in a line over their list */
+/**
+ * what a search shown as a list matched, in a line over it: several blobs, or the one a lookup found while another
+ * did not answer; then that the list holds only the newest, or may be incomplete
+ */
 function matchedWords(key: BlobKey, value: string, f: Found): React.ReactNode {
   const n = int(f.total);
-  if (key.kind === "id") return <>The blob ID <Ident8 text={value} /> was settled {n} times.</>;
-  if (f.by.length === 1 && f.by[0] === "tx") return <>The transaction <Ident8 text={value} tx /> settled {n} blobs.</>;
-  if (f.by.length === 1 && f.by[0] === "commitment") return <>The commitment <Ident8 text={value} /> was settled {n} times.</>;
   const as = f.by.map((b) => `as a ${b === "promise" ? "promise hash" : b === "tx" ? "transaction hash" : b}`);
-  return <>{n} blobs match <Ident8 text={value} />, {as.slice(0, -1).join(", ")} and {as[as.length - 1]}.</>;
+  const what = f.total === 1
+    ? <>One blob matches <Ident8 text={value} tx={f.by[0] === "tx"} />, {key.kind === "id" ? "as a blob ID" : as[0]}.</>
+    : key.kind === "id" ? <>The blob ID <Ident8 text={value} /> was settled {n} times.</>
+    : f.by.length === 1 && f.by[0] === "tx" ? <>The transaction <Ident8 text={value} tx /> settled {n} blobs.</>
+    : f.by.length === 1 && f.by[0] === "commitment" ? <>The commitment <Ident8 text={value} /> was settled {n} times.</>
+    : <>{n} blobs match <Ident8 text={value} />, {as.slice(0, -1).join(", ")} and {as[as.length - 1]}.</>;
+  return (
+    <>
+      {what}
+      {f.total > f.rows.length && <> Showing the newest {int(f.rows.length)}.</>}
+      {f.partial && <> The observer did not answer every lookup ({f.partial}), so there may be more.</>}
+    </>
+  );
 }
 
 const PUB_ICON = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5.6" r="2.7" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M2.8 13.6c.8-2.4 2.8-3.7 5.2-3.7s4.4 1.3 5.2 3.7" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>;
@@ -235,10 +247,11 @@ function Page() {
     }))
     : null;
   // The search: 64 hex characters asked as a promise hash, a commitment and a transaction hash, a blob ID as its
-  // commitment, read once. One match opens the blob; the list shows several, or says none matched.
+  // commitment, read once. One match opens the blob; the list shows several, or says none matched. One match opens only
+  // when every lookup answered: one that failed might have found more, so the list shows it and says so.
   const key = blobKey(found);
   const hit = useFind(key, { limit: SIZE });
-  const one = hit && !hit.error && hit.total === 1 ? hit.rows[0].promise_hash : "";
+  const one = hit && !hit.error && !hit.partial && hit.total === 1 ? hit.rows[0].promise_hash : "";
   useEffect(() => {
     if (!hit) return;
     if (one) {
@@ -265,6 +278,10 @@ function Page() {
         : <>Tensile has not indexed <Ident8 text={found} tx /> yet, or the transaction carries no Fibre blob.</>}
       {explore && <> <a className="lg-ext" href={explore} target="_blank" rel="noopener noreferrer">View transaction ↗</a></>}
     </>);
+  // the line over a list: what several matches matched, or that the one shown may not be all
+  const matched = key && hit && !hit.error && (hit.total > 1 || (!!hit.partial && hit.total > 0)) && matchedWords(key, found, hit);
+  // a hash that matched nothing is named as a transaction, in upper case: the chip says it as the line under it does
+  const upper = tx || (key?.kind === "hash" && !!hit && !hit.error && hit.total === 0 && !hit.noTx);
 
   const nsN = nss.data?.namespaces.length ?? 0;
 
@@ -292,7 +309,7 @@ function Page() {
                 accept={(s) => (/^[0-9a-f]{58}$/.test(s) ? s : null)} placeholder="Name or hex" onPick={setNs} />}
               {!found && <Picker name="Publisher" icon={PUB_ICON} value={pub} text={pub ? <><span className="pre">celestia </span>••• {pub.slice(-4)}</> : null} choices={pubChoices}
                 accept={(s) => (/^celestia1[0-9a-z]{38}$/.test(s) ? s : null)} placeholder="Address" onPick={setPub} onOpen={() => setWantPubs(true)} />}
-              <FindBlob value={found} label={foundLabel} onFind={search} />
+              <FindBlob value={found} label={foundLabel} upper={upper} onFind={search} />
             </div>
           )}
         </div>
@@ -301,7 +318,7 @@ function Page() {
           ? (foundFeed
             ? (
               <>
-                {key && hit && hit.total > 1 && <p className="lg-matched">{matchedWords(key, found, hit)}</p>}
+                {matched && <p className="lg-matched">{matched}</p>}
                 <Ledger feed={foundFeed} size={SIZE} live={false} skew={skew} emptyText={none || undefined} onNs={(v) => { setFound(""); setNs(v); }}>
                   {() => null}
                 </Ledger>
