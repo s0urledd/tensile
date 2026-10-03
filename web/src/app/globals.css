@@ -1268,6 +1268,8 @@ body { background: var(--canvas); }
 .rb-grid.rb-moving .rb-c.rb-ghost { visibility: visible; }
 .rb-c.rb-newest { background: var(--rb-lit); box-shadow: 0 0 0 2px var(--rb-win), 0 0 0 3.5px var(--accent); }
 a.rb-c:hover, .rb-c.rb-on { background: var(--rb-lit); transform: scale(1.12); z-index: 1; text-decoration: none; box-shadow: 0 0 0 2px var(--rb-win), 0 0 0 3.5px var(--text-2); }
+/* while the reader points at or focuses another square, that one alone is lit: the newest lets go of its ring */
+.rb-grid.rb-pick .rb-c.rb-newest:not(.rb-on) { background: var(--rb-fill); box-shadow: none; }
 /* a square takes half the gap on each side, so the pointer between two squares still names a blob. A row's clip margins
    reach over the row above it, so only the squares take the pointer: the gap under a row's squares is theirs, not the next row's */
 a.rb-c::after { content: ""; position: absolute; inset: calc(var(--rb-gap) / -2); }

@@ -20,8 +20,10 @@ import RollNumber, { reducedMotion } from "@/components/RollNumber";
  * whatever arrived with it glows for 1.4 s; nothing else moves.
  *
  * Settled blobs share one tone; the newest and the arrivals are lit with the
- * accent, as is the square under the pointer or focus. A blob's size and the
- * rest are in the readout, for that square.
+ * accent, as is the square under the pointer or focus. While the pointer or
+ * focus is on another square, that square alone is lit: the newest lets go of
+ * its ring until the reader leaves the grid. A blob's size and the rest are in
+ * the readout, for that square.
  *
  * While the pointer is on the grid or a square has focus, the grid holds
  * still: reads go on, and letting go brings what came in in one move.
@@ -327,7 +329,7 @@ export default function RecentBlobs() {
           <h2 className="ov-eyebrow">Recent blobs</h2>
           <span className="rb-live" title={liveTitle}><i className="rb-live-d" aria-hidden="true" />{liveWord}</span>
         </div>
-        <div className="rb-grid" ref={gridRef} role="list" aria-label="The newest blobs settled on chain, newest first"
+        <div className={`rb-grid${sel ? " rb-pick" : ""}`} ref={gridRef} role="list" aria-label="The newest blobs settled on chain, newest first"
           onPointerEnter={() => setPointerIn(true)}
           onPointerLeave={() => { setPointerIn(false); setSel(null); }}
           onFocus={() => setFocusIn(true)}
