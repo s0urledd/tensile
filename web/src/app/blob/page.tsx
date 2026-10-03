@@ -14,7 +14,6 @@ import { monthDayTime } from "@/components/BlobsDeck";
 import { validatorHref } from "@/lib/addr";
 import { blobKey, blobIdOf, type BlobKey } from "@/lib/blobkey";
 import { useFind } from "@/lib/blobfind";
-import { txExplorerUrl } from "@/lib/site";
 
 type Assignment = {
   validator_address: string; moniker?: string; voting_power: number; row_count: number; attested: boolean | null; host_at_settlement: string | null;
@@ -271,13 +270,10 @@ function Page() {
   if (!hash && !via) return <p className="notice">Open a blob from the <Link href="/blobs/">list</Link>, or add <code>?hash=&lt;promise hash&gt;</code>, <code>?id=&lt;blob ID&gt;</code> or <code>?tx=&lt;transaction hash&gt;</code> to the address.</p>;
   if (!hash && via) {
     const name = (via.kind === "bad" ? via.of : via.kind) === "id" ? "blob ID" : "transaction hash";
-    // nothing on record: Tensile has not indexed it yet, or the transaction carries no Fibre blob; the chain's own
-    // record of the transaction is the explorer's, never a word of Tensile's
+    // nothing on record: Tensile has not indexed it yet, or the transaction carries no Fibre blob
     const none = !!hit && !hit.error && hit.total === 0;
     // an observer that cannot look a transaction up has not said the blob is missing: its heading claims nothing
     const unasked = none && via.kind === "tx" && hit.noTx;
-    const explore = via.kind === "tx" ? txExplorerUrl(meta?.chain_id, via.text) : "";
-    const ext = explore && <> The chain&apos;s own record of it: <a href={explore} target="_blank" rel="noopener noreferrer">View transaction ↗</a></>;
     return (
       <>
         <div className="head"><div><p className="crumb"><Link href="/blobs/">Blobs</Link> › {via.text.slice(0, 10)}…</p><h1>{none && !unasked ? "Not indexed yet" : unasked || via.kind === "bad" || hit?.error ? "Blob" : "Loading…"}</h1></div></div>
@@ -285,8 +281,8 @@ function Page() {
         {via.kind === "bad" && <p className="notice"><span className="mono">{shortMid(via.text, 10, 6)}</span> is not a {name}: {via.of === "id" ? "the client's blob ID is a version byte, 0, then the 32-byte commitment, in base64, or 66 hex characters" : "one is 64 hex characters"}.</p>}
         {none && (via.kind === "tx"
           ? hit.noTx
-            ? <p className="notice">This observer does not look blobs up by transaction hash yet. Open the blob from the <Link href="/blobs/">list</Link> or by its blob ID.{ext}</p>
-            : <p className="notice">Tensile has not indexed <span className="mono" title={via.text}>{shortMid(via.text, 10, 6)}</span> yet, or the transaction carries no Fibre blob. A blob appears here once Tensile has read the block that settled it; this page checks again every 30 seconds.{ext}</p>
+            ? <p className="notice">This observer does not look blobs up by transaction hash yet. Open the blob from the <Link href="/blobs/">list</Link> or by its blob ID.</p>
+            : <p className="notice">Tensile has not indexed <span className="mono" title={via.text}>{shortMid(via.text, 10, 6)}</span> yet, or the transaction carries no Fibre blob. A blob appears here once Tensile has read the block that settled it; this page checks again every 30 seconds.</p>
           : <p className="notice">Tensile has not indexed a blob with the blob ID <span className="mono" title={via.text}>{shortMid(via.text, 10, 6)}</span> yet. A blob appears here once Tensile has read the block that settled it; this page checks again every 30 seconds.</p>)}
       </>
     );
@@ -372,7 +368,6 @@ function Page() {
   // as the client and the chain's tools print it
   const blobId = (b.blob_version ?? 0) === 0 ? blobIdOf(b.commitment) : "";
   const txHash = (b.settlement_tx_hash ?? "").toUpperCase();
-  const explore = txExplorerUrl(meta?.chain_id, txHash);
   // who paid, where it went and when: the publisher page's light frame of facts, one row each
   const facts = (
     <dl className="pb-meta bd-meta">
@@ -386,13 +381,12 @@ function Page() {
         <dt title="The ID the Fibre client returns for this blob: its version, 0, then the commitment, in base64">Blob ID</dt>
         <dd title={blobId}><span className="mono">{shortMid(blobId, 10, 6)}</span><Copy text={blobId} label="blob ID" /></dd>
       </>}
-      {/* the settlement, as the chain records it: when, at what height, by which transaction (the explorer's page of it) */}
+      {/* the settlement, as the chain records it: when, at what height, by which transaction */}
       <dt>Settled</dt>
       <dd><b title={utcWord(b.settlement_time)}>{monthDayTime(b.settlement_time)}</b><em>UTC · height {int(b.settlement_height)}</em></dd>
       {txHash && <>
         <dt title="The transaction that carried the MsgPayForFibre settling this blob">Transaction</dt>
-        <dd className="bd-tx"><span className="mono" title={txHash}>{shortMid(txHash, 10, 6)}</span><Copy text={txHash} label="transaction hash" />
-          {explore && <a className="bd-ext" href={explore} target="_blank" rel="noopener noreferrer" title="This transaction in a block explorer: the chain's own record">View transaction ↗</a>}</dd>
+        <dd className="bd-tx"><span className="mono" title={txHash}>{shortMid(txHash, 10, 6)}</span><Copy text={txHash} label="transaction hash" /></dd>
       </>}
       <dt>Created</dt>
       <dd><b title={utcWord(b.creation_timestamp)}>{monthDayTime(b.creation_timestamp)}</b><em>UTC</em></dd>

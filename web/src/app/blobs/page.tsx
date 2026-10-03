@@ -13,7 +13,6 @@ import { nsHex, NsName, NS_ICON } from "@/components/Namespace";
 import Info from "@/components/Info";
 import { blobKey, keyText, type BlobKey } from "@/lib/blobkey";
 import { useFind, type Found } from "@/lib/blobfind";
-import { txExplorerUrl } from "@/lib/site";
 
 /** rows per page of the blob list */
 const SIZE = 25;
@@ -269,14 +268,12 @@ function Page() {
     ? { path: `find:${found}`, rows: one ? [] : hit?.rows ?? [], total: hit?.rows.length ?? 0, loaded: !!hit && !one && !hit.error, error: hit?.error ?? null, refused: false, lastNewAt: 0 }
     : null;
   // nothing matched: Tensile has not indexed it yet, or the transaction carries no blob; never that the chain refused it
-  const explore = key?.kind === "hash" ? txExplorerUrl(meta?.chain_id, key.hex) : "";
   const none = key && hit && !hit.error && hit.total === 0 && (key.kind === "id"
     ? <>Tensile has not indexed a blob with the blob ID <Ident8 text={found} /> yet. A blob appears once Tensile has read the block that settled it.</>
     : <>
       {hit.noTx
         ? <>No blob Tensile has indexed has the promise hash or commitment <Ident8 text={found} />, and this observer does not look transactions up yet.</>
         : <>Tensile has not indexed <Ident8 text={found} tx /> yet, or the transaction carries no Fibre blob.</>}
-      {explore && <> <a className="lg-ext" href={explore} target="_blank" rel="noopener noreferrer">View transaction ↗</a></>}
     </>);
   // the line over a list: what several matches matched, or that the one shown may not be all
   const matched = key && hit && !hit.error && (hit.total > 1 || (!!hit.partial && hit.total > 0)) && matchedWords(key, found, hit);

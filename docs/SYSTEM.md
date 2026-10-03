@@ -557,10 +557,6 @@ this observer exists to publish.
 operator. It marks and nothing else — no filter, no exclusion, no adjustment.
 Default empty.
 
-`NEXT_PUBLIC_TX_EXPLORER` (a URL with `{hash}`) links a blob's settlement
-transaction on a network with no built-in explorer; Mocha and mainnet use
-Celenium (`txExplorerUrl` in `lib/site.ts`). Default empty: no link.
-
 ---
 
 ## 11. Deployment
