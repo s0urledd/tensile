@@ -407,7 +407,7 @@ GET /v1/validators/{addr}/feed.atom, /v1/feed.atom
 GET /v1/blobs                 publication list (?limit=, ?offset=, ?before_height= and
                               ?before_tx_index=, ?namespace=, ?commitment=, ?tx= the settlement
                               transaction hash, ?publisher= the paying account; total); each row
-                              carries its settlement_tx_hash
+                              carries its settlement_tx_hash and blob_version
 GET /v1/blobs/{hash}          one blob: its reading, each assigned validator's service word, the rows
                               (?rows=1 adds each reading's row_indices and rows_sha256)
 GET /v1/namespaces            namespaces by newest settlement

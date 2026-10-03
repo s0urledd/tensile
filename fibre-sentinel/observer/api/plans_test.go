@@ -160,6 +160,10 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 	}{
 		{"blobs by commitment", blobByCommitmentSQL, "publications_commitment (commitment=?)", []any{"ab"}},
 		{"blobs by tx", blobByTxSQL, "publications_tx (settlement_tx_hash=?)", []any{"ab", "AB"}},
+		// with a namespace beside them, as the route writes it: still the
+		// hash's seek, not every blob of the namespace
+		{"blobs by commitment in a namespace", blobByCommitmentSQL + " AND " + blobInNamespaceBesideSQL, "publications_commitment (commitment=?)", []any{"ab", "ns"}},
+		{"blobs by tx in a namespace", blobByTxSQL + " AND " + blobInNamespaceBesideSQL, "publications_tx (settlement_tx_hash=?)", []any{"ab", "AB", "ns"}},
 	} {
 		cases = append(cases,
 			c{f.name + " page", blobRowsSQL(f.cond, blobPageDefault, 0), f.args, []string{f.idx}},

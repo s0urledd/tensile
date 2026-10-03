@@ -3176,14 +3176,19 @@ type blobRow struct {
 	// guess it.
 	SettlementTxIndex int `json:"settlement_tx_index"`
 	// SettlementTxHash is the hash of the transaction that carried the
-	// MsgPayForFibre, in lower-case hex: the hash the submitting client
-	// returns (the chain's tools print it in upper case), and what ?tx=
-	// looks the blob up by.
-	SettlementTxHash   string `json:"settlement_tx_hash"`
-	SettlementTime     string `json:"settlement_time"`
-	CreationTimestamp  string `json:"creation_timestamp"`
-	MustServeUntil     string `json:"must_serve_until"`
-	ValidatorsWithRows int    `json:"validators_with_rows"`
+	// MsgPayForFibre, in lower-case hex like every hash here (the submitting
+	// client and the chain's tools print the same hash in upper case); ?tx=
+	// looks the blob up by it in either case.
+	SettlementTxHash  string `json:"settlement_tx_hash"`
+	SettlementTime    string `json:"settlement_time"`
+	CreationTimestamp string `json:"creation_timestamp"`
+	MustServeUntil    string `json:"must_serve_until"`
+	// BlobVersion is the promise's blob version, the first byte of the blob
+	// ID the Fibre client returns (the commitment is the rest). 0 is the only
+	// version Fibre has; a blob of another is recorded with an assignment
+	// error.
+	BlobVersion        int `json:"blob_version"`
+	ValidatorsWithRows int `json:"validators_with_rows"`
 	// SigmaRows and DistinctRows are the assignment's row counts, 16371 of
 	// 16384 on every blob of the current set; the verdict reads them from
 	// the store.
@@ -3265,7 +3270,7 @@ func (s *Server) blobRows(ctx context.Context, where string, limit int, args ...
 // reports it), from the offset-th.
 func blobRowsSQL(where string, limit, offset int) string {
 	q := `SELECT promise_hash, commitment, namespace, blob_size, signer, signer_public_key, settlement_height, settlement_tx_index, settlement_tx_hash, settlement_time, creation_timestamp,
-		must_serve_until, validators_with_rows, sigma_rows, distinct_rows, assignment_error, attested_voting_power, total_voting_power, attested_with_rows FROM publications`
+		must_serve_until, blob_version, validators_with_rows, sigma_rows, distinct_rows, assignment_error, attested_voting_power, total_voting_power, attested_with_rows FROM publications`
 	if where != "" {
 		q += " WHERE " + where
 	}
@@ -3288,7 +3293,7 @@ func (s *Server) blobRowsAt(ctx context.Context, where string, limit, offset int
 		var b blobRow
 		var key sql.NullString
 		if err := rows.Scan(&b.PromiseHash, &b.Commitment, &b.Namespace, &b.BlobSize, &b.Signer, &key, &b.SettlementHeight, &b.SettlementTxIndex, &b.SettlementTxHash, &b.SettlementTime,
-			&b.CreationTimestamp, &b.MustServeUntil, &b.ValidatorsWithRows, &b.SigmaRows, &b.DistinctRows, &b.AssignmentError, &b.AttestedPower, &b.TotalPower, &b.AttestedWithRows); err != nil {
+			&b.CreationTimestamp, &b.MustServeUntil, &b.BlobVersion, &b.ValidatorsWithRows, &b.SigmaRows, &b.DistinctRows, &b.AssignmentError, &b.AttestedPower, &b.TotalPower, &b.AttestedWithRows); err != nil {
 			return nil, err
 		}
 		// the scanner writes it in lower case; a store sentinel-synth filled, in upper
@@ -3633,13 +3638,19 @@ func (s *Server) reconstructableCount(ctx context.Context, win Window) (reconstr
 // not ask for one, and the size the startup warm-up fills the verdict cache to.
 const blobPageDefault = 50
 
-// The commitment and tx filters of /v1/blobs, kept as constants so the plan
-// test reads the conditions the route runs. blobByTxSQL takes the hash
-// twice: in lower case, as the scanner writes it, and in upper, as
-// sentinel-synth does; each is a seek of publications_tx.
+// The commitment, tx and namespace filters of /v1/blobs, kept as constants
+// so the plan test reads the conditions the route runs. blobByTxSQL takes
+// the hash twice: in lower case, as the scanner writes it, and in upper, as
+// sentinel-synth does; each is a seek of publications_tx. Beside either of
+// those seeks the namespace is blobInNamespaceBesideSQL, whose unary +
+// keeps SQLite off publications_namespace: with no statistics it prefers
+// that one equality to the tx's two, and would read every blob of the
+// namespace to find the one a transaction settled.
 const (
-	blobByCommitmentSQL = `commitment = ?`
-	blobByTxSQL         = `settlement_tx_hash IN (?, ?)`
+	blobByCommitmentSQL      = `commitment = ?`
+	blobByTxSQL              = `settlement_tx_hash IN (?, ?)`
+	blobInNamespaceSQL       = `namespace = ?`
+	blobInNamespaceBesideSQL = `+namespace = ?`
 )
 
 // hash32 reads a 32-byte hash as a caller may write it: 64 hex characters
@@ -3667,9 +3678,6 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	var conds []string
 	var args []any
-	if ns := q.Get("namespace"); ns != "" {
-		conds, args = append(conds, `namespace = ?`), append(args, strings.ToLower(ns))
-	}
 	// commitment: the blobs with this commitment, which a DA team holds where
 	// it does not hold the promise hash (the client's blob ID is the
 	// commitment behind a version byte). One blob can be paid for and
@@ -3694,6 +3702,13 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 	}
 	if tx != "" {
 		conds, args = append(conds, blobByTxSQL), append(args, tx, strings.ToUpper(tx))
+	}
+	if ns := q.Get("namespace"); ns != "" {
+		cond := blobInNamespaceSQL
+		if commitment != "" || tx != "" {
+			cond = blobInNamespaceBesideSQL
+		}
+		conds, args = append(conds, cond), append(args, strings.ToLower(ns))
 	}
 	// publisher: the blobs this account paid for, as each blob row names its
 	// publisher (paidBy). Bech32 may be written in upper case; the store holds

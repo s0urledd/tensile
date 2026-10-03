@@ -19,8 +19,9 @@ const SIZE = 25;
 const MAX_PAGE = Math.floor(100000 / SIZE) + 1;
 
 /**
- * What the search takes, in words that fit its field: about 270 px of 13 px text, where the field leaves 283 px or more
- * (360 px and wider), and 230 px on a narrower phone, where it leaves 243.
+ * What the search takes, in words that fit its field: about 270 px of 13 px text, where the field leaves 281 px or more
+ * (360 px and wider), and 228 px on a narrower phone, where it leaves 241 at 320. The empty field gives the placeholder
+ * the room Chrome and Safari otherwise keep for the search's clear button, about 14 px (globals.css, .lg-findbox).
  */
 const FIND_PLACEHOLDER = "Promise hash, commitment, blob ID or tx hash";
 const FIND_PLACEHOLDER_NARROW = "Promise hash, commitment, blob ID, tx";
@@ -134,7 +135,8 @@ function Page() {
   const [tab, setTab] = useState<"blobs" | "namespaces">("blobs");
   const [ns, setNsRaw] = useState((params.get("namespace") ?? "").trim().toLowerCase());
   const [pub, setPubRaw] = useState((params.get("publisher") ?? "").trim().toLowerCase());
-  const [found, setFoundRaw] = useState(findText(params.get("blob")));
+  // the address reads a raw + as a space, which base64 never holds: each goes back before blobKey trims a last one away
+  const [found, setFoundRaw] = useState(findText((params.get("blob") ?? "").replace(/ /g, "+")));
   // a new page opens at the list's top when the reader had scrolled past it
   const setPage = useCallback((p: number) => {
     setPageRaw(p);

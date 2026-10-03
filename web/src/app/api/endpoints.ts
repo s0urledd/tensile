@@ -544,7 +544,7 @@ export const GROUPS: Group[] = [
         params: [
           { name: "namespace", in: "query", type: "string", desc: "A namespace, 58 hex characters.", example: NAMESPACE },
           { name: "commitment", in: "query", type: "string", desc: "A blob commitment, 64 hex characters: the client's blob ID without its version byte." },
-          { name: "tx", in: "query", type: "string", desc: "The hash of the transaction that settled the blob, 64 hex characters in either case." },
+          { name: "tx", in: "query", type: "string", desc: "The hash of the transaction that settled the blob: 64 hex characters, either case, with or without 0x." },
           { name: "publisher", in: "query", type: "string", desc: "The celestia1… account whose escrow paid." },
           { name: "limit", in: "query", type: "integer", range: "1–500", default: "50", desc: "Blobs per page.", example: "2" },
           { name: "before_height", in: "query", type: "integer", desc: "Blobs settled before this height: pass `next_before_height`." },
@@ -557,7 +557,7 @@ export const GROUPS: Group[] = [
         id: "blob",
         path: "/v1/blobs/{hash}",
         summary: "One blob: availability, charge, validators with rows, and readings.",
-        desc: "`reconstructable.status` is yes (Available), no (Unavailable), pending, not_read or unknown. Each assignment's `service` is served, not_served, in_retention_window (until the window closes; `probes` carry the reading's result once it is in) or deadline_unverified.",
+        desc: "The blob carries `settlement_tx_hash`, the transaction that settled it. `reconstructable.status` is yes (Available), no (Unavailable), pending, not_read or unknown. Each assignment's `service` is served, not_served, in_retention_window (until the window closes; `probes` carry the reading's result once it is in) or deadline_unverified.",
         params: [
           { name: "hash", in: "path", type: "string", required: true, desc: "The blob's promise hash, 64 hex characters.", example: BLOB },
           rows,

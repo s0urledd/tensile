@@ -469,6 +469,8 @@ export type Blob = {
   settlement_tx_index: number;
   /** the transaction that carried the MsgPayForFibre, in lower-case hex; absent from an API before it was published */
   settlement_tx_hash?: string;
+  /** the promise's blob version, the first byte of the client's blob ID; absent from an API before it was published */
+  blob_version?: number;
   settlement_time: string;
   creation_timestamp: string;
   must_serve_until: string;

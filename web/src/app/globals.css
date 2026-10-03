@@ -2303,6 +2303,13 @@ button.warn:focus-visible { outline-offset: 0; }
 /* a publisher's page sets its facts and its figures the same way (.pb-top, .pb-figs) */
 .bd-top, .pb-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: stretch; margin-top: 22px; }
 .bd-top .bd-meta, .pb-top .pb-meta { width: auto; grid-template-columns: 118px minmax(0, 1fr); margin: 0; align-content: start; }
+/* side by side, a blob's facts carry more rows than its figures (its blob ID and transaction): the frame with fewer
+   shares the height out among them, each row's words in its middle, so neither ends in empty rows */
+@media (min-width: 901px) {
+  .bd-top .bd-meta { align-content: stretch; }
+  .bd-top .bd-meta dt { display: flex; align-items: center; }
+  .bd-top .bd-meta dd { align-content: center; }
+}
 .bd-meta .bd-ns { font-weight: 500; color: var(--text); }
 .bd-meta .bd-ns:hover { color: var(--accent-ink); text-decoration: none; }
 .bd-meta .mono { font-size: 12.5px; color: var(--text); }
@@ -2392,6 +2399,8 @@ button.warn:focus-visible { outline-offset: 0; }
 .lg-findbox svg { flex: none; }
 .lg-findbox input { flex: 1; min-width: 0; padding: 0; border: 0; background: none; font: inherit; font-size: var(--t-cell); color: var(--text); }
 .lg-findbox input::placeholder { color: var(--text-3); }
+/* an empty field keeps no room for the clear button it does not show: the placeholder has the whole field */
+.lg-findbox input:placeholder-shown::-webkit-search-cancel-button { display: none; }
 .lg-findbox input:focus { outline: none; }
 .lg-find .lg-chip { cursor: default; }
 .lg-find .lg-chip .v.mono { font-size: 12.5px; }

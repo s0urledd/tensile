@@ -51,8 +51,9 @@ export function blobIdOf(commitment: string): string {
 }
 
 /**
- * Reads what a reader typed, pasted or put in an address. A blob ID in an address may come back with its + read as a
- * space, which base64 never holds, so a space inside is a +.
+ * Reads what a reader typed, pasted or put in an address. An address reads a raw + as a space, which base64 never holds:
+ * a page reading one from its address puts every + back before it calls this, since a last one would be trimmed away
+ * here as white space. A space inside is still read as a +.
  */
 export function blobKey(s: string | null | undefined): BlobKey | null {
   const t = (s ?? "").trim();

@@ -244,10 +244,15 @@ function markOf(a: Assignment, s: Seat | undefined, blob: BlobSide): Mark {
 function Page() {
   const sp = useSearchParams();
   const named = sp.get("hash") ?? "";
-  const via = named ? null : viaOf(sp.get("id"), sp.get("tx"));
+  // the address reads a raw + as a space, which base64 never holds: each goes back before blobKey trims a last one away
+  const via = named ? null : viaOf(sp.get("id")?.replace(/ /g, "+") ?? null, sp.get("tx"));
   const look = useApi<BlobList>(via && via.kind !== "bad" ? via.path : null);
-  // the answer for this identifier: one that says it filtered on it (an API from before ?tx= answers the newest blobs)
-  const list = via && via.kind !== "bad" && look.data && (via.kind === "id" ? look.data.commitment : look.data.tx) === via.hex ? look.data : null;
+  // The answer for this identifier: one that says it filtered on it. useApi keeps the last address's answer until this
+  // one's is in, and an API from before ?tx= answers the newest blobs without saying it filtered on a tx.
+  const echo = look.data ? (via?.kind === "id" ? look.data.commitment : look.data.tx) : undefined;
+  const list = via && via.kind !== "bad" && look.data && echo === via.hex ? look.data : null;
+  // that API's answer to ?tx= echoes no filter at all (a blob ID's answer, still held, echoes its commitment)
+  const unsupported = via?.kind === "tx" && !!look.data && look.data.tx === undefined && look.data.commitment === undefined;
   const picked = list?.blobs[0]?.promise_hash ?? "";
   // what the page was opened by, kept once the address names the blob by its promise hash
   const [from, setFrom] = useState<{ via: Via; total: number; hash: string } | null>(null);
@@ -267,12 +272,13 @@ function Page() {
   if (!hash && !via) return <p className="notice">Open a blob from the <Link href="/blobs/">list</Link>, or add <code>?hash=&lt;promise hash&gt;</code>, <code>?id=&lt;blob ID&gt;</code> or <code>?tx=&lt;transaction hash&gt;</code> to the address.</p>;
   if (!hash && via) {
     const name = (via.kind === "bad" ? via.of : via.kind) === "id" ? "blob ID" : "transaction hash";
-    const none = via.kind !== "bad" && !!look.data && !list?.blobs.length;
+    const none = !!list && !list.blobs.length;
     return (
       <>
-        <div className="head"><div><p className="crumb"><Link href="/blobs/">Blobs</Link> › {via.text.slice(0, 10)}…</p><h1>{none ? "Blob not recorded yet" : via.kind === "bad" || look.error ? "Blob" : "Loading…"}</h1></div></div>
+        <div className="head"><div><p className="crumb"><Link href="/blobs/">Blobs</Link> › {via.text.slice(0, 10)}…</p><h1>{none ? "Blob not recorded yet" : via.kind === "bad" || unsupported || look.error ? "Blob" : "Loading…"}</h1></div></div>
         <StatusLine meta={meta} metaError={metaErr} snap={null} client={{ error: look.error, fetchedAt: look.fetchedAt, status: look.status }} />
         {via.kind === "bad" && <p className="notice"><span className="mono">{shortMid(via.text, 10, 6)}</span> is not a {name}: {via.of === "id" ? "the client's blob ID is a version byte, 0, then the 32-byte commitment, in base64" : "one is 64 hex characters"}.</p>}
+        {unsupported && <p className="notice">This observer does not look blobs up by transaction hash yet. Open the blob from the <Link href="/blobs/">list</Link> or by its blob ID.</p>}
         {none && <p className="notice">No settlement {via.kind === "id" ? "of the blob ID" : "with the transaction hash"} <span className="mono">{shortMid(via.text, 10, 6)}</span> is on record. A blob appears here once the scanner has read the block that settled it; this page checks again every 30 seconds.</p>}
       </>
     );
@@ -353,9 +359,10 @@ function Page() {
   // the endorsers an earlier reading that asked each of them once could not ask: Tensile's own gaps
   const unasked = everyEndorser ? Math.max(0, rows.filter((a) => a.attested === true).length - asked) : 0;
 
-  // the identifiers a developer holds for the blob beside its promise hash: the client's blob ID, and the settlement's
-  // transaction hash in upper case, as the chain's tools print it
-  const blobId = blobIdOf(b.commitment);
+  // the identifiers a developer holds for the blob beside its promise hash: the client's blob ID (its version byte then
+  // the commitment; shown for version 0, the only one Fibre has), and the settlement's transaction hash in upper case,
+  // as the client and the chain's tools print it
+  const blobId = (b.blob_version ?? 0) === 0 ? blobIdOf(b.commitment) : "";
   const txHash = (b.settlement_tx_hash ?? "").toUpperCase();
   // who paid, where it went and when: the publisher page's light frame of facts, one row each
   const facts = (

@@ -311,9 +311,9 @@ is one row each, not a copy of the data directory:
 5. install the older collector and API, and start them.
 
 The columns and indexes stay, unread, and the next upgrade runs the
-migration again over them. Never let an older collector read rows a newer prober wrote: it keys a
-row on the reading, not the attempt, so it keeps a validator's first answer
-and drops the later ones.
+migration again over them. Never let an older collector read rows a newer
+prober wrote: it keys a row on the reading, not the attempt, so it keeps a
+validator's first answer and drops the later ones.
 
 Schema 5 adds a covering index over `probes`. On a store with 700,000 probes it
 takes a few seconds and about 200 bytes a probe; the collector logs it and the

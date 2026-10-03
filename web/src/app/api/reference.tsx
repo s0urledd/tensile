@@ -142,7 +142,7 @@ type Answer =
   | { url: string; error: string };
 
 /** Parameters that take an address, a hash or a namespace get a row of their own. */
-const WIDE = new Set(["validator", "blob", "namespace", "commitment", "publisher", "exclude"]);
+const WIDE = new Set(["validator", "blob", "namespace", "commitment", "tx", "publisher", "exclude"]);
 
 /** The request the inputs make:the path with its placeholders filled, and the query. */
 function request(ep: Endpoint, vals: Record<string, string>): { url: string; missing: string[] } {

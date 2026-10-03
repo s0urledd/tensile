@@ -22,9 +22,9 @@ import (
 // filterFixture is four settlements: p1 and p2 settle the same commitment
 // (a blob paid for twice), p1 with a payment on record from owner and p2
 // from before payments were kept, signed with owner's key; p3 is another
-// blob paid for by samplePublisher; p4 is signed by a third key and has no
-// payment. Every one is submitted by samplePublisher, which pays only for
-// p3.
+// blob paid for by samplePublisher; p4 is signed by a third key, has no
+// payment and is of blob version 1. Every one is in fixtureNS and submitted
+// by samplePublisher, which pays only for p3.
 func filterFixture(t *testing.T) (ts *httptest.Server, owner, twice string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -44,14 +44,15 @@ func filterFixture(t *testing.T) (ts *httptest.Server, owner, twice string) {
 	for i, p := range []struct {
 		hash, commitment string
 		key              *secp256k1.PubKey
+		version          uint32
 	}{
-		{"p1", twice, ownerKey}, {"p2", twice, ownerKey}, {"p3", strings.Repeat("cd", 32), thirdKey}, {"p4", strings.Repeat("ef", 32), thirdKey},
+		{"p1", twice, ownerKey, 0}, {"p2", twice, ownerKey, 0}, {"p3", strings.Repeat("cd", 32), thirdKey, 0}, {"p4", strings.Repeat("ef", 32), thirdKey, 1},
 	} {
 		pub := scan.Publication{
 			SchemaVersion: scan.AttestationSchemaVersion, PromiseHash: p.hash, SettlementHeight: int64(100 + i), SettlementTime: at.Add(time.Duration(i) * time.Minute),
 			SettlementTxHash: txOf(p.hash), MustServeUntil: at.Add(time.Hour), RecordedAt: at, Signer: samplePublisher,
 			Promise: scan.PromiseFields{ChainID: "t", Height: int64(99 + i), Commitment: p.commitment, CreationTimestamp: at, BlobSize: 262144,
-				SignerPublicKey: hex.EncodeToString(p.key.Key)},
+				SignerPublicKey: hex.EncodeToString(p.key.Key), Namespace: fixtureNS, BlobVersion: p.version},
 			Assignment: scan.AssignmentTable{
 				ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: 4096, TotalRows: 16384},
 				ValidatorSetHeight: int64(99 + i), TotalVotingPower: 10, Sigma: 148, Distinct: 148, ValidatorsWithRows: 1,
@@ -80,6 +81,9 @@ func filterFixture(t *testing.T) (ts *httptest.Server, owner, twice string) {
 	return ts, owner, twice
 }
 
+// fixtureNS is the namespace every fixture blob is in.
+var fixtureNS = strings.Repeat("00", 18) + strings.Repeat("0a", 11)
+
 // txOf is the settlement transaction hash the fixture gives a promise: 64 hex
 // characters, in lower case as the scanner writes it, except p4's, in upper
 // case as sentinel-synth writes it.
@@ -97,6 +101,7 @@ type filteredPage struct {
 		Commitment       string `json:"commitment"`
 		Publisher        string `json:"publisher"`
 		SettlementTxHash string `json:"settlement_tx_hash"`
+		BlobVersion      *int   `json:"blob_version"`
 	} `json:"blobs"`
 	Total             int64  `json:"total"`
 	Truncated         bool   `json:"truncated"`
@@ -194,6 +199,14 @@ func TestBlobsByTx(t *testing.T) {
 	if code := get(t, ts, "/v1/blobs?tx="+p3+"&commitment="+twice, &neither); code != 200 || len(neither.Blobs) != 0 {
 		t.Fatalf("p3's tx and another commitment: %d %s", code, neither.hashes())
 	}
+	// and with a namespace, which the route keeps beside the tx's seek
+	var inNs, otherNs filteredPage
+	if code := get(t, ts, "/v1/blobs?tx="+p3+"&namespace="+strings.ToUpper(fixtureNS), &inNs); code != 200 || inNs.hashes() != "p3" || inNs.Total != 1 {
+		t.Fatalf("p3's tx in its namespace: %d %s total %d", code, inNs.hashes(), inNs.Total)
+	}
+	if code := get(t, ts, "/v1/blobs?tx="+p3+"&namespace="+strings.Repeat("00", 29), &otherNs); code != 200 || len(otherNs.Blobs) != 0 || otherNs.Total != 0 {
+		t.Fatalf("p3's tx in another namespace: %d %s total %d", code, otherNs.hashes(), otherNs.Total)
+	}
 	// the commitment is read the same way: 0x and upper case
 	var commit filteredPage
 	if code := get(t, ts, "/v1/blobs?commitment=0X"+strings.ToUpper(twice), &commit); code != 200 || commit.hashes() != "p2,p1" || commit.Commitment != twice {
@@ -208,6 +221,10 @@ func TestBlobsByTx(t *testing.T) {
 	for _, b := range all.Blobs {
 		if want := strings.ToLower(txOf(b.PromiseHash)); b.SettlementTxHash != want {
 			t.Errorf("%s carries tx %q, want %q", b.PromiseHash, b.SettlementTxHash, want)
+		}
+		// and its blob version, the first byte of its blob ID
+		if want := map[bool]int{true: 1, false: 0}[b.PromiseHash == "p4"]; b.BlobVersion == nil || *b.BlobVersion != want {
+			t.Errorf("%s carries blob_version %v, want %d", b.PromiseHash, b.BlobVersion, want)
 		}
 	}
 	var one struct {
