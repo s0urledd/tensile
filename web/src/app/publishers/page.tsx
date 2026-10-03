@@ -2,7 +2,7 @@
 import { Suspense, useCallback, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useApi, type Meta, type Tip, blobFee, bytes, fmtShare, int, nsDisplay, tia, utcWord, TIP_MS } from "@/lib/api";
+import { useApi, type Meta, type Tip, type Window, blobFee, bytes, fmtShare, int, nsDisplay, tia, utcWord, TIP_MS } from "@/lib/api";
 import type { MarketWithQueue, Params, PublisherWithQueue } from "@/lib/withdrawals";
 import { useWindow, WindowSwitch, periodName } from "@/lib/window";
 import { openRow } from "@/lib/row";
@@ -12,8 +12,7 @@ import Pager, { usePage } from "@/components/Pager";
 import Picker, { type Choice } from "@/components/Picker";
 import Ident from "@/components/Ident";
 import { Who } from "@/components/Ledger";
-import { PanelFig } from "@/components/Metrics";
-import Warn from "@/components/Warn";
+import PublishersTop from "@/components/PublishersTop";
 import { age, monthDayTime } from "@/components/BlobsDeck";
 
 /** rows per page of the publisher list */
@@ -67,8 +66,8 @@ function SortHead({ k, sort, onSort, children }: { k: SortKey; sort: Sort; onSor
 const plural = (n: number, w: string) => `${int(n)} ${w}${n === 1 ? "" : "s"}`;
 
 /**
- * Publishers: the accounts that pay for blobs from escrow. A framed panel of
- * the period's figures (the escrow held last, since it is a balance now),
+ * Publishers: the accounts that pay for blobs from escrow. A framed top of
+ * the period's figures in three short ledgers (components/PublishersTop.tsx),
  * then the publishers in the Blobs list's own rows: what each posted and paid
  * in the period, and what its escrow can still spend, in a lane of its own.
  * Every figure is the chain's, read through the API; none was measured by
@@ -88,7 +87,7 @@ function Page() {
   // Before activation every market figure is a zero of a module that does not exist yet: one line says so, the figures show a dash.
   const pre = notLiveOf(meta);
   const { data: m, error } = useApi<MarketWithQueue>(`/v1/market?window=${win}`);
-  const { data: list } = useApi<{ publishers: PublisherWithQueue[]; count: number }>(`/v1/publishers?window=${win}`);
+  const { data: list } = useApi<{ publishers: PublisherWithQueue[]; count: number; window?: Window }>(`/v1/publishers?window=${win}`);
   // every account on record: what each posts as a rule (its average blob over all of them), and the choices of Find
   const { data: all } = useApi<{ publishers: PublisherWithQueue[] }>("/v1/publishers?window=all");
   const pf = useApi<Params>("/v1/params", 0).data?.price_formula;
@@ -121,10 +120,6 @@ function Page() {
   // a figure of the period names it in its label: the period of the answer shown (the last one stays while
   // another loads), else the one selected
   const per = periodName(m?.window?.name ?? win);
-  const ready = !pre && !!m;
-  const noBlobs = pubs.filter((p) => p.settlements === 0).length;
-  const held = m ? m.escrow_total_utia ?? m.escrow_held_utia : 0;
-  const queued = m?.withdrawal_queue?.pending;
 
   const findChoices: Choice[] | null = all
     ? [...all.publishers].sort((a, b) => b.settlements - a.settlements || (b.escrow?.available_utia ?? 0) - (a.escrow?.available_utia ?? 0)).map((p) => ({
@@ -147,29 +142,8 @@ function Page() {
       {error && <div className="note hold"><span className="label">Observer</span><p>Cannot reach the observer API: {error}. Nothing below is current.</p></div>}
 
       <section id="list" className="listing pl-list">
-        {/* The period's figures, then the escrow held now: last, as the escrow lane is last in the table, and at
-            full width right over that lane. Each cell is a label and a figure; what qualifies a figure is on hover,
-            and a timeout is a red dot beside the fees, its words on hover. */}
-        <dl className="pan pl-pan">
-          <PanelFig label="Publishers" period={per} value={ready && list ? int(list.count) : "—"}
-            title={ready && noBlobs > 0 ? `${plural(pubs.length - noBlobs, "account")} posted blobs in the period; ${plural(noBlobs, "account")} only moved escrow` : undefined} />
-          <PanelFig label="Settlements" period={per} value={ready ? int(m.settlements) : "—"} />
-          <PanelFig label="Blob size" period={per} value={ready ? unit(bytes(m.bytes)) : "—"}
-            title={ready && (m.namespaces ?? 0) > 0 ? `In ${plural(m.namespaces!, "namespace")}` : undefined} />
-          <PanelFig label="Fees paid" period={per}
-            value={ready ? <>{unit(tia(m.fees_settled_utia))}{m.timeouts > 0 && <Warn tone="fault" text={`${plural(m.timeouts, "payment promise")} timed out in the period; ${tia(m.timed_out_utia)} charged all the same`} />}</> : "—"}
-            title={ready && m.paid_per_mib_utia != null ? `${tia(m.paid_per_mib_utia)} per MiB` : undefined} />
-          <PanelFig label="Deposited" period={per} value={ready ? unit(tia(m.deposits.utia)) : "—"}
-            title={ready ? [`${plural(m.deposits.count, "deposit")} into escrow in the period`, m.withdrawals_executed.utia > 0 ? `${tia(m.withdrawals_executed.utia)} withdrawn (${plural(m.withdrawals_executed.count, "withdrawal")} paid out)` : ""].filter(Boolean).join("; ") : undefined} />
-          {/* on hover: the accounts the escrow is in (while the ones read one by one hold all of it), any queued
-              withdrawal, and when the chain was read */}
-          <PanelFig label="Escrow held" period="now" value={ready ? unit(tia(held)) : "—"}
-            title={ready ? [
-              m.escrow_total_utia == null || m.escrow_total_utia === m.escrow_held_utia ? `In ${plural(m.escrow_accounts, "account")}` : "",
-              queued && queued.count > 0 ? `${tia(queued.utia)} queued to withdraw${queued.next_available_at ? `, the next payable from ${utcWord(queued.next_available_at)}` : ""}` : "",
-              m.escrow_total_at ? `read at ${utcWord(m.escrow_total_at)}` : "",
-            ].filter(Boolean).join("; ") : undefined} />
-        </dl>
+        {/* the period's three ledgers: activity, blob size with the largest publisher's part, fees and escrow */}
+        <PublishersTop m={pre ? null : m} win={win} list={list} all={all} now={now} pre={pre} onWin={setWin} />
 
         {/* the search over the table's right, above the escrow lane */}
         <div className="lg-bar pl-bar">
