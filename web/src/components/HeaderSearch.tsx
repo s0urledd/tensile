@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { API_BASE, type Blob, type Validator, type Publisher, int, whenUTC, utcWord } from "@/lib/api";
+import { API_BASE, type Blob, type Validator, type Publisher, int, utcWord } from "@/lib/api";
 import { blobKey } from "@/lib/blobkey";
 import { useFind } from "@/lib/blobfind";
 import { siteTarget, type SiteTarget } from "@/lib/sitefind";
@@ -76,7 +76,7 @@ function useRecord<T>(path: string | null): Got<T> | null {
  * one record the search found, as a row of its panel that opens the record's page: what it is, in one word, and which;
  * a blob also says when it settled, so the several settlements of one blob ID tell apart
  */
-type Item = { href: string; glyph: ReactNode; kind: string; title: ReactNode; label: string; at?: string };
+type Item = { href: string; glyph: ReactNode; kind: string; title: ReactNode; label: string; at?: string; hash?: string };
 
 const short = (s: string, head = 8, tail = 4) => (s.length > head + tail + 1 ? `${s.slice(0, head)}…${s.slice(-tail)}` : s);
 /** an address as the lists print it: its prefix, then its last four */
@@ -84,11 +84,16 @@ const addrWords = (a: string) => { const i = a.lastIndexOf("1"); return i > 0 ? 
 /** a plain left click: anything else (a new tab, a download, a modifier) is the browser's */
 const plain = (e: React.MouseEvent) => !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0);
 
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** "Oct 2, 18:23 UTC": the day always, since the settlements of one blob ID may fall on different days */
+const at = (s: string) => { const d = new Date(s); return isNaN(d.getTime()) ? s : `${MON[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.toISOString().slice(11, 16)} UTC`; };
+
+/** a blob as two lines: its block and settlement time over its promise hash */
 const blobItem = (b: Blob): Item => ({
   href: `/blob/?hash=${b.promise_hash}`,
   label: `Blob ${b.promise_hash.slice(0, 10)}, block ${int(b.settlement_height)}`,
-  glyph: BLOB, kind: "Blob", at: b.settlement_time,
-  title: <span className="mono" title={b.promise_hash}>{short(b.promise_hash, 10, 6)}</span>,
+  glyph: BLOB, kind: "Blob", at: b.settlement_time, hash: b.promise_hash,
+  title: <span className="hs-ht">#{int(b.settlement_height)}</span>,
 });
 
 /**
@@ -236,9 +241,14 @@ export default function HeaderSearch() {
                         className={`hs-item${pick === i ? " on" : ""}`} href={it.href}
                         onClick={(e) => { if (!plain(e)) return; e.preventDefault(); open(it.href); }}>
                         <span className="hs-ic">{it.glyph}</span>
-                        <span className="hs-k">{it.kind}</span>
-                        {it.title}
-                        {it.at && <span className="hs-at" title={`Settled ${utcWord(it.at)}`}>{whenUTC(it.at)}</span>}
+                        <span className="hs-bd">
+                          <span className="hs-top">
+                            <span className="hs-k">{it.kind}</span>
+                            {it.title}
+                            {it.at && <span className="hs-at" title={`Settled ${utcWord(it.at)}`}>{at(it.at)}</span>}
+                          </span>
+                          {it.hash && <span className="hs-hash mono" title={it.hash}>{short(it.hash, 18, 10)}</span>}
+                        </span>
                       </Link>
                     </li>
                   ))}
