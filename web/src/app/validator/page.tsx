@@ -3,7 +3,7 @@ import { Fragment, Suspense, useCallback, useEffect, useRef, useState, type CSSP
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useApi, type ValidatorDetail, type ValidatorReading, type Window, type RecordThrough, type Obligations, type Meta, type EndpointCheck, int, pctOf, bytes, utcWord, dateUTC, whenUTC, shortMid, notFound, rateTone, notCountedText, badRequest, MIN_RATED, API_BASE, provisionalNow, type ProvisionalFaults, type NetworkReference,
-  endOfWindow, fullReading, ownGap, ownSide, sharedAnswer, rawErrorWords, foreignRows, hhmm, attemptsOf, judged, askedTimes, FULL_READ_SINCE_WORDS } from "@/lib/api";
+  endOfWindow, fullReading, ownGap, ownSide, sharedAnswer, rawErrorWords, foreignRows, hhmm, attemptsOf, judged, askedTimes, FULL_READ_SINCE_WORDS, ago } from "@/lib/api";
 import { useWindow, WindowSwitch, periodName } from "@/lib/window";
 import StatusLine from "@/components/StatusLine";
 import { Eye } from "@/components/Metrics";
@@ -195,11 +195,6 @@ function Host({ s }: { s: string }) {
   return <span className="mono">{parts.map((part, i) => <Fragment key={i}>{i > 0 && <wbr />}{part}{i < parts.length - 1 && "."}</Fragment>)}</span>;
 }
 
-/** the addresses' mark: a chevron that turns when they show */
-const Chevron = () => (
-  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="m4.5 6.5 3.5 3.5 3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
-);
-
 
 /**
  * One cell of the latest-checks strip: one reading of a blob, its requests together, worded and toned as its row in
@@ -375,7 +370,11 @@ function Page() {
   // them once `until` passes, so a cached answer does not keep the badge.
   const prov = provisionalNow(v.provisional_faults);
   const ref = data.network_reference;
-  const refText = ref && ref.median_rate != null ? `network median ${pctFrac(ref.median_rate)}` : ref && ref.pooled_rate.den > 0 ? `network ${pctOf(ref.pooled_rate.num, ref.pooled_rate.den)}` : "";
+  // the network's rate beside the validator's own, words and figure: the median of the validators' own rates, else every
+  // obligation together; none on a pinned window
+  const refFig: [string, string] | null = ref && ref.median_rate != null ? ["network median", pctFrac(ref.median_rate)]
+    : ref && ref.pooled_rate.den > 0 ? ["network", pctOf(ref.pooled_rate.num, ref.pooled_rate.den)] : null;
+  const refText = refFig ? refFig.join(" ") : "";
 
   // Readings in this period that did not count although something on the validator's side failed (a wrong
   // certificate, an endpoint that did not answer): beside a gap of Tensile's own at a full reading, or while the blob
@@ -440,6 +439,8 @@ function Page() {
       ? { n: att.attested_blobs, of: att.blob_coverage.den, title: `${int(att.attested_blobs)} of ${int(att.blob_coverage.den)} blobs. ${ENDORSE_TITLE}` }
       : null;
   const timeouts = v.timeouts_enforced ?? 0;
+  // the chain's word after the voting power, only when it is not simply bonded
+  const bondWord = v.jailed ? "jailed" : !bonded && v.bond_status ? v.bond_status.replace(/^BOND_STATUS_/, "").toLowerCase() : null;
   const reach = bonded && rw && rw.den > 0 ? rw : null;
 
   const rateCls = notLive || decided === 0 ? "na" : tone === "r-bad" ? "bad" : tone === "r-warn" ? "warn" : "";
@@ -479,12 +480,11 @@ function Page() {
                   {diag.docs && <a href={diag.docs.href} rel="noopener noreferrer" target="_blank">{diag.docs.word} →</a>}
                 </p>
               )}
-              {(v.provider_since || site) && (
-                <p className="vd-sub">
-                  {v.provider_since && <span title={`When this validator first appeared as a Fibre provider, whatever endpoint it had then: ${utcWord(v.provider_since)}`}>Fibre provider since <b>{shortDate(v.provider_since)}</b></span>}
-                  {site && <a href={site} title={site} rel="nofollow noopener noreferrer" target="_blank">{site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</a>}
-                </p>
-              )}
+              <p className="vd-sub">
+                {v.provider_since && <span title={`When this validator first appeared as a Fibre provider, whatever endpoint it had then: ${utcWord(v.provider_since)}`}>Fibre provider since <b>{shortDate(v.provider_since)}</b></span>}
+                {site && <a href={site} title={site} rel="nofollow noopener noreferrer" target="_blank">{site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</a>}
+                <a href={`${API_BASE}/v1/validators/${own}/feed.atom`} type="application/atom+xml" title="Endpoint changes of this validator, as an Atom feed">Atom feed</a>
+              </p>
             </div>
           </div>
           <dl className="vd-facts">
@@ -495,11 +495,12 @@ function Page() {
                 : <><dt>Endpoint</dt><dd className="vd-none" title={noEndpoint && diag ? diag.text : undefined}><em>none registered</em>
                   {noEndpoint && diag?.docs && <a href={diag.docs.href} rel="noopener noreferrer" target="_blank">{diag.docs.word} →</a>}</dd></>}
             {v.host && v.hosting && <><dt>Hosting</dt><dd><HostingFact h={v.hosting} /></dd></>}
+            {v.operator_address && <><dt>Valoper address</dt><dd className="vd-addr"><span className="mono">{v.operator_address}</span><CopyMark text={v.operator_address} label="the valoper address" /></dd></>}
             {(v.host || c) && <>
               <dt>Last check</dt>
               <dd className="vd-chk">{c
                 ? <>
-                  <b title={utcWord(c.at)}>{whenUTC(c.at)}</b>
+                  <span className="vd-when"><b title={utcWord(c.at)}>{whenUTC(c.at)}</b> <em>· {ago(c.at)}</em></span>
                   <span className="vd-stages" title={[c.host !== v.host && `checked ${c.host}`, c.raw_error].filter(Boolean).join(" · ") || "The newest handshake with the registered endpoint, stage by stage."}>
                     {stages.map(([name, ok, note], i) => {
                       const skip = firstFail >= 0 && i > firstFail;
@@ -512,25 +513,16 @@ function Page() {
             </>}
           </dl>
         </div>
-        <div className="vd-pf-foot">
-          <details className="vd-addrs">
-            <summary><Chevron />Addresses</summary>
-            <dl>
-              {v.operator_address && <><dt>Operator</dt><dd className="vd-addr"><span className="mono">{v.operator_address}</span><CopyMark text={v.operator_address} label="the operator address" /></dd></>}
-              <dt>Consensus</dt><dd className="vd-addr" title={v.cons_address ? `hex ${v.address}` : undefined}><span className="mono">{cons}</span><CopyMark text={cons} label="the consensus address" /></dd>
-            </dl>
-          </details>
-          <a className="vd-feed" href={`${API_BASE}/v1/validators/${own}/feed.atom`} type="application/atom+xml" title="Endpoint changes of this validator, as an Atom feed">Atom feed</a>
-        </div>
       </section>
 
       <PreLive meta={meta} />
       <StatusLine meta={meta} metaError={metaErr} snap={{ record_through: data.record_through, window: data.window }} client={{ error: d.error, fetchedAt: d.fetchedAt, status: d.status }} measuring={measuring} />
 
-      {/* what Tensile found when it read this validator's rows: the period's service rate and its fraction on the left,
-          what was not served, what waits for its check, reachability and throughput on the same line to the right, and
-          under them, across the frame, the latest checks whatever the period, one cell each */}
-      <section className="pan vd-svc" id="observed" aria-labelledby="vd-observed">
+      {/* one window: what Tensile found when it read this validator's rows on the left (the period's service rate, its
+          count and the network beside it; the latest checks, one cell each, with their first and last times under them;
+          then the period's other figures on one line), what the chain records on the right, as a quiet list */}
+      <div className="pan vd-stat">
+      <section className="vd-svc" id="observed" aria-labelledby="vd-observed">
         <div className="vp-h">
           <h2 className="vp-t" id="vd-observed" title="Each blob is read once, 10 minutes before its retention window ends, and every validator that endorsed it is asked for its own rows. A validator is not served when its own rows did not come back, at the reading and each time it was asked again."><Eye />Observed by Tensile</h2>
         </div>
@@ -541,65 +533,72 @@ function Page() {
               {notLive || !o || decided === 0 ? "—" : pctOf(o.served, decided)}
               {!notLive && held.length > 0 && <Warn text={`${plural(held.length, "reading")} in this period did not count: ${heldWhy}. ${heldText} The checks below show each one.`} />}
             </p>
-            {!notLive && o && decided > 0 && <p className="vd-rate-s"><b>{int(o.served)}</b> / {int(decided)}</p>}
-            {/* why there is no rate, under the dash only when no check shows below to say otherwise; the dash's title
-                keeps the words */}
-            {!notLive && (!o || decided === 0) && cells.length === 0 && <p className="vd-rate-s">{noRate}</p>}
+            {!notLive && o && decided > 0 && <p className="vd-rate-s"><b>{int(o.served)}</b> / {int(decided)}{refFig && <> · {refFig[0]} <b>{refFig[1]}</b></>}</p>}
+            {/* why there is no rate, under the dash, where the count goes when there is one; the dash's title keeps the
+                rest of the words */}
+            {!notLive && (!o || decided === 0) && <p className="vd-rate-s">{noRate}</p>}
           </div>
-          <div className="vd-more">
-            <span className={"vd-fi" + (!notLive && broken > 0 ? " bad" : "")} title={`Endorsed shards whose own rows did not come back, at the reading and each time they were asked again. Before ${FULL_READ_SINCE_WORDS}: rows that did not come back from a blob that could not be reconstructed.`}>
-              {notLive
-                ? <>Not served <b>—</b></>
-                : broken > 0
-                  ? <button type="button" className="vd-go" onClick={showNotServed} aria-label={`${int(broken)} not served: show them in the checks below`}>Not served <b>{int(broken)}</b></button>
-                  : <>Not served <b>0</b></>}
-              {!notLive && prov > 0 && <Warn text={`${int(prov)} of these ${prov === 1 ? "is" : "are"} younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.`} />}
-            </span>
-            <span className="vd-fi" title={`Endorsed shards whose retention window has not ended. Each is read 10 minutes before its window ends: the result shows in the checks below at once, and enters the counts when the window closes.${!notLive && notCountedText(o) ? ` Not counted in the period: ${notCountedText(o)}.` : ""}`}>
-              Awaiting check <b>{notLive || data.in_retention_window == null ? "—" : int(data.in_retention_window)}</b>
-            </span>
-            <span className="vd-fi" title={!bonded ? "Out of the bonded list: not checked." : reach ? `${int(reach.num)} of ${int(reach.den)} handshakes completed with the registered endpoint over the period. Not signing uptime.${v.last_unreachable_at ? ` Last failed handshake ${utcWord(v.last_unreachable_at)}.` : ""}` : "No handshake yet."}>
-              Reachability <b>{reach ? pctOf(reach.num, reach.den) : "—"}</b>
-            </span>
-            <span className="vd-fi" title={v.serve_bytes_per_second == null
-              ? (v.serve_throughput_sample > 0 ? `${int(v.serve_throughput_sample)} of the 3 large-shard downloads it is shown from.` : "No large-shard download yet.")
-              : `Median download speed over ${int(v.serve_throughput_sample)} shards of 2 MiB or more.`}>
-              Throughput <b>{v.serve_bytes_per_second == null ? "—" : unit(`${bytes(v.serve_bytes_per_second)}/s`)}</b>
-            </span>
+          {/* the latest checks whatever the period, at a fixed size: how many and the key over the cells, the oldest and
+              the newest check's times under them */}
+          <div className="vd-latest">
+            {cells.length > 0
+              ? <>
+                <div className="vd-cap">
+                  <span className="vd-ttl">Latest {plural(cells.length, "check")}</span>
+                  <ul className="vd-key" aria-label="key">
+                    {key.map((k) => <li key={k.word}>{k.sw.map((s) => <i key={s} className={"vd-c " + s} aria-hidden="true" />)}{k.word} <b>{int(k.n)}</b></li>)}
+                  </ul>
+                </div>
+                <Strip key={addr} cells={cells} />
+                <p className="vd-ends" style={{ "--n1": Math.min(cells.length, 25) } as CSSProperties}>
+                  {cells.length > 1 && <span title={utcWord(cells[0].at)}>{monthDayTime(cells[0].at).slice(0, -3)}</span>}
+                  <span title={utcWord(cells[cells.length - 1].at)}>{monthDayTime(cells[cells.length - 1].at).slice(0, -3)} · {age(now - Date.parse(cells[cells.length - 1].at))} ago</span>
+                </p>
+              </>
+              : <p className="vd-none-yet">No check of this validator on record yet.</p>}
           </div>
         </div>
-        {/* the latest checks whatever the period, across the frame: what they are and the key over the cells */}
-        <div className="vd-latest">
-          {cells.length > 0
-            ? <>
-              <div className="vd-cap">
-                <span className="vd-ttl">Latest {plural(cells.length, "check")} whatever the period, oldest to newest</span>
-                <ul className="vd-key" aria-label="key">
-                  {key.map((k) => <li key={k.word}>{k.sw.map((s) => <i key={s} className={"vd-c " + s} aria-hidden="true" />)}{k.word} <b>{int(k.n)}</b></li>)}
-                </ul>
-              </div>
-              <Strip key={addr} cells={cells} />
-            </>
-            : <p className="vd-none-yet">No check of this validator on record yet.</p>}
+        {/* the period's other figures on one line: what was not served (a click shows them in the checks), reachability
+            with its count, then throughput and what waits for its check once there is something to say */}
+        <div className="vd-more">
+          <span className={"vd-fi" + (!notLive && broken > 0 ? " bad" : "")} title={`Endorsed shards whose own rows did not come back, at the reading and each time they were asked again. Before ${FULL_READ_SINCE_WORDS}: rows that did not come back from a blob that could not be reconstructed.`}>
+            {notLive
+              ? <>Not served <b>—</b></>
+              : broken > 0
+                ? <button type="button" className="vd-go" onClick={showNotServed} aria-label={`${int(broken)} not served: show them in the checks below`}>Not served <b>{int(broken)}</b></button>
+                : <>Not served <b>0</b></>}
+            {!notLive && prov > 0 && <Warn text={`${int(prov)} of these ${prov === 1 ? "is" : "are"} younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.`} />}
+          </span>
+          <span className="vd-fi" title={!bonded ? "Out of the bonded list: not checked." : reach ? `${int(reach.num)} of ${int(reach.den)} handshakes completed with the registered endpoint over the period. Not signing uptime.${v.last_unreachable_at ? ` Last failed handshake ${utcWord(v.last_unreachable_at)}.` : ""}` : "No handshake yet."}>
+            Reachability <b>{reach ? pctOf(reach.num, reach.den) : "—"}</b>{reach && <em>{int(reach.num)} / {int(reach.den)}</em>}
+          </span>
+          {v.serve_bytes_per_second != null && <span className="vd-fi" title={`Median download speed over ${int(v.serve_throughput_sample)} shards of 2 MiB or more.`}>
+            Throughput <b>{unit(`${bytes(v.serve_bytes_per_second)}/s`)}</b>
+          </span>}
+          {!notLive && (data.in_retention_window ?? 0) > 0 && <span className="vd-fi" title={`Endorsed shards whose retention window has not ended. Each is read 10 minutes before its window ends: the result shows in the checks below at once, and enters the counts when the window closes.${notCountedText(o) ? ` Not counted in the period: ${notCountedText(o)}.` : ""}`}>
+            Awaiting check <b>{int(data.in_retention_window)}</b>
+          </span>}
         </div>
       </section>
 
-      {/* what the chain records: one compact frame, calmer than Tensile's, so signing is never read as serving */}
+      {/* what the chain records, as a quiet list in the same frame, so signing is never read as serving: the period's
+          figures, a step of space, then what holds now */}
       <section className="vd-oc" id="chain" aria-labelledby="vd-chain">
-        <div className="vd-oc-h">
-          <h2 id="vd-chain">On chain <span className="per">({per})</span></h2>
-          <p>Read from the chain, nothing measured</p>
-        </div>
-        <dl className="vd-oc-l" style={{ "--n": timeouts > 0 ? 5 : 4 } as CSSProperties}>
+        <h2 id="vd-chain" title="Read from the chain, nothing measured.">On chain</h2>
+        <dl className="vd-oc-l">
           <div title={endorse ? endorse.title : `No settlement assigned it rows. ${ENDORSE_TITLE}`}>
-            <dt>Endorsements</dt>
+            <dt>Endorsements <span className="per">· {per}</span></dt>
             <dd className={endorse ? undefined : "na"}><b>{endorse ? pctOf(endorse.n, endorse.of) : "—"}</b>{endorse && <em>{int(endorse.n)} / {int(endorse.of)}</em>}</dd>
           </div>
           <div title={`${load ? `${int(load.promises)} endorsed blobs in the period. ` : ""}Row data of the shards this validator stored and endorsed over the period's settled blobs: blob_size / 4096 per row, padding included. The row proofs stored beside them are not counted.`}>
-            <dt>Shard data</dt>
+            <dt>Shard data <span className="per">· {per}</span></dt>
             <dd className={load && !notLive ? undefined : "na"}><b>{load && !notLive ? unit(bytes(load.bytes)) : "—"}</b></dd>
           </div>
-          <div title="Shard data this validator must hold at this moment: endorsed blobs whose retention window has not ended.">
+          {timeouts > 0 && <div title="Timeouts this validator reported: MsgPaymentPromiseTimeout submitted by its operator account in the period.">
+            <dt>Timeouts <span className="per">· {per}</span></dt>
+            <dd><b>{int(timeouts)}</b></dd>
+          </div>}
+          <div className="now" title="Shard data this validator must hold at this moment: endorsed blobs whose retention window has not ended.">
             <dt>Held now</dt>
             <dd className={load ? undefined : "na"}><b>{load ? unit(bytes(load.stored_bytes)) : "—"}</b></dd>
           </div>
@@ -607,12 +606,13 @@ function Page() {
             <dt>Rows per blob</dt>
             <dd className={load ? undefined : "na"}><b>{load ? int(load.rows_per_blob) : "—"}</b></dd>
           </div>
-          {timeouts > 0 && <div title="MsgPaymentPromiseTimeout submitted by this validator’s operator account in the period.">
-            <dt>Timeouts reported</dt>
-            <dd><b>{int(timeouts)}</b></dd>
-          </div>}
+          <div title="Its stake as the chain records it now, the figure the Validators list sorts by.">
+            <dt>Voting power</dt>
+            <dd><b>{int(v.voting_power)}</b>{bondWord && <em>· {bondWord}</em>}</dd>
+          </div>
         </dl>
       </section>
+      </div>
 
       {/* the latest checks in the Blobs list's own rows, newest first, whatever the period: the whole row opens the blob,
           and what Tensile found sits in its lane at the end */}
