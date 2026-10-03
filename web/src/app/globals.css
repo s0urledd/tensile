@@ -2244,10 +2244,11 @@ button.warn:focus-visible { outline-offset: 0; }
   .vd-stat > .vd-oc { border-left: 0; border-top: 1px solid var(--border); }
   .vd-stat .vd-svc-top { grid-template-columns: minmax(0, 1fr); row-gap: 16px; }
   .vd-stat .vd-latest { width: auto; max-width: 472px; }
-  .vd-stat .vd-strip { grid-template-columns: repeat(25, minmax(0, 1fr)); grid-template-rows: none; }
+  /* the cells take the strip's width again, square, so the desktop's 16 px rows let go too */
+  .vd-stat .vd-strip { grid-template-columns: repeat(25, minmax(0, 1fr)); grid-template-rows: none; grid-auto-rows: auto; }
   .vd-stat .vd-ends { width: auto; }
 }
-@container (max-width: 420px) { .vd-stat .vd-strip { grid-template-columns: repeat(10, minmax(0, 1fr)); grid-template-rows: none; max-width: 256px; } }
+@container (max-width: 420px) { .vd-stat .vd-strip { grid-template-columns: repeat(10, minmax(0, 1fr)); grid-template-rows: none; grid-auto-rows: auto; max-width: 256px; } }
 @media (max-width: 720px) {
   .vd-stat > .vd-svc, .vd-stat > .vd-oc { padding: 16px; }
 }
@@ -2405,6 +2406,8 @@ button.warn:focus-visible { outline-offset: 0; }
   .vd-who .avatar { width: 40px; height: 40px; border-radius: 10px; font-size: 13px; }
   .vd-who h1 { font-size: 24px; line-height: 30px; }
   .vd-facts { grid-template-columns: 84px minmax(0, 1fr); padding: 4px 16px 6px; }
+  /* a label longer than its column (Valoper address) takes two lines rather than run under the value */
+  .vd-facts dt { white-space: normal; }
   .vd-addrs summary { padding: 0 16px; }
   .vd-addrs dl { grid-template-columns: 84px minmax(0, 1fr); padding: 0 16px 12px; }
   .vd-feed { right: 16px; }
