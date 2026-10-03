@@ -6,7 +6,6 @@ import { useApi, type Blob, type BlobReading, type Meta, int, bytes, tia, utcWor
   endOfWindow, fullReading, ownGap, ownSide, sharedAnswer, rawErrorWords, foreignRows, asksAgain, attemptsOf, judged as judgedBy, askedTimes, FULL_READ_SINCE, FULL_READ_SINCE_WORDS } from "@/lib/api";
 import StatusLine from "@/components/StatusLine";
 import { Eye } from "@/components/Metrics";
-import Avatar from "@/components/Avatar";
 import Copy from "@/components/Copy";
 import Warn from "@/components/Warn";
 import { unit } from "@/components/Unit";
@@ -225,9 +224,6 @@ function Page() {
   const [table, setTable] = useState(false);
   const { data: meta, error: metaErr } = useApi<Meta>("/v1/meta");
   const d = useApi<Detail>(hash ? `/v1/blobs/${hash}` : null);
-  // each validator's logo: the Keybase picture its operator set, which the validator list carries and a blob's assignments
-  // do not; asked once, after the blob, so it never holds the page up (the pictures are the overview's, cached a day)
-  const vl = useApi<{ validators: { address: string; avatar_url?: string }[] }>(hash && d.data ? "/v1/validators?window=24h" : null, 0);
   if (!hash) return <p className="notice">Open a blob from the <Link href="/blobs/">list</Link>, or add <code>?hash=&lt;promise hash&gt;</code> to the address.</p>;
   const data = d.data;
   if (!data) {
@@ -304,7 +300,6 @@ function Page() {
   const shown = !!rc && rc.total_rows > 0 && (counted || (rc.status === "pending" && !over));
   // the endorsers an earlier reading that asked each of them once could not ask: Tensile's own gaps
   const unasked = everyEndorser ? Math.max(0, rows.filter((a) => a.attested === true).length - asked) : 0;
-  const avatars = new Map((vl.data?.validators ?? []).filter((v) => v.avatar_url).map((v) => [v.address, v.avatar_url!]));
 
   // who paid, where it went and when: the publisher page's light frame of facts, one row each
   const facts = (
@@ -356,7 +351,7 @@ function Page() {
   );
   const sig = rows.length === 0
     ? <section className="bd-sig"><div className="bd-sh"><h2><Pen />Endorsements</h2></div><p className="bd-none">No assignment recorded{b.assignment_error ? `: ${b.assignment_error}` : ""}.</p></section>
-    : <Signers rows={rows} marks={marks} share={share} stake={stake} avatars={avatars} table={table} onTable={() => setTable((t) => !t)} />;
+    : <Signers rows={rows} marks={marks} share={share} stake={stake} table={table} onTable={() => setTable((t) => !t)} />;
 
   return (
     <>
@@ -393,7 +388,6 @@ function Page() {
 }
 
 type ListProps = { rows: Assignment[]; marks: Map<string, Mark>; share: (vp: number) => number };
-type Logos = Map<string, string>;
 const nameOf = (a: Assignment) => a.moniker || (a.operator_address ? shortMid(a.operator_address, 18, 4) : shortMid(a.validator_address, 12, 4));
 const pct = (f: number) => (f >= 0.0995 ? `${(f * 100).toFixed(1)}%` : f >= 0.001 ? `${(f * 100).toFixed(2)}%` : "<0.1%");
 /** the card's mark: a pen, as a signature */
@@ -407,10 +401,10 @@ const Ban = () => (
 
 /**
  * The endorsements, set as a DA explorer sets a batch's signers: a band for the validators that endorsed and one for
- * those that did not, each a grid of small tiles (the logo, the name, its share of the voting power under it), every
+ * those that did not, each a grid of small tiles (the name, its share of the voting power under it), every
  * validator shown. The voting power endorsed is in the figures above, so the card does not say it twice.
  */
-function Signers({ rows, marks, share, stake, avatars, table, onTable }: ListProps & { stake: number | null; avatars: Logos; table: boolean; onTable: () => void }) {
+function Signers({ rows, marks, share, stake, table, onTable }: ListProps & { stake: number | null; table: boolean; onTable: () => void }) {
   const on = rows.filter((a) => a.attested === true), off = rows.filter((a) => a.attested === false), un = rows.filter((a) => a.attested == null);
   const f = stake ?? on.reduce((s, a) => s + share(a.voting_power), 0);
   return (
@@ -420,15 +414,15 @@ function Signers({ rows, marks, share, stake, avatars, table, onTable }: ListPro
         <button type="button" className="bd-tbl" aria-pressed={table} onClick={onTable} aria-controls="table">Table</button>
       </div>
       <div className="bd-bands">
-        <Band label="Endorsed" list={on} marks={marks} share={share} avatars={avatars} vp={f} />
-        <Band label="Not endorsed" list={off} marks={marks} share={share} avatars={avatars} off vp={un.length === 0 && stake != null ? 1 - stake : undefined} />
-        {un.length > 0 && <Band label="Signature not recorded" list={un} marks={marks} share={share} avatars={avatars} />}
+        <Band label="Endorsed" list={on} marks={marks} share={share} vp={f} />
+        <Band label="Not endorsed" list={off} marks={marks} share={share} off vp={un.length === 0 && stake != null ? 1 - stake : undefined} />
+        {un.length > 0 && <Band label="Signature not recorded" list={un} marks={marks} share={share} />}
       </div>
     </section>
   );
 }
 
-function Band({ label, list, marks, share, avatars, off, vp: given }: { label: string; list: Assignment[]; marks: Map<string, Mark>; share: (vp: number) => number; avatars: Logos; off?: boolean; vp?: number }) {
+function Band({ label, list, marks, share, off, vp: given }: { label: string; list: Assignment[]; marks: Map<string, Mark>; share: (vp: number) => number; off?: boolean; vp?: number }) {
   if (list.length === 0) return null;
   const vp = given ?? list.reduce((s, a) => s + share(a.voting_power), 0);
   return (
@@ -441,8 +435,6 @@ function Band({ label, list, marks, share, avatars, off, vp: given }: { label: s
             <li key={a.validator_address}>
               <Link className={"bd-tile" + (m.tone ? " " + m.tone : "")} href={validatorHref(a.operator_address, a.validator_address)}
                 title={[`${nameOf(a)} · ${pct(share(a.voting_power))} of voting power · ${int(a.row_count)} rows`, m.word, a.host_at_settlement ? `host ${a.host_at_settlement}` : ""].filter(Boolean).join("\n")}>
-                {/* a logo for the validators that endorsed; the rest carry the struck circle alone, and their pictures are not fetched */}
-                {!off && <Avatar v={{ avatar_url: avatars.get(a.validator_address), moniker: a.moniker, address: a.validator_address }} />}
                 <span className="tx">
                   <span className="nm">{off && <Ban />}<span className="t">{nameOf(a)}</span>{m.tone && <i className="mk" aria-label={m.res} />}</span>
                   <span className="vp">{pct(share(a.voting_power))}</span>
