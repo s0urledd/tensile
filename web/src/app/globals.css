@@ -2119,27 +2119,28 @@ button.warn:focus-visible { outline-offset: 0; }
 /* ---- what Tensile found: the rate and the period's other figures on one line, the latest checks across the frame ---- */
 /* one surface with no rule inside it: the name; the rate and its fraction on the left, what was not served, what waits
    for its check, reachability and throughput on the fraction's line to the right; then the strip under them */
-.vd-svc { margin-top: 16px; }
+.vd-svc { margin-top: 16px; display: grid; grid-template-columns: minmax(240px, 280px) minmax(0, 1fr); grid-template-areas: "h h" "top latest"; column-gap: 40px; }
+.vd-svc > .vp-h { grid-area: h; }
 .vp-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 24px 0; }
 .vp-t { display: inline-flex; align-items: center; gap: 7px; margin: 0; font-size: var(--t-cell); font-weight: 600; letter-spacing: 0; line-height: 18px; color: var(--text); white-space: nowrap; }
 .vp-t svg { flex: none; color: var(--accent-ink); }
-.vd-svc-top { display: flex; align-items: flex-end; align-items: last baseline; justify-content: space-between; flex-wrap: wrap; gap: 12px 32px; padding: 20px 24px 0; }
+.vd-svc-top { grid-area: top; display: flex; flex-direction: column; align-items: stretch; gap: 14px; padding: 14px 0 20px 24px; }
 .vd-lbl { margin: 0; font-size: var(--t-tiny); line-height: 14px; font-weight: 500; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* which period the rate is of, beside its label */
 .vd-per { letter-spacing: .02em; text-transform: none; font-weight: 400; }
 .vd-rate { min-width: 0; }
-.vd-rate-v { display: flex; align-items: center; margin: 12px 0 0; font-family: var(--font-table); font-size: var(--t-fig); line-height: 44px; font-weight: 500; letter-spacing: -.03em; color: var(--text); font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
+.vd-rate-v { display: flex; align-items: center; margin: 8px 0 0; font-family: var(--font-table); font-size: 34px; line-height: 40px; font-weight: 500; letter-spacing: -.03em; color: var(--text); font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
 .vd-rate-v .warn { margin-left: 8px; }
 .vd-rate.bad .vd-rate-v { color: var(--fault); }
 .vd-rate.warn .vd-rate-v { color: var(--hold-ink); }
 .vd-rate.na .vd-rate-v { color: var(--text-3); }
-.vd-rate-s { margin: 6px 0 0; font-family: var(--font-table); font-size: 14px; line-height: 20px; color: var(--text-3); font-variant-numeric: tabular-nums lining-nums; }
+.vd-rate-s { margin: 2px 0 0; font-family: var(--font-table); font-size: 14px; line-height: 20px; color: var(--text-3); font-variant-numeric: tabular-nums lining-nums; }
 .vd-rate-s b { font-weight: 500; color: var(--text-2); }
 .vd-rate.na .vd-rate-s { font-family: var(--sans); font-size: var(--t-cell); }
 
 /* the period's other figures, on the fraction's line: what was not served (a click shows them in the checks), what
    waits for its check, then reachability and throughput */
-.vd-more { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 28px; font-size: var(--t-cell); line-height: 20px; color: var(--text-3); }
+.vd-more { display: grid; grid-template-columns: repeat(2, max-content); gap: 4px 20px; font-size: var(--t-cell); line-height: 20px; color: var(--text-3); }
 .vd-fi { display: inline-flex; align-items: baseline; white-space: nowrap; }
 .vd-fi b { margin-left: 7px; font-family: var(--font-table); font-size: 14px; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
 .vd-fi b .u { margin-left: 1px; font-weight: 400; color: var(--text-3); }
@@ -2155,7 +2156,7 @@ button.warn:focus-visible { outline-offset: 0; }
    over 16px and the room left over shared between them; where the frame is too narrow for that, two lines of 25, then
    a fixed count to a line on a phone, so no line ends short. The slots are fixed, so fewer checks keep the same pitch.
    A finger slides along it sideways (the page still scrolls up and down from it) */
-.vd-latest { min-width: 0; padding: 22px 24px 22px; container-type: inline-size; }
+.vd-latest { grid-area: latest; align-self: center; min-width: 0; padding: 14px 24px 20px 0; container-type: inline-size; }
 .vd-cap { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 24px; margin-bottom: 10px; font-size: var(--t-small); line-height: 16px; color: var(--text-3); }
 .vd-ttl { color: var(--text-2); }
 .vd-key { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; padding: 0; list-style: none; }
@@ -2163,13 +2164,9 @@ button.warn:focus-visible { outline-offset: 0; }
 .vd-key b { font-weight: 500; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .vd-key .vd-c { width: 9px; height: 9px; border-radius: 2px; cursor: default; }
 .vd-key .vd-c + .vd-c { margin-left: -4px; }
-.vd-strip { display: grid; grid-template-columns: repeat(50, minmax(14px, 16px)); justify-content: space-between; gap: 4px 3px; touch-action: pan-y; }
+.vd-strip { display: grid; grid-template-columns: repeat(25, minmax(0, 1fr)); gap: 4px; max-width: 746px; touch-action: pan-y; }
 /* by the strip's own width: 50 x 14px + 49 x 3px is 847px, 25 x 16px + 24 x 4px is 496px, 17 x 14px + 16 x 4px is 302px */
-@container (max-width: 846px) { .vd-strip { grid-template-columns: repeat(25, 16px); justify-content: start; gap: 4px; } }
-@container (max-width: 495px) { .vd-strip { grid-template-columns: repeat(25, 14px); } }
-@container (max-width: 445px) { .vd-strip { grid-template-columns: repeat(17, 14px); } }
-@container (max-width: 301px) { .vd-strip { column-gap: 3px; } }
-@container (max-width: 285px) { .vd-strip { grid-template-columns: repeat(13, 14px); column-gap: 4px; } }
+@container (max-width: 420px) { .vd-strip { grid-template-columns: repeat(10, minmax(0, 1fr)); max-width: 256px; } }
 .vd-c { --cc: var(--neutral); display: block; width: 100%; height: auto; aspect-ratio: 1 / 1; padding: 0; border: 0; border-radius: 3px; background: var(--cc); cursor: pointer; transition: box-shadow var(--dur), opacity var(--dur); }
 .vd-c.ok { --cc: var(--ok); }
 .vd-c.fault { --cc: var(--fault); }
@@ -2194,13 +2191,13 @@ button.warn:focus-visible { outline-offset: 0; }
 .vd-tip .tip-n { margin-top: 4px; padding-top: 5px; border-top: 1px solid var(--border); color: var(--text-3); }
 
 /* ---- what the chain records: one calmer frame, its name on the left, a label over each figure ---- */
-.vd-oc { display: grid; grid-template-columns: var(--vd-cols); margin-top: 16px; border: 1px solid var(--border); border-radius: var(--r-card); background: color-mix(in srgb, var(--paper) 40%, transparent); }
+.vd-oc { display: flex; flex-wrap: wrap; align-items: center; column-gap: 48px; margin-top: 16px; border: 1px solid var(--border); border-radius: var(--r-card); background: color-mix(in srgb, var(--paper) 40%, transparent); }
 .vd-oc-h { display: flex; flex-direction: column; justify-content: center; min-width: 0; padding: 16px 24px; }
 .vd-oc-h h2 { margin: 0; font-size: var(--t-cell); font-weight: 600; line-height: 18px; letter-spacing: 0; color: var(--text); white-space: nowrap; }
 .vd-oc-h h2 .per { font-weight: 400; color: var(--text-3); }
 .vd-oc-h p { margin: 3px 0 0; font-size: var(--t-small); line-height: 16px; color: var(--text-3); white-space: nowrap; }
 /* the figures from the endpoint facts' left edge, spaced, with no rule between them */
-.vd-oc-l { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); column-gap: 20px; margin: 0; padding: 16px 24px 17px; }
+.vd-oc-l { display: flex; flex-wrap: wrap; column-gap: 40px; row-gap: 12px; margin: 0; padding: 16px 24px 17px 0; }
 .vd-oc-l > div { min-width: 0; }
 .vd-oc-l dt { font-size: var(--t-small); line-height: 16px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .vd-oc-l dd { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; margin: 5px 0 0; white-space: nowrap; font-family: var(--font-table); font-variant-numeric: tabular-nums lining-nums; }
@@ -2263,7 +2260,7 @@ button.warn:focus-visible { outline-offset: 0; }
   .vd-facts { padding: 6px 24px 8px; border-top: 1px solid var(--border); }
   .vd-oc-h { flex-direction: row; align-items: baseline; justify-content: flex-start; gap: 4px 12px; flex-wrap: wrap; padding: 14px 24px 0; }
   .vd-oc-h p { margin: 0; }
-  .vd-oc-l { padding-top: 12px; }
+  .vd-oc-l { padding: 12px 24px 17px; }
 }
 @media (max-width: 720px) {
   .vd-head { padding-top: 16px; }
@@ -2277,10 +2274,11 @@ button.warn:focus-visible { outline-offset: 0; }
   .vd-feed { right: 16px; }
   .vp-h { padding: 16px 16px 0; }
   /* the rate over the period's other figures, two to a line */
-  .vd-svc-top { flex-direction: column; align-items: stretch; gap: 12px; padding: 14px 16px 0; }
+  .vd-svc { display: block; }
+  .vd-svc-top { gap: 12px; padding: 12px 16px 0; }
   .vd-more { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; }
-  .vd-rate-v { font-size: 34px; line-height: 40px; }
-  .vd-latest { padding: 18px 16px 18px; }
+  .vd-rate-v { font-size: 30px; line-height: 36px; }
+  .vd-latest { padding: 16px 16px 16px; }
   .vd-oc-h { padding: 14px 16px 0; }
   .vd-oc-l { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; padding: 12px 16px 15px; }
   .vd-oc-l > :last-child:nth-child(odd) { grid-column: 1 / -1; }

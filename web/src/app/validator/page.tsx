@@ -200,8 +200,6 @@ const Chevron = () => (
   <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="m4.5 6.5 3.5 3.5 3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
 );
 
-/** the checks table shows this many rows at first, and this many more at each "Show more" */
-const PAGE = 12;
 
 /**
  * One cell of the latest-checks strip: one reading of a blob, its requests together, worded and toned as its row in
@@ -317,8 +315,6 @@ function Page() {
   const addr = useSearchParams().get("addr") ?? "";
   const [win, setWin] = useWindow("24h");
   const [onlyNotServed, setOnlyNotServed] = useState(false);
-  // how many rows of the checks table show: a page at first, a page more at each "Show more"
-  const [rowsShown, setRowsShown] = useState(PAGE);
   const router = useRouter();
   const onOpen = useCallback((e: React.MouseEvent, href: string) => {
     // a plain click stays in the app; a modified or middle click is the browser's
@@ -326,7 +322,7 @@ function Page() {
     router.push(href);
   }, [router]);
   // another validator starts at the top of its own list
-  useEffect(() => { setRowsShown(PAGE); setOnlyNotServed(false); }, [addr]);
+  useEffect(() => { setOnlyNotServed(false); }, [addr]);
   const { data: meta, error: metaErr } = useApi<Meta>("/v1/meta");
   const d = useApi<Detail>(addr ? `/v1/validators/${addr}?window=${win}` : null);
   const notLive = !!meta?.app_version && !meta.fibre_active;
@@ -432,17 +428,9 @@ function Page() {
   // the not-served figure opens its records: the checks table, filtered to them
   const showNotServed = () => {
     setOnlyNotServed(true);
-    setRowsShown(PAGE);
     document.getElementById("evidence")?.scrollIntoView({ block: "start" });
   };
-  const setFilter = (only: boolean) => { setOnlyNotServed(only); setRowsShown(PAGE); };
-  // a page more; focus moves to the blob link of the first row it adds, so it is not lost when the button goes with the
-  // last page
-  const showMore = () => {
-    const first = Math.min(rowsShown, shown.length);
-    setRowsShown((n) => n + PAGE);
-    requestAnimationFrame(() => document.querySelectorAll<HTMLAnchorElement>("#evidence tr.row .c-b a")[first]?.focus({ preventScroll: true }));
-  };
+  const setFilter = (only: boolean) => setOnlyNotServed(only);
 
   // signing participation, as the chain records it: settlements signed of those assigned, or before signing was
   // counted per settlement, blobs endorsed
@@ -462,7 +450,7 @@ function Page() {
     : decided === 0 ? (o.not_counted > 0 ? `Read, none counted: ${notCountedText(o)}.` : "Not read yet.")
     : `${int(o.served)} of ${int(decided)} counted readings served${refText ? `; ${refText}` : ""}. Endorsed shards served, over served plus not served. A shard counts neither way when one of its requests failed on Tensile’s side or could not be made in time, an answer was rows of the blob that are not the validator’s own, a request Tensile still owed is not on record, or its reading was not made or reached no server; before ${FULL_READ_SINCE_WORDS}, so did a shard not asked for, or one that failed on a blob that was available.`)
     + (data.rolled_up ? ` Before ${data.rolled_up.raw_from}, from the daily rollup.` : "");
-  const visible = shown.slice(0, rowsShown);
+  const visible = shown;
 
   return (
     <>
@@ -706,11 +694,10 @@ function Page() {
             </tbody>
           </table>
         </div>
-        {/* how many show, a page more on each press, and every reading in the API */}
+        {/* every reading, in the API */}
         <div className="pager vd-pager">
-          <span className="count">{shown.length > 0 && <>Showing <b>{int(visible.length)}</b> of {int(shown.length)}</>}</span>
+          <span className="count">{shown.length > 0 && <>{int(visible.length)} {visible.length === 1 ? "check" : "checks"}</>}</span>
           <span className="ctl">
-            {visible.length < shown.length && <button type="button" className="btn" onClick={showMore}>Show more</button>}
             <a className="btn" href={onlyNotServed ? notServedHref : `${API_BASE}/v1/probes?validator=${own}&limit=1000`}
               title={data.recent_probes_truncated ? "The newest readings are here; every one is in the API." : "Every reading, in the API."}>Full history →</a>
           </span>
