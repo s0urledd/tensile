@@ -2,7 +2,7 @@
 import { Suspense, useCallback, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useApi, type Meta, type Tip, blobFee, bytes, fmtShare, int, nsDisplay, tia, utcWord } from "@/lib/api";
+import { useApi, type Meta, type Tip, blobFee, bytes, fmtShare, int, nsDisplay, tia, utcWord, TIP_MS } from "@/lib/api";
 import type { MarketWithQueue, Params, PublisherWithQueue } from "@/lib/withdrawals";
 import { useWindow, WindowSwitch, periodName } from "@/lib/window";
 import { openRow } from "@/lib/row";
@@ -92,7 +92,7 @@ function Page() {
   // every account on record: what each posts as a rule (its average blob over all of them), and the choices of Find
   const { data: all } = useApi<{ publishers: PublisherWithQueue[] }>("/v1/publishers?window=all");
   const pf = useApi<Params>("/v1/params", 0).data?.price_formula;
-  const tip = useApi<Tip>("/v1/tip", 4000); // the header's stream: no request of its own
+  const tip = useApi<Tip>("/v1/tip", TIP_MS); // the header's stream: no request of its own
   const skew = tip.data?.server_time && tip.fetchedAt ? Date.parse(tip.data.server_time) - Date.parse(tip.fetchedAt) : 0;
   const now = Date.now() + skew;
 

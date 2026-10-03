@@ -2,7 +2,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { API_BASE, useApi, type Blob, type Tip, int, pctOf, bytes, whenUTC, utcWord } from "@/lib/api";
+import { API_BASE, useApi, type Blob, type Tip, int, pctOf, bytes, whenUTC, utcWord, TIP_MS } from "@/lib/api";
 import RollNumber, { reducedMotion } from "@/components/RollNumber";
 
 /**
@@ -240,7 +240,7 @@ const Place = memo(function Place({ c, i, fresh, on, tab, ghost, onShow, onKey, 
  * the grid in one column, the readout in the next.
  */
 export default function RecentBlobs() {
-  const tip = useApi<Tip>("/v1/tip", 4000); // the header's stream: no request of its own
+  const tip = useApi<Tip>("/v1/tip", TIP_MS); // the header's stream: no request of its own
   const skew = tip.data?.server_time && tip.fetchedAt ? Date.parse(tip.data.server_time) - Date.parse(tip.fetchedAt) : 0;
   const feed = useBlobFeed(tip.data?.height, skew);
 

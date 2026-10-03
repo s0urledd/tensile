@@ -12,7 +12,7 @@ EnvironmentFile=/etc/fibre-observer/%i.env
 # an unset or empty SKIP_HEIGHTS becomes -skip-heights= , which the scanner
 # reads as no skips, and the value can never be confused with the flag
 # after it.
-ExecStart=/usr/local/bin/sentinel-scan -rpc ${RPC} -data-dir ${DATA_DIR} -start-height ${START_HEIGHT} -skip-heights=${SKIP_HEIGHTS} -follow
+ExecStart=/usr/local/bin/sentinel-scan -rpc ${RPC} -data-dir ${DATA_DIR} -start-height ${START_HEIGHT} -skip-heights=${SKIP_HEIGHTS} -follow -poll 1s
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
