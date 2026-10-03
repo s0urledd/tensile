@@ -1,12 +1,21 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
+import { API_BASE, type Blob, type Validator, type Publisher, int, bytes, tia, nsDisplay, whenUTC, ago } from "@/lib/api";
 import { blobKey } from "@/lib/blobkey";
-import { siteTarget } from "@/lib/sitefind";
+import { useFind, type MatchBy } from "@/lib/blobfind";
+import { siteTarget, type SiteTarget } from "@/lib/sitefind";
+import { lane, recon } from "@/lib/status";
+import Ident from "@/components/Ident";
+import { endpoint } from "@/components/Validators";
 
 /** the full placeholder needs about 300 px of field; a narrower one says only "Search" */
 const WORDS = "Search tx hash, blob ID or address";
 const WORDS_FIT = 300;
+
+/** the most blobs one search lists in its panel, newest first; each opens its own page */
+const SHOWN = 25;
 
 /** what the search takes, with the docs' example blob as the sample of each */
 const KINDS: [string, string][] = [
@@ -18,24 +27,101 @@ const KINDS: [string, string][] = [
 ];
 
 const ICON = <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.75" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="m10.5 10.5 3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>;
+/** a blob: its rows, stacked */
+const BLOB = <svg className="hs-glyph" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="M5 6h6M5 8h6M5 10h4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></svg>;
 
 /** a key pressed in a field or an editor types there; "/" only opens the search from the page itself */
 const typing = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 
 /**
- * The site's search, in the header between the nav and the block: an identifier pasted or typed whole opens what it
- * names (sitefind.ts). A paste goes at once; typing goes on Enter. While the field has focus, a panel under it lists
- * what it takes. "/" anywhere on the page puts the cursor in it.
+ * Whether what is in the field is an identifier whole, so the search can look it up as it stands. A paste is. Hex being
+ * typed waits until it is whole or Enter: 64 characters starting 00 may be the first 64 of a blob ID in hex. Base64
+ * and addresses are whole once they read as one, since a part of either reads as none.
+ */
+function whole(v: string, pasted: boolean): boolean {
+  const t = v.trim();
+  if (!siteTarget(t, blobKey)) return false;
+  if (pasted) return true;
+  const h = t.replace(/^0x/i, "");
+  // typed hex is a hash once it reads as one (44 characters of hex also read as base64), a blob ID in hex at 66
+  return !/^[0-9a-f]+$/i.test(h) || h.length >= 66 || (blobKey(t)?.kind === "hash" && !h.startsWith("00"));
+}
+
+/**
+ * One record from the API, asked once for this path: null until its own answer is in, so a record asked earlier never
+ * stands for the one asked now. missing: the API has no such record (404, 410); invalid: it refused the address (400).
+ */
+type Got<T> = { data: T | null; missing: boolean; invalid: boolean; error: string | null };
+function useRecord<T>(path: string | null): Got<T> | null {
+  const [st, setSt] = useState<{ path: string; got: Got<T> } | null>(null);
+  useEffect(() => {
+    if (!path) return;
+    let live = true;
+    (async () => {
+      let got: Got<T>;
+      try {
+        const r = await fetch(API_BASE + path);
+        got = r.ok ? { data: (await r.json()) as T, missing: false, invalid: false, error: null }
+          : { data: null, missing: r.status === 404 || r.status === 410, invalid: r.status === 400, error: `HTTP ${r.status}` };
+      } catch (e) {
+        got = { data: null, missing: false, invalid: false, error: e instanceof Error ? e.message : String(e) };
+      }
+      if (live) setSt({ path, got });
+    })();
+    return () => { live = false; };
+  }, [path]);
+  return path && st && st.path === path ? st.got : null;
+}
+
+/** one record the search found, as a row of its panel that opens the record's page; each line is its parts, kept whole */
+type Item = { href: string; glyph: ReactNode; title: ReactNode; aside?: ReactNode; lines: ReactNode[][]; label: string };
+
+const by = (b: MatchBy) => (b === "tx" ? "transaction hash" : b === "promise" ? "promise hash" : "commitment");
+const short = (s: string, head = 8, tail = 4) => (s.length > head + tail + 1 ? `${s.slice(0, head)}…${s.slice(-tail)}` : s);
+/** an address as the lists print it: its prefix, then its last four */
+const addrWords = (a: string) => { const i = a.lastIndexOf("1"); return i > 0 ? `${a.slice(0, i)} ••• ${a.slice(-4)}` : a; };
+/** a plain left click: anything else (a new tab, a download, a modifier) is the browser's */
+const plain = (e: React.MouseEvent) => !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0);
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+const bond = (v: Validator) =>
+  v.jailed ? "Jailed" : v.bond_status === "BOND_STATUS_BONDED" ? "Bonded" : v.bond_status === "BOND_STATUS_UNBONDING" ? "Unbonding" : v.bond_status === "BOND_STATUS_UNBONDED" ? "Unbonded" : "";
+
+function blobItem(b: Blob): Item {
+  // Tensile's word for it, as the blob page says it; the list's dated note on hover
+  const rc = recon(b), ln = lane(b);
+  const tx = b.settlement_tx_hash ? short(b.settlement_tx_hash.toUpperCase()) : "";
+  return {
+    href: `/blob/?hash=${b.promise_hash}`,
+    label: `Blob ${b.promise_hash.slice(0, 10)}, block ${int(b.settlement_height)}`,
+    glyph: BLOB,
+    title: <span className="mono">{short(b.promise_hash, 8, 6)}</span>,
+    aside: <span className={`hs-st${rc.tier === "hold" ? " hold" : rc.tier === "kept" ? " ok" : ""}`} title={ln.title}>{cap(rc.word)}</span>,
+    lines: [
+      [`Block ${int(b.settlement_height)}`, whenUTC(b.settlement_time), ...(tx ? [<>Tx <span className="mono">{tx}</span></>] : [])],
+      [bytes(b.blob_size), nsDisplay(b.namespace), ...(b.charge ? [`${tia(b.charge.fee_utia)} fee`] : []), addrWords(b.publisher)],
+    ],
+  };
+}
+
+/**
+ * The site's search, in the header between the nav and the block. An identifier pasted, typed whole or entered is
+ * looked up at once and what it names shows in a panel under the field: the blob or blobs it matches with their
+ * settlement, the validator, the publisher. Nothing opens until the reader picks a row, by click or by the arrow keys
+ * and Enter (a row under a resting pointer is not picked). With nothing to look up, the panel lists what the search takes. "/" anywhere on the page puts the cursor
+ * in it.
  */
 export default function HeaderSearch() {
   const router = useRouter();
   const [q, setQ] = useState("");
+  const [asked, setAsked] = useState<SiteTarget | null>(null);
   const [on, setOn] = useState(false);
   const [bad, setBad] = useState(false);
+  const [pick, setPick] = useState(-1);
   const [fits, setFits] = useState(true);
   const input = useRef<HTMLInputElement>(null);
   const field = useRef<HTMLLabelElement>(null);
+  const box = useRef<HTMLDivElement>(null);
   const pasted = useRef(false);
 
   useEffect(() => {
@@ -55,17 +141,90 @@ export default function HeaderSearch() {
     return () => document.removeEventListener("keydown", key);
   }, []);
 
-  const go = (s: string) => {
-    const t = siteTarget(s, blobKey);
-    if (!t) { setBad(!!s.trim()); return; }
+  // the lookups: each asks only for its own kind, once, and stands until the identifier changes
+  const blob = asked?.kind === "blob" ? blobKey(asked.id) : null;
+  const hit = useFind(blob, { limit: SHOWN });
+  const val = useRecord<{ validator: Validator }>(asked?.kind === "validator" ? `/v1/validators/${asked.id}?window=24h` : null);
+  const pub = useRecord<{ publisher: Publisher }>(asked?.kind === "publisher" ? `/v1/publishers/${asked.id}?window=all` : null);
+
+  let items: Item[] = [];
+  let head: ReactNode = null;
+  let note: ReactNode = null;
+  if (asked?.kind === "blob") {
+    if (!hit) note = <span className="hs-wait">Looking it up…</span>;
+    else if (hit.error && hit.rows.length === 0) note = <>The observer did not answer ({hit.error}). Try again in a moment.</>;
+    else if (hit.total === 0) note = blob?.kind === "id"
+      ? <>Tensile has not indexed a blob with this blob ID yet. A blob appears once Tensile has read the block that settled it.</>
+      : <>Tensile has not indexed a blob with this hash yet, or the transaction carries no Fibre blob.</>;
+    else {
+      items = hit.rows.slice(0, SHOWN).map(blobItem);
+      const tx = hit.by.length === 1 && hit.by[0] === "tx";
+      head = <>{hit.total === 1 ? "Blob" : tx ? `${int(hit.total)} blobs in this transaction` : `${int(hit.total)} blobs`}<span>{blob?.kind === "id" ? "by blob ID" : `by ${hit.by.map(by).join(" and ")}`}</span></>;
+      if (hit.partial) note = <>The observer did not answer every lookup, so there may be more.</>;
+      else if (hit.total > items.length) note = <>The newest {int(items.length)} of {int(hit.total)}.</>;
+    }
+  } else if (asked?.kind === "validator") {
+    const v = val?.data?.validator;
+    if (v) {
+      const st = bond(v), ep = endpoint(v);
+      // the endpoint as the Validators table words it; a jailed or unbonded validator's status already says why there is none
+      const reach = ep.word === "Jailed" || ep.word === "Not bonded" ? null : ep.word === "No endpoint" ? "No Fibre endpoint registered" : `Endpoint: ${ep.word}`;
+      items = [{
+        href: asked.href, label: `Validator ${v.moniker || asked.id}`,
+        glyph: <Ident addr={v.operator_address || asked.id} />,
+        title: <span className="hs-nm">{v.moniker || short(asked.id, 16, 4)}</span>,
+        aside: st ? <span className={`hs-st${v.jailed ? " hold" : ""}`}>{st}</span> : undefined,
+        lines: [
+          [<span key="a" className="mono">{short(v.operator_address || asked.id, 20, 6)}</span>],
+          ...(reach ? [[<span key="e" title={ep.title}>{reach}</span>, ...(v.host && v.last_seen_at ? [`checked ${ago(v.last_seen_at)}`] : [])]] : []),
+        ],
+      }];
+      head = <>Validator<span>by {asked.id.startsWith("celestiavalcons") ? "consensus address" : "valoper address"}</span></>;
+    } else if (val?.missing) note = <>No validator with this address is on record.</>;
+    else if (val?.invalid) note = <>Not a valid validator address. Check it and paste it again.</>;
+    else if (val?.error) note = <>The observer did not answer ({val.error}). Try again in a moment.</>;
+    else note = <span className="hs-wait">Looking it up…</span>;
+  } else if (asked?.kind === "publisher") {
+    const p = pub?.data?.publisher;
+    if (p) {
+      items = [{
+        href: asked.href, label: `Publisher ${p.label || asked.id}`,
+        glyph: <Ident addr={p.publisher} />,
+        title: <span className="hs-nm">{p.label || addrWords(p.publisher)}</span>,
+        aside: <span className="hs-st">{int(p.settlements)} {p.settlements === 1 ? "blob" : "blobs"}</span>,
+        lines: [
+          [<span key="a" className="mono">{short(p.publisher, 16, 6)}</span>],
+          [`${bytes(p.bytes)} of blobs`, ...(p.last_settlement_at ? [`last blob ${ago(p.last_settlement_at)}`] : p.last_seen_at ? [`last seen ${ago(p.last_seen_at)}`] : [])],
+        ],
+      }];
+      head = <>Publisher<span>by address</span></>;
+    } else if (pub?.missing) note = <>No publisher with this address is on record.</>;
+    else if (pub?.invalid) note = <>Not a valid account address. Check it and paste it again.</>;
+    else if (pub?.error) note = <>The observer did not answer ({pub.error}). Try again in a moment.</>;
+    else note = <span className="hs-wait">Looking it up…</span>;
+  }
+
+  const ask = (t: SiteTarget | null) => { setAsked(t); setPick(-1); };
+  // the row the arrow keys picked stays in sight in a long list
+  useEffect(() => { if (pick >= 0) document.getElementById(`hs-i${pick}`)?.scrollIntoView({ block: "nearest" }); }, [pick]);
+  const open = (href: string) => {
     setQ("");
+    ask(null);
     setBad(false);
-    input.current?.blur();
-    router.push(t.href);
+    // a row picked with Tab has the focus, not the field: whichever it is, it lets go, and the panel closes with it
+    const el = document.activeElement;
+    if (el instanceof HTMLElement && box.current?.contains(el)) el.blur();
+    setOn(false);
+    router.push(href);
+  };
+  const enter = () => {
+    if (asked && pick >= 0 && pick < items.length) return open(items[pick].href);
+    const t = siteTarget(q, blobKey);
+    if (t) { if (t.id !== asked?.id) ask(t); setBad(false); } else setBad(!!q.trim());
   };
 
   return (
-    <div className={`hs${on ? " on" : ""}${bad ? " bad" : ""}`} role="search"
+    <div ref={box} className={`hs${on ? " on" : ""}${bad ? " bad" : ""}`} role="search"
       onFocus={() => setOn(true)}
       onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOn(false); }}>
       <div className="hs-box">
@@ -73,27 +232,60 @@ export default function HeaderSearch() {
           {ICON}
           <input ref={input} type="search" value={q} placeholder={fits ? WORDS : "Search"}
             aria-label="Search by transaction hash, blob ID, commitment, promise hash, valoper address or publisher address"
-            aria-describedby="hs-kinds" spellCheck={false} autoComplete="off" enterKeyHint="search"
+            aria-controls="hs-list" aria-expanded={on && items.length > 0} aria-activedescendant={on && pick >= 0 ? `hs-i${pick}` : undefined}
+            role="combobox" aria-autocomplete="list"
+            spellCheck={false} autoComplete="off" enterKeyHint="search"
             onPaste={() => { pasted.current = true; }}
             onChange={(e) => {
               const v = e.target.value;
               setQ(v);
               setBad(false);
-              if (pasted.current && siteTarget(v, blobKey)) go(v);
+              const t = whole(v, pasted.current) ? siteTarget(v, blobKey) : null;
+              if (t?.id !== asked?.id) ask(t);
               pasted.current = false;
             }}
             onKeyDown={(e) => {
               pasted.current = false;
-              if (e.key === "Enter") go(q);
+              if (e.key === "Enter") { e.preventDefault(); enter(); }
               else if (e.key === "Escape") input.current?.blur();
+              else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && items.length) {
+                e.preventDefault();
+                setPick((p) => (e.key === "ArrowDown" ? (p + 1) % items.length : p <= 0 ? items.length - 1 : p - 1));
+              }
             }} />
           <kbd className="hs-key" aria-hidden="true">/</kbd>
         </label>
-        {/* the panel keeps the field's focus when clicked, so it stays open to read */}
-        <div className="hs-dd" id="hs-kinds" hidden={!on} onMouseDown={(e) => e.preventDefault()}>
-          <p className="hs-h">Paste any of these</p>
-          <ul>{KINDS.map(([k, v]) => <li key={k}><span>{k}</span><code>{v}</code></li>)}</ul>
-          <p className="hs-ft" role="status">{bad ? "Not a hash, blob ID or address." : "Enter to search"}</p>
+        {/* the panel keeps the field's focus when clicked, so it stays open; a row is a link and opens on click */}
+        <div className={`hs-dd${asked ? " res" : ""}`} id="hs-panel" hidden={!on} onMouseDown={(e) => e.preventDefault()}>
+          {asked ? (
+            <>
+              {head && <p className="hs-h">{head}</p>}
+              {items.length > 0 && (
+                <ul className="hs-items" id="hs-list" role="listbox" aria-label="What the search found">
+                  {items.map((it, i) => (
+                    <li key={it.href} role="presentation">
+                      <Link id={`hs-i${i}`} role="option" aria-selected={pick === i} aria-label={it.label}
+                        className={`hs-item${pick === i ? " on" : ""}`} href={it.href}
+                        onClick={(e) => { if (!plain(e)) return; e.preventDefault(); open(it.href); }}>
+                        <span className="hs-ic">{it.glyph}</span>
+                        <span className="hs-tx">
+                          <span className="hs-t1">{it.title}{it.aside}</span>
+                          {it.lines.map((l, j) => <span key={j} className="hs-t2">{l.map((part, k) => <Fragment key={k}>{k > 0 && " · "}<span className="hs-pt">{part}</span></Fragment>)}</span>)}
+                        </span>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {note && <p className="hs-note" role="status">{note}</p>}
+            </>
+          ) : (
+            <>
+              <p className="hs-h">Paste any of these</p>
+              <ul className="hs-kinds">{KINDS.map(([k, v]) => <li key={k}><span>{k}</span><code>{v}</code></li>)}</ul>
+              <p className="hs-ft" role="status">{bad ? "Not a hash, blob ID or address." : "Paste or press Enter to look it up"}</p>
+            </>
+          )}
         </div>
       </div>
     </div>

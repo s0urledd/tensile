@@ -23,25 +23,25 @@ const VALOPER = "celestiavaloper19jz75rcp26a6tkch208qm2wmt2ekk4a272cvlx";
 const VALCONS = "celestiavalcons17dzlj8xncd3r3a2s5qjgqrq29ngd04yu6v4lcc";
 const ACCOUNT = "celestia1las83d0dt9gew3faq2mxp2gtupq5drclee9snr";
 
-test("a blob identifier opens the Blobs list of what it matches", () => {
-  assert.deepEqual(go(TX), { kind: "blob", href: `/blobs/?blob=${TX.toLowerCase()}` });
-  assert.deepEqual(go(`0x${PROMISE}`), { kind: "blob", href: `/blobs/?blob=${PROMISE}` });
-  assert.deepEqual(go(COMMITMENT.toUpperCase()), { kind: "blob", href: `/blobs/?blob=${COMMITMENT}` });
+test("a blob identifier is read as the site keeps it, with the Blobs list of what it matches", () => {
+  assert.deepEqual(go(TX), { kind: "blob", id: TX.toLowerCase(), href: `/blobs/?blob=${TX.toLowerCase()}` });
+  assert.deepEqual(go(`0x${PROMISE}`), { kind: "blob", id: PROMISE, href: `/blobs/?blob=${PROMISE}` });
+  assert.deepEqual(go(COMMITMENT.toUpperCase()), { kind: "blob", id: COMMITMENT, href: `/blobs/?blob=${COMMITMENT}` });
   // a blob ID keeps its base64 in the address, encoded, whether it came as base64 or as hex
-  const id = { kind: "blob", href: `/blobs/?blob=${encodeURIComponent(ID)}` };
+  const id = { kind: "blob", id: ID, href: `/blobs/?blob=${encodeURIComponent(ID)}` };
   assert.deepEqual(go(ID), id);
   assert.deepEqual(go(`00${COMMITMENT}`), id);
   assert.deepEqual(go(` ${ID}\n`), id);
 });
 
-test("a validator's operator or consensus address opens its page, an account address a publisher's", () => {
-  assert.deepEqual(go(VALOPER), { kind: "validator", href: `/validator/?addr=${VALOPER}` });
-  assert.deepEqual(go(VALOPER.toUpperCase()), { kind: "validator", href: `/validator/?addr=${VALOPER}` });
-  assert.deepEqual(go(VALCONS), { kind: "validator", href: `/validator/?addr=${VALCONS}` });
-  assert.deepEqual(go(ACCOUNT), { kind: "publisher", href: `/publisher/?addr=${ACCOUNT}` });
+test("a validator's operator or consensus address leads to its page, an account address to a publisher's", () => {
+  assert.deepEqual(go(VALOPER), { kind: "validator", id: VALOPER, href: `/validator/?addr=${VALOPER}` });
+  assert.deepEqual(go(VALOPER.toUpperCase()), { kind: "validator", id: VALOPER, href: `/validator/?addr=${VALOPER}` });
+  assert.deepEqual(go(VALCONS), { kind: "validator", id: VALCONS, href: `/validator/?addr=${VALCONS}` });
+  assert.deepEqual(go(ACCOUNT), { kind: "publisher", id: ACCOUNT, href: `/publisher/?addr=${ACCOUNT}` });
 });
 
-test("names, words and partial identifiers go nowhere", () => {
+test("names, words and partial identifiers are no identifier", () => {
   for (const s of ["", "   ", null, undefined, "Qubelabs", "celestia", "celestiavaloper1", VALOPER.slice(0, -1), `${ACCOUNT}x`,
     ACCOUNT.replace("l", "b"), TX.slice(0, 63), `${TX}0`, ACCOUNT.replace("celestia", "osmo")]) {
     assert.equal(go(s), null, String(s));
