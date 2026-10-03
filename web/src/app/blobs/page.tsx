@@ -210,6 +210,23 @@ function Page() {
     if (v) setFoundRaw(v); else setFound("");
   }, [setFound]);
   const showNs = useCallback((v: string) => { setNs(v); setTab("blobs"); }, [setNs]);
+  // A search from the header while this page is open, or Back to an earlier one, changes only the address under it: the
+  // list follows, from its first page. The page writing its own search into the address changes nothing here, as that
+  // is the search shown.
+  const asked = params.get("blob");
+  const askedSeen = useRef(asked);
+  useEffect(() => {
+    if (asked === askedSeen.current) return;
+    askedSeen.current = asked;
+    const v = findText((asked ?? "").replace(/ /g, "+"));
+    if (v === found) return;
+    typed.current = false;
+    setFoundRaw(v);
+    setNsRaw((params.get("namespace") ?? "").trim().toLowerCase());
+    setPubRaw((params.get("publisher") ?? "").trim().toLowerCase());
+    setPageRaw(1);
+    setTab("blobs");
+  }, [asked]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const q = `${ns ? `&namespace=${encodeURIComponent(ns)}` : ""}${pub ? `&publisher=${encodeURIComponent(pub)}` : ""}`;
   const offset = (Math.min(page, MAX_PAGE) - 1) * SIZE;
