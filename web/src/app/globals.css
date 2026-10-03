@@ -71,7 +71,6 @@
   --seg-on-ink: var(--accent-ink);
   --seg-on-shadow: 0 1px 2px rgb(16 24 32 / .14), 0 0 0 1px rgb(var(--ink) / .05);
   --hold-ink: #8a5a00;
-  --ok-ink: #2f6f4a;
   --obs-bg: rgb(var(--ink) / .035);
   --obs-edge: inset 0 0 0 1px rgb(var(--ink) / .04);
   --r-panel: 18px;
@@ -127,7 +126,6 @@
   --seg-on-ink: #8ae0e8;
   --seg-on-shadow: inset 0 0 0 1px rgb(51 179 191 / .5), 0 0 18px -6px rgb(51 179 191 / .7);
   --hold-ink: #d3a24a;
-  --ok-ink: var(--ok);
   --obs-bg: rgb(255 255 255 / .022);
   --obs-edge: inset 0 0 0 1px rgb(255 255 255 / .05);
   --text: rgb(var(--ink) / .92);
@@ -219,42 +217,31 @@ button { font: inherit; color: inherit; }
 .hs-key { flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--wash); font: inherit; font-size: 11px; font-weight: 500; line-height: 1; color: var(--text-3); }
 .hs.on .hs-key { display: none; }
 .hs-dd { position: absolute; top: 40px; left: 50%; z-index: 40; width: 380px; max-width: calc(100vw - 32px); transform: translateX(-50%); padding: 12px 14px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--paper); box-shadow: 0 12px 32px rgb(0 0 0 / .22); font-size: 13px; color: var(--text-2); }
-.hs-dd .hs-h { display: flex; justify-content: space-between; gap: 12px; margin: 0 0 8px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
-.hs-dd .hs-h span { font-weight: 500; letter-spacing: 0; text-transform: none; font-size: 12px; }
+.hs-dd .hs-h { margin: 0 0 8px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
 .hs-kinds { margin: 0; padding: 0; list-style: none; }
 .hs-kinds li { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 28px; }
 .hs-kinds code { padding: 0; background: none; font-size: 12px; color: var(--text-3); white-space: nowrap; }
-/* what a search found: one row per record, the whole row a link to its page */
-.hs-dd.res { width: 460px; padding: 12px 8px 8px; }
-.hs-dd.res .hs-h { padding: 0 8px; }
+/* what a search found: one row per record, saying what it is, the whole row a link to its page */
+.hs-dd.res { padding: 8px; }
 .hs-items { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; max-height: min(60vh, 520px); overflow-y: auto; overscroll-behavior: contain; }
-.hs-item { display: flex; align-items: flex-start; gap: 12px; padding: 9px 10px; border-radius: 9px; color: var(--text-2); }
+.hs-item { display: flex; align-items: center; gap: 10px; min-width: 0; height: 40px; padding: 0 10px; border-radius: 8px; color: var(--text); font-size: 13.5px; font-weight: 500; }
 .hs-item:hover, .hs-item.on { text-decoration: none; background: var(--wash); }
 .hs-item.on { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
-.hs-ic { flex: none; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; background: var(--wash); color: var(--accent-ink); }
+.hs-ic { flex: none; display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; background: var(--wash); color: var(--accent-ink); }
 .hs-item:hover .hs-ic, .hs-item.on .hs-ic { background: var(--paper); }
-.hs-tx { display: grid; gap: 2px; min-width: 0; flex: 1; }
-.hs-t1 { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 13.5px; color: var(--text); font-weight: 500; }
-.hs-t1 .mono, .hs-t1 .hs-nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hs-t1 .hs-st { margin-left: auto; flex: none; font-size: 12px; font-weight: 500; color: var(--text-3); }
-.hs-t1 .hs-st.ok { color: var(--ok-ink); }
-.hs-t1 .hs-st.hold { color: var(--hold-ink); }
-.hs-t2 { font-size: 12px; line-height: 18px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.hs-t2 .mono { font-size: 11.5px; }
-.hs-dd .hs-note { margin: 6px 8px 2px; font-size: 12.5px; line-height: 18px; color: var(--text-2); }
+.hs-k { flex: none; width: 72px; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--text-3); }
+.hs-item .mono, .hs-item .hs-nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hs-dd .hs-note { margin: 6px 10px 4px; font-size: 12.5px; line-height: 18px; color: var(--text-2); }
 .hs-wait { color: var(--text-3); }
-/* a phone keeps every part of a row: its lines wrap rather than cut the publisher or the transaction off */
-@media (max-width: 480px) { .hs-t2 { white-space: normal; } .hs-pt { white-space: nowrap; } }
-.hs-dd .hs-ft { margin: 8px -14px 0; padding: 8px 14px 0; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-3); }
-.hs.bad .hs-dd .hs-ft { color: var(--hold); }
 @media (hover: none) { .hs-key { display: none; } }
-/* the block, the network and the theme a little nearer the edge than the page under them, for the search's room */
-@media (min-width: 1120px) { .top .right { margin-right: -24px; } }
+/* the block, the network and the theme nearer the edge than the page under them, for the search's room: 48 px out
+   where the page has a margin to take it from, never closer than 16 px to the window's edge */
+@media (min-width: 1120px) { .top .right { margin-right: calc(-1 * min(48px, 24px + max(0px, (100vw - var(--page)) / 2))); } }
 @media (max-width: 1119px) {
   .top .wrap { flex-wrap: wrap; height: auto; min-height: 56px; row-gap: 0; }
   .top .hs { order: 4; flex-basis: 100%; margin: 0; padding: 2px 0 12px; }
   .hs-box { max-width: none; }
-  .hs-dd, .hs-dd.res { left: 0; width: 460px; transform: none; }
+  .hs-dd { left: 0; transform: none; }
 }
 .net.menu { position: relative; }
 .net.menu summary { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; }

@@ -1,14 +1,12 @@
 "use client";
 import Link from "next/link";
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { API_BASE, type Blob, type Validator, type Publisher, int, bytes, tia, nsDisplay, whenUTC, ago } from "@/lib/api";
+import { API_BASE, type Blob, type Validator, type Publisher, int } from "@/lib/api";
 import { blobKey } from "@/lib/blobkey";
-import { useFind, type MatchBy } from "@/lib/blobfind";
+import { useFind } from "@/lib/blobfind";
 import { siteTarget, type SiteTarget } from "@/lib/sitefind";
-import { lane, recon } from "@/lib/status";
 import Ident from "@/components/Ident";
-import { endpoint } from "@/components/Validators";
 
 /** the full placeholder needs about 300 px of field; a narrower one says only "Search" */
 const WORDS = "Search tx hash, blob ID or address";
@@ -74,42 +72,28 @@ function useRecord<T>(path: string | null): Got<T> | null {
   return path && st && st.path === path ? st.got : null;
 }
 
-/** one record the search found, as a row of its panel that opens the record's page; each line is its parts, kept whole */
-type Item = { href: string; glyph: ReactNode; title: ReactNode; aside?: ReactNode; lines: ReactNode[][]; label: string };
+/** one record the search found, as a row of its panel that opens the record's page: what it is, in one word, and which */
+type Item = { href: string; glyph: ReactNode; kind: string; title: ReactNode; label: string };
 
-const by = (b: MatchBy) => (b === "tx" ? "transaction hash" : b === "promise" ? "promise hash" : "commitment");
 const short = (s: string, head = 8, tail = 4) => (s.length > head + tail + 1 ? `${s.slice(0, head)}…${s.slice(-tail)}` : s);
 /** an address as the lists print it: its prefix, then its last four */
 const addrWords = (a: string) => { const i = a.lastIndexOf("1"); return i > 0 ? `${a.slice(0, i)} ••• ${a.slice(-4)}` : a; };
 /** a plain left click: anything else (a new tab, a download, a modifier) is the browser's */
 const plain = (e: React.MouseEvent) => !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0);
-const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-const bond = (v: Validator) =>
-  v.jailed ? "Jailed" : v.bond_status === "BOND_STATUS_BONDED" ? "Bonded" : v.bond_status === "BOND_STATUS_UNBONDING" ? "Unbonding" : v.bond_status === "BOND_STATUS_UNBONDED" ? "Unbonded" : "";
 
-function blobItem(b: Blob): Item {
-  // Tensile's word for it, as the blob page says it; the list's dated note on hover
-  const rc = recon(b), ln = lane(b);
-  const tx = b.settlement_tx_hash ? short(b.settlement_tx_hash.toUpperCase()) : "";
-  return {
-    href: `/blob/?hash=${b.promise_hash}`,
-    label: `Blob ${b.promise_hash.slice(0, 10)}, block ${int(b.settlement_height)}`,
-    glyph: BLOB,
-    title: <span className="mono">{short(b.promise_hash, 8, 6)}</span>,
-    aside: <span className={`hs-st${rc.tier === "hold" ? " hold" : rc.tier === "kept" ? " ok" : ""}`} title={ln.title}>{cap(rc.word)}</span>,
-    lines: [
-      [`Block ${int(b.settlement_height)}`, whenUTC(b.settlement_time), ...(tx ? [<>Tx <span className="mono">{tx}</span></>] : [])],
-      [bytes(b.blob_size), nsDisplay(b.namespace), ...(b.charge ? [`${tia(b.charge.fee_utia)} fee`] : []), addrWords(b.publisher)],
-    ],
-  };
-}
+const blobItem = (b: Blob): Item => ({
+  href: `/blob/?hash=${b.promise_hash}`,
+  label: `Blob ${b.promise_hash.slice(0, 10)}, block ${int(b.settlement_height)}`,
+  glyph: BLOB, kind: "Blob",
+  title: <span className="mono" title={b.promise_hash}>{short(b.promise_hash, 10, 6)}</span>,
+});
 
 /**
  * The site's search, in the header between the nav and the block. An identifier pasted, typed whole or entered is
- * looked up at once and what it names shows in a panel under the field: the blob or blobs it matches with their
- * settlement, the validator, the publisher. Nothing opens until the reader picks a row, by click or by the arrow keys
- * and Enter (a row under a resting pointer is not picked). With nothing to look up, the panel lists what the search takes. "/" anywhere on the page puts the cursor
- * in it.
+ * looked up at once and what it names shows in a panel under the field, one row each, saying what it is: the blob or
+ * blobs it matches, the validator, the publisher. Nothing opens until the reader picks a row, by click or by the arrow
+ * keys and Enter (a row under a resting pointer is not picked). With nothing to look up, the panel lists what the
+ * search takes. "/" anywhere on the page puts the cursor in it.
  */
 export default function HeaderSearch() {
   const router = useRouter();
@@ -148,7 +132,6 @@ export default function HeaderSearch() {
   const pub = useRecord<{ publisher: Publisher }>(asked?.kind === "publisher" ? `/v1/publishers/${asked.id}?window=all` : null);
 
   let items: Item[] = [];
-  let head: ReactNode = null;
   let note: ReactNode = null;
   if (asked?.kind === "blob") {
     if (!hit) note = <span className="hs-wait">Looking it up…</span>;
@@ -158,28 +141,17 @@ export default function HeaderSearch() {
       : <>Tensile has not indexed a blob with this hash yet, or the transaction carries no Fibre blob.</>;
     else {
       items = hit.rows.slice(0, SHOWN).map(blobItem);
-      const tx = hit.by.length === 1 && hit.by[0] === "tx";
-      head = <>{hit.total === 1 ? "Blob" : tx ? `${int(hit.total)} blobs in this transaction` : `${int(hit.total)} blobs`}<span>{blob?.kind === "id" ? "by blob ID" : `by ${hit.by.map(by).join(" and ")}`}</span></>;
       if (hit.partial) note = <>The observer did not answer every lookup, so there may be more.</>;
       else if (hit.total > items.length) note = <>The newest {int(items.length)} of {int(hit.total)}.</>;
     }
   } else if (asked?.kind === "validator") {
     const v = val?.data?.validator;
     if (v) {
-      const st = bond(v), ep = endpoint(v);
-      // the endpoint as the Validators table words it; a jailed or unbonded validator's status already says why there is none
-      const reach = ep.word === "Jailed" || ep.word === "Not bonded" ? null : ep.word === "No endpoint" ? "No Fibre endpoint registered" : `Endpoint: ${ep.word}`;
       items = [{
         href: asked.href, label: `Validator ${v.moniker || asked.id}`,
-        glyph: <Ident addr={v.operator_address || asked.id} />,
-        title: <span className="hs-nm">{v.moniker || short(asked.id, 16, 4)}</span>,
-        aside: st ? <span className={`hs-st${v.jailed ? " hold" : ""}`}>{st}</span> : undefined,
-        lines: [
-          [<span key="a" className="mono">{short(v.operator_address || asked.id, 20, 6)}</span>],
-          ...(reach ? [[<span key="e" title={ep.title}>{reach}</span>, ...(v.host && v.last_seen_at ? [`checked ${ago(v.last_seen_at)}`] : [])]] : []),
-        ],
+        glyph: <Ident addr={v.operator_address || asked.id} />, kind: "Validator",
+        title: <span className="hs-nm" title={v.operator_address || asked.id}>{v.moniker || short(asked.id, 16, 4)}</span>,
       }];
-      head = <>Validator<span>by {asked.id.startsWith("celestiavalcons") ? "consensus address" : "valoper address"}</span></>;
     } else if (val?.missing) note = <>No validator with this address is on record.</>;
     else if (val?.invalid) note = <>Not a valid validator address. Check it and paste it again.</>;
     else if (val?.error) note = <>The observer did not answer ({val.error}). Try again in a moment.</>;
@@ -189,15 +161,9 @@ export default function HeaderSearch() {
     if (p) {
       items = [{
         href: asked.href, label: `Publisher ${p.label || asked.id}`,
-        glyph: <Ident addr={p.publisher} />,
-        title: <span className="hs-nm">{p.label || addrWords(p.publisher)}</span>,
-        aside: <span className="hs-st">{int(p.settlements)} {p.settlements === 1 ? "blob" : "blobs"}</span>,
-        lines: [
-          [<span key="a" className="mono">{short(p.publisher, 16, 6)}</span>],
-          [`${bytes(p.bytes)} of blobs`, ...(p.last_settlement_at ? [`last blob ${ago(p.last_settlement_at)}`] : p.last_seen_at ? [`last seen ${ago(p.last_seen_at)}`] : [])],
-        ],
+        glyph: <Ident addr={p.publisher} />, kind: "Publisher",
+        title: <span className="hs-nm" title={p.publisher}>{p.label || addrWords(p.publisher)}</span>,
       }];
-      head = <>Publisher<span>by address</span></>;
     } else if (pub?.missing) note = <>No publisher with this address is on record.</>;
     else if (pub?.invalid) note = <>Not a valid account address. Check it and paste it again.</>;
     else if (pub?.error) note = <>The observer did not answer ({pub.error}). Try again in a moment.</>;
@@ -259,7 +225,6 @@ export default function HeaderSearch() {
         <div className={`hs-dd${asked ? " res" : ""}`} id="hs-panel" hidden={!on} onMouseDown={(e) => e.preventDefault()}>
           {asked ? (
             <>
-              {head && <p className="hs-h">{head}</p>}
               {items.length > 0 && (
                 <ul className="hs-items" id="hs-list" role="listbox" aria-label="What the search found">
                   {items.map((it, i) => (
@@ -268,10 +233,8 @@ export default function HeaderSearch() {
                         className={`hs-item${pick === i ? " on" : ""}`} href={it.href}
                         onClick={(e) => { if (!plain(e)) return; e.preventDefault(); open(it.href); }}>
                         <span className="hs-ic">{it.glyph}</span>
-                        <span className="hs-tx">
-                          <span className="hs-t1">{it.title}{it.aside}</span>
-                          {it.lines.map((l, j) => <span key={j} className="hs-t2">{l.map((part, k) => <Fragment key={k}>{k > 0 && " · "}<span className="hs-pt">{part}</span></Fragment>)}</span>)}
-                        </span>
+                        <span className="hs-k">{it.kind}</span>
+                        {it.title}
                       </Link>
                     </li>
                   ))}
