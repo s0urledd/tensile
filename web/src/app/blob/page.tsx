@@ -193,8 +193,8 @@ function markOf(a: Assignment, s: Seat | undefined, blob: BlobSide): Mark {
   if (r === "in_retention_window") return one("in retention window", SERVICE.in_retention_window[1]);
   if (r === "deadline_unverified") return one("deadline unverified", SERVICE.deadline_unverified[1]);
   // counted neither way
-  if (a.attested === false && p?.outcome === "SERVED_OK") return one("served", "Not endorsed, so nothing owed; its rows came back and counted toward the blob.");
-  if (a.attested === false) return one(p || full ? "not endorsed" : "not asked", full ? "Not endorsed: nothing owed, so not asked." : "Not endorsed: nothing owed.");
+  // a validator that did not endorse owes nothing: whatever an earlier reading got from it, it is not served or not
+  if (a.attested === false) return one("not endorsed", full ? "Not endorsed: nothing owed, so not asked." : "Not endorsed: nothing owed, so not judged.");
   if (failed(p)) {
     const held = full
       ? (cause ? `; ${CAUSE[cause]}, so counted neither way` : "; counted neither way")
@@ -248,11 +248,12 @@ function Page() {
   const judged = !!rc && (rc.status === "yes" || rc.status === "no");
   const available = rc?.status === "yes";
   const over = new Date(b.must_serve_until).getTime() <= Date.now();
-  const asked = rc?.probed_validators ?? 0;
-
   // Each validator's requests at the reading behind its mark: the end reading, its attempts with it, or on the earlier
   // schedule the newest reading inside the window.
   const seats = seatsOf(probes);
+  // the endorsers the reading asked: an earlier reading in the client's order also asked validators that had not
+  // endorsed, which owe nothing and are not counted here
+  const asked = assignments.filter((a) => a.attested === true && seats.has(a.validator_address)).length;
   // Blobs settled since the end reading began are read once, near the end; earlier ones at several points of the window.
   // A reading from FULL_READ_SINCE on asks every endorser for its own rows; one not made yet will, when it is due then.
   const endRead = probes.some((p) => endOfWindow(p.schedule_label)) || (probes.length === 0 && b.settlement_time >= END_READ_SINCE);
@@ -285,8 +286,8 @@ function Page() {
   const finalNote = `The reading is in; the record is final when the retention window closes at ${closes}${retried ? ", and a validator that did not serve is asked again, up to two more times, before then" : ""}.`;
   // The client's result: Available, enough rows came back to reconstruct the blob; Unavailable, with its own error.
   const state: [string, string, string] =
-    rc?.status === "yes" ? ["ok", "Available", `Enough rows came back to reconstruct the blob, from ${int(rc.served_by_validators)} of the ${int(asked)} validators asked.`]
-    : rc?.status === "no" ? ["hold", "Unavailable", `${rc.error ? `${rc.error[0].toUpperCase()}${rc.error.slice(1)}: ` : ""}${rc.error === "no shards retrieved" ? "no rows came back" : `fewer than the ${int(rc.needed_rows)} rows needed came back`} from the ${int(asked)} validators asked.`]
+    rc?.status === "yes" ? ["ok", "Available", `Enough rows came back to reconstruct the blob; ${int(served)} of the ${int(asked)} endorsing validators asked served their own rows.`]
+    : rc?.status === "no" ? ["hold", "Unavailable", `${rc.error ? `${rc.error[0].toUpperCase()}${rc.error.slice(1)}: ` : ""}${rc.error === "no shards retrieved" ? "no rows came back" : `fewer than the ${int(rc.needed_rows)} rows needed came back`} from the ${int(asked)} endorsing validators asked.`]
     : !over ? ["none", "In retention window", "Read once, 10 minutes before the retention window ends."]
     : counted ? ["none", "Not read by Tensile", "Tensile could not make every request of this reading in time, and the rows that came back do not reconstruct the blob. Each validator it asked is judged on its own answers; one it could not ask counts neither way."]
     : ["none", "Not read by Tensile", "Tensile did not read this blob: it missed the reading, its own network was down, or, before 27 September 2026, the load policy of the time did not draw it. Tensile's own gaps count against no validator."];

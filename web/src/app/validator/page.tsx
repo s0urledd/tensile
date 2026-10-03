@@ -105,7 +105,8 @@ const whatCame = (p: ValidatorReading): string => {
 const probeWord = (p: ValidatorReading): [string, string] => {
   if (p.service === "not_served") return [`Not served · ${whatCame(p)}`, "fault"];
   if (p.service === "served") return ["Served", "ok"];
-  if (p.classification === "UNATTESTED") return (p.outcome === "SERVED_OK" || p.outcome === "PARTIAL") ? ["Served, not endorsed", "unsigned"] : ["Not endorsed", "unsigned"];
+  // nothing owed: whatever an earlier reading got from it, a blob it did not endorse is not served or not
+  if (p.classification === "UNATTESTED") return ["Not endorsed", "unsigned"];
   if (p.classification === "NOT_PROBED" || p.classification === "PROBE_ERROR") return wordOf(p.classification);
   const w = whatCame(p);
   return [`${w[0].toUpperCase()}${w.slice(1)} · not counted`, "gone"];
