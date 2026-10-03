@@ -297,22 +297,23 @@ directory, since its time down is readings and attempts not made.
 
 **Going back.** Every binary refuses a database newer than itself, so an
 older build needs the database's version taken back too. When the newer
-migrations only added columns, as migration 25 does, that is one row, not a
-copy of the data directory:
+migrations only added columns or indexes, as migrations 25 and 26 do, that
+is one row each, not a copy of the data directory:
 
 1. install the older prober and restart it;
 2. wait until the newer collector has read everything the newer prober
    wrote: its cursor in `ingest_cursors` for `measurements.jsonl` equals
    the file's size;
 3. stop the collector and the API;
-4. `sudo -u fibre-observer sqlite3 /var/lib/fibre-observer/mocha/observer.db 'DELETE FROM schema_migrations WHERE version = 25'`
-   (or the same statement through Python's `sqlite3`);
+4. `sudo -u fibre-observer sqlite3 /var/lib/fibre-observer/mocha/observer.db 'DELETE FROM schema_migrations WHERE version > 25'`,
+   25 being the older build's `store.SchemaVersion` (or the same statement
+   through Python's `sqlite3`);
 5. install the older collector and API, and start them.
 
-The columns stay, unread, and the next upgrade runs the migration again over
-them. Never let an older collector read rows a newer prober wrote: it keys a
-row on the reading, not the attempt, so it keeps a validator's first answer
-and drops the later ones.
+The columns and indexes stay, unread, and the next upgrade runs the
+migration again over them. Never let an older collector read rows a newer
+prober wrote: it keys a row on the reading, not the attempt, so it keeps a
+validator's first answer and drops the later ones.
 
 Schema 5 adds a covering index over `probes`. On a store with 700,000 probes it
 takes a few seconds and about 200 bytes a probe; the collector logs it and the

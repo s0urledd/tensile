@@ -1,7 +1,7 @@
 "use client";
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useApi, type Blob, type BlobReading, type Meta, int, bytes, tia, utcWord, hhmm, dur, shortMid, nsDisplay, notFound, pctOf, API_BASE,
   endOfWindow, fullReading, ownGap, ownSide, sharedAnswer, rawErrorWords, foreignRows, asksAgain, attemptsOf, judged as judgedBy, askedTimes, FULL_READ_SINCE, FULL_READ_SINCE_WORDS } from "@/lib/api";
 import StatusLine from "@/components/StatusLine";
@@ -12,6 +12,8 @@ import { unit } from "@/components/Unit";
 import { Who } from "@/components/Ledger";
 import { monthDayTime } from "@/components/BlobsDeck";
 import { validatorHref } from "@/lib/addr";
+import { blobKey, blobIdOf, type BlobKey } from "@/lib/blobkey";
+import { useFind } from "@/lib/blobfind";
 
 type Assignment = {
   validator_address: string; moniker?: string; voting_power: number; row_count: number; attested: boolean | null; host_at_settlement: string | null;
@@ -30,6 +32,24 @@ type Detail = {
   assignments: Assignment[] | null;
   probes: BlobReading[] | null;
 };
+
+/**
+ * A blob opened by an identifier other than its promise hash: ?id= the client's blob ID, which is its commitment behind
+ * a version byte, or ?tx= the hash of the transaction that settled it. One settlement opens here; several open the
+ * Blobs list of them. bad is an identifier that is none.
+ */
+type Via = { kind: "id" | "tx"; text: string; key: BlobKey } | { kind: "bad"; of: "id" | "tx"; text: string };
+function viaOf(id: string | null, tx: string | null): Via | null {
+  if (id != null) {
+    const k = blobKey(id);
+    return k?.kind === "id" ? { kind: "id", text: k.id, key: k } : { kind: "bad", of: "id", text: id };
+  }
+  if (tx != null) {
+    const k = blobKey(tx);
+    return k?.kind === "hash" ? { kind: "tx", text: k.hex.toUpperCase(), key: k } : { kind: "bad", of: "tx", text: tx };
+  }
+  return null;
+}
 
 /** when the single end-of-window reading began (END_READ_SINCE on the observer) */
 const END_READ_SINCE = "2026-09-27T16:20:28Z";
@@ -220,11 +240,53 @@ function markOf(a: Assignment, s: Seat | undefined, blob: BlobSide): Mark {
 }
 
 function Page() {
-  const hash = useSearchParams().get("hash") ?? "";
+  const sp = useSearchParams();
+  const named = sp.get("hash") ?? "";
+  // the address reads a raw + as a space, which base64 never holds: each goes back before blobKey trims a last one away
+  const via = named ? null : viaOf(sp.get("id")?.replace(/ /g, "+") ?? null, sp.get("tx"));
+  // its settlements, asked again every 30 s while there are none (a blob the scanner has not read yet)
+  const hit = useFind(via && via.kind !== "bad" ? via.key : null, { as: [via?.kind === "tx" ? "tx" : "commitment"], limit: 1, refreshMs: 30000 });
+  const picked = hit && !hit.error && !hit.partial && hit.total === 1 ? hit.rows[0].promise_hash : "";
+  const many = !!hit && !hit.error && hit.total > 1;
+  const router = useRouter();
+  useEffect(() => {
+    if (!via || via.kind === "bad") return;
+    if (picked) {
+      // the address names the blob as every other link to it does
+      try {
+        const u = new URL(window.location.href);
+        u.search = `?hash=${picked}`;
+        window.history.replaceState(null, "", u.pathname + u.search + u.hash);
+      } catch { /* the address keeps the identifier; the page shows the blob all the same */ }
+    } else if (many) {
+      // several settlements: never the newest of them silently, but the list of them all
+      router.replace(`/blobs/?blob=${encodeURIComponent(via.kind === "id" ? via.text : via.key.hex)}`);
+    }
+  }, [picked, many]); // eslint-disable-line react-hooks/exhaustive-deps
+  const hash = named || picked;
   const [table, setTable] = useState(false);
   const { data: meta, error: metaErr } = useApi<Meta>("/v1/meta");
   const d = useApi<Detail>(hash ? `/v1/blobs/${hash}` : null);
-  if (!hash) return <p className="notice">Open a blob from the <Link href="/blobs/">list</Link>, or add <code>?hash=&lt;promise hash&gt;</code> to the address.</p>;
+  if (!hash && !via) return <p className="notice">Open a blob from the <Link href="/blobs/">list</Link>, or add <code>?hash=&lt;promise hash&gt;</code>, <code>?id=&lt;blob ID&gt;</code> or <code>?tx=&lt;transaction hash&gt;</code> to the address.</p>;
+  if (!hash && via) {
+    const name = (via.kind === "bad" ? via.of : via.kind) === "id" ? "blob ID" : "transaction hash";
+    // nothing on record: Tensile has not indexed it yet, or the transaction carries no Fibre blob
+    const none = !!hit && !hit.error && hit.total === 0;
+    // an observer that cannot look a transaction up has not said the blob is missing: its heading claims nothing
+    const unasked = none && via.kind === "tx" && hit.noTx;
+    return (
+      <>
+        <div className="head"><div><p className="crumb"><Link href="/blobs/">Blobs</Link> › {via.text.slice(0, 10)}…</p><h1>{none && !unasked ? "Not indexed yet" : unasked || via.kind === "bad" || hit?.error ? "Blob" : "Loading…"}</h1></div></div>
+        <StatusLine meta={meta} metaError={metaErr} snap={null} client={{ error: hit?.error ?? null, fetchedAt: hit && !hit.error ? hit.at : null }} />
+        {via.kind === "bad" && <p className="notice"><span className="mono">{shortMid(via.text, 10, 6)}</span> is not a {name}: {via.of === "id" ? "the client's blob ID is a version byte, 0, then the 32-byte commitment, in base64, or 66 hex characters" : "one is 64 hex characters"}.</p>}
+        {none && (via.kind === "tx"
+          ? hit.noTx
+            ? <p className="notice">This observer does not look blobs up by transaction hash yet. Open the blob from the <Link href="/blobs/">list</Link> or by its blob ID.</p>
+            : <p className="notice">Tensile has not indexed <span className="mono" title={via.text}>{shortMid(via.text, 10, 6)}</span> yet, or the transaction carries no Fibre blob. A blob appears here once Tensile has read the block that settled it; this page checks again every 30 seconds.</p>
+          : <p className="notice">Tensile has not indexed a blob with the blob ID <span className="mono" title={via.text}>{shortMid(via.text, 10, 6)}</span> yet. A blob appears here once Tensile has read the block that settled it; this page checks again every 30 seconds.</p>)}
+      </>
+    );
+  }
   const data = d.data;
   if (!data) {
     return (
@@ -301,6 +363,11 @@ function Page() {
   // the endorsers an earlier reading that asked each of them once could not ask: Tensile's own gaps
   const unasked = everyEndorser ? Math.max(0, rows.filter((a) => a.attested === true).length - asked) : 0;
 
+  // the identifiers a developer holds for the blob beside its promise hash: the client's blob ID (its version byte then
+  // the commitment; shown for version 0, the only one Fibre has), and the settlement's transaction hash in upper case,
+  // as the client and the chain's tools print it
+  const blobId = (b.blob_version ?? 0) === 0 ? blobIdOf(b.commitment) : "";
+  const txHash = (b.settlement_tx_hash ?? "").toUpperCase();
   // who paid, where it went and when: the publisher page's light frame of facts, one row each
   const facts = (
     <dl className="pb-meta bd-meta">
@@ -310,8 +377,17 @@ function Page() {
       <dd><Link className="bd-ns" href={`/blobs/?namespace=${b.namespace}`} title={`${b.namespace} · every blob in it`}>{nsDisplay(b.namespace)}</Link><Copy text={b.namespace} label="namespace" /></dd>
       <dt>Commitment</dt>
       <dd title={b.commitment}><span className="mono">{shortMid(b.commitment, 10, 6)}</span><Copy text={b.commitment} label="commitment" /></dd>
+      {blobId && <>
+        <dt title="The ID the Fibre client returns for this blob: its version, 0, then the commitment, in base64">Blob ID</dt>
+        <dd title={blobId}><span className="mono">{shortMid(blobId, 10, 6)}</span><Copy text={blobId} label="blob ID" /></dd>
+      </>}
+      {/* the settlement, as the chain records it: when, at what height, by which transaction */}
       <dt>Settled</dt>
       <dd><b title={utcWord(b.settlement_time)}>{monthDayTime(b.settlement_time)}</b><em>UTC · height {int(b.settlement_height)}</em></dd>
+      {txHash && <>
+        <dt title="The transaction that carried the MsgPayForFibre settling this blob">Transaction</dt>
+        <dd className="bd-tx"><span className="mono" title={txHash}>{shortMid(txHash, 10, 6)}</span><Copy text={txHash} label="transaction hash" /></dd>
+      </>}
       <dt>Created</dt>
       <dd><b title={utcWord(b.creation_timestamp)}>{monthDayTime(b.creation_timestamp)}</b><em>UTC</em></dd>
       <dt>Retention window</dt>
@@ -362,7 +438,8 @@ function Page() {
         </div>
         <div className="pb-addr"><span className="mono">{b.promise_hash}</span><Copy text={b.promise_hash} label="the promise hash" /></div>
         <div className="chips bd-chips">
-          <span className="state" title={state[2]}><i className={"dot " + state[0]} />{state[1]}</span>
+          {/* Tensile's reading, with its eye as its figures carry it: the chips after it are the chain's settlement */}
+          <span className="state" title={`Tensile's reading: ${state[2]}`}><i className={"dot " + state[0]} /><Eye />{state[1]}</span>
           <span title={utcWord(b.settlement_time)}>Settled <b className="word">#{int(b.settlement_height)}</b></span>
           <span title={`${utcWord(b.settlement_time)} → ${utcWord(b.must_serve_until)}`}>{over ? <>Retention window over <b className="word">{hhmm(b.must_serve_until)}</b></> : <>In retention window until <b className="word">{hhmm(b.must_serve_until)}</b></>}</span>
         </div>

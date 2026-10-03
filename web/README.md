@@ -18,6 +18,12 @@ without the `/v1` as its base URL. Unset, the page prints its own site's
 export serves every network's site; set it only when the API is published
 at another address.
 
+A blob page links its settlement transaction to a block explorer for the
+network `/v1/meta` names: Celenium for Mocha (`mocha-*`) and for mainnet
+(`celestia`). `NEXT_PUBLIC_TX_EXPLORER`, a URL with `{hash}` in it, links
+the transaction on any other network; unset, those pages show the hash
+without a link.
+
 The pages share one small system, all in `src/app/globals.css`: white paper
 and hairlines rather than cards, IBM Plex Sans for prose and figures with
 Plex Mono only for addresses, hashes and heights, nothing heavier than 600,

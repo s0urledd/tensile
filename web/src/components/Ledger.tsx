@@ -357,7 +357,7 @@ function Placeholders({ rows, one }: { rows: number; one: boolean }) {
   );
 }
 
-export default function Ledger({ feed, size, live, skew, onePublisher = false, moves, onNs, children }: {
+export default function Ledger({ feed, size, live, skew, onePublisher = false, moves, emptyText, onNs, children }: {
   feed: Feed;
   /** the rows a page holds: as many places are kept while the first one loads */
   size: number;
@@ -369,6 +369,8 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
   onePublisher?: boolean;
   /** one publisher's escrow movements, set between its blobs by time */
   moves?: Moves;
+  /** what the empty list says, in place of "No blob recorded" */
+  emptyText?: React.ReactNode;
   onNs: (ns: string) => void;
   /** the pager, under the table; it counts what the table shows: its rows, and any movements placed among them */
   children?: (total: number, placed?: Placed) => React.ReactNode;
@@ -505,7 +507,7 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
               {!shown.loaded && (feed.error
                 ? <tr className="lg-empty"><td colSpan={cols}>{feed.refused ? `${feed.error.charAt(0).toUpperCase()}${feed.error.slice(1)}.` : `The observer API is not answering (${feed.error}).`}</td></tr>
                 : <Placeholders rows={size} one={onePublisher} />)}
-              {shown.loaded && shown.rows.length === 0 && <tr className="lg-empty"><td colSpan={cols}>No blob recorded{shown.path.includes("&namespace=") || (!onePublisher && shown.path.includes("&publisher=")) ? " with this filter" : ""}.</td></tr>}
+              {shown.loaded && shown.rows.length === 0 && <tr className="lg-empty"><td colSpan={cols}>{emptyText ?? <>No blob recorded{shown.path.includes("&namespace=") || (!onePublisher && shown.path.includes("&publisher=")) ? " with this filter" : ""}.</>}</td></tr>}
               {items.map(({ b, m, t }) => b
                 ? <Row key={b.promise_hash} b={b} age={now ? age(now - t) : null} fresh={!!fresh?.has(b.promise_hash)} one={onePublisher} dec={dec} onNs={onNs} onOpen={onOpen} />
                 : <MoveRow key={m!.key} m={m!} age={now ? age(now - t) : null} dec={dec} />)}

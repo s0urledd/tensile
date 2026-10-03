@@ -150,6 +150,28 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 	)
 	scans["not yet read"] = []string{"publications"}
 	scans["not yet read, pinned"] = []string{"publications"}
+	// A blob found by a hash a developer holds (/v1/blobs?commitment=,
+	// ?tx=, and the blob ID, which the site turns into its commitment): the
+	// page, the selection its verdict cache fingerprints, and the count
+	// each seek migration 26's index, never walk publications.
+	for _, f := range []struct {
+		name, cond, idx string
+		args            []any
+	}{
+		{"blobs by commitment", blobByCommitmentSQL, "publications_commitment (commitment=?)", []any{"ab"}},
+		{"blobs by tx", blobByTxSQL, "publications_tx (settlement_tx_hash=?)", []any{"ab", "AB"}},
+		// with a namespace beside them, as the route writes it: still the
+		// hash's seek, not every blob of the namespace
+		{"blobs by commitment in a namespace", blobByCommitmentSQL + " AND " + blobInNamespaceBesideSQL, "publications_commitment (commitment=?)", []any{"ab", "ns"}},
+		{"blobs by tx in a namespace", blobByTxSQL + " AND " + blobInNamespaceBesideSQL, "publications_tx (settlement_tx_hash=?)", []any{"ab", "AB", "ns"}},
+	} {
+		cases = append(cases,
+			c{f.name + " page", blobRowsSQL(f.cond, blobPageDefault, 0), f.args, []string{f.idx}},
+			c{f.name + " selection", blobSelAt(f.cond, blobPageDefault+1, 0) + `SELECT promise_hash FROM sel`, f.args, []string{f.idx}},
+			c{f.name + " count", `SELECT COUNT(*) FROM publications WHERE ` + f.cond, f.args, []string{f.idx}},
+		)
+		scans[f.name+" selection"] = []string{"sel"}
+	}
 	for _, tc := range cases {
 		plan, err := st.QueryPlan(ctx, tc.q, tc.args...)
 		if err != nil {

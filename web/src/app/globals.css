@@ -2300,6 +2300,9 @@ button.warn:focus-visible { outline-offset: 0; }
    ========================================================================== */
 .bd-h1 .tl { font-weight: 500; }
 .bd-chips { margin-top: 14px; }
+/* the state chip is Tensile's reading, not the chain's: it carries Tensile's eye, as its figures do */
+.bd-chips .state .dot { margin-right: 2px; }
+.bd-chips .state svg { flex: none; width: 13px; height: 13px; color: var(--accent-ink); }
 /* a publisher's page sets its facts and its figures the same way (.pb-top, .pb-figs) */
 .bd-top, .pb-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: stretch; margin-top: 22px; }
 .bd-top .bd-meta, .pb-top .pb-meta { width: auto; grid-template-columns: 118px minmax(0, 1fr); margin: 0; align-content: start; }
@@ -2307,6 +2310,9 @@ button.warn:focus-visible { outline-offset: 0; }
 .bd-meta .bd-ns:hover { color: var(--accent-ink); text-decoration: none; }
 .bd-meta .mono { font-size: 12.5px; color: var(--text); }
 .bd-meta .copy { margin-left: 2px; }
+/* the transaction in a block explorer, after its copy button; flush under the hash where the row wraps it (its space
+   on the line is the copy button's right margin, which a wrap leaves at the line's end) */
+.bd-meta .bd-tx .copy { margin-right: 6px; }
 .bd-meta .lg-who .hd { font-size: var(--t-cell); }
 .bd-meta .u { font-weight: 400; color: var(--text-3); }
 /* Tensile's three rows carry its eye */
@@ -2386,12 +2392,23 @@ button.warn:focus-visible { outline-offset: 0; }
 .lg-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; margin: -4px 0 12px; }
 .lg-bar-l { display: inline-flex; align-items: center; gap: 8px; }
 .pl-bar { justify-content: flex-end; margin: 0 0 12px; }
-.lg-findbox { display: inline-flex; align-items: center; gap: 8px; width: 360px; max-width: 100%; height: 34px; padding: 0 12px 0 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--paper); box-shadow: var(--shadow-sm); color: var(--text-3); transition: border-color var(--dur), box-shadow var(--dur); }
+.lg-findbox { display: inline-flex; align-items: center; gap: 8px; width: 360px; max-width: 100%; height: 34px; padding: 0 9px 0 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--paper); box-shadow: var(--shadow-sm); color: var(--text-3); transition: border-color var(--dur), box-shadow var(--dur); }
 .lg-findbox:focus-within { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); box-shadow: 0 0 0 3px var(--accent-tint); }
 .lg-findbox.bad { border-color: color-mix(in srgb, var(--hold) 60%, var(--border)); }
 .lg-findbox svg { flex: none; }
+.lg-findbox label { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; height: 100%; cursor: text; }
+/* the formats it takes, behind its i at the field's end */
+.lg-findbox .info { flex: none; margin: 0; vertical-align: 0; }
+.lg-formats { margin: 0 0 8px; padding-left: 1.1em; }
+.lg-formats li { margin-bottom: 4px; }
+.lg-formats b { font-weight: 500; color: var(--text); }
+/* over the list a search with several matches shows: what it matched */
+.lg-matched { margin: 0 0 12px; font-size: var(--t-cell); color: var(--text-2); }
+.lg-matched .mono, .lg-empty .mono { font-size: 12.5px; color: var(--text); }
 .lg-findbox input { flex: 1; min-width: 0; padding: 0; border: 0; background: none; font: inherit; font-size: var(--t-cell); color: var(--text); }
 .lg-findbox input::placeholder { color: var(--text-3); }
+/* an empty field keeps no room for the clear button it does not show: the placeholder has the whole field */
+.lg-findbox input:placeholder-shown::-webkit-search-cancel-button { display: none; }
 .lg-findbox input:focus { outline: none; }
 .lg-find .lg-chip { cursor: default; }
 .lg-find .lg-chip .v.mono { font-size: 12.5px; }

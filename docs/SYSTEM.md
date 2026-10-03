@@ -157,6 +157,7 @@ older *or* newer than the binary expects.
 | 20 | `param_uncertainty.corrected_at`: verifying a range and having applied what it proves are two different facts, and `holds` is derived from both |
 | 19 | params uncertainty: `param_uncertainty`, `publication_corrections`, `probe_corrections`, the `retention_unverified` hold and the `*_at_scan` / `*_at_probe` originals, `obligation_daily.held_param_unverified`, and `publications.must_serve_until_ambiguous` (written to the record since it was added and read by nothing until now) |
 | 24 | `sampling_decisions` and its points: a sampled-out publication stored once; `probe_rows` derives its NOT_PROBED rows for every figure; the rows already stored for one are collapsed into it |
+| 26 | `publications_tx` and `publications_commitment`: a blob looked up by its settlement transaction or its commitment (`/v1/blobs?tx=`, `?commitment=`) is a seek, not a walk |
 
 The store is append-only **in its inserts** (`ON CONFLICT DO NOTHING`) but not
 in its verdicts: `ApplyAmendment` updates a row's classification in place when
@@ -404,8 +405,9 @@ GET /v1/validators/{addr}/status
 GET /v1/validators/{addr}/feed.atom, /v1/feed.atom
                               endpoint and registration events as Atom
 GET /v1/blobs                 publication list (?limit=, ?offset=, ?before_height= and
-                              ?before_tx_index=, ?namespace=, ?commitment=, ?publisher= the
-                              paying account; total)
+                              ?before_tx_index=, ?namespace=, ?commitment=, ?tx= the settlement
+                              transaction hash, ?publisher= the paying account; total); each row
+                              carries its settlement_tx_hash and blob_version
 GET /v1/blobs/{hash}          one blob: its reading, each assigned validator's service word, the rows
                               (?rows=1 adds each reading's row_indices and rows_sha256)
 GET /v1/namespaces            namespaces by newest settlement
@@ -530,8 +532,8 @@ Every page's header and footer read `/v1/meta` and `/v1/tip`.
 |---|---|
 | `/` | `/v1/network` (the period, and `all` for Available), `/v1/validators` (the map's "served last" line is the rows' `last_served_at`), `/v1/blobs?limit=1` |
 | `/validator/?addr=` | `/v1/validators/{addr}` |
-| `/blobs/` | `/v1/blobs` (the first page again as the chain moves), `/v1/namespaces`, `/v1/market` (the period), `/v1/publishers` (once its filter opens) |
-| `/blob/?hash=` | `/v1/blobs/{hash}` |
+| `/blobs/` | `/v1/blobs` (the first page again as the chain moves), `/v1/namespaces`, `/v1/market` (the period), `/v1/publishers` (once its filter opens); its search (`?blob=`) asks 64 hex as `/v1/blobs/{hash}`, `?commitment=` and `?tx=`, and a blob ID as `?commitment=` |
+| `/blob/?hash=`, `?id=`, `?tx=` | `/v1/blobs/{hash}`; a blob ID (`?id=`) or a settlement transaction (`?tx=`) is found first with `/v1/blobs?commitment=` or `?tx=`, and several matches open the Blobs list of them |
 | `/publishers/` | `/v1/market`, `/v1/publishers` |
 | `/publisher/?addr=` | `/v1/publishers/{addr}` |
 | `/methodology/` | `/v1/params` (the protocol-parameters section; the rest is static) |
