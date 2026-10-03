@@ -230,11 +230,11 @@ function keyOf(cells: Cell[]): { sw: string[]; word: string; n: number }[] {
 const TIP_W = 216;
 
 /**
- * The latest checks, oldest to newest: one small square of a fixed size per check, coloured by its result, in one row
- * across the frame where there is room for them and wrapped where there is not. Not a timeline: the cells are evenly
- * spaced whatever the time between the checks, and nothing marks time along it. A cell
- * names its check (when, which blob, what came back) on hover, on focus and on a tap; a finger can slide along the
- * strip to move from check to check, and the arrow keys do the same.
+ * The latest checks, oldest to newest: one small square per check, coloured by its result, in one line across the
+ * frame where there is room for it and in lines of a fixed count where there is not. Not a timeline: the cells are
+ * evenly spaced whatever the time between the checks, and nothing marks time along it. A cell names its check (when,
+ * which blob, what came back) on hover, on focus and on a tap; a finger can slide along the strip to move from check
+ * to check, and the arrow keys do the same.
  */
 function Strip({ cells }: { cells: Cell[] }) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
