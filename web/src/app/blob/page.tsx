@@ -368,8 +368,10 @@ function Page() {
   }, new Map<string, number>())]
     .map(([w, n]) => `${w} (${int(n)})`).join(", ");
   const stake = b.total_voting_power ? (b.attested_voting_power ?? 0) / b.total_voting_power : null;
-  // the rows of a reading still in progress, or of one that counts, never of one the window closed on uncounted
-  const shown = !!rc && rc.total_rows > 0 && (counted || (rc.status === "pending" && !over));
+  // the rows of a reading still in progress, or of one that counts, never of one the window closed on uncounted, and
+  // never before the reading has asked anyone: a blob not read yet has no rows back to count, not none
+  const begun = !!rc && (!!rc.point_at || (rc.probed_validators ?? 0) > 0);
+  const shown = !!rc && rc.total_rows > 0 && (counted || (rc.status === "pending" && !over && begun));
   // the endorsers an earlier reading that asked each of them once could not ask: Tensile's own gaps
   const unasked = everyEndorser ? Math.max(0, rows.filter((a) => a.attested === true).length - asked) : 0;
 
@@ -420,7 +422,7 @@ function Page() {
       <dt>Blob size</dt><dd title="The size the blob paid for: Celestia's upload size, with header and padding, without parity."><b>{unit(bytes(b.blob_size))}</b></dd>
       <dt>Fee paid</dt><dd title="Charged to the publisher's escrow; not the settlement transaction's own fee.">{b.charge ? <><b>{unit(tia(b.charge.fee_utia))}</b><em>{b.charge.timed_out ? "timed out" : b.charge.settled ? "settled" : "not settled yet"}</em></> : <em>not recorded</em>}</dd>
       <dt>Endorsed</dt><dd title="Voting power whose signature on the settlement verified. A settlement needs ⅔.">{stake != null ? <><b>{pctOf(b.attested_voting_power ?? 0, b.total_voting_power ?? 0)}</b><em>of voting power</em></> : <em>not recorded</em>}</dd>
-      <dt className="tz" title={readTitle}><Eye />Rows back</dt><dd title={shown ? `Distinct rows retrieved and verified against the commitment; ${int(rc!.needed_rows)} of the ${int(rc!.total_rows)} reconstruct the blob.` : undefined}>{shown ? <><b>{int(rc!.served_distinct_rows)}</b><em>of {int(rc!.total_rows)} · {int(rc!.needed_rows)} needed</em></> : <em>{!over ? `read before ${hhmm(b.must_serve_until)}` : "no reading"}</em>}</dd>
+      <dt className="tz" title={readTitle}><Eye />Rows back</dt><dd title={shown ? `Distinct rows retrieved and verified against the commitment; ${int(rc!.needed_rows)} of the ${int(rc!.total_rows)} reconstruct the blob.` : undefined}>{shown ? <><b>{int(rc!.served_distinct_rows)}</b><em>of {int(rc!.total_rows)} · {int(rc!.needed_rows)} needed</em></> : <><span className="u">—</span><em>{!over ? `not read yet · read before ${hhmm(b.must_serve_until)}` : "no reading"}</em></>}</dd>
       <dt className="tz" title={readTitle}><Eye />Served</dt><dd title={counted ? `${full
         ? `Every validator that endorsed the blob is asked for its own rows: ${int(asked)} were asked, and the rows of ${int(served)} came back and verified.`
         : everyEndorser

@@ -186,7 +186,7 @@ function Statement({ d, moves, page, onPage, now }: { d: Detail; moves: Move[]; 
     <>
       <div className="lg-tw">
         <table className="lg-t lg-one pb-st">
-          <LedgerHead one />
+          <LedgerHead one escrow />
           <tbody>
             {moves.length === 0 && <tr className="lg-empty"><td colSpan={9}>No escrow movement on record.</td></tr>}
             {shown.map((m) => <MoveRow key={m.key} m={m} age={age(now - Date.parse(m.time))} dec={dec} />)}
