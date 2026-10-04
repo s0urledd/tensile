@@ -40,6 +40,7 @@ func main() {
 		dbPath    = flag.String("db", "", "SQLite database path (default <data-dir>/observer.db)")
 		vantage   = flag.String("vantage", "local", "vantage name recorded on this run")
 		interval  = flag.Duration("interval", 10*time.Second, "how often to tail the files")
+		fastEvery = flag.Duration("fast-every", time.Second, "how often, between those passes, to read only state.json, publications.jsonl and payments.jsonl, so a new blob is served within about this long of the scanner writing it; nothing is opened while they have not changed (0 = only in the full pass)")
 		epEvery   = flag.Duration("endpoints-every", 60*time.Second, "how often to poll AllBondedFibreProviders (0 = never)")
 		escEvery  = flag.Duration("escrow-every", 5*time.Minute, "how often to read every known publisher's escrow balance (one state query each; 0 = never)")
 		rpcTO     = flag.Duration("rpc-timeout", 15*time.Second, "per-RPC-call timeout")
@@ -305,12 +306,7 @@ func main() {
 		if r, err := ingest.Publications(st, *pubsPath, now); err != nil {
 			fail("publications", err)
 		} else {
-			if r.Inserted > 0 {
-				log.Printf("publications: +%d (read %d, line %d)", r.Inserted, r.Read, r.Line)
-			}
-			if r.Skipped > 0 {
-				log.Printf("publications: WARNING skipped %d undecodable line(s); last: %s", r.Skipped, r.LastSkipped)
-			}
+			logTail(log.Printf, "publications", r) // fast.go; the fast tick logs its reads the same way
 		}
 		// Before the measurements, deliberately. A range says how to read
 		// the rows of the publications it covers, and InsertProbe decides
@@ -417,12 +413,7 @@ func main() {
 		if r, err := ingest.Payments(st, *payPath, now); err != nil {
 			fail("payments", err)
 		} else {
-			if r.Inserted > 0 {
-				log.Printf("payments: +%d (read %d, line %d)", r.Inserted, r.Read, r.Line)
-			}
-			if r.Skipped > 0 {
-				log.Printf("payments: WARNING skipped %d undecodable line(s); last: %s", r.Skipped, r.LastSkipped)
-			}
+			logTail(log.Printf, "payments", r)
 		}
 		if r, err := ingest.Runs(st, *runsPath, now); err != nil {
 			fail("runs", err)
@@ -729,6 +720,19 @@ func main() {
 
 	tick := time.NewTicker(*interval)
 	defer tick.Stop()
+	// The fast tick (fast.go) runs in this same loop, so it never writes
+	// beside a pass: one that falls due while a pass runs waits for it, and
+	// then reads only what came in after the pass read the files. A nil
+	// channel is never ready, so -fast-every 0 leaves the pass alone, as
+	// before.
+	var fastC <-chan time.Time
+	fast := newFastTick(st, *statePath, *pubsPath, *payPath, log.Printf, live.Error)
+	if *fastEvery > 0 {
+		ft := time.NewTicker(*fastEvery)
+		defer ft.Stop()
+		fastC = ft.C
+		log.Printf("fast tick: state.json, publications and payments every %s between passes", *fastEvery)
+	}
 	lastEP, lastAV := time.Now(), time.Now()
 	for {
 		select {
@@ -737,6 +741,8 @@ func main() {
 			_ = st.StopRun(runID, time.Now(), "signal")
 			live.Stop("signal")
 			return
+		case <-fastC:
+			fast.run(time.Now())
 		case <-tick.C:
 			poll := *epEvery > 0 && time.Since(lastEP) >= *epEvery
 			pass(poll)

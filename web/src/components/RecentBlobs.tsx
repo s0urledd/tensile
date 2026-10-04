@@ -38,19 +38,22 @@ import { lane } from "@/lib/status";
  * While the pointer is on the grid or a square has focus, the grid holds
  * still: reads go on, and letting go brings what came in in one move.
  *
- * Reading the list: GET /v1/blobs when the chain moves (the header's /v1/tip
- * stream, shared, so no request of its own), at most every 5 s while blobs
- * arrive and every 15 s once none has for two minutes, every 30 s if the
- * chain stops moving, and never while the tab is hidden. Each read asks for
+ * Reading the list: GET /v1/blobs as soon as the tip names a newest blob the
+ * grid does not hold. The tip is the header's /v1/tip stream, shared, so no
+ * request of its own, and its latest_blob is the newest blob Tensile has
+ * stored, which the collector stores within about a second of the scanner
+ * reading its block: a new blob is on the grid a few seconds after its block,
+ * and while none arrives the list is not read at all. Besides that, one read
+ * every 30 s, for an API whose tip does not name its newest blob and for a
+ * chain that stops; and never while the tab is hidden. Each read asks for
  * about as many rows as the last one brought, and the API's total says
  * whether more arrived than the page returned, in which case one more read
  * fills the gap.
  */
 
 const COLS = 10, ROWS = 5, CELLS = COLS * ROWS;
-const FAST_MS = 5000, SLOW_MS = 15000, FALLBACK_MS = 30000;
-/** no new blob for this long reads at the slow pace */
-const IDLE_AFTER_MS = 120000;
+/** the read that needs no word from the tip */
+const FALLBACK_MS = 30000;
 const SLIDE_MS = 420;
 
 type Cell = { b: Blob; seq: number };
@@ -62,10 +65,8 @@ type Feed = {
   total: number | null;
   loaded: boolean;
   error: string | null;
-  /** when the newest blob arrived, on the observer's clock (or when it settled, on the first read) */
-  lastNewAt: number;
 };
-const EMPTY: Feed = { cells: [], next: 0, total: null, loaded: false, error: null, lastNewAt: 0 };
+const EMPTY: Feed = { cells: [], next: 0, total: null, loaded: false, error: null };
 
 type Page = { blobs: Blob[]; total: number };
 
@@ -87,7 +88,7 @@ async function readPage(limit: number): Promise<Page> {
  * newer reading. extra: arrivals the page had no room for (the API's total says how many), counted
  * so that "N new" and the move stay true, though only the newest CELLS can be shown.
  */
-function merge(s: Feed, p: Page, now: number, extra = 0): { feed: Feed; fresh: number } {
+function merge(s: Feed, p: Page, extra = 0): { feed: Feed; fresh: number } {
   const byHash = new Map(p.blobs.map((b) => [b.promise_hash, b]));
   const known = new Set(s.cells.map((c) => c.b.promise_hash));
   const kept = s.cells.map((c) => {
@@ -96,85 +97,94 @@ function merge(s: Feed, p: Page, now: number, extra = 0): { feed: Feed; fresh: n
   });
   const fresh = p.blobs.filter((b) => !known.has(b.promise_hash)).slice(0, CELLS);
   const total = Number.isFinite(p.total) ? p.total : s.total;
-  const first = !s.loaded;
   // the oldest of the new takes the lowest seq, the newest the highest
   const n = fresh.length + (fresh.length ? Math.max(0, extra) : 0);
   const add: Cell[] = fresh.map((b, i) => ({ b, seq: s.next + n - 1 - i }));
-  const lastNewAt = first ? (p.blobs[0] ? Date.parse(p.blobs[0].settlement_time) : 0) : fresh.length ? now : s.lastNewAt;
   return {
-    feed: { cells: [...add, ...kept].slice(0, CELLS), next: s.next + n, total, loaded: true, error: null, lastNewAt },
+    feed: { cells: [...add, ...kept].slice(0, CELLS), next: s.next + n, total, loaded: true, error: null },
     fresh: fresh.length,
   };
 }
 
+/** whether the feed holds the blob with this promise hash */
+function holds(f: Feed, hash: string): boolean {
+  return f.cells.some((c) => c.b.promise_hash === hash);
+}
+
 /**
- * The feed, read when the chain moves (height: the tip's, from the shared
- * stream), paced as the comment at the top says. skew: the observer's clock
- * minus the reader's.
+ * The feed, read when the tip names a newest blob it does not hold (mark: the
+ * tip's latest_blob, from the shared stream), and otherwise only as the
+ * comment at the top says.
  */
-function useBlobFeed(height: number | undefined, skew: number) {
+function useBlobFeed(mark: string | undefined) {
   const [feed, setFeed] = useState<Feed>(EMPTY);
   const cur = useRef(feed);
   const limit = useRef(CELLS);
   const busy = useRef(false);
+  // a read was asked for while one was out
+  const again = useRef(false);
   const last = useRef(0);
-  const later = useRef<number | undefined>(undefined);
-  const skewRef = useRef(skew);
-  skewRef.current = skew;
+  const markRef = useRef(mark);
 
   const apply = useCallback((f: Feed) => { cur.current = f; setFeed(f); }, []);
-  const gap = () => {
-    const f = cur.current;
-    return f.error || (f.loaded && Date.now() + skewRef.current - f.lastNewAt > IDLE_AFTER_MS) ? SLOW_MS : FAST_MS;
-  };
 
   const read = useCallback(async () => {
-    if (busy.current || document.hidden) return;
+    if (document.hidden) return;
+    // One read at a time. A blob the tip names while one is out is not lost: the read goes again once it is
+    // back, unless what it brought already holds that blob.
+    if (busy.current) { again.current = true; return; }
     busy.current = true;
-    last.current = Date.now();
     try {
-      const before = cur.current;
-      const now = () => Date.now() + skewRef.current;
-      // how many settled since the last read, by the API's total
-      const known = new Set(before.cells.map((c) => c.b.promise_hash));
-      const allNew = (pg: Page) => pg.blobs.length > 0 && pg.blobs.every((b) => !known.has(b.promise_hash));
-      let page = await readPage(limit.current);
-      const delta = before.loaded && before.total != null && Number.isFinite(page.total) ? page.total - before.total : 0;
-      // More arrived than the page returned, all of it new: one more read fills the squares. The second
-      // page, newest first, holds the first, so it replaces it.
-      if (before.loaded && allNew(page) && delta > page.blobs.length && page.blobs.length < CELLS) page = await readPage(Math.min(CELLS, delta));
-      // what even that page had no room for is counted, not shown
-      const extra = before.loaded && allNew(page) ? Math.max(0, delta - page.blobs.length) : 0;
-      const { feed: f, fresh } = merge(before, page, now(), extra);
-      apply(f);
-      // ask next time for about as many as this time brought
-      const came = before.loaded ? Math.max(fresh, delta) : 0;
-      limit.current = Math.min(CELLS, Math.max(2, Math.ceil(came * 1.5) + 2));
-    } catch (e) {
-      apply({ ...cur.current, error: e instanceof Error ? e.message : String(e) });
+      do {
+        again.current = false;
+        last.current = Date.now();
+        try {
+          const before = cur.current;
+          // how many settled since the last read, by the API's total
+          const known = new Set(before.cells.map((c) => c.b.promise_hash));
+          const allNew = (pg: Page) => pg.blobs.length > 0 && pg.blobs.every((b) => !known.has(b.promise_hash));
+          let page = await readPage(limit.current);
+          const delta = before.loaded && before.total != null && Number.isFinite(page.total) ? page.total - before.total : 0;
+          // More arrived than the page returned, all of it new: one more read fills the squares. The second
+          // page, newest first, holds the first, so it replaces it.
+          if (before.loaded && allNew(page) && delta > page.blobs.length && page.blobs.length < CELLS) page = await readPage(Math.min(CELLS, delta));
+          // what even that page had no room for is counted, not shown
+          const extra = before.loaded && allNew(page) ? Math.max(0, delta - page.blobs.length) : 0;
+          const { feed: f, fresh } = merge(before, page, extra);
+          apply(f);
+          // ask next time for about as many as this time brought
+          const came = before.loaded ? Math.max(fresh, delta) : 0;
+          limit.current = Math.min(CELLS, Math.max(2, Math.ceil(came * 1.5) + 2));
+        } catch (e) {
+          apply({ ...cur.current, error: e instanceof Error ? e.message : String(e) });
+          // a failed read is not retried at once: the next blob the tip names, or the slow read, asks again
+          break;
+        }
+      } while (again.current && !document.hidden && markRef.current !== undefined && !holds(cur.current, markRef.current));
     } finally {
       busy.current = false;
     }
   }, [apply]);
 
-  /** a read now, or at the end of the current gap if the last one was sooner */
-  const request = useCallback(() => {
-    window.clearTimeout(later.current);
-    if (document.hidden) return;
-    const wait = gap() - (Date.now() - last.current);
-    if (wait <= 0) read();
-    else later.current = window.setTimeout(read, wait);
-  }, [read]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // the first read, and one each time the chain moves
-  useEffect(() => { request(); }, [height, request]);
-  // a read when the page comes back into view, and a slow one when the chain stops moving
+  // the first read
+  useEffect(() => { read(); }, [read]);
+  // a read as soon as the tip names a newest blob the feed does not hold
+  useEffect(() => {
+    markRef.current = mark;
+    if (mark !== undefined && !holds(cur.current, mark)) read();
+  }, [mark, read]);
+  // the slow read, and one when the page comes back into view if a blob came while it was hidden or the slow
+  // read fell due
   useEffect(() => {
     const t = window.setInterval(() => { if (!document.hidden && Date.now() - last.current >= FALLBACK_MS) read(); }, 5000);
-    const onVis = () => { if (document.hidden) window.clearTimeout(later.current); else request(); };
+    const onVis = () => {
+      if (document.hidden) return;
+      const m = markRef.current;
+      if ((m !== undefined && !holds(cur.current, m)) || Date.now() - last.current >= FALLBACK_MS) read();
+    };
     document.addEventListener("visibilitychange", onVis);
-    return () => { window.clearInterval(t); window.clearTimeout(later.current); document.removeEventListener("visibilitychange", onVis); };
-  }, [read, request]);
+    return () => { window.clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
+  }, [read]);
 
   return feed;
 }
@@ -255,7 +265,8 @@ const Place = memo(function Place({ c, i, fresh, on, tab, ghost, onShow, onKey, 
 export default function RecentBlobs() {
   const tip = useApi<Tip>("/v1/tip", TIP_MS); // the header's stream: no request of its own
   const skew = tip.data?.server_time && tip.fetchedAt ? Date.parse(tip.data.server_time) - Date.parse(tip.fetchedAt) : 0;
-  const feed = useBlobFeed(tip.data?.height, skew);
+  const mark = tip.data?.latest_blob?.promise_hash;
+  const feed = useBlobFeed(mark);
 
   const [pointerIn, setPointerIn] = useState(false);
   const [focusIn, setFocusIn] = useState(false);
@@ -338,11 +349,13 @@ export default function RecentBlobs() {
     : undefined;
 
   const state = feed.error ? "down" : !feed.loaded ? "wait" : "live";
-  const idle = feed.loaded && Date.now() + skew - feed.lastNewAt > IDLE_AFTER_MS;
   const liveWord = feed.error ? "Not answering" : feed.loaded ? "Live" : "Connecting";
+  // the tip names the newest blob from an API that knows to; from one that does not, only the slow read is left
   const liveTitle = feed.error
     ? `The observer API did not answer (${feed.error}); the grid shows the last read.`
-    : `Reads the newest blobs as the chain moves, at most every ${idle ? 15 : 5} s, while this page is open.`;
+    : mark
+      ? "Reads each new blob as soon as Tensile records it, a few seconds after its block, while this page is open."
+      : `Reads the newest blobs every ${FALLBACK_MS / 1000} s while this page is open.`;
 
   const rows = Array.from({ length: ROWS }, (_, r) => r);
   const mv = shown.move;

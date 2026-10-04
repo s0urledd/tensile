@@ -78,7 +78,10 @@ chain block
   heartbeat: every 5 min, every bonded provider's endpoint, layers 1-3 only
        └─→ reachability.jsonl
 
-  collector: tails all of it into SQLite with byte-offset cursors
+  collector: tails all of it into SQLite with byte-offset cursors, every 10 s
+       ├─ between those passes, every second: state.json, publications and
+       │  payments only, so a new blob is served about a second after the
+       │  scanner writes it (-fast-every; nothing opened while they stand still)
        ├─ endpoint history from AllBondedFibreProviders
        ├─ escrow balances, validator identities, Keybase avatars
        ├─ deferred shadow verdicts (amendments) once the scan frontier passes
@@ -418,7 +421,9 @@ GET /v1/sampling              the earlier sampling: day commitments, and secrets
 GET /v1/exports[/{name}]      daily tarballs + digests; /v1/exports/pubkey the signing keys
 GET /v1/avatars/{identity}    Keybase picture
 GET /v1/health                machine-readable liveness (200 / 503), each process's status
-GET /v1/tip                   the newest block read
+GET /v1/tip                   the newest block read, and the newest blob stored (latest_blob);
+                              one answer kept for 250 ms, so the node and the store are asked
+                              at most four times a second however many pages poll it
 GET /v1/market                the publisher side
 GET /v1/publishers[/{addr}]   incl. the escrow withdrawal queue read from state
 GET /v1/params                x/fibre params + change log (heights, block times), pinned protocol
@@ -530,7 +535,7 @@ Every page's header and footer read `/v1/meta` and `/v1/tip`.
 
 | route | reads |
 |---|---|
-| `/` | `/v1/network` (the period, and `all` for Available), `/v1/validators` (the map's "served last" line is the rows' `last_served_at`), `/v1/blobs?limit=1` |
+| `/` | `/v1/network` (the period, and `all` for Available), `/v1/validators` (the map's "served last" line is the rows' `last_served_at`), `/v1/blobs` (the recent blobs: as soon as `/v1/tip`'s `latest_blob` names a blob the grid does not hold, and every 30 s besides) |
 | `/validator/?addr=` | `/v1/validators/{addr}` |
 | `/blobs/` | `/v1/blobs` (the first page again as the chain moves), `/v1/namespaces`, `/v1/market` (the period), `/v1/publishers` (once its filter opens); its search (`?blob=`) asks 64 hex as `/v1/blobs/{hash}`, `?commitment=` and `?tx=`, and a blob ID as `?commitment=` |
 | `/blob/?hash=`, `?id=`, `?tx=` | `/v1/blobs/{hash}`; a blob ID (`?id=`) or a settlement transaction (`?tx=`) is found first with `/v1/blobs?commitment=` or `?tx=`, and several matches open the Blobs list of them |

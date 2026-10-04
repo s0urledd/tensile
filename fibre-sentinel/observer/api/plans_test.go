@@ -172,6 +172,11 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 		)
 		scans[f.name+" selection"] = []string{"sel"}
 	}
+	// The tip's newest blob, asked up to four times a second whoever is
+	// reading: the highest height from the index's last entry, then that
+	// block's rows, never a walk of publications.
+	cases = append(cases, c{"tip's newest blob", latestBlobSQL, nil,
+		[]string{"SEARCH publications USING INDEX publications_settlement (settlement_height=?)", "COVERING INDEX publications_settlement"}})
 	for _, tc := range cases {
 		plan, err := st.QueryPlan(ctx, tc.q, tc.args...)
 		if err != nil {
