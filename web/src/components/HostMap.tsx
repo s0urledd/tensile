@@ -20,9 +20,10 @@ import { type EndpointState, endpointState, readiness } from "@/components/Readi
  * Every place is a rounded square in the accent carrying its count; a lone
  * host is a small square with no figure. Hosts close together on screen share
  * one badge (badges never touch). A badge with an unreachable host carries an
- * amber pip, one whose hosts all stopped answering turns amber, and one with a
- * broken obligation a red pip: the only red on the map. Names appear only on
- * hover, focus or tap, in the place's popover, and the other badges step back
+ * amber pip, and one whose hosts all stopped answering turns amber; the map
+ * shows reachability only, what was served is on each validator's page. Names
+ * appear only on hover, focus or tap, in the place's popover (its unreachable
+ * hosts first), and the other badges step back
  * while one is open. A badge that holds several places zooms in on them; the
  * corner buttons, a double click, a pinch on a trackpad and a drag (once
  * zoomed) move the view, each in one eased flight.
@@ -585,7 +586,6 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
         <ul className="cm-pins" aria-label="Fibre providers by location">
           {placed.map(({ c, x, y, bw, bh, hit }) => {
             const isOpen = open === c.id;
-            const fault = c.hosts.some((h) => (h.v.obligations?.broken ?? 0) > 0);
             const place = placeLabel(c);
             const tally = ORDER.map((s) => [s, c.hosts.filter((h) => h.state === s).length] as const).filter(([, n]) => n > 0);
             const unreach = c.hosts.filter((h) => h.state === "unreachable").length;
@@ -612,7 +612,6 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
                   onFocus={() => { setRoving(c.id); openNow(c.id); }} onKeyDown={walk} onClick={() => activate(c)}>
                   <span className="cm-badge" data-tone={tone} style={{ width: bw, height: bh }}>{one ? null : n}</span>
                   {unreach > 0 && tone !== "hold" && <i className="cm-pip hold" aria-hidden="true" style={{ left: `calc(50% + ${bw / 2 - 3}px)`, top: `calc(50% - ${bh / 2 + 2}px)` }} />}
-                  {fault && <i className="cm-pip fault" aria-hidden="true" style={{ left: `calc(50% - ${bw / 2 + 3}px)`, top: `calc(50% - ${bh / 2 + 2}px)` }} />}
                 </button>
                 {isOpen && !moving && (
                   <div className="cm-pop" style={pop} role="group" aria-label={place}>
