@@ -542,7 +542,7 @@ function Page() {
             {cells.length > 0
               ? <>
                 <div className="vd-cap">
-                  <span className="vd-ttl">Latest {plural(cells.length, "check")}</span>
+                  <span className="vd-ttl">Latest {plural(cells.length, "check")} <span className="vd-per">· regardless of period</span></span>
                   <ul className="vd-key" aria-label="key">
                     {key.map((k) => <li key={k.word}>{k.sw.map((s) => <i key={s} className={"vd-c " + s} aria-hidden="true" />)}{k.word} <b>{int(k.n)}</b></li>)}
                   </ul>

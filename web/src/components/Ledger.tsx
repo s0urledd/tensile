@@ -222,8 +222,29 @@ export type Placed = { list: Move[]; range: [number, number] };
  */
 export type Moves = { place: (path: string, rows: Blob[], total: number) => Placed; rank: Map<string, number> };
 
-/** the columns' heads; one publisher's list names no publisher, its rows are its transactions, and its fee column is the escrow's statement */
-export function LedgerHead({ one }: { one: boolean }) {
+/**
+ * the columns' heads; one publisher's list names no publisher, its rows are its transactions, and its fee column is the
+ * escrow's statement. The statement alone (escrow) heads what its rows hold: the kind of movement and its amount, the
+ * blobs' columns left unnamed (they stay, so nothing moves when the kind changes)
+ */
+export function LedgerHead({ one, escrow = false }: { one: boolean; escrow?: boolean }) {
+  if (escrow) {
+    return (
+      <thead>
+        <tr>
+          <th className="c-h">Height</th>
+          <th className="c-t">Time <span className="per">(UTC)</span></th>
+          <th className="c-b">Type</th>
+          <th className="c-ns" aria-hidden="true" />
+          <th className="c-sz num" aria-hidden="true" />
+          <th className="c-fee num" title="What each movement put into the escrow (+) or took out of it (−).">Amount</th>
+          <th className="c-e num" aria-hidden="true" />
+          <th className="gap" aria-hidden="true" />
+          <th className="tn" aria-hidden="true" />
+        </tr>
+      </thead>
+    );
+  }
   return (
     <thead>
       <tr>

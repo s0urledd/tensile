@@ -1774,6 +1774,8 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 /* the namespaces view */
 .lg-nss th.n-nm { width: 26%; } .lg-nss th.n-pub { width: 10%; } .lg-nss th.n-n { width: 11%; } .lg-nss th.n-sz { width: 12%; } .lg-nss th.n-24 { width: 13%; } .lg-nss th.n-first { width: 14%; }
 .lg-nss th.n-first, .lg-nss td.n-first { padding-left: 28px; }
+/* the namespaces list's scope, on the tabs line */
+.lg-scope { margin: 0 0 0 auto; font-size: var(--t-small); color: var(--text-3); }
 .lg-nss td.n-nm .nsb { font-weight: 600; }
 .lg-nss td.n-nm .nsb .mono { font-weight: 500; }
 .lg-nss .hx { margin-left: 8px; font-family: var(--mono); font-size: 11.5px; color: var(--text-3); }

@@ -308,6 +308,8 @@ function Page() {
             <button type="button" aria-pressed={tab === "blobs"} onClick={() => setTab("blobs")}>Blobs</button>
             <button type="button" aria-pressed={tab === "namespaces"} onClick={() => setTab("namespaces")}>Namespaces{nsN ? <span className="n">{int(nsN)}{nss.data?.truncated ? "+" : ""}</span> : null}</button>
           </div>
+          {/* the namespaces are the whole record, whatever the period above: said on the tabs line */}
+          {tab === "namespaces" && <p className="lg-scope">All namespaces · totals on record</p>}
           {/* on the tabs line: the publisher filter right beside the search (a namespace picked from a row shows its
               chip before them, to clear it) */}
           {tab === "blobs" && (
