@@ -99,7 +99,7 @@ export default function PublishersTop({ m, win, list, all, now, pre, onWin }: {
   // on hover: any queued withdrawal, and when the chain was read
   const heldTitle = m ? [
     queued && queued.count > 0 ? `${tia(queued.utia)} queued to withdraw${queued.next_available_at ? `, the next payable from ${utcWord(queued.next_available_at)}` : ""}` : "",
-    m.escrow_total_at ? `Read at ${utcWord(m.escrow_total_at)}` : "",
+    m.escrow_total_at ? `As of ${utcWord(m.escrow_total_at)}` : "",
   ].filter(Boolean).join("; ") || undefined : undefined;
   const z = (v: number) => (v === 0 ? " zero" : "");
   // another period is on its way: what is shown stays, a step back, until it lands
@@ -206,7 +206,7 @@ export default function PublishersTop({ m, win, list, all, now, pre, onWin }: {
         </p>
         <hr className="tp-rule" />
         <dl className="tp-rows">
-          <div title={m ? [`${plural(m.deposits.count, "deposit")} into escrow in the period`, m.withdrawals_executed.utia > 0 ? `${tia(m.withdrawals_executed.utia)} withdrawn (${plural(m.withdrawals_executed.count, "withdrawal")} paid out)` : ""].filter(Boolean).join("; ") : undefined}>
+          <div title={m && m.withdrawals_executed.utia > 0 ? `${tia(m.withdrawals_executed.utia)} withdrawn in the period (${plural(m.withdrawals_executed.count, "withdrawal")} paid out)` : undefined}>
             <dt>Deposited <span className="per">· {per}</span></dt>
             <dd className={m && m.deposits.utia === 0 ? "zero" : undefined}>{m ? <>{unit(tia(m.deposits.utia))}{m.deposits.count > 0 && <em>{plural(m.deposits.count, "deposit")}</em>}</> : ph("00,000 TIA")}</dd>
           </div>

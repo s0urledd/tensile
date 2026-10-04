@@ -70,13 +70,12 @@ export function asLabel(h: { asn?: number; as_org?: string }): string {
 
 /** the one-line tooltip for a validator's hosting cell */
 export function hostingTitle(h: Hosting): string {
-  if (h.status === "unresolved") return `${h.host}: no address recorded by a recent heartbeat, so the network is unknown.`;
+  if (h.status === "unresolved") return `${h.host}: no recent address on record, so its network is unknown.`;
   const parts = [
     `${h.host} → ${h.ip}`,
-    h.asn ? asLabel(h) : "no routed network for this address in the database",
-    h.country ? `${h.country} (${h.country_basis === "geolocation" ? "geolocation estimate" : "country the network is registered in"})` : "",
-    h.mixed_networks ? `the name resolves into ${new Set((h.addresses ?? []).map((a) => a.asn).filter(Boolean)).size} networks; shown is the address the heartbeat connected to` : "",
-    "as resolved from this vantage",
+    h.asn ? asLabel(h) : "no known network for this address",
+    h.country ? `${h.country} (${h.country_basis === "geolocation" ? "geolocation estimate" : "where the network is registered"})` : "",
+    h.mixed_networks ? `resolves into ${new Set((h.addresses ?? []).map((a) => a.asn).filter(Boolean)).size} networks; shown: the address Tensile connected to` : "",
   ];
   return parts.filter(Boolean).join(" · ");
 }

@@ -33,33 +33,34 @@ type Filter = "all" | "unreachable" | "nohost";
 type SortKey = "power" | "shard" | "signed" | "last";
 
 /**
- * A rejected certificate, in the words of the Fibre TLS identity spec
- * (specs/src/fibre_tls_identity.md): the reason a client refuses it. The
- * verifier splits the spec's outside_validity_window into expired and not yet
- * valid; no_certificate is a peer that sent none, before the spec's checks.
+ * A rejected certificate, in a word: the reason a client refuses it, after the
+ * Fibre TLS identity spec (specs/src/fibre_tls_identity.md). The verifier
+ * splits the spec's outside_validity_window into expired and not yet valid;
+ * no_certificate is a peer that sent none, before the spec's checks.
  */
-function certificate(reason: string | undefined): { word: string; spec: string } {
+function certificate(reason: string | undefined): string {
   switch (reason) {
-    case "cert_expired": return { word: "Certificate expired", spec: "outside_validity_window" };
-    case "cert_not_yet_valid": return { word: "Certificate not yet valid", spec: "outside_validity_window" };
-    case "no_certificate": return { word: "No certificate", spec: "" };
-    case undefined: case "": return { word: "Wrong certificate", spec: "" };
-    default: return { word: "Wrong certificate", spec: reason };
+    case "cert_expired": return "Certificate expired";
+    case "cert_not_yet_valid": return "Certificate not yet valid";
+    case "no_certificate": return "No certificate";
+    default: return "Wrong certificate";
   }
 }
 
 /** the endpoint right now: the chain's own words first, then the newest handshake */
 export function endpoint(v: Validator): { dot: string; word: string; title: string; warn?: boolean } {
-  if (v.jailed) return { dot: "none", word: "Jailed", title: "Jailed by the chain: out of the bonded provider list, so no handshake is attempted. Shards it signed for are still owed." };
-  if (!bonded(v)) return { dot: "none", word: "Not bonded", title: `${v.bond_status!.replace("BOND_STATUS_", "").toLowerCase()} by the chain: out of the bonded provider list, so no handshake is attempted.` };
-  if (!v.host) return { dot: "none", word: "No endpoint", title: v.last_host ? `No open Fibre endpoint. Last registered ${v.last_host}; the registration stays on chain.` : "No Fibre provider registered in x/valaddr." };
+  if (v.jailed) return { dot: "none", word: "Jailed", title: "Jailed: out of the bonded set, so not checked. Shards it endorsed are still owed." };
+  if (!bonded(v)) {
+    const w = v.bond_status!.replace("BOND_STATUS_", "").toLowerCase();
+    return { dot: "none", word: "Not bonded", title: `${w.charAt(0).toUpperCase()}${w.slice(1)}: out of the bonded set, so not checked.` };
+  }
+  if (!v.host) return { dot: "none", word: "No endpoint", title: v.last_host ? `No open Fibre endpoint; last registered ${v.last_host}.` : "No Fibre provider registered." };
   if (v.reachable === null) return { dot: "none", word: "Not checked yet", title: `${v.host}: no handshake attempted yet.` };
   const checked = v.last_seen_at ? ` · checked ${ago(v.last_seen_at)}` : "";
   if (v.reachable === false) return { dot: "hold", word: "Unreachable", title: `${v.host}: no TLS handshake in the last two checks${v.last_reachable_at ? `; last reachable ${ago(v.last_reachable_at)}` : ""}${checked}`, warn: true };
   if (v.identity_status === "no_tls") return { dot: "hold", word: "No TLS", title: `${v.host}: answered TCP, but no TLS handshake completed${checked}`, warn: true };
   if (v.identity_status === "expired" || v.identity_status === "mismatch") {
-    const c = certificate(v.identity_reason);
-    return { dot: "hold", word: c.word, title: `${v.host}: answered TLS with a certificate a client rejects${c.spec ? ` (${c.spec}, Fibre TLS identity)` : ""}${checked}`, warn: true };
+    return { dot: "hold", word: certificate(v.identity_reason), title: `${v.host}: answered TLS with a certificate a client rejects${checked}`, warn: true };
   }
   if (v.identity_status && v.identity_status !== "verified") return { dot: "hold", word: "Reachable, unverified", title: `${v.host}: answered TLS; no certificate check recorded yet${checked}`, warn: true };
   // Reachable is dated by the last handshake this location completed (one
@@ -190,7 +191,7 @@ export default function Validators({ rows, window: win, notLive, loading, period
           <thead>
             <tr>
               <th className="col-pin">Validator</th>
-              <th className="c-ep" title="Whether the validator's Fibre server answered our latest check.">Endpoint now</th>
+              <th className="c-ep" title="Whether the validator's Fibre server answered Tensile's latest check.">Endpoint now</th>
               {showHosting && <th className="c-host" title="Where the validator's Fibre server is hosted.">Hosting</th>}
               <Th col="c-power" k="power" dflt={-1} label="Voting power" title="The default order. Not a performance ranking." />
               <Th col="c-shard" k="shard" dflt={-1} label="Shard data" per info="Row data of the shards this validator stored and endorsed over the period's settled blobs: blob_size / 4096 per row, padding included. The row proofs stored beside them are not counted." />
@@ -219,9 +220,9 @@ export default function Validators({ rows, window: win, notLive, loading, period
                       <Avatar v={v} />
                       <span>
                         <Link className="mon" href={href(v)}>{v.moniker || shortMid(v.operator_address || v.cons_address || v.address, 18, 4)}</Link>
-                        {isSelf(v) && <span className="ours" title="Huginn Tech runs both this validator and Tensile. It is measured like every other row.">runs Tensile</span>}
-                        {notLive && v.signaled_upgrade === true && <span className="ours" title="Signalled for the app version that brings Fibre (x/signal, a chain record).">signalled</span>}
-                        {notLive && v.signaled_upgrade === false && <span className="ours" title="Has not signalled for the app version that brings Fibre (x/signal, a chain record).">not signalled</span>}
+                        {isSelf(v) && <span className="ours" title="Huginn Tech runs both this validator and Tensile. It is measured like every other validator.">runs Tensile</span>}
+                        {notLive && v.signaled_upgrade === true && <span className="ours" title="Signalled on chain for the app version that brings Fibre.">signalled</span>}
+                        {notLive && v.signaled_upgrade === false && <span className="ours" title="Has not signalled on chain for the app version that brings Fibre.">not signalled</span>}
                         {/* The operator address is the one operators and delegators know (explorers list it); the consensus address stays in the tooltip and on the validator page. */}
                         {/* Without a moniker the name above already is the operator address; the line then gives the consensus address rather than the same one twice. */}
                         {(v.moniker || v.operator_address) && <span className="addr mono" title={[v.operator_address, v.cons_address || v.address].filter(Boolean).join(" · ")}>{shortMid(v.moniker ? (v.operator_address || v.cons_address || v.address) : (v.cons_address || v.address), 18, 4)}</span>}

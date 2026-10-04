@@ -3,7 +3,7 @@ import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useApi, askAgain, useNewestBlob, type Blob, type BlobReading, type Meta, int, bytes, tia, utcWord, hhmm, shortMid, nsDisplay, notFound, pctOf, API_BASE,
-  endOfWindow, fullReading, ownGap, ownSide, sharedAnswer, rawErrorWords, foreignRows, asksAgain, attemptsOf, judged as judgedBy, askedTimes, FULL_READ_SINCE, FULL_READ_SINCE_WORDS } from "@/lib/api";
+  endOfWindow, fullReading, ownGap, ownSide, sharedAnswer, rawErrorWords, foreignRows, asksAgain, attemptsOf, judged as judgedBy, askedTimes, FULL_READ_SINCE } from "@/lib/api";
 import StatusLine from "@/components/StatusLine";
 import { Eye } from "@/components/Metrics";
 import Copy from "@/components/Copy";
@@ -158,16 +158,16 @@ function causeOf(s: Seat, blob: BlobSide): Cause {
 }
 /** a cause in words, after "counted neither way:" (one validator) */
 const CAUSE: Record<Exclude<Cause, "">, string> = {
-  own: "one of Tensile's own requests for it failed or was not made in time",
+  own: "a request failed on Tensile's side or was not made in time",
   none: "no request of the reading reached a server",
-  owed: "Tensile still owed it another request, which is not on record",
-  foreign: "rows of the blob came back that are not its own, which show neither that it holds its rows nor that it does not",
+  owed: "Tensile still owed it a request that is not on record",
+  foreign: "rows of the blob came back that are not its own",
 };
 /** the same, short, for the figures' note, which counts them over every validator */
 const CAUSE_SHORT: Record<Exclude<Cause, "">, string> = {
-  own: "one of Tensile's own requests failed or was not made in time",
+  own: "a request failed on Tensile's side or was not made in time",
   none: "no request of the reading reached a server",
-  owed: "Tensile still owed another request that is not on record",
+  owed: "Tensile still owed a request that is not on record",
   foreign: "rows of the blob came back that are not the validator's own",
 };
 
@@ -207,7 +207,7 @@ function markOf(a: Assignment, s: Seat | undefined, blob: BlobSide): Mark {
   }
   const one = (res: string, word: string, tone: Mark["tone"] = ""): Mark => ({ r, tone, res, tab: res, word });
   if (r === "in_retention_window" && s && full && failed(p) && asksAgain(s.last, blob.until)) {
-    return one("in retention window", `Asked, and its own rows have not come back yet (${why}); it is asked again before the retention window closes at ${blob.closes}.${tries}`);
+    return one("in retention window", `Its own rows have not come back yet (${why}); asked again before the retention window closes at ${blob.closes}.${tries}`);
   }
   if (r === "in_retention_window") return one("in retention window", SERVICE.in_retention_window[1]);
   if (r === "deadline_unverified") return one("deadline unverified", SERVICE.deadline_unverified[1]);
@@ -216,16 +216,16 @@ function markOf(a: Assignment, s: Seat | undefined, blob: BlobSide): Mark {
   if (a.attested === false) return one("not endorsed", full ? "Not endorsed: nothing owed, so not asked." : "Not endorsed: nothing owed, so not judged.");
   if (failed(p)) {
     const held = full
-      ? (cause ? `; ${CAUSE[cause]}, so counted neither way` : "; counted neither way")
+      ? (cause ? `; counted neither way: ${CAUSE[cause]}` : "; counted neither way")
       : blob.available ? "; not counted, the blob was available from the others" : "; counted neither way";
     const word = cause === "foreign"
-      ? `Asked, and rows of the blob came back that are not its own: they show neither that it holds its rows nor that it does not, so counted neither way.`
-      : `Asked, and its ${full ? "own " : ""}rows did not come back (${why})${held}.`;
+      ? "Rows of the blob came back that are not its own, so counted neither way."
+      : `Its ${full ? "own " : ""}rows did not come back (${why})${held}.`;
     return { r, tone: "hold", cause, res: `${why}${times}`, tab: seq || why, word: `${word}${tries}${final}` };
   }
   if (!blob.judged) return one("—", "No reading that counts.");
   if (!p) return full
-    ? one("not read", "Tensile has no request to this validator on record at this reading: counted neither way.")
+    ? one("not read", "No request to this validator on record at this reading: counted neither way.")
     : one("not asked", "Not asked: the reading had enough rows before it reached this validator.");
   const gap = (res: string, word: string): Mark => ({ r, tone: "", res, tab: seq ? `${res} · ${seq}` : res, word: `${word}${tries}${final}` });
   if (p.classification === "NOT_PROBED") return gap("not read", "Tensile could not make this request in time: counted neither way.");
@@ -352,14 +352,14 @@ function Page() {
   const count = (s: Result) => rows.filter((a) => marks.get(a.validator_address)!.r === s).length;
   const served = count("served"), notServed = count("not_served");
   const early = counted && !over;
-  const finalNote = `The reading is in; the record is final when the retention window closes at ${closes}${retried ? ", and a validator that did not serve is asked again, up to two more times, before then" : ""}.`;
+  const finalNote = `Final when the retention window closes at ${closes}${retried ? "; a validator that did not serve is asked again until then" : ""}.`;
   // The client's result: Available, enough rows came back to reconstruct the blob; Unavailable, with its own error.
   const state: [string, string, string] =
-    rc?.status === "yes" ? ["ok", "Available", `Enough rows came back to reconstruct the blob; ${int(served)} of the ${int(asked)} endorsing validators asked served their own rows.`]
+    rc?.status === "yes" ? ["ok", "Available", `Enough rows came back to reconstruct the blob; ${int(served)} of the ${int(asked)} endorsing validators asked served.`]
     : rc?.status === "no" ? ["hold", "Unavailable", `${rc.error ? `${rc.error[0].toUpperCase()}${rc.error.slice(1)}: ` : ""}${rc.error === "no shards retrieved" ? "no rows came back" : `fewer than the ${int(rc.needed_rows)} rows needed came back`} from the ${int(asked)} endorsing validators asked.`]
     : !over ? ["none", "In retention window", "Read once, 10 minutes before the retention window ends."]
-    : counted ? ["none", "Not read by Tensile", "Tensile could not make every request of this reading in time, and the rows that came back do not reconstruct the blob. Each validator it asked is judged on its own answers; one it could not ask counts neither way."]
-    : ["none", "Not read by Tensile", "Tensile did not read this blob: it missed the reading, its own network was down, or, before 27 September 2026, the load policy of the time did not draw it. Tensile's own gaps count against no validator."];
+    : counted ? ["none", "Not read by Tensile", "Tensile could not make every request in time, and the rows that came back fell short. Each validator it asked is judged on its own answers."]
+    : ["none", "Not read by Tensile", "Tensile did not read this blob. Its own gaps count against no validator."];
   // failures on the validators' side that the rule did not count, as the validator page names them
   const held = rows.filter((a) => marks.get(a.validator_address)!.tone === "hold");
   const heldWhy = [...held.reduce((m, a) => {
@@ -384,18 +384,18 @@ function Page() {
   const facts = (
     <dl className="pb-meta bd-meta">
       <dt>Publisher</dt>
-      <dd>{pub ? <Who addr={pub} /> : "—"}{b.signer && pub && b.signer !== pub && <em title={`Sent by ${b.signer}; the escrow it settled from is the publisher's`}>sent by {b.signer.slice(0, b.signer.indexOf("1") + 1)}…{b.signer.slice(-4)}</em>}</dd>
+      <dd>{pub ? <Who addr={pub} /> : "—"}{b.signer && pub && b.signer !== pub && <em title={`Sent by ${b.signer}, paid from the publisher's escrow`}>sent by {b.signer.slice(0, b.signer.indexOf("1") + 1)}…{b.signer.slice(-4)}</em>}</dd>
       <dt>Namespace</dt>
       <dd><Link className="bd-ns" href={`/blobs/?namespace=${b.namespace}`} title={`${b.namespace} · every blob in it`}>{nsDisplay(b.namespace)}</Link><Copy text={b.namespace} label="namespace" /></dd>
       <dt>Commitment</dt>
       <dd title={b.commitment}><span className="mono">{shortMid(b.commitment, 10, 6)}</span><Copy text={b.commitment} label="commitment" /></dd>
-      <dt title="The payment promise this settlement carried: one blob ID can be settled again under another promise, and this page is this settlement's">Promise hash</dt>
+      <dt title="This settlement's payment promise. A blob settled again has another promise hash.">Promise hash</dt>
       <dd title={b.promise_hash}><span className="mono">{shortMid(b.promise_hash, 10, 6)}</span><Copy text={b.promise_hash} label="the promise hash" /></dd>
       {/* the settlement, as the chain records it: when, at what height, by which transaction */}
       <dt>Settled</dt>
       <dd><b title={utcWord(b.settlement_time)}>{monthDayTime(b.settlement_time)}</b><em>UTC · height {int(b.settlement_height)}</em></dd>
       {txHash && <>
-        <dt title="The transaction that carried the MsgPayForFibre settling this blob">Transaction</dt>
+        <dt title="The transaction that settled this blob">Transaction</dt>
         <dd className="bd-tx"><span className="mono" title={txHash}>{shortMid(txHash, 10, 6)}</span><Copy text={txHash} label="transaction hash" /></dd>
       </>}
       {b.assignment_error && <><dt>Assignment</dt><dd>{b.assignment_error}</dd></>}
@@ -406,13 +406,11 @@ function Page() {
   const causeWords = ([c, n]: [Exclude<Cause, "">, number]) => `${CAUSE_SHORT[c]}${causes.length > 1 || n < held.length ? ` (${int(n)})` : ""}`;
   const notServedDot = counted && held.length > 0 && <Warn text={`${int(held.length)} validator${held.length === 1 ? "'s" : "s'"} ${full ? "own " : ""}rows did not come back: ${heldWhy}. ${full ? `Counted neither way${causes.length > 0 ? `: ${causes.map(causeWords).join("; ")}` : ""}.` : available ? "Not counted: the blob was available from the others." : "Counted neither way."}`} />;
   const readTitle = full ? (retried
-      ? "Read once, 10 minutes before the retention window ends: every validator that endorsed the blob is asked for its own rows, as celestia-app’s client asks for a shard, and one that did not serve is asked again, up to two more times, while the window is open."
-      : "Read once, 10 minutes before the retention window ends: every validator that endorsed the blob was asked for its own rows, once, as celestia-app’s client asks for a shard.")
+      ? "Read once, 10 minutes before the retention window ends. Each endorsing validator is asked for its own rows, up to twice more if it does not serve."
+      : "Read once, 10 minutes before the retention window ends. Each endorsing validator was asked once for its own rows.")
     : endRead ? (everyEndorser
-      ? `Read once, 10 minutes before the retention window ends: every validator that endorsed the blob was asked once. Readings before ${FULL_READ_SINCE_WORDS} keep the rule of their time.`
-      : enough
-      ? "Read once, 10 minutes before the retention window ends, as celestia-app’s client downloads it: the validators in its order, until enough rows came back. A reading that stops at enough rows keeps the earlier rule: a validator is not served only when its rows did not come back and the blob could not be reconstructed."
-      : `Read once, 10 minutes before the retention window ends, as celestia-app’s client downloads it: the validators in its order, until enough rows came back. Readings before ${FULL_READ_SINCE_WORDS} keep the rule of their time.`)
+      ? "Read once, 10 minutes before the retention window ends; each endorsing validator was asked once. Not served counts only on an unavailable blob."
+      : "Read once, 10 minutes before the retention window ends, in the client's order until enough rows came back. Not served counts only on an unavailable blob.")
     : probes.length > 0 ? "Read on the earlier schedule, at several points in the retention window, and judged by the rule of its time." : "Not read by Tensile.";
   // the figures, in the facts' own rows: the chain's three, then Tensile's three, marked with its eye
   const figs = (
@@ -420,14 +418,14 @@ function Page() {
       <dt>Blob size</dt><dd title="The size the blob paid for: Celestia's upload size, with header and padding, without parity."><b>{unit(bytes(b.blob_size))}</b></dd>
       <dt>Fee paid</dt><dd title="Charged to the publisher's escrow; not the settlement transaction's own fee.">{b.charge ? <><b>{unit(tia(b.charge.fee_utia))}</b><em>{b.charge.timed_out ? "timed out" : b.charge.settled ? "settled" : "not settled yet"}</em></> : <em>not recorded</em>}</dd>
       <dt>Endorsed</dt><dd title="Voting power whose signature on the settlement verified. A settlement needs ⅔.">{stake != null ? <><b>{pctOf(b.attested_voting_power ?? 0, b.total_voting_power ?? 0)}</b><em>of voting power</em></> : <em>not recorded</em>}</dd>
-      <dt className="tz" title={readTitle}><Eye />Rows back</dt><dd title={shown ? `Distinct rows retrieved and verified against the commitment; ${int(rc!.needed_rows)} of the ${int(rc!.total_rows)} reconstruct the blob.` : undefined}>{shown ? <><b>{int(rc!.served_distinct_rows)}</b><em>of {int(rc!.total_rows)} · {int(rc!.needed_rows)} needed</em></> : <><span className="u">—</span><em>{!over ? `not read yet · read before ${hhmm(b.must_serve_until)}` : "no reading"}</em></>}</dd>
+      <dt className="tz" title={readTitle}><Eye />Rows back</dt><dd title={shown ? `Distinct rows that came back and verified against the commitment; ${int(rc!.needed_rows)} reconstruct the blob.` : undefined}>{shown ? <><b>{int(rc!.served_distinct_rows)}</b><em>of {int(rc!.total_rows)} · {int(rc!.needed_rows)} needed</em></> : <><span className="u">—</span><em>{!over ? `not read yet · read before ${hhmm(b.must_serve_until)}` : "no reading"}</em></>}</dd>
       {/* served and not served in one row: how many of those asked served, how many did not (red, with the dot for
           failures that counted neither way), then when the blob was read */}
-      <dt className="tz" title={readTitle}><Eye />Served</dt><dd title={counted ? `${full
-        ? `Every validator that endorsed the blob is asked for its own rows: ${int(asked)} were asked, and the rows of ${int(served)} came back and verified${notServed > 0 ? `; ${int(notServed)} did not serve, their own rows not coming back ${retried ? "at the reading and each time they were asked again" : "at the reading"}` : ""}.`
+      <dt className="tz" title={readTitle}><Eye />Served</dt><dd title={counted ? (full
+        ? `Endorsing validators whose own rows came back and verified, of the ${int(asked)} asked${notServed > 0 ? `; ${int(notServed)} did not serve, ${retried ? "neither at the reading nor when asked again" : "at the reading"}` : ""}.`
         : everyEndorser
-        ? `This reading asked every validator that endorsed the blob once: ${int(asked)} were asked, and the rows of ${int(served)} came back and verified${unasked > 0 ? `; the other ${int(unasked)} requests were Tensile's own gaps, counted neither way` : ""}${notServed > 0 ? `; ${int(notServed)} did not serve: their rows did not come back from a blob that could not be reconstructed` : ""}.`
-        : `This reading asked validators in the client's order until it had enough rows: it asked ${int(asked)}, and ${int(served)} endorsing validators' rows came back and verified. The rest were not asked.${notServed > 0 ? ` ${int(notServed)} did not serve: their rows did not come back from a blob that could not be reconstructed.` : ""}`}${early ? ` ${finalNote}` : ""}` : undefined}>
+        ? `Endorsing validators whose rows came back and verified, of the ${int(asked)} asked once each${unasked > 0 ? `; Tensile could not ask ${int(unasked)} more, counted neither way` : ""}${notServed > 0 ? `; ${int(notServed)} did not serve, on a blob that could not be reconstructed` : ""}.`
+        : `Endorsing validators whose rows came back and verified, of the ${int(asked)} asked in the client's order until enough rows came back; the rest were not asked.${notServed > 0 ? ` ${int(notServed)} did not serve, on a blob that could not be reconstructed.` : ""}`) : undefined}>
         {counted
           ? <>
             <b>{int(served)}</b><em>of {int(asked)} asked</em>
@@ -450,7 +448,7 @@ function Page() {
         {/* the blob as the client names it: its blob ID, as fibre.Submit returns it and Download takes it; the page itself
             is one settlement of it, by its promise hash, with its height and time in the chips under it */}
         <div className="pb-addr">
-          <span className="bd-idl" title={`The ID the Fibre client returns for this blob: its version, ${b.blob_version ?? 0}, then the commitment, in base64`}>Blob ID</span>
+          <span className="bd-idl" title={`The ID the Fibre client returns for this blob: version ${b.blob_version ?? 0} and the commitment, in base64`}>Blob ID</span>
           <span className="mono">{blobId}</span><Copy text={blobId} label="the blob ID" />
           {(same.data?.total ?? 0) > 1 && <Link className="bd-many" href={`/blobs/?blob=${encodeURIComponent(blobId)}`} title="Every settlement of this blob ID">settled {int(same.data!.total)} times →</Link>}
         </div>
