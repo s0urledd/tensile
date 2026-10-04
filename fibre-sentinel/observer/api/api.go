@@ -4847,7 +4847,7 @@ func (s *Server) fillSettledAt(ctx context.Context, rs []validatorReading) error
 			args = append(args, r.PromiseHash)
 		}
 	}
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT promise_hash, settlement_time FROM publications WHERE promise_hash IN (?`+strings.Repeat(", ?", len(args)-1)+`)`, args...)
+	rows, err := s.q(ctx).QueryContext(ctx, `SELECT promise_hash, settlement_time FROM publications WHERE promise_hash IN (?`+strings.Repeat(", ?", len(args)-1)+`)`, args...)
 	if err != nil {
 		return err
 	}
