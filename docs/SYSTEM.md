@@ -586,14 +586,17 @@ Caddy serves the static export from `/var/www/fibre-observer` and proxies
 
 ## 12. Retention and rollup
 
-Defaults: raw rows 90 days, `raw_json` 30 days, roll a day up 14 days after it
-ends. A day is **rolled before it is pruned**, oldest first, whole days at a
-time — the record is never thinner than the rollup behind it.
+Every row is kept for good: nothing deletes a probe or heartbeat row or
+strips its `raw_json` (decided 2026-10-04; the 90-day prune and the 30-day
+strip of 2026-09-18 were retired before either first ran). A day is rolled
+up 14 days after it ends, for speed only.
 
-Past the raw retention the `all` window is `obligation_daily` + `probe_daily`
-for the pruned days plus the raw rows, and the response says so
-(`rolled_up`). `Rolled.Without` applies `?exclude=` to the rolled days too,
-or the `all` window would answer half the question.
+The API keeps its rolled-up path for a database pruned before then: the
+`all` window would be `obligation_daily` + `probe_daily` for the pruned
+days plus the raw rows, and the response would say so (`rolled_up`).
+`Rolled.Without` applies `?exclude=` to the rolled days too, or the `all`
+window would answer half the question. With every row kept, `raw_from` is
+never set and nothing is labelled.
 
 ---
 

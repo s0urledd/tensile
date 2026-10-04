@@ -414,16 +414,16 @@ func TestSampledOutFiguresUnchanged(t *testing.T) {
 	compareStores(t, "decision", rows, dec)
 	compareStores(t, "migrated", rows, mig)
 
-	// The daily rollups and, once rolled days are pruned, the "all" window
-	// built on them.
-	cfg := rollup.Config{RollupAfter: time.Nanosecond, RetainRaw: 24 * time.Hour, Batch: 5000}
+	// The daily rollups and, once rolled days are pruned (as the observer
+	// did before 2026-10-04: pruneLikeBefore), the "all" window built on them.
 	for _, st := range []*store.Store{rows, dec, mig} {
-		rep, err := rollup.Run(context.Background(), st, now, cfg)
+		rep, err := rollup.Run(context.Background(), st, now, rollup.Config{RollupAfter: time.Nanosecond})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(rep.RolledDays) == 0 || len(rep.PrunedDays) == 0 {
-			t.Fatalf("the rollup did not roll and prune the fixture's first day: %+v", rep)
+		days, _, _ := pruneLikeBefore(t, st, now, 24*time.Hour, 0)
+		if len(rep.RolledDays) == 0 || len(days) == 0 {
+			t.Fatalf("the rollup did not roll and prune the fixture's first day: %+v, pruned %v", rep, days)
 		}
 	}
 	// The pruned day took the decision with it, as it took the rows.

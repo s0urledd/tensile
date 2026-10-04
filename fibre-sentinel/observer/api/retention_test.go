@@ -2,8 +2,13 @@ package api_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -58,10 +63,12 @@ type valSnapshot struct {
 	Reach       struct{ Num, Den int64 } `json:"reachability_window"`
 }
 
-// Past the raw retention the "all" window is the daily rollup for the
-// pruned days plus the raw rows: rolling a day up and pruning it must
-// leave every "all" figure exactly as it was, now labelled, and stripping
-// raw_json must leave every typed figure in place.
+// A database pruned before 2026-10-04, when the prune was retired, answers
+// the "all" window from the daily rollup for the pruned days plus the raw
+// rows: rolling a day up and pruning it must leave every "all" figure
+// exactly as it was, now labelled, and stripping raw_json must leave every
+// typed figure in place. The prune is pruneLikeBefore here; the observer no
+// longer runs one.
 func TestRollupAndPruneKeepTheAllWindow(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
@@ -112,28 +119,18 @@ func TestRollupAndPruneKeepTheAllWindow(t *testing.T) {
 	get(t, ts, "/v1/validators?window=all", &beforeVals)
 	beforeTallies := talliesOf(t, st)
 
-	// roll up (14 days after the day) and prune (rows older than 30 days)
-	cfg := rollup.Config{RetainRaw: 30 * 24 * time.Hour, RetainRawJSON: 7 * 24 * time.Hour, RollupAfter: 14 * 24 * time.Hour}
-	rep, err := rollup.Run(context.Background(), st, now, cfg)
+	// roll up (14 days after the day), then prune as the observer did before
+	// 2026-10-04: rows older than 30 days, raw_json older than 7
+	rep, err := rollup.Run(context.Background(), st, now, rollup.Config{RollupAfter: 14 * 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(rep.RolledDays) == 0 || rep.PendingAtRoll != 0 {
 		t.Fatalf("report = %+v", rep)
 	}
-	// rolled through yesterday minus 14 days; the old day is pruned, the
-	// days after it up to the retention cut are pruned three at a time
-	for i := 0; i < 20 && len(rep.PrunedDays) < 11; i++ {
-		more, err := rollup.Run(context.Background(), st, now, cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
-		rep.PrunedDays = append(rep.PrunedDays, more.PrunedDays...)
-		rep.PrunedRows += more.PrunedRows
-		rep.RawJSONDropped += more.RawJSONDropped
-	}
-	if rep.PrunedRows == 0 || rep.PrunedDays[0] != old.Format("2006-01-02") {
-		t.Fatalf("pruned %d rows over %v", rep.PrunedRows, rep.PrunedDays)
+	prunedDays, prunedRows, stripped := pruneLikeBefore(t, st, now, 30*24*time.Hour, 7*24*time.Hour)
+	if prunedRows == 0 || prunedDays[0] != old.Format("2006-01-02") {
+		t.Fatalf("pruned %d rows over %v", prunedRows, prunedDays)
 	}
 	var left int64
 	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM probes WHERE promise_hash IN ('old1','old2')`).Scan(&left)
@@ -147,9 +144,7 @@ func TestRollupAndPruneKeepTheAllWindow(t *testing.T) {
 	if left != 9 {
 		t.Fatalf("%d seam rows survived the prune, want the 9 that started on the retained day", left)
 	}
-	var withJSON int64
-	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM probes WHERE raw_json = ''`).Scan(&withJSON)
-	if rep.RawJSONDropped == 0 {
+	if stripped == 0 {
 		t.Errorf("no raw_json was dropped (rows older than the 7-day retention existed)")
 	}
 	from, ok := rollup.RawFrom(st)
@@ -280,5 +275,185 @@ func TestRollupAndPruneKeepTheAllWindow(t *testing.T) {
 	}
 	if code := get(t, ts2, "/v1/probes?limit=5", &probes); code != 200 || len(probes.Probes) == 0 {
 		t.Errorf("probes: %d, %d rows", code, len(probes.Probes))
+	}
+}
+
+// pruneLikeBefore does to st what the collector's retention pass did until
+// 2026-10-04, when it was retired: strip raw_json from probe and heartbeat
+// rows older than strip (0: none), and delete whole rolled days of rows
+// older than keep, moving raw_from past them. Nothing in the observer prunes
+// any more; the API's rolled-up path stays until it is removed, and this
+// keeps it under test for a database pruned before then.
+func pruneLikeBefore(t *testing.T, st *store.Store, now time.Time, keep, strip time.Duration) (days []string, rows, stripped int64) {
+	t.Helper()
+	db := st.DB()
+	if strip > 0 {
+		for _, table := range []string{"probes", "reachability"} {
+			res, err := db.Exec(`UPDATE `+table+` SET raw_json = '' WHERE started_at < ? AND raw_json <> ''`, store.TS(now.Add(-strip)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			n, _ := res.RowsAffected()
+			stripped += n
+		}
+	}
+	through, err := st.Meta("rollup_through")
+	if err != nil || through == "" {
+		return
+	}
+	rolled, err := time.Parse("2006-01-02", through)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first sql.NullString
+	if err := db.QueryRow(`SELECT MIN(t) FROM (
+			SELECT MIN(started_at) AS t FROM probes
+			UNION ALL SELECT MIN(decided_at) FROM sampling_decisions
+			UNION ALL SELECT MIN(started_at) FROM reachability
+			UNION ALL SELECT MIN(settlement_time) FROM publications)`).Scan(&first); err != nil {
+		t.Fatal(err)
+	}
+	if !first.Valid || first.String == "" {
+		return
+	}
+	ft, err := time.Parse(store.TimeLayout, first.String)
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := func(x time.Time) time.Time {
+		x = x.UTC()
+		return time.Date(x.Year(), x.Month(), x.Day(), 0, 0, 0, 0, time.UTC)
+	}
+	cut := day(now.Add(-keep))
+	for from := day(ft); !from.After(rolled) && from.Before(cut); from = from.Add(24 * time.Hour) {
+		lo, hi := store.TS(from), store.TS(from.Add(24*time.Hour-time.Nanosecond))
+		for _, q := range []string{
+			`DELETE FROM probes WHERE started_at >= ? AND started_at <= ?`,
+			`DELETE FROM reachability WHERE started_at >= ? AND started_at <= ?`,
+			`DELETE FROM probe_confirmations WHERE started_at >= ? AND started_at <= ?`,
+			`DELETE FROM sampling_decisions WHERE decided_at >= ? AND decided_at <= ?`,
+		} {
+			res, err := db.Exec(q, lo, hi)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n, _ := res.RowsAffected()
+			rows += n
+		}
+		days = append(days, from.Format("2006-01-02"))
+		if err := st.SetMeta("raw_from", from.Add(24*time.Hour).Format("2006-01-02"), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return
+}
+
+// tableDigests is every table's rows, as a count and a digest of the sorted
+// rows, so two states of a store compare table by table.
+func tableDigests(t *testing.T, st *store.Store) map[string]string {
+	t.Helper()
+	names, err := st.DB().Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tables []string
+	for names.Next() {
+		var n string
+		if err := names.Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		tables = append(tables, n)
+	}
+	names.Close()
+	out := map[string]string{}
+	for _, table := range tables {
+		r, err := st.DB().Query(`SELECT * FROM "` + table + `"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cols, _ := r.Columns()
+		var lines []string
+		for r.Next() {
+			v := make([]any, len(cols))
+			p := make([]any, len(cols))
+			for i := range v {
+				p[i] = &v[i]
+			}
+			if err := r.Scan(p...); err != nil {
+				t.Fatal(err)
+			}
+			lines = append(lines, fmt.Sprintf("%q", v))
+		}
+		r.Close()
+		sort.Strings(lines)
+		h := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+		out[table] = fmt.Sprintf("%d rows %s", len(lines), hex.EncodeToString(h[:8]))
+	}
+	return out
+}
+
+// The rollup pass deletes nothing and rewrites no row: run as the collector
+// runs it, today, a year on and ten years on, every table but the rollups'
+// own holds exactly the rows it held, raw_json included, raw_from is never
+// set, and the "all" window reads the same, unlabelled. An old blob reads in
+// ten years as it reads today (the retention decision of 2026-10-04).
+func TestRollupDeletesNothing(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	now := time.Now().UTC().Truncate(time.Second)
+	old := now.Add(-120 * 24 * time.Hour).Truncate(24 * time.Hour).Add(10 * time.Hour)
+	insertProbeSet(t, st, "old1", old, old.Add(30*time.Minute), map[string][]wire{
+		"served": {ok, ok, ok, ok}, "broken": {ok, gone, ok, ok}, "unreach": {refused, refused, refused, refused},
+	})
+	mid := now.Add(-40 * 24 * time.Hour)
+	insertProbeSet(t, st, "mid1", mid, mid.Add(30*time.Minute), map[string][]wire{
+		"served": {ok, ok, ok, ok}, "endun": {ok, err500, err500, err500},
+	})
+	recent := now.Add(-2 * time.Hour)
+	insertProbeSet(t, st, "new1", recent, now.Add(-30*time.Minute), map[string][]wire{
+		"served": {ok, ok, ok, ok}, "broken": {ok, gone, ok, ok},
+	})
+	ts := httptestServer(t, st)
+	var before allSnapshot
+	get(t, ts, "/v1/network?window=all", &before)
+	beforeTables := tableDigests(t, st)
+
+	ctx := context.Background()
+	for _, cfg := range []rollup.Config{rollup.Default(), {RollupAfter: time.Nanosecond, Vantage: "test"}} {
+		for _, at := range []time.Time{now, now.Add(400 * 24 * time.Hour), now.Add(10 * 365 * 24 * time.Hour)} {
+			for i := 0; i < 3; i++ {
+				if _, err := rollup.Run(ctx, st, at, cfg); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	if through, _ := st.Meta("rollup_through"); through == "" {
+		t.Fatal("the fixture was never rolled up, so the pass was not exercised")
+	}
+	after := tableDigests(t, st)
+	for table, b := range beforeTables {
+		switch table {
+		case "obligation_daily", "probe_daily", "meta":
+			continue // the rollups and their mark are what the pass writes
+		}
+		if after[table] != b {
+			t.Errorf("table %s changed: before %s, after %s", table, b, after[table])
+		}
+	}
+	if v, _ := st.Meta("raw_from"); v != "" {
+		t.Errorf("raw_from was set to %q; nothing may be pruned", v)
+	}
+	ts2 := httptestServer(t, st)
+	var later allSnapshot
+	get(t, ts2, "/v1/network?window=all", &later)
+	if later.RolledUp != nil {
+		t.Errorf("the all window is labelled rolled up: %+v", later.RolledUp)
+	}
+	if later.Obligations != before.Obligations || later.ServeRate != before.ServeRate || later.ReachWindow != before.ReachWindow {
+		t.Errorf("the all window changed: before %+v, after %+v", before, later)
 	}
 }

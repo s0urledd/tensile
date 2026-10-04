@@ -738,34 +738,19 @@ what the measurement cannot separate.
   whether an endpoint this observer calls down answers from elsewhere; it
   adds no reading to any rate.
 
-- **Retention and the rollup.** Raw probe and heartbeat rows are kept for
-  90 days and their `raw_json` (the bulk of a row) for 30; every typed
-  column stays, including the evidence columns. Fourteen days after a UTC
-  day ends, while its rows are all still present, the collector computes
-  the day's rollup with the same SQL the API runs live: the obligation
-  buckets per validator for the promises settled that day, and the row
-  counts (in-window classes, gaps, heartbeats) for the rows started that
-  day. A day is
-  pruned only after it is rolled, whole days at a time, oldest first, so
-  the record is never thinner than the rollup behind it. From the first
-  prune on, the "all" window is the rollup for every day before `raw_from`
-  plus the raw record from `raw_from` on, and the answer carries
-  `rolled_up` (`raw_from`, the days folded in, and which figures rest on
-  the rollup); the 24h, 7d and 30d windows never touch it. The two parts
-  partition cleanly because they cut along the same lines the rollup was
-  computed on: obligations by the day their promise settled (raw counts
-  those settled from `raw_from` on), rows by the day they started (raw
-  counts those started from `raw_from` on). A promise settled late on a
-  rolled day may still have rows that started on a retained day; those
-  rows stay until their own day is pruned and count in the row figures,
-  while the obligation they belong to is the rollup's alone. Figures the
-  rollup does not hold, latency percentiles, attestation and throughput, cover the raw record only, and the label
-  says so. A pinned `as_of` before `raw_from` takes whole rolled days up
-  to its own. Fourteen days is a floor, not the rule: a day rolls only
-  once every promise settled on it has left its window and no probe row
-  of theirs is still deferred, so a chain whose retention outruns the
-  flag holds the rollup rather than rolling a pending obligation. The JSONL record and the daily exports are untouched by any
-  of this: pruning is the database's, never the record's.
+- **Retention and the rollup.** Every probe and heartbeat row is kept for
+  good, `raw_json` included: nothing is deleted or stripped, so an old
+  blob, a validator's history and every rate read the same years on as
+  they do today (decided 2026-10-04; the 90-day prune and 30-day strip of
+  2026-09-18 never ran). Fourteen days after a UTC day ends the collector
+  computes the day's rollup with the same SQL the API runs live, for speed:
+  the obligation buckets per validator for the promises settled that day,
+  and the row counts (in-window classes, gaps, heartbeats) for the rows
+  started that day. A day rolls only once every promise settled on it has
+  left its window and no probe row of theirs is still deferred, so a chain
+  whose retention outruns the fourteen days holds the rollup rather than
+  rolling a pending obligation. The JSONL record and the daily exports are
+  untouched by any of this.
 
 ## Reproducing the figures
 
