@@ -478,6 +478,10 @@ function Page() {
                   {diag.docs && <a href={diag.docs.href} rel="noopener noreferrer" target="_blank">{diag.docs.word} →</a>}
                 </p>
               )}
+              {/* an endpoint that stopped answering: since when, by its last completed handshake */}
+              {diag && diag.tone === "hold" && !noEndpoint && e.word === "Unreachable" && v.last_reachable_at && (
+                <p className="vd-since" title={utcWord(v.last_reachable_at)}>Last answered {monthDayTime(v.last_reachable_at).slice(0, -3)} UTC</p>
+              )}
               <p className="vd-sub">
                 {v.provider_since && <span title={`When this validator first appeared as a Fibre provider, whatever endpoint it had then: ${utcWord(v.provider_since)}`}>Fibre provider since <b>{shortDate(v.provider_since)}</b></span>}
                 {site && <a href={site} title={site} rel="nofollow noopener noreferrer" target="_blank">{site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</a>}
@@ -556,9 +560,13 @@ function Page() {
               : <p className="vd-none-yet">No check of this validator on record yet.</p>}
           </div>
         </div>
-        {/* the period's other figures on one line: what was not served (a click shows them in the checks), reachability
-            with its count, then throughput and what waits for its check once there is something to say */}
+        {/* the period's other figures on one line, spread evenly across the frame: reachability with its count, what was
+            not served (a click shows them in the checks), then throughput and what waits for its check once there is
+            something to say */}
         <div className="vd-more">
+          <span className="vd-fi" title={!bonded ? "Out of the bonded list: not checked." : reach ? `${int(reach.num)} of ${int(reach.den)} handshakes completed with the registered endpoint over the period. Not signing uptime.${v.last_unreachable_at ? ` Last failed handshake ${utcWord(v.last_unreachable_at)}.` : ""}` : "No handshake yet."}>
+            Reachability <b>{reach ? pctOf(reach.num, reach.den) : "—"}</b>{reach && <em>{int(reach.num)} / {int(reach.den)}</em>}
+          </span>
           <span className={"vd-fi" + (!notLive && broken > 0 ? " bad" : "")} title={`Endorsed shards whose own rows did not come back, at the reading and each time they were asked again. Before ${FULL_READ_SINCE_WORDS}: rows that did not come back from a blob that could not be reconstructed.`}>
             {notLive
               ? <>Not served <b>—</b></>
@@ -566,9 +574,6 @@ function Page() {
                 ? <button type="button" className="vd-go" onClick={showNotServed} aria-label={`${int(broken)} not served: show them in the checks below`}>Not served <b>{int(broken)}</b></button>
                 : <>Not served <b>0</b></>}
             {!notLive && prov > 0 && <Warn text={`${int(prov)} of these ${prov === 1 ? "is" : "are"} younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.`} />}
-          </span>
-          <span className="vd-fi" title={!bonded ? "Out of the bonded list: not checked." : reach ? `${int(reach.num)} of ${int(reach.den)} handshakes completed with the registered endpoint over the period. Not signing uptime.${v.last_unreachable_at ? ` Last failed handshake ${utcWord(v.last_unreachable_at)}.` : ""}` : "No handshake yet."}>
-            Reachability <b>{reach ? pctOf(reach.num, reach.den) : "—"}</b>{reach && <em>{int(reach.num)} / {int(reach.den)}</em>}
           </span>
           {v.serve_bytes_per_second != null && <span className="vd-fi" title={`Median download speed over ${int(v.serve_throughput_sample)} shards of 2 MiB or more.`}>
             Throughput <b>{unit(`${bytes(v.serve_bytes_per_second)}/s`)}</b>
@@ -588,6 +593,10 @@ function Page() {
             <dt>Endorsements <span className="per">· {per}</span></dt>
             <dd className={endorse ? undefined : "na"}><b>{endorse ? pctOf(endorse.n, endorse.of) : "—"}</b>{endorse && <em>{int(endorse.n)} / {int(endorse.of)}</em>}</dd>
           </div>
+          {sig?.last_endorsed_at && <div title={`The newest settlement carrying this validator's endorsement: ${utcWord(sig.last_endorsed_at)}`}>
+            <dt>Last endorsed</dt>
+            <dd><b>{monthDayTime(sig.last_endorsed_at).slice(0, -3)}</b><em>UTC</em></dd>
+          </div>}
           <div title={`${load ? `${int(load.promises)} endorsed blobs in the period. ` : ""}Row data of the shards this validator stored and endorsed over the period's settled blobs: blob_size / 4096 per row, padding included. The row proofs stored beside them are not counted.`}>
             <dt>Shard data <span className="per">· {per}</span></dt>
             <dd className={load && !notLive ? undefined : "na"}><b>{load && !notLive ? unit(bytes(load.bytes)) : "—"}</b></dd>
@@ -660,6 +669,7 @@ function Page() {
                 const foreign = full && !judged(tries) && tries.some(foreignRows);
                 const asked = made > 1 ? `, ${askedTimes(made)}` : "";
                 const note = [
+                  p.settled_at && `Endorsed when it settled, ${monthDayTime(p.settled_at).slice(0, -3)} UTC.`,
                   r.tone === "fault" ? `${cap(whatCame(p))}${asked}.`
                     : r.tone === "ok" ? `Its own rows came back and verified${asked}.`
                     : foreign ? "Not counted: rows came back that are not its own."

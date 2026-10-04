@@ -3141,7 +3141,11 @@ func (s *Server) detailReadings(ctx context.Context, addr string, win Window, sp
 	if err != nil {
 		return err
 	}
-	out["recent_probes"] = validatorReadings(probes)
+	readings := validatorReadings(probes)
+	if err := s.fillSettledAt(ctx, readings); err != nil {
+		return err
+	}
+	out["recent_probes"] = readings
 	out["recent_probes_truncated"] = moreProbes
 	// in_retention_window is the endorsed shards whose retention window
 	// has not ended at the answer's moment, from the chain's record: a
@@ -4647,4 +4651,40 @@ func latestAssignmentSQL(only string) (string, []any) {
 		FROM m
 		JOIN assignments a ON a.validator_address = m.va AND a.settlement_height = m.h
 		JOIN publications p ON p.promise_hash = a.promise_hash AND p.settlement_height = m.h`, args
+}
+
+// fillSettledAt sets each reading's SettledAt from its publication: one
+// query for the page's (at most fifty) blobs.
+func (s *Server) fillSettledAt(ctx context.Context, rs []validatorReading) error {
+	if len(rs) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	args := []any{}
+	for _, r := range rs {
+		if !seen[r.PromiseHash] {
+			seen[r.PromiseHash] = true
+			args = append(args, r.PromiseHash)
+		}
+	}
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT promise_hash, settlement_time FROM publications WHERE promise_hash IN (?`+strings.Repeat(", ?", len(args)-1)+`)`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	at := map[string]string{}
+	for rows.Next() {
+		var h, t string
+		if err := rows.Scan(&h, &t); err != nil {
+			return err
+		}
+		at[h] = t
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range rs {
+		rs[i].SettledAt = at[rs[i].PromiseHash]
+	}
+	return nil
 }

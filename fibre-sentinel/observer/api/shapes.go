@@ -352,6 +352,11 @@ type validatorReading struct {
 	NextAttemptDue    string `json:"next_attempt_due,omitempty"`
 	// RowsSubsetOfAssignment: see probeRow.
 	RowsSubsetOfAssignment *bool `json:"rows_subset_of_assignment,omitempty"`
+	// SettledAt is when the blob settled, which is when the validator endorsed
+	// it: a reading comes hours later, near the end of the retention window,
+	// and its own times do not say when the endorsement was given. Absent when
+	// the publication is not on record.
+	SettledAt string `json:"settled_at,omitempty"`
 }
 
 func validatorReadings(rows []probeRow) []validatorReading {
