@@ -392,7 +392,7 @@ export default function RecentBlobs() {
       </div>
 
       <div className="rb-read">
-        <h3 className="rb-read-h">
+        <h3 className={`rb-read-h${isLatest || !blob ? "" : " pick"}`}>
           <span className="ov-eyebrow">{isLatest || !blob ? "Latest blob" : `Blob · ${selAt === 0 ? "newest" : `${nth(selAt + 1)} newest`}`}</span>
           {st && <span className={`rb-st${st.tier === "kept" ? " ok" : st.tier === "hold" || st.tier === "fault" ? " bad" : ""}`} title={st.title}>{st.word}</span>}
           {blob && <Age at={blob.settlement_time} skew={skew} />}

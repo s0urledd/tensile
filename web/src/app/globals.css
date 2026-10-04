@@ -1302,16 +1302,18 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   border-radius: 18px; background: var(--rb-sheet); box-shadow: var(--rb-sheet-hi);
 }
 .rb-read { display: flex; flex-direction: column; }
-/* the heading, the blob's state label and "settled 3h 59m ago" on one line: a little smaller and tighter than the
-   other heads, and reaching 3px into the sheet's side padding on each side (6px on phones) */
+/* the heading, the blob's state label and "settled 3h 59m ago" on one line: the label and the age a little smaller,
+   the gaps tighter. A pointed blob's longer heading ("Blob · 50th newest") is set smaller too, and only then the line
+   reaches 3px into the sheet's side padding on each side (6px on phones); the latest blob's heading is as the others */
 .rb-read-h { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 24px; margin: 0; font-size: var(--t-small); font-weight: 400; }
-@media (min-width: 1081px) { .rb-read-h { margin: 0 -3px; } }
+@media (min-width: 1081px) { .rb-read-h.pick { margin: 0 -3px; } }
 /* the blob's state, a small label after the heading: in its retention window, then available or unavailable */
 .rb-read-h > * { white-space: nowrap; flex: none; }
 .rb-st { display: inline-flex; align-items: center; height: 20px; margin-right: auto; padding: 0 5px; border-radius: 999px; border: 1px solid var(--border); background: var(--wash); font-size: 10px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text-2); }
 .rb-st.ok { border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
 .rb-st.bad { border-color: color-mix(in srgb, var(--hold) 45%, transparent); background: color-mix(in srgb, var(--hold) 12%, transparent); color: var(--hold-ink); }
-.rb-read-h .ov-eyebrow { display: inline; font-size: 10px; letter-spacing: 0; }
+.rb-read-h .ov-eyebrow { display: inline; }
+.rb-read-h.pick .ov-eyebrow { font-size: 10px; letter-spacing: 0; }
 .rb-read-h .ov-when { font-size: 11px; }
 /* the facts as one wrapping line of items, the dl's rows dissolved:
    1,204,085
@@ -1430,7 +1432,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .deck-row.no-cp { grid-template-areas: "rb" "rd"; }
   .deck-row > * { padding: 0 16px; }
   .deck-row > .rb-read { margin: 18px 16px 0 !important; padding: 15px 16px 16px; }
-  .rb-read-h { margin: 0 -6px; }
+  .rb-read-h.pick { margin: 0 -6px; }
   .deck-row > .rb { justify-self: stretch; width: auto; margin: 22px 16px 0 !important; padding: 16px 12px 18px; }
   /* without the current providers the recent blobs open the row, under the bar */
   .deck-row.no-cp > .rb { margin-top: 0 !important; }
