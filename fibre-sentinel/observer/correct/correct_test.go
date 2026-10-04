@@ -298,3 +298,69 @@ func TestAnUnresolvableRangeIsNotCorrected(t *testing.T) {
 		t.Fatal("an unresolvable range stopped holding")
 	}
 }
+
+// TestEveryMoveOfTheHoldFlagsIsCounted: the API's day partials follow the
+// holds by store.MetaHeldFlagsRev and read the flags again only when it
+// moves, so every transaction that moves a flag of a stored row moves it
+// too, and one that moves none leaves it: a range's own raise, the hold
+// sync that lifts it once the range is corrected, and a sync with nothing
+// to do.
+func TestEveryMoveOfTheHoldFlagsIsCounted(t *testing.T) {
+	st, created := fixture(t, 2)
+	ctx := context.Background()
+	state := func() (string, int) {
+		t.Helper()
+		rev, err := st.Meta(store.MetaHeldFlagsRev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var held int
+		if err := st.DB().QueryRow(`SELECT (SELECT COUNT(*) FROM probes WHERE retention_unverified = 1)
+			+ (SELECT COUNT(*) FROM publications WHERE retention_unverified = 1)`).Scan(&held); err != nil {
+			t.Fatal(err)
+		}
+		return rev, held
+	}
+	if rev, held := state(); rev != "" || held != 0 {
+		t.Fatalf("before any range: counter %q, %d held", rev, held)
+	}
+	// Raised open: the range's own transaction holds the publication and
+	// its rows, and counts it.
+	open := verifiedRange(created)
+	open.Resolution, open.ResolveMethod, open.HeightsRead, open.ResolvedAt, open.Values = "", "", 0, nil, nil
+	raw, err := json.Marshal(open)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertParamUncertainty(open, raw, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	rev1, held := state()
+	if rev1 != "1" || held == 0 {
+		t.Fatalf("after the raise: counter %q, %d held", rev1, held)
+	}
+	// A sync with nothing to move counts nothing.
+	if n, err := st.SyncParamHolds(ctx); err != nil || n != 0 {
+		t.Fatalf("a sync over holds already in place moved %d flag(s): %v", n, err)
+	}
+	if rev, _ := state(); rev != rev1 {
+		t.Fatalf("a sync that moved nothing moved the counter from %q to %q", rev1, rev)
+	}
+	// Verified, corrected and lifted: the sync that releases the rows counts.
+	record(t, st, verifiedRange(created))
+	f, err := os.OpenFile(filepath.Join(t.TempDir(), "corrections.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := correct.New(st, f, 5*time.Minute).Run(ctx, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := st.SyncParamHolds(ctx); err != nil || n == 0 {
+		t.Fatalf("the sync after the correction moved %d flag(s): %v", n, err)
+	}
+	rev2, held := state()
+	if rev2 == rev1 || held != 0 {
+		t.Fatalf("after the lift: counter %q (was %q), %d held", rev2, rev1, held)
+	}
+}

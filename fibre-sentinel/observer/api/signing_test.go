@@ -150,6 +150,7 @@ func TestSigningParticipationPerValidator(t *testing.T) {
 	if s := det.Validator.Signing; s.Assigned != 3 || s.Signed != 1 {
 		t.Fatalf("detail signing = %+v, want 1/3", s)
 	}
+	partsAfter(t, st, "test", time.Time{})
 }
 
 // A window with nothing assigned is nothing to say: den 0 and a null value,
@@ -269,6 +270,7 @@ func TestSigningLeavesOutPromisesWithoutAHost(t *testing.T) {
 	if s := det.Validator.Signing; s.Assigned != 1 || s.Signed != 1 || s.NoHost != 2 {
 		t.Fatalf("signing = %+v, want 1/1 with 2 promises without a host", s)
 	}
+	partsAfter(t, st, "test", time.Time{})
 }
 
 // The newest endorsement and the newest assigned promises are read from the
@@ -316,6 +318,7 @@ func TestSigningRecentAndLastEndorsement(t *testing.T) {
 			t.Errorf("%s last endorsed = %v, want %s", c.addr[:4], s.Last, c.last)
 		}
 	}
+	partsAfter(t, st, "test", time.Time{})
 }
 
 // The blob list carries how many validators with rows endorsed each promise,

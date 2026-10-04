@@ -126,7 +126,7 @@ const currentIdentity = "updated_at DESC, cons_address DESC"
 // open the newer validator's page, and the older one's page and history
 // could only be reached by typing its hex address.
 func (s *Server) operatorAddrs(ctx context.Context) (map[string]string, error) {
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT cons_address, operator_address FROM validator_identities
+	rows, err := s.q(ctx).QueryContext(ctx, `SELECT cons_address, operator_address FROM validator_identities
 		WHERE operator_address <> '' ORDER BY operator_address, `+currentIdentity)
 	if err != nil {
 		return nil, err

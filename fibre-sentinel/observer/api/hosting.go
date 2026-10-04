@@ -38,7 +38,7 @@ func (s *Server) attachHosting(ctx context.Context, rows []validatorRow, win Win
 	if win.AsOf || len(rows) == 0 {
 		return nil
 	}
-	cur, err := hosting.Current(ctx, s.st.DB())
+	cur, err := hosting.Current(ctx, s.q(ctx))
 	if err != nil {
 		return err
 	}

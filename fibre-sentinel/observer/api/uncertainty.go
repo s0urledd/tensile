@@ -93,7 +93,7 @@ func paramUncertaintyOf(r store.ParamRange) paramUncertainty {
 // retentionUncertaintyNow summarises what is currently withheld, or nil
 // when nothing is.
 func (s *Server) retentionUncertaintyNow(ctx context.Context) *retentionUncertainty {
-	pubs, probes, ranges, err := s.st.HeldCounts(ctx)
+	pubs, probes, ranges, err := store.HeldCountsIn(ctx, s.q(ctx))
 	// Rows outlive the range that withheld them. A measurement arriving
 	// after a range was corrected is born withheld on the deadline it
 	// carries, and stays that way until the next correction pass reaches

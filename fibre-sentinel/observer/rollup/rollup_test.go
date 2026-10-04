@@ -216,4 +216,5 @@ func TestTheSQLAndTheGoTwinHoldTheSameRows(t *testing.T) {
 			t.Errorf("(%s, %s, held=%v): SQL says %q, the Go twin says %q", c.cls, c.out, c.held, got[c.key], want)
 		}
 	}
+	partsAfter(t, st)
 }

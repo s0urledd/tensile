@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -869,6 +870,14 @@ func OpenReadOnly(path string) (*Store, error) {
 // DB exposes the underlying handle for read-only queries (the API).
 func (s *Store) DB() *sql.DB { return s.db }
 
+// Querier is what a read needs: the database itself, or one transaction on
+// it, so that every read of one computation can see the same snapshot of the
+// store (the API computes a whole window in one read transaction).
+type Querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
@@ -951,8 +960,10 @@ func (s *Store) applyMigration(m migration) error {
 		return err
 	}
 	defer tx.Rollback()
+	var rewritten int64
 	for _, stmt := range m.stmts {
-		if _, err := tx.Exec(stmt); err != nil {
+		res, err := tx.Exec(stmt)
+		if err != nil {
 			// The column is already there: a database rolled back by
 			// deleting its schema_migrations row keeps the columns the
 			// migration gave it, and the migration runs again over them.
@@ -962,6 +973,18 @@ func (s *Store) applyMigration(m migration) error {
 			}
 			return fmt.Errorf("migration %d (%s): %w\n%s", m.version, m.note, err, stmt)
 		}
+		if reRewrite.MatchString(stmt) {
+			n, _ := res.RowsAffected()
+			rewritten += n
+		}
+	}
+	if rewritten > 0 {
+		if _, err := tx.Exec(`INSERT INTO meta (key, value, updated_at) VALUES (?, '1', ?)
+			ON CONFLICT(key) DO UPDATE SET
+				value      = CAST(CAST(meta.value AS INTEGER) + 1 AS TEXT),
+				updated_at = excluded.updated_at`, MetaMigrationRewrites, ts(time.Now())); err != nil {
+			return fmt.Errorf("migration %d: count: %w", m.version, err)
+		}
 	}
 	if _, err := tx.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`,
 		m.version, ts(time.Now())); err != nil {
@@ -969,6 +992,24 @@ func (s *Store) applyMigration(m migration) error {
 	}
 	return tx.Commit()
 }
+
+// MetaMigrationRewrites counts the migrations applied to this store that
+// rewrote rows (an INSERT, UPDATE, DELETE or REPLACE among their statements
+// that wrote a row: a backfill over rows already stored), advanced in the
+// migration's own transaction. A migration that only adds tables, columns
+// or indexes leaves it alone, and so does a backfill over a new store,
+// which has no rows to rewrite.
+//
+// What is derived from the store and kept across restarts (the API's day
+// partials) is begun again when a migration rewrote rows it was computed
+// from, which the tables' own definitions do not show; a migration that
+// only adds what nothing derived reads does not cost a rebuild in every
+// process reading the store, as the schema version would. Absent, it reads
+// as none. It is a key of meta: a build before it never reads it.
+const MetaMigrationRewrites = "migration_rewrites"
+
+// reRewrite is a statement that writes rows rather than the schema.
+var reRewrite = regexp.MustCompile(`(?is)^\s*(INSERT|UPDATE|DELETE|REPLACE|WITH)\b`)
 
 // addsColumn reports an ALTER TABLE ... ADD COLUMN statement.
 func addsColumn(stmt string) bool {
@@ -1920,7 +1961,12 @@ func (s *Store) CheckpointWAL(ctx context.Context) (busy bool, inLog, checkpoint
 
 // CurrentEndpoints lists open endpoint rows.
 func (s *Store) CurrentEndpoints(ctx context.Context) ([]Endpoint, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, validator_cons_address, host, first_seen_at, first_seen_height, last_seen_at, last_seen_height, closed_at
+	return CurrentEndpointsIn(ctx, s.db)
+}
+
+// CurrentEndpointsIn is CurrentEndpoints read through q.
+func CurrentEndpointsIn(ctx context.Context, q Querier) ([]Endpoint, error) {
+	rows, err := q.QueryContext(ctx, `SELECT id, validator_cons_address, host, first_seen_at, first_seen_height, last_seen_at, last_seen_height, closed_at
 		FROM endpoints WHERE closed_at IS NULL ORDER BY validator_cons_address`)
 	if err != nil {
 		return nil, err

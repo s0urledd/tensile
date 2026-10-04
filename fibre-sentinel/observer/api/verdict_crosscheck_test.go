@@ -164,4 +164,5 @@ func TestVerdictPackageMatchesTheSQL(t *testing.T) {
 			t.Errorf("%s: no validator carried obligations in the API answer", c.name)
 		}
 	}
+	partsAfter(t, st, "test", now)
 }

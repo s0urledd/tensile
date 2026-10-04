@@ -274,4 +274,5 @@ func exportParity(t *testing.T, now time.Time, label string, retries map[string]
 			t.Errorf("blob %s: the export %v, the API %v", p.PromiseHash[60:], got, apiBlob[p.PromiseHash])
 		}
 	}
+	partsAfter(t, st, "test", now)
 }

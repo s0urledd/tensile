@@ -144,6 +144,7 @@ func TestExcludeRecomputesTheHeadlineWithoutAValidator(t *testing.T) {
 	if again.Excluded != nil {
 		t.Errorf("the unfiltered answer came back claiming an exclusion: %v", again.Excluded)
 	}
+	partsAfter(t, st, "test", time.Time{})
 }
 
 // A filtered answer is computed per request, so it must not be stored by a

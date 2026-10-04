@@ -199,12 +199,13 @@ func TestAnUnattestedReadingIsNoObligation(t *testing.T) {
 	if seen != 3 {
 		t.Fatalf("saw %d of the 3 validators", seen)
 	}
+	partsAfter(t, st, "test", time.Time{})
 }
 
 // v1 and v2 together returned all 4 rows the blob needs: it is Available,
 // whatever v3, which never endorsed it, answered.
 func TestReconstructabilityIgnoresUnattestedNonServers(t *testing.T) {
-	ts, _ := attestedFixture(t)
+	ts, st := attestedFixture(t)
 
 	var blob struct {
 		Blob struct {
@@ -242,4 +243,5 @@ func TestReconstructabilityIgnoresUnattestedNonServers(t *testing.T) {
 			t.Fatalf("%s attested=%v, want %v", a.ValidatorAddress, *a.Attested, want)
 		}
 	}
+	partsAfter(t, st, "test", time.Time{})
 }

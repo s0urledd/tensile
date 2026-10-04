@@ -123,7 +123,7 @@ type readingAgg struct {
 // bounds replace the row lists. A list or detail page, which does publish
 // it, uses the reference.
 func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, pin asOfPin, args ...any) (map[string]*reconstruct, error) {
-	db := s.st.DB()
+	db := s.q(ctx)
 	sel := blobSel(where, limit)
 
 	// 1. the publications themselves.

@@ -81,7 +81,10 @@ jobs:
         run: go build ./...
       - name: test
         working-directory: fibre-sentinel
-        run: go test -shuffle=on ./...
+        # The day partials' equality harness drives the collector pass by
+        # pass; the api package takes minutes, more on a loaded runner, so
+        # the default ten-minute timeout is no margin.
+        run: go test -timeout 30m -shuffle=on ./...
       - name: test the prober's concurrent code (with -race)
         working-directory: fibre-sentinel
         run: go test -race ./internal/probe/ ./internal/record/

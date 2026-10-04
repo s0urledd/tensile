@@ -264,8 +264,10 @@ the last error and when, its progress height, and the free space of the
 data disk. `/v1/health` reads those files straight from disk and answers
 200 when every one of scanner, prober, heartbeat and collector is alive and
 succeeding, the scanner is within 200 blocks of the chain, the disk has
-over 5% free, no scan gap is recorded and the chain has not upgraded past
-this build's pin, and 503 with the failing checks otherwise. `/v1/meta`
+over 15% free, no scan gap is recorded, the chain has not upgraded past
+this build's pin and the day partials are sound (`day_partials`: no audit
+found them not what the store holds, and no day due has stayed unsealed for
+two days), and 503 with the failing checks otherwise. `/v1/meta`
 carries the same verdict and checks, and the header chip on the site
 reflects it: green, amber with the failing processes in its tooltip, red
 when nothing is alive.
@@ -320,12 +322,21 @@ is one row each, not a copy of the data directory:
 4. `sudo -u fibre-observer sqlite3 /var/lib/fibre-observer/mocha/observer.db 'DELETE FROM schema_migrations WHERE version > 25'`,
    25 being the older build's `store.SchemaVersion` (or the same statement
    through Python's `sqlite3`);
-5. install the older collector and API, and start them.
+5. remove any drop-in that passes the API a flag the older build does not
+   know, `-day-partials` or `-day-partials-pace` among them (an unknown
+   flag stops it at start): `sudo systemctl revert fibre-api@mocha`, or
+   delete the file under `/etc/systemd/system/fibre-api@mocha.service.d/`,
+   then `sudo systemctl daemon-reload`;
+6. install the older collector and API, and start them.
 
 The columns and indexes stay, unread, and the next upgrade runs the
 migration again over them. Never let an older collector read rows a newer
 prober wrote: it keys a row on the reading, not the attempt, so it keeps a
-validator's first answer and drops the later ones.
+validator's first answer and drops the later ones. So do the two counters
+the day partials follow in `meta`, `held_flags_rev` and
+`migration_rewrites`: an older build neither reads nor writes them. Coming
+forward again, the API reads every hold again when it loads its files,
+since an older collector moved the flags without counting.
 
 Schema 5 adds a covering index over `probes`. On a store with 700,000 probes it
 takes a few seconds and about 200 bytes a probe; the collector logs it and the
@@ -348,6 +359,39 @@ the new schema: it drops both and builds them again from the migrated
 database. `-warm-only` writes them too, and the copy below
 carries them over with the snapshots.
 
+The same directory also keeps the day partials the 7d, 30d and "all"
+windows are summed from: `day-partials.json`, the index, and
+`day-partials/`, one file per sealed day, which the index names with its
+digest. They are checked the same way on start (a seal file that is
+missing, damaged or not the one the index names leaves only its own day to
+be read raw until it is sealed again; anything else wrong begins them again
+from the database), are written as the sealer comes to rest and when the
+API stops, whenever a day was sealed or dropped since the last write, and
+an older build ignores them. A migration that changes a table they read, or
+rewrites rows, begins them again; one that only adds what they do not read
+(a table, an index, a column of a table they do not read) leaves them.
+`-day-partials=false` turns them off and reads every window whole, each
+statement on its own, as the build before them did; the files stay where
+they are, and the next start with the flag on catches up from them.
+
+Sealing reads the database a day at a time, and the disk it reads may be
+the one other services write (the validator beside it): it is the
+partials' one burst of reads. `-day-partials-pace` keeps it gentle: after
+each unit of work the sealer rests that many times as long as the unit
+took, live and with `-warm-only` alike. The default, 3, leaves the disk to
+everything else at least three quarters of the time; 0 does not rest. A
+unit that fails is tried again after a minute, then two, four, at most six
+hours, while the sealer goes on with the others, and the API logs the first
+failure and the recovery. Each burst of sealing ends with one line in the
+journal (`day partials: sealer: sealed ...`), and every hourly audit with
+one (`day partials: audit: ...`). `/v1/health` carries a `day_partials`
+block (state, days sealed, the oldest day due and not sealed, the last
+audit) and a `day_partials` check, which fails when an audit found the
+partials not what the database holds (a window or a ledger day that
+differs puts the process on raw reads, as `-day-partials=false` would,
+until it is restarted, and leaves the files as they are for inspection)
+and when a day due has stayed unsealed for two days.
+
 That holds only while the copies are still valid. Each file carries the
 revision it was computed under (the rules, `verdict.MethodologyVersion`,
 the retention holds and whether Fibre is active), and the API serves a file
@@ -359,48 +403,85 @@ figures being computed and asks again for; nothing hangs, but the figures
 are missing until the warm-up reaches them.
 
 To avoid that, compute the new build's snapshots before switching to it.
-`observer-api -warm-only` opens the database read-only, computes every window
-of every snapshot once under the current revision, writes the files to
-`-snapshot-dir` and exits 0 (non-zero, with the reason, on any failure).
-With `-warm-only` that directory defaults to `<data-dir>/snapshots.next`, and
-the live `<data-dir>/snapshots` is refused: the running API rewrites its
-files there under the same temporary names, and an old API restarted
-meanwhile would load the new build's market files. It must run as the
-service user and with the unit's own flags: the snapshots depend on
-`-vantage` (the heartbeats counted are that vantage's) and the market one on
-`-publishers`, and a file written for another vantage is not loaded.
-`systemd-run` gives it both, from the unit's env file, expanding `${…}` the
-way the unit's `ExecStart` does. After the collector has migrated the
-database (the new binary refuses an older schema), and while the old API
-keeps serving:
+`observer-api -warm-only` opens the database read-only, seals every day of
+the day partials that is due and builds their publication ledger, computes
+every window of every snapshot once under the current revision, writes the
+files to `-snapshot-dir` and exits 0 (non-zero, with the reason, on any
+failure). With `-warm-only` that directory defaults to
+`<data-dir>/snapshots.next`, and the live `<data-dir>/snapshots` is
+refused: the running API rewrites its files there under the same temporary
+names, and an old API restarted meanwhile would load the new build's market
+files. It must run as the service user and with the unit's own flags: the
+snapshots depend on `-vantage` (the heartbeats counted are that vantage's)
+and the market one on `-publishers`, and a file written for another
+vantage is not loaded. `systemd-run` gives it both, from the unit's env
+file, expanding `${…}` the way the unit's `ExecStart` does.
+
+Seed `snapshots.next` with a copy of the whole live directory first: the
+warm-up then begins from the live API's partials, its memo and its ledger,
+and seals only the days the live API had not. A partial from a build that
+folds days another way is refused as it is loaded (its definition holds the
+Go that folds them), so a seed is never a stale figure, at worst a cold
+start. Sealing is most of a warm-up's time, and at the default pace takes
+four times its work. On a synthetic record of 32 days (2.2 GB, 19,000
+publications, 311,000 readings), the work of sealing every day from nothing
+is about 20 seconds of reads (4.5 GB read with the database's memory map
+off; 50 seconds from a cold page cache), 80 seconds at the default pace;
+seeded from the files of an API that had sealed them, it seals nothing and
+takes the two seconds of loading them. The four and a half days of Mocha on
+record in late September 2026 took about three minutes unpaced; months of
+traffic ten times as busy take hours, which is what the seed spares.
+
+`Nice=10` below lowers the warm-up's CPU priority only. On an NVMe disk with
+the `none` I/O scheduler (`cat /sys/block/nvme0n1/queue/scheduler`) neither
+it nor `IOSchedulingClass=idle` lowers its reads: the pace is what does.
+
+After the collector has migrated the database (the new binary refuses an
+older schema), and while the old API keeps serving:
 
 ```bash
 sudo install -m 0755 fibre-sentinel/bin/* /usr/local/bin/
 sudo install -m 0755 deploy/vantage-pull.sh /usr/local/bin/fibre-vantage-pull   # the timer runs it next minute
 sudo systemctl restart fibre-collector@mocha       # applies migrations
-# a few minutes, reading the database only, beside the running API
+# the seed: a copy of the whole live directory, as the service user
+sudo -u fibre-observer sh -c 'rm -rf /var/lib/fibre-observer/mocha/snapshots.next &&
+  cp -r /var/lib/fibre-observer/mocha/snapshots /var/lib/fibre-observer/mocha/snapshots.next'
+# seconds when seeded; minutes, hours on a long, busy record, when not
 sudo systemd-run --wait --pipe --collect -p User=fibre-observer -p Nice=10 \
   -p EnvironmentFile=/etc/fibre-observer/mocha.env \
   /usr/local/bin/observer-api -warm-only -data-dir '${DATA_DIR}' -snapshot-dir '${DATA_DIR}/snapshots.next' \
   -vantage '${VANTAGE}' -vantage-location '${VANTAGE_LOCATION}' -vantage-provider '${VANTAGE_PROVIDER}' \
   -publishers /etc/fibre-observer/publishers-mocha.yaml
 sudo systemctl stop fibre-api@mocha
-sudo -u fibre-observer sh -c 'cp /var/lib/fibre-observer/mocha/snapshots.next/*.json /var/lib/fibre-observer/mocha/snapshots/ &&
+sudo -u fibre-observer sh -c 'rm -rf /var/lib/fibre-observer/mocha/snapshots/day-partials &&
+  cp -r /var/lib/fibre-observer/mocha/snapshots.next/. /var/lib/fibre-observer/mocha/snapshots/ &&
   rm -r /var/lib/fibre-observer/mocha/snapshots.next'
 sudo systemctl start fibre-api@mocha
+# only when this build changed them (not for the day partials, which are the
+# collector's and the API's): every minute the prober is down is readings not made
 sudo systemctl restart fibre-scan@mocha fibre-probe@mocha fibre-heartbeat@mocha
 ```
 
-The copy runs as `fibre-observer` so the files stay its own: the API
-rewrites them on every refresh. For the same reason the warm-up does not run
-as root, which would also risk creating the database's `-shm` file owned by
-root. A hold or the activation landing between the warm-up and the start
-changes the revision: the files are then dropped and recomputed rather than
-served, which is the cold start again and never a stale figure.
-`journalctl -u fibre-api@mocha` shows `snapshot(s) loaded from disk` on
-start.
+The seed and the switch each copy a whole directory, never its `*.json`
+files alone: `day-partials.json` names the files under `day-partials/`, and
+an index copied without them leaves its days to be sealed again. The seed
+may copy while the live API writes; a day whose seal file it missed is
+sealed again by the warm-up. At the switch the live directory's own
+`day-partials/` goes first, so that no seal file of the old API's is left
+under a name the new index uses. Both copies run as `fibre-observer` so the
+files stay its own: the API rewrites them on every refresh. For the same
+reason the warm-up does not run as root, which would also risk creating the
+database's `-shm` file owned by root. A hold or the activation landing
+between the warm-up and the start changes the revision: the files are then
+dropped and recomputed rather than served, which is the cold start again
+and never a stale figure. `journalctl -u fibre-api@mocha` shows
+`snapshot(s) loaded from disk` and `day partials: loaded from ...` on
+start. The scanner, the prober and the heartbeat need no restart for a
+build that changed only the collector and the API, as one changing the day
+partials does; restart them only when their own code changed, the prober
+last.
 
-This keeps the old API serving from the migrated database for the few
+This keeps the old API serving from the migrated database for the
 minutes of the warm-up, where the plain upgrade above leaves it seconds, so
 use it only when the build's schema change, if any, is additive: new tables,
 columns or indexes the old API does not read. When a migration changes or

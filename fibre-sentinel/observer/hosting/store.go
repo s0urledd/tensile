@@ -173,7 +173,7 @@ type Info struct {
 //
 // A table from before the city columns (the API opened the database before
 // the new collector's EnsureSchema ran) reads as having no cities.
-func Current(ctx context.Context, db *sql.DB) (map[string]Info, error) {
+func Current(ctx context.Context, db store.Querier) (map[string]Info, error) {
 	const base = `SELECT validator_address, host, status, ip, asn, as_org, country, country_basis,
 		provider, addresses_json, resolved_at, resolved_by, looked_up_at`
 	withCity := true

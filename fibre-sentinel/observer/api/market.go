@@ -1012,7 +1012,7 @@ func (s *Server) chargesFor(ctx context.Context, hashes []string) (map[string]*b
 // keyed by the 20 account bytes in hex so a validator's operator address
 // (same bytes, different prefix) can be matched to it.
 func (s *Server) timeoutsByAccount(ctx context.Context, win Window) (map[string]int64, error) {
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT processor, COUNT(*) FROM payments
+	rows, err := s.q(ctx).QueryContext(ctx, `SELECT processor, COUNT(*) FROM payments
 		WHERE kind = 'timeout' AND time >= ? AND time <= ? AND processor != '' GROUP BY processor`, win.startArg(), win.endArg())
 	if err != nil {
 		return nil, err

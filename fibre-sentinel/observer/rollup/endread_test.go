@@ -109,4 +109,5 @@ func TestTheSQLAndTheGoTwinCountEveryCellTheSame(t *testing.T) {
 				c.cls, c.out, c.held, c.verified, c.assigned, c.attested, c.phase, got[c.key], want)
 		}
 	}
+	partsAfter(t, st)
 }

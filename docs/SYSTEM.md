@@ -526,6 +526,48 @@ snapshots beside the running API (into `<data-dir>/snapshots.next`; it
 refuses the live directory) so a switch does not start cold
 (deploy/README.md, "Upgrading a running observer").
 
+**Day partials.** The 7d, 30d and `all` windows are summed from per-UTC-day
+partials (`dayparts*.go`): each figure that is a sum, a maximum, a set union
+or an exact histogram is kept per day once the day is final (sealed), and a
+window is the days it covers wholly plus raw reads of the shipped statements
+over what it covers partly or cannot use a sealed day for. Every write that
+can move a sealed day is found by the catch-up each computation makes in its
+own read transaction, and drops the day: rows past each table's mark, the
+holds by a counter the collector moves in the transaction that moves a flag
+(`meta.held_flags_rev`) and then an exact digest of each promise's held rows,
+corrections by a fingerprint of what they write, a collapse and the prune of
+an older build by the promises and spans they reach; a seal read before such
+a write is not published (the journal). The sealer works one unit at a time
+at a pace (`-day-partials-pace`, default 3: after each unit it rests three
+times as long as the unit took, live and with `-warm-only` alike), backs off
+a unit that fails (a minute, doubling, at most six hours), and logs one line
+per burst. The partials are kept beside the snapshots (`day-partials.json`
+and `day-partials/`) under a definition that holds their statements, their
+Go as tokens and the definitions of the tables they read, for the store named
+by its creation, chain and count of migrations that rewrote rows
+(`meta.migration_rewrites`): a migration that only adds what they do not read
+leaves them. Every hour the next sealed row day, settlement day and ledger day
+in turn are read again raw and compared field by field; a sealed day that
+differs is dropped, and a ledger day or a window (compared both ways a few
+times after a start) that differs puts the process on raw reads until it is
+restarted, as `-day-partials=false` would, the files left for inspection.
+`/v1/health` carries a `day_partials` block (state, origin, days sealed,
+oldest day due and not sealed, last audit, rebuilds, last write error) and a
+`day_partials` check that fails on raw reads, on an audit that found a
+difference, and on a day due and unsealed for over two days.
+
+*Mainnet item: the histograms in memory.* A sealed row day keeps each
+validator's service-time and transfer-rate histograms, exact, one bin per
+distinct value, and the whole epoch is in memory from the start (loaded from
+the files): about 14 bytes a probe row on the September fixtures, so a year
+of a mainnet ten times Mocha's traffic would hold gigabytes. Before that, one
+of two: keep the histograms on disk and read only the days a window sums
+(the seal files are per day already; an index of their offsets, or SQLite
+beside them, and the "all" window's percentiles read from the files as it
+sums), or retire a day's histograms once the rollup holds the day and sum
+older days' percentiles from a coarser histogram kept per day in the rollup
+(exact only to its bin width, which the figure would have to say).
+
 **Two paths bypass the cache and are rationed** (4-burst, then one per 2s;
 429 with `Retry-After`):
 
@@ -783,6 +825,7 @@ Stated here because they are properties of the machine, not of any validator.
 | symptom | look at |
 |---|---|
 | a figure is stale | `computed_at` on the response; `snapshots/` on disk; the warm-up log |
+| the 7d, 30d or all windows are slow, or the disk busy | `day_partials` in `/v1/health` (state, oldest day not sealed, last audit); the API's `day partials:` log lines (one per sealer burst and per audit, a unit's failure and its recovery) |
 | a validator reads 0 obligations | `attested` NULL vs 0; `assignment_error` on the publication |
 | the service rate moved with no new readings | an amendment settled a deferred verdict (`probe_amendments`) |
 | every validator failed in one reading | the blob's rows (`/v1/probes?blob=`): if no request reached a server (`PROBE_ERROR`, or a failed lookup or dial, everywhere) the blob reads not read and no one counts; otherwise it is unavailable, and at a full reading each validator is not served by its last answer |

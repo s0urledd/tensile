@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -54,6 +55,9 @@ import (
 //	                             timed, and written there at the end
 //	TENSILE_SNAPSHOT_EXPECT      optional, with STATE: how both must have begun,
 //	                             "loaded" or "built"
+//	TENSILE_SNAPSHOT_SEAL        optional: first do the sealer's work due at the
+//	                             clock (the day partials, dayparts.go), timed;
+//	                             with STATE they are kept there too
 //
 // Run with -timeout 0: a busy store takes minutes per build.
 func TestSnapshotHarness(t *testing.T) {
@@ -128,6 +132,25 @@ func TestSnapshotHarness(t *testing.T) {
 		}()
 	}
 
+	if s.parts != nil {
+		// The partials' first catch-up, built from the store or loaded
+		// from STATE and brought up to date; then, with SEAL, every day
+		// due at the clock sealed before the first figure, which is then
+		// summed from them.
+		t0 := time.Now()
+		if err := s.partsTx(ctx, func(context.Context, *epoch) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("day partials caught up in %.3fs: %s", time.Since(t0).Seconds(), s.parts.origin)
+		if os.Getenv("TENSILE_SNAPSHOT_SEAL") != "" {
+			t0 := time.Now()
+			n, err := s.sealDue(ctx, math.MaxInt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("day partials: %d units of the sealer's work in %.3fs", n, time.Since(t0).Seconds())
+		}
+	}
 	cases := harnessCases(t, s, now)
 	var failed, compared int
 	for _, c := range cases {
@@ -179,8 +202,9 @@ type harnessCase struct {
 
 // harnessCases is every snapshot the harness computes: each window of each
 // cache as its keeper computes it at the clock, the same windows pinned
-// (?as_of=) at every pin, as the handlers compute them, and the network with
-// validators excluded (?exclude=).
+// (?as_of=) at every pin, as the handlers compute them (in one read
+// transaction, from the day partials where they serve), and the network
+// with validators excluded (?exclude=).
 func harnessCases(t *testing.T, s *Server, now time.Time) []harnessCase {
 	t.Helper()
 	var cases []harnessCase
@@ -227,20 +251,19 @@ func harnessCases(t *testing.T, s *Server, now time.Time) []harnessCase {
 			win := harnessWindow(t, now, url.Values{"window": {name}, "as_of": {at}})
 			cases = append(cases,
 				harnessCase{"network-" + name + "-asof-" + label, func(ctx context.Context) ([]byte, error) {
-					resp, err := s.computeNetwork(ctx, win, excludeSet{}, nil)
+					resp, err := s.networkSnapshot(ctx, win, excludeSet{}, nil)
 					if err != nil {
 						return nil, err
 					}
-					resp.RecordThrough = s.recordThrough(ctx)
 					return harnessJSON(resp, networkOutOf(resp))
 				}},
 				harnessCase{"validators-" + name + "-asof-" + label, func(ctx context.Context) ([]byte, error) {
-					rows, err := s.validatorRows(ctx, win, "")
+					snap, err := s.validatorsSnapshot(ctx, win)
 					if err != nil {
 						return nil, err
 					}
-					return harnessJSON(rows, map[string]any{"window": win, "validators": listOfRows(rows), "as_of_note": AsOfNote,
-						"record_through": s.recordThrough(ctx)})
+					return harnessJSON(snap.Rows, map[string]any{"window": win, "validators": listOfRows(snap.Rows), "as_of_note": AsOfNote,
+						"record_through": snap.RecordThrough})
 				}},
 				harnessCase{"market-" + name + "-asof-" + label, func(ctx context.Context) ([]byte, error) {
 					resp, err := s.computeMarket(ctx, win)
@@ -267,11 +290,10 @@ func harnessCases(t *testing.T, s *Server, now time.Time) []harnessCase {
 			for _, name := range warmWindows {
 				win := windowFor(name, now)
 				cases = append(cases, harnessCase{fmt.Sprintf("network-%s-exclude-%d", name, n), func(ctx context.Context) ([]byte, error) {
-					resp, err := s.computeNetwork(ctx, win, ex, excluded)
+					resp, err := s.networkSnapshot(ctx, win, ex, excluded)
 					if err != nil {
 						return nil, err
 					}
-					resp.RecordThrough = s.recordThrough(ctx)
 					return harnessJSON(resp, networkOutOf(resp))
 				}})
 			}
@@ -324,11 +346,6 @@ func harnessJSON(snapshot, published any) ([]byte, error) {
 	}
 	return b.Bytes(), nil
 }
-
-// computedFields are the two fields that say when and how fast, not what.
-var computedFields = regexp.MustCompile(`"(computed_at|compute_ms)":("[^"]*"|[0-9]+),?`)
-
-func scrubComputed(b []byte) []byte { return computedFields.ReplaceAll(b, nil) }
 
 // firstDifference locates the first byte where a and b part, with some of
 // each around it.

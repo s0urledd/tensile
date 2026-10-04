@@ -121,12 +121,23 @@ func signingByValidatorSQL(filter string) string {
 // signingByValidator counts signing participation per validator over win,
 // only for one validator when only is set.
 func (s *Server) signingByValidator(ctx context.Context, win Window, only string) (map[string]signingStats, error) {
+	if e := epochOf(ctx); e != nil && partsFor(win) {
+		// The ledger's whole days and the partial days at the ends
+		// (signingWindow).
+		out, err := s.signingWindow(ctx, e, win, only)
+		if err == nil {
+			return out, s.recentSigning(ctx, only, out)
+		}
+		if !errors.Is(err, errNoParts) {
+			return nil, err
+		}
+	}
 	filter, args := "", []any{win.startArg(), win.endArg()}
 	if only != "" {
 		filter = ` AND a.validator_address = ?`
 		args = append(args, only)
 	}
-	rows, err := s.st.DB().QueryContext(ctx, signingByValidatorSQL(filter), args...)
+	rows, err := s.q(ctx).QueryContext(ctx, signingByValidatorSQL(filter), args...)
 	if err != nil {
 		return nil, err
 	}

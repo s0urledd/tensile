@@ -330,6 +330,7 @@ func TestTheSQLAndTheGoTwinCountTheSameRows(t *testing.T) {
 			t.Errorf("%s: %s %q, want %s %q", blob, got.Status, got.Error, want[0], want[1])
 		}
 	}
+	partsAfter(t, r.st)
 }
 
 // Whether a reading happened is the same fact in SQL and in the Go twin

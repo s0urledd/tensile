@@ -228,3 +228,46 @@ func TestReadOnlyRefusesNewerSchema(t *testing.T) {
 		t.Fatal("read-only open accepted a database newer than the binary")
 	}
 }
+
+// TestMigrationsThatRewriteRowsAreCounted: what is derived from the store and
+// kept across restarts (the API's day partials) begins again when a
+// migration rewrote rows it was computed from, and stays when one only
+// added tables, columns or indexes. So a migration whose statements wrote a
+// row moves MetaMigrationRewrites, in its own transaction, and no other
+// does: not one that only adds, nor a backfill with nothing to rewrite, as
+// over a new store.
+func TestMigrationsThatRewriteRowsAreCounted(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "o.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	count := func() string {
+		t.Helper()
+		v, err := st.Meta(MetaMigrationRewrites)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	if v := count(); v != "" {
+		t.Fatalf("a new store, whose backfills had nothing to rewrite, counts %q", v)
+	}
+	for _, c := range []struct {
+		m    migration
+		want string
+	}{
+		{migration{version: 901, note: "adds", stmts: []string{`CREATE TABLE t_added (x INTEGER)`, `CREATE INDEX t_added_x ON t_added (x)`}}, ""},
+		{migration{version: 902, note: "a backfill over nothing", stmts: []string{`UPDATE t_added SET x = 1`}}, ""},
+		{migration{version: 903, note: "rows", stmts: []string{`INSERT INTO t_added (x) VALUES (1), (2)`}}, "1"},
+		{migration{version: 904, note: "a backfill", stmts: []string{`ALTER TABLE t_added ADD COLUMN y INTEGER`, `UPDATE t_added SET y = x`}}, "2"},
+		{migration{version: 905, note: "a column", stmts: []string{`ALTER TABLE t_added ADD COLUMN z INTEGER`}}, "2"},
+	} {
+		if err := st.applyMigration(c.m); err != nil {
+			t.Fatal(err)
+		}
+		if v := count(); v != c.want {
+			t.Errorf("after migration %d (%s): %q, want %q", c.m.version, c.m.note, v, c.want)
+		}
+	}
+}

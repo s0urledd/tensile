@@ -25,6 +25,7 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
+	"github.com/plsgiveup/fibre/fibre-sentinel/observer/collect"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/correct"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/export"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/ingest"
@@ -206,70 +207,6 @@ func main() {
 		log.Fatalf("open %s: %v", *amendPath, err)
 	}
 	defer amendFile.Close()
-	frontierMissing := false
-	judgeLate := func(now time.Time) {
-		v, err := st.Meta("last_scanned_time")
-		if err != nil || v == "" {
-			if !frontierMissing {
-				log.Printf("late verdicts: the scanner's frontier time is not on record yet (state.json last_scanned_time); deferred shadow verdicts wait")
-				frontierMissing = true
-			}
-			return
-		}
-		frontier, err := time.Parse(store.TimeLayout, v)
-		if err != nil {
-			log.Printf("late verdicts: bad last_scanned_time %q", v)
-			return
-		}
-		ams, err := st.LateShadowVerdicts(ctx, frontier, now, *pruneTol)
-		if err != nil {
-			log.Printf("late verdicts: %v", err)
-			live.Error(fmt.Sprintf("late verdicts: %v", err))
-			return
-		}
-		applied := 0
-		for _, a := range ams {
-			// The line is appended and fsynced BEFORE the amendment is
-			// applied. The two can only fail in one direction: a line whose
-			// amendment did not apply replays as a no-op, because
-			// ApplyAmendment is idempotent on (dedupe_key, judged_at) and a
-			// rebuild replays this file before anything is re-judged. An
-			// applied amendment with no line is the other way round, and it
-			// is permanent: the store would carry a verdict that changed
-			// with nothing on record saying why, and the export would no
-			// longer reproduce it. That is the state this ordering exists to
-			// prevent, and it is the same ordering the store uses for its own
-			// records.
-			b, err := json.Marshal(a)
-			if err != nil {
-				log.Printf("amendments: marshal %s: %v", a.DedupeKey, err)
-				continue
-			}
-			if _, err := amendFile.Write(append(b, '\n')); err != nil {
-				log.Printf("amendments: write: %v", err)
-				live.Error(fmt.Sprintf("amendments write: %v", err))
-				continue
-			}
-			if err := amendFile.Sync(); err != nil {
-				log.Printf("amendments: sync: %v", err)
-				live.Error(fmt.Sprintf("amendments sync: %v", err))
-				continue
-			}
-			ok, err := st.ApplyAmendment(a)
-			if err != nil {
-				log.Printf("late verdicts: apply %s: %v", a.DedupeKey, err)
-				continue
-			}
-			if !ok {
-				continue
-			}
-			applied++
-			log.Printf("late verdict: %s %s %s: %s -> %s", a.PromiseHash[:min(12, len(a.PromiseHash))], a.ValidatorAddress, a.ScheduledAt.UTC().Format(time.RFC3339), a.From, a.To)
-		}
-		if applied > 0 {
-			live.Set("late_verdicts", applied)
-		}
-	}
 	corrFile, err := os.OpenFile(*corrPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		log.Fatalf("open %s: %v", *corrPath, err)
@@ -281,216 +218,24 @@ func main() {
 	log.Printf("collector up: run=%d vantage=%s db=%s data=%s exports=%s", runID, *vantage, *dbPath, *dataDir, *expDir)
 
 	retention := rollup.Config{RollupAfter: *rollAfter, Vantage: *vantage}
-	var lastWaiting string
-	var lastRetention time.Time
+	// The record-keeping half of a pass: every file into the store, then the
+	// collapse, the late verdicts, the corrections, the holds and the
+	// retention pass (observer/collect).
+	coll := collect.New(collect.Collector{
+		St: st,
+		Paths: collect.Paths{
+			State: *statePath, Publications: *pubsPath, Measurements: *measPath, SampledOut: *soPath,
+			Reachability: *reachPath, VantagesDir: *vantDir, Registry: *regPath, Payments: *payPath,
+			Runs: *runsPath, SamplingSecrets: *secPath, HostHistory: *hostsPath, Amendments: *amendPath,
+			ParamUncertainty: *uncPath, Corrections: *corrPath,
+		},
+		Vantage: *vantage, Logf: log.Printf, Live: live, AmendFile: amendFile, PruneTolerance: *pruneTol,
+		Corrector: corr, Retention: retention, RetentionEvery: *retEvery,
+	})
 	var lastEscrow time.Time
-	// The first pass gives back whatever the schema migration freed: the
-	// sampled-out collapse (migration 24) deletes most of the probe rows a
-	// store holds, and a DELETE alone never shrinks the file.
-	reclaimPending := true
 	pass := func(pollEndpoints bool) {
 		now := time.Now()
-		if err := ingest.State(st, *statePath, now); err != nil {
-			log.Printf("state: %v", err)
-		}
-		// Every ingest failure used to be a log line and nothing else, while
-		// the collector's OK flag was set by the unrelated chain-status poll
-		// — so a collector that could read the tip and could not read a
-		// single file reported itself healthy, and the site went on serving
-		// the last figures with nothing saying the record had stopped
-		// reaching it.
-		var passErrs []string
-		fail := func(what string, err error) {
-			log.Printf("%s: %v", what, err)
-			passErrs = append(passErrs, fmt.Sprintf("%s: %v", what, err))
-		}
-		if r, err := ingest.Publications(st, *pubsPath, now); err != nil {
-			fail("publications", err)
-		} else {
-			logTail(log.Printf, "publications", r) // fast.go; the fast tick logs its reads the same way
-		}
-		// Before the measurements, deliberately. A range says how to read
-		// the rows of the publications it covers, and InsertProbe decides
-		// there and then whether a row is born withheld. Ingesting the
-		// ranges after the measurements left every row of the pass that
-		// first carried a range readable as FAULT until the hold sync at
-		// the end of that pass — and for as long as the collector stayed
-		// down, if it stopped in between.
-		//
-		// The ranges come in before the corrections that close them, and
-		// both come in before the holds are synced, so a range and the
-		// correction that lifts it can never be half-applied in one pass.
-		if r, err := ingest.ParamUncertainty(st, *uncPath, now); err != nil {
-			fail("param uncertainty", err)
-		} else if r.Inserted > 0 {
-			log.Printf("param uncertainty: +%d range(s) (read %d, line %d)", r.Inserted, r.Read, r.Line)
-		}
-		if r, err := ingest.Corrections(st, *corrPath, now); err != nil {
-			fail("corrections", err)
-		} else if r.Inserted > 0 {
-			log.Printf("corrections: +%d deadline/verdict correction(s) replayed (read %d, line %d)", r.Inserted, r.Read, r.Line)
-		}
-		if r, err := ingest.Measurements(st, *measPath, now); err != nil {
-			fail("measurements", err)
-		} else {
-			if r.Inserted > 0 {
-				log.Printf("measurements: +%d (read %d, line %d)", r.Inserted, r.Read, r.Line)
-			}
-			if r.Skipped > 0 {
-				log.Printf("measurements: WARNING skipped %d undecodable line(s); last: %s", r.Skipped, r.LastSkipped)
-			}
-		}
-		// After the measurements: a decision is not stored beside rows its
-		// vantage already wrote for the promise (store.InsertSampledOut).
-		if r, err := ingest.SampledOut(st, *soPath, now); err != nil {
-			fail("sampling decisions", err)
-		} else {
-			if r.Inserted > 0 {
-				log.Printf("sampling decisions: +%d sampled-out publication(s) (read %d, line %d)", r.Inserted, r.Read, r.Line)
-			}
-			if r.Skipped > 0 {
-				log.Printf("sampling decisions: WARNING skipped %d undecodable line(s); last: %s", r.Skipped, r.LastSkipped)
-			}
-		}
-		// Rows a prober wrote for a sampled-out publication before the
-		// decision had a record of its own become that decision: the
-		// migration did it for the store it found, this does it for rows
-		// read since (a store rebuilt from an older measurements.jsonl).
-		// The pages go back to the filesystem, here and on the first pass
-		// after the migration freed them.
-		if n, rows, err := st.CollapseSampledOut(ctx); err != nil {
-			fail("sampled-out rows", err)
-		} else if n > 0 {
-			log.Printf("sampled-out rows: %d row(s) recorded as %d decision(s)", rows, n)
-			reclaimPending = true
-		}
-		if reclaimPending {
-			if freed, err := st.ReclaimSpace(ctx, 20000); err != nil {
-				log.Printf("reclaim: %v", err)
-				reclaimPending = false
-			} else if freed > 0 {
-				log.Printf("reclaim: %d page(s) returned to the filesystem", freed)
-			} else {
-				reclaimPending = false
-			}
-		}
-		if r, err := ingest.Reachability(st, *reachPath, now); err != nil {
-			fail("reachability", err)
-		} else {
-			if r.Inserted > 0 {
-				log.Printf("reachability: +%d (read %d, line %d)", r.Inserted, r.Read, r.Line)
-			}
-			if r.Skipped > 0 {
-				log.Printf("reachability: WARNING skipped %d undecodable line(s); last: %s", r.Skipped, r.LastSkipped)
-			}
-		}
-		// Other vantages' heartbeats, copied in whole by rsync. They confirm
-		// or contradict this observer's own failed checks (the API's
-		// reachabilityNow) and are counted in no published figure. Listed
-		// again every pass, so a vantage that starts sending is picked up
-		// without a restart.
-		if files, err := ingest.VantageFiles(*vantDir); err != nil {
-			fail("vantages", err)
-		} else {
-			for _, f := range files {
-				name := filepath.Base(filepath.Dir(f))
-				if r, err := ingest.VantageReachability(st, f, *vantage, now); err != nil {
-					fail("reachability from "+name, err)
-				} else {
-					if r.Inserted > 0 {
-						log.Printf("reachability from %s: +%d (read %d, line %d)", name, r.Inserted, r.Read, r.Line)
-					}
-					if r.Skipped > 0 {
-						log.Printf("reachability from %s: WARNING skipped %d undecodable line(s); last: %s", name, r.Skipped, r.LastSkipped)
-					}
-				}
-			}
-		}
-		if r, err := ingest.Registry(st, *regPath, now); err != nil {
-			fail("registry", err)
-		} else if r.Inserted > 0 {
-			log.Printf("registry: +%d endpoint event(s) replayed (read %d, line %d)", r.Inserted, r.Read, r.Line)
-		}
-		if r, err := ingest.Payments(st, *payPath, now); err != nil {
-			fail("payments", err)
-		} else {
-			logTail(log.Printf, "payments", r)
-		}
-		if r, err := ingest.Runs(st, *runsPath, now); err != nil {
-			fail("runs", err)
-		} else if r.Inserted > 0 {
-			log.Printf("runs: +%d run event(s) replayed (read %d, line %d)", r.Inserted, r.Read, r.Line)
-		}
-		if r, err := ingest.SamplingSecrets(st, *secPath, now); err != nil {
-			fail("sampling secrets", err)
-		} else if r.Inserted > 0 {
-			log.Printf("sampling secrets: +%d day(s) revealed (read %d, line %d)", r.Inserted, r.Read, r.Line)
-		}
-		if r, err := ingest.HostEvents(st, *hostsPath, now); err != nil {
-			fail("host history", err)
-		} else if r.Inserted > 0 {
-			log.Printf("host history: +%d registration(s) (read %d, line %d)", r.Inserted, r.Read, r.Line)
-		}
-		if r, err := ingest.Amendments(st, *amendPath, now); err != nil {
-			fail("amendments", err)
-		} else if r.Inserted > 0 {
-			log.Printf("amendments: +%d late verdict(s) replayed (read %d, line %d)", r.Inserted, r.Read, r.Line)
-		}
-		// Copy the write-ahead log back and truncate it while nothing is
-		// reading. A pass that ingested a backlog can leave hundreds of
-		// megabytes of WAL behind otherwise, and SQLite will not reset it on
-		// its own while the API holds a snapshot.
-		if busy, inLog, done, err := st.CheckpointWAL(ctx); err != nil {
-			log.Printf("wal checkpoint: %v", err)
-		} else if !busy && done > 0 && inLog > 2000 {
-			log.Printf("wal checkpoint: %d of %d frame(s) written back and the log truncated", done, inLog)
-		}
-		judgeLate(now)
-		// Corrections first, then the hold sync. A verified range only
-		// stops holding once every deadline it covers has actually been
-		// re-derived, so the flag can never be cleared on a row the
-		// correction has not reached — and a publication covered by two
-		// overlapping ranges keeps its hold until the second one closes
-		// too, because SyncParamHolds recomputes the flag from the ranges
-		// rather than clearing it per range.
-		if n, err := corr.Run(ctx, now); err != nil {
-			log.Printf("corrections: %v", err)
-			live.Error(fmt.Sprintf("corrections: %v", err))
-		} else if n > 0 {
-			live.Set("param_corrections", n)
-			bumpHoldsRevision(st, now)
-		}
-		if changed, err := st.SyncParamHolds(ctx); err != nil {
-			log.Printf("param holds: %v", err)
-			live.Error(fmt.Sprintf("param holds: %v", err))
-		} else if changed > 0 {
-			log.Printf("param holds: %d row(s) changed", changed)
-			bumpHoldsRevision(st, now)
-		}
-		if *retEvery > 0 && time.Since(lastRetention) >= *retEvery {
-			lastRetention = now
-			if rep, err := rollup.Run(ctx, st, now, retention); err != nil {
-				log.Printf("retention: %v", err)
-				live.Error(fmt.Sprintf("retention: %v", err))
-			} else {
-				if len(rep.RolledDays) > 0 {
-					log.Printf("retention: rolled up %d day(s) through %s (%d obligations still pending at roll)", len(rep.RolledDays), rep.RolledDays[len(rep.RolledDays)-1], rep.PendingAtRoll)
-					live.Set("rollup_through", rep.RolledDays[len(rep.RolledDays)-1])
-				}
-				if rep.PendingAtRoll > 0 {
-					log.Printf("retention: WARNING %d obligation(s) were still pending when their day was rolled; -rollup-after is shorter than a retention window", rep.PendingAtRoll)
-				}
-				// A day that is not final holds every later one: say so once
-				// when it starts holding, and keep it in the status file.
-				if rep.Waiting != lastWaiting {
-					if rep.Waiting != "" {
-						log.Printf("retention: rollup waiting on %s: %s", rep.Waiting, rep.WaitingWhy)
-					}
-					lastWaiting = rep.Waiting
-				}
-				live.Set("rollup_waiting", strings.TrimSpace(rep.Waiting+" "+rep.WaitingWhy))
-			}
-		}
+		passErrs := coll.Pass(ctx, now)
 		if exporter != nil {
 			if built, err := exporter.Run(now); err != nil {
 				log.Printf("export: %v", err)

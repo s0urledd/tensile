@@ -123,6 +123,9 @@ type healthResponse struct {
 	ScanGaps   []scan.ScanGap    `json:"scan_gaps,omitempty"`
 	PinStatus  string            `json:"pin_status"`
 	ServerTime time.Time         `json:"server_time"`
+	// DayPartials is the state of the day partials the longer windows are
+	// summed from (dayparts_health.go).
+	DayPartials *dayPartsHealth `json:"day_partials,omitempty"`
 }
 
 // components reads the status directory into the API's shape.
@@ -301,6 +304,15 @@ func (s *Server) health(ctx context.Context, now time.Time) healthResponse {
 		}
 	}
 
+	var parts *dayPartsHealth
+	if s.parts != nil {
+		h, c := s.parts.health(now)
+		parts = &h
+		checks = append(checks, c)
+	} else if s.noParts {
+		parts = &dayPartsHealth{State: "off"}
+	}
+
 	st := "ok"
 	for _, c := range checks {
 		if !c.OK {
@@ -310,7 +322,7 @@ func (s *Server) health(ctx context.Context, now time.Time) healthResponse {
 	if alive == 0 {
 		st = "down"
 	}
-	return healthResponse{Status: st, Checks: checks, Components: comps, ScanGaps: gaps, PinStatus: pin, ServerTime: now.UTC()}
+	return healthResponse{Status: st, Checks: checks, Components: comps, ScanGaps: gaps, PinStatus: pin, ServerTime: now.UTC(), DayPartials: parts}
 }
 
 func orNone(s string) string {

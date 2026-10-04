@@ -34,7 +34,7 @@ type endpointCheck struct {
 func (s *Server) lastEndpointCheck(ctx context.Context, addr string, win Window) (*endpointCheck, error) {
 	var c endpointCheck
 	var dns, tcp, tls, id int
-	err := s.st.DB().QueryRowContext(ctx, `SELECT started_at, validator_host, outcome, dns_ok, tcp_ok, tcp_ms, tls_ok, tls_ms,
+	err := s.q(ctx).QueryRowContext(ctx, `SELECT started_at, validator_host, outcome, dns_ok, tcp_ok, tcp_ms, tls_ok, tls_ms,
 			identity_ok, identity_reason, raw_error, vantage
 		FROM reachability WHERE validator_address = ? AND started_at <= ? AND +vantage = ?
 		ORDER BY started_at DESC LIMIT 1`, addr, win.endArg(), s.vantage).
