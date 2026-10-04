@@ -15,7 +15,7 @@ const ID = "AJ+0/lcm8YgL/06EFKHMnnMaQfJp/ChDQskMk7rkd8FQ";
 const COMMITMENT = "9fb4fe5726f1880bff4e8414a1cc9e731a41f269fc284342c90c93bae477c150";
 const TX = "ADD4C5190131D0AFB55AF3341B347700B2ADEC2B128FAF3C7CA06495852C5C16";
 const PROMISE = "481498948d4e9ee30ad214ab22d1d2005c7c218e9db95dabfd5b4e42d5e88a95";
-const asId = { kind: "id", hex: COMMITMENT, id: ID };
+const asId = { kind: "id", version: 0, hex: COMMITMENT, id: ID };
 
 test("the docs' blob ID is version 0 and its commitment", () => {
   assert.equal(blobIdOf(COMMITMENT), ID);
@@ -41,8 +41,14 @@ test("66 hex is a blob ID, never a commitment; 64 hex is a hash, never a blob ID
   assert.deepEqual(blobKey(COMMITMENT), { kind: "hash", hex: COMMITMENT });
   // a 64-hex hash that starts 00 is still a hash
   assert.deepEqual(blobKey(`00${COMMITMENT.slice(2)}`), { kind: "hash", hex: `00${COMMITMENT.slice(2)}` });
-  // another version byte is no blob ID Fibre has
-  assert.equal(blobKey(`01${COMMITMENT}`), null);
+});
+
+test("a blob ID of another version reads with its version, and is built back the same", () => {
+  const v1 = Buffer.concat([Buffer.from([1]), Buffer.from(COMMITMENT, "hex")]).toString("base64");
+  assert.equal(blobIdOf(COMMITMENT, 1), v1);
+  assert.deepEqual(blobKey(v1), { kind: "id", version: 1, hex: COMMITMENT, id: v1 });
+  assert.deepEqual(blobKey(`01${COMMITMENT}`), { kind: "id", version: 1, hex: COMMITMENT, id: v1 });
+  assert.equal(blobIdOf(COMMITMENT, 256), "");
 });
 
 test("a transaction hash and a promise hash read as 64 hex, in lower case", () => {
@@ -56,7 +62,6 @@ test("anything else is no identifier", () => {
   const c = Buffer.from(COMMITMENT, "hex");
   for (const s of [
     "", "   ", "hello world", TX.slice(1), `${TX}0`,
-    Buffer.concat([Buffer.from([1]), c]).toString("base64"), // version 1
     c.toString("base64"), // 32 bytes: a bare commitment in base64
     Buffer.concat([Buffer.from([0]), c, Buffer.from([7])]).toString("base64"), // 34 bytes
     `${ID.slice(0, 43)}!`, `${ID}===`,

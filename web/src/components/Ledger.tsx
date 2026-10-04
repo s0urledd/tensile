@@ -10,6 +10,10 @@ import { Eye } from "@/components/Metrics";
 import { Frac } from "@/components/CurrentProviders";
 import Ident from "@/components/Ident";
 import Info from "@/components/Info";
+import { blobIdOf } from "@/lib/blobkey";
+
+/** how many of the blob ID's first and last characters the Blob column shows */
+const ID_ENDS = 6;
 import { reducedMotion } from "@/components/RollNumber";
 import { age, monthDayTime } from "@/components/BlobsDeck";
 
@@ -225,7 +229,7 @@ export function LedgerHead({ one }: { one: boolean }) {
       <tr>
         <th className="c-h">Height</th>
         <th className="c-t">{one ? "Time" : "Settled"} <span className="per">(UTC)</span></th>
-        <th className="c-b">Blob</th>
+        <th className="c-b">Blob ID</th>
         <th className="c-ns">Namespace</th>
         {!one && <th className="c-p">Publisher</th>}
         <th className="c-sz num">Blob size</th>
@@ -294,6 +298,7 @@ type RowProps = { b: Blob; age: string | null; fresh: boolean; one: boolean; dec
 /** one blob: the cells of the table, and the second line a phone shows under the first */
 const Row = memo(function Row({ b, age: ag, fresh, one, dec, onNs, onOpen }: RowProps) {
   const href = `/blob/?hash=${b.promise_hash}`;
+  const id = blobIdOf(b.commitment, b.blob_version ?? 0);
   const who = payer(b);
   const name = nsDisplay(b.namespace);
   const ln = lane(b);
@@ -305,8 +310,10 @@ const Row = memo(function Row({ b, age: ag, fresh, one, dec, onNs, onOpen }: Row
       <td className="c-h">{int(b.settlement_height)}</td>
       <td className="c-t"><span title={utcWord(b.settlement_time)}><span className="tm">{monthDayTime(b.settlement_time)}</span>{ag && <span className="ag">{ag}</span>}</span></td>
       <td className="c-b">
-        <Link href={href} title={b.promise_hash} aria-label={`Blob ${b.promise_hash.slice(0, 10)}, height ${int(b.settlement_height)}`}>{b.promise_hash.slice(0, 6)}<span className="el">…</span>{b.promise_hash.slice(-4)}</Link>
-        <CopyMark text={b.promise_hash} label="the promise hash" />
+        {/* the blob as the client names it, its blob ID's first and last characters; the row opens this settlement (its
+            promise hash), and the copy is the blob ID */}
+        <Link href={href} title={`Blob ID ${id}\nPromise hash ${b.promise_hash}`} aria-label={`Blob ${id.slice(0, 10)}, height ${int(b.settlement_height)}`}>{id.slice(0, ID_ENDS)}<span className="el">…</span>{id.slice(-ID_ENDS)}</Link>
+        <CopyMark text={id} label="the blob ID" />
         <span className="ht">#{int(b.settlement_height)}</span>
       </td>
       <td className="c-ns"><button type="button" className="nsb" onClick={() => onNs(b.namespace)} title={`${b.namespace} · show only this namespace`}>{name}</button></td>
@@ -342,7 +349,7 @@ function Placeholders({ rows, one }: { rows: number; one: boolean }) {
         <tr key={i} className="row sk" aria-hidden="true">
           <td className="c-h"><span className="wait">1,204,085</span></td>
           <td className="c-t"><span className="wait">Sep 28 20:48:38</span></td>
-          <td className="c-b"><span className="wait">36f68b…2417</span><span className="ht"><span className="wait">#1,204,085</span></span></td>
+          <td className="c-b"><span className="wait">AJ+0/l…kd8FQ</span><span className="ht"><span className="wait">#1,204,085</span></span></td>
           <td className="c-ns"><span className="wait">sov-niko-a</span></td>
           {!one && <td className="c-p"><span className="wait">celestia ••• 9snr</span></td>}
           <td className="c-sz num"><span className="wait">16.0 MiB</span></td>

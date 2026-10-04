@@ -1696,9 +1696,10 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-t tbody tr:first-child td { border-top: 0; }
 /* a column whose cells are always about as wide is as wide as they are (the time at its widest: "May 28 20:48:38 23 h 59 min",
    and the publisher's chip); the namespace takes the rest */
-/* the blob column holds the short hash and its copy button */
-.lg-t th.c-h { width: 96px; } .lg-t th.c-t { width: 206px; } .lg-t th.c-b { width: 128px; } .lg-t th.c-p { width: 148px; } .lg-t th.c-sz { width: 88px; } .lg-t th.c-fee { width: 92px; }
-.lg-t th.c-e { width: 128px; } .lg-t th.gap { width: 10px; } .lg-t th.tn { width: 120px; }
+/* the blob column holds the blob ID's first and last six and its copy button; the fee ("23.69 TIA" at most) and
+   Tensile's lane ("retention window") at their widest, so the namespace keeps its 102px at the page's width */
+.lg-t th.c-h { width: 96px; } .lg-t th.c-t { width: 206px; } .lg-t th.c-b { width: 140px; } .lg-t th.c-p { width: 148px; } .lg-t th.c-sz { width: 88px; } .lg-t th.c-fee { width: 86px; }
+.lg-t th.c-e { width: 128px; } .lg-t th.gap { width: 10px; } .lg-t th.tn { width: 114px; }
 .lg-t tr.row { position: relative; cursor: pointer; }
 .lg-t tr.row td { transition: background var(--dur); }
 .lg-t tr.row:hover td { background: color-mix(in srgb, var(--accent) 5%, var(--paper)); }
@@ -2066,6 +2067,9 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .pb-addr { --copy-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.4'%3E%3Crect x='5.5' y='5.5' width='8' height='8' rx='1.8'/%3E%3Cpath d='M10.5 3.6v-.2c0-.9-.7-1.6-1.6-1.6H4.1c-.9 0-1.6.7-1.6 1.6v4.8c0 .9.7 1.6 1.6 1.6h.2' stroke-linecap='round'/%3E%3C/svg%3E");
   display: flex; align-items: center; gap: 10px; margin-top: 10px; min-width: 0; }
 .pb-addr .mono { font-size: var(--t-cell); color: var(--text-2); letter-spacing: .01em; }
+/* the blob page names what the identifier is, and how many settlements carry it when more than this one */
+.pb-addr .bd-idl { flex: none; font-size: var(--t-small); font-weight: 500; color: var(--text-3); }
+.pb-addr .bd-many { flex: none; font-size: var(--t-small); color: var(--accent-ink); white-space: nowrap; }
 .pb-addr .copy { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 24px; margin: 0; padding: 0 9px 0 7px; border-radius: 999px; border: 1px solid var(--border); background: var(--paper); box-shadow: var(--shadow-sm); color: var(--text-2); font: 500 var(--t-small)/1 var(--sans); text-transform: capitalize; transition: color var(--dur), border-color var(--dur); }
 .pb-addr .copy::before { content: ""; width: 13px; height: 13px; background: var(--text-3); -webkit-mask: var(--copy-mark) center / contain no-repeat; mask: var(--copy-mark) center / contain no-repeat; }
 .pb-addr .copy:hover { color: var(--accent-ink); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
