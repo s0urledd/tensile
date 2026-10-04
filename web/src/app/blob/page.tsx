@@ -2,7 +2,7 @@
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useApi, type Blob, type BlobReading, type Meta, int, bytes, tia, utcWord, hhmm, shortMid, nsDisplay, notFound, pctOf, API_BASE,
+import { useApi, askAgain, useNewestBlob, type Blob, type BlobReading, type Meta, int, bytes, tia, utcWord, hhmm, shortMid, nsDisplay, notFound, pctOf, API_BASE,
   endOfWindow, fullReading, ownGap, ownSide, sharedAnswer, rawErrorWords, foreignRows, asksAgain, attemptsOf, judged as judgedBy, askedTimes, FULL_READ_SINCE, FULL_READ_SINCE_WORDS } from "@/lib/api";
 import StatusLine from "@/components/StatusLine";
 import { Eye } from "@/components/Metrics";
@@ -244,8 +244,11 @@ function Page() {
   const named = sp.get("hash") ?? "";
   // the address reads a raw + as a space, which base64 never holds: each goes back before blobKey trims a last one away
   const via = named ? null : viaOf(sp.get("id")?.replace(/ /g, "+") ?? null, sp.get("tx"));
-  // its settlements, asked again every 30 s while there are none (a blob the scanner has not read yet)
-  const hit = useFind(via && via.kind !== "bad" ? via.key : null, { as: [via?.kind === "tx" ? "tx" : "commitment"], limit: 1, refreshMs: 30000 });
+  // the newest blob on record, from the header's tip stream (no request of its own): a blob not on record yet is
+  // asked for again each time it changes, and every 30 s besides
+  const newest = useNewestBlob();
+  // its settlements, asked again while there are none (a blob the scanner has not read yet)
+  const hit = useFind(via && via.kind !== "bad" ? via.key : null, { as: [via?.kind === "tx" ? "tx" : "commitment"], limit: 1, refreshMs: 30000, retryOn: newest });
   const picked = hit && !hit.error && !hit.partial && hit.total === 1 ? hit.rows[0].promise_hash : "";
   const many = !!hit && !hit.error && hit.total > 1;
   const router = useRouter();
@@ -267,6 +270,11 @@ function Page() {
   const [table, setTable] = useState(false);
   const { data: meta, error: metaErr } = useApi<Meta>("/v1/meta");
   const d = useApi<Detail>(hash ? `/v1/blobs/${hash}` : null);
+  // a promise hash not on record yet (404) is asked for again as soon as a newer blob is, not at the next 30 s
+  const missing = !!hash && notFound(d);
+  useEffect(() => {
+    if (missing) askAgain(`/v1/blobs/${hash}`);
+  }, [newest]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!hash && !via) return <p className="notice">Open a blob from the <Link href="/blobs/">list</Link>, or add <code>?hash=&lt;promise hash&gt;</code>, <code>?id=&lt;blob ID&gt;</code> or <code>?tx=&lt;transaction hash&gt;</code> to the address.</p>;
   if (!hash && via) {
     const name = (via.kind === "bad" ? via.of : via.kind) === "id" ? "blob ID" : "transaction hash";
@@ -282,8 +290,8 @@ function Page() {
         {none && (via.kind === "tx"
           ? hit.noTx
             ? <p className="notice">This observer does not look blobs up by transaction hash yet. Open the blob from the <Link href="/blobs/">list</Link> or by its blob ID.</p>
-            : <p className="notice">Tensile has not indexed <span className="mono" title={via.text}>{shortMid(via.text, 10, 6)}</span> yet, or the transaction carries no Fibre blob. A blob appears here once Tensile has read the block that settled it; this page checks again every 30 seconds.</p>
-          : <p className="notice">Tensile has not indexed a blob with the blob ID <span className="mono" title={via.text}>{shortMid(via.text, 10, 6)}</span> yet. A blob appears here once Tensile has read the block that settled it; this page checks again every 30 seconds.</p>)}
+            : <p className="notice">Tensile has not indexed <span className="mono" title={via.text}>{shortMid(via.text, 10, 6)}</span> yet, or the transaction carries no Fibre blob. A blob appears here once Tensile has read the block that settled it; this page checks again each time Tensile records a new blob, and every 30 seconds.</p>
+          : <p className="notice">Tensile has not indexed a blob with the blob ID <span className="mono" title={via.text}>{shortMid(via.text, 10, 6)}</span> yet. A blob appears here once Tensile has read the block that settled it; this page checks again each time Tensile records a new blob, and every 30 seconds.</p>)}
       </>
     );
   }
@@ -293,7 +301,7 @@ function Page() {
       <>
         <div className="head"><div><p className="crumb"><Link href="/blobs/">Blobs</Link> › {hash.slice(0, 10)}…</p><h1>{notFound(d) ? "Blob not recorded yet" : d.error ? "Blob" : "Loading…"}</h1></div></div>
         <StatusLine meta={meta} metaError={metaErr} snap={null} client={{ error: d.error, fetchedAt: d.fetchedAt, status: d.status }} />
-        {notFound(d) && <p className="notice">No publication with the promise hash <span className="mono">{shortMid(hash, 10, 6)}</span> is on record. A blob appears here once the scanner has read the block that settled it; this page checks again every 30 seconds.</p>}
+        {notFound(d) && <p className="notice">No publication with the promise hash <span className="mono">{shortMid(hash, 10, 6)}</span> is on record. A blob appears here once the scanner has read the block that settled it; this page checks again each time Tensile records a new blob, and every 30 seconds.</p>}
       </>
     );
   }

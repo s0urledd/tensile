@@ -32,7 +32,13 @@ port, behind one Caddy with a site per network (see "Two networks").
   reads `block_results` for every block, and a node that discards ABCI
   responses answers "node is not persisting finalize block responses"
   (rpc-mocha.pops.one did on 8 September 2026). Public RPCs on
-  celestia-core v0.41.0 also cap heavy requests at 20 in flight.
+  celestia-core v0.41.0 also cap heavy requests at 20 in flight. The
+  scanner also subscribes to the node's new block headers on the same
+  address's websocket (`/websocket`, which CometBFT serves on the RPC
+  port), so it reads each block the moment the node has it. A proxy in
+  front of the node has to pass websocket upgrades for that; without them
+  the scanner follows by polling the tip every second, as before
+  (`-subscribe=false` turns the subscription off).
 - Before the chain runs app version 10, `x/fibre` and `x/valaddr` do not
   exist. The scanner logs "x/fibre is not active on this chain yet" and
   keeps following blocks, retrying the params query every 100 heights;
@@ -240,7 +246,13 @@ round. A height the node cannot serve at all (pruned, or ABCI responses
 discarded) is retried for ten minutes and then recorded as a gap in
 `state.json`, shown on the dashboard and reported by `/v1/health`, and the
 scan moves on. A chain halt is warned about every five minutes and waited
-out; `Restart=always` in the units is for crashes, not for outages.
+out; `Restart=always` in the units is for crashes, not for outages. The
+scanner's block subscription is no exception: when it drops (a node
+restart) or the node cancels it, the scanner polls the tip every second and
+subscribes again with backoff, and the journal says `block subscription
+lost` and `block subscription up again`, one line each. The collector's
+watch on the scanner's files works the same way: if it cannot start or is
+lost, the collector reads them every second on its timer and says so once.
 
 `sudo systemctl status 'fibre-*@mocha'` and `journalctl -u fibre-probe@mocha -f`.
 
@@ -926,6 +938,14 @@ Then check the vantage is described: with `VANTAGE_LOCATION` or
 
 ```bash
 journalctl -u fibre-api@mocha --no-pager | grep 'vantage not fully described'   # no output is right
+```
+
+Check that the scanner reads each block as the node announces it, and that
+the collector reads the scanner's files as they change:
+
+```bash
+journalctl -u fibre-scan@mocha --no-pager | grep 'block subscription'      # "up", and no "unavailable" after it
+journalctl -u fibre-collector@mocha --no-pager | grep 'fast tick:'        # "... and within 100ms of a change to one of them"
 ```
 
 Confirm the provider you declared is the one your traffic actually carries:

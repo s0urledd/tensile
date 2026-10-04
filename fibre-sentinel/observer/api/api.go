@@ -3805,6 +3805,15 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 		last := blobs[len(blobs)-1]
 		out["next_before_height"], out["next_before_tx_index"] = last.SettlementHeight, last.SettlementTxIndex
 	}
+	// A lookup by commitment or transaction that finds nothing is not kept
+	// by a cache. It is how a reader asks for a blob it has just submitted,
+	// often a second before the scanner has read its block, and a miss held
+	// for 15 seconds would answer "not indexed yet" for 15 seconds after the
+	// blob was on record. A 404 from /v1/blobs/{hash} is never cached either
+	// (statusWriter); a lookup that finds its blob keeps the usual policy.
+	if (commitment != "" || tx != "") && total == 0 {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	writeJSON(w, 200, out)
 }
 

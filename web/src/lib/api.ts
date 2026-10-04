@@ -805,8 +805,12 @@ export function throttled(f: { error: string | null; status?: number }): boolean
 // components ask for it: the header, the banner, the footer and the page all
 // want /v1/meta, which was four requests per interval per viewer.
 // retry is the one early re-ask a stream has pending while its figure is
-// being computed.
-type Sub = { subs: Set<(f: Fetch<unknown>) => void>; timer: ReturnType<typeof setInterval> | null; retry: ReturnType<typeof setTimeout> | null; last: Fetch<unknown> };
+// being computed. load asks now; busy counts the requests out, and again asks
+// once more when the last of them is back (askAgain).
+type Sub = {
+  subs: Set<(f: Fetch<unknown>) => void>; timer: ReturnType<typeof setInterval> | null; retry: ReturnType<typeof setTimeout> | null; last: Fetch<unknown>;
+  load: () => void; busy: number; again: boolean;
+};
 const streams = new Map<string, Sub>();
 
 /** how soon to ask again for a figure being computed: what the API says, kept between 2 and 30 s */
@@ -847,10 +851,13 @@ async function fetchOnce(path: string): Promise<Fetch<unknown> & { retryMs?: num
 function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<unknown>) => void): () => void {
   let st = streams.get(key);
   if (!st) {
-    st = { subs: new Set(), timer: null, retry: null, last: { data: null, error: null, loading: true, fetchedAt: null } };
+    const own: Sub = { subs: new Set(), timer: null, retry: null, last: { data: null, error: null, loading: true, fetchedAt: null }, load: () => {}, busy: 0, again: false };
+    st = own;
     streams.set(key, st);
     const load = async () => {
+      own.busy++;
       const { retryMs, ...next } = await fetchOnce(path);
+      own.busy--;
       const cur = streams.get(key);
       if (!cur) return;
       if (next.computing) {
@@ -873,7 +880,12 @@ function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<u
       }
       const out = cur.last;
       cur.subs.forEach((s) => s(out));
+      if (own.again && own.busy === 0) {
+        own.again = false;
+        load();
+      }
     };
+    own.load = load;
     load();
     if (refreshMs > 0) st.timer = setInterval(load, refreshMs);
   } else if (!st.last.loading || st.last.computing) {
@@ -904,6 +916,18 @@ function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<u
  */
 export const TIP_MS = 1000;
 
+/**
+ * Asks a stream again now, ahead of its interval: the one useApi(path, refreshMs) reads. A request already out is
+ * followed by one more, so an answer from before the reason to ask again never has the last word. Nothing when no
+ * page reads the stream.
+ */
+export function askAgain(path: string, refreshMs = 30000): void {
+  const st = streams.get(`${refreshMs}|${path}`);
+  if (!st) return;
+  if (st.busy > 0) st.again = true;
+  else st.load();
+}
+
 export function useApi<T>(path: string | null, refreshMs = 30000): Fetch<T> {
   const [state, setState] = useState<Fetch<T>>({ data: null, error: null, loading: !!path, fetchedAt: null });
   useEffect(() => {
@@ -911,6 +935,17 @@ export function useApi<T>(path: string | null, refreshMs = 30000): Fetch<T> {
     return subscribe(`${refreshMs}|${path}`, path, refreshMs, (f) => setState(f as Fetch<T>));
   }, [path, refreshMs]);
   return state;
+}
+
+/**
+ * The promise hash of the newest blob on record (/v1/tip's latest_blob), null until the tip has named one. It reads
+ * the header's tip stream, so it asks nothing of its own, and it renders its page only when the blob changes, not at
+ * every answer: what a page that waits for a blob to be recorded asks again on.
+ */
+export function useNewestBlob(): string | null {
+  const [newest, setNewest] = useState<string | null>(null);
+  useEffect(() => subscribe(`${TIP_MS}|/v1/tip`, "/v1/tip", TIP_MS, (f) => setNewest((f.data as Tip | null)?.latest_blob?.promise_hash ?? null)), []);
+  return newest;
 }
 
 // ---- formatting ----

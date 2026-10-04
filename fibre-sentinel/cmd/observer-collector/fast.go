@@ -18,8 +18,9 @@ import (
 // wrote a moment after a pass had read publications.jsonl waited for the next
 // one, so the overview's newest blob reached the store up to ten seconds after
 // its block, on top of the scanner's second. Between passes this reads, every
-// -fast-every (a second), the three files a just-settled blob's row is made
-// of, in the order the pass reads them:
+// -fast-every (a second) and within a tenth of a second of a change to one of
+// them (-fast-watch, watch.go), the three files a just-settled blob's row is
+// made of, in the order the pass reads them:
 //
 //   - state.json, the scanner's checkpoint, first. The scanner syncs
 //     publications.jsonl before it rewrites state.json, so a checkpoint read
