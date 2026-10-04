@@ -1125,7 +1125,6 @@ body { background: var(--canvas); }
 .cm-pin.one.open .cm-badge, .cm-pin.one .cm-b:focus-visible .cm-badge { outline-offset: 4px; transform: scale(1.3); }
 .cm-pip { position: absolute; width: 7px; height: 7px; border-radius: 50%; box-shadow: 0 0 0 2px var(--cm-halo); pointer-events: none; }
 .cm-pip.hold { background: var(--hold); }
-.cm-pip.fault { background: var(--fault); }
 /* the bar's validator: one soft ring outwards from its place, twice, then still */
 .cm-pin.live .cm-badge::after {
   content: ""; position: absolute; inset: -3px; border-radius: 9px; border: 1.5px solid var(--accent);
