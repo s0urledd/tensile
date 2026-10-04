@@ -118,8 +118,7 @@ function NetworkChip({ meta, error }: { meta: Meta | null; error: string | null 
   const title = !meta
     ? (error ? `Observer API unreachable: ${error}` : "Connecting to the observer API…")
     : [
-      `network ${meta.chain_id}`,
-      error ? `observer state unknown: API unreachable (${error})` : `observer ${health === "ok" ? "healthy" : health}`,
+      error ? `Observer API unreachable (${error})` : `Observer ${health === "ok" ? "healthy" : health}`,
       meta.chain_height ? `chain tip #${int(Number(meta.chain_height))}` : "",
       meta.app_version ? (meta.fibre_active ? `Fibre live on app v${meta.app_version}` : `Fibre not live: app v${meta.app_version}`) : "",
     ].filter(Boolean).join(" · ");
@@ -177,8 +176,8 @@ function BlockTicker({ meta }: { meta: Meta | null }) {
   const sig = meta?.upgrade_signal;
   const countdown = !tip.fibre_active && sig?.eta_seconds ? span(sig.eta_seconds) : "";
   const title = [
-    `Block #${int(tip.height)}${tip.block_time ? ` · made ${utcWord(tip.block_time)}${age !== null ? `, ${age < 90 ? `${Math.round(age)}s` : since(tip.block_time)} ago` : ""}` : ""}`,
-    error ? `API unreachable (${error}); showing the last reading` : "",
+    `Block #${int(tip.height)}${tip.block_time ? ` · ${utcWord(tip.block_time)}${age !== null ? `, ${age < 90 ? `${Math.round(age)}s` : since(tip.block_time)} ago` : ""}` : ""}`,
+    error ? `Observer API unreachable (${error}); showing the last block read` : "",
     countdown && sig?.upgrade_height ? `Fibre activates at #${int(sig.upgrade_height)}, about ${countdown} at the chain's recent pace` : "",
   ].filter(Boolean).join(" · ");
   return (
@@ -224,7 +223,7 @@ export function Footer() {
   const { data: meta } = useApi<Meta>("/v1/meta", 30000);
   return (
     <footer className="foot">
-      <div title={meta?.server_time ? `Observer time ${utcWord(meta.server_time)}${meta.last_probe_at ? ` · newest probe ${ago(meta.last_probe_at)}` : ""}` : undefined}>
+      <div title={meta?.server_time ? `Observer time ${utcWord(meta.server_time)}${meta.last_probe_at ? ` · newest reading ${ago(meta.last_probe_at)}` : ""}` : undefined}>
         Tensile by <a href="https://huginn.tech" rel="noopener noreferrer" target="_blank">Huginn Tech</a>
         <span>·</span><Link href="/methodology/">methodology</Link>
         <span>·</span><a href={SOURCE_URL} rel="noopener noreferrer" target="_blank">GitHub</a>

@@ -47,7 +47,7 @@ export function diagnose(v: ValidatorDetail, c: EndpointCheck | undefined, decid
   if (v.jailed) {
     return {
       tone: "none", title: "Jailed: out of the bonded set",
-      text: `Publishers skip it and its endpoint is not checked${v.last_host ? ` (last host ${v.last_host})` : ""}. Shards it endorsed before are still owed; checks resume once it is back in the bonded set.`,
+      text: `Publishers skip it and its endpoint is not checked${v.last_host ? ` (last host ${v.last_host})` : ""}. Shards it endorsed are still owed.`,
     };
   }
   if (v.bond_status && v.bond_status !== "BOND_STATUS_BONDED") {
@@ -120,14 +120,14 @@ export function diagnose(v: ValidatorDetail, c: EndpointCheck | undefined, decid
     const clock = !!v.identity_reason && CLOCK_REASONS.has(v.identity_reason);
     return {
       tone: "hold", title: "The certificate endorsement has lapsed",
-      text: `${host} completes TLS, but the consensus-key endorsement is outside its validity window${reason}, so clients reject it and publishers will not upload here. ${clock ? "Fix the server clock, then restart" : "Check the signer connection and the clock, then restart"} the Fibre server for a fresh endorsement.`,
+      text: `${host} completes TLS, but its certificate endorsement is outside its validity window${reason}, so publishers will not upload here. ${clock ? "Fix the server clock, then restart" : "Check the signer connection and the clock, then restart"} the Fibre server for a fresh one.`,
       docs: { href: TLS_DOCS, word: "Transport security" },
     };
   }
   if (v.identity_status === "mismatch") {
     return {
       tone: "hold", title: "The certificate is not this validator’s",
-      text: `${host} completes TLS, but its certificate is not endorsed by this validator’s consensus key${reason}, so publishers will not upload here. Point the Fibre server’s signer at this validator’s own key and chain ID, and check the registered host is this validator’s server.`,
+      text: `${host} completes TLS, but its certificate is not endorsed by this validator’s consensus key${reason}, so publishers will not upload here. Point the Fibre server’s signer at this validator’s key and chain ID, and check the registered host is its server.`,
       docs: { href: TLS_DOCS, word: "Transport security" },
     };
   }
@@ -138,7 +138,7 @@ export function diagnose(v: ValidatorDetail, c: EndpointCheck | undefined, decid
   if (v.confirmed_from) {
     return {
       tone: "hold", title: "Reachable from a second location only",
-      text: `The main check could not complete TLS with ${host}, but a second location did ${v.last_seen_at ? ago(v.last_seen_at) : "within the last 15 minutes"}, with this validator’s certificate. It counts as reachable. If some publishers fail too, look for firewall rules, geo-blocking or routing that treat source addresses differently.`,
+      text: `The main check could not complete TLS with ${host}; a second location did ${v.last_seen_at ? ago(v.last_seen_at) : "within the last 15 minutes"}, with this validator’s certificate, so it counts as reachable. If publishers fail too, check firewall, geo-blocking or routing rules.`,
     };
   }
   const o = v.obligations;

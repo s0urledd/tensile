@@ -42,8 +42,8 @@ type Detail = {
 /** a fraction as the site prints a share */
 const pctFrac = (f: number) => (f >= 1 ? "100%" : `${(f * 100).toFixed(1)}%`);
 
-/** The overview's Endorsements sentence, so the two pages explain the figure one way. */
-const ENDORSE_TITLE = "How often this validator’s signature is in the settlement, counted while it had a Fibre provider. A settlement needs signatures from ⅔ of the stake, and the first validators to respond fill it.";
+/** after the Endorsements count on hover: why a missing endorsement is not a fault, as the overview's definition says it */
+const ENDORSE_NOTE = "The first validators to answer fill the ⅔ a settlement needs.";
 
 /** the verdict as a word and a mark; the classification is the observer's, never re-derived here */
 const WORDS: Record<string, [string, string]> = {
@@ -292,7 +292,7 @@ function Strip({ cells }: { cells: Cell[] }) {
           <span className="tip-b">Blob <span className="mono">{shortHash(c.hash)}</span></span>
           <span className={"tip-r " + c.tone}>{cap(c.word)}{c.made > 1 && <span className="tip-q"> · {askedTimes(c.made)}</span>}</span>
           {(c.tone === "hold" || c.tone === "quiet") && !c.open && <span className="tip-n">Counted neither way</span>}
-          {c.open && <span className="tip-n">The retention window is still open: final when it closes</span>}
+          {c.open && <span className="tip-n">Retention window still open: final when it closes</span>}
         </div>
       )}
     </div>
@@ -372,7 +372,6 @@ function Page() {
   // obligation together; none on a pinned window
   const refFig: [string, string] | null = ref && ref.median_rate != null ? ["network median", pctFrac(ref.median_rate)]
     : ref && ref.pooled_rate.den > 0 ? ["network", pctOf(ref.pooled_rate.num, ref.pooled_rate.den)] : null;
-  const refText = refFig ? refFig.join(" ") : "";
 
   // Readings in this period that did not count although something on the validator's side failed (a wrong
   // certificate, an endpoint that did not answer): beside a gap of Tensile's own at a full reading, or while the blob
@@ -384,10 +383,9 @@ function Page() {
   for (const r of held) { const w = resultOf(r.p, r.g).word; heldBy.set(w, (heldBy.get(w) ?? 0) + 1); }
   const heldWhy = [...heldBy].map(([w, n]) => `${w} (${int(n)})`).join(", ");
   const heldFull = held.filter((r) => r.full).length;
-  const gapText = "each counted neither way: one of Tensile’s requests failed on its side or was not made in time, rows of the blob came back that are not the validator’s own, no request reached any server, or a request Tensile still owed is not on record";
-  const heldText = heldFull === held.length ? `Its own rows did not come back, but ${gapText}.`
-    : heldFull === 0 ? "The rows did not come back, and the blob was available from other validators."
-    : `The rows did not come back, but ${gapText}; or, before ${FULL_READ_SINCE_WORDS}, the blob was available from other validators.`;
+  const heldText = heldFull === held.length ? "Tensile’s side had a gap, or rows came back that are not the validator’s own."
+    : heldFull === 0 ? "The blob was available from other validators."
+    : `Tensile’s side had a gap, rows came back that are not the validator’s own, or, before ${FULL_READ_SINCE_WORDS}, the blob was available from others.`;
   const tone = o && decided > 0 ? rateTone(o.served, decided) : undefined;
   const now = Date.now();
   const per = periodName(data.window.name ?? win);
@@ -432,9 +430,9 @@ function Page() {
   // signing participation, as the chain records it: settlements signed of those assigned, or before signing was
   // counted per settlement, blobs endorsed
   const endorse = sig && sig.assigned > 0
-    ? { n: sig.signed, of: sig.assigned, title: `${int(sig.signed)} of ${int(sig.assigned)} settlements. ${ENDORSE_TITLE}` }
+    ? { n: sig.signed, of: sig.assigned, title: `${int(sig.signed)} of ${int(sig.assigned)} settlements carry its signature, counted while it had a Fibre provider. ${ENDORSE_NOTE}` }
     : att && att.blob_coverage.den > 0
-      ? { n: att.attested_blobs, of: att.blob_coverage.den, title: `${int(att.attested_blobs)} of ${int(att.blob_coverage.den)} blobs. ${ENDORSE_TITLE}` }
+      ? { n: att.attested_blobs, of: att.blob_coverage.den, title: `${int(att.attested_blobs)} of ${int(att.blob_coverage.den)} blobs carry its signature, counted while it had a Fibre provider. ${ENDORSE_NOTE}` }
       : null;
   const timeouts = v.timeouts_enforced ?? 0;
   // the chain's word after the voting power, only when it is not simply bonded
@@ -447,7 +445,7 @@ function Page() {
     : o.not_counted > 0 ? "Read, none counted" : "Not read yet";
   const rateTitle = notLive ? undefined : (!o || o.total === 0 ? ((v.signing?.signed ?? 0) > 0 ? "Not read yet." : "Nothing endorsed in this period.")
     : decided === 0 ? (o.not_counted > 0 ? `Read, none counted: ${notCountedText(o)}.` : "Not read yet.")
-    : `${int(o.served)} of ${int(decided)} counted readings served${refText ? `; ${refText}` : ""}. Endorsed shards served, over served plus not served. A shard counts neither way when one of its requests failed on Tensile’s side or could not be made in time, an answer was rows of the blob that are not the validator’s own, a request Tensile still owed is not on record, or its reading was not made or reached no server; before ${FULL_READ_SINCE_WORDS}, so did a shard not asked for, or one that failed on a blob that was available.`)
+    : `${int(o.served)} of ${int(decided)} counted readings served. Tensile’s own gaps, and rows that are not the validator’s own, count neither way.`)
     + (data.rolled_up ? ` Before ${data.rolled_up.raw_from}, from the daily rollup.` : "");
   const visible = shown;
 
@@ -465,7 +463,7 @@ function Page() {
           <div className="vd-who">
             <Avatar v={v} />
             <div className="vd-who-t">
-              <h1>{v.moniker || <span className="mono">{shortMid(v.operator_address || cons, 22, 6)}</span>}{self && <span className="ours" title="Huginn Tech runs both this validator and Tensile. It is measured by the same code as every other validator, never filtered or adjusted.">runs Tensile</span>}</h1>
+              <h1>{v.moniker || <span className="mono">{shortMid(v.operator_address || cons, 22, 6)}</span>}{self && <span className="ours" title="Huginn Tech runs both this validator and Tensile. It is measured like every other validator.">runs Tensile</span>}</h1>
               <div className="chips vd-chips">
                 <span className="state" title={e.title}><i className={"dot " + e.dot} />{e.word}</span>
                 {v.host && <span title={v.identity_reason || "The consensus-key check on the newest handshake."}>TLS identity <b className="word">{identityWord[v.identity_status] ?? v.identity_status}</b></span>}
@@ -483,7 +481,7 @@ function Page() {
                 <p className="vd-since" title={utcWord(v.last_reachable_at)}>Last answered {monthDayTime(v.last_reachable_at).slice(0, -3)} UTC</p>
               )}
               <p className="vd-sub">
-                {v.provider_since && <span title={`When this validator first appeared as a Fibre provider, whatever endpoint it had then: ${utcWord(v.provider_since)}`}>Fibre provider since <b>{shortDate(v.provider_since)}</b></span>}
+                {v.provider_since && <span title={`First seen as a Fibre provider ${utcWord(v.provider_since)}, under any endpoint`}>Fibre provider since <b>{shortDate(v.provider_since)}</b></span>}
                 {site && <a href={site} title={site} rel="nofollow noopener noreferrer" target="_blank">{site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</a>}
                 <a href={`${API_BASE}/v1/validators/${own}/feed.atom`} type="application/atom+xml" title="Endpoint changes of this validator, as an Atom feed">Atom feed</a>
               </p>
@@ -493,7 +491,7 @@ function Page() {
             {v.host
               ? <><dt>Endpoint</dt><dd><span className="vd-id"><Host s={v.host} /><CopyMark text={v.host} label="the endpoint" /></span>{endpointSince && <em title={`Registered ${utcWord(endpointSince)}`}>since {shortDate(endpointSince)}</em>}</dd></>
               : v.last_host
-                ? <><dt>Last endpoint</dt><dd title="The registration stays on chain; the validator left the bonded provider list."><span className="vd-id"><Host s={v.last_host} /></span>{v.endpoint_closed_at && <em>left {dateUTC(v.endpoint_closed_at)}</em>}</dd></>
+                ? <><dt>Last endpoint</dt><dd title="Still registered on chain; the validator left the bonded set."><span className="vd-id"><Host s={v.last_host} /></span>{v.endpoint_closed_at && <em>left {dateUTC(v.endpoint_closed_at)}</em>}</dd></>
                 : <><dt>Endpoint</dt><dd className="vd-none" title={noEndpoint && diag ? diag.text : undefined}><em>none registered</em>
                   {noEndpoint && diag?.docs && <a href={diag.docs.href} rel="noopener noreferrer" target="_blank">{diag.docs.word} →</a>}</dd></>}
             {v.host && v.hosting && <><dt>Hosting</dt><dd><HostingFact h={v.hosting} /></dd></>}
@@ -526,7 +524,7 @@ function Page() {
       <div className="pan vd-stat">
       <section className="vd-svc" id="observed" aria-labelledby="vd-observed">
         <div className="vp-h">
-          <h2 className="vp-t" id="vd-observed" title="Each blob is read once, 10 minutes before its retention window ends, and every validator that endorsed it is asked for its own rows. A validator is not served when its own rows did not come back, at the reading and each time it was asked again."><Eye />Observed by Tensile</h2>
+          <h2 className="vp-t" id="vd-observed" title="Tensile reads each blob once, 10 minutes before its retention window ends, asking every endorsing validator for its own rows."><Eye />Observed by Tensile</h2>
         </div>
         <div className="vd-svc-top">
           <div className={"vd-rate" + (rateCls ? " " + rateCls : "")} title={rateTitle}>
@@ -564,10 +562,10 @@ function Page() {
             not served (a click shows them in the checks), then throughput and what waits for its check once there is
             something to say */}
         <div className="vd-more">
-          <span className="vd-fi" title={!bonded ? "Out of the bonded list: not checked." : reach ? `${int(reach.num)} of ${int(reach.den)} handshakes completed with the registered endpoint over the period. Not signing uptime.${v.last_unreachable_at ? ` Last failed handshake ${utcWord(v.last_unreachable_at)}.` : ""}` : "No handshake yet."}>
+          <span className="vd-fi" title={!bonded ? "Out of the bonded set: not checked." : reach ? `${int(reach.num)} of ${int(reach.den)} handshakes with the registered endpoint completed in the period; not signing uptime.${v.last_unreachable_at ? ` Last failed ${utcWord(v.last_unreachable_at)}.` : ""}` : "No handshake yet."}>
             Reachability <b>{reach ? pctOf(reach.num, reach.den) : "—"}</b>{reach && <em>{int(reach.num)} / {int(reach.den)}</em>}
           </span>
-          <span className={"vd-fi" + (!notLive && broken > 0 ? " bad" : "")} title={`Endorsed shards whose own rows did not come back, at the reading and each time they were asked again. Before ${FULL_READ_SINCE_WORDS}: rows that did not come back from a blob that could not be reconstructed.`}>
+          <span className={"vd-fi" + (!notLive && broken > 0 ? " bad" : "")} title={`Endorsed shards whose own rows did not come back, even when asked again. Before ${FULL_READ_SINCE_WORDS}: only on an unavailable blob.`}>
             {notLive
               ? <>Not served <b>—</b></>
               : broken > 0
@@ -578,7 +576,7 @@ function Page() {
           {v.serve_bytes_per_second != null && <span className="vd-fi" title={`Median download speed over ${int(v.serve_throughput_sample)} shards of 2 MiB or more.`}>
             Throughput <b>{unit(`${bytes(v.serve_bytes_per_second)}/s`)}</b>
           </span>}
-          {!notLive && (data.in_retention_window ?? 0) > 0 && <span className="vd-fi" title={`Endorsed shards whose retention window has not ended. Each is read 10 minutes before its window ends: the result shows in the checks below at once, and enters the counts when the window closes.${notCountedText(o) ? ` Not counted in the period: ${notCountedText(o)}.` : ""}`}>
+          {!notLive && (data.in_retention_window ?? 0) > 0 && <span className="vd-fi" title={`Endorsed shards still in their retention window: read 10 minutes before it ends, counted once it closes.${notCountedText(o) ? ` Not counted in the period: ${notCountedText(o)}.` : ""}`}>
             Awaiting check <b>{int(data.in_retention_window)}</b>
           </span>}
         </div>
@@ -589,27 +587,27 @@ function Page() {
       <section className="vd-oc" id="chain" aria-labelledby="vd-chain">
         <h2 id="vd-chain" title="Read from the chain, nothing measured.">On chain</h2>
         <dl className="vd-oc-l">
-          <div title={endorse ? endorse.title : `No settlement assigned it rows. ${ENDORSE_TITLE}`}>
+          <div title={endorse ? endorse.title : "No settlement assigned it rows."}>
             <dt>Endorsements <span className="per">· {per}</span></dt>
             <dd className={endorse ? undefined : "na"}><b>{endorse ? pctOf(endorse.n, endorse.of) : "—"}</b>{endorse && <em>{int(endorse.n)} / {int(endorse.of)}</em>}</dd>
           </div>
-          {sig?.last_endorsed_at && <div title={`The newest settlement carrying this validator's endorsement: ${utcWord(sig.last_endorsed_at)}`}>
+          {sig?.last_endorsed_at && <div title={`Newest settlement with its endorsement: ${utcWord(sig.last_endorsed_at)}`}>
             <dt>Last endorsed</dt>
             <dd><b>{monthDayTime(sig.last_endorsed_at).slice(0, -3)}</b><em>UTC</em></dd>
           </div>}
-          <div title={`${load ? `${int(load.promises)} endorsed blobs in the period. ` : ""}Row data of the shards this validator stored and endorsed over the period's settled blobs: blob_size / 4096 per row, padding included. The row proofs stored beside them are not counted.`}>
+          <div title={`${load ? `${int(load.promises)} endorsed blobs in the period. ` : ""}Row data it stored and endorsed for the period's settled blobs, with padding, without row proofs.`}>
             <dt>Shard data <span className="per">· {per}</span></dt>
             <dd className={load && !notLive ? undefined : "na"}><b>{load && !notLive ? unit(bytes(load.bytes)) : "—"}</b></dd>
           </div>
-          {timeouts > 0 && <div title="Timeouts this validator reported: MsgPaymentPromiseTimeout submitted by its operator account in the period.">
+          {timeouts > 0 && <div title="Payment promise timeouts its operator account reported in the period.">
             <dt>Timeouts <span className="per">· {per}</span></dt>
             <dd><b>{int(timeouts)}</b></dd>
           </div>}
-          <div className="now" title="Shard data this validator must hold at this moment: endorsed blobs whose retention window has not ended.">
+          <div className="now" title="Shard data it must hold now: endorsed blobs still in their retention window.">
             <dt>Held now</dt>
             <dd className={load ? undefined : "na"}><b>{load ? unit(bytes(load.stored_bytes)) : "—"}</b></dd>
           </div>
-          <div title="Rows the assignment gives this validator on the newest settled blob, of every settled blob, by stake. Rows follow stake, not blob size.">
+          <div title="Rows it is assigned of each blob, by stake whatever the blob size; from the newest settled blob.">
             <dt>Rows per blob</dt>
             <dd className={load ? undefined : "na"}><b>{load ? int(load.rows_per_blob) : "—"}</b></dd>
           </div>
