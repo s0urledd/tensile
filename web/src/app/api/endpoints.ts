@@ -451,10 +451,25 @@ const EX_HEALTH = `{
       "name": "chain_liveness",
       "ok": true,
       "detail": "newest block 36s old (2026-10-04T14:29:05Z)"
+    },
+    {
+      "name": "day_partials",
+      "ok": true,
+      "detail": "no audit found a difference, and no day due has stayed unsealed for two days"
     }
   ],
   "pin_status": "matches",
-  "server_time": "2026-10-04T14:29:40.849080098Z"
+  "server_time": "2026-10-04T14:29:40.849080098Z",
+  "day_partials": {
+    "state": "on",
+    "origin": "loaded",
+    "sealed_row_days": 31,
+    "sealed_settlement_days": 30,
+    "ledger_built": true,
+    "last_audit_at": "2026-10-04T14:12:03.511243118Z",
+    "last_audit": "as the store holds them: row day 2026-09-17, settlement day 2026-09-17, ledger day 2026-09-17",
+    "rebuilds": 0
+  }
 }`;
 
 const EX_VALIDATOR_FEED = `<feed xmlns="http://www.w3.org/2005/Atom">
@@ -720,7 +735,7 @@ export const GROUPS: Group[] = [
         id: "health",
         path: "/v1/health",
         summary: "Tensile's status, ok, degraded or down, with each check behind it.",
-        desc: "The status is down when no process is alive and degraded when any check fails, such as a stopped process, the chain's newest block over 10 minutes old or less than 15% of the disk free.",
+        desc: "The status is down when no process is alive and degraded when any check fails, such as a stopped process, the chain's newest block over 10 minutes old or less than 15% of the disk free. `day_partials` is the per-day partials the 7d, 30d and all windows are summed from: `state` is on, off, loading or raw-fallback (an audit found them not what the store holds, and every window is read whole until the API restarts), with the days sealed, the oldest day due and not sealed, and the last hourly audit and what it found. Its check fails on raw-fallback, on an audit that found a sealed day not what the store holds, and on a day due and not sealed for over two days.",
         params: [],
         errors: "503 when the status is not ok, with the same body.",
         example: EX_HEALTH,
