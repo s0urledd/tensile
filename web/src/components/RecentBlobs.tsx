@@ -211,6 +211,36 @@ function liveAgo(t: string, now: number): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+/**
+ * The readout's heading, its state label and its age on one line at the largest of four sizes that fits
+ * (globals.css, .rb-read-h[data-fit]): tried from the largest down when the heading mounts, whenever its words change
+ * (the age ticks on its own, a pointed blob names itself, the label appears) and whenever the sheet's width does
+ */
+function useFitHead() {
+  const ref = useRef<HTMLHeadingElement>(null);
+  useLayoutEffect(() => {
+    const h = ref.current;
+    if (!h) return;
+    const fit = () => {
+      for (const f of ["0", "1", "2", "3"]) {
+        h.dataset.fit = f;
+        const kids = [...h.children], gap = parseFloat(getComputedStyle(h).columnGap) || 0;
+        const need = kids.reduce((a, k) => a + k.getBoundingClientRect().width, 0) + gap * Math.max(0, kids.length - 1);
+        if (need <= h.getBoundingClientRect().width + 0.5) return;
+      }
+    };
+    fit();
+    // the words, not the attribute this sets, so a fit never sets off another
+    const mo = new MutationObserver(fit);
+    mo.observe(h, { childList: true, characterData: true, subtree: true });
+    const ro = new ResizeObserver(fit);
+    if (h.parentElement) ro.observe(h.parentElement);
+    document.fonts?.ready.then(fit);
+    return () => { mo.disconnect(); ro.disconnect(); };
+  }, []);
+  return ref;
+}
+
 /** a blob's age on the observer's clock, every second while it is under a minute old, then every 15 s */
 function Age({ at, skew }: { at: string; skew: number }) {
   const [now, setNow] = useState(0);
@@ -290,6 +320,9 @@ export default function RecentBlobs() {
       };
     });
   }, [feed, hold]);
+
+  // ---- the readout's heading on one line, as large as it fits ----
+  const headRef = useFitHead();
 
   // ---- the move: every row's tape slides by the places that came in, once, together ----
   const gridRef = useRef<HTMLDivElement>(null);
@@ -405,7 +438,7 @@ export default function RecentBlobs() {
       </div>
 
       <div className="rb-read">
-        <h3 className={`rb-read-h${isLatest || !blob ? "" : " pick"}`}>
+        <h3 className="rb-read-h" ref={headRef}>
           <span className="ov-eyebrow">{isLatest || !blob ? "Latest blob" : `Blob · ${selAt === 0 ? "newest" : `${nth(selAt + 1)} newest`}`}</span>
           {st && <span className={`rb-st${st.tier === "kept" ? " ok" : st.tier === "hold" || st.tier === "fault" ? " bad" : ""}`} title={st.title}>{st.word}</span>}
           {blob && <Age at={blob.settlement_time} skew={skew} />}
