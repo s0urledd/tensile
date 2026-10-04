@@ -567,13 +567,23 @@ func (c *snapshotCache[T]) precompute(ctx context.Context, dir string, log logf)
 // warm computes every window once, in the background, one at a time.
 // Sequential on purpose: starting four at once against a cold page cache
 // makes each of them slower than running them in turn.
+//
+// A window a reader computed while the warm-up was busy with the ones before
+// it is newer than the warm-up and is left as it is: recomputed with the
+// window as of the warm-up's start, it replaced a snapshot ending later
+// with one ending earlier, and two answers read from the same cache a moment
+// apart (the publishers' table and the market board beside it) described
+// two moments. A window the warm-up does compute ends when the warm-up
+// reaches it. now is when the warm-up began; a snapshot older than it (one
+// loaded from disk) is recomputed.
 func (c *snapshotCache[T]) warm(log logf, now time.Time) {
 	c.bg.Add(1)
 	go func() {
 		defer c.bg.Done()
 		for _, name := range warmWindows {
 			c.mu.Lock()
-			busy := c.refreshing[name]
+			s := c.entries[name]
+			busy := c.refreshing[name] || (s != nil && !s.at.Before(now))
 			if !busy {
 				c.refreshing[name] = true
 			}
@@ -581,7 +591,7 @@ func (c *snapshotCache[T]) warm(log logf, now time.Time) {
 			if busy {
 				continue // a reader got there first
 			}
-			c.background(log, windowFor(name, now))
+			c.background(log, windowFor(name, time.Now()))
 		}
 	}()
 }
