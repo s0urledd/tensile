@@ -84,6 +84,14 @@ func TestDayPartsUnderConcurrency(t *testing.T) {
 		}(i)
 	}
 	for at := s.t0.Add(time.Hour); at.Before(wall); at = at.Add(4 * time.Hour) {
+		// the collector's fast tick between two passes, beside the readers
+		// and the sealer too
+		if fast := at.Add(-2 * time.Hour); fast.After(s.now) {
+			s.advance(fast)
+			clock.Store(fast.UnixNano())
+			s.fastTick()
+			time.Sleep(10 * time.Millisecond)
+		}
 		s.advance(at)
 		clock.Store(at.UnixNano())
 		s.pass()

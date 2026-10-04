@@ -245,4 +245,5 @@ func TestTheAPIJudgesAFullReadingOnEachEndorsersAnswers(t *testing.T) {
 			t.Errorf("%s: %+v, want %+v", v.Address, g, w)
 		}
 	}
+	partsAfter(t, st, "test", time.Time{})
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/collect"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/correct"
+	"github.com/plsgiveup/fibre/fibre-sentinel/observer/ingest"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/rollup"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
@@ -35,7 +36,8 @@ import (
 // corrections that fail part way, amendments, a collapse of rows written
 // on two days, the rollup, the prune of a database an older build pruned
 // (pruneLikeBefore), a second vantage with a tie, odd times, rows that start
-// long before their settlement.
+// long before their settlement, full readings whose later attempts land on
+// the next day, and blobs stored by the fast tick between passes.
 
 // simConfig sizes a simulation.
 type simConfig struct {
@@ -115,6 +117,9 @@ type sim struct {
 	// a day was sealed empty while the collector was down.
 	saved      bool
 	sealedDark bool
+	// fastStored counts the publications the fast tick stored between
+	// passes (fastTick).
+	fastStored int64
 	// the collector's side
 	st         *store.Store
 	coll       *collect.Collector
@@ -298,6 +303,11 @@ func (s *sim) plan() {
 		}
 		// one settling at 23:30, whose reading is after midnight
 		times = append(times, day.Add(23*time.Hour+30*time.Minute))
+		if !day.Add(24 * time.Hour).Before(s.scen.fullFrom) {
+			// once readings are full, one read at about 23:58:30, whose
+			// later attempts start after midnight (readFull)
+			times = append(times, day.Add(20*time.Hour+8*time.Minute+50*time.Second))
+		}
 		sort.Slice(times, func(i, j int) bool { return times[i].Before(times[j]) })
 		for _, at := range times {
 			s.addPublication(n, at)
@@ -492,12 +502,30 @@ func (s *sim) addPublication(i int, at time.Time) {
 			started = pt.At.Add(time.Second)
 		}
 		defer1 := sameDay(at, s.scen.deferDay) && (s.rng.IntN(6) == 0 || !s.forced["defer"])
-		for k, m := range s.read(sp, pt, simVantage, started) {
-			if defer1 && k == 0 && m.Download.CommitmentVerified {
-				m = s.deferred(m)
-				s.forced["defer"] = true
+		if !at.Before(s.scen.fullFrom) {
+			// A full reading. Now and then its later attempts land late, as
+			// the prober's file does when a pull stalls: until they do, the
+			// answer before each says an attempt is owed, and its validator
+			// counts neither way.
+			late := s.rng.IntN(8) == 0 || !s.forced["late attempt"]
+			for k, row := range s.readFull(sp, pt, started) {
+				for _, m := range row {
+					when := m.StartedAt.Add(2 * time.Second)
+					if k > 0 && late {
+						when = m.StartedAt.Add(30 * time.Hour)
+						s.forced["late attempt"] = true
+					}
+					s.emit(when, "measurements.jsonl", m)
+				}
 			}
-			s.emit(m.StartedAt.Add(2*time.Second), "measurements.jsonl", m)
+		} else {
+			for k, m := range s.read(sp, pt, simVantage, started) {
+				if defer1 && k == 0 && m.Download.CommitmentVerified {
+					m = s.deferred(m)
+					s.forced["defer"] = true
+				}
+				s.emit(m.StartedAt.Add(2*time.Second), "measurements.jsonl", m)
+			}
 		}
 		if tie {
 			// a second vantage reads the same blob at the very same instant,
@@ -657,6 +685,95 @@ func (s *sim) read(sp *simPub, pt probe.SchedulePoint, vantage string, started t
 	return out
 }
 
+// readFull is a full reading as the prober has made them since 2026-10-02
+// (probe.FullReadLabel): every endorsing validator asked for its own rows,
+// whatever the rows already held, and one whose answer did not serve asked
+// again RetrySpacing (90 s) after it, up to probe.FullReadRetries more times
+// while the attempt can start before must_serve_until less the request start
+// margin (a minute); the answer before an attempt says when it is due
+// (NextAttemptDue). It returns the answers attempt by attempt.
+func (s *sim) readFull(sp *simPub, pt probe.SchedulePoint, started time.Time) [][]probe.Measurement {
+	cutoff := sp.pub.MustServeUntil.Add(-time.Minute)
+	next := map[string]time.Time{}
+	var asked []simVal
+	for i, v := range s.vals {
+		if s.endorses(sp, v) {
+			asked = append(asked, v)
+			next[v.addr] = started.Add(time.Duration(i) * time.Millisecond)
+		}
+	}
+	var out [][]probe.Measurement
+	for attempt := 0; attempt <= probe.FullReadRetries && len(asked) > 0; attempt++ {
+		var row []probe.Measurement
+		var again []simVal
+		for _, v := range asked {
+			m := s.fullAnswer(sp, v, pt, next[v.addr], attempt)
+			served := m.Download.CommitmentVerified && (m.Outcome == probe.OutcomeServedOK || m.Classification == probe.ClassShadowedShard)
+			if due := m.FinishedAt.Add(90 * time.Second); !served && attempt < probe.FullReadRetries && due.Before(cutoff) {
+				m.NextAttemptDue = &due
+				next[v.addr] = due
+				again = append(again, v)
+			}
+			row = append(row, m)
+		}
+		out = append(out, row)
+		asked = again
+	}
+	return out
+}
+
+// fullAnswer is one validator's answer at attempt of a full reading: what
+// its behaviour gives, and now and then a short answer of genuine rows,
+// either all its own (counted not served at a full reading) or not (this
+// observer's gap: rows no settled promise explains).
+func (s *sim) fullAnswer(sp *simPub, v simVal, pt probe.SchedulePoint, started time.Time, attempt int) probe.Measurement {
+	a := s.assignment(sp, v.addr)
+	m := s.base(sp, v, pt, simVantage, started)
+	m.ScheduleLabel, m.Attempt = probe.FullReadLabel, attempt
+	m.DNS = probe.StepResult{Attempted: true, OK: true, DurationMS: 2}
+	m.TCP = probe.StepResult{Attempted: true, OK: true, DurationMS: int64(5 + s.rng.IntN(30))}
+	m.TLS = probe.TLSResult{Attempted: true, OK: true, DurationMS: int64(10 + s.rng.IntN(30)), Version: "1.3"}
+	m.Identity = probe.IdentityResult{Attempted: true, OK: true}
+	verified, subset := false, false
+	switch r := s.rng.IntN(30); {
+	case v.beh == "nohost":
+		m.ValidatorHost, m.Outcome = "", probe.OutcomeNoHost
+		m.DNS, m.TCP, m.TLS, m.Identity = probe.StepResult{}, probe.StepResult{}, probe.TLSResult{}, probe.IdentityResult{}
+	case v.beh == "unreachable":
+		m.TCP = probe.StepResult{Attempted: true, OK: false, DurationMS: 5000, Error: "dial tcp: i/o timeout"}
+		m.TLS, m.Identity = probe.TLSResult{}, probe.IdentityResult{}
+		m.Outcome = probe.OutcomeTCPTimeout
+	case sp.lost || v.beh == "prunes":
+		m.Download = probe.DownloadResult{Attempted: true, DurationMS: int64(5 + s.rng.IntN(20)), RPCCode: "NotFound"}
+		m.Outcome = probe.OutcomeNotFound
+	case v.beh == "throttles" && s.rng.IntN(2) == 0:
+		m.Download = probe.DownloadResult{Attempted: true, DurationMS: 8, RPCCode: "ResourceExhausted"}
+		m.Outcome = probe.OutcomeThrottled
+	case v.beh == "flaky" && s.rng.IntN(3) == 0:
+		m.Download = probe.DownloadResult{Attempted: true, DurationMS: 30, RPCCode: "Internal"}
+		m.Outcome = probe.OutcomeServerError
+	case r < 2:
+		// fewer of its own rows than it holds, or rows that are not its own
+		verified, subset = true, r == 0
+		m.Download = probe.DownloadResult{Attempted: true, OK: true, DurationMS: int64(20 + s.rng.IntN(300)),
+			RowsReturned: a.RowCount / 2, RowsExpected: a.RowCount, CommitmentVerified: true, RowsSubsetOfAssignment: subset}
+		m.Outcome = probe.OutcomePartial
+	default:
+		verified = true
+		m.Download = probe.DownloadResult{Attempted: true, OK: true, DurationMS: int64(20 + s.rng.IntN(900)),
+			RowsReturned: a.RowCount, RowsExpected: a.RowCount, CommitmentVerified: true, AssignmentVerified: true,
+			RowIndices: make([]uint32, a.RowCount), RowsSubsetOfAssignment: true,
+			BytesReturned: int64(a.RowCount) * int64(sp.pub.Promise.BlobSize/uint32(sp.pub.Assignment.ProtocolParams.OriginalRows)+1)}
+		m.Outcome = probe.OutcomeServedOK
+	}
+	cls, reason := probe.Classify(probe.Evidence{Assigned: true, Attested: a.Attested, AttestationUnknown: !sp.pub.HasAttestation(),
+		Phase: m.Phase, Outcome: m.Outcome, CommitmentVerified: verified, RowsSubsetOfOwn: subset})
+	m.Classification, m.ClassificationReason = cls, reason
+	m.TotalDurationMS = m.DNS.DurationMS + m.TCP.DurationMS + m.TLS.DurationMS + m.Download.DurationMS + 1
+	m.FinishedAt = m.StartedAt.Add(time.Duration(m.TotalDurationMS) * time.Millisecond)
+	return m
+}
+
 func (s *sim) heartbeat(v simVal, vantage string, at time.Time) probe.Measurement {
 	m := probe.Measurement{SchemaVersion: probe.MeasurementSchemaVersion, Vantage: vantage, ValidatorAddress: v.addr, ValidatorHost: v.host,
 		ScheduledAt: at, StartedAt: at, FinishedAt: at.Add(40 * time.Millisecond)}
@@ -743,6 +860,28 @@ func (s *sim) pass() {
 		s.t.Logf("pass at %s: %v", s.now.Format(time.RFC3339), errs)
 	}
 	s.pruneLikeBefore()
+}
+
+// fastTick is what observer-collector's fast tick (cmd/observer-collector,
+// fast.go) writes between passes, at the clock: state.json, then
+// publications.jsonl, then payments.jsonl, each tailed into the store from
+// its cursor as the pass tails it, and nothing else. A publication stored
+// here reaches the store before the measurements, ranges, corrections and
+// hold sync of the pass that follows, and the API may compute in between.
+func (s *sim) fastTick() {
+	s.t.Helper()
+	paths := collect.DefaultPaths(s.dir)
+	if err := ingest.State(s.st, paths.State, s.now); err != nil {
+		s.t.Logf("fast tick at %s: state: %v", s.now.Format(time.RFC3339), err)
+	}
+	r, err := ingest.Publications(s.st, paths.Publications, s.now)
+	if err != nil {
+		s.t.Fatalf("fast tick at %s: publications: %v", s.now.Format(time.RFC3339), err)
+	}
+	s.fastStored += r.Inserted
+	if _, err := ingest.Payments(s.st, paths.Payments, s.now); err != nil {
+		s.t.Fatalf("fast tick at %s: payments: %v", s.now.Format(time.RFC3339), err)
+	}
 }
 
 // makeSampled turns a planned publication into one drawn out of the
@@ -837,6 +976,9 @@ type simScen struct {
 	// tieFrom is where the second vantage's readings begin to tie with this
 	// one's: a settlement day with a tie is read raw, never sealed.
 	tieFrom time.Time
+	// fullFrom is where full readings begin (readFull): before it a blob's
+	// reading stops once its rows reconstruct it, as before 2026-10-02.
+	fullFrom time.Time
 }
 
 func (s *sim) planScenarios() {
@@ -862,6 +1004,7 @@ func (s *sim) planScenarios() {
 	r = func(lo, hi float64) float64 { return lo + (hi-lo)*later.Float64() }
 	sc.reapplyAt = day(7, r(0, 12))
 	sc.dark = [2]time.Time{day(0, r(18, 22)), day(2, r(6, 9))}
+	sc.fullFrom = day(s.cfg.days/2, r(0, 12))
 }
 
 // inOutage reports whether a reading at t falls in the prober's outage.

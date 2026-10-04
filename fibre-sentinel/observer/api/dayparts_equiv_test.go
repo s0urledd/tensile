@@ -323,13 +323,27 @@ func equivRun(t *testing.T, cfg simConfig, sample int, restart bool, step [2]int
 		// between the statements of the prune, each its own commit
 		tally.add(s.compare(srv, rng, 2, "prune "+step+" "+day))
 	}
+	// The fast tick's moments draw from an order of their own, so the passes
+	// and the pins fall where they did before it existed.
+	frng := rand.New(rand.NewPCG(cfg.seed, 0xfa57))
 	end := s.t0.Add(time.Duration(cfg.days)*24*time.Hour + 8*time.Hour)
 	sc := s.scen
 	amended, failed, weird, reapplied := false, false, false, false
 	ctx := context.Background()
+	prev := s.now
 	for at := s.t0.Add(time.Hour); !at.After(end); at = at.Add(time.Duration(step[0]+rng.IntN(step[1]-step[0])) * time.Minute) {
+		down := func(t time.Time) bool { return !t.Before(sc.backlog[0]) && t.Before(sc.backlog[1]) }
+		// Between two passes the collector's fast tick stores what the
+		// scanner wrote since (state.json, publications, payments), and the
+		// API computes before the pass brings in the rest.
+		if fast := prev.Add(time.Duration(float64(at.Sub(prev)) * (0.2 + 0.7*frng.Float64()))); fast.After(prev) && !down(fast) {
+			s.advance(fast)
+			s.fastTick()
+			tally.add(s.compare(srv, frng, 3, "fast tick"))
+		}
+		prev = at
 		s.advance(at)
-		if !at.Before(sc.backlog[0]) && at.Before(sc.backlog[1]) {
+		if down(at) {
 			continue // the collector is down
 		}
 		if !amended && !at.Before(sc.amendAt) {
@@ -428,6 +442,9 @@ func (s *sim) checkScenarios(srv *Server) {
 	}
 	if !s.sealedDark {
 		s.t.Errorf("no day was sealed without a reading while the prober's lines were held back")
+	}
+	if s.fastStored == 0 {
+		s.t.Errorf("the fast tick never stored a publication between passes")
 	}
 	e := srv.parts.cur
 	sealed := 0
@@ -528,11 +545,23 @@ var simWitnesses = []struct {
 	{"a row start of the right shape that is no time", `SELECT COUNT(*) FROM probes WHERE started_at GLOB '*:60.*'`},
 	{"a publication recorded after its deadline", `SELECT COUNT(*) FROM publications WHERE recorded_at > must_serve_until`},
 	{"original_rows not a power of two", `SELECT COUNT(*) FROM publications WHERE json_extract(raw_json, '$.assignment.protocol_params.original_rows') = 4000`},
+	// full readings: a later attempt moves how the validator's answers
+	// before it count, which are of the same promise
+	{"a full reading's later attempt", `SELECT COUNT(*) FROM probes WHERE schedule_label = 'full' AND dedupe_key GLOB '*|[12]'`},
+	{"a full reading's attempt started the day after its reading", `SELECT COUNT(*) FROM probes a JOIN probes b
+		ON b.promise_hash = a.promise_hash AND b.scheduled_at = a.scheduled_at AND b.validator_address = a.validator_address AND b.vantage = a.vantage
+		WHERE a.schedule_label = 'full' AND b.schedule_label = 'full' AND substr(b.started_at, 1, 10) > substr(a.started_at, 1, 10)`},
+	{"a full reading's attempt owed and not on record", `SELECT COUNT(*) FROM probes a WHERE a.next_attempt_due IS NOT NULL
+		AND NOT EXISTS (SELECT 1 FROM probes b WHERE b.promise_hash = a.promise_hash AND b.scheduled_at = a.scheduled_at
+			AND b.validator_address = a.validator_address AND b.vantage = a.vantage AND b.started_at > a.started_at)`},
+	{"a short answer of the validator's own rows", `SELECT COUNT(*) FROM probes WHERE schedule_label = 'full' AND outcome = 'PARTIAL' AND rows_subset_of_assignment = 1`},
+	{"a short answer of rows not the validator's own", `SELECT COUNT(*) FROM probes WHERE schedule_label = 'full' AND outcome = 'PARTIAL' AND rows_subset_of_assignment = 0`},
 }
 
 // TestDayPartsEquivalence runs the harness over many seeds: every figure
 // from the partials equal, byte for byte, to the shipped statements', after
-// every pass and between the statements of every prune (pruneLikeBefore).
+// every pass, after the fast tick between two passes, and between the
+// statements of every prune (pruneLikeBefore).
 // TENSILE_DAYPARTS_FULL runs every case at every pass at the design's
 // scale (200 publications a day); TENSILE_DAYPARTS_SEEDS sets the seeds.
 func TestDayPartsEquivalence(t *testing.T) {

@@ -36,7 +36,10 @@ const notRead = "not read by any partial"
 var writeCensus = map[string]writeMechanism{
 	// the rows the row days sum, and the obligations and readable counts of
 	// the settlement days
-	"INSERT probes": {"probes past the mark: the row's day, its promise's settlement day (span widened)", "a restarted prober's row"},
+	// A later attempt of a full reading moves how its validator's answers
+	// before it at that reading count (rollup.CountedClass reads them), and
+	// those are rows of the same promise, so of the same settlement day.
+	"INSERT probes": {"probes past the mark: the row's day, its promise's settlement day (span widened), which holds every answer a full reading's later attempt moves", "a restarted prober's row"},
 	"UPDATE probes SET amended_at,classification,classification_at_probe,classification_reason,shadowed_by":                                                       {"probe_amendments past the mark (written in the same transaction)", "an amendment"},
 	"UPDATE probes SET classification,classification_at_probe,classification_reason,corrected_at,must_serve_until,must_serve_until_at_probe,phase,phase_at_probe": {"probe_corrections past the mark (written in the same transaction); applied again under its range, which adds no line: every row a correction wrote, fingerprinted every catch-up", "a row correction applied again under its range"},
 	"UPDATE probes SET retention_unverified": {"an aggregate of the held rows every catch-up, per promise once it moves", "a held publication"},
@@ -54,7 +57,10 @@ var writeCensus = map[string]writeMechanism{
 	"INSERT probe_amendments":                        {"probe_amendments past the mark: the row's day and settlement day", "an amendment"},
 	"INSERT probe_corrections":                       {"probe_corrections past the mark: the row's day and settlement day", "a probe verdict corrected"},
 	// the ledger, and the settlement days' latest deadlines
-	"INSERT publications":                          {"publications past the mark: the ledger, the settlement day's span from its rows, its points' row days", "a publication recorded after its deadline"},
+	// Stored by the pass, or between passes by the fast tick
+	// (cmd/observer-collector, fast.go), which tails state.json, the
+	// publications and the payments only: either way past the mark.
+	"INSERT publications":                          {"publications past the mark, by the pass or the fast tick: the ledger, the settlement day's span from its rows, its points' row days", "a publication recorded after its deadline"},
 	"INSERT assignments":                           {"written with its publication in one transaction: folded with it", "a publication recorded after its deadline"},
 	"UPDATE publications SET retention_unverified": {"an aggregate of the held publications every catch-up, the set once it moves", "a held publication"},
 	"UPDATE publications SET corrected_at,must_serve_until,must_serve_until_at_scan,must_serve_until_basis,must_serve_until_basis_at_scan": {"publication_corrections past the mark: the day's latest deadline read again; applied again under its range, which adds no line: the corrected publications fingerprinted", "a publication correction applied again under its range"},
@@ -64,7 +70,8 @@ var writeCensus = map[string]writeMechanism{
 	"UPSERT param_uncertainty SET heights_read,holds,raw_json,resolution,resolve_error,resolve_method,resolved_at": {"the same", "a range corrected"},
 	"UPDATE param_uncertainty SET corrected_at,holds":                                                              {"the holds it lifts, diffed", "a range corrected"},
 	// meta: raw_from is read by every catch-up (a database pruned before
-	// 2026-10-04 carries it); nothing else a partial reads
+	// 2026-10-04 carries it); nothing else a partial reads. The fast tick
+	// writes the scanner's checkpoint keys between passes.
 	"UPSERT meta SET updated_at,value": {"raw_from, read by every catch-up; no other key is read by a partial", "a prune"},
 	"INSERT meta":                      {"the same", "a prune"},
 	// the daily rollup: read raw beside the partials (rolledFor), unchanged

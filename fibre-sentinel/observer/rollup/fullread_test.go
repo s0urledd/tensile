@@ -259,6 +259,7 @@ func TestTheSQLAndTheGoTwinCountFullReadingsTheSame(t *testing.T) {
 			t.Errorf("%s: %s, want %s", blob, got.Status, want)
 		}
 	}
+	partsAfter(t, r.st)
 }
 
 // The obligations the day's rollup draws from full readings agree with the
@@ -439,4 +440,5 @@ func TestTheSQLAndTheGoTwinCountEveryFullReadingCellTheSame(t *testing.T) {
 				c.label, c.cls, c.out, c.held, c.verified, c.attested, c.phase, c.subset, c.owed, got[c.key], want)
 		}
 	}
+	partsAfter(t, st)
 }

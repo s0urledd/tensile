@@ -24,15 +24,18 @@ import (
 // transaction, before it reads anything else, and drops what the answer
 // touches. Every write path, how it is found and what it drops:
 //
-//	InsertProbe (late readings, backlogs,     probes past the mark      its row day; its promise's settlement
-//	  a restarted prober's NOT_PROBED rows)                             day (span widened, seal dropped)
+//	InsertProbe (late readings, backlogs,      probes past the mark      its row day; its promise's settlement
+//	  a restarted prober's NOT_PROBED rows,                              day (span widened, seal dropped)
+//	  a full reading's later attempt, which
+//	  moves how the answers before it count:
+//	  the same promise)
 //	InsertSampledOut, the collapse's           sampling_decision_points  the points' row days; the settlement
 //	  decisions and points                     and _decisions past the   day; the sealed row days whose
 //	                                           marks                     collapsible promises it names
 //	the collapse's DELETE                      its new decision          the same
 //	UpsertPublication with its assignments     publications past the     the ledger adds it; its settlement day
-//	                                           mark                      (span from its rows, seal dropped); the
-//	                                                                     row days of its decision points
+//	  (in the pass, or between passes by the   mark                      (span from its rows, seal dropped); the
+//	  collector's fast tick)                                             row days of its decision points
 //	ApplyAmendment                             probe_amendments past     the row's row day and settlement day
 //	                                           the mark
 //	ApplyProbeCorrection                       probe_corrections past    the same, the deadline widened
