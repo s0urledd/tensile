@@ -8,7 +8,9 @@
 //
 // Every RPC call is timeout-bounded. Follow mode gives up (non-zero exit, with a
 // dump of the last log lines) if the chain stops producing blocks — it never
-// hangs.
+// hangs. It reads a new block as soon as the node announces its header on the
+// RPC websocket (-subscribe), with the tip poll behind it as the safety net,
+// every -subscribed-poll, and every -poll while the subscription is down.
 package main
 
 import (
@@ -30,7 +32,9 @@ func main() {
 		maxHeight   = flag.Int64("max-height", 0, "stop after this height (0 = run to tip)")
 		follow      = flag.Bool("follow", false, "keep scanning new blocks after reaching the tip")
 		followTO    = flag.Duration("follow-timeout", 0, "in follow mode, fail if no new block within this (0 = never; a halted chain is warned about every 5 minutes)")
-		pollEvery   = flag.Duration("poll", 2*time.Second, "follow-mode tip poll interval")
+		pollEvery   = flag.Duration("poll", 2*time.Second, "follow-mode tip poll interval; with -subscribe, while the block subscription is down")
+		subscribe   = flag.Bool("subscribe", true, "in follow mode, subscribe to the node's new block headers on its RPC websocket (/websocket, tm.event='NewBlockHeader') and read each new block as soon as it is announced; the tip poll keeps running behind it (false = poll only)")
+		subPoll     = flag.Duration("subscribed-poll", 5*time.Second, "follow-mode tip poll interval while the block subscription is up: the safety net for an announcement the node did not deliver (never shorter than -poll)")
 		rpcTO       = flag.Duration("rpc-timeout", 15*time.Second, "per-RPC-call timeout")
 		deadline    = flag.Duration("deadline", 0, "whole-run wall-clock cap (0 = none)")
 		includeFail = flag.Bool("include-failed", false, "also record MsgPayForFibre txs that failed on chain")
@@ -70,6 +74,8 @@ func main() {
 		Follow:          *follow,
 		FollowTimeout:   *followTO,
 		PollInterval:    *pollEvery,
+		Subscribe:       *subscribe,
+		SubscribedPoll:  *subPoll,
 		RPCTimeout:      *rpcTO,
 		Deadline:        *deadline,
 		IncludeFailed:   *includeFail,

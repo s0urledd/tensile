@@ -34,7 +34,15 @@ type Config struct {
 	// Follow keeps polling for new blocks after the tip is reached.
 	Follow        bool
 	FollowTimeout time.Duration // give up (fatal) if no new block within this; 0 = never, warn instead
-	PollInterval  time.Duration // gap between tip polls
+	PollInterval  time.Duration // gap between tip polls (while the block subscription is down, with Subscribe)
+
+	// Subscribe, in follow mode, keeps a subscription to the node's new block
+	// headers on its RPC websocket and reads each new height as soon as its
+	// header is announced (heads.go). The tip poll keeps running behind it,
+	// every SubscribedPoll while the subscription is up and every
+	// PollInterval while it is down.
+	Subscribe      bool
+	SubscribedPoll time.Duration
 
 	RPCTimeout time.Duration // per-RPC-call timeout
 	Deadline   time.Duration // whole-run wall-clock cap (0 = none)
@@ -66,6 +74,9 @@ type Scanner struct {
 	store  *Store
 	status *status.Writer
 	gaps   []ScanGap
+	// heads is the block subscription in follow mode, nil without one
+	// (Subscribe off, or an RPC address with no websocket).
+	heads *heads
 
 	params      *ParamHistory
 	chainID     string
@@ -123,6 +134,13 @@ func New(cfg Config, log *Logger) (*Scanner, error) {
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = 2 * time.Second
 	}
+	// the safety poll is the slower one: never faster than the poll it backs off from
+	if cfg.SubscribedPoll <= 0 {
+		cfg.SubscribedPoll = 5 * time.Second
+	}
+	if cfg.SubscribedPoll < cfg.PollInterval {
+		cfg.SubscribedPoll = cfg.PollInterval
+	}
 	if cfg.CheckpointEvery <= 0 {
 		cfg.CheckpointEvery = 20
 	}
@@ -179,6 +197,14 @@ func (s *Scanner) Run(parent context.Context) error {
 	}
 	s.chainID = chainID
 	s.log.Printf("connected: chain_id=%s tip=%d rpc=%s", chainID, tip, s.cfg.RPCURL)
+
+	// The block subscription starts before the catch-up, so it is up by the
+	// time the scan reaches the tip. It ends with Run.
+	if s.cfg.Follow && s.cfg.Subscribe {
+		if stop := s.startHeads(ctx); stop != nil {
+			defer stop()
+		}
+	}
 
 	next, err := s.resume(ctx, tip)
 	if err != nil {
@@ -427,11 +453,38 @@ func (s *Scanner) noteGap(h int64, reason, lastErr string, blockTime time.Time, 
 	}
 }
 
+// startHeads starts the block subscription (heads.go) for this run and
+// returns what stops it, or nil when there is none: an RPC address with no
+// websocket counterpart follows by polling alone, and says so once.
+func (s *Scanner) startHeads(ctx context.Context) (stop func()) {
+	h, err := newHeads(s.cfg.RPCURL, s.cfg.RPCTimeout, s.cfg.PollInterval, s.cfg.SubscribedPoll, s.log)
+	if err != nil {
+		s.log.Printf("WARNING: block subscription off (%v): following by polling the tip every %s", err, s.cfg.PollInterval)
+		return nil
+	}
+	s.heads = h
+	hctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.run(hctx)
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
 // waitForHeight polls Status until the tip reaches want, or FollowTimeout
 // elapses (fatal). With FollowTimeout 0 it waits forever and logs a warning
 // every five minutes: a halted chain (upgrade, outage) is the node's problem,
 // and the observer should be there when blocks resume. Returns the observed
 // tip (>= want). Transient RPC errors are retried, not fatal.
+//
+// With the block subscription, a header the node announces cuts the wait
+// between two polls short: the next poll is made at once (pause). The tip it
+// returns is still the one /status gives, and the caller reads up to it from
+// its own cursor, so an announcement never decides which heights are read.
 func (s *Scanner) waitForHeight(ctx context.Context, want int64) (int64, error) {
 	start := time.Now()
 	var deadline time.Time
@@ -466,10 +519,42 @@ func (s *Scanner) waitForHeight(ctx context.Context, want int64) (int64, error) 
 			s.log.Printf("WARNING: no new block for %s (tip %d, waiting for %d); still following", time.Since(start).Round(time.Second), tip, want)
 			nextWarn = time.Now().Add(5 * time.Minute)
 		}
+		if s.heads != nil {
+			s.heads.check(tip)
+		}
+		if err := s.pause(ctx, want); err != nil {
+			return 0, err
+		}
+	}
+}
+
+// pause waits until the next tip poll is due: PollInterval, or with the block
+// subscription up, the slower SubscribedPoll, cut short by an announcement of
+// want or a later height, or by the subscription going down. An announcement
+// of a height already read is dropped and the wait goes on. A height the
+// node announced that /status did not show yet (an RPC address that spreads
+// requests over several nodes) is polled for at PollInterval until it does.
+func (s *Scanner) pause(ctx context.Context, want int64) error {
+	every := s.cfg.PollInterval
+	var wake <-chan int64
+	if s.heads != nil {
+		wake = s.heads.wake
+		if s.heads.Up() && s.heads.Announced() < want {
+			every = s.cfg.SubscribedPoll
+		}
+	}
+	t := time.NewTimer(every)
+	defer t.Stop()
+	for {
 		select {
 		case <-ctx.Done():
-			return 0, ctx.Err()
-		case <-time.After(s.cfg.PollInterval):
+			return ctx.Err()
+		case <-t.C:
+			return nil
+		case h := <-wake:
+			if h == 0 || h >= want {
+				return nil
+			}
 		}
 	}
 }

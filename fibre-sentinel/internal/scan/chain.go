@@ -27,7 +27,9 @@ import (
 
 // Chain is a thin, timeout-bounded wrapper over a single CometBFT RPC endpoint.
 // Every call takes a fresh child context with Timeout; nothing here can block
-// forever. The scanner only reads — no subscriptions, no websockets.
+// forever. Chain only reads, request by request; the scanner's one
+// subscription, to new block headers in follow mode, is heads.go's, and it
+// only wakes the follow loop.
 type Chain struct {
 	rpc     *rpchttp.HTTP
 	timeout time.Duration

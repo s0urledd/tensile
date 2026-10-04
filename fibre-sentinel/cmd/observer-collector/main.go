@@ -41,6 +41,7 @@ func main() {
 		vantage   = flag.String("vantage", "local", "vantage name recorded on this run")
 		interval  = flag.Duration("interval", 10*time.Second, "how often to tail the files")
 		fastEvery = flag.Duration("fast-every", time.Second, "how often, between those passes, to read only state.json, publications.jsonl and payments.jsonl, so a new blob is served within about this long of the scanner writing it; nothing is opened while they have not changed (0 = only in the full pass)")
+		fastWatch = flag.Bool("fast-watch", true, "also run that read as soon as one of those files changes, from the kernel's file events on their directory (a burst of writes is one read, at most 100 ms after its first); the -fast-every timer stays as the fallback")
 		epEvery   = flag.Duration("endpoints-every", 60*time.Second, "how often to poll AllBondedFibreProviders (0 = never)")
 		escEvery  = flag.Duration("escrow-every", 5*time.Minute, "how often to read every known publisher's escrow balance (one state query each; 0 = never)")
 		rpcTO     = flag.Duration("rpc-timeout", 15*time.Second, "per-RPC-call timeout")
@@ -724,14 +725,29 @@ func main() {
 	// beside a pass: one that falls due while a pass runs waits for it, and
 	// then reads only what came in after the pass read the files. A nil
 	// channel is never ready, so -fast-every 0 leaves the pass alone, as
-	// before.
+	// before. The file watch (watch.go) only says when a tick is due sooner
+	// than its timer: the tick still runs here, and the timer keeps running
+	// beside it, so a watch that cannot start, or is lost, costs what the
+	// timer costs.
 	var fastC <-chan time.Time
+	var wakeC <-chan struct{}
 	fast := newFastTick(st, *statePath, *pubsPath, *payPath, log.Printf, live.Error)
 	if *fastEvery > 0 {
 		ft := time.NewTicker(*fastEvery)
 		defer ft.Stop()
 		fastC = ft.C
-		log.Printf("fast tick: state.json, publications and payments every %s between passes", *fastEvery)
+		watching := ""
+		if *fastWatch {
+			fw, err := watchFiles([]string{*statePath, *pubsPath, *payPath}, watchQuiet, watchMaxWait, log.Printf)
+			if err != nil {
+				log.Printf("WARNING: fast tick: cannot watch the files (%v): reading them on the timer alone", err)
+			} else {
+				defer fw.Close()
+				wakeC = fw.C
+				watching = fmt.Sprintf(", and within %s of a change to one of them (watching %s)", watchMaxWait, strings.Join(fw.Dirs(), ", "))
+			}
+		}
+		log.Printf("fast tick: state.json, publications and payments every %s between passes%s", *fastEvery, watching)
 	}
 	lastEP, lastAV := time.Now(), time.Now()
 	for {
@@ -742,6 +758,8 @@ func main() {
 			live.Stop("signal")
 			return
 		case <-fastC:
+			fast.run(time.Now())
+		case <-wakeC:
 			fast.run(time.Now())
 		case <-tick.C:
 			poll := *epEvery > 0 && time.Since(lastEP) >= *epEvery
