@@ -2,8 +2,9 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { API_BASE, useApi, type Blob, type Tip, int, pctOf, bytes, whenUTC, utcWord, TIP_MS } from "@/lib/api";
+import { API_BASE, useApi, type Blob, type Publisher, type Tip, int, pctOf, bytes, whenUTC, utcWord, TIP_MS } from "@/lib/api";
 import RollNumber, { reducedMotion } from "@/components/RollNumber";
+import { lane } from "@/lib/status";
 
 /**
  * The overview's recent blobs: the newest settlements as a grid of squares,
@@ -18,6 +19,15 @@ import RollNumber, { reducedMotion } from "@/components/RollNumber";
  * five slide together in one 420 ms move per read, the places that leave a
  * row's right end entering the next row's left. The newest is ringed and
  * whatever arrived with it glows for 1.4 s; nothing else moves.
+ *
+ * The readout names its blob's state as Tensile has it, in a small label
+ * between its heading and its age: in its retention window until Tensile
+ * reads it near the end, then available or unavailable, or not read.
+ *
+ * Under the grid, beside the settlements on record, the share of the blobs
+ * Tensile has read that were available: every blob over the whole record,
+ * summed from each publisher's readings. A blob Tensile did not read counts
+ * neither way, as everywhere else.
  *
  * Settled blobs share one tone; the newest and the arrivals are lit with the
  * accent, as is the square under the pointer or focus. While the pointer or
@@ -311,7 +321,18 @@ export default function RecentBlobs() {
   const blob = selAt >= 0 ? cells[selAt].b : latest;
   const isLatest = !!blob && blob.promise_hash === latest?.promise_hash;
   // the endorsed voting power over the set's total at the promise height: the figure and its bar
+  // the blob's state as the Blobs list words it: in its retention window, then what Tensile's reading found
+  const st = blob ? lane(blob) : null;
   const vp = blob?.attested_voting_power != null && blob.total_voting_power ? { n: blob.attested_voting_power, of: blob.total_voting_power } : null;
+
+  // every blob Tensile has read over the whole record, by what its reading found: summed from each publisher's readings
+  const pubs = useApi<{ publishers: Publisher[] }>("/v1/publishers?window=all", 60000);
+  const reads = pubs.data?.publishers.reduce((t, p) => p.readings
+    ? { ok: t.ok + p.readings.available, bad: t.bad + p.readings.unavailable, none: t.none + p.readings.not_read } : t, { ok: 0, bad: 0, none: 0 }) ?? null;
+  const read = reads ? reads.ok + reads.bad : 0;
+  const avTitle = reads && read > 0
+    ? `Of the ${int(read)} blobs on record Tensile has read, each near the end of its retention window, ${int(reads.ok)} were available${reads.bad ? ` and ${int(reads.bad)} unavailable` : ""}. ${int(reads.none)} were not read and count neither way.`
+    : undefined;
 
   const state = feed.error ? "down" : !feed.loaded ? "wait" : "live";
   const idle = feed.loaded && Date.now() + skew - feed.lastNewAt > IDLE_AFTER_MS;
@@ -352,15 +373,25 @@ export default function RecentBlobs() {
             </div>
           ))}
         </div>
-        <p className="rb-count">
-          {shown.total != null ? <RollNumber value={shown.total} format={int} className="rb-total" /> : <span className="rb-total wait">0,000</span>}
-          <span>settlements on record</span>
-        </p>
+        {/* two figures under one rule, a full-height line between them: the settlements on record, and how many of
+            those Tensile read were available */}
+        <div className="rb-foot">
+          <p className="rb-fig">
+            {shown.total != null ? <RollNumber value={shown.total} format={int} className="rb-total" /> : <span className="rb-total wait">0,000</span>}
+            <span>settlements on record</span>
+          </p>
+          <i className="rb-div" aria-hidden="true" />
+          <p className="rb-fig" title={avTitle}>
+            {read > 0 ? <span className={`rb-total${reads!.bad === 0 ? " ok" : ""}`}>{pctOf(reads!.ok, read)}</span> : <span className={`rb-total${reads ? "" : " wait"}`}>{reads ? "—" : "000%"}</span>}
+            <span>available</span>
+          </p>
+        </div>
       </div>
 
       <div className="rb-read">
         <h3 className="rb-read-h">
           <span className="ov-eyebrow">{isLatest || !blob ? "Latest blob" : `Blob · ${selAt === 0 ? "newest" : `${nth(selAt + 1)} newest`}`}</span>
+          {st && <span className={`rb-st${st.tier === "kept" ? " ok" : st.tier === "hold" || st.tier === "fault" ? " bad" : ""}`} title={st.title}>{st.word}</span>}
           {blob && <Age at={blob.settlement_time} skew={skew} />}
         </h3>
         {/* the height as the figure, "Height · time · size" under it; the endorsed share before its bar, the ⅔ a blob

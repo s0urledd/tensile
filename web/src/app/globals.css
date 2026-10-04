@@ -1252,12 +1252,17 @@ body { background: var(--canvas); }
 .rb-live-d { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .rb[data-state="down"] .rb-live-d { background: var(--hold); }
 .rb[data-state="wait"] .rb-live-d { background: var(--pending); }
-.rb-count { display: flex; align-items: baseline; justify-content: center; flex-wrap: wrap; gap: 0 6px; margin: 0; font-size: var(--t-small); color: var(--text-3); }
+/* under the grid: the settlements on record and the share of read blobs that were available, side by side under one
+   rule, a line between them from the rule down */
+.rb-foot { display: grid; grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr); align-items: stretch; width: 100%; margin-top: 4px; border-top: 1px solid var(--line); }
+.rb-div { background: var(--line); }
+.rb-fig { display: grid; justify-items: center; align-content: center; gap: 1px; margin: 0; padding: 10px 8px 0; font-size: var(--t-small); color: var(--text-3); white-space: nowrap; }
 .rb-total { font-size: 15.5px; font-weight: 600; letter-spacing: -.012em; line-height: 21px; color: var(--text); }
+.rb-total.ok { color: var(--ok); }
 
 /* the grid: five rows, each a window on one tape. A row clips its tape a few px outside the places, so a ring or a glow
    is not cut and a place sliding past the row's end is; the margins take that room back */
-.rb-grid { display: flex; flex-direction: column; gap: var(--rb-gap); width: calc(var(--rb-cell) * 10 + var(--rb-gap) * 9); max-width: 100%; margin: auto 0; padding: 18px 0; }
+.rb-grid { display: flex; flex-direction: column; gap: var(--rb-gap); width: calc(var(--rb-cell) * 10 + var(--rb-gap) * 9); max-width: 100%; margin: auto 0; padding: 10px 0 12px; }
 .rb-row { position: relative; margin: -8px -7px; padding: 8px 7px; overflow: hidden; }
 .rb-tape { display: flex; gap: var(--rb-gap); width: max-content; }
 .rb-c {
@@ -1294,6 +1299,11 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 }
 .rb-read { display: flex; flex-direction: column; }
 .rb-read-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 24px; margin: 0; font-size: var(--t-small); font-weight: 400; }
+/* the blob's state, a small label after the heading: in its retention window, then available or unavailable */
+.rb-read-h > * { white-space: nowrap; flex: none; }
+.rb-st { display: inline-flex; align-items: center; height: 20px; margin-right: auto; padding: 0 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--wash); font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text-2); }
+.rb-st.ok { border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
+.rb-st.bad { border-color: color-mix(in srgb, var(--hold) 45%, transparent); background: color-mix(in srgb, var(--hold) 12%, transparent); color: var(--hold-ink); }
 .rb-read-h .ov-eyebrow { display: inline; }
 /* the facts as one wrapping line of items, the dl's rows dissolved:
    1,204,085
