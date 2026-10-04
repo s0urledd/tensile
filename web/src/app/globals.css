@@ -18,12 +18,13 @@
   --ink: 22 26 30;
   --paper: #ffffff;
   --text: rgb(var(--ink) / .92);
-  /* Three greys that read as three roles: value, label, help. --text-3 is the
-     lightest that keeps 4.5:1 (WCAG AA, small text) on the paper AND on the
-     --wash and tint bands it also sits on: .62 gives 4.90 on white, 4.77 on
-     --wash, 4.64 on --accent-tint (.60 would drop to 4.47 on --wash). */
-  --text-2: rgb(var(--ink) / .72);
-  --text-3: rgb(var(--ink) / .62);
+  /* Three greys that read as three roles: value, label, help, as strong as
+     the dark theme's: --text-3 at .69 is 6.23:1 on white and 6.01 on --wash
+     (the dark one: 6.35 and 6.02), --text-2 at .78 is 8.59:1 on white (the
+     dark one about 8.5). Lighter, at .62 and .72 (4.90 and 6.93), the help
+     and the secondary times read faint in light beside the dark theme. */
+  --text-2: rgb(var(--ink) / .78);
+  --text-3: rgb(var(--ink) / .69);
   --line: rgb(var(--ink) / .12);
   --line-soft: rgb(var(--ink) / .08);
   --wash: rgb(var(--ink) / .04);
