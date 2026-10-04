@@ -1,15 +1,15 @@
 /**
  * The identifiers a developer holds for a blob, as the site reads them: a promise hash, a commitment or the hash of the
  * transaction that settled it (each 64 hex characters, in either case, with or without 0x), or the blob ID the Fibre
- * client returns. A blob ID is one version byte, 0, then the 32-byte commitment (celestia-app's fibre.BlobID): the
- * client's JSON prints it in base64, standard or URL-safe, with or without padding, and BlobID.String in hex (66
- * characters). Anything else is no blob's identifier.
+ * client returns. A blob ID is one version byte (0 is the only version Fibre has today), then the 32-byte commitment
+ * (celestia-app's fibre.BlobID): the client's JSON prints it in base64, standard or URL-safe, with or without padding,
+ * and BlobID.String in hex (66 characters). Anything else is no blob's identifier.
  */
 export type BlobKey =
   /** 64 hex characters, in lower case: a promise hash, a commitment or a transaction hash, which only a lookup tells apart */
   | { kind: "hash"; hex: string }
-  /** a blob ID: its commitment in lower-case hex, and the ID as the client prints it (standard base64) */
-  | { kind: "id"; hex: string; id: string };
+  /** a blob ID: its version, its commitment in lower-case hex, and the ID as the client prints it (standard base64) */
+  | { kind: "id"; version: number; hex: string; id: string };
 
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -41,11 +41,14 @@ function base64(bytes: number[]): string {
 
 const hexOf = (bytes: number[]) => bytes.map((b) => b.toString(16).padStart(2, "0")).join("");
 
-/** the blob ID of a version-0 blob (the only version Fibre has), from its commitment, as the client prints it */
-export function blobIdOf(commitment: string): string {
+/**
+ * a blob's ID from its version and its commitment, as the chain records both and the client prints the ID: the version
+ * byte, then the commitment, in base64. Any version: a version Fibre adds later still has its blob shown
+ */
+export function blobIdOf(commitment: string, version = 0): string {
   const c = commitment.toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(c)) return "";
-  const bytes = [0];
+  if (!/^[0-9a-f]{64}$/.test(c) || !Number.isInteger(version) || version < 0 || version > 255) return "";
+  const bytes = [version];
   for (let i = 0; i < 64; i += 2) bytes.push(parseInt(c.slice(i, i + 2), 16));
   return base64(bytes);
 }
@@ -61,11 +64,11 @@ export function blobKey(s: string | null | undefined): BlobKey | null {
   const h = t.toLowerCase().replace(/^0x/, "");
   if (/^[0-9a-f]{64}$/.test(h)) return { kind: "hash", hex: h };
   // BlobID.String: the version byte and the commitment in hex
-  if (/^00[0-9a-f]{64}$/.test(h)) return { kind: "id", hex: h.slice(2), id: blobIdOf(h.slice(2)) };
+  if (/^[0-9a-f]{66}$/.test(h)) { const version = parseInt(h.slice(0, 2), 16); return { kind: "id", version, hex: h.slice(2), id: blobIdOf(h.slice(2), version) }; }
   const bytes = unbase64(t.replace(/ /g, "+"));
-  if (!bytes || bytes.length !== 33 || bytes[0] !== 0) return null;
+  if (!bytes || bytes.length !== 33) return null;
   const hex = hexOf(bytes.slice(1));
-  return { kind: "id", hex, id: blobIdOf(hex) };
+  return { kind: "id", version: bytes[0], hex, id: blobIdOf(hex, bytes[0]) };
 }
 
 /** the form a found blob keeps in the address and the search's chip: a hash in lower-case hex, a blob ID in base64 */

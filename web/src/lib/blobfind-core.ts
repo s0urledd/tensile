@@ -73,8 +73,9 @@ export async function findBlobs(key: BlobKey, opts: { as?: MatchBy[]; limit?: nu
       const echo = w === "commitment" ? l.commitment : l.tx;
       if (w === "tx" && echo === undefined) noTx = true;
       if (echo !== hex) return;
-      blobs = l.blobs ?? [];
-      more += Math.max(0, (l.total ?? blobs.length) - blobs.length);
+      // a blob ID names its version too: the commitment's settlements under another version are not its own
+      blobs = (l.blobs ?? []).filter((b) => key.kind !== "id" || (b.blob_version ?? 0) === key.version);
+      more += Math.max(0, (l.total ?? (l.blobs ?? []).length) - (l.blobs ?? []).length);
     }
     if (blobs.length) by.push(w);
     for (const b of blobs) if (!rows.some((x) => x.promise_hash === b.promise_hash)) rows.push(b);

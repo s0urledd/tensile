@@ -270,6 +270,9 @@ function Page() {
   const [table, setTable] = useState(false);
   const { data: meta, error: metaErr } = useApi<Meta>("/v1/meta");
   const d = useApi<Detail>(hash ? `/v1/blobs/${hash}` : null);
+  // every settlement of the same blob ID (its version, 0, and the commitment): the head says so when there is more than
+  // this one
+  const same = useApi<{ total: number }>(d.data ? `/v1/blobs?commitment=${d.data.blob.commitment}&limit=1` : null);
   // a promise hash not on record yet (404) is asked for again as soon as a newer blob is, not at the next 30 s
   const missing = !!hash && notFound(d);
   useEffect(() => {
@@ -384,10 +387,8 @@ function Page() {
       <dd><Link className="bd-ns" href={`/blobs/?namespace=${b.namespace}`} title={`${b.namespace} · every blob in it`}>{nsDisplay(b.namespace)}</Link><Copy text={b.namespace} label="namespace" /></dd>
       <dt>Commitment</dt>
       <dd title={b.commitment}><span className="mono">{shortMid(b.commitment, 10, 6)}</span><Copy text={b.commitment} label="commitment" /></dd>
-      {blobId && <>
-        <dt title="The ID the Fibre client returns for this blob: its version, 0, then the commitment, in base64">Blob ID</dt>
-        <dd title={blobId}><span className="mono">{shortMid(blobId, 10, 6)}</span><Copy text={blobId} label="blob ID" /></dd>
-      </>}
+      <dt title="The payment promise this settlement carried: one blob ID can be settled again under another promise, and this page is this settlement's">Promise hash</dt>
+      <dd title={b.promise_hash}><span className="mono">{shortMid(b.promise_hash, 10, 6)}</span><Copy text={b.promise_hash} label="the promise hash" /></dd>
       {/* the settlement, as the chain records it: when, at what height, by which transaction */}
       <dt>Settled</dt>
       <dd><b title={utcWord(b.settlement_time)}>{monthDayTime(b.settlement_time)}</b><em>UTC · height {int(b.settlement_height)}</em></dd>
@@ -438,11 +439,17 @@ function Page() {
     <>
       <section className="pb-mast bd-mast">
         <h1 className="bd-title">Blob</h1>
-        <div className="pb-addr"><span className="mono">{b.promise_hash}</span><Copy text={b.promise_hash} label="the promise hash" /></div>
+        {/* the blob as the client names it: its blob ID, as fibre.Submit returns it and Download takes it; the page itself
+            is one settlement of it, by its promise hash, with its height and time in the chips under it */}
+        <div className="pb-addr">
+          <span className="bd-idl" title={`The ID the Fibre client returns for this blob: its version, ${b.blob_version ?? 0}, then the commitment, in base64`}>Blob ID</span>
+          <span className="mono">{blobId}</span><Copy text={blobId} label="the blob ID" />
+          {(same.data?.total ?? 0) > 1 && <Link className="bd-many" href={`/blobs/?blob=${encodeURIComponent(blobId)}`} title="Every settlement of this blob ID">settled {int(same.data!.total)} times →</Link>}
+        </div>
         <div className="chips bd-chips">
           {/* Tensile's reading, with its eye as its figures carry it: the chips after it are the chain's settlement */}
           <span className="state" title={`Tensile's reading: ${state[2]}`}><i className={"dot " + state[0]} /><Eye />{state[1]}</span>
-          <span title={utcWord(b.settlement_time)}>Settled <b className="word">#{int(b.settlement_height)}</b></span>
+          <span title={utcWord(b.settlement_time)}>Settled <b className="word">#{int(b.settlement_height)}</b> · {monthDayTime(b.settlement_time)} UTC</span>
           <span title={`${utcWord(b.settlement_time)} → ${utcWord(b.must_serve_until)}`}>{over ? <>Retention window over <b className="word">{hhmm(b.must_serve_until)}</b></> : <>In retention window until <b className="word">{hhmm(b.must_serve_until)}</b></>}</span>
         </div>
 
