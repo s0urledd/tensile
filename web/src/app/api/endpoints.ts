@@ -700,8 +700,8 @@ export const GROUPS: Group[] = [
       {
         id: "tip",
         path: "/v1/tip",
-        summary: "The chain's newest block as Tensile last saw it.",
-        desc: "`block_time` is absent while Tensile catches up to the tip.",
+        summary: "The chain's newest block as Tensile last saw it, and the newest blob it has recorded.",
+        desc: "`block_time` is absent while Tensile catches up to the tip. `latest_blob`, its `promise_hash` and `settlement_height`, is the first blob /v1/blobs lists, and absent while there is none: when it changes, a new blob is on record.",
         params: [],
         example: EX_TIP,
         whole: true,

@@ -899,7 +899,8 @@ function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<u
 /**
  * How often the site asks for the newest block (/v1/tip): every second, so the header's block moves with the chain's
  * own pace (a block about every 3 s). Every reader of the tip asks with this one interval, so a page shares one stream;
- * the API keeps one answer for a second, so a reader costs it a small cached reply, never a database read.
+ * the API keeps one answer for a quarter of a second, so a reader costs it a small cached reply, and however many
+ * readers there are, the node and the database are asked at most four times a second.
  */
 export const TIP_MS = 1000;
 
@@ -1165,11 +1166,16 @@ export function fmtShare(v: number | null | undefined): string {
   return pct2(v, v >= 1, v <= 0);
 }
 
-/** /v1/tip: the newest block the observer has read, for the header ticker */
+/**
+ * /v1/tip: the newest block the observer has read, for the header ticker, and the newest blob it has stored
+ * (latest_blob, in /v1/blobs' order; absent while there is none, and from an API older than it), which the
+ * overview's recent blobs compare with the blobs they hold to know when to read the list
+ */
 export type Tip = {
   height: number;
   block_time?: string;
   fibre_active: boolean;
+  latest_blob?: { promise_hash: string; settlement_height: number };
   server_time: string;
 };
 

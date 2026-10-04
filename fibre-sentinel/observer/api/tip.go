@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -25,17 +27,52 @@ type tipResponse struct {
 	// catching up, when the block it last read is not the tip.
 	BlockTime   *time.Time `json:"block_time,omitempty"`
 	FibreActive bool       `json:"fibre_active"`
-	ServerTime  time.Time  `json:"server_time"`
+	// LatestBlob is the newest blob the store holds, in /v1/blobs' own order;
+	// absent while it holds none. It is here so a page can tell that a blob
+	// arrived from the stream it already reads every second, and ask
+	// /v1/blobs only then, rather than every few seconds in case one did.
+	LatestBlob *tipBlob  `json:"latest_blob,omitempty"`
+	ServerTime time.Time `json:"server_time"`
 }
 
+// tipBlob names a blob: the marker a page compares with the blobs it holds,
+// and the height it settled at, so the marker can be told from an older one
+// without a second request.
+type tipBlob struct {
+	PromiseHash      string `json:"promise_hash"`
+	SettlementHeight int64  `json:"settlement_height"`
+}
+
+// latestBlobSQL is the newest publication in /v1/blobs' order (settlement
+// height, then position in the block, both descending). The highest height
+// comes from publications_settlement's last entry, which SQLite reads without
+// walking the index (its min/max optimisation), and only that block's
+// publications are then sought through the same index and sorted: a handful of
+// rows however many millions the table holds. The page's own statement with
+// LIMIT 1 would read the index from its top and stop just as soon, but its plan
+// prints as a SCAN, the shape TestHotQueriesUseIndexes exists to refuse.
+const latestBlobSQL = `SELECT promise_hash, settlement_height FROM publications
+	WHERE settlement_height = (SELECT MAX(settlement_height) FROM publications)
+	ORDER BY settlement_tx_index DESC LIMIT 1`
+
+// tipStoreTimeout bounds the store's part of one answer. A read in WAL mode is
+// never blocked by the collector writing, so this is a backstop only: the
+// cache's mutex is held while readTip runs, and every reader waits on it.
+const tipStoreTimeout = 500 * time.Millisecond
+
 // tipCache keeps one answer for a quarter of a second: every open page polls
-// this route every second, so however many readers there are, the node is asked
-// at most four times a second, and a new block shows within that of the node
-// committing it.
+// this route every second, so however many readers there are, the node and the
+// store are each asked at most four times a second, and a new block (or a new
+// blob) shows within that of the node committing it (or the collector storing
+// it).
 type tipCache struct {
 	mu sync.Mutex
 	at time.Time
 	v  tipResponse
+	// blobErrAt is when a failure to read the newest blob was last logged,
+	// so a store that keeps failing is said once a minute, not four times a
+	// second.
+	blobErrAt time.Time
 }
 
 const tipTTL = 250 * time.Millisecond
@@ -61,11 +98,13 @@ func (s *Server) handleTip(w http.ResponseWriter, r *http.Request) {
 // moment it has it. Without a node, or when it does not answer in time, the
 // scanner's status file answers (written within a second of each block while
 // it follows the tip, after reading it), and the collector's meta row (a poll
-// behind) when the scanner has written nothing.
+// behind) when the scanner has written nothing. The newest blob comes from the
+// store whichever of them answers.
 func (s *Server) readTip(now time.Time) tipResponse {
 	var out tipResponse
 	active, _ := s.st.Meta("fibre_active")
 	out.FibreActive = active == "yes"
+	out.LatestBlob = s.latestBlob(now)
 	if s.tipRPC != "" {
 		if h, t, ok := nodeTip(s.tipRPC); ok {
 			out.Height, out.BlockTime = h, &t
@@ -97,6 +136,24 @@ func (s *Server) readTip(now time.Time) tipResponse {
 		}
 	}
 	return out
+}
+
+// latestBlob is the newest blob the store holds (latestBlobSQL); nil when it
+// holds none, or when the store could not say, in which case the answer leaves
+// the field out and a page reads /v1/blobs at its slow pace, as it would from
+// an API that never published it. Called with s.tip.mu held.
+func (s *Server) latestBlob(now time.Time) *tipBlob {
+	ctx, cancel := context.WithTimeout(context.Background(), tipStoreTimeout)
+	defer cancel()
+	var b tipBlob
+	if err := s.st.DB().QueryRowContext(ctx, latestBlobSQL).Scan(&b.PromiseHash, &b.SettlementHeight); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) && s.log != nil && now.Sub(s.tip.blobErrAt) >= time.Minute {
+			s.tip.blobErrAt = now
+			s.log.Printf("tip: newest blob: %v", err)
+		}
+		return nil
+	}
+	return &b
 }
 
 // nodeTip asks a CometBFT RPC's /status for its newest committed block.

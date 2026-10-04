@@ -2,10 +2,12 @@ package api_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,5 +116,77 @@ func TestTipAsksTheNode(t *testing.T) {
 	defer down.Close()
 	if b, _ := getTip(t, down); b.Height != 1351480 {
 		t.Errorf("a node that does not answer should leave the scanner's file to answer: %+v", b)
+	}
+}
+
+// The tip names the newest blob the store holds, in /v1/blobs' own order
+// (height, then position in the block), so a page can read the list only when
+// a blob arrives; with none stored the field is left out, which is what a
+// page also meets from an API that predates it.
+func TestTipNamesTheNewestBlob(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	_ = st.SetMeta("chain_height", "1000", time.Now())
+	srv := api.NewWithVantage(st, api.VantageInfo{Name: "test"}, nil, api.WithDataDir(dir))
+	defer srv.Close()
+
+	_, rec := getTip(t, srv)
+	if strings.Contains(rec.Body.String(), "latest_blob") {
+		t.Fatalf("a store without blobs should leave latest_blob out: %s", rec.Body.String())
+	}
+
+	// two blobs in block 900, the second later in it, and an older one
+	now := time.Now().UTC()
+	hash := func(idx int) string { return fmt.Sprintf("%064x", 0x5a0000+idx) }
+	insertPublication(t, st, 1, 899, now.Add(-time.Minute), "aa", "alice", 10)
+	insertPublication(t, st, 2, 900, now, "aa", "alice", 10)
+	insertPublication(t, st, 3, 900, now, "aa", "alice", 10)
+	for idx, tx := range map[int]int{2: 4, 3: 1} {
+		if _, err := st.DB().Exec(`UPDATE publications SET settlement_tx_index = ? WHERE promise_hash = ?`, tx, hash(idx)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type latest struct {
+		LatestBlob *struct {
+			PromiseHash      string `json:"promise_hash"`
+			SettlementHeight int64  `json:"settlement_height"`
+		} `json:"latest_blob"`
+	}
+	read := func() latest {
+		t.Helper()
+		_, rec := getTip(t, srv)
+		var l latest
+		if err := json.Unmarshal(rec.Body.Bytes(), &l); err != nil {
+			t.Fatal(err)
+		}
+		return l
+	}
+	// the answer is kept for a quarter of a second
+	time.Sleep(300 * time.Millisecond)
+	if l := read(); l.LatestBlob == nil || l.LatestBlob.PromiseHash != hash(2) || l.LatestBlob.SettlementHeight != 900 {
+		t.Fatalf("latest_blob %+v, want %s at 900 (tx index 4 of the block)", l.LatestBlob, hash(2))
+	}
+
+	// a blob in the next block takes its place once the cached answer lapses
+	insertPublication(t, st, 4, 901, now, "bb", "bob", 10)
+	time.Sleep(300 * time.Millisecond)
+	if l := read(); l.LatestBlob == nil || l.LatestBlob.PromiseHash != hash(4) || l.LatestBlob.SettlementHeight != 901 {
+		t.Fatalf("latest_blob %+v, want %s at 901", l.LatestBlob, hash(4))
+	}
+
+	// and it is the first row /v1/blobs serves
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/blobs?limit=1", nil))
+	var page struct {
+		Blobs []struct {
+			PromiseHash string `json:"promise_hash"`
+		} `json:"blobs"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil || len(page.Blobs) != 1 || page.Blobs[0].PromiseHash != hash(4) {
+		t.Fatalf("/v1/blobs' newest is not the tip's: %s", rec.Body.String())
 	}
 }
