@@ -1,6 +1,8 @@
 "use client";
 import { useLayoutEffect, useRef, useState } from "react";
-import { type Validator, int } from "@/lib/api";
+import Link from "next/link";
+import { type Validator, int, shortMid } from "@/lib/api";
+import { validatorHref } from "@/lib/addr";
 import Info from "@/components/Info";
 import { endpointState, readiness } from "@/components/Readiness";
 
@@ -60,7 +62,12 @@ export default function CurrentProviders({ rows }: { rows: Validator[] | null })
   }) : [];
   const q = `${total > 0 ? Math.min(100, Math.max(0, (100 * quorum) / total)) : 0}%`;
   const power = (vs: Validator[]) => vs.reduce((n, v) => n + (v.voting_power || 0), 0);
-  const part = (vs: Validator[]) => `${pct!(power(vs))} · ${int(vs.length)} validator${vs.length === 1 ? "" : "s"}`;
+  // a part of the stake in its small frame: its name and share in the text's colour, how many validators in the help grey
+  const part = (sw: string, name: string, vs: Validator[]) => <>
+    <i className={`cp-sw${sw ? ` ${sw}` : ""}`} aria-hidden="true" />
+    <span className="cp-k">{name} {pct!(power(vs))}</span>
+    <span className="cp-n">· {int(vs.length)} validator{vs.length === 1 ? "" : "s"}</span>
+  </>;
 
   return (
     <div className="cp" aria-busy={!ready || undefined}>
@@ -87,11 +94,24 @@ export default function CurrentProviders({ rows }: { rows: Validator[] | null })
           )}
         </div>
       </div>
+      {/* the parts of the stake that are not a working provider, each in a small frame, the unreachable first: it opens
+          the names of its validators, each a link to its page */}
       <ul className="cp-rest">
         {ready ? <>
-          <li><i className="cp-sw" aria-hidden="true" />no Fibre provider {part(off)}</li>
-          {down.length > 0 && <li><i className="cp-sw hold" aria-hidden="true" />unreachable {part(down)}</li>}
-          {unchecked.length > 0 && <li><i className="cp-sw none" aria-hidden="true" />not checked yet {part(unchecked)}</li>}
+          {down.length > 0 && <li>
+            <Info label="Unreachable" className="cp-it" title="Show the unreachable validators" trigger={part("hold", "unreachable", down)}>
+              <ul className="cp-names">
+                {down.map((v) => (
+                  <li key={v.address}>
+                    <Link href={validatorHref(v.operator_address, v.address)}>{v.moniker || shortMid(v.operator_address || v.address, 18, 4)}</Link>
+                    <span>{pct!(v.voting_power || 0)}</span>
+                  </li>
+                ))}
+              </ul>
+            </Info>
+          </li>}
+          <li><span className="cp-it">{part("", "no Fibre provider", off)}</span></li>
+          {unchecked.length > 0 && <li><span className="cp-it">{part("none", "not checked yet", unchecked)}</span></li>}
         </> : <li>{" "}</li>}
       </ul>
     </div>
