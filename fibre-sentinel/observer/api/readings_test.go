@@ -200,9 +200,11 @@ func TestPublisherReadingsAreTheBlobsLane(t *testing.T) {
 	settle(len(cases)-1, pubB)
 	check("a settlement recorded")
 
-	// The retention prune deletes whole days of rows and moves raw_from past
-	// them: the blob read three days ago is not read any more, and it is the
-	// only publication computed again, the one with a row before raw_from.
+	// A prune deletes whole days of rows and moves raw_from past them. The
+	// observer no longer prunes (2026-10-04), but the memo still has to
+	// follow raw_from for a database pruned before then: the blob read three
+	// days ago is not read any more, and it is the only publication computed
+	// again, the one with a row before raw_from.
 	from := time.Now().UTC().Add(-48 * time.Hour).Truncate(24 * time.Hour)
 	if res, err := db.Exec(`DELETE FROM probes WHERE started_at < ?`, store.TS(from)); err != nil {
 		t.Fatal(err)

@@ -63,10 +63,10 @@ func main() {
 		expDir    = flag.String("exports-dir", "", "where the daily export tarballs are built (default <data-dir>/exports)")
 		expHour   = flag.Int("export-hour", 3, "UTC hour after which a day's export is built, the grace for late rows (-1 = never build exports)")
 		expKey    = flag.String("export-signing-key", os.Getenv(export.SigningKeyEnv), "ed25519 private key (PKCS#8 PEM, e.g. from openssl genpkey -algorithm ed25519) that signs every daily export's manifest digest; default $"+export.SigningKeyEnv+"; empty = exports are unsigned, exactly as before (docs/exports-signing.md)")
-		retainRaw = flag.Duration("retain-raw", rollup.Default().RetainRaw, "keep probe and heartbeat rows this long; older rolled days are pruned, whole days at a time (0 = keep forever)")
-		retainRJ  = flag.Duration("retain-raw-json", rollup.Default().RetainRawJSON, "keep a row's raw_json (the bulk of it) this long; every typed column stays (0 = keep forever)")
-		rollAfter = flag.Duration("rollup-after", rollup.Default().RollupAfter, "compute a day's obligation and probe rollups this long after the day ends; must clear every retention window (0 = never roll up, so never prune)")
-		retEvery  = flag.Duration("retention-every", time.Hour, "how often the retention pass runs")
+		// -retain-raw and -retain-raw-json went with the prune and the raw_json strip they set (2026-10-04): every row is
+		// kept for good, and a unit that still passes either fails at start rather than believe it prunes.
+		rollAfter = flag.Duration("rollup-after", rollup.Default().RollupAfter, "compute a day's obligation and probe rollups this long after the day ends; must clear every retention window (0 = never roll up)")
+		retEvery  = flag.Duration("retention-every", time.Hour, "how often the rollup pass runs")
 		avEvery   = flag.Duration("avatars-every", time.Hour, "how often to look for validator Keybase pictures to fetch or refresh (0 = never)")
 		avMaxAge  = flag.Duration("avatar-max-age", 24*time.Hour, "re-resolve a validator's Keybase picture after this long")
 	)
@@ -278,7 +278,8 @@ func main() {
 
 	log.Printf("collector up: run=%d vantage=%s db=%s data=%s exports=%s", runID, *vantage, *dbPath, *dataDir, *expDir)
 
-	retention := rollup.Config{RetainRaw: *retainRaw, RetainRawJSON: *retainRJ, RollupAfter: *rollAfter, Vantage: *vantage}
+	retention := rollup.Config{RollupAfter: *rollAfter, Vantage: *vantage}
+	var lastWaiting string
 	var lastRetention time.Time
 	var lastEscrow time.Time
 	// The first pass gives back whatever the schema migration freed: the
@@ -487,22 +488,15 @@ func main() {
 				if rep.PendingAtRoll > 0 {
 					log.Printf("retention: WARNING %d obligation(s) were still pending when their day was rolled; -rollup-after is shorter than a retention window", rep.PendingAtRoll)
 				}
-				if rep.RawJSONDropped > 0 {
-					log.Printf("retention: dropped raw_json from %d row(s)", rep.RawJSONDropped)
-				}
-				if len(rep.PrunedDays) > 0 {
-					log.Printf("retention: pruned %d row(s) of %d day(s) through %s", rep.PrunedRows, len(rep.PrunedDays), rep.PrunedDays[len(rep.PrunedDays)-1])
-					live.Set("raw_from", rep.PrunedDays[len(rep.PrunedDays)-1])
-					// Give the pages back. A DELETE moves them to SQLite's
-					// free list and the file never shrinks on its own, so
-					// the pruning the operator was told to rely on when a
-					// disk fills would have reclaimed nothing they could see.
-					if freed, err := st.ReclaimSpace(ctx, 20000); err != nil {
-						log.Printf("retention: reclaim: %v", err)
-					} else if freed > 0 {
-						log.Printf("retention: %d page(s) returned to the filesystem", freed)
+				// A day that is not final holds every later one: say so once
+				// when it starts holding, and keep it in the status file.
+				if rep.Waiting != lastWaiting {
+					if rep.Waiting != "" {
+						log.Printf("retention: rollup waiting on %s: %s", rep.Waiting, rep.WaitingWhy)
 					}
+					lastWaiting = rep.Waiting
 				}
+				live.Set("rollup_waiting", strings.TrimSpace(rep.Waiting+" "+rep.WaitingWhy))
 			}
 		}
 		if exporter != nil {

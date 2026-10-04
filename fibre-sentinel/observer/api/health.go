@@ -64,8 +64,11 @@ const unassignableWindow = 24 * time.Hour
 // Celestia's are several seconds apart.
 const minBlockSeconds = 1
 
-// diskFloor is the free share of the data disk below which health fails.
-const diskFloor = 0.05
+// diskFloor is the free share of the data disk below which health fails, and
+// the health watcher alerts. Nothing is ever deleted to make room (the prune
+// was retired on 2026-10-04), and the disk is shared with other services, so
+// the alarm comes while a sixth of it is still free.
+const diskFloor = 0.15
 
 // componentStatus is one process as /v1/health shows it.
 type componentStatus struct {

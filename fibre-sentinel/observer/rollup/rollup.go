@@ -1,15 +1,18 @@
-// Package rollup is the retention policy: raw probe rows are kept for a
-// bounded time, their raw JSON for a shorter one, and beyond that the
-// "all" window rests on per-day rollups computed while the rows were still
-// there, by the same SQL the API runs live. The obligation SQL lives here
-// so the live figures and the rolled ones are one implementation; the API
+// Package rollup computes per-day rollups of the obligations and the probe
+// rows, by the same SQL the API runs live: the obligation SQL lives here so
+// the live figures and the rolled ones are one implementation; the API
 // imports it.
 //
-// Three meta keys carry the state: rollup_through (the last day rolled,
-// inclusive), raw_from (the first day whose raw rows are all still
-// present; unset until the first prune) and nothing else. A day is pruned
-// only after it is rolled, oldest first, whole days at a time, so the
-// record is never thinner than the rollup behind it.
+// Every row is kept for good. Nothing here deletes a row or strips a
+// column: an old blob, a validator's history and every rate must read the
+// same in a year as they do today (the retention decision of 2026-10-04,
+// which retired the 90-day prune and the 30-day raw_json strip). Rollups
+// exist for speed only.
+//
+// One meta key carries the state: rollup_through, the last day rolled,
+// inclusive. raw_from, the first day whose raw rows were all present, is
+// never written any more; RawFrom stays only for the API's rolled-up path,
+// which has nothing to label while no row is ever pruned.
 package rollup
 
 import (
@@ -383,30 +386,20 @@ func unavailableSQL(h, t string) string {
 
 // Config is the retention policy.
 type Config struct {
-	// RetainRaw is how long probe and heartbeat rows are kept. 0 keeps
-	// them forever (and prunes nothing).
-	RetainRaw time.Duration
-	// RetainRawJSON is how long a row keeps its raw_json, the bulk of it.
-	// 0 keeps it forever.
-	RetainRawJSON time.Duration
 	// RollupAfter is how long after a UTC day ends its rollup is computed;
 	// it must clear every retention window a promise settled that day can
 	// have, so that nothing is pending when the day is rolled.
 	RollupAfter time.Duration
-	// Batch bounds the rows one pass strips raw_json from, and the days one
-	// pass prunes.
-	Batch int
 	// Vantage, when set, is the observer's own: the heartbeat counts rolled
 	// into probe_daily are its rows only, as every live reachability figure
-	// is. Other vantages' copied heartbeats are pruned with the rest but
-	// never counted. Empty counts every row.
+	// is. Other vantages' copied heartbeats are kept but never counted.
+	// Empty counts every row.
 	Vantage string
 }
 
-// Default is the retention decision of 2026-09-18: rows 90 days, raw JSON
-// 30 days, rollup 14 days after the day.
+// Default rolls a day up 14 days after it ends. Rows are kept for good.
 func Default() Config {
-	return Config{RetainRaw: 90 * 24 * time.Hour, RetainRawJSON: 30 * 24 * time.Hour, RollupAfter: 14 * 24 * time.Hour, Batch: 5000}
+	return Config{RollupAfter: 14 * 24 * time.Hour}
 }
 
 // Report is what one pass did.
@@ -417,9 +410,6 @@ type Report struct {
 	// the late shadow verdict. RollupAfter is a floor; this is the ceiling.
 	Waiting, WaitingWhy string
 	PendingAtRoll       int64 // obligations still pending when their day was rolled, which dayFinal should make impossible
-	RawJSONDropped      int64
-	PrunedDays          []string
-	PrunedRows          int64
 }
 
 const (
@@ -440,7 +430,8 @@ func dayRange(d time.Time) (string, string) {
 }
 
 // RawFrom is the first day whose raw rows are all still present, and false
-// until a prune has happened (every row is present then).
+// when every row is present, which is always since the prune was retired;
+// a database pruned before then would still carry the mark.
 func RawFrom(st *store.Store) (time.Time, bool) {
 	v, err := st.Meta(metaRawFrom)
 	if err != nil || v == "" {
@@ -453,13 +444,10 @@ func RawFrom(st *store.Store) (time.Time, bool) {
 	return d, true
 }
 
-// Run does one retention pass: roll every day that is due, strip raw_json
-// past its retention, prune rolled days past theirs.
+// Run rolls up every day that is due. It deletes nothing and rewrites no
+// row: it only writes obligation_daily, probe_daily and rollup_through.
 func Run(ctx context.Context, st *store.Store, now time.Time, cfg Config) (Report, error) {
 	var rep Report
-	if cfg.Batch <= 0 {
-		cfg.Batch = 5000
-	}
 	now = now.UTC()
 	db := st.DB()
 
@@ -497,66 +485,6 @@ func Run(ctx context.Context, st *store.Store, now time.Time, cfg Config) (Repor
 		}
 	}
 
-	// ---- raw_json ----
-	if cfg.RetainRawJSON > 0 {
-		cut := store.TS(now.Add(-cfg.RetainRawJSON))
-		for _, table := range []string{"probes", "reachability"} {
-			res, err := db.ExecContext(ctx, `UPDATE `+table+` SET raw_json = '' WHERE rowid IN
-				(SELECT rowid FROM `+table+` WHERE started_at < ? AND raw_json <> '' LIMIT ?)`, cut, cfg.Batch)
-			if err != nil {
-				return rep, fmt.Errorf("strip raw_json from %s: %w", table, err)
-			}
-			n, _ := res.RowsAffected()
-			rep.RawJSONDropped += n
-		}
-	}
-
-	// ---- prune ----
-	if cfg.RetainRaw > 0 {
-		through, err := st.Meta(metaRollupThrough)
-		if err != nil || through == "" {
-			return rep, err // nothing rolled: nothing may be pruned
-		}
-		rolled, err := time.Parse(dayLayout, through)
-		if err != nil {
-			return rep, fmt.Errorf("rollup_through %q: %w", through, err)
-		}
-		from, ok := RawFrom(st)
-		if !ok {
-			from, ok, err = firstRowDay(ctx, db)
-			if err != nil || !ok {
-				return rep, err
-			}
-		}
-		cut := dayOf(now.Add(-cfg.RetainRaw))
-		for days := 0; days < 3 && !from.After(rolled) && from.Before(cut); days++ {
-			lo, hi := dayRange(from)
-			var n int64
-			for _, table := range []string{"probes", "reachability", "probe_confirmations"} {
-				res, err := db.ExecContext(ctx, `DELETE FROM `+table+` WHERE started_at >= ? AND started_at <= ?`, lo, hi)
-				if err != nil {
-					return rep, fmt.Errorf("prune %s %s: %w", table, from.Format(dayLayout), err)
-				}
-				k, _ := res.RowsAffected()
-				n += k
-			}
-			// A sampled-out publication's rows are its decision, started at
-			// decided_at: pruned with the day its rows would have been,
-			// points and all (ON DELETE CASCADE).
-			res, err := db.ExecContext(ctx, `DELETE FROM sampling_decisions WHERE decided_at >= ? AND decided_at <= ?`, lo, hi)
-			if err != nil {
-				return rep, fmt.Errorf("prune sampling_decisions %s: %w", from.Format(dayLayout), err)
-			}
-			k, _ := res.RowsAffected()
-			n += k
-			rep.PrunedRows += n
-			rep.PrunedDays = append(rep.PrunedDays, from.Format(dayLayout))
-			from = from.Add(24 * time.Hour)
-			if err := st.SetMeta(metaRawFrom, from.Format(dayLayout), now); err != nil {
-				return rep, err
-			}
-		}
-	}
 	return rep, nil
 }
 

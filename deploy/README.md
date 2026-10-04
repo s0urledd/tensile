@@ -455,34 +455,33 @@ Budget for disk: one measurement is about 1.5 KB in `measurements.jsonl`
 (about 3 KB when it carries the verified row indices) and about twice that
 again in the database, one per validator a reading asks. At mocha's rate on
 28 September (about 20 blobs a minute, 12 to 20 validators asked each) that
-is about 1.2 to 1.8 GB a day of JSONL plus the database, until `raw_json`
-is dropped after 30 days. The JSONL files are the record; the three biggest are kept bounded
+is about 1.2 to 1.8 GB a day of JSONL plus the database. The JSONL files are the record; the three biggest are kept bounded
 by moving their older lines into compressed segments under `archive/`
 (below), never by deleting a line. `/v1/health` fails the `disk` check
-under 5% free so the alert arrives before a write does. When a disk fills,
+under 15% free, so the alert arrives while there is still room to act; the
+disk may be shared with other services, and nothing is deleted to make room. When a disk fills,
 move the oldest archive segments or the small record files off the box
 (append-only or immutable; a copy is complete the moment it is taken) and
 rebuild the database from the rest if you want it smaller. Nothing here
-deletes a probe row yet: the "all" window is exactly that.
+deletes a row.
 
-**Retention (decided 2026-09-18, implemented in the collector):** raw
-probe and heartbeat rows are kept for **90 days** (`-retain-raw`);
-`raw_json` (the bulk of a row) is dropped after **30 days**
-(`-retain-raw-json`) while every typed column, including the evidence
-columns from schema 9, stays; **14 days** after a UTC day ends
-(`-rollup-after`) the collector computes the day's per-validator rollup
-(obligation buckets by settlement day; classes, faults, gaps and
-heartbeats by start day) with the API's own SQL, and only a rolled day is
-ever pruned, whole days at a time. `-rollup-after` is a floor, not the
+**Retention (decided 2026-10-04):** every row is kept for good. Probe and
+heartbeat rows and their `raw_json` are never deleted or stripped, so an
+old blob, a validator's history and every rate read the same years on as
+they do today. The 90-day prune and the 30-day `raw_json` strip of
+2026-09-18 were retired before either first ran; their flags
+(`-retain-raw`, `-retain-raw-json`) are gone, and a unit that still passes
+one fails at start. **14 days** after a UTC day ends (`-rollup-after`) the
+collector computes the day's per-validator rollup (obligation buckets by
+settlement day; classes, faults, gaps and heartbeats by start day) with the
+API's own SQL, for speed only. `-rollup-after` is a floor, not the
 rule: a day rolls only once every promise settled on it has left its
 window (`must_serve_until` plus an hour) and no probe row of theirs still
 awaits the late shadow verdict, so a chain whose retention is longer than
 the flag holds the rollup rather than rolling a pending obligation; the
-log says which day is waiting and why. From the first prune on the "all"
-figures are the rollup plus the raw rows and carry a `rolled_up` label
-(`raw_from`, days folded in); the shorter windows never touch it. The
-retention pass runs hourly (`-retention-every`); the status file shows
-`rollup_through` and `raw_from`. A warning in the log that obligations
+log says which day is waiting and why, once when it starts waiting. The
+pass runs hourly (`-retention-every`); the status file shows
+`rollup_through` and `rollup_waiting`. A warning in the log that obligations
 were still pending at roll means `-rollup-after` is shorter than a
 retention window on this chain: raise it. The
 JSONL files (with their `archive/` segments) remain the record; the
@@ -581,10 +580,10 @@ mocha host on 29 September, and how to remove it once the owner approves:
 |---|---|---|---|
 | `probe-budget.json` | 1.3 MB | the prober before this change; the new prober never reads or writes it | after the new prober is running: `rm <DATA_DIR>/probe-budget.json` |
 | `sampling-master.key` | 32 B | the prober's reveal of the earlier draws' day secrets (`-policy`) | after the last draw day (2026-09-26) is revealed, on 2026-10-04 with `-reveal-after 7d`: `rm <DATA_DIR>/sampling-master.key` and drop `-policy` from the unit |
-| `sampling-secrets.jsonl` | 5.8 KB | `/v1/sampling`, the daily export, `sentinel-recompute -sampling` | only with the sampling audit itself: then `rm`, and remove `/v1/sampling` in the same change |
-| `sampling_decisions.jsonl` | 8.3 KB | the collector (`sampling_decisions` table), the daily export | the same: with the sampling audit |
-| table `sampling_decisions` (53 rows) and `sampling_decision_points` (318 rows, with its key index) | 0.2 MB | `/v1/sampling`, the obligation rows of sampled-out publications (`obligation_rows`) | with the sampling audit, in a migration that bumps the schema: `DROP TABLE sampling_decision_points; DROP TABLE sampling_decisions;` and the views over them |
-| index `probes_sampling_started` | 68 MB | `/v1/sampling` only | with the sampling audit, in the same migration: `DROP INDEX probes_sampling_started;` then `VACUUM` (hours on a 5 GB store; run it with the collector stopped) |
+| `sampling-secrets.jsonl` | 5.8 KB | `/v1/sampling`, the daily export, `sentinel-recompute -sampling` | kept: the earlier draws' audit is part of what old blobs show |
+| `sampling_decisions.jsonl` | 8.3 KB | the collector (`sampling_decisions` table), the daily export | kept, as above |
+| table `sampling_decisions` (53 rows) and `sampling_decision_points` (318 rows, with its key index) | 0.2 MB | `/v1/sampling`, the obligation rows of sampled-out publications (`obligation_rows`) | kept: removing them would change those blobs' obligations |
+| index `probes_sampling_started` | 68 MB | `/v1/sampling` only | kept for now; a smaller index only if `/v1/sampling` stays identical and as fast. Never `VACUUM` the store: it can renumber rowids that some figures read in order |
 | columns `probe_daily.faults`, `attested`, `unattested`, `unknown_att` | none yet (no day rolled) | nothing: written as 0 | a migration that bumps the schema, whenever the table is next changed |
 | columns `obligation_daily.end_unobserved`, `unobserved_reachable`, `unobserved_unreachable`, `unobserved_not_probed` | none yet | summed into `not_counted` | the same; one `not_counted` column would do |
 | `snapshots/` | 1.0 MB, 12 files | the API, which rewrites every file on start and on each refresh | nothing to do: none is left from an earlier model |

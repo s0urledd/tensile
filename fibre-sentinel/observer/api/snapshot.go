@@ -141,9 +141,9 @@ var warmWindows = []string{"24h", "7d", "30d", "all"}
 const (
 	snapshotTimeout    = 5 * time.Minute
 	snapshotTimeoutAll = 20 * time.Minute
-	// slowRefresh is when a refresh is worth a log line: at this point the
-	// operator should be lowering -retain-raw (deploy/README.md, "Backups,
-	// retention, rebuild") rather than waiting for the timeout.
+	// slowRefresh is when a refresh is worth a log line, well before the
+	// timeout: the window has outgrown its refresh, which the per-day
+	// rollups (rather than deleting rows) are there to answer.
 	slowRefresh = 45 * time.Second
 )
 
@@ -479,7 +479,7 @@ func (c *snapshotCache[T]) background(log logf, win Window) {
 		// It is the trend that matters, because the cost of this window grows
 		// with the history behind it and the end of that growth is a window
 		// that stops refreshing at all.
-		log("%s snapshot refresh (%s) took %s (over %s); consider lowering -retain-raw", c.label, win.Name, took.Round(time.Second), slowRefresh)
+		log("%s snapshot refresh (%s) took %s (over %s); the window's rows outgrow its refresh", c.label, win.Name, took.Round(time.Second), slowRefresh)
 		return
 	}
 	if ttl := c.ttl(win.Name); took >= ttl {
