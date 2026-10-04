@@ -215,9 +215,10 @@ function keyOf(cells: Cell[]): { sw: string[]; word: string; n: number }[] {
 const TIP_W = 216;
 
 /**
- * The latest checks, oldest to newest: one small square per check, coloured by its result, in one line across the
- * frame where there is room for it and in lines of a fixed count where there is not. Not a timeline: the cells are
- * evenly spaced whatever the time between the checks, and nothing marks time along it. A cell names its check (when,
+ * The latest checks, newest to oldest from the top left as the overview's recent blobs run: one small square per
+ * check, coloured by its result, in one line across the frame where there is room for it and in lines of a fixed count
+ * where there is not. Not a timeline: the cells are evenly spaced whatever the time between the checks, and nothing
+ * marks time along it. A cell names its check (when,
  * which blob, what came back) on hover, on focus and on a tap; a finger can slide along the strip to move from check
  * to check, and the arrow keys do the same.
  */
@@ -231,7 +232,7 @@ function Strip({ cells }: { cells: Cell[] }) {
   // on, and are dropped
   const slidAt = useRef(0);
   const sliding = () => performance.now() - slidAt.current < 700;
-  const tabK = focusK && cells.some((x) => x.k === focusK) ? focusK : cells[cells.length - 1]?.k;
+  const tabK = focusK && cells.some((x) => x.k === focusK) ? focusK : cells[0]?.k;
   const show = useCallback((i: number) => {
     const r = refs.current[i]?.getBoundingClientRect();
     if (!r) return;
@@ -273,7 +274,7 @@ function Strip({ cells }: { cells: Cell[] }) {
   const c = tip ? cells.find((x) => x.k === tip.k) : undefined;
   return (
     <div ref={box}>
-      <div className="vd-strip" role="group" aria-label="Latest checks, oldest to newest"
+      <div className="vd-strip" role="group" aria-label="Latest checks, newest to oldest"
         onPointerMove={scrub}>
         {cells.map((x, i) => (
           <button key={x.k} ref={(el) => { refs.current[i] = el; }} type="button"
@@ -396,8 +397,8 @@ function Page() {
   // older than these checks, and the Not served tab says where they are
   const nsInPeriod = notServedRows.filter((r) => !isOpen(r.p) && Date.parse(r.at) >= since).length;
 
-  // the strip: every check this page carries, oldest to newest, worded as its row
-  const cells: Cell[] = [...grouped].reverse().map(({ p, g, made, at }) => {
+  // the strip: every check this page carries, newest to oldest as the table lists them, worded as its row
+  const cells: Cell[] = grouped.map(({ p, g, made, at }) => {
     const op = isOpen(p);
     const r = resultOf(op ? { ...p, provisional: false } : p, g);
     return { k: `${p.vantage}|${p.promise_hash}|${p.scheduled_at}`, at, hash: p.promise_hash, tone: r.tone, word: r.word, made, open: op };
@@ -534,8 +535,8 @@ function Page() {
                 rest of the words */}
             {!notLive && (!o || decided === 0) && <p className="vd-rate-s">{noRate}</p>}
           </div>
-          {/* the latest checks whatever the period, at a fixed size: how many and the key over the cells, the oldest and
-              the newest check's times under them */}
+          {/* the latest checks whatever the period, at a fixed size: how many and the key over the cells, the newest and
+              the oldest check's times under them */}
           <div className="vd-latest">
             {cells.length > 0
               ? <>
@@ -547,8 +548,8 @@ function Page() {
                 </div>
                 <Strip key={addr} cells={cells} />
                 <p className="vd-ends" style={{ "--n1": Math.min(cells.length, 25) } as CSSProperties}>
-                  {cells.length > 1 && <span title={utcWord(cells[0].at)}>{monthDayTime(cells[0].at).slice(0, -3)}</span>}
-                  <span title={utcWord(cells[cells.length - 1].at)}>{monthDayTime(cells[cells.length - 1].at).slice(0, -3)} · {age(now - Date.parse(cells[cells.length - 1].at))} ago</span>
+                  <span title={utcWord(cells[0].at)}>{monthDayTime(cells[0].at).slice(0, -3)} · {age(now - Date.parse(cells[0].at))} ago</span>
+                  {cells.length > 1 && <span title={utcWord(cells[cells.length - 1].at)}>{monthDayTime(cells[cells.length - 1].at).slice(0, -3)}</span>}
                 </p>
               </>
               : <p className="vd-none-yet">No check of this validator on record yet.</p>}

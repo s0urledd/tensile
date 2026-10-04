@@ -2310,7 +2310,7 @@ button.warn:focus-visible { outline-offset: 0; }
 /* a fixed strip: 25 cells of 16px a line with 3px between them, 472 x 35 when full; fewer checks keep the same pitch
    from the first cell, and 25 or fewer take one line, so the end times stay 6px under the cells they date */
 .vd-stat .vd-strip { grid-template-columns: repeat(25, 16px); grid-template-rows: none; grid-auto-rows: 16px; gap: 3px; justify-content: start; max-width: none; }
-/* the oldest check's time under the first cell, the newest's and its age ending under the first line's last cell */
+/* the newest check's time and its age under the first cell, the oldest's ending under the first line's last cell */
 .vd-ends { display: flex; justify-content: space-between; gap: 16px; width: calc(var(--n1, 25) * 19px - 3px); min-width: max-content; margin: 6px 0 0; font-family: var(--font-table); font-size: var(--t-small); line-height: 16px; color: var(--text-3); font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
 /* the period's other figures in one line across the column, over a hairline */
 .vd-stat .vd-more { display: flex; flex-wrap: wrap; column-gap: 28px; row-gap: 2px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft); line-height: 20px; }
