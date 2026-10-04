@@ -398,8 +398,6 @@ function Page() {
         <dt title="The transaction that carried the MsgPayForFibre settling this blob">Transaction</dt>
         <dd className="bd-tx"><span className="mono" title={txHash}>{shortMid(txHash, 10, 6)}</span><Copy text={txHash} label="transaction hash" /></dd>
       </>}
-      <dt>Created</dt>
-      <dd><b title={utcWord(b.creation_timestamp)}>{monthDayTime(b.creation_timestamp)}</b><em>UTC</em></dd>
       {b.assignment_error && <><dt>Assignment</dt><dd>{b.assignment_error}</dd></>}
     </dl>
   );
@@ -423,14 +421,22 @@ function Page() {
       <dt>Fee paid</dt><dd title="Charged to the publisher's escrow; not the settlement transaction's own fee.">{b.charge ? <><b>{unit(tia(b.charge.fee_utia))}</b><em>{b.charge.timed_out ? "timed out" : b.charge.settled ? "settled" : "not settled yet"}</em></> : <em>not recorded</em>}</dd>
       <dt>Endorsed</dt><dd title="Voting power whose signature on the settlement verified. A settlement needs ⅔.">{stake != null ? <><b>{pctOf(b.attested_voting_power ?? 0, b.total_voting_power ?? 0)}</b><em>of voting power</em></> : <em>not recorded</em>}</dd>
       <dt className="tz" title={readTitle}><Eye />Rows back</dt><dd title={shown ? `Distinct rows retrieved and verified against the commitment; ${int(rc!.needed_rows)} of the ${int(rc!.total_rows)} reconstruct the blob.` : undefined}>{shown ? <><b>{int(rc!.served_distinct_rows)}</b><em>of {int(rc!.total_rows)} · {int(rc!.needed_rows)} needed</em></> : <><span className="u">—</span><em>{!over ? `not read yet · read before ${hhmm(b.must_serve_until)}` : "no reading"}</em></>}</dd>
+      {/* served and not served in one row: how many of those asked served, how many did not (red, with the dot for
+          failures that counted neither way), then when the blob was read */}
       <dt className="tz" title={readTitle}><Eye />Served</dt><dd title={counted ? `${full
-        ? `Every validator that endorsed the blob is asked for its own rows: ${int(asked)} were asked, and the rows of ${int(served)} came back and verified.`
+        ? `Every validator that endorsed the blob is asked for its own rows: ${int(asked)} were asked, and the rows of ${int(served)} came back and verified${notServed > 0 ? `; ${int(notServed)} did not serve, their own rows not coming back ${retried ? "at the reading and each time they were asked again" : "at the reading"}` : ""}.`
         : everyEndorser
-        ? `This reading asked every validator that endorsed the blob once: ${int(asked)} were asked, and the rows of ${int(served)} came back and verified${unasked > 0 ? `; the other ${int(unasked)} requests were Tensile's own gaps, counted neither way` : ""}.`
-        : `This reading asked validators in the client's order until it had enough rows: it asked ${int(asked)}, and ${int(served)} endorsing validators' rows came back and verified. The rest were not asked.`}${early ? ` ${finalNote}` : ""}` : undefined}>{counted ? <><b>{int(served)}</b><em>of {int(asked)} asked</em></> : <em>—</em>}</dd>
-      <dt className="tz" title={readTitle}><Eye />Not served</dt><dd title={`${full
-        ? retried ? "Endorsing validators whose own rows did not come back, at the reading and each time they were asked again." : "Endorsing validators whose own rows did not come back at the reading."
-        : "Endorsing validators whose rows did not come back from a blob that could not be reconstructed. On an available blob a validator that failed counts neither way."}${early ? ` ${finalNote}` : ""}`}>{counted ? <><b className={notServed > 0 ? "bad" : undefined}>{int(notServed)}</b>{notServedDot}{rc?.point_at && <em title={early ? `Read ${utcWord(rc.point_at)}. ${finalNote}` : utcWord(rc.point_at)}>{early ? <>final at {closes}</> : <>read {hhmm(rc.point_at)}</>}</em>}</> : <em>—</em>}</dd>
+        ? `This reading asked every validator that endorsed the blob once: ${int(asked)} were asked, and the rows of ${int(served)} came back and verified${unasked > 0 ? `; the other ${int(unasked)} requests were Tensile's own gaps, counted neither way` : ""}${notServed > 0 ? `; ${int(notServed)} did not serve: their rows did not come back from a blob that could not be reconstructed` : ""}.`
+        : `This reading asked validators in the client's order until it had enough rows: it asked ${int(asked)}, and ${int(served)} endorsing validators' rows came back and verified. The rest were not asked.${notServed > 0 ? ` ${int(notServed)} did not serve: their rows did not come back from a blob that could not be reconstructed.` : ""}`}${early ? ` ${finalNote}` : ""}` : undefined}>
+        {counted
+          ? <>
+            <b>{int(served)}</b><em>of {int(asked)} asked</em>
+            {notServed > 0 && <span className="bd-nsv">· <b className="bad">{int(notServed)}</b> not served</span>}
+            {notServedDot}
+            {rc?.point_at && <em title={early ? `Read ${utcWord(rc.point_at)}. ${finalNote}` : utcWord(rc.point_at)}>{early ? <>· final at {closes}</> : <>· read {hhmm(rc.point_at)}</>}</em>}
+          </>
+          : <em>—</em>}
+      </dd>
     </dl>
   );
   const sig = rows.length === 0
