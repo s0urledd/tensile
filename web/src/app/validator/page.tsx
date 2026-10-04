@@ -341,14 +341,15 @@ function Page() {
   const cons = v.cons_address || v.address;
   // Readings inside the retention window: the earlier schedule's checks after
   // the deadline count in nothing and stay in the full history. A blob this
-  // validator did not endorse is left out too, and so is a check made while it
-  // had no endpoint registered: it owed nothing for either, and the line only
-  // said "not endorsed" or "no endpoint" (an earlier reading asked validators
-  // in the client's order, endorsers or not); the API keeps them. One line per
-  // reading of a blob, its requests together, with its outcome group, once: the
-  // strip, the summary and the filter all read the same judgement, so they
+  // validator did not endorse is left out too: it owed nothing for it, and the
+  // line only said "not endorsed", or "no endpoint" for one asked while it had
+  // none registered (an earlier reading asked validators in the client's
+  // order, endorsers or not); the API keeps them. An endorser whose endpoint
+  // was gone when it was asked stays: that is a not-served reading. One line
+  // per reading of a blob, its requests together, with its outcome group, once:
+  // the strip, the summary and the filter all read the same judgement, so they
   // cannot disagree.
-  const grouped = linesOf(data.recent_probes.filter((p) => p.phase === "in_window" && p.classification !== "UNATTESTED" && p.classification !== "NOT_REGISTERED"));
+  const grouped = linesOf(data.recent_probes.filter((p) => p.phase === "in_window" && p.attested !== false && p.classification !== "UNATTESTED"));
   const probes = grouped.map((r) => r.p);
   const notServedRows = grouped.filter((r) => r.g === "not served");
   const shown = onlyNotServed ? notServedRows : grouped;
