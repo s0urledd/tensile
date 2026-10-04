@@ -71,7 +71,7 @@ export default function Methodology() {
       </ul>
 
       <h2 id="evidence">Evidence behind each figure</h2>
-      <p>The validator, blob and Blobs pages show what the chain records under <strong>On chain</strong>, and Tensile&rsquo;s own readings under <strong>Observed by Tensile</strong>. Every snapshot names the block it was computed through (<code>record_through</code>). Daily exports are signed, <code>/api/v1/exports</code>, and <code>sentinel-recompute</code> re-derives every verdict and figure from them.</p>
+      <p>The validator page shows what the chain records under <strong>On chain</strong> and Tensile&rsquo;s own readings under <strong>Observed by Tensile</strong>; on the blob page and the Blobs list, Tensile&rsquo;s own readings carry its eye. Every snapshot names the block it was computed through (<code>record_through</code>). Every reading stays on record for good: nothing is deleted, so a blob&rsquo;s page and every rate read the same later as they do today. Daily exports are signed, <code>/api/v1/exports</code>, and <code>sentinel-recompute</code> re-derives every verdict and figure from them.</p>
 
       <h2 id="vantage">Two locations</h2>
       <p>Endpoints are checked every five minutes from two locations; a host is unreachable only when both fail. Blobs are read from one location, as one client&rsquo;s download is.</p>
