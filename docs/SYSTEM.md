@@ -29,7 +29,7 @@ The processes share files, not memory, and only one of them writes SQLite.
 
 | process | binary | writes | reads |
 |---|---|---|---|
-| scanner | `sentinel-scan` | `publications.jsonl`, `payments.jsonl`, `host_history.jsonl`, `state.json` | chain RPC |
+| scanner | `sentinel-scan` | `publications.jsonl`, `payments.jsonl`, `host_history.jsonl`, `state.json` | chain RPC, and its websocket's new block headers |
 | prober | `sentinel-probe` | `measurements.jsonl`, `sampling-secrets.jsonl` (reveals of the earlier draws) | `publications.jsonl`, `state.json`, `registry.jsonl`, `sampling-master.key`, chain RPC |
 | heartbeat | `observer-heartbeat` | `reachability.jsonl` | chain RPC (registry) |
 | collector | `observer-collector` | `observer.db`, `registry.jsonl`, `amendments.jsonl`, `exports/` | every `.jsonl`, `state.json`, chain RPC |
@@ -50,6 +50,10 @@ is tied back to the code and configuration that produced it.
 ```
 chain block
   └─ scanner: single-message MsgPayForFibre txs (TryParseFibreTx)
+       ├─ each block read as soon as the node announces its header
+       │  (NewBlockHeader on the RPC websocket, -subscribe); the tip still
+       │  polled behind it, every 5 s (-subscribed-poll), and every second
+       │  (-poll) while the subscription is down
        ├─ param history  (EventUpdateFibreParams, + a state reconcile every 60 blocks)
        ├─ host history   (set_fibre_provider_info events, seeded from the bonded registry)
        ├─ validator set at the PROMISE height
@@ -79,9 +83,10 @@ chain block
        └─→ reachability.jsonl
 
   collector: tails all of it into SQLite with byte-offset cursors, every 10 s
-       ├─ between those passes, every second: state.json, publications and
-       │  payments only, so a new blob is served about a second after the
-       │  scanner writes it (-fast-every; nothing opened while they stand still)
+       ├─ between those passes: state.json, publications and payments only,
+       │  within a tenth of a second of the scanner writing one of them (their
+       │  directory's file events, -fast-watch) and every second besides
+       │  (-fast-every; nothing opened while they stand still)
        ├─ endpoint history from AllBondedFibreProviders
        ├─ escrow balances, validator identities, Keybase avatars
        ├─ deferred shadow verdicts (amendments) once the scan frontier passes
@@ -432,6 +437,14 @@ GET /v1/signing               endorsements per settled promise against the ⅔ q
 GET /v1/hosting               where the registered endpoints are hosted, and how concentrated
 ```
 
+**HTTP caching.** A successful answer is `Cache-Control: public, max-age=15`
+unless its route sets its own; an error is `no-store`. A blob lookup that
+finds nothing is `no-store` too: a 404 from `/v1/blobs/{hash}`, and
+`/v1/blobs?commitment=` or `?tx=` with no blob to list. A reader looks a
+blob up by what it holds, often a second after submitting it, and a miss a
+cache kept would say "not indexed yet" for 15 seconds after the blob was on
+record.
+
 **Validator addresses.** Every row is keyed by the consensus address in
 lower-case hex, and the answers keep naming validators by it (`address`,
 `validator_address`), which is what the site keys on. A reader knows a
@@ -531,14 +544,17 @@ headline. Tests hold both paths off the cache.
 Next.js `output: "export"` — plain files, all data fetched in the browser from
 `NEXT_PUBLIC_API_BASE` (default `/api`, which Caddy proxies same-origin).
 
-Every page's header and footer read `/v1/meta` and `/v1/tip`.
+Every page's header and footer read `/v1/meta` and `/v1/tip`. The header's
+search asks for a blob identifier that found nothing again each time
+`/v1/tip`'s `latest_blob` changes, while its panel is open, for two minutes
+after the identifier was first asked.
 
 | route | reads |
 |---|---|
 | `/` | `/v1/network` (the period, and `all` for Available), `/v1/validators` (the map's "served last" line is the rows' `last_served_at`), `/v1/blobs` (the recent blobs: as soon as `/v1/tip`'s `latest_blob` names a blob the grid does not hold, and every 30 s besides) |
 | `/validator/?addr=` | `/v1/validators/{addr}` |
 | `/blobs/` | `/v1/blobs` (the first page again as the chain moves), `/v1/namespaces`, `/v1/market` (the period), `/v1/publishers` (once its filter opens); its search (`?blob=`) asks 64 hex as `/v1/blobs/{hash}`, `?commitment=` and `?tx=`, and a blob ID as `?commitment=` |
-| `/blob/?hash=`, `?id=`, `?tx=` | `/v1/blobs/{hash}`; a blob ID (`?id=`) or a settlement transaction (`?tx=`) is found first with `/v1/blobs?commitment=` or `?tx=`, and several matches open the Blobs list of them |
+| `/blob/?hash=`, `?id=`, `?tx=` | `/v1/blobs/{hash}`; a blob ID (`?id=`) or a settlement transaction (`?tx=`) is found first with `/v1/blobs?commitment=` or `?tx=`, and several matches open the Blobs list of them; a blob not on record yet is asked for again each time `/v1/tip`'s `latest_blob` changes, and every 30 s |
 | `/publishers/` | `/v1/market`, `/v1/publishers` |
 | `/publisher/?addr=` | `/v1/publishers/{addr}` |
 | `/methodology/` | `/v1/params` (the protocol-parameters section; the rest is static) |
