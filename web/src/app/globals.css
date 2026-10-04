@@ -33,6 +33,9 @@
   --accent-ink: #005a63;
   --accent-tint: rgb(0 106 116 / .10);
   --ok: #3f8a5f;
+  /* the green as text: a shade darker than the fills, 5.56:1 on white and 4.7 on its own label's tint (--ok gave 4.19
+     and 3.63, under AA for small text) */
+  --ok-ink: #2e7550;
   --hold: #a36a00;
   --hold-tint: rgb(163 106 0 / .07);
   --fault: #b0262c;
@@ -147,6 +150,7 @@
   --accent-ink: #4cc3ce;
   --accent-tint: rgb(51 179 191 / .14);
   --ok: #5fb583;
+  --ok-ink: #5fb583;
   --hold: #d3a24a;
   --hold-tint: rgb(211 162 74 / .09);
   --fault: #e2736f;
@@ -185,7 +189,7 @@ main { min-height: 60vh; }
 .faint { color: var(--text-3); }
 .right { text-align: right; }
 .err { color: var(--fault); }
-.ok { color: var(--ok); }
+.ok { color: var(--ok-ink); }
 .word { font-weight: 500; }
 .word.fault { color: var(--fault); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
@@ -533,7 +537,7 @@ input[type=search]:focus { border-color: var(--accent); outline: none; }
 .btn { border: 1px solid var(--line); background: var(--paper); color: var(--text-2); border-radius: 6px; padding: 4px 10px; font: inherit; font-size: var(--t-small); cursor: pointer; }
 .btn:hover { color: var(--text); }
 .chip { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-small); color: var(--text-2); border: 1px solid var(--line); border-radius: 999px; padding: 1px 9px; white-space: nowrap; }
-.chip.ok { color: var(--ok); } .chip.hold { color: var(--hold); } .chip.fault { color: var(--fault); }
+.chip.ok { color: var(--ok-ink); } .chip.hold { color: var(--hold); } .chip.fault { color: var(--fault); }
 .note { border-left: 3px solid var(--line); background: var(--wash); border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: var(--t-cell); }
 .note.hold { border-color: var(--hold); background: var(--hold-tint); }
 .note .label { display: block; margin-bottom: 4px; color: var(--text); }
@@ -1261,7 +1265,7 @@ body { background: var(--canvas); }
 /* the labels under the two figures in capitals, as the window's own heading */
 .rb-fig > span:last-child { margin-top: 2px; font-size: var(--t-tiny); font-weight: 600; line-height: 16px; letter-spacing: .09em; text-transform: uppercase; }
 .rb-total { font-size: 15.5px; font-weight: 600; letter-spacing: -.012em; line-height: 21px; color: var(--text); }
-.rb-total.ok { color: var(--ok); }
+.rb-total.ok { color: var(--ok-ink); }
 
 /* the grid: five rows, each a window on one tape. A row clips its tape a few px outside the places, so a ring or a glow
    is not cut and a place sliding past the row's end is; the margins take that room back */
@@ -1313,7 +1317,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
    Blobs list's Tensile lane wears the same label */
 .rb-read-h > * { white-space: nowrap; flex: none; }
 .rb-st, .lg-t td.tn .lw { display: inline-flex; align-items: center; height: 20px; padding: 0 5px; border-radius: 999px; border: 1px solid var(--border); background: var(--wash); font-size: 10px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text-2); }
-.rb-st.ok, .lg-t td.tn .lw.ok { border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
+.rb-st.ok, .lg-t td.tn .lw.ok { border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok-ink); }
 .rb-st.bad, .lg-t td.tn .lw.hold { border-color: color-mix(in srgb, var(--hold) 45%, transparent); background: color-mix(in srgb, var(--hold) 12%, transparent); color: var(--hold-ink); }
 .rb-read-h .ov-eyebrow { display: inline; }
 .rb-read-h[data-fit="1"] .ov-eyebrow { letter-spacing: .04em; }
@@ -1718,7 +1722,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-t .c-b .cp { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: 2px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--text-3); opacity: .55; vertical-align: -3px; cursor: pointer; transition: opacity var(--dur), color var(--dur), background var(--dur); }
 .lg-t tr.row:hover .c-b .cp, .lg-t .c-b .cp:focus-visible { opacity: 1; }
 .lg-t .c-b .cp:hover { color: var(--accent-ink); background: var(--accent-tint); }
-.lg-t .c-b .cp.done { opacity: 1; color: var(--ok); }
+.lg-t .c-b .cp.done { opacity: 1; color: var(--ok-ink); }
 .lg-t .c-b .el { margin: 0 1px; font-weight: 400; color: var(--text-3); }
 .lg-t .c-b .ht { display: none; }
 .nsb { max-width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; cursor: pointer; }
@@ -2256,7 +2260,7 @@ button.warn:focus-visible { outline-offset: 0; }
 /* the Blobs list's copy mark, at full strength: a frame of facts has no row to hover */
 .vd-pf .cp { display: inline-grid; place-items: center; flex: none; width: 20px; height: 18px; margin-left: 4px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--text-3); cursor: pointer; transition: color var(--dur), background var(--dur); }
 .vd-pf .cp:hover { color: var(--accent-ink); background: var(--accent-tint); }
-.vd-pf .cp.done { color: var(--ok); }
+.vd-pf .cp.done { color: var(--ok-ink); }
 /* where it is hosted: the flag, the provider, then the network and the place quieter */
 .vd-hosting .flag { margin-right: 7px; }
 .vd-hosting .soft { color: var(--text-3); }
@@ -2265,7 +2269,7 @@ button.warn:focus-visible { outline-offset: 0; }
 .vd-stages { display: inline-flex; flex-wrap: wrap; column-gap: 12px; }
 .vd-stages > span { color: var(--text-2); white-space: nowrap; }
 .vd-stages i { margin-left: 1px; font-style: normal; }
-.vd-stages .ok i { color: var(--ok); }
+.vd-stages .ok i { color: var(--ok-ink); }
 /* a failed stage is amber, as the state it explains is; red on this site means not served */
 .vd-stages .bad, .vd-stages .bad i { color: var(--hold-ink); }
 .vd-stages .skip { color: var(--text-3); }
@@ -2417,7 +2421,7 @@ button.warn:focus-visible { outline-offset: 0; }
 .vd-tip .tip-x { margin-bottom: 2px; font-size: var(--t-tiny); line-height: 14px; letter-spacing: .02em; color: var(--text-3); }
 .vd-tip .mono { font-size: 11.5px; color: var(--text); }
 .vd-tip .tip-r { font-weight: 600; color: var(--text); }
-.vd-tip .tip-r.ok { color: var(--ok); }
+.vd-tip .tip-r.ok { color: var(--ok-ink); }
 .vd-tip .tip-r.fault { color: var(--fault); }
 .vd-tip .tip-r.hold { color: var(--hold-ink); }
 .vd-tip .tip-q { font-weight: 400; color: var(--text-3); }
@@ -2460,7 +2464,7 @@ button.warn:focus-visible { outline-offset: 0; }
 .vr-t .u { font-weight: 400; color: var(--text-3); }
 .vr-t td.tn .fault { color: var(--fault); font-weight: 500; }
 .vr-t td.tn .quiet { color: var(--text-3); }
-.vr-t .c-m .rs.ok { color: var(--ok); font-weight: 500; }
+.vr-t .c-m .rs.ok { color: var(--ok-ink); font-weight: 500; }
 .vr-t .c-m .rs.fault { color: var(--fault); font-weight: 500; }
 .vr-t .c-m .rs.hold { color: var(--hold-ink); font-weight: 500; }
 .vr-t .c-m .rs.hold::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--hold); vertical-align: 1px; }
@@ -2595,7 +2599,7 @@ button.warn:focus-visible { outline-offset: 0; }
 .bd-t .tn { padding-left: 14px; padding-right: 18px; background: var(--obs-bg); border-left: 1px dashed var(--line); font-family: var(--sans); font-size: var(--t-small); }
 .bd-t th.tn { background: color-mix(in srgb, var(--paper) 97.5%, var(--text)); }
 .bd-t th.tn svg { margin-right: 6px; vertical-align: -2px; color: var(--accent-ink); }
-.bd-t td.tn .ok { color: var(--ok); font-weight: 500; }
+.bd-t td.tn .ok { color: var(--ok-ink); font-weight: 500; }
 .bd-t td.tn .fault { color: var(--fault); font-weight: 500; }
 .bd-t td.tn .hold { color: var(--hold-ink); font-weight: 500; }
 .bd-t td.tn .hold::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--hold); vertical-align: 1px; }
