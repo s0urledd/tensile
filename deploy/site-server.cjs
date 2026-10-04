@@ -129,17 +129,77 @@ async function resolveFile(pathname) {
   return null;
 }
 
-function send(req, res, status, found, rel) {
+// Compressed copies, made once per file and kept in memory: brotli for a client that takes it, else gzip, both at
+// their best levels, since a file is compressed once per deploy rather than once per request. A copy is keyed by the
+// file's path, size and modification time, so the files a deploy swaps in are compressed afresh; the oldest copies go
+// first past PACKED_MAX bytes. Requests that arrive while a file is being compressed wait for that one compression.
+const PACKED_MAX = 64 * 1024 * 1024;
+const packed = new Map();     // key -> { br, gz, bytes }, oldest first
+const packing = new Map();    // key -> the compression in progress
+let packedBytes = 0;
+const brotli = (buf) => new Promise((ok, no) => zlib.brotliCompress(buf, { params: {
+  [zlib.constants.BROTLI_PARAM_QUALITY]: zlib.constants.BROTLI_MAX_QUALITY,
+  [zlib.constants.BROTLI_PARAM_SIZE_HINT]: buf.length,
+} }, (e, out) => (e ? no(e) : ok(out))));
+const gzipped = (buf) => new Promise((ok, no) => zlib.gzip(buf, { level: zlib.constants.Z_BEST_COMPRESSION }, (e, out) => (e ? no(e) : ok(out))));
+function packedOf(found) {
+  const key = `${found.file}|${found.size}|${found.mtime.getTime()}`;
+  const have = packed.get(key);
+  if (have) { packed.delete(key); packed.set(key, have); return Promise.resolve(have); }
+  if (packing.has(key)) return packing.get(key);
+  const job = (async () => {
+    const raw = await fs.promises.readFile(found.file);
+    const [br, gz] = await Promise.all([brotli(raw), gzipped(raw)]);
+    const p = { br, gz, bytes: br.length + gz.length };
+    packed.set(key, p);
+    packedBytes += p.bytes;
+    for (const [k, v] of packed) {
+      if (packedBytes <= PACKED_MAX || packed.size <= 1) break;
+      packed.delete(k);
+      packedBytes -= v.bytes;
+    }
+    return p;
+  })().finally(() => packing.delete(key));
+  packing.set(key, job);
+  return job;
+}
+
+async function send(req, res, status, found, rel) {
   const ext = path.extname(found.file).toLowerCase();
   const headers = { ...SECURITY, "content-type": TYPES[ext] || "application/octet-stream", "cache-control": cacheControl(rel), "last-modified": found.mtime.toUTCString() };
-  const gzip = COMPRESSIBLE.has(ext) && found.size > 1024 && /\bgzip\b/.test(req.headers["accept-encoding"] || "");
   if (COMPRESSIBLE.has(ext)) headers.vary = "Accept-Encoding";
-  if (gzip) headers["content-encoding"] = "gzip"; else headers["content-length"] = found.size;
-  res.writeHead(status, headers);
+  const accepts = req.headers["accept-encoding"] || "";
+  const coding = !COMPRESSIBLE.has(ext) || found.size <= 1024 ? "" : /\bbr\b/.test(accepts) ? "br" : /\bgzip\b/.test(accepts) ? "gzip" : "";
+  if (coding) {
+    // a file that cannot be compressed (a read or zlib error) goes out as it is
+    const p = await packedOf(found).catch((e) => { console.error(`site-server: compress ${rel}: ${e.message}`); return null; });
+    if (p) {
+      const body = coding === "br" ? p.br : p.gz;
+      res.writeHead(status, { ...headers, "content-encoding": coding, "content-length": body.length });
+      return res.end(req.method === "HEAD" ? undefined : body);
+    }
+  }
+  res.writeHead(status, { ...headers, "content-length": found.size });
   if (req.method === "HEAD") return res.end();
   const stream = fs.createReadStream(found.file);
   stream.on("error", () => res.destroy());
-  (gzip ? stream.pipe(zlib.createGzip()) : stream).pipe(res);
+  stream.pipe(res);
+}
+
+// After start, every compressible file of the export is compressed in the background, one at a time, so the first
+// visitors after a deploy are not the ones who wait for it.
+async function warm(dir = ROOT) {
+  let entries;
+  try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    const f = path.join(dir, e.name);
+    if (e.isDirectory()) { await warm(f); continue; }
+    if (!COMPRESSIBLE.has(path.extname(f).toLowerCase())) continue;
+    try {
+      const st = await fs.promises.stat(f);
+      if (st.size > 1024) await packedOf({ file: f, size: st.size, mtime: st.mtime });
+    } catch { /* a file that went away, or one that cannot be read: it is served as it is */ }
+  }
 }
 
 // SLOW_MS is when an API answer is worth a journal line.
@@ -192,9 +252,9 @@ const server = http.createServer(async (req, res) => {
       return res.end();
     }
     const found = await resolveFile(u.pathname);
-    if (found) return send(req, res, 200, found, u.pathname);
+    if (found) return await send(req, res, 200, found, u.pathname);
     const nf = await resolveFile("/404.html");
-    if (nf) return send(req, res, 404, nf, "/404.html");
+    if (nf) return await send(req, res, 404, nf, "/404.html");
     res.writeHead(404, { ...SECURITY, "content-type": "text/plain; charset=utf-8" });
     res.end("not found");
   } catch (e) {
@@ -205,5 +265,9 @@ const server = http.createServer(async (req, res) => {
 server.headersTimeout = 20_000;
 server.requestTimeout = 60_000;
 server.on("clientError", (_e, sock) => { if (sock.writable) sock.end("HTTP/1.1 400 Bad Request\r\n\r\n"); });
-server.listen(LISTEN.port, LISTEN.host, () => console.log(`site-server: ${ROOT} on ${LISTEN.host}:${LISTEN.port}, /api/v1 -> ${API.host}:${API.port}`));
+server.listen(LISTEN.port, LISTEN.host, () => {
+  console.log(`site-server: ${ROOT} on ${LISTEN.host}:${LISTEN.port}, /api/v1 -> ${API.host}:${API.port}`);
+  const t0 = Date.now();
+  warm().then(() => console.log(`site-server: ${packed.size} files compressed in ${Date.now() - t0} ms (${Math.round(packedBytes / 1024)} KB kept)`));
+});
 for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => server.close(() => process.exit(0)));
