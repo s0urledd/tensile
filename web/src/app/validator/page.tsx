@@ -3,7 +3,7 @@ import { Fragment, Suspense, useCallback, useEffect, useRef, useState, type CSSP
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useApi, type ValidatorDetail, type ValidatorReading, type Window, type RecordThrough, type Obligations, type Meta, type EndpointCheck, int, pctOf, bytes, utcWord, dateUTC, whenUTC, shortMid, notFound, rateTone, notCountedText, badRequest, MIN_RATED, API_BASE, provisionalNow, type ProvisionalFaults, type NetworkReference,
-  endOfWindow, fullReading, ownGap, ownSide, sharedAnswer, rawErrorWords, foreignRows, hhmm, attemptsOf, judged, askedTimes, FULL_READ_SINCE_WORDS, ago } from "@/lib/api";
+  endOfWindow, fullReading, ownGap, foreignRows, attemptsOf, judged, askedTimes, FULL_READ_SINCE_WORDS, ago } from "@/lib/api";
 import { useWindow, WindowSwitch, periodName } from "@/lib/window";
 import StatusLine from "@/components/StatusLine";
 import { Eye } from "@/components/Metrics";
@@ -157,14 +157,6 @@ function linesOf(rows: ValidatorReading[]): Line[] {
   // alone, so it is left out (a later attempt never follows a request that was not made)
   return out.filter((l) => (l.tries[0].attempt ?? 0) === 0).sort((a, b) => b.at.localeCompare(a.at));
 }
-/** one request's answer in a few words, for the list of a validator's requests at a reading */
-const answerWord = (p: ValidatorReading): string =>
-  p.service === "served" || p.outcome === "SERVED_OK" ? "served"
-  : p.classification === "NOT_PROBED" ? "not made in time"
-  : p.classification === "PROBE_ERROR" ? `Tensile's own ${ownSide(p.raw_error) || "error"}`
-  // a later attempt answered by another request to the same endpoint, which failed before any blob was asked for
-  : sharedAnswer(p.raw_error) ? `same answer as its request for another blob at ${hhmm(p.started_at)}: ${whatCame(p)}`
-  : whatCame(p);
 /**
  * The lane's word for one reading, in the Blobs list's tones: served green,
  * not served red, a failure that did not count amber with its dot (the rows
@@ -347,11 +339,14 @@ function Page() {
   const own = pageAddr(v.operator_address, v.address);
   const cons = v.cons_address || v.address;
   // Readings inside the retention window: the earlier schedule's checks after
-  // the deadline count in nothing and stay in the full history. One line per
-  // reading of a blob, its requests together, with its outcome group, once:
-  // the strip, the summary and the filter all read the same judgement, so
-  // they cannot disagree.
-  const grouped = linesOf(data.recent_probes.filter((p) => p.phase === "in_window"));
+  // the deadline count in nothing and stay in the full history. A blob this
+  // validator did not endorse is left out too: it owed nothing for it, and the
+  // line only said "not endorsed" (an earlier reading asked validators in the
+  // client's order, endorsers or not); the API keeps it. One line per reading
+  // of a blob, its requests together, with its outcome group, once: the strip,
+  // the summary and the filter all read the same judgement, so they cannot
+  // disagree.
+  const grouped = linesOf(data.recent_probes.filter((p) => p.phase === "in_window" && p.classification !== "UNATTESTED"));
   const probes = grouped.map((r) => r.p);
   const notServedRows = grouped.filter((r) => r.g === "not served");
   const shown = onlyNotServed ? notServedRows : grouped;
@@ -653,31 +648,23 @@ function Page() {
                 const t = Date.parse(readAt);
                 const rows = p.rows_expected ? <><b>{int(p.rows_returned)}</b><span className="u"> / {int(p.rows_expected)}</span></> : "—";
                 const ms = <>{int(p.total_duration_ms)}<span className="u"> ms</span></>;
-                // a validator asked more than once says so after the word (on a line of its own where the lane is narrow)
-                const at = made > 1 ? <span className="at">{askedTimes(made)}</span> : null;
+                // The lane says only what the check counts as: "not served", "served", or the word for a check that
+                // counts neither way. Its note says the rest in a sentence or two: what came back, how many times it
+                // was asked, and whether it is final. The blob's page, and the API, carry every request's detail.
+                const word = r.tone === "fault" ? "not served" : r.word;
                 // at a full reading, rows of the blob that are not the validator's own, among its answers, leave it
                 // counted neither way
                 const foreign = full && !judged(tries) && tries.some(foreignRows);
-                const notes = [
-                  r.tone === "hold" && (full
-                    ? (tries.some((x) => ownGap(x.classification))
-                      ? "not counted: its own rows did not come back, but one of Tensile’s own requests at the reading failed or was not made in time"
-                      : foreign ? "not counted: rows of the blob came back that are not its own, which show neither that it holds its rows nor that it does not"
-                      : "not counted: its own rows did not come back, but one of Tensile’s own requests at the reading failed or was not made in time, no request of the reading reached any server, or a request Tensile still owed it is not on record")
-                    : "not counted: the rows did not come back, and the blob was available from other validators"),
-                  r.tone !== "hold" && foreign && "not counted: rows of the blob came back that are not its own, which show neither that it holds its rows nor that it does not",
-                  tries.length > 1 && `requests in order: ${tries.map(answerWord).join(", ")}${judged(tries) ? "; the last answer carries the result" : ""}`,
-                  open && "the retention window is still open: final when it closes",
-                  !endOfWindow(p.schedule_label) && "read on the earlier schedule",
-                  `outcome: ${p.outcome.toLowerCase().replace(/_/g, " ")}`,
-                  (g === "not served" || r.tone === "hold") && p.raw_error && rawErrorWords(p),
-                  g === "not served" && p.provisional && !open && "provisional: counted, and can still be withdrawn",
-                  p.attested === false && "not endorsed by this validator, so outside the rate",
-                  p.retry_first_outcome && `first answer ${p.retry_first_outcome.toLowerCase().replace(/_/g, " ")}, dialled again at once`,
-                  p.host_changed && `re-registered during the window: the upload went to ${p.host_at_settlement}`,
-                  p.rpc_code && `gRPC ${p.rpc_code}`,
-                  p.shadowed_by && `answered from promise ${p.shadowed_by.slice(0, 10)}…`,
-                ].filter(Boolean).join(" · ");
+                const asked = made > 1 ? `, ${askedTimes(made)}` : "";
+                const note = [
+                  r.tone === "fault" ? `${cap(whatCame(p))}${asked}.`
+                    : r.tone === "ok" ? `Its own rows came back and verified${asked}.`
+                    : foreign ? "Not counted: rows came back that are not its own."
+                    : r.tone === "hold" ? `Not counted: ${!full ? "the blob was available from the others" : tries.some((x) => ownGap(x.classification)) ? "one of Tensile’s own requests failed" : "a gap on Tensile’s side"}.`
+                    : `Not counted${asked}.`,
+                  r.tone === "fault" && p.provisional && !open && "Provisional: it can still be withdrawn.",
+                  open && "Final when the retention window closes.",
+                ].filter(Boolean).join(" ");
                 return (
                   <tr key={`${p.vantage}|${p.promise_hash}|${p.scheduled_at}`} className="row"
                     onClick={(ev) => openRow(ev, href, onOpen)} onAuxClick={(ev) => openRow(ev, href, onOpen)}>
@@ -686,8 +673,8 @@ function Page() {
                     <td className="c-r">{rows}</td>
                     <td className="c-d">{ms}</td>
                     <td className="gap" aria-hidden="true" />
-                    <td className="tn"><span className={r.tone} title={[p.classification_reason, notes].filter(Boolean).join(" · ")}>{r.word}{at}</span></td>
-                    <td className="c-m"><span className={"rs " + r.tone}>{r.word}{at}</span><span className="sep rs-sep">·</span><span>{rows}</span><span className="sep">·</span><span>{ms}</span></td>
+                    <td className="tn"><span className={r.tone} title={note}>{word}</span></td>
+                    <td className="c-m"><span className={"rs " + r.tone} title={note}>{word}</span><span className="sep rs-sep">·</span><span>{rows}</span><span className="sep">·</span><span>{ms}</span></td>
                   </tr>
                 );
               })}

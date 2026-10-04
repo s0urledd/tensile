@@ -148,8 +148,10 @@ function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
     const merged: C = { hosts: [...a.hosts, ...b.hosts], ux: (a.ux * na + b.ux * nb) / (na + nb), uy: (a.uy * na + b.uy * nb) / (na + nb) };
     cs = cs.filter((_, i) => i !== best![0] && i !== best![1]).concat(merged);
   }
+  // a place's hosts as its popover lists them: the unreachable first, so a badge opened for its amber pip shows them at
+  // once, then the rest; each group by voting power
   return cs.map((c) => {
-    const hosts = [...c.hosts].sort((x, y) => (y.v.voting_power || 0) - (x.v.voting_power || 0));
+    const hosts = [...c.hosts].sort((x, y) => Number(y.state === "unreachable") - Number(x.state === "unreachable") || (y.v.voting_power || 0) - (x.v.voting_power || 0));
     const n = new Map<string, number>();
     for (const h of hosts) if (h.cc) n.set(h.cc, (n.get(h.cc) ?? 0) + 1);
     const ccs = [...n.entries()].sort((p, q) => q[1] - p[1]).map(([cc]) => cc);
@@ -625,7 +627,6 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
                           <span className="cm-share">{fmtShare(h.share)}</span>
                           <span className="cm-meta">
                             {[multi ? h.cc : "", h.provider, c.locs > 1 && h.city ? h.city : multi && !h.city ? countryName(h.cc) : "", h.state !== "reachable" ? STATE_WORD[h.state] : ""].filter(Boolean).join(" · ")}
-                            {(h.v.obligations?.broken ?? 0) > 0 && <span className="cm-broken"> · {h.v.obligations.broken} not served</span>}
                           </span>
                         </li>
                       ))}
