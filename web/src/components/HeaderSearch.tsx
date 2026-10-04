@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { API_BASE, type Blob, type Validator, type Publisher, int, utcWord } from "@/lib/api";
+import { API_BASE, useNewestBlob, type Blob, type Validator, type Publisher, int, utcWord } from "@/lib/api";
 import { blobKey } from "@/lib/blobkey";
 import { useFind } from "@/lib/blobfind";
 import { siteTarget, type SiteTarget } from "@/lib/sitefind";
@@ -14,6 +14,13 @@ const WORDS_FIT = 300;
 
 /** the most blobs one search lists in its panel, newest first; each opens its own page */
 const SHOWN = 25;
+
+/**
+ * how long after a blob identifier is first looked up a search that found nothing asks again, each time Tensile
+ * records a new blob while the panel is open: a reader who pasted a transaction hash a moment before its block was
+ * read sees the blob appear
+ */
+const RETRY_FOR = 2 * 60 * 1000;
 
 /** what the search takes, with the docs' example blob as the sample of each */
 const KINDS: [string, string][] = [
@@ -133,9 +140,11 @@ export default function HeaderSearch() {
     return () => document.removeEventListener("keydown", key);
   }, []);
 
-  // the lookups: each asks only for its own kind, once, and stands until the identifier changes
+  // the lookups: each asks only for its own kind, once, and stands until the identifier changes; a blob identifier
+  // that found nothing asks again as the tip names a newer blob, while the panel is open (RETRY_FOR)
+  const newest = useNewestBlob(); // the header's tip stream: no request of its own
   const blob = asked?.kind === "blob" ? blobKey(asked.id) : null;
-  const hit = useFind(blob, { limit: SHOWN });
+  const hit = useFind(blob, { limit: SHOWN, retryOn: on ? newest : null, retryForMs: RETRY_FOR });
   const val = useRecord<{ validator: Validator }>(asked?.kind === "validator" ? `/v1/validators/${asked.id}?window=24h` : null);
   const pub = useRecord<{ publisher: Publisher }>(asked?.kind === "publisher" ? `/v1/publishers/${asked.id}?window=all` : null);
 
