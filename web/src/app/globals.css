@@ -1253,12 +1253,12 @@ body { background: var(--canvas); }
 .rb[data-state="down"] .rb-live-d { background: var(--hold); }
 .rb[data-state="wait"] .rb-live-d { background: var(--pending); }
 /* under the grid: the settlements on record and the share of read blobs that were available, side by side under one
-   rule, a line between them from the rule down, as far from the one as from the other; the footer reaches into the
-   window's side padding by the same amount on both sides, for the longer label's room */
-.rb { --rb-foot-out: 22px; }
-.rb-foot { display: grid; grid-template-columns: max-content 1px max-content; justify-content: space-evenly; align-items: stretch; width: calc(100% + 2 * var(--rb-foot-out)); margin: 4px calc(-1 * var(--rb-foot-out)) 0; border-top: 1px solid var(--line); }
+   rule as wide as the window's content, a line between them from the rule down, as far from the one as from the other
+   (each as wide as its widest line: the first label is set on two lines). Both figures on one line at the top, each
+   over its own label */
+.rb-foot { display: grid; grid-template-columns: max-content 1px max-content; justify-content: space-evenly; align-items: stretch; width: 100%; margin-top: 4px; border-top: 1px solid var(--line); }
 .rb-div { background: var(--line); }
-.rb-fig { display: grid; justify-items: center; align-content: center; gap: 1px; margin: 0; padding: 10px 0 0; font-size: var(--t-small); color: var(--text-3); white-space: nowrap; }
+.rb-fig { display: grid; justify-items: center; align-content: start; gap: 1px; margin: 0; padding: 10px 0 0; font-size: var(--t-small); color: var(--text-3); white-space: nowrap; }
 /* the labels under the two figures in capitals, as the window's own heading */
 .rb-fig > span:last-child { margin-top: 2px; font-size: var(--t-tiny); font-weight: 600; line-height: 16px; letter-spacing: .09em; text-transform: uppercase; }
 .rb-total { font-size: 15.5px; font-weight: 600; letter-spacing: -.012em; line-height: 21px; color: var(--text); }
@@ -1302,13 +1302,19 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   border-radius: 18px; background: var(--rb-sheet); box-shadow: var(--rb-sheet-hi);
 }
 .rb-read { display: flex; flex-direction: column; }
-.rb-read-h { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 24px; margin: 0; font-size: var(--t-small); font-weight: 400; }
+/* the heading, the blob's state label and "settled 3h 59m ago" on one line: the label and the age a little smaller,
+   the gaps tighter. A pointed blob's longer heading ("Blob · 50th newest") is set smaller too, and only then the line
+   reaches 3px into the sheet's side padding on each side (6px on phones); the latest blob's heading is as the others */
+.rb-read-h { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 24px; margin: 0; font-size: var(--t-small); font-weight: 400; }
+@media (min-width: 1081px) { .rb-read-h.pick { margin: 0 -3px; } }
 /* the blob's state, a small label after the heading: in its retention window, then available or unavailable */
 .rb-read-h > * { white-space: nowrap; flex: none; }
-.rb-st { display: inline-flex; align-items: center; height: 20px; margin-right: auto; padding: 0 7px; border-radius: 999px; border: 1px solid var(--border); background: var(--wash); font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text-2); }
+.rb-st { display: inline-flex; align-items: center; height: 20px; margin-right: auto; padding: 0 5px; border-radius: 999px; border: 1px solid var(--border); background: var(--wash); font-size: 10px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text-2); }
 .rb-st.ok { border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
 .rb-st.bad { border-color: color-mix(in srgb, var(--hold) 45%, transparent); background: color-mix(in srgb, var(--hold) 12%, transparent); color: var(--hold-ink); }
 .rb-read-h .ov-eyebrow { display: inline; }
+.rb-read-h.pick .ov-eyebrow { font-size: 10px; letter-spacing: 0; }
+.rb-read-h .ov-when { font-size: 11px; }
 /* the facts as one wrapping line of items, the dl's rows dissolved:
    1,204,085
    Height · Sep 28 20:48 UTC · 16.0 MiB
@@ -1426,11 +1432,8 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .deck-row.no-cp { grid-template-areas: "rb" "rd"; }
   .deck-row > * { padding: 0 16px; }
   .deck-row > .rb-read { margin: 18px 16px 0 !important; padding: 15px 16px 16px; }
+  .rb-read-h.pick { margin: 0 -6px; }
   .deck-row > .rb { justify-self: stretch; width: auto; margin: 22px 16px 0 !important; padding: 16px 12px 18px; }
-  /* the window's side padding is 10-12px here: the footer reaches 10px into it, and the labels set a little tighter */
-  .rb { --rb-foot-out: 10px; }
-  .rb-fig { padding: 10px 0 0; }
-  .rb-fig > span:last-child { letter-spacing: .06em; }
   /* without the current providers the recent blobs open the row, under the bar */
   .deck-row.no-cp > .rb { margin-top: 0 !important; }
   .rb-grid { margin: 0; }
