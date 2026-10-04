@@ -2245,6 +2245,8 @@ button.warn:focus-visible { outline-offset: 0; }
 .vd-diag > span { font-weight: 500; color: var(--text); }
 .vd-diag.hold > span { color: var(--hold-ink); }
 .vd-diag .warn { margin-left: -7px; }
+/* when an endpoint that stopped answering last did */
+.vd-since { margin: 2px 0 0; font-size: var(--t-cell); line-height: 19px; color: var(--text-3); }
 .vd-diag a, .vd-none a { font-weight: 500; color: var(--accent-ink); }
 .vd-sub { display: flex; flex-wrap: wrap; column-gap: 14px; row-gap: 2px; margin: 12px 0 0; font-size: var(--t-cell); line-height: 18px; color: var(--text-3); }
 .vd-sub b { font-weight: 500; color: var(--text-2); }
@@ -2324,7 +2326,7 @@ button.warn:focus-visible { outline-offset: 0; }
 /* the newest check's time and its age under the first cell, the oldest's ending under the first line's last cell */
 .vd-ends { display: flex; justify-content: space-between; gap: 16px; width: calc(var(--n1, 25) * 19px - 3px); min-width: max-content; margin: 6px 0 0; font-family: var(--font-table); font-size: var(--t-small); line-height: 16px; color: var(--text-3); font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
 /* the period's other figures in one line across the column, over a hairline */
-.vd-stat .vd-more { display: flex; flex-wrap: wrap; column-gap: 28px; row-gap: 2px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft); line-height: 20px; }
+.vd-stat .vd-more { display: flex; flex-wrap: wrap; justify-content: space-between; column-gap: 28px; row-gap: 2px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft); line-height: 20px; }
 .vd-fi > em { margin-left: 6px; font-style: normal; font-family: var(--font-table); line-height: 1; color: var(--text-3); font-variant-numeric: tabular-nums lining-nums; }
 .vd-stat .vd-fi b { line-height: 1; }
 /* the chain's column: its name, then a fixed label column, so the values start at one x whatever the period, and a

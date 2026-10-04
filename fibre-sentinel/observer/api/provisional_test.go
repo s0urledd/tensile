@@ -99,6 +99,7 @@ func TestProvisionalFaultsAreCountedAndFlagged(t *testing.T) {
 			PromiseHash    string `json:"promise_hash"`
 			Classification string `json:"classification"`
 			Provisional    bool   `json:"provisional"`
+			SettledAt      string `json:"settled_at"`
 		} `json:"recent_probes"`
 		Windows []struct {
 			Provisional *prov `json:"provisional_faults"`
@@ -112,6 +113,13 @@ func TestProvisionalFaultsAreCountedAndFlagged(t *testing.T) {
 	}
 	if code := get(t, ts, "/v1/validators/"+a+"?window=24h", &detail); code != 200 {
 		t.Fatalf("detail: %d", code)
+	}
+	// each check says when its blob settled, the time its endorsement was given
+	for _, p := range detail.Recent {
+		want := map[string]time.Time{"newp": freshCreated, "oldp": oldCreated}[p.PromiseHash]
+		if got, err := time.Parse(time.RFC3339Nano, p.SettledAt); err != nil || !got.Equal(want) {
+			t.Errorf("%s settled_at = %q, want %s", p.PromiseHash, p.SettledAt, want.Format(time.RFC3339))
+		}
 	}
 	var fresh, old int
 	for _, p := range detail.Recent {

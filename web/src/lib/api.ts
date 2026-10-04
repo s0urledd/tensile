@@ -323,6 +323,8 @@ export type ValidatorReading = {
   shadowed_by?: string;
   /** where the upload went; host_changed when the host read differs (the validator re-registered during the window) */
   host_at_settlement?: string;
+  /** when the blob settled, which is when the validator endorsed it; absent from an API before it was named */
+  settled_at?: string;
   host_changed?: boolean;
   /**
    * what this request counts as for the validator: served; not_served (at a full reading, its last answer when none
