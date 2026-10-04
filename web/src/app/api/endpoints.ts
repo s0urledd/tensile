@@ -5,8 +5,8 @@
  *
  * Each parameter's type, allowed values, range and default are the ones
  * observer-api enforces (fibre-sentinel/observer/api). The example
- * responses are real answers of the Mocha API (mocha-5), taken on 30
- * September 2026 with the Try it values below; all but the ones marked
+ * responses are real answers of the Mocha API (mocha-5), taken on 4
+ * October 2026 with the Try it values below; all but the ones marked
  * `whole` are trimmed to a few fields. Nothing is added and no value is
  * changed.
  *
@@ -78,7 +78,7 @@ const rows: Param = {
 
 const EX_VALIDATORS = `{
   "window": {"name": "7d"},
-  "computed_at": "2026-09-30T05:58:48.392022076Z",
+  "computed_at": "2026-10-04T14:29:17.748900805Z",
   "validators": [
     {
       "address": "e4401aea8b1f8359fe58216d70d78a402689a2a4",
@@ -89,11 +89,11 @@ const EX_VALIDATORS = `{
       "endpoint_state": "reachable",
       "identity_status": "verified",
       "obligations": {
-        "served": 1918,
+        "served": 1855,
         "broken": 0,
-        "rate": {"num": 1918, "den": 1918, "value": 1}
+        "rate": {"num": 1855, "den": 1855, "value": 1}
       },
-      "signing": {"assigned": 8625, "signed": 7916},
+      "signing": {"assigned": 8524, "signed": 7815},
       "hosting": {"provider": "InterServer", "country": "US"}
     }
   ]
@@ -104,26 +104,28 @@ const EX_VALIDATOR = `{
   "validator": {
     "address": "e4401aea8b1f8359fe58216d70d78a402689a2a4",
     "moniker": "Huginn",
+    "operator_address": "celestiavaloper1d2ktc37cme7ydk30ylzhamutcynhdvyet7nt3x",
     "endpoint_state": "reachable",
     "obligations": {
-      "served": 1918,
+      "served": 1855,
       "broken": 0,
-      "not_counted": 5998,
-      "rate": {"num": 1918, "den": 1918, "value": 1}
+      "not_counted": 5945,
+      "rate": {"num": 1855, "den": 1855, "value": 1}
     },
-    "signing": {"assigned": 8625, "signed": 7916},
-    "load": {"bytes": 4756213248, "stored_bytes": 0, "rows_per_blob": 148}
+    "signing": {"assigned": 8524, "signed": 7815},
+    "load": {"bytes": 4770127616, "stored_bytes": 9178368, "rows_per_blob": 148}
   },
   "windows": [
-    {"window": {"name": "24h"}, "obligations": {"served": 0, "broken": 0}},
-    {"window": {"name": "7d"}, "obligations": {"served": 1918, "broken": 0}}
+    {"window": {"name": "24h"}, "obligations": {"served": 31, "broken": 0}},
+    {"window": {"name": "7d"}, "obligations": {"served": 1855, "broken": 0}}
   ],
-  "network_reference": {"median_rate": 1, "validators": 69},
+  "network_reference": {"median_rate": 1, "validators": 77},
   "recent_probes_truncated": true
 }`;
 
 const EX_STATUS = `{
   "address": "e4401aea8b1f8359fe58216d70d78a402689a2a4",
+  "operator_address": "celestiavaloper1d2ktc37cme7ydk30ylzhamutcynhdvyet7nt3x",
   "moniker": "Huginn",
   "host": "174.138.180.150:7980",
   "window": {"name": "7d"},
@@ -132,17 +134,17 @@ const EX_STATUS = `{
   "endpoint_state": "reachable",
   "identity_status": "verified",
   "obligations": {
-    "served": 1918,
+    "served": 1855,
     "broken": 0,
-    "rate": {"num": 1918, "den": 1918, "value": 1}
+    "rate": {"num": 1855, "den": 1855, "value": 1}
   },
   "signing": {
-    "assigned": 8625,
-    "signed": 7916,
-    "last_endorsed_at": "2026-09-28T20:48:38.760812205Z"
+    "assigned": 8524,
+    "signed": 7815,
+    "last_endorsed_at": "2026-10-04T14:28:50.795350731Z"
   },
   "last_endpoint_check": {
-    "at": "2026-09-30T05:59:40.968398993Z",
+    "at": "2026-10-04T14:27:12.361746574Z",
     "outcome": "REACHABLE"
   }
 }`;
@@ -150,18 +152,18 @@ const EX_STATUS = `{
 const EX_PROBES = `{
   "limit": 1,
   "truncated": true,
-  "next_before": "2026-09-29T00:48:20.592635297Z",
+  "next_before": "2026-10-04T14:02:09.958745992Z",
   "probes": [
     {
-      "promise_hash": "8a4aa311920cc5694ff88eee3e3928919ef97c4d4d057a946ee738ba9debe9e0",
+      "promise_hash": "3c45d04e34f44378810e469b2df62404387b58247965bd9cb4534fdb1559aa4a",
       "validator_address": "e4401aea8b1f8359fe58216d70d78a402689a2a4",
       "operator_address": "celestiavaloper1d2ktc37cme7ydk30ylzhamutcynhdvyet7nt3x",
-      "started_at": "2026-09-29T00:48:20.592635297Z",
+      "started_at": "2026-10-04T14:02:09.958745992Z",
       "outcome": "SERVED_OK",
       "classification": "HEALTHY",
       "rows_returned": 148,
       "rows_expected": 148,
-      "total_duration_ms": 506,
+      "total_duration_ms": 368,
       "service": "served"
     }
   ]
@@ -175,7 +177,9 @@ const EX_BLOBS = `{
       "blob_size": 16777216,
       "publisher": "celestia1las83d0dt9gew3faq2mxp2gtupq5drclee9snr",
       "settlement_height": 1204085,
+      "settlement_tx_hash": "e1ee077529fac8d580b8359758734af3b8f3e16bb28a634e8e9a58dfd41d8370",
       "settlement_time": "2026-09-28T20:48:38.760812205Z",
+      "blob_version": 0,
       "reconstructable": {
         "status": "yes",
         "served_distinct_rows": 8051,
@@ -197,7 +201,9 @@ const EX_BLOB = `{
     "promise_hash": "36f68ba9a781754e80037357ebf485d25e471332f436596904467099cfda2417",
     "blob_size": 16777216,
     "publisher": "celestia1las83d0dt9gew3faq2mxp2gtupq5drclee9snr",
+    "settlement_tx_hash": "e1ee077529fac8d580b8359758734af3b8f3e16bb28a634e8e9a58dfd41d8370",
     "must_serve_until": "2026-09-29T00:48:35.807567083Z",
+    "blob_version": 0,
     "reconstructable": {
       "status": "yes",
       "served_distinct_rows": 8051,
@@ -230,14 +236,14 @@ const EX_BLOB = `{
 const EX_NAMESPACES = `{
   "namespaces": [
     {
-      "namespace": "00000000000000000000000000000000000000736f762d6e696b6f2d61",
-      "blobs": 8467,
-      "bytes": 142052687872,
-      "blobs_24h": 0,
-      "bytes_24h": 0,
+      "namespace": "00000000000000000000000000000000000000000074656e73696c6500",
+      "blobs": 33,
+      "bytes": 550502400,
+      "blobs_24h": 32,
+      "bytes_24h": 550240256,
       "accounts": 1,
-      "first_seen": "2026-09-28T12:47:32.406462187Z",
-      "last_blob": "2026-09-28T20:48:38.760812205Z"
+      "first_seen": "2026-10-01T17:18:06.819013523Z",
+      "last_blob": "2026-10-04T14:28:50.795350731Z"
     }
   ],
   "limit": 3,
@@ -246,23 +252,23 @@ const EX_NAMESPACES = `{
 
 const EX_PUBLISHERS = `{
   "window": {"name": "7d"},
-  "count": 10,
+  "count": 5,
   "publishers": [
     {
       "publisher": "celestia1las83d0dt9gew3faq2mxp2gtupq5drclee9snr",
-      "settlements": 8467,
-      "bytes": 142052687872,
-      "fees_utia": 29888510000,
-      "fees_share": 0.9882393979672135,
-      "paid_per_mib_utia": 220625,
+      "settlements": 8472,
+      "bytes": 142723776512,
+      "fees_utia": 30006960000,
+      "fees_share": 0.9921409253965701,
+      "paid_per_mib_utia": 220457.85823439521,
       "namespaces": [
         {"namespace": "00000000000000000000000000000000000000736f762d6e696b6f2d61", "settlements": 8467, "bytes": 142052687872}
       ],
-      "namespaces_total": 1,
+      "namespaces_total": 2,
       "first_settlement_at": "2026-09-28T12:47:32.406462187Z",
-      "last_settlement_at": "2026-09-28T20:48:38.760812205Z",
-      "readings": {"available": 8324, "unavailable": 0, "in_retention_window": 0, "not_read": 143},
-      "escrow": {"balance_utia": 111490000, "available_utia": 111490000}
+      "last_settlement_at": "2026-10-02T14:54:50.445602763Z",
+      "readings": {"available": 8329, "unavailable": 0, "in_retention_window": 0, "not_read": 143},
+      "escrow": {"balance_utia": 19993040000, "available_utia": 19993040000}
     }
   ]
 }`;
@@ -271,23 +277,23 @@ const EX_PUBLISHER = `{
   "window": {"name": "7d"},
   "publisher": {
     "publisher": "celestia1las83d0dt9gew3faq2mxp2gtupq5drclee9snr",
-    "settlements": 8467,
-    "fees_utia": 29888510000,
+    "settlements": 8472,
+    "fees_utia": 30006960000,
     "timeouts": 0,
     "first_settlement_at": "2026-09-28T12:47:32.406462187Z",
-    "last_settlement_at": "2026-09-28T20:48:38.760812205Z",
-    "readings": {"available": 8324, "unavailable": 0, "in_retention_window": 0, "not_read": 143},
-    "escrow": {"balance_utia": 111490000, "available_utia": 111490000},
+    "last_settlement_at": "2026-10-02T14:54:50.445602763Z",
+    "readings": {"available": 8329, "unavailable": 0, "in_retention_window": 0, "not_read": 143},
+    "escrow": {"balance_utia": 19993040000, "available_utia": 19993040000},
     "pending_withdrawals": {"count": 0, "utia": 0}
   },
   "windows": [
     {
       "window": {"name": "all"},
-      "settlements": 8467,
+      "settlements": 8472,
       "namespaces": [
         {"namespace": "00000000000000000000000000000000000000736f762d6e696b6f2d61", "settlements": 8467, "bytes": 142052687872}
       ],
-      "namespaces_total": 1
+      "namespaces_total": 2
     }
   ],
   "recent_payments": [
@@ -305,13 +311,13 @@ const EX_PUBLISHER = `{
 
 const EX_MARKET = `{
   "window": {"name": "7d"},
-  "settlements": 8625,
-  "blobs": 8623,
-  "fees_settled_utia": 30244200000,
-  "bytes": 143526461440,
-  "publishers_active": 7,
+  "settlements": 8524,
+  "blobs": 8524,
+  "fees_settled_utia": 30244655000,
+  "bytes": 143911550976,
+  "publishers_active": 4,
   "timeouts": 0,
-  "escrow_total_utia": 207465000,
+  "escrow_total_utia": 20873330000,
   "daily": [
     {
       "day": "2026-09-28",
@@ -323,27 +329,27 @@ const EX_MARKET = `{
   "top_publishers": [
     {
       "publisher": "celestia1las83d0dt9gew3faq2mxp2gtupq5drclee9snr",
-      "fees_share": 0.9882393979672135,
-      "bytes_share": 0.9897316943982758
+      "fees_share": 0.9921409253965701,
+      "bytes_share": 0.9917464966783793
     }
   ]
 }`;
 
 const EX_NETWORK = `{
   "window": {"name": "7d"},
-  "registered_endpoints": 73,
-  "reachability": {"num": 72, "den": 73, "value": 0.9863013698630136},
+  "registered_endpoints": 78,
+  "reachability": {"num": 76, "den": 78, "value": 0.9743589743589743},
   "obligations": {
-    "served": 284544,
-    "broken": 0,
-    "not_counted": 174576,
-    "rate": {"num": 284544, "den": 284544, "value": 1}
+    "served": 282534,
+    "broken": 4,
+    "not_counted": 172260,
+    "rate": {"num": 282534, "den": 282538, "value": 0.9999858426123212}
   },
   "reconstructable": {
     "recoverable": {"num": 1999, "den": 1999, "value": 1},
     "yes": 1999,
     "no": 0,
-    "not_read": 191,
+    "not_read": 138,
     "publications_examined": 2000
   }
 }`;
@@ -351,27 +357,27 @@ const EX_NETWORK = `{
 const EX_SIGNING = `{
   "window": {"name": "7d"},
   "threshold": {"num": 2, "den": 3},
-  "promises": 8625,
-  "meets_threshold": {"num": 8625, "den": 8625, "value": 1},
+  "promises": 8524,
+  "meets_threshold": {"num": 8524, "den": 8524, "value": 1},
   "buckets": [
-    {"key": "q_70", "label": "⅔ – 70%", "count": 6250},
-    {"key": "70_75", "label": "70 – 75%", "count": 1704}
+    {"key": "q_70", "label": "⅔ – 70%", "count": 6212},
+    {"key": "70_75", "label": "70 – 75%", "count": 1661}
   ],
   "signers_median": 53
 }`;
 
 const EX_HOSTING = `{
   "summary": {
-    "registered_hosts": 73,
-    "resolved_hosts": 73,
+    "registered_hosts": 78,
+    "resolved_hosts": 78,
     "by_provider": [
-      {"key": "Scaleway", "hosts": 3, "stake_share": 0.14928847580443982}
+      {"key": "Scaleway", "hosts": 3, "stake_share": 0.14623101036259428}
     ],
     "nakamoto_third": {
       "provider": {
         "count": 3,
-        "entities": ["Scaleway", "Cherry Servers", "Hetzner"],
-        "share": 0.40274827648451667
+        "entities": ["Scaleway", "Cherry Servers", "GTHost"],
+        "share": 0.3962039256745373
       }
     }
   }
@@ -422,15 +428,19 @@ const EX_PUBKEY = `{
     "key_fingerprint": "sha256:8eb4c98fd59e067ce8651f0edec06bcccc6d92b49b2ddd8161929ec3826a5412",
     "public_key": "VgeY7esoNK5uSXdt0DRLdS0K74K3hneAD2Gx5T1vd8s=",
     "first_day": "2026-09-24",
-    "last_day": "2026-09-29"
+    "last_day": "2026-10-03"
   }
 }`;
 
 const EX_TIP = `{
-  "height": 1245968,
-  "block_time": "2026-09-30T06:03:27.867738453Z",
+  "height": 1377383,
+  "block_time": "2026-10-04T14:29:36.479193218Z",
   "fibre_active": true,
-  "server_time": "2026-09-30T06:03:38.225648922Z"
+  "latest_blob": {
+    "promise_hash": "873f226127aafe95680a625a16b89906954447f97ab190f8bc16f84819269369",
+    "settlement_height": 1377367
+  },
+  "server_time": "2026-10-04T14:29:40.842798062Z"
 }`;
 
 const EX_HEALTH = `{
@@ -440,11 +450,11 @@ const EX_HEALTH = `{
     {
       "name": "chain_liveness",
       "ok": true,
-      "detail": "newest block 47s old (2026-09-30T06:02:50Z)"
+      "detail": "newest block 36s old (2026-10-04T14:29:05Z)"
     }
   ],
   "pin_status": "matches",
-  "server_time": "2026-09-30T06:03:38.231100213Z"
+  "server_time": "2026-10-04T14:29:40.849080098Z"
 }`;
 
 const EX_VALIDATOR_FEED = `<feed xmlns="http://www.w3.org/2005/Atom">
@@ -460,7 +470,7 @@ const EX_VALIDATOR_FEED = `<feed xmlns="http://www.w3.org/2005/Atom">
 
 const EX_FEED = `<feed xmlns="http://www.w3.org/2005/Atom">
   <title type="text">Tensile · mocha-5 · Fibre network events</title>
-  <updated>2026-09-29T18:10:13Z</updated>
+  <updated>2026-10-04T13:09:24Z</updated>
   <entry>
     <id>tag:tensile.huginn.tech,2026:tensile/mocha-5/5282878ddcbbe0d2e0ca42d54cb64711c901ba75/bonded-joined/20260929T181013Z</id>
     <updated>2026-09-29T18:10:13Z</updated>
@@ -540,10 +550,10 @@ export const GROUPS: Group[] = [
         id: "blobs",
         path: "/v1/blobs",
         summary: "Settled blobs, newest first, by namespace, commitment, transaction or publisher.",
-        desc: "Filters combine, and `total` counts every blob the filters and the cursor select. Each blob carries `settlement_tx_hash`, the transaction that settled it.",
+        desc: "Filters combine, and `total` counts every blob the filters and the cursor select. Each blob carries `settlement_tx_hash`, the transaction that settled it, and `blob_version`, the first byte of the client's blob ID.",
         params: [
           { name: "namespace", in: "query", type: "string", desc: "A namespace, 58 hex characters.", example: NAMESPACE },
-          { name: "commitment", in: "query", type: "string", desc: "A blob commitment, 64 hex characters: the client's blob ID without its version byte. An answer with no blob is not cached." },
+          { name: "commitment", in: "query", type: "string", desc: "A blob commitment, the client's blob ID without its version byte: 64 hex characters, either case, with or without 0x. An answer with no blob is not cached." },
           { name: "tx", in: "query", type: "string", desc: "The hash of the transaction that settled the blob: 64 hex characters, either case, with or without 0x. An answer with no blob is not cached." },
           { name: "publisher", in: "query", type: "string", desc: "The celestia1… account whose escrow paid." },
           { name: "limit", in: "query", type: "integer", range: "1–500", default: "50", desc: "Blobs per page.", example: "2" },
@@ -557,7 +567,7 @@ export const GROUPS: Group[] = [
         id: "blob",
         path: "/v1/blobs/{hash}",
         summary: "One blob: availability, charge, validators with rows, and readings.",
-        desc: "The blob carries `settlement_tx_hash`, the transaction that settled it. `reconstructable.status` is yes (Available), no (Unavailable), pending, not_read or unknown. Each assignment's `service` is served, not_served, in_retention_window (until the window closes; `probes` carry the reading's result once it is in) or deadline_unverified.",
+        desc: "The blob carries `settlement_tx_hash` and `blob_version`, as on /v1/blobs. `reconstructable.status` is yes (Available), no (Unavailable), pending, not_read or unknown. Each assignment's `service` is served, not_served, in_retention_window (until the window closes; `probes` carry the reading's result once it is in) or deadline_unverified.",
         params: [
           { name: "hash", in: "path", type: "string", required: true, desc: "The blob's promise hash, 64 hex characters.", example: BLOB },
           rows,
@@ -617,7 +627,7 @@ export const GROUPS: Group[] = [
         id: "network",
         path: "/v1/network",
         summary: "Network service rate, availability and endpoint reachability.",
-        desc: "`exclude` recomputes the figures without the named validators; availability still counts every validator.",
+        desc: "`exclude` recomputes the figures without the named validators; availability still counts every validator. `provisional_faults`, when present, counts the `broken` obligations that rest only on not-served readings under 30 minutes old, which can still be withdrawn.",
         params: [
           windowParam, asOf,
           { name: "exclude", in: "query", type: "string", desc: "Up to 8 validators in any address form, comma-separated or repeated." },
@@ -700,8 +710,8 @@ export const GROUPS: Group[] = [
       {
         id: "tip",
         path: "/v1/tip",
-        summary: "The chain's newest block as Tensile last saw it, and the newest blob it has recorded.",
-        desc: "`block_time` is absent while Tensile catches up to the tip. `latest_blob`, its `promise_hash` and `settlement_height`, is the first blob /v1/blobs lists, and absent while there is none: when it changes, a new blob is on record.",
+        summary: "The chain's newest block and the newest blob Tensile has recorded.",
+        desc: "`height` and `block_time` are the chain node's newest committed block, at most a quarter of a second old, and the answer is not cached; `block_time` is absent only when the node does not answer and Tensile is still catching up to the tip. `latest_blob`, its `promise_hash` and `settlement_height`, is the first blob /v1/blobs lists, and absent while there is none: when it changes, a new blob is on record.",
         params: [],
         example: EX_TIP,
         whole: true,
@@ -710,6 +720,7 @@ export const GROUPS: Group[] = [
         id: "health",
         path: "/v1/health",
         summary: "Tensile's status, ok, degraded or down, with each check behind it.",
+        desc: "The status is down when no process is alive and degraded when any check fails, such as a stopped process, the chain's newest block over 10 minutes old or less than 15% of the disk free.",
         params: [],
         errors: "503 when the status is not ok, with the same body.",
         example: EX_HEALTH,
