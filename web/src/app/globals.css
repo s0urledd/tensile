@@ -2550,6 +2550,9 @@ button.warn:focus-visible { outline-offset: 0; }
 .bd-meta .copy { margin-left: 2px; }
 /* the transaction in a block explorer, after its copy button; flush under the hash where the row wraps it (its space
    on the line is the copy button's right margin, which a wrap leaves at the line's end) */
+/* the not-served count beside the served one, in its own red */
+.bd-figs .bd-nsv { color: var(--text-2); }
+.bd-figs .bd-nsv b { margin-right: 4px; }
 .bd-meta .bd-tx .copy { margin-right: 6px; }
 .bd-meta .lg-who .hd { font-size: var(--t-cell); }
 .bd-meta .u { font-weight: 400; color: var(--text-3); }
