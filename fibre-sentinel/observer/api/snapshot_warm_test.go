@@ -178,3 +178,30 @@ func TestWarmSnapshotsFillsEveryWindowForTheNextProcess(t *testing.T) {
 		t.Fatalf("%d snapshot(s) computed for vantage eu1 were loaded by vantage local", n)
 	}
 }
+
+// The warm-up leaves a window a reader computed while it was busy with the
+// ones before it, rather than replace it with one that ends at the warm-up's
+// start; a window it does compute ends when it reaches it. Before, the
+// publishers' table and the market board, read a moment apart from one cache,
+// could describe two moments.
+func TestWarmLeavesAWindowAReaderComputed(t *testing.T) {
+	c := newSnapshotCache("test", func(_ context.Context, w Window) (time.Time, error) { return w.End, nil })
+	started := time.Now()
+	time.Sleep(5 * time.Millisecond)
+	read := windowFor("7d", time.Now())
+	got, _, _, err := c.get(context.Background(), nil, read)
+	if err != nil || !got.Equal(read.End) {
+		t.Fatalf("the reader's 7d: %v %v", got, err)
+	}
+	c.warm(nil, started)
+	c.wait()
+	c.mu.Lock()
+	week, all := c.entries["7d"], c.entries["all"]
+	c.mu.Unlock()
+	if week == nil || !week.v.Equal(read.End) {
+		t.Fatalf("the warm-up replaced the reader's 7d window, ending %v, with one ending %v", read.End, week)
+	}
+	if all == nil || all.v.Before(read.End) {
+		t.Fatalf("the warm-up computed the all window as of its start, not as of when it reached it: %v", all)
+	}
+}
