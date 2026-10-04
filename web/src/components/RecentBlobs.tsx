@@ -185,17 +185,20 @@ function nth(n: number): string {
   const r10 = n % 10, r100 = n % 100;
   return n + (r10 === 1 && r100 !== 11 ? "st" : r10 === 2 && r100 !== 12 ? "nd" : r10 === 3 && r100 !== 13 ? "rd" : "th");
 }
-/** "8 s ago", "4 min ago", "3 h 5 min ago", "2 d ago", by the given clock */
+/**
+ * "8s ago", "4m ago", "3h 5m ago", "2d ago", by the given clock: short, so the readout's heading, its blob's state
+ * label and its age share one line in the card's width; the settlement's full time is on hover
+ */
 function liveAgo(t: string, now: number): string {
   const s = Math.floor((now - Date.parse(t)) / 1000);
   if (!Number.isFinite(s)) return "";
   if (s < 1) return "just now";
-  if (s < 60) return `${s} s ago`;
+  if (s < 60) return `${s}s ago`;
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m} min ago`;
+  if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60), rm = m % 60;
-  if (h < 24) return rm ? `${h} h ${rm} min ago` : `${h} h ago`;
-  return `${Math.floor(h / 24)} d ago`;
+  if (h < 24) return rm ? `${h}h ${rm}m ago` : `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
 }
 
 /** a blob's age on the observer's clock, every second while it is under a minute old, then every 15 s */
@@ -212,7 +215,7 @@ function Age({ at, skew }: { at: string; skew: number }) {
     tick();
     return () => window.clearTimeout(t);
   }, [at, skew]);
-  return now ? <span className="ov-when" title={utcWord(at)}>settled {liveAgo(at, now)}</span> : null;
+  return now ? <span className="ov-when" title={`Settled ${utcWord(at)}`}>{liveAgo(at, now)}</span> : null;
 }
 
 /** what the grid shows: a snapshot of the feed, and the last move into it */

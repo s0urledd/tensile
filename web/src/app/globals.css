@@ -1253,12 +1253,12 @@ body { background: var(--canvas); }
 .rb[data-state="down"] .rb-live-d { background: var(--hold); }
 .rb[data-state="wait"] .rb-live-d { background: var(--pending); }
 /* under the grid: the settlements on record and the share of read blobs that were available, side by side under one
-   rule, a line between them from the rule down. The footer reaches into the window's side padding by the same amount
-   on both sides, so the line stays on the grid's middle and the longer label has room */
+   rule, a line between them from the rule down, as far from the one as from the other; the footer reaches into the
+   window's side padding by the same amount on both sides, for the longer label's room */
 .rb { --rb-foot-out: 22px; }
-.rb-foot { display: grid; grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr); align-items: stretch; width: calc(100% + 2 * var(--rb-foot-out)); margin: 4px calc(-1 * var(--rb-foot-out)) 0; border-top: 1px solid var(--line); }
+.rb-foot { display: grid; grid-template-columns: max-content 1px max-content; justify-content: space-evenly; align-items: stretch; width: calc(100% + 2 * var(--rb-foot-out)); margin: 4px calc(-1 * var(--rb-foot-out)) 0; border-top: 1px solid var(--line); }
 .rb-div { background: var(--line); }
-.rb-fig { display: grid; justify-items: center; align-content: center; gap: 1px; margin: 0; padding: 10px 8px 0; font-size: var(--t-small); color: var(--text-3); white-space: nowrap; }
+.rb-fig { display: grid; justify-items: center; align-content: center; gap: 1px; margin: 0; padding: 10px 0 0; font-size: var(--t-small); color: var(--text-3); white-space: nowrap; }
 /* the labels under the two figures in capitals, as the window's own heading */
 .rb-fig > span:last-child { margin-top: 2px; font-size: var(--t-tiny); font-weight: 600; line-height: 16px; letter-spacing: .09em; text-transform: uppercase; }
 .rb-total { font-size: 15.5px; font-weight: 600; letter-spacing: -.012em; line-height: 21px; color: var(--text); }
@@ -1302,10 +1302,10 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   border-radius: 18px; background: var(--rb-sheet); box-shadow: var(--rb-sheet-hi);
 }
 .rb-read { display: flex; flex-direction: column; }
-.rb-read-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 24px; margin: 0; font-size: var(--t-small); font-weight: 400; }
+.rb-read-h { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 24px; margin: 0; font-size: var(--t-small); font-weight: 400; }
 /* the blob's state, a small label after the heading: in its retention window, then available or unavailable */
 .rb-read-h > * { white-space: nowrap; flex: none; }
-.rb-st { display: inline-flex; align-items: center; height: 20px; margin-right: auto; padding: 0 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--wash); font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text-2); }
+.rb-st { display: inline-flex; align-items: center; height: 20px; margin-right: auto; padding: 0 7px; border-radius: 999px; border: 1px solid var(--border); background: var(--wash); font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text-2); }
 .rb-st.ok { border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
 .rb-st.bad { border-color: color-mix(in srgb, var(--hold) 45%, transparent); background: color-mix(in srgb, var(--hold) 12%, transparent); color: var(--hold-ink); }
 .rb-read-h .ov-eyebrow { display: inline; }
