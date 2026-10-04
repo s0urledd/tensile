@@ -532,7 +532,7 @@ var simWitnesses = []struct {
 
 // TestDayPartsEquivalence runs the harness over many seeds: every figure
 // from the partials equal, byte for byte, to the shipped statements', after
-// every pass and between the statements of every prune.
+// every pass and between the statements of every prune (pruneLikeBefore).
 // TENSILE_DAYPARTS_FULL runs every case at every pass at the design's
 // scale (200 publications a day); TENSILE_DAYPARTS_SEEDS sets the seeds.
 func TestDayPartsEquivalence(t *testing.T) {
@@ -568,9 +568,10 @@ func TestDayPartsEquivalence(t *testing.T) {
 
 // TestDayPartsRollback runs the API with the partials, then as the build
 // before them (partials off, no partials file written) while the collector
-// goes on (holds verified and corrected, a collapse, the prune), then with
-// the partials again from the files written before: every change made
-// meanwhile is found by the catch-up, and every figure is still exact.
+// goes on (holds verified and corrected, a collapse, an older build's
+// prune), then with the partials again from the files written before:
+// every change made meanwhile is found by the catch-up, and every figure is
+// still exact.
 func TestDayPartsRollback(t *testing.T) {
 	skipUnderRace(t)
 	t.Parallel()

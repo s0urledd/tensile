@@ -1,15 +1,18 @@
-// Package rollup is the retention policy: raw probe rows are kept for a
-// bounded time, their raw JSON for a shorter one, and beyond that the
-// "all" window rests on per-day rollups computed while the rows were still
-// there, by the same SQL the API runs live. The obligation SQL lives here
-// so the live figures and the rolled ones are one implementation; the API
+// Package rollup computes per-day rollups of the obligations and the probe
+// rows, by the same SQL the API runs live: the obligation SQL lives here so
+// the live figures and the rolled ones are one implementation; the API
 // imports it.
 //
-// Three meta keys carry the state: rollup_through (the last day rolled,
-// inclusive), raw_from (the first day whose raw rows are all still
-// present; unset until the first prune) and nothing else. A day is pruned
-// only after it is rolled, oldest first, whole days at a time, so the
-// record is never thinner than the rollup behind it.
+// Every row is kept for good. Nothing here deletes a row or strips a
+// column: an old blob, a validator's history and every rate must read the
+// same in a year as they do today (the retention decision of 2026-10-04,
+// which retired the 90-day prune and the 30-day raw_json strip). Rollups
+// exist for speed only.
+//
+// One meta key carries the state: rollup_through, the last day rolled,
+// inclusive. raw_from, the first day whose raw rows were all present, is
+// never written any more; RawFrom stays only for the API's rolled-up path,
+// which has nothing to label while no row is ever pruned.
 package rollup
 
 import (
@@ -29,9 +32,12 @@ import (
 // settlement window start and end (inclusive), the row upper bound (as_of),
 // the row lower bound, then any caller filter appended to the WHERE.
 //
-// Each row counts as its blob's reading leaves it (CountedClass): served
-// when its rows came back verified, not served when they did not and the
-// blob was Unavailable.
+// Each row counts as CountedClass says: at a full reading (one that asked
+// every endorser, probe.FullReading) on the validator's own answers, served
+// when one of them served and not served by its last answer when none did
+// and none was this observer's gap; at any other reading as the blob's
+// reading leaves it, served when its rows came back verified, not served
+// when they did not and the blob was Unavailable.
 //
 // The rows are obligation_rows (with commitment_verified beside them,
 // store.ObligationRowsVerified): the stored probes plus the NOT_PROBED rows a
@@ -42,7 +48,8 @@ import (
 //
 // late_healthy is the count of HEALTHY readings that speak for the end of
 // the promise: the one reading 10 minutes before must_serve_until
-// (probe.EndReadLabel), or, for a blob read on the earlier schedule, a
+// (probe.EndReadLabel, probe.FullReadLabel: EndLabelsSQL), or, for a blob
+// read on the earlier schedule, a
 // reading in the tail of its own retention window
 // (verdict.EndSegmentDivisor). An early HEALTHY probe says the shard was
 // there minutes after settlement, not that it survived the hours the
@@ -70,7 +77,7 @@ var ObligationBuckets = `SELECT validator_address, promise_hash,
 			SUM(cls = 'FAULT')                AS faults,
 			SUM(cls = 'HEALTHY')              AS healthy,
 			SUM(cls = 'RETENTION_UNVERIFIED') AS held,
-			SUM(cls = 'HEALTHY' AND (schedule_label = '` + probe.EndReadLabel + `' OR julianday(scheduled_at) >=
+			SUM(cls = 'HEALTHY' AND (schedule_label IN ` + EndLabelsSQL + ` OR julianday(scheduled_at) >=
 			    julianday(must_serve_until) - (julianday(must_serve_until) - julianday(settlement_time)) / 4.0)) AS late_healthy,
 			SUM(cls NOT IN ('NOT_PROBED','PROBE_ERROR'))                AS attempted,
 			SUM(cls NOT IN ('NOT_PROBED','PROBE_ERROR') AND tls_ok = 1) AS reached,
@@ -88,9 +95,12 @@ var ObligationBuckets = `SELECT validator_address, promise_hash,
 			WHERE pb.settlement_time >= ? AND pb.settlement_time <= ? AND pr.started_at <= ? AND pr.started_at >= ?
 			  AND pr.assigned = 1 AND pr.phase = 'in_window' AND pr.attested = 1`
 
-// cls is CountedClass: served, not served on an Unavailable blob, and the
-// retention hold over both (a row whose deadline this observer cannot vouch
-// for publishes neither). The Go twin is verdict.Row.CountedClass.
+// cls is CountedClass: served, not served (at a full reading on the
+// validator's own last answer, at any other on an Unavailable blob), and
+// the retention hold over both (a row whose deadline this observer cannot
+// vouch for publishes neither). The Go twin is verdict.Row.CountedClass. At
+// a full reading only one answer of a validator counts either way, so a
+// failed answer before a served one is no fault.
 //
 // The 4.0 in that SUM is verdict.EndSegmentDivisor, spelled out because a
 // query fragment is a constant; a test in this package holds the two to the
@@ -98,7 +108,9 @@ var ObligationBuckets = `SELECT validator_address, promise_hash,
 //
 // The window ORDER BY deliberately keeps pr.classification: it asks whether
 // a row is a gap, and a counted row is served or not, never a gap. Asking
-// the same question of cls would give the same answer more slowly.
+// the same question of cls would give the same answer more slowly. At a
+// full reading the newest answer that is not a gap is the one that served,
+// when one did: no answer follows a served one.
 // RowLowerBound is the probe-row lower bound that goes with a settlement
 // window start: the start less an hour of clock-skew margin, or the zero
 // string when the window is unbounded. Written once so the API and the
@@ -122,7 +134,9 @@ func RowLowerBound(settlementStart string) string {
 // reading that does not speak for the end of the window (the earlier
 // schedule); the three unobserved arms split the rest by what the rows saw:
 // an answer that did not count (TLS came up, or not), or no reading at all.
-// The split stays in the table because the table's columns are its schema.
+// At a full reading what is left there is this observer's own gap among a
+// validator's answers, or a reading that reached no server. The split stays
+// in the table because the table's columns are its schema.
 //
 // held_param_unverified excludes them all: an obligation whose only readings
 // were withheld is one this observer observed and cannot speak for.
@@ -187,17 +201,32 @@ func EffectiveClass(alias string) string {
 const DeadlineDerivedSQL = `('HEALTHY','FAULT')`
 
 // CountedClass is what an endorsing validator's row counts as once its
-// blob's reading is known, in the window: HEALTHY (served) when its rows
-// came back verified; FAULT (not served) when they did not and the reading
-// left the blob Unavailable; NOT_PROBED and PROBE_ERROR, this observer's
-// gap, and 'NOT_COUNTED' for any other answer, when it was not. Over
-// served and not served, the retention hold of EffectiveClass. A row
-// outside the window, or of a validator that did not endorse, keeps its own
-// class. The Go twin is verdict.Row.CountedClass.
+// blob's reading is known, in the window. The Go twin is
+// verdict.Row.CountedClass, which says it in full.
 //
-// The blob's reading is looked at only where it can change the count: a
-// row whose rows did not come back. That keeps a tally over many readings
-// to the few of them that did not come back.
+// A row of a full reading (FullReadingSQL) counts on the validator's own
+// answers at that reading: HEALTHY (served) when this answer handed over
+// the validator's own rows, verified (FullServedSQL); NOT_PROBED and
+// PROBE_ERROR, this observer's gap; 'NOT_COUNTED' for rows that are not its
+// own and that no settled promise explains (FullForeignSQL), when another of
+// its answers there served, was this observer's gap or started later, when
+// not a single request of the reading reached a server, or when the row
+// still owed its validator an attempt (next_attempt_due) that is not on
+// record; FAULT (not served) otherwise.
+//
+// Any other row counts as its blob's reading leaves it: HEALTHY (served)
+// when its rows came back verified; FAULT (not served) when they did not
+// and the reading left the blob Unavailable; NOT_PROBED and PROBE_ERROR,
+// this observer's gap, and 'NOT_COUNTED' for any other answer, when it was
+// not.
+//
+// Over served and not served, the retention hold of EffectiveClass. A row
+// outside the window, or of a validator that did not endorse, keeps its own
+// class.
+//
+// The blob's reading, and a full reading's other answers, are looked at only
+// where they can change the count: a row that did not serve. That keeps a
+// tally over many readings to the few of them that did not come back.
 //
 // alias must name the row's table or view (the correlated subqueries read
 // probes under an alias of their own).
@@ -211,12 +240,58 @@ func CountedClass(alias string) string {
 		return `(CASE WHEN ` + p + `retention_unverified = 1 AND ` + p + `outcome <> 'INVALID_ROWS' THEN 'RETENTION_UNVERIFIED' ELSE '` + c + `' END)`
 	}
 	nc := `'` + string(verdict.NotCounted) + `'`
+	full := `(CASE WHEN ` + FullServedSQL(alias) + ` THEN ` + held("HEALTHY") +
+		` WHEN ` + p + `classification IN ('NOT_PROBED','PROBE_ERROR') THEN ` + p + `classification` +
+		` WHEN ` + FullForeignSQL(alias) + ` THEN ` + nc +
+		` WHEN EXISTS (SELECT 1 FROM probes qa WHERE qa.promise_hash = ` + h + ` AND qa.scheduled_at = ` + t + `
+				AND qa.validator_address = ` + p + `validator_address
+				AND (` + FullServedSQL("qa") + ` OR ` + FullGapSQL("qa") + ` OR qa.started_at > ` + p + `started_at)) THEN ` + nc +
+		` WHEN NOT ` + ranSQL(h, t) + ` THEN ` + nc +
+		` WHEN ` + p + `next_attempt_due IS NOT NULL THEN ` + nc +
+		` ELSE ` + held("FAULT") + ` END)`
 	return `(CASE WHEN ` + p + `phase <> 'in_window' OR COALESCE(` + p + `assigned, 0) <> 1 OR COALESCE(` + p + `attested, 0) <> 1 THEN ` + p + `classification` +
+		` WHEN ` + FullReadingSQL(alias) + ` THEN ` + full +
 		` WHEN ` + p + `commitment_verified = 1 THEN ` + held("HEALTHY") +
 		` WHEN ` + p + `classification = 'NOT_PROBED' THEN 'NOT_PROBED'` +
 		` WHEN ` + unavailableSQL(h, t) + ` = 1 THEN ` + held("FAULT") +
 		` WHEN ` + p + `classification = 'PROBE_ERROR' THEN 'PROBE_ERROR'` +
 		` ELSE ` + nc + ` END)`
+}
+
+// EndLabelsSQL is probe.EndOfWindowLabel as a SQL IN list: the labels of
+// the one reading of a blob near the end of its window.
+const EndLabelsSQL = `('` + probe.EndReadLabel + `','` + probe.FullReadLabel + `','` + probe.EnoughReadLabel + `')`
+
+// FullReadingSQL is probe.FullReading over the row under alias: a full
+// reading's label, or the end reading's from probe.FullReadSince on.
+func FullReadingSQL(alias string) string {
+	p := alias + "."
+	return `(` + p + `schedule_label = '` + probe.FullReadLabel + `' OR (` + p + `schedule_label = '` + probe.EndReadLabel +
+		`' AND ` + p + `started_at >= '` + store.TS(probe.FullReadSince) + `'))`
+}
+
+// FullServedSQL is probe.FullServed over the row under alias: rows that
+// verified and are exactly the validator's own assignment (SERVED_OK), or
+// exactly another settled promise's (SHADOWED_SHARD).
+func FullServedSQL(alias string) string {
+	p := alias + "."
+	return `(COALESCE(` + p + `commitment_verified, 0) = 1 AND (` + p + `outcome = 'SERVED_OK' OR ` + p + `classification = 'SHADOWED_SHARD'))`
+}
+
+// FullForeignSQL is probe.FullForeign over the row under alias: verified
+// rows that are not the validator's own and that no settled promise
+// explains.
+func FullForeignSQL(alias string) string {
+	p := alias + "."
+	return `(COALESCE(` + p + `commitment_verified, 0) = 1 AND ` + p + `classification <> 'SHADOWED_SHARD' AND (` + p +
+		`outcome = 'WRONG_ROWS' OR (` + p + `outcome = 'PARTIAL' AND COALESCE(` + p + `rows_subset_of_assignment, 0) = 0)))`
+}
+
+// FullGapSQL is probe.FullGap over the row under alias: this observer's
+// gap at a full reading.
+func FullGapSQL(alias string) string {
+	p := alias + "."
+	return `(` + p + `classification IN ('NOT_PROBED','PROBE_ERROR') OR ` + FullForeignSQL(alias) + `)`
 }
 
 // NotServedSQL is true of a row that counts as not served (CountedClass
@@ -225,7 +300,7 @@ func CountedClass(alias string) string {
 // cheap as the rows that failed.
 func NotServedSQL(alias string) string {
 	p := alias + "."
-	return `(NOT (COALESCE(` + p + `commitment_verified, 0) = 1 AND ` + p + `phase = 'in_window' AND COALESCE(` + p + `assigned, 0) = 1 AND COALESCE(` +
+	return `(NOT (` + FullServedSQL(alias) + ` AND ` + p + `phase = 'in_window' AND COALESCE(` + p + `assigned, 0) = 1 AND COALESCE(` +
 		p + `attested, 0) = 1) AND ` + CountedClass(alias) + ` = 'FAULT')`
 }
 
@@ -260,7 +335,10 @@ func ranSQL(h, t string) string {
 }
 
 // missedSQL is true when the prober missed a request of the reading of
-// promise h at t: a NOT_PROBED row of an assigned validator in the window.
+// promise h at t: a NOT_PROBED row of an assigned validator in the window,
+// and, at a full reading (FullReadingSQL), no other row of that validator
+// at the reading (a later attempt that could not be made leaves its
+// validator asked all the same). verdict.ReadingOf's Missed is the Go twin.
 //
 // It asks the reading's own rows, sought by probes_promise (promise_hash,
 // scheduled_at), so it costs what one reading's rows cost. It used to be a
@@ -278,7 +356,9 @@ func ranSQL(h, t string) string {
 // walks every assigned in-window row of the store once per reading asked.
 func missedSQL(h, t string) string {
 	return `EXISTS (SELECT 1 FROM probes qm WHERE qm.promise_hash = ` + h + ` AND qm.scheduled_at = ` + t + `
-			AND +qm.assigned = 1 AND +qm.phase = 'in_window' AND +qm.classification = 'NOT_PROBED')`
+			AND +qm.assigned = 1 AND +qm.phase = 'in_window' AND +qm.classification = 'NOT_PROBED'
+			AND (NOT ` + FullReadingSQL("qm") + ` OR NOT EXISTS (SELECT 1 FROM probes qo WHERE qo.promise_hash = qm.promise_hash
+				AND qo.scheduled_at = qm.scheduled_at AND +qo.validator_address = qm.validator_address AND +qo.classification <> 'NOT_PROBED')))`
 }
 
 // Reached is verdict.Reached (probe.Reached) over a probes row under the
@@ -306,36 +386,20 @@ func unavailableSQL(h, t string) string {
 
 // Config is the retention policy.
 type Config struct {
-	// RetainRaw is how long probe and heartbeat rows are kept. 0 keeps
-	// them forever (and prunes nothing).
-	RetainRaw time.Duration
-	// RetainRawJSON is how long a row keeps its raw_json, the bulk of it.
-	// 0 keeps it forever.
-	RetainRawJSON time.Duration
 	// RollupAfter is how long after a UTC day ends its rollup is computed;
 	// it must clear every retention window a promise settled that day can
 	// have, so that nothing is pending when the day is rolled.
 	RollupAfter time.Duration
-	// Batch bounds the rows one pass strips raw_json from, and the days one
-	// pass prunes.
-	Batch int
 	// Vantage, when set, is the observer's own: the heartbeat counts rolled
 	// into probe_daily are its rows only, as every live reachability figure
-	// is. Other vantages' copied heartbeats are pruned with the rest but
-	// never counted. Empty counts every row.
+	// is. Other vantages' copied heartbeats are kept but never counted.
+	// Empty counts every row.
 	Vantage string
-	// AfterPrune, when set, is called after each statement of the prune:
-	// with the table a DELETE emptied of the day, and with "raw_from" once
-	// the day is recorded pruned. The prune is several statements, each
-	// its own commit, and this is how a test looks at the store between
-	// them. Nothing sets it in production.
-	AfterPrune func(step, day string)
 }
 
-// Default is the retention decision of 2026-09-18: rows 90 days, raw JSON
-// 30 days, rollup 14 days after the day.
+// Default rolls a day up 14 days after it ends. Rows are kept for good.
 func Default() Config {
-	return Config{RetainRaw: 90 * 24 * time.Hour, RetainRawJSON: 30 * 24 * time.Hour, RollupAfter: 14 * 24 * time.Hour, Batch: 5000}
+	return Config{RollupAfter: 14 * 24 * time.Hour}
 }
 
 // Report is what one pass did.
@@ -346,9 +410,6 @@ type Report struct {
 	// the late shadow verdict. RollupAfter is a floor; this is the ceiling.
 	Waiting, WaitingWhy string
 	PendingAtRoll       int64 // obligations still pending when their day was rolled, which dayFinal should make impossible
-	RawJSONDropped      int64
-	PrunedDays          []string
-	PrunedRows          int64
 }
 
 const (
@@ -369,7 +430,8 @@ func dayRange(d time.Time) (string, string) {
 }
 
 // RawFrom is the first day whose raw rows are all still present, and false
-// until a prune has happened (every row is present then).
+// when every row is present, which is always since the prune was retired;
+// a database pruned before then would still carry the mark.
 func RawFrom(st *store.Store) (time.Time, bool) {
 	v, err := st.Meta(metaRawFrom)
 	if err != nil || v == "" {
@@ -396,13 +458,10 @@ func rawFromValue(v string) (time.Time, bool) {
 	return d, true
 }
 
-// Run does one retention pass: roll every day that is due, strip raw_json
-// past its retention, prune rolled days past theirs.
+// Run rolls up every day that is due. It deletes nothing and rewrites no
+// row: it only writes obligation_daily, probe_daily and rollup_through.
 func Run(ctx context.Context, st *store.Store, now time.Time, cfg Config) (Report, error) {
 	var rep Report
-	if cfg.Batch <= 0 {
-		cfg.Batch = 5000
-	}
 	now = now.UTC()
 	db := st.DB()
 
@@ -440,75 +499,6 @@ func Run(ctx context.Context, st *store.Store, now time.Time, cfg Config) (Repor
 		}
 	}
 
-	// ---- raw_json ----
-	if cfg.RetainRawJSON > 0 {
-		cut := store.TS(now.Add(-cfg.RetainRawJSON))
-		for _, table := range []string{"probes", "reachability"} {
-			res, err := db.ExecContext(ctx, `UPDATE `+table+` SET raw_json = '' WHERE rowid IN
-				(SELECT rowid FROM `+table+` WHERE started_at < ? AND raw_json <> '' LIMIT ?)`, cut, cfg.Batch)
-			if err != nil {
-				return rep, fmt.Errorf("strip raw_json from %s: %w", table, err)
-			}
-			n, _ := res.RowsAffected()
-			rep.RawJSONDropped += n
-		}
-	}
-
-	// ---- prune ----
-	if cfg.RetainRaw > 0 {
-		through, err := st.Meta(metaRollupThrough)
-		if err != nil || through == "" {
-			return rep, err // nothing rolled: nothing may be pruned
-		}
-		rolled, err := time.Parse(dayLayout, through)
-		if err != nil {
-			return rep, fmt.Errorf("rollup_through %q: %w", through, err)
-		}
-		from, ok := RawFrom(st)
-		if !ok {
-			from, ok, err = firstRowDay(ctx, db)
-			if err != nil || !ok {
-				return rep, err
-			}
-		}
-		cut := dayOf(now.Add(-cfg.RetainRaw))
-		for days := 0; days < 3 && !from.After(rolled) && from.Before(cut); days++ {
-			lo, hi := dayRange(from)
-			var n int64
-			for _, table := range []string{"probes", "reachability", "probe_confirmations"} {
-				res, err := db.ExecContext(ctx, `DELETE FROM `+table+` WHERE started_at >= ? AND started_at <= ?`, lo, hi)
-				if err != nil {
-					return rep, fmt.Errorf("prune %s %s: %w", table, from.Format(dayLayout), err)
-				}
-				k, _ := res.RowsAffected()
-				n += k
-				if cfg.AfterPrune != nil {
-					cfg.AfterPrune(table, from.Format(dayLayout))
-				}
-			}
-			// A sampled-out publication's rows are its decision, started at
-			// decided_at: pruned with the day its rows would have been,
-			// points and all (ON DELETE CASCADE).
-			res, err := db.ExecContext(ctx, `DELETE FROM sampling_decisions WHERE decided_at >= ? AND decided_at <= ?`, lo, hi)
-			if err != nil {
-				return rep, fmt.Errorf("prune sampling_decisions %s: %w", from.Format(dayLayout), err)
-			}
-			k, _ := res.RowsAffected()
-			n += k
-			if cfg.AfterPrune != nil {
-				cfg.AfterPrune("sampling_decisions", from.Format(dayLayout))
-			}
-			rep.PrunedRows += n
-			rep.PrunedDays = append(rep.PrunedDays, from.Format(dayLayout))
-			from = from.Add(24 * time.Hour)
-			if err := st.SetMeta(metaRawFrom, from.Format(dayLayout), now); err != nil {
-				return rep, err
-			}
-			if cfg.AfterPrune != nil {
-				cfg.AfterPrune("raw_from", from.Format(dayLayout))
-			}
-		}
-	}
 	return rep, nil
 }
 

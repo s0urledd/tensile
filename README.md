@@ -14,13 +14,18 @@ Live at **https://tensile.huginn.tech**.
 - **Endpoint reachability and TLS identity** of every registered Fibre
   endpoint, from two locations: DNS, TCP, TLS 1.3 and the validator-endorsed
   identity signed by its consensus key.
-- **One reading of each blob**, 10 minutes before its retention window ends,
-  the way celestia-app's Fibre client downloads it, with every row verified
-  against the on-chain commitment and the recomputed assignment.
+- **One reading of each blob**, 10 minutes before its retention window ends:
+  every validator that endorsed the blob is asked for its own rows, the way
+  celestia-app's Fibre client asks for a shard, with every row verified
+  against the on-chain commitment and the recomputed assignment. A
+  validator that did not serve is asked again, up to two more times, while
+  the window is open.
 - **Verdicts** per blob, the client's own result (available, or unavailable
   with the client's error), and per validator, from a fixed taxonomy in
-  which a validator counts as not served only when the blob could not be
-  reconstructed and its rows did not come back
+  which each validator that endorsed the blob is judged on its own
+  answers: served when its own rows came back and verified, not served
+  when its last answer did not serve, and never counted against it when
+  the gap was this observer's own
   ([`docs/verdicts.md`](docs/verdicts.md)).
 - **Signed daily exports** of the full record, so every figure can be
   recomputed offline ([`docs/exports-signing.md`](docs/exports-signing.md)).

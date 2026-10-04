@@ -122,15 +122,18 @@ export function Concentration() {
   );
 }
 
-/** the validator page's hosting fact: provider, network, place */
+/** the validator page's hosting fact: the country's flag, provider, network, place */
 export function HostingFact({ h }: { h: Hosting }) {
   if (h.status === "unresolved") return <span className="soft" title={hostingTitle(h)}>unresolved</span>;
   const prov = h.provider === "Other" || h.status === "no_asn" ? (h.as_org ? shortOrg(h.as_org) : "unknown network") : h.provider;
+  const place = h.country ? countryName(h.country) : "";
   return (
-    <span title={hostingTitle(h)}>
+    <span className="vd-hosting" title={hostingTitle(h)}>
+      {h.country && <Flag cc={h.country} />}
       {prov}
       {h.asn ? <span className="soft"> · AS{h.asn}</span> : null}
-      {h.country && <span className="soft"> · {h.city ? `${h.city}, ` : ""}{h.country}</span>}
+      {/* the place keeps one line; a city that is its country ("Hong Kong") is named once */}
+      {h.country && <span className="soft"> · <span className="nw">{h.city && h.city !== place ? `${h.city}, ` : ""}{place}</span></span>}
     </span>
   );
 }

@@ -32,7 +32,13 @@ port, behind one Caddy with a site per network (see "Two networks").
   reads `block_results` for every block, and a node that discards ABCI
   responses answers "node is not persisting finalize block responses"
   (rpc-mocha.pops.one did on 8 September 2026). Public RPCs on
-  celestia-core v0.41.0 also cap heavy requests at 20 in flight.
+  celestia-core v0.41.0 also cap heavy requests at 20 in flight. The
+  scanner also subscribes to the node's new block headers on the same
+  address's websocket (`/websocket`, which CometBFT serves on the RPC
+  port), so it reads each block the moment the node has it. A proxy in
+  front of the node has to pass websocket upgrades for that; without them
+  the scanner follows by polling the tip every second, as before
+  (`-subscribe=false` turns the subscription off).
 - Before the chain runs app version 10, `x/fibre` and `x/valaddr` do not
   exist. The scanner logs "x/fibre is not active on this chain yet" and
   keeps following blocks, retrying the params query every 100 heights;
@@ -115,8 +121,9 @@ the tip, which the scan needs anyway (a block the node cannot serve is a
 recorded gap, and a registration inside a gap makes the hosts of later
 settlements unknown until the gap is re-scanned).
 
-The prober asks a validator only for a blob it was assigned rows of, in
-window, as the client asks, and stops once a blob's rows are enough. The
+The prober asks a validator only for a blob it endorsed, in window, for its
+own rows, as the client asks for a shard, and asks it again, up to twice,
+only when its answer did not serve. The
 read-path rate limiting Celestia is designing (forum
 topic 2295) treats requests for shards a validator was never assigned as
 illegitimate; reading only real, in-window, assigned commitments keeps the
@@ -124,32 +131,80 @@ observer's traffic on the right side of it.
 
 **What the prober sustains.** On 28 September mocha settled about 20 blobs
 a minute (1,200 an hour from 14:00 to 20:00 UTC, 22 in the busiest minute),
-nearly all of 16 MiB. A reading asks 12 to 20 validators (12 when every
-validator holds its rows, 20 when the third that did not endorse holds
-nothing) and moves about 19 MiB, the rows needed plus the requests already
-on their way: at 20 blobs a minute that is 240 to 400 requests and about
-380 MiB a minute, about 50 Mbit/s. The validator with the most stake is
-asked for nearly every blob; there is no limit per validator, as the client
-has none. A scheduler run on the observer (82 shared fake validators with
+nearly all of 16 MiB. A reading asks every validator that endorsed the blob
+for its own rows, so it moves the endorsers' share of the blob's encoded
+rows, which for blob version 0 are four times the blob's size: two thirds
+or more of them, by stake. For a 16 MiB blob that is about 43 to 64 MiB
+of rows, and at 20 blobs a minute roughly 120 to 180 Mbit/s: arithmetic,
+not a measurement, and about three times what the earlier reading moved
+when it stopped at enough rows (12 to 20 validators and about 19 MiB a
+blob, about 50 Mbit/s). Every endorser is asked for every blob it
+endorsed; the reading's own requests have no limit per validator, as the
+client has none, and at most one later attempt is in flight to a
+validator. A scheduler run on the observer (82 shared fake validators with
 mocha's row shape scaled to 1/16, 1.0 to 1.8 s per shard, production
 timeouts, loopback) read 60 of 60 blobs at 20 a minute (reading p50 1.9 s,
 max 3.0 s, no start lag) and 180 of 180 at 60 a minute (p50 2.5 s, max
-4.3 s, no start lag) under the earlier one-request-per-validator pacing,
-which only slowed it; at 120 a minute every blob was still read but the
-start lag grew to 30 s in two minutes. So the prober keeps up at three times
-today's rate with nothing queued. The limits it keeps, 16 blobs and 64
-requests at once and 512 MiB of shards in flight (`-blob-concurrency`,
-`-concurrency`, `-in-flight-mib`), only delay a request: its 15 s start once
-it is let go, it is never dropped, and it carries the phase its reading
-started in, so a request held back past `must_serve_until` counts as the
-client, which asks at once, would have made it.
+4.3 s, no start lag) under the earlier reading, which stopped at enough
+rows, and the earlier one-request-per-validator pacing, which only slowed
+it; at 120 a minute every blob was still read but the start lag grew to
+30 s in two minutes. The limits it keeps, 16 blobs and 256 requests at
+once, 512 MiB of shards in flight and a reading rate of 400 Mbit/s
+(`-blob-concurrency`, `-concurrency`, `-in-flight-mib`, `-max-read-mbps`),
+only delay a request: its 15 s start once it is let go, and it carries the
+phase its reading started in, so a request held back past
+`must_serve_until` counts as the client, which asks at once, would have
+made it. A request of a full reading, or a later attempt it owes, that
+then cannot start a minute before `must_serve_until`
+(`-request-start-margin`) is not made and is this observer's gap
+(`NOT_PROBED`). An attempt is owed unless the validator's own time leaves
+no room for it: this observer's own delays (a late reading, a wait for
+room, a lane, a restart) never cost a validator one. The prober's status `reads`
+block counts them (`requests_not_started_last_hour`, the `retries_*`
+counts, per validator) beside the admission wait (`admit_wait_p95_ms`).
+Measure the observer's link and set `-link-mbps` from it (in `PROBE_ARGS`,
+section 4) before blobs grow toward 128 MiB: it holds the shard bytes in flight to what the link moves
+in half a request's time, so a timeout is never the observer's own full
+link, and every row records the load it was let go under
+(`observer_load`).
 
-A validator that times out holds a request for 30 s (the request and the
-client's re-dial). The other readings go on beside it, as other clients'
+**The reading-rate ceiling.** A full reading of a large blob can fill the
+observer's port. Unpaced, a 128 MiB blob's full reading let its 62 to 67
+requests go at once and pulled 376 to 392 MB in about 3 s, nearly a
+1 Gbit/s port's line rate. `-max-read-mbps` (default 400; 0 turns it off;
+another value goes in `PROBE_ARGS`) paces what is let go. Each request,
+the reading's and every later attempt's, is charged its whole expected
+shard against a token bucket of that rate. The bucket holds a quarter of a
+second of the rate, 12.5 MB at the default, so no second lets go more than
+62.5 MB, half of a 1 Gbit/s port. A shard larger than that (mocha's largest
+validator holds 1,463 of 16,384 rows, 48.7 MB of a 128 MiB blob) waits
+until the bucket has refilled what it lacks, under a second. At 400 Mbit/s
+a 16 MiB blob's reading is let go over about 0.85 s and a 128 MiB blob's
+over about 7.5 s; today's load of 16 MiB blobs, about a third of the rate,
+is spread out but not held back. The client's re-dial after a first try
+that had its session is charged again; one after a failed dial moved no
+shard and is not.
+
+The ceiling's wait is like the other limits'. It only delays, it is never
+part of the request's 15 s, and it is recorded on the row
+(`observer_load.rate_wait_ms`) and in the status file (`rate_wait_p95_ms`).
+A full reading's request or later attempt whose turn would come after its
+start cutoff (`must_serve_until` less `-request-start-margin`) is not made:
+`NOT_PROBED`, this observer's gap, never the validator's. A request waiting
+for the ceiling keeps its request slot and its share of the byte budget, so
+the ceiling's own wait is at most the budget over the rate, about 11 s at
+the defaults. `-link-mbps` bounds the bytes in flight at once and the
+ceiling the rate they are let go at; with both set, keep the ceiling below
+the link.
+
+A validator that times out holds a request for 30 s at the reading (the
+request and the client's re-dial), and 15 s at a later attempt, which is
+one request. The other readings go on beside it, as other clients'
 would, so an unavailable blob is still read at 20 a minute beside a
 validator that hangs (`TestAnUnavailableBlobIsReadWhileAValidatorTimesOut`).
 Each blob being read also holds its verifier and the first shard it
-verified, up to about 11 MiB, beside the `-in-flight-mib` budget.
+verified, up to about 11 MiB, beside the `-in-flight-mib` budget; a later
+attempt's own verifier, about 4 MiB at K = 4096, is charged to it.
 
 ## 4. systemd
 
@@ -175,7 +230,10 @@ and `publishers-<network>.yaml`. They are hardened (`ProtectSystem=strict`,
 directory. The sampling secret must therefore sit under the data directory,
 not under `/etc`.
 
-Each unit runs one binary with the flags from its env file. Order does not
+Each unit runs one binary with the flags from its env file. The prober
+also takes any extra flags from `PROBE_ARGS` in it (for example
+`PROBE_ARGS=-max-read-mbps 600 -link-mbps 900`); a change there takes a
+`systemctl restart fibre-probe@mocha`. Order does not
 matter: the collector tolerates missing files, the API waits for the
 collector to create the database, and before Fibre is active on the chain
 the prober and heartbeat have nothing to do and say so in their logs.
@@ -188,7 +246,13 @@ round. A height the node cannot serve at all (pruned, or ABCI responses
 discarded) is retried for ten minutes and then recorded as a gap in
 `state.json`, shown on the dashboard and reported by `/v1/health`, and the
 scan moves on. A chain halt is warned about every five minutes and waited
-out; `Restart=always` in the units is for crashes, not for outages.
+out; `Restart=always` in the units is for crashes, not for outages. The
+scanner's block subscription is no exception: when it drops (a node
+restart) or the node cancels it, the scanner polls the tip every second and
+subscribes again with backoff, and the journal says `block subscription
+lost` and `block subscription up again`, one line each. The collector's
+watch on the scanner's files works the same way: if it cannot start or is
+lost, the collector reads them every second on its timer and says so once.
 
 `sudo systemctl status 'fibre-*@mocha'` and `journalctl -u fibre-probe@mocha -f`.
 
@@ -237,7 +301,31 @@ which anything uses any more.
 
 The API also refuses a database **newer** than itself, so an API left on an
 old build after the collector moved on says so rather than serving columns
-it does not know.
+it does not know. A migration can take a while on a large store: start the
+new API only once `SELECT MAX(version) FROM schema_migrations` reads the
+new version, and give it minutes, not seconds. The prober never opens the
+database: restart it last, once, and never stop it for a copy of the data
+directory, since its time down is readings and attempts not made.
+
+**Going back.** Every binary refuses a database newer than itself, so an
+older build needs the database's version taken back too. When the newer
+migrations only added columns or indexes, as migrations 25 and 26 do, that
+is one row each, not a copy of the data directory:
+
+1. install the older prober and restart it;
+2. wait until the newer collector has read everything the newer prober
+   wrote: its cursor in `ingest_cursors` for `measurements.jsonl` equals
+   the file's size;
+3. stop the collector and the API;
+4. `sudo -u fibre-observer sqlite3 /var/lib/fibre-observer/mocha/observer.db 'DELETE FROM schema_migrations WHERE version > 25'`,
+   25 being the older build's `store.SchemaVersion` (or the same statement
+   through Python's `sqlite3`);
+5. install the older collector and API, and start them.
+
+The columns and indexes stay, unread, and the next upgrade runs the
+migration again over them. Never let an older collector read rows a newer
+prober wrote: it keys a row on the reading, not the attempt, so it keeps a
+validator's first answer and drops the later ones.
 
 Schema 5 adds a covering index over `probes`. On a store with 700,000 probes it
 takes a few seconds and about 200 bytes a probe; the collector logs it and the
@@ -351,8 +439,9 @@ and `mocha.observer.example.org`:
 sudo cp deploy/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
 ```
 
-Caddy serves the same static export on every site, proxies each site's
-`/api/*` to that network's `observer-api` port, and gets TLS certificates
+Caddy serves the same static export on every site (its `/api/` page
+documents the API), proxies each site's `/api/v1/*` to that network's
+`observer-api` port, and gets TLS certificates
 from Let's Encrypt. Delete the second site block if you run one network.
 
 , and the header shows
@@ -399,34 +488,33 @@ Budget for disk: one measurement is about 1.5 KB in `measurements.jsonl`
 (about 3 KB when it carries the verified row indices) and about twice that
 again in the database, one per validator a reading asks. At mocha's rate on
 28 September (about 20 blobs a minute, 12 to 20 validators asked each) that
-is about 1.2 to 1.8 GB a day of JSONL plus the database, until `raw_json`
-is dropped after 30 days. The JSONL files are the record; the three biggest are kept bounded
+is about 1.2 to 1.8 GB a day of JSONL plus the database. The JSONL files are the record; the three biggest are kept bounded
 by moving their older lines into compressed segments under `archive/`
 (below), never by deleting a line. `/v1/health` fails the `disk` check
-under 5% free so the alert arrives before a write does. When a disk fills,
+under 15% free, so the alert arrives while there is still room to act; the
+disk may be shared with other services, and nothing is deleted to make room. When a disk fills,
 move the oldest archive segments or the small record files off the box
 (append-only or immutable; a copy is complete the moment it is taken) and
 rebuild the database from the rest if you want it smaller. Nothing here
-deletes a probe row yet: the "all" window is exactly that.
+deletes a row.
 
-**Retention (decided 2026-09-18, implemented in the collector):** raw
-probe and heartbeat rows are kept for **90 days** (`-retain-raw`);
-`raw_json` (the bulk of a row) is dropped after **30 days**
-(`-retain-raw-json`) while every typed column, including the evidence
-columns from schema 9, stays; **14 days** after a UTC day ends
-(`-rollup-after`) the collector computes the day's per-validator rollup
-(obligation buckets by settlement day; classes, faults, gaps and
-heartbeats by start day) with the API's own SQL, and only a rolled day is
-ever pruned, whole days at a time. `-rollup-after` is a floor, not the
+**Retention (decided 2026-10-04):** every row is kept for good. Probe and
+heartbeat rows and their `raw_json` are never deleted or stripped, so an
+old blob, a validator's history and every rate read the same years on as
+they do today. The 90-day prune and the 30-day `raw_json` strip of
+2026-09-18 were retired before either first ran; their flags
+(`-retain-raw`, `-retain-raw-json`) are gone, and a unit that still passes
+one fails at start. **14 days** after a UTC day ends (`-rollup-after`) the
+collector computes the day's per-validator rollup (obligation buckets by
+settlement day; classes, faults, gaps and heartbeats by start day) with the
+API's own SQL, for speed only. `-rollup-after` is a floor, not the
 rule: a day rolls only once every promise settled on it has left its
 window (`must_serve_until` plus an hour) and no probe row of theirs still
 awaits the late shadow verdict, so a chain whose retention is longer than
 the flag holds the rollup rather than rolling a pending obligation; the
-log says which day is waiting and why. From the first prune on the "all"
-figures are the rollup plus the raw rows and carry a `rolled_up` label
-(`raw_from`, days folded in); the shorter windows never touch it. The
-retention pass runs hourly (`-retention-every`); the status file shows
-`rollup_through` and `raw_from`. A warning in the log that obligations
+log says which day is waiting and why, once when it starts waiting. The
+pass runs hourly (`-retention-every`); the status file shows
+`rollup_through` and `rollup_waiting`. A warning in the log that obligations
 were still pending at roll means `-rollup-after` is shorter than a
 retention window on this chain: raise it. The
 JSONL files (with their `archive/` segments) remain the record; the
@@ -525,10 +613,10 @@ mocha host on 29 September, and how to remove it once the owner approves:
 |---|---|---|---|
 | `probe-budget.json` | 1.3 MB | the prober before this change; the new prober never reads or writes it | after the new prober is running: `rm <DATA_DIR>/probe-budget.json` |
 | `sampling-master.key` | 32 B | the prober's reveal of the earlier draws' day secrets (`-policy`) | after the last draw day (2026-09-26) is revealed, on 2026-10-04 with `-reveal-after 7d`: `rm <DATA_DIR>/sampling-master.key` and drop `-policy` from the unit |
-| `sampling-secrets.jsonl` | 5.8 KB | `/v1/sampling`, the daily export, `sentinel-recompute -sampling` | only with the sampling audit itself: then `rm`, and remove `/v1/sampling` in the same change |
-| `sampling_decisions.jsonl` | 8.3 KB | the collector (`sampling_decisions` table), the daily export | the same: with the sampling audit |
-| table `sampling_decisions` (53 rows) and `sampling_decision_points` (318 rows, with its key index) | 0.2 MB | `/v1/sampling`, the obligation rows of sampled-out publications (`obligation_rows`) | with the sampling audit, in a migration that bumps the schema: `DROP TABLE sampling_decision_points; DROP TABLE sampling_decisions;` and the views over them |
-| index `probes_sampling_started` | 68 MB | `/v1/sampling` only | with the sampling audit, in the same migration: `DROP INDEX probes_sampling_started;` then `VACUUM` (hours on a 5 GB store; run it with the collector stopped) |
+| `sampling-secrets.jsonl` | 5.8 KB | `/v1/sampling`, the daily export, `sentinel-recompute -sampling` | kept: the earlier draws' audit is part of what old blobs show |
+| `sampling_decisions.jsonl` | 8.3 KB | the collector (`sampling_decisions` table), the daily export | kept, as above |
+| table `sampling_decisions` (53 rows) and `sampling_decision_points` (318 rows, with its key index) | 0.2 MB | `/v1/sampling`, the obligation rows of sampled-out publications (`obligation_rows`) | kept: removing them would change those blobs' obligations |
+| index `probes_sampling_started` | 68 MB | `/v1/sampling` only | kept for now; a smaller index only if `/v1/sampling` stays identical and as fast. Never `VACUUM` the store: it can renumber rowids that some figures read in order |
 | columns `probe_daily.faults`, `attested`, `unattested`, `unknown_att` | none yet (no day rolled) | nothing: written as 0 | a migration that bumps the schema, whenever the table is next changed |
 | columns `obligation_daily.end_unobserved`, `unobserved_reachable`, `unobserved_unreachable`, `unobserved_not_probed` | none yet | summed into `not_counted` | the same; one `not_counted` column would do |
 | `snapshots/` | 1.0 MB, 12 files | the API, which rewrites every file on start and on each refresh | nothing to do: none is left from an earlier model |
@@ -871,6 +959,14 @@ Then check the vantage is described: with `VANTAGE_LOCATION` or
 
 ```bash
 journalctl -u fibre-api@mocha --no-pager | grep 'vantage not fully described'   # no output is right
+```
+
+Check that the scanner reads each block as the node announces it, and that
+the collector reads the scanner's files as they change:
+
+```bash
+journalctl -u fibre-scan@mocha --no-pager | grep 'block subscription'      # "up", and no "unavailable" after it
+journalctl -u fibre-collector@mocha --no-pager | grep 'fast tick:'        # "... and within 100ms of a change to one of them"
 ```
 
 Confirm the provider you declared is the one your traffic actually carries:

@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { int } from "@/lib/api";
 
@@ -24,7 +24,8 @@ export function usePage(): [number, (p: number) => void] {
 }
 
 /** "Showing 26–50 of 153 settlements on record" and First ‹ Page 2 of 7 › Last */
-export default function Pager({ total, page, size, maxPages, onPage, noun }: {
+export default function Pager({ total, page, size, maxPages, onPage, noun, range, of }: {
+  /** the rows the pages are counted from, size a page */
   total: number;
   page: number;
   size: number;
@@ -32,17 +33,22 @@ export default function Pager({ total, page, size, maxPages, onPage, noun }: {
   maxPages?: number;
   onPage: (p: number) => void;
   /** what the rows are, plural: "settlements" */
-  noun: string;
+  noun: ReactNode;
+  /** the rows this page shows, counted from the list's first, where a page holds more than its size: a publisher's blobs, a page of them a page,
+   *  with its escrow movements between them */
+  range?: [number, number];
+  /** what the range counts against, where it is more than the rows the pages follow: those blobs and the movements */
+  of?: number;
 }) {
   const pages = Math.min(maxPages ?? Infinity, Math.max(1, Math.ceil(total / size)));
   // a page past the end (an old link, a smaller period) goes to the last one
   useEffect(() => { if (page > pages) onPage(pages); }, [page, pages, onPage]);
   const at = Math.min(page, pages);
-  const from = total === 0 ? 0 : (at - 1) * size + 1;
-  const to = Math.min(total, at * size);
+  const [from, to] = range ?? [total === 0 ? 0 : (at - 1) * size + 1, Math.min(total, at * size)];
   return (
     <div className="pager">
-      <span className="count">{total === 0 ? `No ${noun}` : <>Showing <b>{int(from)}–{int(to)}</b> of <b>{int(total)}</b> {noun}</>}</span>
+      {/* one row is "Showing 1 of 1", not a range from it to itself */}
+      <span className="count">{total === 0 ? <>No {noun}</> : <>Showing <b>{from === to ? int(from) : <>{int(from)}–{int(to)}</>}</b> of <b>{int(of ?? total)}</b> {noun}</>}</span>
       {pages > 1 && (
         <span className="ctl" role="group" aria-label="pages">
           <button type="button" className="btn" disabled={at <= 1} onClick={() => onPage(1)}>First</button>

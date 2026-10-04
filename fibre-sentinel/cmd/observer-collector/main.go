@@ -41,6 +41,8 @@ func main() {
 		dbPath    = flag.String("db", "", "SQLite database path (default <data-dir>/observer.db)")
 		vantage   = flag.String("vantage", "local", "vantage name recorded on this run")
 		interval  = flag.Duration("interval", 10*time.Second, "how often to tail the files")
+		fastEvery = flag.Duration("fast-every", time.Second, "how often, between those passes, to read only state.json, publications.jsonl and payments.jsonl, so a new blob is served within about this long of the scanner writing it; nothing is opened while they have not changed (0 = only in the full pass)")
+		fastWatch = flag.Bool("fast-watch", true, "also run that read as soon as one of those files changes, from the kernel's file events on their directory (a burst of writes is one read, at most 100 ms after its first); the -fast-every timer stays as the fallback")
 		epEvery   = flag.Duration("endpoints-every", 60*time.Second, "how often to poll AllBondedFibreProviders (0 = never)")
 		escEvery  = flag.Duration("escrow-every", 5*time.Minute, "how often to read every known publisher's escrow balance (one state query each; 0 = never)")
 		rpcTO     = flag.Duration("rpc-timeout", 15*time.Second, "per-RPC-call timeout")
@@ -64,10 +66,10 @@ func main() {
 		expDir    = flag.String("exports-dir", "", "where the daily export tarballs are built (default <data-dir>/exports)")
 		expHour   = flag.Int("export-hour", 3, "UTC hour after which a day's export is built, the grace for late rows (-1 = never build exports)")
 		expKey    = flag.String("export-signing-key", os.Getenv(export.SigningKeyEnv), "ed25519 private key (PKCS#8 PEM, e.g. from openssl genpkey -algorithm ed25519) that signs every daily export's manifest digest; default $"+export.SigningKeyEnv+"; empty = exports are unsigned, exactly as before (docs/exports-signing.md)")
-		retainRaw = flag.Duration("retain-raw", rollup.Default().RetainRaw, "keep probe and heartbeat rows this long; older rolled days are pruned, whole days at a time (0 = keep forever)")
-		retainRJ  = flag.Duration("retain-raw-json", rollup.Default().RetainRawJSON, "keep a row's raw_json (the bulk of it) this long; every typed column stays (0 = keep forever)")
-		rollAfter = flag.Duration("rollup-after", rollup.Default().RollupAfter, "compute a day's obligation and probe rollups this long after the day ends; must clear every retention window (0 = never roll up, so never prune)")
-		retEvery  = flag.Duration("retention-every", time.Hour, "how often the retention pass runs")
+		// -retain-raw and -retain-raw-json went with the prune and the raw_json strip they set (2026-10-04): every row is
+		// kept for good, and a unit that still passes either fails at start rather than believe it prunes.
+		rollAfter = flag.Duration("rollup-after", rollup.Default().RollupAfter, "compute a day's obligation and probe rollups this long after the day ends; must clear every retention window (0 = never roll up)")
+		retEvery  = flag.Duration("retention-every", time.Hour, "how often the rollup pass runs")
 		avEvery   = flag.Duration("avatars-every", time.Hour, "how often to look for validator Keybase pictures to fetch or refresh (0 = never)")
 		avMaxAge  = flag.Duration("avatar-max-age", 24*time.Hour, "re-resolve a validator's Keybase picture after this long")
 	)
@@ -215,7 +217,7 @@ func main() {
 
 	log.Printf("collector up: run=%d vantage=%s db=%s data=%s exports=%s", runID, *vantage, *dbPath, *dataDir, *expDir)
 
-	retention := rollup.Config{RetainRaw: *retainRaw, RetainRawJSON: *retainRJ, RollupAfter: *rollAfter, Vantage: *vantage}
+	retention := rollup.Config{RollupAfter: *rollAfter, Vantage: *vantage}
 	// The record-keeping half of a pass: every file into the store, then the
 	// collapse, the late verdicts, the corrections, the holds and the
 	// retention pass (observer/collect).
@@ -464,6 +466,34 @@ func main() {
 
 	tick := time.NewTicker(*interval)
 	defer tick.Stop()
+	// The fast tick (fast.go) runs in this same loop, so it never writes
+	// beside a pass: one that falls due while a pass runs waits for it, and
+	// then reads only what came in after the pass read the files. A nil
+	// channel is never ready, so -fast-every 0 leaves the pass alone, as
+	// before. The file watch (watch.go) only says when a tick is due sooner
+	// than its timer: the tick still runs here, and the timer keeps running
+	// beside it, so a watch that cannot start, or is lost, costs what the
+	// timer costs.
+	var fastC <-chan time.Time
+	var wakeC <-chan struct{}
+	fast := newFastTick(st, *statePath, *pubsPath, *payPath, log.Printf, live.Error)
+	if *fastEvery > 0 {
+		ft := time.NewTicker(*fastEvery)
+		defer ft.Stop()
+		fastC = ft.C
+		watching := ""
+		if *fastWatch {
+			fw, err := watchFiles([]string{*statePath, *pubsPath, *payPath}, watchQuiet, watchMaxWait, log.Printf)
+			if err != nil {
+				log.Printf("WARNING: fast tick: cannot watch the files (%v): reading them on the timer alone", err)
+			} else {
+				defer fw.Close()
+				wakeC = fw.C
+				watching = fmt.Sprintf(", and within %s of a change to one of them (watching %s)", watchMaxWait, strings.Join(fw.Dirs(), ", "))
+			}
+		}
+		log.Printf("fast tick: state.json, publications and payments every %s between passes%s", *fastEvery, watching)
+	}
 	lastEP, lastAV := time.Now(), time.Now()
 	for {
 		select {
@@ -472,6 +502,10 @@ func main() {
 			_ = st.StopRun(runID, time.Now(), "signal")
 			live.Stop("signal")
 			return
+		case <-fastC:
+			fast.run(time.Now())
+		case <-wakeC:
+			fast.run(time.Now())
 		case <-tick.C:
 			poll := *epEvery > 0 && time.Since(lastEP) >= *epEvery
 			pass(poll)

@@ -254,32 +254,14 @@ func shadowedBy(idx []uint32, cands []ShadowCandidate) string {
 	return ""
 }
 
-// Run executes one layered probe and returns a fully-populated Measurement.
-// It never returns an error — a probe that cannot run records
-// OutcomeProbeError. The named return lets the deferred finaliser stamp
-// FinishedAt / TotalDurationMS / Classification after every early return.
-func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measurement) {
-	to = to.withDefaults()
-	// The caller's context is kept apart from the request's own deadline: a
-	// request the caller abandoned (shutdown) is this observer's gap, while
-	// one that ran out of the client's RPCTimeout is the validator's answer.
-	caller := ctx
-	if in.ClientRules && in.RequestTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, in.RequestTimeout)
-		defer cancel()
-		// The client bounds the lookup, the connect and the handshake by the
-		// request's time alone (the RPCTimeout around DownloadShard covers
-		// gRPC's lazy dial and its resolver), so a lookup or a connect that
-		// takes 5 to 15 s is still made here.
-		to.DNS, to.TCP, to.TLS = in.RequestTimeout, in.RequestTimeout, in.RequestTimeout
-	}
-	now := time.Now().UTC()
+// newMeasurement is the row of a request of in started at now: what was
+// asked, of whom, and when, before any layer has run.
+func newMeasurement(in Input, now time.Time) Measurement {
 	phase := PhaseAtWindow(now, in.MustServeUntil, in.PruneTolerance)
 	if in.ReadingPhase != "" {
 		phase = in.ReadingPhase
 	}
-	m = Measurement{
+	m := Measurement{
 		SchemaVersion:      MeasurementSchemaVersion,
 		Vantage:            in.Vantage,
 		PromiseHash:        in.PromiseHash,
@@ -306,6 +288,47 @@ func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measur
 		o := in.Observer
 		m.Observer = &o
 	}
+	return m
+}
+
+// classifyRow applies the taxonomy to a row's own evidence.
+func classifyRow(m *Measurement) {
+	m.Classification, m.ClassificationReason = Classify(Evidence{
+		Assigned:           m.Assigned,
+		Attested:           m.Attested,
+		AttestationUnknown: m.AttestationUnknown,
+		Phase:              m.Phase,
+		Outcome:            m.Outcome,
+		CommitmentVerified: m.Download.CommitmentVerified,
+		Shadowed:           m.Download.ShadowedBy != "",
+		ShadowUncertain:    m.Download.ShadowedBy == "" && m.Download.ShadowGap != "",
+		RowsSubsetOfOwn:    m.Download.RowsSubsetOfAssignment,
+		IdentityStale:      m.Identity.Stale,
+		PinStale:           m.Observer != nil && m.Observer.PinStale,
+	})
+}
+
+// Run executes one layered probe and returns a fully-populated Measurement.
+// It never returns an error — a probe that cannot run records
+// OutcomeProbeError. The named return lets the deferred finaliser stamp
+// FinishedAt / TotalDurationMS / Classification after every early return.
+func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measurement) {
+	to = to.withDefaults()
+	// The caller's context is kept apart from the request's own deadline: a
+	// request the caller abandoned (shutdown) is this observer's gap, while
+	// one that ran out of the client's RPCTimeout is the validator's answer.
+	caller := ctx
+	if in.ClientRules && in.RequestTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, in.RequestTimeout)
+		defer cancel()
+		// The client bounds the lookup, the connect and the handshake by the
+		// request's time alone (the RPCTimeout around DownloadShard covers
+		// gRPC's lazy dial and its resolver), so a lookup or a connect that
+		// takes 5 to 15 s is still made here.
+		to.DNS, to.TCP, to.TLS = in.RequestTimeout, in.RequestTimeout, in.RequestTimeout
+	}
+	m = newMeasurement(in, time.Now().UTC())
 	defer func() {
 		m.FinishedAt = time.Now().UTC()
 		m.TotalDurationMS = m.FinishedAt.Sub(m.StartedAt).Milliseconds()
@@ -321,19 +344,7 @@ func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measur
 				m.RawError = "probe abandoned (" + caller.Err().Error() + "): " + m.RawError
 			}
 		}
-		m.Classification, m.ClassificationReason = Classify(Evidence{
-			Assigned:           m.Assigned,
-			Attested:           m.Attested,
-			AttestationUnknown: m.AttestationUnknown,
-			Phase:              m.Phase,
-			Outcome:            m.Outcome,
-			CommitmentVerified: m.Download.CommitmentVerified,
-			Shadowed:           m.Download.ShadowedBy != "",
-			ShadowUncertain:    m.Download.ShadowedBy == "" && m.Download.ShadowGap != "",
-			RowsSubsetOfOwn:    m.Download.RowsSubsetOfAssignment,
-			IdentityStale:      m.Identity.Stale,
-			PinStale:           m.Observer != nil && m.Observer.PinStale,
-		})
+		classifyRow(&m)
 	}()
 
 	if !in.SkipDownload && coder == nil {

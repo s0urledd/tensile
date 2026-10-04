@@ -13,7 +13,7 @@ import (
 
 // partsAfter holds a test's store to the API's day partials as the clock
 // moves on past its fixtures, two hours, fifteen days (after the rollup)
-// and ninety-five (after the prune): the longer windows computed from the
+// and ninety-five (long after it): the longer windows computed from the
 // partials must be what the shipped statements compute
 // (api.CompareDayParts).
 func partsAfter(t *testing.T, st *store.Store) {

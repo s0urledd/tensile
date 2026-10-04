@@ -142,7 +142,7 @@ export type Network = {
   reachability: Rate;
   /** every heartbeat in the window that completed TLS, over every one sent */
   reachability_window: Rate;
-  /** one per (validator, blob) endorsed, judged by the blob's reading; the headline */
+  /** one per (validator, blob) endorsed, judged on the validator's own answers at the blob's reading; the headline */
   obligations: Obligations;
   /** the part of obligations.broken whose faults are all still settling; absent when none (see ProvisionalFaults) */
   provisional_faults?: ProvisionalFaults;
@@ -181,15 +181,28 @@ export type Reconstructable = {
 
 /**
  * One per (validator, blob) the settled promise proves the validator owes,
- * judged by the blob's reading. Only served and broken enter the rate.
+ * judged on the validator's own answers at the blob's reading (readings
+ * before FULL_READ_SINCE keep the rule of their time). Only served and
+ * broken enter the rate.
  */
 export type Obligations = {
   total: number;
-  /** its rows came back and verified */
+  /** its own rows came back and verified, at the reading or when asked again */
   served: number;
-  /** not served: the blob could not be reconstructed, and its rows did not come back */
+  /**
+   * not served: none of its answers served and none was Tensile's own gap, its last giving the reason (no shard, rows
+   * that do not verify or fewer of its own than it holds, a wrong or expired certificate, no registered endpoint, an
+   * endpoint that could not be reached, a timeout, a rate limit or a server error); at a reading before
+   * FULL_READ_SINCE, its rows did not come back and the blob could not be reconstructed
+   */
   broken: number;
-  /** counted neither way: not asked because the rows were already enough, a failure on a blob that was available, or a blob not read by Tensile */
+  /**
+   * counted neither way: one of its answers was Tensile's own gap (a request it could not make in time, or an error on
+   * its own side: its network, its resolver or its clock) or rows of the blob that are not its own, a request Tensile
+   * still owed it is not on record, no request of the reading reached a server, or the blob was not read by Tensile;
+   * at a reading before FULL_READ_SINCE also a failure on a blob that was available (a validator such a reading did
+   * not ask has no obligation at all)
+   */
   not_counted: number;
   /** read, and the retention window has not ended (an endorsed shard not read yet has no obligation row) */
   pending: number;
@@ -250,7 +263,7 @@ export type Validator = {
    */
   reachability_window: Rate;
   last_reachable_at: string | null;
-  /** one per (validator, blob) endorsed, judged by the blob's reading; the headline */
+  /** one per (validator, blob) endorsed, judged on the validator's own answers at the blob's reading; the headline */
   obligations: Obligations;
   /** the part of obligations.broken whose faults are all still settling; absent when none (see ProvisionalFaults) */
   provisional_faults?: ProvisionalFaults;
@@ -293,6 +306,7 @@ export type ValidatorReading = {
   promise_hash: string;
   /** true proven obliged, false unproven, null recorded before verification existed */
   attested: boolean | null;
+  /** "full" (every endorser asked for its own rows; so is "end" started at or after FULL_READ_SINCE), "enough" (a reading that stopped at enough rows, judged by the earlier rule), "end" (the one reading near the end of the window, before it), or the earlier schedule's w1…wN, grace, post */
   schedule_label: string;
   scheduled_at: string;
   started_at: string;
@@ -309,22 +323,50 @@ export type ValidatorReading = {
   shadowed_by?: string;
   /** where the upload went; host_changed when the host read differs (the validator re-registered during the window) */
   host_at_settlement?: string;
+  /** when the blob settled, which is when the validator endorsed it; absent from an API before it was named */
+  settled_at?: string;
   host_changed?: boolean;
-  /** what the reading counts as for the validator: served, not_served (the blob was unavailable), or absent when it counts neither way */
+  /**
+   * what this request counts as for the validator: served; not_served (at a full reading, its last answer when none
+   * served and none was Tensile's own gap or rows of the blob not its own; at an earlier one, rows that did not come
+   * back from a blob that was unavailable); absent when it counts neither way, among them an answer a later one
+   * replaced, or one whose next attempt is still owed
+   */
   service?: "served" | "not_served";
   /** a not-served reading younger than the settling period: counted, and an x/fibre params change can still withdraw it */
   provisional?: boolean;
+  /**
+   * which of the validator's requests at a full reading this is: absent (0) the reading's own, 1 and 2 asked again
+   * after an answer that did not serve; a later one can carry the answer of another request to the same endpoint, which
+   * failed before any blob was asked for (its raw_error names that request: sharedAnswer)
+   */
+  attempt?: number;
+  /**
+   * at a full reading, on an answer that did not serve: when its validator is to be asked again. The answer is then
+   * not its last, and until that request is on record (made, or recorded as not made) the validator counts neither
+   * way. Absent when none is owed.
+   */
+  next_attempt_due?: string;
+  /**
+   * on a short answer (outcome PARTIAL) only: true when every row that came back is one this promise assigns the
+   * validator (at a full reading, not served), false when some are not (rows of the blob that are not its own,
+   * counted neither way)
+   */
+  rows_subset_of_assignment?: boolean;
 };
 
 /** one reading row of /v1/probes */
 export type Probe = {
   promise_hash: string;
   validator_address: string;
+  /** celestiavaloper1… from the staking set, when the collector has read one */
+  operator_address?: string;
   validator_host: string;
   assigned: boolean;
   /** true proven obliged, false unproven, null recorded before verification existed */
   attested: boolean | null;
   assigned_row_count: number;
+  /** "full" (every endorser asked for its own rows; so is "end" started at or after FULL_READ_SINCE), "enough" (a reading that stopped at enough rows, judged by the earlier rule), "end" (the one reading near the end of the window, before it), or the earlier schedule's w1…wN, grace, post */
   schedule_label: string;
   scheduled_at: string;
   started_at: string;
@@ -352,10 +394,16 @@ export type Probe = {
   /** the evidence probe of the settlement host, run when the current host did not serve; never the verdict */
   settlement_host_outcome?: string;
   settlement_host_served?: boolean;
-  /** what the reading counts as for the validator: served, not_served (the blob was unavailable), or absent when it counts neither way */
+  /** what this request counts as for the validator; see ValidatorReading.service */
   service?: "served" | "not_served";
   /** a not-served reading younger than the settling period: counted, and an x/fibre params change can still withdraw it */
   provisional?: boolean;
+  /** see ValidatorReading.attempt */
+  attempt?: number;
+  /** see ValidatorReading.next_attempt_due */
+  next_attempt_due?: string;
+  /** see ValidatorReading.rows_subset_of_assignment */
+  rows_subset_of_assignment?: boolean;
 };
 
 // Below this many rated probes a percentage is noise dressed as a
@@ -395,7 +443,11 @@ export type Reconstruct = {
   total_rows: number;
   /** validators whose rows came back verified */
   served_by_validators: number;
-  /** validators the reading asked, endorsing or not; it stops once the rows are enough */
+  /**
+   * validators the reading asked (a request of Tensile's own that failed or could not be made asks no one): at a full
+   * reading the endorsing validators, and only those; at a reading before FULL_READ_SINCE, endorsing or not, most of
+   * them in the client's order until the rows were enough, as at a reading labelled enough
+   */
   probed_validators: number;
 };
 
@@ -417,6 +469,10 @@ export type Blob = {
   settlement_height: number;
   /** the other half of the list's cursor, with settlement_height */
   settlement_tx_index: number;
+  /** the transaction that carried the MsgPayForFibre, in lower-case hex; absent from an API before it was published */
+  settlement_tx_hash?: string;
+  /** the promise's blob version, the first byte of the client's blob ID; absent from an API before it was published */
+  blob_version?: number;
   settlement_time: string;
   creation_timestamp: string;
   must_serve_until: string;
@@ -428,6 +484,9 @@ export type Blob = {
 /** one validator's reading of a blob, as the blob page lists them */
 export type BlobReading = {
   validator_address: string;
+  /** celestiavaloper1… from the staking set, when the collector has read one */
+  operator_address?: string;
+  /** "full" (every endorser asked for its own rows; so is "end" started at or after FULL_READ_SINCE), "enough" (a reading that stopped at enough rows, judged by the earlier rule), "end" (the one reading near the end of the window, before it), or the earlier schedule's w1…wN, grace, post */
   schedule_label: string;
   started_at: string;
   phase: string;
@@ -441,8 +500,121 @@ export type BlobReading = {
   row_indices?: number[];
   rows_sha256?: string;
   rpc_code?: string;
+  /** what this request counts as for the validator; see ValidatorReading.service */
   service?: "served" | "not_served";
+  /** see ValidatorReading.attempt */
+  attempt?: number;
+  /** see ValidatorReading.next_attempt_due */
+  next_attempt_due?: string;
+  /** see ValidatorReading.rows_subset_of_assignment */
+  rows_subset_of_assignment?: boolean;
 };
+
+/**
+ * When Tensile began reading every blob in full (probe.FullReadSince on the observer): every validator that endorsed
+ * the blob is asked for its own rows 10 minutes before the retention window ends, one that did not serve is asked
+ * again, up to two more times, about 90 s apart, while the window is open, and each is judged on its own answers,
+ * whatever the blob's reconstruction; the first such readings, labelled "end", asked each validator once. Readings
+ * started before it (most of them asking validators in the client's order until the blob could be rebuilt), and a
+ * reading made after it that stops at enough rows (labelled "enough"), keep the earlier rule: not served only when
+ * the blob was unavailable.
+ */
+export const FULL_READ_SINCE = "2026-10-02T16:09:49Z";
+const FULL_READ_SINCE_MS = Date.parse(FULL_READ_SINCE);
+/** the same moment as the site writes it in a dated note */
+export const FULL_READ_SINCE_WORDS = "2 October 2026, 16:09 UTC";
+
+/** the one reading of a blob near the end of its retention window: "end", "full", or "enough" (one that stopped at enough rows) */
+export function endOfWindow(label: string): boolean {
+  return label === "end" || label === "full" || label === "enough";
+}
+
+/** whether a reading row belongs to a full reading: label "full", or "end" started at or after FULL_READ_SINCE */
+export function fullReading(label: string, startedAt: string): boolean {
+  return label === "full" || (label === "end" && Date.parse(startedAt) >= FULL_READ_SINCE_MS);
+}
+
+/**
+ * a request that was Tensile's own gap: not made in time, or failed on its own side (among them its network, its
+ * resolver or its clock: ownSide); never counted against a validator
+ */
+export function ownGap(classification: string): boolean {
+  return classification === "NOT_PROBED" || classification === "PROBE_ERROR";
+}
+
+/**
+ * Which part of Tensile's own side a failure of a full reading rests on, from the raw error the observer wrote when it
+ * filed the answer as its own gap: its network (a connect that timed out while it reached no server), its resolver, or
+ * its clock (a certificate read at the edge of its validity); "" for any other.
+ */
+export function ownSide(raw?: string): "network" | "resolver" | "clock" | "" {
+  const m = /^this observer's own (network|resolver|clock):/.exec(raw ?? "");
+  return m ? (m[1] as "network" | "resolver" | "clock") : "";
+}
+
+/**
+ * A later attempt that carries the answer of another request to the same endpoint: the endpoint failed before any blob
+ * was asked for, while this attempt was due and waiting, so that answer is this attempt's too. blob is the other
+ * request's blob, wire what came back to it. Null for a request of its own.
+ */
+export function sharedAnswer(raw?: string): { blob: string; wire: string } | null {
+  const m = /^the validator's endpoint failed before any blob was asked for, on request (\S+) for blob ([0-9a-f]+), made while this attempt was due and waiting for it: ?([\s\S]*)$/.exec(raw ?? "");
+  if (!m) return null;
+  const key = m[1].split("|");
+  return { blob: key.length >= 4 && /^[0-9a-f]{64}$/.test(key[1]) ? key[1] : m[2], wire: m[3] };
+}
+
+/** a request's raw error as a page shows it: a shared answer names, in words, the request it repeats */
+export function rawErrorWords(p: { raw_error?: string; started_at: string }): string {
+  const sh = sharedAnswer(p.raw_error);
+  return sh
+    ? `the same answer as its request for blob ${sh.blob.slice(0, 6)}…${sh.blob.slice(-4)} at ${hhmm(p.started_at)}: its endpoint failed before any blob was asked for${sh.wire ? `; on the wire: ${sh.wire}` : ""}`
+    : p.raw_error ?? "";
+}
+
+/**
+ * Rows of the blob that verified and are not the validator's own, with no settled promise to explain them: under
+ * hash-order serving they show neither that it holds its rows nor that it does not, so at a full reading Tensile counts
+ * them neither way. Other rows (WRONG_ROWS), or a short answer (PARTIAL) whose rows the record says are not all its
+ * own; a short answer that is a part of its own rows is not served.
+ */
+export function foreignRows(p: { classification: string; outcome: string; rows_subset_of_assignment?: boolean }): boolean {
+  return p.classification === "UNMATCHED_GENUINE"
+    && (p.outcome === "WRONG_ROWS" || (p.outcome === "PARTIAL" && p.rows_subset_of_assignment === false));
+}
+
+/**
+ * Whether a validator's last answer at a full reading still owes it another request (the record's next_attempt_due),
+ * and that request can still be made: due before a minute ahead of the window's end. One due later was owed only
+ * because of Tensile's own delays, and is recorded as not made, Tensile's own gap.
+ */
+export function asksAgain(p: { next_attempt_due?: string }, until: number): boolean {
+  return !!p.next_attempt_due && Date.parse(p.next_attempt_due) < until - 60_000;
+}
+
+/**
+ * One validator's requests at one reading, in the order they were made (attempt, then start), and the last of them,
+ * which carries the result and its reason: the attempts stop once one serves.
+ */
+export function attemptsOf<T extends { attempt?: number; started_at: string }>(rows: T[]): { last: T; tries: T[] } {
+  const tries = [...rows].sort((a, b) => (a.attempt ?? 0) - (b.attempt ?? 0) || a.started_at.localeCompare(b.started_at));
+  return { last: tries[tries.length - 1], tries };
+}
+
+/**
+ * What a validator's requests at one reading count as, read off the service word the observer put on each: served when
+ * one served, not served when one is the not-served answer, otherwise neither ("").
+ */
+export function judged(tries: { service?: "served" | "not_served" }[]): "served" | "not_served" | "" {
+  if (tries.some((t) => t.service === "served")) return "served";
+  if (tries.some((t) => t.service === "not_served")) return "not_served";
+  return "";
+}
+
+/** "asked 3 times", or "" for a single request */
+export function askedTimes(n: number): string {
+  return n > 1 ? `asked ${n} times` : "";
+}
 
 /**
  * The fee side of one promise, from the payments table. Null when the
@@ -461,6 +633,11 @@ export type Sum = { count: number; utia: number };
 
 /** x/fibre's charge for a blob, on /v1/params: fee = (base_gas + gas_per_chunk × ⌈blob_size / chunk_bytes⌉) × utia_per_gas */
 export type PriceFormula = { base_gas: number; gas_per_chunk: number; chunk_bytes: number; utia_per_gas: number; note: string };
+
+/** the fee of one blob of this size, in utia, by the module's price formula */
+export function blobFee(f: PriceFormula, size: number): number {
+  return (f.base_gas + f.gas_per_chunk * Math.ceil(size / f.chunk_bytes)) * f.utia_per_gas;
+}
 
 export type PublisherShare = {
   publisher: string;
@@ -535,10 +712,25 @@ export type Publisher = {
   largest_blob_bytes: number;
   timeouts: number;
   timed_out_utia: number;
+  /** its first and last escrow movement of any kind, over the whole record */
   first_seen_at: string;
   last_seen_at: string;
+  /** the namespaces its settlements in the period used, the most used first, at most 10; namespaces_total counts them all */
+  namespaces?: PublisherNamespace[];
+  namespaces_total?: number;
+  /** its first and last settlement over the whole record, whatever the period; null when it never settled */
+  first_settlement_at?: string | null;
+  last_settlement_at?: string | null;
+  /** every blob it paid for, over the whole record, by Tensile's reading; null until the API has counted them after a start */
+  readings?: PublisherReadings | null;
   escrow: Escrow | null;
 };
+
+/** one namespace a publisher's settlements used */
+export type PublisherNamespace = { namespace: string; settlements: number; bytes: number };
+
+/** a publisher's blobs by the Blobs list's Tensile lane (lib/status.ts lane()) */
+export type PublisherReadings = { available: number; unavailable: number; in_retention_window: number; not_read: number };
 
 export type Payment = {
   kind: "settlement" | "timeout" | "deposit" | "withdrawal_request" | "withdrawal_executed";
@@ -615,8 +807,12 @@ export function throttled(f: { error: string | null; status?: number }): boolean
 // components ask for it: the header, the banner, the footer and the page all
 // want /v1/meta, which was four requests per interval per viewer.
 // retry is the one early re-ask a stream has pending while its figure is
-// being computed.
-type Sub = { subs: Set<(f: Fetch<unknown>) => void>; timer: ReturnType<typeof setInterval> | null; retry: ReturnType<typeof setTimeout> | null; last: Fetch<unknown> };
+// being computed. load asks now; busy counts the requests out, and again asks
+// once more when the last of them is back (askAgain).
+type Sub = {
+  subs: Set<(f: Fetch<unknown>) => void>; timer: ReturnType<typeof setInterval> | null; retry: ReturnType<typeof setTimeout> | null; last: Fetch<unknown>;
+  load: () => void; busy: number; again: boolean;
+};
 const streams = new Map<string, Sub>();
 
 /** how soon to ask again for a figure being computed: what the API says, kept between 2 and 30 s */
@@ -657,10 +853,13 @@ async function fetchOnce(path: string): Promise<Fetch<unknown> & { retryMs?: num
 function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<unknown>) => void): () => void {
   let st = streams.get(key);
   if (!st) {
-    st = { subs: new Set(), timer: null, retry: null, last: { data: null, error: null, loading: true, fetchedAt: null } };
+    const own: Sub = { subs: new Set(), timer: null, retry: null, last: { data: null, error: null, loading: true, fetchedAt: null }, load: () => {}, busy: 0, again: false };
+    st = own;
     streams.set(key, st);
     const load = async () => {
+      own.busy++;
       const { retryMs, ...next } = await fetchOnce(path);
+      own.busy--;
       const cur = streams.get(key);
       if (!cur) return;
       if (next.computing) {
@@ -683,7 +882,12 @@ function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<u
       }
       const out = cur.last;
       cur.subs.forEach((s) => s(out));
+      if (own.again && own.busy === 0) {
+        own.again = false;
+        load();
+      }
     };
+    own.load = load;
     load();
     if (refreshMs > 0) st.timer = setInterval(load, refreshMs);
   } else if (!st.last.loading || st.last.computing) {
@@ -706,6 +910,26 @@ function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<u
   };
 }
 
+/**
+ * How often the site asks for the newest block (/v1/tip): every second, so the header's block moves with the chain's
+ * own pace (a block about every 3 s). Every reader of the tip asks with this one interval, so a page shares one stream;
+ * the API keeps one answer for a quarter of a second, so a reader costs it a small cached reply, and however many
+ * readers there are, the node and the database are asked at most four times a second.
+ */
+export const TIP_MS = 1000;
+
+/**
+ * Asks a stream again now, ahead of its interval: the one useApi(path, refreshMs) reads. A request already out is
+ * followed by one more, so an answer from before the reason to ask again never has the last word. Nothing when no
+ * page reads the stream.
+ */
+export function askAgain(path: string, refreshMs = 30000): void {
+  const st = streams.get(`${refreshMs}|${path}`);
+  if (!st) return;
+  if (st.busy > 0) st.again = true;
+  else st.load();
+}
+
 export function useApi<T>(path: string | null, refreshMs = 30000): Fetch<T> {
   const [state, setState] = useState<Fetch<T>>({ data: null, error: null, loading: !!path, fetchedAt: null });
   useEffect(() => {
@@ -713,6 +937,17 @@ export function useApi<T>(path: string | null, refreshMs = 30000): Fetch<T> {
     return subscribe(`${refreshMs}|${path}`, path, refreshMs, (f) => setState(f as Fetch<T>));
   }, [path, refreshMs]);
   return state;
+}
+
+/**
+ * The promise hash of the newest blob on record (/v1/tip's latest_blob), null until the tip has named one. It reads
+ * the header's tip stream, so it asks nothing of its own, and it renders its page only when the blob changes, not at
+ * every answer: what a page that waits for a blob to be recorded asks again on.
+ */
+export function useNewestBlob(): string | null {
+  const [newest, setNewest] = useState<string | null>(null);
+  useEffect(() => subscribe(`${TIP_MS}|/v1/tip`, "/v1/tip", TIP_MS, (f) => setNewest((f.data as Tip | null)?.latest_blob?.promise_hash ?? null)), []);
+  return newest;
 }
 
 // ---- formatting ----
@@ -968,11 +1203,16 @@ export function fmtShare(v: number | null | undefined): string {
   return pct2(v, v >= 1, v <= 0);
 }
 
-/** /v1/tip: the newest block the observer has read, for the header ticker */
+/**
+ * /v1/tip: the newest block the observer has read, for the header ticker, and the newest blob it has stored
+ * (latest_blob, in /v1/blobs' order; absent while there is none, and from an API older than it), which the
+ * overview's recent blobs compare with the blobs they hold to know when to read the list
+ */
 export type Tip = {
   height: number;
   block_time?: string;
   fibre_active: boolean;
+  latest_blob?: { promise_hash: string; settlement_height: number };
   server_time: string;
 };
 

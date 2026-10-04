@@ -50,9 +50,9 @@ import (
 //	  a row born held                          rows and of the held      of a promise whose held rows moved;
 //	                                           publications; per promise the publication's settlement day
 //	                                           once it moves
-//	the prune (probes, heartbeats,             raw_from moving; one      the row days before raw_from; the
-//	  decisions; not one transaction)          anchor row per table      settlement days whose span reaches a
-//	                                           per row day               pruned day or an anchor that went
+//	the prune of a build before 2026-10-04     raw_from moving; one      the row days before raw_from; the
+//	  (probes, heartbeats, decisions; not one  anchor row per table      settlement days whose span reaches a
+//	  transaction), on a database it pruned    per row day               pruned day or an anchor that went
 //	InsertReachability (own vantage)           reachability past the     its row day
 //	                                           mark
 //	a migration, a restore                     the store's identity and  everything: the partials begin again

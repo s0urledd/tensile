@@ -69,6 +69,13 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 			[]any{1, lo}, []string{"publications_unassignable (settlement_height>?)"}},
 		c{"publishers", publisherRowsSQL(""), []any{lo, hi}, []string{"payments_time (time>? AND time<?)", "payments_publisher_time (publisher=?)"}},
 		c{"publisher", publisherRowsSQL(" AND p.publisher = ?"), []any{lo, hi, "celestia1x"}, []string{"payments_publisher_time (publisher=?"}},
+		// the namespaces of the rows: the window's settlements, or one
+		// publisher's in the window
+		c{"publisher namespaces", publisherNamespacesSQL(""), []any{lo, hi}, []string{"payments_kind_time (kind=? AND time>? AND time<?)"}},
+		c{"one publisher's namespaces", publisherNamespacesSQL(" AND publisher = ?"), []any{lo, hi, "celestia1x"},
+			[]string{"payments_publisher_time (publisher=? AND time>? AND time<?)"}},
+		c{"a publisher's namespaces in each span", spanNamespacesSQL, []any{"celestia1x", hi, lo, lo},
+			[]string{"payments_publisher_time (publisher=?)"}},
 		c{"class tally", `SELECT ` + cls + `, COUNT(*) FROM probes WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window' GROUP BY 1`,
 			[]any{lo, hi}, []string{"COVERING INDEX probes_"}},
 		c{"per-validator class tally", `SELECT validator_address, ` + cls + `, COUNT(*) FROM probes WHERE started_at >= ? AND started_at <= ? AND assigned = 1 AND phase = 'in_window' GROUP BY 1, 2`,
@@ -148,6 +155,33 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 		cases = append(cases, c{p.name, p.q, p.args, p.want})
 		scans[p.name] = p.scans
 	}
+	// A blob found by a hash a developer holds (/v1/blobs?commitment=,
+	// ?tx=, and the blob ID, which the site turns into its commitment): the
+	// page, the selection its verdict cache fingerprints, and the count
+	// each seek migration 26's index, never walk publications.
+	for _, f := range []struct {
+		name, cond, idx string
+		args            []any
+	}{
+		{"blobs by commitment", blobByCommitmentSQL, "publications_commitment (commitment=?)", []any{"ab"}},
+		{"blobs by tx", blobByTxSQL, "publications_tx (settlement_tx_hash=?)", []any{"ab", "AB"}},
+		// with a namespace beside them, as the route writes it: still the
+		// hash's seek, not every blob of the namespace
+		{"blobs by commitment in a namespace", blobByCommitmentSQL + " AND " + blobInNamespaceBesideSQL, "publications_commitment (commitment=?)", []any{"ab", "ns"}},
+		{"blobs by tx in a namespace", blobByTxSQL + " AND " + blobInNamespaceBesideSQL, "publications_tx (settlement_tx_hash=?)", []any{"ab", "AB", "ns"}},
+	} {
+		cases = append(cases,
+			c{f.name + " page", blobRowsSQL(f.cond, blobPageDefault, 0), f.args, []string{f.idx}},
+			c{f.name + " selection", blobSelAt(f.cond, blobPageDefault+1, 0) + `SELECT promise_hash FROM sel`, f.args, []string{f.idx}},
+			c{f.name + " count", `SELECT COUNT(*) FROM publications WHERE ` + f.cond, f.args, []string{f.idx}},
+		)
+		scans[f.name+" selection"] = []string{"sel"}
+	}
+	// The tip's newest blob, asked up to four times a second whoever is
+	// reading: the highest height from the index's last entry, then that
+	// block's rows, never a walk of publications.
+	cases = append(cases, c{"tip's newest blob", latestBlobSQL, nil,
+		[]string{"SEARCH publications USING INDEX publications_settlement (settlement_height=?)", "COVERING INDEX publications_settlement"}})
 	for _, tc := range cases {
 		plan, err := st.QueryPlan(ctx, tc.q, tc.args...)
 		if err != nil {

@@ -13,10 +13,11 @@ import (
 // PartsAfter holds a parity test's store to the day partials as the clock
 // moves on past its fixtures: two hours after base (the days not over
 // yet), fifteen days (after the rollup, every day sealed) and ninety-five
-// (after the prune, the "all" window resting on the rollup). At each the
-// longer windows of the network and the validator list are computed from
-// the partials and with the shipped statements (CompareDayParts), and
-// must not differ. A zero base is the newest moment the store holds.
+// (long after it; the rollup deletes nothing, so every row is still read).
+// At each the longer windows of the network and the validator list are
+// computed from the partials and with the shipped statements
+// (CompareDayParts), and must not differ. A zero base is the newest moment
+// the store holds.
 // Under the race detector, which has nothing to find in it, it does
 // nothing.
 func PartsAfter(t testing.TB, st *store.Store, vantage string, base time.Time) {

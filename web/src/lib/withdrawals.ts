@@ -131,10 +131,3 @@ export type Params = {
   /** the module's charge for a blob, from which every fee on the site is recomputed */
   price_formula: PriceFormula;
 };
-
-/** the words the site uses for an outcome */
-export const OUTCOME: Record<WithdrawalOutcome, string> = {
-  executed: "paid out",
-  consumed: "consumed by settlements",
-  unattributed: "left the queue (unattributed)",
-};

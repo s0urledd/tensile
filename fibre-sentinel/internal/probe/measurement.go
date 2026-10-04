@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -77,11 +79,35 @@ type Measurement struct {
 	AssignedRowCount   int  `json:"assigned_row_count"`
 
 	// scheduling
-	ScheduleLabel string    `json:"schedule_label"` // "end" for the one reading of a blob; earlier rows w1..w4, grace, post
+	ScheduleLabel string    `json:"schedule_label"` // "full" for the one reading of a blob that asks every endorser ("enough" for one that stops at enough rows); "end" before it; earlier rows w1..w4, grace, post
 	ScheduledAt   time.Time `json:"scheduled_at"`
 	StartedAt     time.Time `json:"started_at"`
 	FinishedAt    time.Time `json:"finished_at"`
 	LatenessMS    int64     `json:"lateness_ms"` // started_at - scheduled_at
+	// Attempt is which of a validator's requests in a full reading this row
+	// is: 0 the reading's own, 1 and 2 the later ones made when the earlier
+	// did not serve (retry.go). Every attempt is its own row, at the
+	// reading's point. Additive, omitempty: 0 on every other row.
+	Attempt int `json:"attempt,omitempty"`
+	// NextAttemptDue, on a row of a full reading that did not serve, is when
+	// its validator is to be asked again (retry.go): set only while an
+	// attempt is left and it can start before must_serve_until less the
+	// request start margin, or could have but for this observer's own
+	// delays (then it may lie past that cutoff, and the attempt is recorded
+	// as not made when the cutoff comes). A row that carries it is not the validator's
+	// last answer: until the attempt is on record (made, or recorded as not
+	// made) the validator is judged on neither (observer/verdict), so an
+	// attempt this observer owed and never recorded is never read as the
+	// validator's failure. Additive, omitempty.
+	NextAttemptDue *time.Time `json:"next_attempt_due,omitempty"`
+	// SharedFrom names, by its dedupe key, the request whose answer this
+	// row of a later attempt repeats: the validator's endpoint failed before
+	// any blob was asked for (no such host, a connect refused, timed out or
+	// unroutable, a failed handshake or certificate) while this attempt was
+	// due and waiting for the validator's one attempt in flight, so the
+	// endpoint's answer is this attempt's too (retry.go). Empty on a row of
+	// a request of its own. Additive, omitempty.
+	SharedFrom string `json:"shared_from,omitempty"`
 
 	// per-layer results (each timed and judged on its own)
 	DNS      StepResult     `json:"dns"`
@@ -136,12 +162,33 @@ type Measurement struct {
 	// receive bound, its re-dial). Additive, omitempty.
 	ClientRules bool `json:"client_rules,omitempty"`
 
+	// ObserverLoad is this observer's own load when the request was let
+	// go, so a timeout can be read beside what the observer itself had in
+	// flight. Additive, omitempty.
+	ObserverLoad *LoadInfo `json:"observer_load,omitempty"`
+
 	// novel is how many of the returned rows the blob's reading had not
 	// already seen. Not recorded.
 	novel int
 }
 
-// ReadInfo places one validator's answer in its blob's reading.
+// LoadInfo is this observer's load at the moment a request was let go
+// (Prober.admitBy): the requests and shard bytes in flight then, this one
+// included (not those the reading-rate ceiling was still holding), how long
+// the request waited for that room, and how much of that wait was the
+// ceiling's (Config.MaxReadMbps). None of the wait is the request's own
+// time, which starts once it is let go.
+type LoadInfo struct {
+	RequestsInFlight   int   `json:"requests_in_flight"`
+	ShardBytesInFlight int64 `json:"shard_bytes_in_flight"`
+	AdmitWaitMS        int64 `json:"admit_wait_ms"`
+	RateWaitMS         int64 `json:"rate_wait_ms"`
+}
+
+// ReadInfo places one validator's answer in its blob's reading. A row of a
+// later attempt (Measurement.Attempt above 0) verified its rows on its own,
+// apart from the reading: it carries the validator's place and what the
+// reading's first pass came to, and no row counts.
 type ReadInfo struct {
 	// Order is the validator's place in the order the reading asked in
 	// (celestia-app's validator.Set.Select), from 0.
@@ -337,13 +384,47 @@ const (
 )
 
 // DedupeKey identifies a measurement slot: one probe per (vantage, promise,
-// validator, scheduled point).
+// validator, scheduled point, attempt). The reading's own request (attempt
+// 0) keeps the key of four fields every earlier row has; a later attempt
+// adds its number (AttemptOfKey reads it back).
 func (m Measurement) DedupeKey() string {
-	return m.Vantage + "|" + m.PromiseHash + "|" + m.ValidatorAddress + "|" + m.ScheduledAt.UTC().Format(time.RFC3339Nano)
+	k := dedupeKey(m.Vantage, m.PromiseHash, m.ValidatorAddress, m.ScheduledAt)
+	if m.Attempt > 0 {
+		k += "|" + strconv.Itoa(m.Attempt)
+	}
+	return k
 }
 
 func dedupeKey(vantage, promiseHash, validatorAddr string, scheduledAt time.Time) string {
 	return vantage + "|" + promiseHash + "|" + validatorAddr + "|" + scheduledAt.UTC().Format(time.RFC3339Nano)
+}
+
+// AttemptMark is what the record says of a validator in a full reading
+// whose last answer did not serve, while it is owed another attempt: the
+// last attempt, when the next is due, and what that attempt needs to be
+// made and recorded after a restart (Prober.recoverRetries).
+type AttemptMark struct {
+	Validator          string
+	Attempt            int
+	Due                time.Time
+	ScheduledAt        time.Time
+	Order              int
+	BlobResult         string
+	BlobError          string
+	Host               string
+	HostAtSettlement   string
+	Assigned           bool
+	Attested           bool
+	AttestationUnknown bool
+	RowCount           int
+}
+
+// retryOpen reports whether a row of a full reading leaves its validator
+// owed another attempt: the row says when it is due (NextAttemptDue), which
+// the prober sets only on an answer that did not serve, is not a request
+// that could not be made, and has an attempt left that can start in time.
+func retryOpen(m Measurement) bool {
+	return m.ScheduleLabel == FullReadLabel && m.NextAttemptDue != nil
 }
 
 // MeasurementStore is an append-only measurements.jsonl plus an in-memory set
@@ -351,14 +432,20 @@ func dedupeKey(vantage, promiseHash, validatorAddr string, scheduledAt time.Time
 // has. Keys are grouped by promise hash so a finished publication can be
 // forgotten in O(1) (Forget) instead of growing the set forever. Safe for
 // concurrent use.
+//
+// It also keeps, for a full reading, the validators whose last answer did
+// not serve and who can still be asked again (open): the record is
+// appended in time order, so the last row read of a validator is its last
+// attempt, and a restart finds the attempts it still owes (PendingAttempts).
 type MeasurementStore struct {
 	path string
 	f    *record.Appender
 
 	mu         sync.Mutex
-	seen       map[string]map[string]bool // promise hash -> full dedupe keys
-	seenPoints map[string]map[string]bool // promise hash -> vantage|promise|scheduledAt
-	dirty      bool                       // appended without fsync since the last Sync
+	seen       map[string]map[string]bool        // promise hash -> full dedupe keys
+	seenPoints map[string]map[string]bool        // promise hash -> vantage|promise|scheduledAt
+	open       map[string]map[string]AttemptMark // promise hash -> validator -> its last attempt, still to be followed
+	dirty      bool                              // appended without fsync since the last Sync
 }
 
 func pointKey(vantage, promiseHash string, scheduledAt time.Time) string {
@@ -374,7 +461,8 @@ func OpenMeasurementStore(dir string) (*MeasurementStore, error) {
 		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 	path := filepath.Join(dir, "measurements.jsonl")
-	s := &MeasurementStore{path: path, seen: map[string]map[string]bool{}, seenPoints: map[string]map[string]bool{}}
+	s := &MeasurementStore{path: path, seen: map[string]map[string]bool{}, seenPoints: map[string]map[string]bool{},
+		open: map[string]map[string]AttemptMark{}}
 	if err := s.loadSeen(); err != nil {
 		return nil, err
 	}
@@ -416,14 +504,44 @@ func (s *MeasurementStore) loadSeen() error {
 		if len(sc.Bytes()) == 0 {
 			continue
 		}
-		var m Measurement
-		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
+		var r seenRow
+		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
 			return fmt.Errorf("%s line %d: %w", s.path, n+1, err)
 		}
-		s.remember(m)
+		s.remember(r.measurement())
 		n++
 	}
 	return sc.Err()
+}
+
+// seenRow is the part of a row that remember reads, and all loadSeen
+// decodes: a restart reads every row of the live file, days of full
+// readings, and decoding each whole row (its layers, its download, its
+// observer) took more than twice as long. Each field has the name, type
+// and JSON key of Measurement's (TestSeenRowMatchesMeasurement).
+type seenRow struct {
+	Vantage            string     `json:"vantage"`
+	PromiseHash        string     `json:"promise_hash"`
+	ValidatorAddress   string     `json:"validator_address"`
+	ValidatorHost      string     `json:"validator_host"`
+	HostAtSettlement   string     `json:"host_at_settlement,omitempty"`
+	Assigned           bool       `json:"assigned"`
+	Attested           bool       `json:"attested"`
+	AttestationUnknown bool       `json:"attestation_unknown,omitempty"`
+	AssignedRowCount   int        `json:"assigned_row_count"`
+	ScheduleLabel      string     `json:"schedule_label"`
+	ScheduledAt        time.Time  `json:"scheduled_at"`
+	Attempt            int        `json:"attempt,omitempty"`
+	NextAttemptDue     *time.Time `json:"next_attempt_due,omitempty"`
+	Read               *ReadInfo  `json:"read,omitempty"`
+}
+
+// measurement is the row as remember reads it.
+func (r seenRow) measurement() Measurement {
+	return Measurement{Vantage: r.Vantage, PromiseHash: r.PromiseHash, ValidatorAddress: r.ValidatorAddress,
+		ValidatorHost: r.ValidatorHost, HostAtSettlement: r.HostAtSettlement, Assigned: r.Assigned, Attested: r.Attested,
+		AttestationUnknown: r.AttestationUnknown, AssignedRowCount: r.AssignedRowCount, ScheduleLabel: r.ScheduleLabel,
+		ScheduledAt: r.ScheduledAt, Attempt: r.Attempt, NextAttemptDue: r.NextAttemptDue, Read: r.Read}
 }
 
 func (s *MeasurementStore) remember(m Measurement) {
@@ -433,6 +551,45 @@ func (s *MeasurementStore) remember(m Measurement) {
 	}
 	s.seen[m.PromiseHash][m.DedupeKey()] = true
 	s.seenPoints[m.PromiseHash][pointKey(m.Vantage, m.PromiseHash, m.ScheduledAt)] = true
+	if m.ScheduleLabel != FullReadLabel {
+		return
+	}
+	open := s.open[m.PromiseHash]
+	if prev, ok := open[m.ValidatorAddress]; ok && prev.Attempt > m.Attempt {
+		return
+	}
+	if !retryOpen(m) {
+		delete(open, m.ValidatorAddress)
+		if len(open) == 0 {
+			delete(s.open, m.PromiseHash)
+		}
+		return
+	}
+	if open == nil {
+		open = map[string]AttemptMark{}
+		s.open[m.PromiseHash] = open
+	}
+	mark := AttemptMark{Validator: m.ValidatorAddress, Attempt: m.Attempt, Due: *m.NextAttemptDue, ScheduledAt: m.ScheduledAt,
+		Host: m.ValidatorHost, HostAtSettlement: m.HostAtSettlement, Assigned: m.Assigned, Attested: m.Attested,
+		AttestationUnknown: m.AttestationUnknown, RowCount: m.AssignedRowCount}
+	if m.Read != nil {
+		mark.Order, mark.BlobResult, mark.BlobError = m.Read.Order, m.Read.BlobResult, m.Read.BlobError
+	}
+	open[m.ValidatorAddress] = mark
+}
+
+// PendingAttempts is, for a full reading of promiseHash, every validator
+// whose last row on record says it is owed another attempt
+// (Measurement.NextAttemptDue).
+func (s *MeasurementStore) PendingAttempts(promiseHash string) []AttemptMark {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]AttemptMark, 0, len(s.open[promiseHash]))
+	for _, m := range s.open[promiseHash] {
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Validator < out[j].Validator })
+	return out
 }
 
 // Has reports whether a measurement for this exact slot is already recorded.
@@ -458,6 +615,7 @@ func (s *MeasurementStore) Forget(promiseHash string) {
 	defer s.mu.Unlock()
 	delete(s.seen, promiseHash)
 	delete(s.seenPoints, promiseHash)
+	delete(s.open, promiseHash)
 }
 
 // Append writes one measurement (skipping an already-seen slot) and fsyncs,
@@ -477,6 +635,20 @@ func (s *MeasurementStore) AppendDeferred(m Measurement) error {
 // fsync, skipping rows already on record, so a reading lands whole or, torn
 // by a crash, is repaired to the rows before the tear.
 func (s *MeasurementStore) AppendReading(ms []Measurement) error {
+	return s.appendRows(ms, true)
+}
+
+// AppendDeferredRows is AppendReading without the fsync: one write, made
+// durable by the next Sync. The later attempts of full readings are written
+// this way and synced about once a second (Prober.runRetries), so a burst of
+// them costs one fsync, not one each, on a disk the host shares. A row lost
+// to a crash before its Sync is owed again after the restart, from what the
+// file holds.
+func (s *MeasurementStore) AppendDeferredRows(ms []Measurement) error {
+	return s.appendRows(ms, false)
+}
+
+func (s *MeasurementStore) appendRows(ms []Measurement, sync bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var buf []byte
@@ -498,10 +670,13 @@ func (s *MeasurementStore) AppendReading(ms []Measurement) error {
 	if _, err := s.f.Write(buf); err != nil {
 		return fmt.Errorf("write measurements: %w", err)
 	}
-	if err := s.f.Sync(); err != nil {
-		return fmt.Errorf("fsync measurements: %w", err)
+	s.dirty = true
+	if sync {
+		if err := s.f.Sync(); err != nil {
+			return fmt.Errorf("fsync measurements: %w", err)
+		}
+		s.dirty = false
 	}
-	s.dirty = false
 	for _, m := range kept {
 		s.remember(m)
 	}

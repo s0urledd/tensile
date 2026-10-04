@@ -283,7 +283,7 @@ func harnessCases(t *testing.T, s *Server, now time.Time) []harnessCase {
 			}
 			addrs := harnessValidators(t, s, n)
 			q := url.Values{"exclude": {strings.Join(addrs, ",")}}
-			ex, excluded, err := parseExclude(httptest.NewRequest("GET", "/v1/network?"+q.Encode(), nil))
+			ex, excluded, err := s.parseExclude(httptest.NewRequest("GET", "/v1/network?"+q.Encode(), nil))
 			if err != nil {
 				t.Fatalf("exclude %d: %v", n, err)
 			}

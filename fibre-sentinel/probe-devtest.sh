@@ -11,8 +11,9 @@
 #      kill ONE validator's fibre server
 #   6. let the prober read every blob once and drain
 #   7. sentinel-measure-check: every blob is available from the live
-#      validators, and the killed one is never served and never a FAULT (on
-#      an available blob no failure counts against anyone)
+#      validators, and the killed one is never served and never a FAULT on
+#      the wire; at a full reading (every endorser asked, and asked again)
+#      it counts as not served by its own last answer
 #   8. tear down
 #
 # Runs ~10 min (each blob is read half way through its 10-minute window).
@@ -165,5 +166,5 @@ sentinel-measure-check -data-dir "$DATA_DIR" -killed-host "$KILL_HOST" -kill-at 
 echo ""
 echo "=================================================="
 echo "  PASS: one reading per blob + measurements + taxonomy"
-echo "        available from the live validators, the killed one not counted"
+echo "        available from the live validators, the killed one judged on its own answers"
 echo "=================================================="

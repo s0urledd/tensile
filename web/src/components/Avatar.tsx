@@ -19,11 +19,13 @@ export function initialsOf(moniker: string | undefined, address: string): string
 
 /** The validator's badge: the Keybase picture its operator set, served by
  *  our own API once the collector fetched it; initials until then, and
- *  again if the image fails to load. */
+ *  again if the image fails to load. Asked as the API's 72 px square
+ *  (?s=72), enough for the 36 px title on a 2x screen: the originals run to
+ *  40 KB each, and a page of validators would fetch two megabytes of them. */
 export default function Avatar({ v }: { v: Pick<Validator, "avatar_url" | "moniker" | "address"> }) {
   const [broken, setBroken] = useState(false);
   if (v.avatar_url && !broken) {
-    return <img className="avatar" src={API_BASE + v.avatar_url} alt="" width={24} height={24} loading="lazy" decoding="async" onError={() => setBroken(true)} />;
+    return <img className="avatar" src={`${API_BASE}${v.avatar_url}?s=72`} alt="" width={24} height={24} loading="lazy" decoding="async" onError={() => setBroken(true)} />;
   }
   return <span className="avatar" aria-hidden="true">{initialsOf(v.moniker, v.address)}</span>;
 }

@@ -3,8 +3,9 @@ package api
 // Provisional not-served readings, and the network reference beside a
 // validator's rate.
 //
-// A reading that counts as not served (rollup.CountedClass FAULT: the blob
-// was Unavailable and the validator's rows did not come back) and is
+// A reading that counts as not served (rollup.CountedClass FAULT: at a full
+// reading the validator's last answer, none having served; before it, the
+// blob was Unavailable and the validator's rows did not come back) and is
 // younger than verdict.FaultSettling can still be withdrawn by evidence
 // already on its way (a params range the scanner has not noticed yet). This
 // file labels it: a reading carries provisional: true, and a not-served

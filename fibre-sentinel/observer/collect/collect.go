@@ -9,6 +9,9 @@
 // after each one. What the collector does besides (the chain polls, the
 // escrow and endpoint history, the exports, the hosting lookups, the run
 // heartbeat) needs a node or the network and stays in main.go, after Pass.
+// So does the fast tick between passes (fast.go, watch.go), which tails
+// state.json, the publications and the payments only, in the same select
+// loop as Pass, so it never writes beside one.
 package collect
 
 import (
@@ -18,6 +21,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
@@ -59,11 +63,14 @@ type Collector struct {
 	// Corrector moves the deadlines and verdicts a verified params range
 	// proves, writing corrections.jsonl.
 	Corrector *correct.Corrector
-	// Retention is the retention policy, run every RetentionEvery (0 never).
+	// Retention is the rollup policy (rows are kept for good: the rollup
+	// deletes nothing), run every RetentionEvery (0 never).
 	Retention      rollup.Config
 	RetentionEvery time.Duration
 
 	lastRetention time.Time
+	// lastWaiting is the day the rollup last said it waits on.
+	lastWaiting string
 	// reclaimPending: the first pass gives back whatever the schema
 	// migration freed: the sampled-out collapse (migration 24) deletes most
 	// of the probe rows a store holds, and a DELETE alone never shrinks the
@@ -121,7 +128,7 @@ func DefaultPaths(dataDir string) Paths {
 // Pass does one pass at now: every file tailed into the store, the
 // sampled-out rows collapsed, the write-ahead log checkpointed, the late
 // shadow verdicts judged, the verified params ranges corrected, the holds
-// synced, and the retention pass run when it is due. It returns what failed
+// synced, and the rollup pass run when it is due. It returns what failed
 // to ingest; the collector names that on its status file last, after the
 // chain polls, so that a chain-status OK does not overwrite it.
 func (c *Collector) Pass(ctx context.Context, now time.Time) []string {
@@ -326,22 +333,15 @@ func (c *Collector) Pass(ctx context.Context, now time.Time) []string {
 			if rep.PendingAtRoll > 0 {
 				c.logf("retention: WARNING %d obligation(s) were still pending when their day was rolled; -rollup-after is shorter than a retention window", rep.PendingAtRoll)
 			}
-			if rep.RawJSONDropped > 0 {
-				c.logf("retention: dropped raw_json from %d row(s)", rep.RawJSONDropped)
-			}
-			if len(rep.PrunedDays) > 0 {
-				c.logf("retention: pruned %d row(s) of %d day(s) through %s", rep.PrunedRows, len(rep.PrunedDays), rep.PrunedDays[len(rep.PrunedDays)-1])
-				c.liveSet("raw_from", rep.PrunedDays[len(rep.PrunedDays)-1])
-				// Give the pages back. A DELETE moves them to SQLite's
-				// free list and the file never shrinks on its own, so
-				// the pruning the operator was told to rely on when a
-				// disk fills would have reclaimed nothing they could see.
-				if freed, err := st.ReclaimSpace(ctx, 20000); err != nil {
-					c.logf("retention: reclaim: %v", err)
-				} else if freed > 0 {
-					c.logf("retention: %d page(s) returned to the filesystem", freed)
+			// A day that is not final holds every later one: say so once
+			// when it starts holding, and keep it in the status file.
+			if rep.Waiting != c.lastWaiting {
+				if rep.Waiting != "" {
+					c.logf("retention: rollup waiting on %s: %s", rep.Waiting, rep.WaitingWhy)
 				}
+				c.lastWaiting = rep.Waiting
 			}
+			c.liveSet("rollup_waiting", strings.TrimSpace(rep.Waiting+" "+rep.WaitingWhy))
 		}
 	}
 	return passErrs

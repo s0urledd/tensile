@@ -480,7 +480,7 @@ func Classify(in Evidence) (Classification, string) {
 		case o == OutcomeInvalidRows:
 			return ClassFault, "returned bytes that do not verify against the blob commitment"
 		case (o == OutcomeWrongRows || o == OutcomePartial) && in.CommitmentVerified && in.RowsSubsetOfOwn:
-			return ClassUnmatchedGenuine, "returned genuine rows of this blob that this promise does assign this validator, but fewer than it owes; the shard on disk is short, which the validator signed for after writing whatever it received, so this observer cannot tell a validator that lost rows from a publisher that uploaded them incomplete: held out of the rate, counted beside it, indices on the row"
+			return ClassUnmatchedGenuine, "returned genuine rows of this blob that this promise does assign this validator, but fewer than it holds; the validator signed only after it received all of them (UploadShard checks the count against the assignment), so at a full reading this is not served; at any other reading verified rows count as served; indices on the row"
 		case (o == OutcomeWrongRows || o == OutcomePartial) && in.CommitmentVerified:
 			return ClassUnmatchedGenuine, "returned genuine rows of this blob, but not the set this promise assigns, and no settled promise over this commitment assigns them; the store serves the first shard by promise-hash order and a shard uploaded for a promise that never settled is never on chain, so this is not an accusation the evidence supports: held out of the rate, counted beside it, indices on the row"
 		case o == OutcomeWrongRows || o == OutcomePartial:
@@ -507,7 +507,7 @@ func Classify(in Evidence) (Classification, string) {
 		case o == OutcomeInvalidRows:
 			return ClassFault, "returned bytes that do not verify against the blob commitment"
 		case (o == OutcomeWrongRows || o == OutcomePartial) && in.CommitmentVerified && in.RowsSubsetOfOwn:
-			return ClassUnmatchedGenuine, "returned genuine rows of this blob that this promise does assign this validator, but fewer than it owes; a short shard is not an accusation this observer can make, since the validator signed for whatever it received: held out of the rate, indices on the row"
+			return ClassUnmatchedGenuine, "returned genuine rows of this blob that this promise does assign this validator, but fewer than it holds (it signed only after it received all of them: UploadShard checks the count); past must_serve_until, within prune-lag tolerance: held out of the rate, indices on the row"
 		case (o == OutcomeWrongRows || o == OutcomePartial) && in.CommitmentVerified:
 			return ClassUnmatchedGenuine, "returned genuine rows of this blob, but not the set this promise assigns, and no settled promise over this commitment assigns them; not an accusation the evidence supports under hash-order serving: held out of the rate, indices on the row"
 		case o == OutcomeWrongRows || o == OutcomePartial:

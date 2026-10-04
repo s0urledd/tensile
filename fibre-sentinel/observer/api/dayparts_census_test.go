@@ -39,13 +39,15 @@ var writeCensus = map[string]writeMechanism{
 	"INSERT probes": {"probes past the mark: the row's day, its promise's settlement day (span widened)", "a restarted prober's row"},
 	"UPDATE probes SET amended_at,classification,classification_at_probe,classification_reason,shadowed_by":                                                       {"probe_amendments past the mark (written in the same transaction)", "an amendment"},
 	"UPDATE probes SET classification,classification_at_probe,classification_reason,corrected_at,must_serve_until,must_serve_until_at_probe,phase,phase_at_probe": {"probe_corrections past the mark (written in the same transaction); applied again under its range, which adds no line: every row a correction wrote, fingerprinted every catch-up", "a row correction applied again under its range"},
-	"UPDATE probes SET retention_unverified":         {"an aggregate of the held rows every catch-up, per promise once it moves", "a held publication"},
-	"UPDATE ? SET raw_json":                          {notRead + " (raw_json, stripped by the retention pass)", ""},
-	"DELETE probes":                                  {"the collapse: its decision past the mark (collapsible sets); the prune: raw_from and the anchors", "a collapse"},
-	"DELETE ?":                                       {"the prune (probes, reachability, probe_confirmations): raw_from and the anchors", "a prune"},
+	"UPDATE probes SET retention_unverified": {"an aggregate of the held rows every catch-up, per promise once it moves", "a held publication"},
+	// The prune (rows, heartbeats, decisions, by the day they started) was
+	// retired on 2026-10-04 and nothing writes it any more, but a database a
+	// build before then pruned carries raw_from and the gap behind it: the
+	// partials still follow raw_from and the anchors, and the harness prunes
+	// as that build did (pruneLikeBefore, "a prune").
+	"DELETE probes":                                  {"the collapse: its decision past the mark (collapsible sets)", "a collapse"},
 	"INSERT sampling_decisions":                      {"sampling_decisions past the mark: the collapsible days, the settlement day", "a collapse"},
 	"UPDATE sampling_decisions SET must_serve_until": {"the fingerprint of every decision a correction can reach", "a sampled-out point corrected"},
-	"DELETE sampling_decisions":                      {"the prune: raw_from and the anchors (its points go by ON DELETE CASCADE)", "a prune"},
 	"INSERT sampling_decision_points":                {"sampling_decision_points past the mark: the points' row days, the settlement day", "a collapse"},
 	"UPDATE sampling_decision_points SET phase":      {"the fingerprint of every decision a correction can reach", "a sampled-out point corrected"},
 	"INSERT reachability":                            {"reachability past the mark (this observer's own vantage): the row day", "a second vantage's row"},
@@ -61,7 +63,8 @@ var writeCensus = map[string]writeMechanism{
 	"INSERT param_uncertainty": {"the held rows and publications it raises (diffed); a verified range widens the fingerprints", "a range still holding"},
 	"UPSERT param_uncertainty SET heights_read,holds,raw_json,resolution,resolve_error,resolve_method,resolved_at": {"the same", "a range corrected"},
 	"UPDATE param_uncertainty SET corrected_at,holds":                                                              {"the holds it lifts, diffed", "a range corrected"},
-	// meta: raw_from is read by every catch-up; nothing else a partial reads
+	// meta: raw_from is read by every catch-up (a database pruned before
+	// 2026-10-04 carries it); nothing else a partial reads
 	"UPSERT meta SET updated_at,value": {"raw_from, read by every catch-up; no other key is read by a partial", "a prune"},
 	"INSERT meta":                      {"the same", "a prune"},
 	// the daily rollup: read raw beside the partials (rolledFor), unchanged
@@ -77,6 +80,7 @@ var writeCensus = map[string]writeMechanism{
 	"UPDATE param_uncertainty SET holds":       {"a migration's backfill: the store's identity (schema version)", ""},
 	"UPDATE probes SET clock_offset_ms,retry_first_outcome,sampling_binding,sampling_commitment,sampling_p": {"a migration's backfill: the store's identity (schema version)", ""},
 	"UPDATE probes SET shadow_gap":                       {"a migration's backfill: the store's identity (schema version)", ""},
+	"UPDATE probes SET rows_subset_of_assignment":        {"a migration's backfill: the store's identity (schema version)", ""},
 	"UPDATE publications SET must_serve_until_ambiguous": {"a migration's backfill: the store's identity (schema version)", ""},
 }
 
@@ -255,8 +259,8 @@ func TestEveryWriteHasAnInvalidation(t *testing.T) {
 	// derive. A decision's points go with it, an amendment with its row, and
 	// the rows a decision stands for follow its points and the assignments.
 	for _, c := range []string{
-		"sampling_decision_points: ON DELETE CASCADE from sampling_decisions (the prune): raw_from and the anchors (a prune)",
-		"probe_amendments: ON DELETE CASCADE from probes (the prune): the ladder steps back past it (a prune)",
+		"sampling_decision_points: ON DELETE CASCADE from sampling_decisions (the prune of a build before 2026-10-04): raw_from and the anchors (a prune)",
+		"probe_amendments: ON DELETE CASCADE from probes (the prune of a build before 2026-10-04): the ladder steps back past it (a prune)",
 		"probe_rows / obligation_rows / sampled_out_rows: points × decisions × assignments; each base is followed above (a collapse)",
 	} {
 		t.Log(c)

@@ -33,13 +33,16 @@ type networkOut struct {
 	ComputeMs            int64                 `json:"compute_ms,omitempty"`
 	RecordThrough        *recordThrough        `json:"record_through,omitempty"`
 	Excluded             []string              `json:"excluded,omitempty"`
-	ExcludeNote          string                `json:"exclude_note,omitempty"`
-	RegisteredEndpoints  int64                 `json:"registered_endpoints"`
-	Reachability         Rate                  `json:"reachability"`
-	ReachabilityWindow   Rate                  `json:"reachability_window"`
-	Obligations          obligationStats       `json:"obligations"`
-	Reconstructable      reconstructSummary    `json:"reconstructable"`
-	ProvisionalFaults    *provisionalFaults    `json:"provisional_faults,omitempty"`
+	// ExcludedOperators is the operator address of each validator in
+	// Excluded the staking set names, keyed by the address in Excluded.
+	ExcludedOperators   map[string]string  `json:"excluded_operator_addresses,omitempty"`
+	ExcludeNote         string             `json:"exclude_note,omitempty"`
+	RegisteredEndpoints int64              `json:"registered_endpoints"`
+	Reachability        Rate               `json:"reachability"`
+	ReachabilityWindow  Rate               `json:"reachability_window"`
+	Obligations         obligationStats    `json:"obligations"`
+	Reconstructable     reconstructSummary `json:"reconstructable"`
+	ProvisionalFaults   *provisionalFaults `json:"provisional_faults,omitempty"`
 }
 
 func networkOutOf(r *networkResponse) networkOut {
@@ -345,6 +348,15 @@ type validatorReading struct {
 	HostChanged       bool   `json:"host_changed,omitempty"`
 	Service           string `json:"service,omitempty"`
 	Provisional       bool   `json:"provisional,omitempty"`
+	Attempt           int    `json:"attempt,omitempty"`
+	NextAttemptDue    string `json:"next_attempt_due,omitempty"`
+	// RowsSubsetOfAssignment: see probeRow.
+	RowsSubsetOfAssignment *bool `json:"rows_subset_of_assignment,omitempty"`
+	// SettledAt is when the blob settled, which is when the validator endorsed
+	// it: a reading comes hours later, near the end of the retention window,
+	// and its own times do not say when the endorsement was given. Absent when
+	// the publication is not on record.
+	SettledAt string `json:"settled_at,omitempty"`
 }
 
 func validatorReadings(rows []probeRow) []validatorReading {
@@ -355,7 +367,8 @@ func validatorReadings(rows []probeRow) []validatorReading {
 			StartedAt: p.StartedAt, Phase: p.Phase, Outcome: p.Outcome, Classification: p.Classification, Reason: p.Reason,
 			RowsReturned: p.RowsReturned, RowsExpected: p.RowsExpected, TotalDurationMS: p.TotalDurationMS, RawError: p.RawError,
 			RetryFirstOutcome: p.RetryFirstOutcome, RPCCode: p.RPCCode, ShadowedBy: p.ShadowedBy, HostAtSettlement: p.HostAtSettlement,
-			HostChanged: p.HostChanged, Service: p.Service, Provisional: p.Provisional,
+			HostChanged: p.HostChanged, Service: p.Service, Provisional: p.Provisional, Attempt: p.Attempt,
+			NextAttemptDue: p.NextAttemptDue, RowsSubsetOfAssignment: p.RowsSubsetOfAssignment,
 		}
 	}
 	return out
@@ -368,6 +381,7 @@ func validatorReadings(rows []probeRow) []validatorReading {
 // digest come with ?rows=1.
 type blobReading struct {
 	ValidatorAddress string   `json:"validator_address"`
+	OperatorAddress  string   `json:"operator_address,omitempty"`
 	ScheduleLabel    string   `json:"schedule_label"`
 	StartedAt        string   `json:"started_at"`
 	Phase            string   `json:"phase"`
@@ -381,16 +395,21 @@ type blobReading struct {
 	RowsSHA256       string   `json:"rows_sha256,omitempty"`
 	RPCCode          string   `json:"rpc_code,omitempty"`
 	Service          string   `json:"service,omitempty"`
+	Attempt          int      `json:"attempt,omitempty"`
+	NextAttemptDue   string   `json:"next_attempt_due,omitempty"`
+	// RowsSubsetOfAssignment: see probeRow.
+	RowsSubsetOfAssignment *bool `json:"rows_subset_of_assignment,omitempty"`
 }
 
 func blobReadings(rows []probeRow) []blobReading {
 	out := make([]blobReading, len(rows))
 	for i, p := range rows {
 		out[i] = blobReading{
-			ValidatorAddress: p.ValidatorAddress, ScheduleLabel: p.ScheduleLabel, StartedAt: p.StartedAt, Phase: p.Phase,
+			ValidatorAddress: p.ValidatorAddress, OperatorAddress: p.OperatorAddress, ScheduleLabel: p.ScheduleLabel, StartedAt: p.StartedAt, Phase: p.Phase,
 			Outcome: p.Outcome, Classification: p.Classification, RowsReturned: p.RowsReturned, RowsExpected: p.RowsExpected,
 			TotalDurationMS: p.TotalDurationMS, RawError: p.RawError, RowIndices: p.RowIndices, RowsSHA256: p.RowsSHA256,
-			RPCCode: p.RPCCode, Service: p.Service,
+			RPCCode: p.RPCCode, Service: p.Service, Attempt: p.Attempt, NextAttemptDue: p.NextAttemptDue,
+			RowsSubsetOfAssignment: p.RowsSubsetOfAssignment,
 		}
 	}
 	return out

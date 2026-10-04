@@ -23,6 +23,15 @@
 //     expanded into the NOT_PROBED rows it stands for before anything
 //     else is computed).
 //
+// A daily export holds the measurement rows started that day. A full
+// reading's later attempts start up to about nine minutes after its own
+// request, so the attempts of a reading made shortly before midnight UTC
+// can sit in the next day's export: until they are read, the answer before
+// them says an attempt was owed (next_attempt_due) and its validator
+// counts neither way here, where the API, holding both days, may count it.
+// Recompute such a day together with the next one (both exports untarred
+// into one directory, the measurement files concatenated).
+//
 // Exit status 1 when anything differs, 2 on a usage or read error.
 package main
 

@@ -47,14 +47,55 @@ func writeJSONL(t *testing.T, path string, vs ...any) {
 //     rows; every one is not served.
 //   - Not read: not a single request reached a server (two failed on this
 //     observer's side, the third validator has no host); nothing counts.
+//
+// These are readings from before full readings (probe.FullReadSince),
+// judged by the rule of their time; TestTheExportRedrawsTheAPIsCountsAtFullReadings
+// is the same at full readings.
 func TestTheExportRedrawsTheAPIsCounts(t *testing.T) {
+	exportParity(t, probe.FullReadSince.Add(-24*time.Hour), probe.EndReadLabel, nil, map[string][2]int64{ // served, not served
+		"a1": {1, 0}, "a2": {1, 0}, "a3": {0, 0},
+		"okval": {1, 0}, "goneval": {0, 1}, "downval": {0, 1},
+		"n1": {0, 1}, "n2": {0, 1}, "n3": {0, 1},
+		"l1": {0, 0}, "l2": {0, 0}, "l3": {0, 0},
+	})
+}
+
+// The same at full readings (the end label from probe.FullReadSince on, and
+// every reading labelled full), where each endorser is judged on its own
+// answers and asked again when one did not serve: the validator that timed
+// out on an Available blob, every time, is not served; one that answered
+// NOT_FOUND and then served is served; one whose second answer was this
+// observer's gap counts neither way; and the reading that reached no server
+// counts for no one. The export redraws every one of them as the API does.
+func TestTheExportRedrawsTheAPIsCountsAtFullReadings(t *testing.T) {
+	for _, label := range []string{probe.FullReadLabel, probe.EndReadLabel} {
+		t.Run(label, func(t *testing.T) {
+			exportParity(t, time.Now().UTC().Truncate(time.Second), label, map[string][]probe.Outcome{
+				"a3": {probe.OutcomeRPCTimeout, probe.OutcomeRPCTimeout},
+				"a4": {probe.OutcomeServedOK},
+				"a5": {probe.OutcomeProbeError},
+			}, map[string][2]int64{
+				"a1": {1, 0}, "a2": {1, 0}, "a3": {0, 1}, "a4": {1, 0}, "a5": {0, 0},
+				"okval": {1, 0}, "goneval": {0, 1}, "downval": {0, 1},
+				"n1": {0, 1}, "n2": {0, 1}, "n3": {0, 1},
+				"l1": {0, 0}, "l2": {0, 0}, "l3": {0, 0},
+			})
+		})
+	}
+}
+
+// exportParity writes the four readings at now under label, each validator
+// asked again with the outcomes retries names (attempts 1, 2, ... a row
+// each), and checks the API's counts against want and against the export's
+// redraw.
+func exportParity(t *testing.T, now time.Time, label string, retries map[string][]probe.Outcome, want map[string][2]int64) {
+	t.Helper()
 	data := t.TempDir()
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	now := time.Now().UTC().Truncate(time.Second)
 	settled, msu := now.Add(-3*time.Hour), now.Add(-30*time.Minute)
 	at := msu.Add(-10 * time.Minute)
 	type val struct {
@@ -83,27 +124,35 @@ func TestTheExportRedrawsTheAPIsCounts(t *testing.T) {
 			},
 		})
 		for i, v := range vals {
-			cls, reason := probe.Classify(probe.Evidence{Assigned: true, Attested: true, Phase: probe.PhaseInWindow, Outcome: v.out})
-			m := probe.Measurement{SchemaVersion: probe.MeasurementSchemaVersion, Vantage: "test", PromiseHash: hash, Commitment: "cc" + hash[60:],
-				MustServeUntil: msu, ValidatorSetHeight: int64(199 + n), ValidatorAddress: v.addr, ValidatorHost: v.addr + ":7980",
-				Assigned: true, Attested: true, AssignedRowCount: 2, ScheduleLabel: probe.EndReadLabel, ScheduledAt: at,
-				StartedAt: at.Add(time.Duration(i) * time.Second), FinishedAt: at.Add(time.Duration(i+1) * time.Second), Phase: probe.PhaseInWindow,
-				Outcome: v.out, Classification: cls, ClassificationReason: reason, TotalDurationMS: 10, ClientRules: true}
-			m.Read = &probe.ReadInfo{Order: i, BlobResult: result, BlobError: clientErr}
-			// the connection was opened unless the request never left: no
-			// host, or a failure on this observer's side
-			m.TCP.Attempted = v.out != probe.OutcomeNoHost
-			m.TCP.OK = m.TCP.Attempted && v.out != probe.OutcomeProbeError
-			if v.out == probe.OutcomeServedOK {
-				m.Download.OK, m.Download.RowsReturned, m.Download.RowsExpected = true, 2, 2
-				m.Download.CommitmentVerified, m.Download.AssignmentVerified = true, true
-				m.Download.RowIndices = []uint32{uint32(2 * i), uint32(2*i + 1)}
+			outs := append([]probe.Outcome{v.out}, retries[v.addr]...)
+			for k, out := range outs {
+				cls, reason := probe.Classify(probe.Evidence{Assigned: true, Attested: true, Phase: probe.PhaseInWindow, Outcome: out})
+				start := at.Add(time.Duration(i)*time.Second + time.Duration(k)*90*time.Second)
+				m := probe.Measurement{SchemaVersion: probe.MeasurementSchemaVersion, Vantage: "test", PromiseHash: hash, Commitment: "cc" + hash[60:],
+					MustServeUntil: msu, ValidatorSetHeight: int64(199 + n), ValidatorAddress: v.addr, ValidatorHost: v.addr + ":7980",
+					Assigned: true, Attested: true, AssignedRowCount: 2, ScheduleLabel: label, ScheduledAt: at,
+					StartedAt: start, FinishedAt: start.Add(time.Second), Phase: probe.PhaseInWindow, Attempt: k,
+					Outcome: out, Classification: cls, ClassificationReason: reason, TotalDurationMS: 10, ClientRules: true}
+				m.Read = &probe.ReadInfo{Order: i, BlobResult: result, BlobError: clientErr}
+				// the connection was opened unless the request never left: no
+				// host, or a failure on this observer's side
+				m.TCP.Attempted = out != probe.OutcomeNoHost
+				m.TCP.OK = m.TCP.Attempted && out != probe.OutcomeProbeError
+				if out == probe.OutcomeServedOK {
+					m.Download.OK, m.Download.RowsReturned, m.Download.RowsExpected = true, 2, 2
+					m.Download.CommitmentVerified, m.Download.AssignmentVerified = true, true
+					m.Download.RowIndices = []uint32{uint32(2 * i), uint32(2*i + 1)}
+				}
+				ms = append(ms, m)
 			}
-			ms = append(ms, m)
 		}
 		return hash
 	}
-	available := blob(1, probe.ReadAvailable, "", val{"a1", probe.OutcomeServedOK}, val{"a2", probe.OutcomeServedOK}, val{"a3", probe.OutcomeRPCTimeout})
+	avail := []val{{"a1", probe.OutcomeServedOK}, {"a2", probe.OutcomeServedOK}, {"a3", probe.OutcomeRPCTimeout}}
+	if retries != nil {
+		avail = append(avail, val{"a4", probe.OutcomeNotFound}, val{"a5", probe.OutcomeNotFound})
+	}
+	available := blob(1, probe.ReadAvailable, "", avail...)
 	notEnough := blob(2, probe.ReadUnavailable, probe.ClientErrNotEnoughShards,
 		val{"okval", probe.OutcomeServedOK}, val{"goneval", probe.OutcomeNotFound}, val{"downval", probe.OutcomeRPCTimeout})
 	noShards := blob(3, probe.ReadUnavailable, probe.ClientErrNoShards,
@@ -126,14 +175,9 @@ func TestTheExportRedrawsTheAPIsCounts(t *testing.T) {
 	for _, v := range api.Validators {
 		byAddr[v.Address] = v.Obligations
 	}
-	for addr, want := range map[string][2]int64{ // served, not served
-		"a1": {1, 0}, "a2": {1, 0}, "a3": {0, 0},
-		"okval": {1, 0}, "goneval": {0, 1}, "downval": {0, 1},
-		"n1": {0, 1}, "n2": {0, 1}, "n3": {0, 1},
-		"l1": {0, 0}, "l2": {0, 0}, "l3": {0, 0},
-	} {
-		if got := byAddr[addr]; got.Served != want[0] || got.Broken != want[1] {
-			t.Errorf("the API, %s: %+v; want served %d, not served %d", addr, got, want[0], want[1])
+	for addr, w := range want { // served, not served
+		if got := byAddr[addr]; got.Total != 1 || got.Served != w[0] || got.Broken != w[1] {
+			t.Errorf("the API, %s: %+v; want one obligation, served %d, not served %d", addr, got, w[0], w[1])
 		}
 	}
 	apiBlob := map[string][2]string{}

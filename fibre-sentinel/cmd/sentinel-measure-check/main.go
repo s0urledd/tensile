@@ -2,6 +2,11 @@
 // measurements.jsonl held to the reading rule, including a fault-injection
 // run where one fibre server was killed before the blobs were read.
 // Test/CI helper.
+//
+// At a full reading (schedule_label full: every endorser asked for its own
+// rows, and asked again when it did not serve) the killed validator is not
+// served, by its last answer; at a reading that stopped once the rows were
+// enough it counts neither way on an available blob.
 package main
 
 import (
@@ -13,6 +18,7 @@ import (
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
+	"github.com/plsgiveup/fibre/fibre-sentinel/observer/verdict"
 )
 
 func main() {
@@ -63,7 +69,7 @@ func main() {
 		fmt.Printf("measure-check| WARN: no row references killed host %s (the readings did not need it)\n", *killedHost)
 	}
 
-	available, killedSeen := 0, false
+	available, killedSeen, killedNotServed, fullReadings := 0, false, 0, 0
 	hashes := make([]string, 0, len(readings))
 	for h := range readings {
 		hashes = append(hashes, h)
@@ -73,10 +79,16 @@ func main() {
 		rs := readings[h]
 		distinct := map[uint32]bool{}
 		result := ""
+		full := false
+		attempts := map[string][]int{}
 		for _, m := range rs {
-			if m.ScheduleLabel != probe.EndReadLabel || m.Phase != probe.PhaseInWindow {
+			if !probe.EndOfWindowLabel(m.ScheduleLabel) || m.Phase != probe.PhaseInWindow {
 				fail("%s %s: label %q phase %s, want the one in-window reading", short(h), short(m.ValidatorAddress), m.ScheduleLabel, m.Phase)
 			}
+			if probe.FullReading(m.ScheduleLabel, m.StartedAt) {
+				full = true
+			}
+			attempts[m.ValidatorAddress] = append(attempts[m.ValidatorAddress], m.Attempt)
 			// A validator that did not endorse is asked like the rest, as
 			// the client asks the whole set; it serves as UNATTESTED.
 			endorsing := m.Attested || m.AttestationUnknown
@@ -110,6 +122,40 @@ func main() {
 				}
 			}
 		}
+		// A full reading asks each validator once, then again only after an
+		// answer that did not serve: attempts 0, 1, 2 in order.
+		for v, as := range attempts {
+			for i, a := range as {
+				if a != i {
+					fail("%s %s: attempts %v, want 0, 1, ... in order", short(h), short(v), as)
+					break
+				}
+			}
+			if len(as) > 1 && !full {
+				fail("%s %s: %d rows at a reading that was not full", short(h), short(v), len(as))
+			}
+			if len(as) > 1+probe.FullReadRetries {
+				fail("%s %s: asked %d times, want at most %d", short(h), short(v), len(as), 1+probe.FullReadRetries)
+			}
+		}
+		if full {
+			fullReadings++
+			rows := make([]verdict.Row, 0, len(rs))
+			for _, m := range rs {
+				rows = append(rows, verdict.FromMeasurement(m))
+			}
+			rd := verdict.ReadingOf(rows, verdict.BlobFacts{Needed: *k})
+			for i, m := range rs {
+				c := rows[i].CountedClass(rd)
+				isKilled := killedAddr != "" && m.ValidatorAddress == killedAddr
+				switch {
+				case isKilled && c == probe.ClassFault:
+					killedNotServed++
+				case !isKilled && c == probe.ClassFault:
+					fail("%s live %s: counts as not served (%s)", short(h), short(m.ValidatorAddress), m.Outcome)
+				}
+			}
+		}
 		switch result {
 		case probe.ReadAvailable:
 			available++
@@ -132,9 +178,17 @@ func main() {
 	if killedAddr != "" && !killedSeen {
 		fmt.Println("measure-check| WARN: the killed validator was asked only before the kill")
 	}
+	if fullReadings > 0 && killedSeen && killedNotServed == 0 {
+		fail("the killed validator counts as not served at no full reading")
+	}
+	fmt.Printf("measure-check| %d full readings; the killed validator not served at %d\n", fullReadings, killedNotServed)
 	fmt.Printf("measure-check| %d checks failed\n", fails)
 	if fails > 0 {
 		os.Exit(1)
+	}
+	if fullReadings > 0 {
+		fmt.Println("measure-check| PASS: every blob read once, available from the live validators; the killed one not served, by its own last answer")
+		return
 	}
 	fmt.Println("measure-check| PASS: every blob read once, available from the live validators; the killed one counted neither way")
 }

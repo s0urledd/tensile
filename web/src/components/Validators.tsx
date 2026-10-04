@@ -8,7 +8,8 @@ import Avatar from "./Avatar";
 import Info from "./Info";
 import { HostingCell } from "./Hosting";
 import { SELF_VALIDATOR } from "@/lib/site";
-import { isOperatorAccount } from "@/lib/addr";
+import { isOperatorAccount, validatorHref } from "@/lib/addr";
+import { openRow } from "@/lib/row";
 
 /**
  * The validators table: who, whether the endpoint answers right now, how
@@ -91,6 +92,7 @@ export default function Validators({ rows, window: win, notLive, loading, period
   const [filter, setFilter] = useState<Filter>("all");
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "power", dir: -1 });
   const router = useRouter();
+  const go = (_: React.MouseEvent, to: string) => router.push(to);
 
   const counts = useMemo(() => ({
     all: rows.length,
@@ -144,7 +146,7 @@ export default function Validators({ rows, window: win, notLive, loading, period
       </span>
     </th>
   );
-  const href = (v: Validator, hash = "") => `/validator/?addr=${v.address}${win !== "24h" ? `&window=${win}` : ""}${hash}`;
+  const href = (v: Validator, hash = "") => validatorHref(v.operator_address, v.address, `${win !== "24h" ? `&window=${win}` : ""}${hash}`);
 
   // The endorsement share, with the counts behind it in the title; a dash
   // with its reason when nothing was assigned. Never a fault colour.
@@ -209,23 +211,24 @@ export default function Validators({ rows, window: win, notLive, loading, period
             {list.map((v) => {
               const e = endpoint(v);
               return (
-                // A click that lands on a titled figure (above the cover link) opens the page too; links keep their own target.
+                // The whole row opens the validator; links keep their own target.
                 <tr key={v.address} className={e.warn ? "warn" : undefined}
-                  onClick={(ev) => { if (!(ev.target as HTMLElement).closest("a") && !window.getSelection()?.toString()) router.push(href(v)); }}>
+                  onClick={(ev) => openRow(ev, href(v), go)} onAuxClick={(ev) => openRow(ev, href(v), go)}>
                   <td className="id col-pin">
                     <span className="who">
                       <Avatar v={v} />
                       <span>
-                        <Link className="mon" href={href(v)}>{v.moniker || shortMid(v.cons_address || v.address, 18, 4)}</Link>
+                        <Link className="mon" href={href(v)}>{v.moniker || shortMid(v.operator_address || v.cons_address || v.address, 18, 4)}</Link>
                         {isSelf(v) && <span className="ours" title="Huginn Tech runs both this validator and Tensile. It is measured like every other row.">runs Tensile</span>}
                         {notLive && v.signaled_upgrade === true && <span className="ours" title="Signalled for the app version that brings Fibre (x/signal, a chain record).">signalled</span>}
                         {notLive && v.signaled_upgrade === false && <span className="ours" title="Has not signalled for the app version that brings Fibre (x/signal, a chain record).">not signalled</span>}
                         {/* The operator address is the one operators and delegators know (explorers list it); the consensus address stays in the tooltip and on the validator page. */}
-                        <span className="addr mono" title={[v.operator_address, v.cons_address || v.address].filter(Boolean).join(" · ")}>{shortMid(v.operator_address || v.cons_address || v.address, 18, 4)}</span>
+                        {/* Without a moniker the name above already is the operator address; the line then gives the consensus address rather than the same one twice. */}
+                        {(v.moniker || v.operator_address) && <span className="addr mono" title={[v.operator_address, v.cons_address || v.address].filter(Boolean).join(" · ")}>{shortMid(v.moniker ? (v.operator_address || v.cons_address || v.address) : (v.cons_address || v.address), 18, 4)}</span>}
                       </span>
                     </span>
                   </td>
-                  <td><Link className="rowcover" href={href(v)} tabIndex={-1} aria-hidden="true" /><span className="state" title={e.title}><i className={"dot " + e.dot} />{e.word}</span></td>
+                  <td><span className="state" title={e.title}><i className={"dot " + e.dot} />{e.word}</span></td>
                   {showHosting && <td><HostingCell h={v.hosting} /></td>}
                   <td className="num fig">{int(v.voting_power)}</td>
                   <td className="num fig">{shard(v)}</td>

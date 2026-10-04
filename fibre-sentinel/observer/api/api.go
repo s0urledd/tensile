@@ -93,6 +93,9 @@ type Server struct {
 	// dataDir holds the status files the processes write (internal/status);
 	// empty means liveness is not reported.
 	dataDir string
+	// tipRPC is the CometBFT RPC /v1/tip asks for the newest block (WithTipRPC);
+	// empty means the scanner's status file answers.
+	tipRPC string
 	// snapshotDir is where the snapshots are kept across restarts: this
 	// when set (WithSnapshotDir), <dataDir>/snapshots otherwise, nowhere
 	// when both are empty.
@@ -112,6 +115,9 @@ type Server struct {
 	origRows originalRowsMemo
 	// recent keeps each validator's newest endorsements (see signing.go).
 	recent endorsementLedger
+	// readings keeps each publication's reading status for the publisher
+	// rows (see readings.go).
+	readings readingMemo
 	// lanes is the keepers' pace, and keepers the schedule they run (see
 	// snapshot.go).
 	lanes   lanes
@@ -172,6 +178,9 @@ func WithDataDir(dir string) Option { return func(s *Server) { s.dataDir = dir }
 // the 7d, 30d and "all" windows are summed from them, each window in one
 // read transaction.
 func WithDayParts(on bool) Option { return func(s *Server) { s.noParts = !on } }
+
+// WithTipRPC has /v1/tip ask this CometBFT RPC for the newest block.
+func WithTipRPC(url string) Option { return func(s *Server) { s.tipRPC = url } }
 
 // WithSnapshotDir keeps the snapshots in dir rather than under the data
 // directory: observer-api -snapshot-dir, for a warm-up into a directory the
@@ -278,6 +287,9 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 // the warm-up and the switch costs a recomputation, never a stale figure.
 func WarmSnapshots(ctx context.Context, st *store.Store, info VantageInfo, log *scan.Logger, opts ...Option) error {
 	s := newServer(st, info, log, opts...)
+	// Nothing is served meanwhile, so the readings' first computation may
+	// take its time and the files carry them (readings.go).
+	s.readings.slice = readingSliceWarm
 	dir := s.snapshotsIn()
 	if dir == "" {
 		return errors.New("no snapshot directory: set a data directory or a snapshot directory")
@@ -1165,16 +1177,28 @@ type networkResponse struct {
 	Obligations  obligationStats  `json:"obligations"`
 	ByObligation Rate             `json:"serve_rate_by_obligation"`
 	Attestation  attestationStats `json:"attestation"`
-	ProbeCount   int64            `json:"probe_count"` // every reading row in the window
+	// ProbeCount is every reading row in the window. A full reading writes
+	// a row per attempt (attempt 0, then 1 and 2 for a validator asked again
+	// after an answer that did not serve), so it counts attempts, not
+	// blobs: a validator that kept failing has up to three rows for a blob
+	// where one that served at once has one.
+	ProbeCount int64 `json:"probe_count"`
 	// Classes tallies the readings by the class each was recorded with on the
 	// wire (probe.Classify, with a held deadline withheld): what each
 	// validator's answer was, not what it counts as. A FAULT here on a blob
-	// that was Available counts for nothing in Obligations.
+	// that was Available counts for nothing in Obligations at a reading
+	// that stopped at enough rows. Like ProbeCount it counts every attempt
+	// of a full reading, so a failing class's share is of attempts, and
+	// reads higher than its share of blobs; Obligations counts each
+	// (validator, blob) once.
 	Classes          classCounts        `json:"classes"`
 	Publications     int64              `json:"publications"`
 	PublicationBytes int64              `json:"publication_bytes"`
 	Reconstructable  reconstructSummary `json:"reconstructable"`
-	Gaps             int64              `json:"probe_gaps"` // NOT_PROBED + PROBE_ERROR rows in window
+	// Gaps is the NOT_PROBED and PROBE_ERROR rows in the window, attempts
+	// of full readings included: a later attempt that could not be made in
+	// time is a NOT_PROBED row of its own.
+	Gaps int64 `json:"probe_gaps"`
 	// GapsByOutcome breaks the gaps down by what actually happened: a
 	// reading not made in time (MISSED) is a different gap from one this
 	// observer started and could not complete (PROBE_ERROR).
@@ -1266,28 +1290,45 @@ type attestationStats struct {
 // obligationStats counts one observation per (validator, blob): whether the
 // validator served the rows it endorsed when this observer read the blob.
 //
-// A blob is read the way celestia-app's Fibre client downloads one, and
-// what each endorsing validator's answer counts as depends on what the whole
-// reading came to (verdict.BlobReading):
+// A blob is read the way celestia-app's Fibre client downloads one. Since
+// 2026-10-02T16:09:49Z the reading is full: it asks every endorsing
+// validator for its own rows. A full reading (schedule_label full) also
+// asks a validator again (up to twice, 90 s after its last answer, while a
+// request can start a minute before must_serve_until) when its answer did
+// not serve; the end readings from 2026-10-02T16:09:49Z until full readings
+// existed asked once. Each endorser is then judged on its own answers,
+// whatever the blob came to (verdict.Row.CountedClass):
 //
-//	served         its rows came back and verified against the commitment
-//	broken         its rows did not come back, and the blob could not be
-//	               reconstructed from the rows that did: Unavailable
+//	served         its own rows came back and verified against the
+//	               commitment, at the reading or when asked again
+//	broken         none of its answers served and none was this observer's
+//	               gap: no such shard, rows that do not verify or fewer of
+//	               its own than it holds, a wrong certificate, no registered
+//	               host, an endpoint that could not be reached, a timeout, a
+//	               rate limit or a server error, every time it was asked
 //	               (Not served on the site)
 //	held_param_unverified
 //	               its only readings sit inside an x/fibre params range this
 //	               observer has not read every height of, so neither the
 //	               failure nor the credit is published
-//	not_counted    decided, with no count either way: its answer failed on a
-//	               blob that was Available all the same, or the blob was not
-//	               read by Tensile
+//	not_counted    decided, with no count either way: one of its answers
+//	               was this observer's gap (a request that could not be made
+//	               in time, its own resolver, network or clock, a restart,
+//	               or rows of the blob that are not the validator's and that
+//	               no settled promise explains), an attempt it was owed is
+//	               not on record, not a single request of the reading
+//	               reached a server, or the blob was not read by Tensile
 //	pending        read, and the retention window has not ended at as_of
 //	               (an obligation not read yet has no row here; the
 //	               validator page counts those as in_retention_window)
 //
-// Only served and broken enter the rate. An endorsing validator the reading
-// never asked (the blob was whole before its turn) has no row and no
-// obligation here at all.
+// Readings from before then stopped once the rows reconstructed the blob,
+// and keep their rule: broken when its rows did not come back and the blob
+// was Unavailable; not_counted when its answer failed on a blob that was
+// Available all the same; an endorsing validator such a reading never asked
+// (the blob was whole before its turn) has no row and no obligation here.
+//
+// Only served and broken enter the rate.
 //
 // The population is obligations the settled promise proves (attested = 1):
 // an unattested one is nothing to keep or break, and a record from before
@@ -1500,20 +1541,30 @@ func (e excludeSet) args(base ...any) []any {
 const ExcludeNote = "Figures exclude the validators named in `excluded`. Reconstructability is computed over the whole set, because excluding a validator from it would answer a different question."
 
 // parseExclude reads `?exclude=`, which may be repeated or comma-separated,
-// and takes either form of address the rest of the API takes.
-func parseExclude(r *http.Request) (excludeSet, []string, error) {
+// and takes every spelling of a validator the rest of the API takes
+// (resolveAddr): the consensus address in hex or celestiavalcons1…, the
+// operator's celestiavaloper1… the site shows, or its account address. The
+// answer names each excluded validator by its consensus address, the key
+// every figure is filtered on. A refusal is an *addrError, answered by
+// writeAddrErr as on every route that takes a validator.
+func (s *Server) parseExclude(r *http.Request) (excludeSet, []string, error) {
 	var ex excludeSet
 	var names []string
-	seen := map[string]bool{}
+	seen, asked := map[string]bool{}, map[string]bool{}
 	for _, raw := range r.URL.Query()["exclude"] {
 		for _, part := range strings.Split(raw, ",") {
-			part = strings.TrimSpace(part)
-			if part == "" {
+			part = strings.ToLower(strings.TrimSpace(part))
+			if part == "" || asked[part] {
 				continue
 			}
-			addr, err := parseAddr(part)
+			asked[part] = true
+			addr, err := s.resolveAddr(r.Context(), part)
 			if err != nil {
-				return excludeSet{}, nil, fmt.Errorf("exclude %q: address must be 40 hex chars or celestiavalcons1...", part)
+				var ae *addrError
+				if errors.As(err, &ae) {
+					return excludeSet{}, nil, &addrError{ae.status, fmt.Sprintf("exclude %q: %s", part, ae.msg)}
+				}
+				return excludeSet{}, nil, err
 			}
 			if seen[addr] {
 				continue
@@ -1521,10 +1572,12 @@ func parseExclude(r *http.Request) (excludeSet, []string, error) {
 			seen[addr] = true
 			ex.addrs = append(ex.addrs, addr)
 			names = append(names, addr)
+			// Refused as soon as the bound is passed, so a long list is
+			// never looked up to its end.
+			if len(ex.addrs) > maxExclude {
+				return excludeSet{}, nil, &addrError{400, fmt.Sprintf("exclude takes at most %d validators", maxExclude)}
+			}
 		}
-	}
-	if len(ex.addrs) > maxExclude {
-		return excludeSet{}, nil, fmt.Errorf("exclude takes at most %d validators", maxExclude)
 	}
 	return ex, names, nil
 }
@@ -1562,9 +1615,9 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	ex, excluded, err := parseExclude(r)
+	ex, excluded, err := s.parseExclude(r)
 	if err != nil {
-		writeErr(w, 400, err.Error())
+		s.writeAddrErr(w, r.URL.Path, err)
 		return
 	}
 	if win.AsOf || ex.on() {
@@ -1591,8 +1644,24 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp.ComputedAt, resp.ComputeMs = t0.UTC().Format(time.RFC3339Nano), time.Since(t0).Milliseconds()
+		out := networkOutOf(resp)
+		if len(excluded) > 0 {
+			ops, err := s.operatorAddrs(r.Context())
+			if err != nil {
+				s.writeInternal(w, r.URL.Path, err)
+				return
+			}
+			for _, a := range excluded {
+				if op := ops[a]; op != "" {
+					if out.ExcludedOperators == nil {
+						out.ExcludedOperators = map[string]string{}
+					}
+					out.ExcludedOperators[a] = op
+				}
+			}
+		}
 		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, 200, networkOutOf(resp))
+		writeJSON(w, 200, out)
 		return
 	}
 	resp, at, ms, err := s.net.get(r.Context(), s.logf(), win)
@@ -2205,7 +2274,9 @@ type validatorRow struct {
 	// consensus address, or before identities have been polled once. A reader
 	// recognises a validator by this, not by twenty hex characters.
 	Moniker string `json:"moniker,omitempty"`
-	// Operator is the celestiavaloper... address, for linking out.
+	// Operator is the celestiavaloper... address, for linking out and for
+	// the site's links to this row's page; absent for an older consensus
+	// key of an operator that holds a newer one (operatorAddrs).
 	Operator string `json:"operator_address,omitempty"`
 	// KeybaseIdentity is the operator's Keybase key suffix when it set one,
 	// which is how an avatar could be resolved later. Deliberately NOT called
@@ -2783,6 +2854,16 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	// rows are a subset of what the assignment table produces anyway. Before
 	// it, they are the whole answer to "am I in your list", with every measured
 	// column honestly empty.
+	//
+	// The operator address a row publishes comes from operatorAddrs: an
+	// older consensus key of an operator that holds a newer one publishes
+	// none, so its page stays linked by the consensus address. The row's own
+	// operator account still keys its timeouts below, so no count moves.
+	ops, err := s.operatorAddrs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	account := map[string]string{}
 	irows, err := db.QueryContext(ctx, `SELECT vi.cons_address, vi.operator_address, vi.moniker, vi.identity, vi.website, vi.jailed, vi.status, vi.tokens,
 			EXISTS (SELECT 1 FROM validator_avatars a WHERE UPPER(a.identity) = UPPER(vi.identity) AND a.status = 'ok')
 		FROM validator_identities vi`)
@@ -2807,7 +2888,8 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 			}
 			v = get(hexAddr)
 		}
-		v.Moniker, v.Operator, v.KeybaseIdentity, v.Website = moniker, op, identity, website
+		v.Moniker, v.Operator, v.KeybaseIdentity, v.Website = moniker, ops[hexAddr], identity, website
+		account[hexAddr] = op
 		if hasAvatar == 1 {
 			v.AvatarURL = "/v1/avatars/" + strings.ToUpper(identity)
 		}
@@ -2893,8 +2975,8 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 		v.Obligations = byObligation[addr]
 		v.ByObligation = v.Obligations.Rate
 		v.ProvisionalFaults = provisional[addr]
-		if v.Operator != "" {
-			v.TimeoutsEnforced = timeouts[accountKey(v.Operator)]
+		if op := account[addr]; op != "" {
+			v.TimeoutsEnforced = timeouts[accountKey(op)]
 		}
 		// The registry supplies the bech32 form only for validators that
 		// registered an endpoint; before Fibre is live that is nobody, and
@@ -3225,7 +3307,11 @@ func (s *Server) detailReadings(ctx context.Context, addr string, win Window, sp
 	if err != nil {
 		return err
 	}
-	out["recent_probes"] = validatorReadings(probes)
+	readings := validatorReadings(probes)
+	if err := s.fillSettledAt(ctx, readings); err != nil {
+		return err
+	}
+	out["recent_probes"] = readings
 	out["recent_probes_truncated"] = moreProbes
 	// in_retention_window is the endorsed shards whose retention window
 	// has not ended at the answer's moment, from the chain's record: a
@@ -3264,11 +3350,21 @@ type blobRow struct {
 	// SettlementTxIndex is the other half of this route's cursor, published
 	// so a caller paging with before_height/before_tx_index does not have to
 	// guess it.
-	SettlementTxIndex  int    `json:"settlement_tx_index"`
-	SettlementTime     string `json:"settlement_time"`
-	CreationTimestamp  string `json:"creation_timestamp"`
-	MustServeUntil     string `json:"must_serve_until"`
-	ValidatorsWithRows int    `json:"validators_with_rows"`
+	SettlementTxIndex int `json:"settlement_tx_index"`
+	// SettlementTxHash is the hash of the transaction that carried the
+	// MsgPayForFibre, in lower-case hex like every hash here (the submitting
+	// client and the chain's tools print the same hash in upper case); ?tx=
+	// looks the blob up by it in either case.
+	SettlementTxHash  string `json:"settlement_tx_hash"`
+	SettlementTime    string `json:"settlement_time"`
+	CreationTimestamp string `json:"creation_timestamp"`
+	MustServeUntil    string `json:"must_serve_until"`
+	// BlobVersion is the promise's blob version, the first byte of the blob
+	// ID the Fibre client returns (the commitment is the rest). 0 is the only
+	// version Fibre has; a blob of another is recorded with an assignment
+	// error.
+	BlobVersion        int `json:"blob_version"`
+	ValidatorsWithRows int `json:"validators_with_rows"`
 	// SigmaRows and DistinctRows are the assignment's row counts, 16371 of
 	// 16384 on every blob of the current set; the verdict reads them from
 	// the store.
@@ -3326,10 +3422,14 @@ type reconstruct struct {
 	ServedRows int `json:"served_distinct_rows"`
 	NeededRows int `json:"needed_rows"`
 	TotalRows  int `json:"total_rows"`
-	// ServedBy is how many validators' rows came back verified, and
-	// ProbedValidators how many the reading asked, endorsing or not. The
-	// reading stops once it has enough rows, so a validator it did not ask
-	// is no gap.
+	// ServedBy is how many validators' rows came back verified (any rows of
+	// the blob: the rows this reading holds, which reconstruct it or not),
+	// and ProbedValidators how many the reading asked. It is about the blob,
+	// not the obligations: at a full reading a validator whose verified rows
+	// were fewer of its own than it holds is in ServedBy and still not
+	// served (assignments[].service). A full reading asks every endorsing
+	// validator, and only those; a reading from before it stopped once it
+	// had enough rows, so a validator it did not ask is no gap.
 	ServedBy         int `json:"served_by_validators"`
 	ProbedValidators int `json:"probed_validators"`
 }
@@ -3341,19 +3441,25 @@ func (s *Server) blobRows(ctx context.Context, where string, limit int, args ...
 	return s.blobRowsAt(ctx, where, limit, 0, args...)
 }
 
-// blobRowsAt is blobRows from the offset-th row of the same order.
-func (s *Server) blobRowsAt(ctx context.Context, where string, limit, offset int, args ...any) ([]blobRow, error) {
-	q := `SELECT promise_hash, commitment, namespace, blob_size, signer, signer_public_key, settlement_height, settlement_tx_index, settlement_time, creation_timestamp,
-		must_serve_until, validators_with_rows, sigma_rows, distinct_rows, assignment_error, attested_voting_power, total_voting_power, attested_with_rows FROM publications`
+// blobRowsSQL is the statement blobRowsAt runs: the rows where selects,
+// newest first, one more than limit (see probeRows; the caller trims and
+// reports it), from the offset-th.
+func blobRowsSQL(where string, limit, offset int) string {
+	q := `SELECT promise_hash, commitment, namespace, blob_size, signer, signer_public_key, settlement_height, settlement_tx_index, settlement_tx_hash, settlement_time, creation_timestamp,
+		must_serve_until, blob_version, validators_with_rows, sigma_rows, distinct_rows, assignment_error, attested_voting_power, total_voting_power, attested_with_rows FROM publications`
 	if where != "" {
 		q += " WHERE " + where
 	}
-	// One more than asked: see probeRows. The caller trims and reports it.
 	q += " ORDER BY settlement_height DESC, settlement_tx_index DESC LIMIT " + strconv.Itoa(limit+1)
 	if offset > 0 {
 		q += " OFFSET " + strconv.Itoa(offset)
 	}
-	rows, err := s.q(ctx).QueryContext(ctx, q, args...)
+	return q
+}
+
+// blobRowsAt is blobRows from the offset-th row of the same order.
+func (s *Server) blobRowsAt(ctx context.Context, where string, limit, offset int, args ...any) ([]blobRow, error) {
+	rows, err := s.q(ctx).QueryContext(ctx, blobRowsSQL(where, limit, offset), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -3362,10 +3468,12 @@ func (s *Server) blobRowsAt(ctx context.Context, where string, limit, offset int
 	for rows.Next() {
 		var b blobRow
 		var key sql.NullString
-		if err := rows.Scan(&b.PromiseHash, &b.Commitment, &b.Namespace, &b.BlobSize, &b.Signer, &key, &b.SettlementHeight, &b.SettlementTxIndex, &b.SettlementTime,
-			&b.CreationTimestamp, &b.MustServeUntil, &b.ValidatorsWithRows, &b.SigmaRows, &b.DistinctRows, &b.AssignmentError, &b.AttestedPower, &b.TotalPower, &b.AttestedWithRows); err != nil {
+		if err := rows.Scan(&b.PromiseHash, &b.Commitment, &b.Namespace, &b.BlobSize, &b.Signer, &key, &b.SettlementHeight, &b.SettlementTxIndex, &b.SettlementTxHash, &b.SettlementTime,
+			&b.CreationTimestamp, &b.MustServeUntil, &b.BlobVersion, &b.ValidatorsWithRows, &b.SigmaRows, &b.DistinctRows, &b.AssignmentError, &b.AttestedPower, &b.TotalPower, &b.AttestedWithRows); err != nil {
 			return nil, err
 		}
+		// the scanner writes it in lower case; a store sentinel-synth filled, in upper
+		b.SettlementTxHash = strings.ToLower(b.SettlementTxHash)
 		// Who paid, from the promise's own key. A row whose key cannot be
 		// read keeps the submitter, the only account on record for it.
 		b.Publisher = b.Signer
@@ -3489,7 +3597,7 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 	// Every reading row of the blob as of the pin. The row lists are parsed
 	// only at the reading the blob is judged at.
 	pb, pargs := pin.bound("probes", []any{hash})
-	prows, err := db.QueryContext(ctx, `SELECT validator_address, schedule_label, scheduled_at, phase, classification, outcome,
+	prows, err := db.QueryContext(ctx, `SELECT validator_address, schedule_label, scheduled_at, started_at, phase, classification, outcome,
 			commitment_verified, rows_returned, COALESCE(row_indices, ''), assigned, COALESCE(tcp_ok, 0)
 		FROM probes WHERE promise_hash = ?`+pb, pargs...)
 	if err != nil {
@@ -3503,14 +3611,17 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 	var all []readRow
 	for prows.Next() {
 		var rr readRow
-		var phase, cls, out string
+		var phase, cls, out, started string
 		var verified, assigned, tcp int
-		if err := prows.Scan(&rr.row.Validator, &rr.row.ScheduleLabel, &rr.at, &phase, &cls, &out, &verified, &rr.row.RowsReturned, &rr.idx,
+		if err := prows.Scan(&rr.row.Validator, &rr.row.ScheduleLabel, &rr.at, &started, &phase, &cls, &out, &verified, &rr.row.RowsReturned, &rr.idx,
 			&assigned, &tcp); err != nil {
 			prows.Close()
 			return nil, err
 		}
 		rr.row.ScheduledAt, _ = time.Parse(store.TimeLayout, rr.at)
+		// The start says whether an end reading was a full one
+		// (probe.FullReading), which decides what a missed request means.
+		rr.row.StartedAt, _ = time.Parse(store.TimeLayout, started)
 		rr.row.Phase, rr.row.Classification, rr.row.Outcome = probe.Phase(phase), probe.Classification(cls), probe.Outcome(out)
 		rr.row.CommitmentVerified, rr.row.Assigned, rr.row.TCPOK = verified == 1, assigned == 1, tcp == 1
 		all = append(all, rr)
@@ -3717,6 +3828,37 @@ func (s *Server) reconstructableCount(ctx context.Context, win Window) (reconstr
 // not ask for one, and the size the startup warm-up fills the verdict cache to.
 const blobPageDefault = 50
 
+// The commitment, tx and namespace filters of /v1/blobs, kept as constants
+// so the plan test reads the conditions the route runs. blobByTxSQL takes
+// the hash twice: in lower case, as the scanner writes it, and in upper, as
+// sentinel-synth does; each is a seek of publications_tx. Beside either of
+// those seeks the namespace is blobInNamespaceBesideSQL, whose unary +
+// keeps SQLite off publications_namespace: with no statistics it prefers
+// that one equality to the tx's two, and would read every blob of the
+// namespace to find the one a transaction settled.
+const (
+	blobByCommitmentSQL      = `commitment = ?`
+	blobByTxSQL              = `settlement_tx_hash IN (?, ?)`
+	blobInNamespaceSQL       = `namespace = ?`
+	blobInNamespaceBesideSQL = `+namespace = ?`
+)
+
+// hash32 reads a 32-byte hash as a caller may write it: 64 hex characters
+// in either case, with or without 0x. It answers the hash in lower case, ""
+// for an empty parameter, and ok false for anything else.
+func hash32(s string) (hash string, ok bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", true
+	}
+	s = strings.ToLower(s)
+	s = strings.TrimPrefix(s, "0x")
+	if b, err := hex.DecodeString(s); err != nil || len(b) != 32 {
+		return "", false
+	}
+	return s, true
+}
+
 func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 	limit, err := parseLimit(r, blobPageDefault, 500)
 	if err != nil {
@@ -3726,25 +3868,37 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	var conds []string
 	var args []any
-	if ns := q.Get("namespace"); ns != "" {
-		conds, args = append(conds, `namespace = ?`), append(args, strings.ToLower(ns))
-	}
 	// commitment: the blobs with this commitment, which a DA team holds where
-	// it does not hold the promise hash. One blob can be paid for and
-	// settled more than once, so this is a list.
-	//
-	// Nothing indexes publications.commitment yet, so the page and its count
-	// each walk every publication: 45-65 ms at 8,600 publications, and they
-	// are never pruned. The index (and the collector's lookup of a
-	// commitment's other promises, which walks the same way) wants the next
-	// schema change, and has to land before mainnet volumes.
-	commitment := strings.ToLower(q.Get("commitment"))
+	// it does not hold the promise hash (the client's blob ID is the
+	// commitment behind a version byte). One blob can be paid for and
+	// settled more than once, so this is a list. publications_commitment
+	// seeks it (migration 26).
+	commitment, ok := hash32(q.Get("commitment"))
+	if !ok {
+		writeErr(w, 400, "commitment must be 64 hex characters")
+		return
+	}
 	if commitment != "" {
-		if b, err := hex.DecodeString(commitment); err != nil || len(b) != 32 {
-			writeErr(w, 400, "commitment must be 64 hex characters")
-			return
+		conds, args = append(conds, blobByCommitmentSQL), append(args, commitment)
+	}
+	// tx: the blob a settlement transaction settled, by the hash the client
+	// that submitted it returns, in either case and with or without 0x. The
+	// scanner records one publication per transaction; this is a list like
+	// the other filters all the same. publications_tx seeks it.
+	tx, ok := hash32(q.Get("tx"))
+	if !ok {
+		writeErr(w, 400, "tx must be 64 hex characters")
+		return
+	}
+	if tx != "" {
+		conds, args = append(conds, blobByTxSQL), append(args, tx, strings.ToUpper(tx))
+	}
+	if ns := q.Get("namespace"); ns != "" {
+		cond := blobInNamespaceSQL
+		if commitment != "" || tx != "" {
+			cond = blobInNamespaceBesideSQL
 		}
-		conds, args = append(conds, `commitment = ?`), append(args, commitment)
+		conds, args = append(conds, cond), append(args, strings.ToLower(ns))
 	}
 	// publisher: the blobs this account paid for, as each blob row names its
 	// publisher (paidBy). Bech32 may be written in upper case; the store holds
@@ -3823,6 +3977,9 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 	if commitment != "" {
 		out["commitment"] = commitment
 	}
+	if tx != "" {
+		out["tx"] = tx
+	}
 	if publisher != "" {
 		out["publisher"] = publisher
 	}
@@ -3832,11 +3989,25 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 		last := blobs[len(blobs)-1]
 		out["next_before_height"], out["next_before_tx_index"] = last.SettlementHeight, last.SettlementTxIndex
 	}
+	// A lookup by commitment or transaction that finds nothing is not kept
+	// by a cache. It is how a reader asks for a blob it has just submitted,
+	// often a second before the scanner has read its block, and a miss held
+	// for 15 seconds would answer "not indexed yet" for 15 seconds after the
+	// blob was on record. A 404 from /v1/blobs/{hash} is never cached either
+	// (statusWriter); a lookup that finds its blob keeps the usual policy.
+	if (commitment != "" || tx != "") && total == 0 {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	writeJSON(w, 200, out)
 }
 
 type assignmentRow struct {
 	ValidatorAddress string `json:"validator_address"`
+	// OperatorAddress is the validator's celestiavaloper1… from the staking
+	// module, the address the blob page links the validator by. Absent when
+	// the chain has no validator at this consensus address, or when its
+	// operator has since moved to a newer consensus key (operatorAddrs).
+	OperatorAddress string `json:"operator_address,omitempty"`
 	// Moniker is the name from the staking module, so this table reads like
 	// a list of validators rather than a list of hashes. Empty when the chain
 	// has no validator at this consensus address.
@@ -3854,12 +4025,16 @@ type assignmentRow struct {
 	HostAtSettlement *string `json:"host_at_settlement"`
 	// Service is this validator's obligation on this blob, by the rule the
 	// obligation counts use (rollup.ObligationBuckets): served (its rows
-	// came back verified), not_served (they did not, and the blob was
+	// came back verified; at a full reading, its own rows), not_served (at a
+	// full reading: none of its answers served and none was this observer's
+	// gap; before it: its rows did not come back, and the blob was
 	// Unavailable), in_retention_window (the window is still open) or
 	// deadline_unverified (the deadline is held). Absent when there is no
-	// result either way: not endorsed, not asked because the reading had
-	// enough rows before its turn, a failure on a blob that was Available
-	// all the same, or a blob not read by Tensile.
+	// result either way: not endorsed, this observer's gap among its answers,
+	// an attempt it was owed that is not on record, a reading that reached no
+	// server, a blob not read by Tensile, or, before full readings, not asked
+	// because the reading had enough rows before its turn, or a failure on a
+	// blob that was Available all the same.
 	Service string `json:"service,omitempty"`
 	// Provisional marks a not_served still younger than the settling period.
 	Provisional bool `json:"provisional,omitempty"`
@@ -3896,6 +4071,15 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "no publication with this promise hash")
 		return
 	}
+	// The operator addresses, for the assignments and the readings alike: a
+	// reading can name a validator the assignment does not (one asked
+	// without rows), and a superseded consensus key gets none
+	// (operatorAddrs), which a join on the identities would not know.
+	ops, err := s.operatorAddrs(ctx)
+	if err != nil {
+		s.writeInternal(w, r.URL.Path, err)
+		return
+	}
 	rows, err := s.st.DB().QueryContext(ctx, `SELECT a.validator_address, a.voting_power, a.row_count, a.attested,
 			COALESCE(i.moniker, ''), a.host_at_settlement
 		FROM assignments a
@@ -3918,6 +4102,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 			b := att.Int64 == 1
 			a.Attested = &b
 		}
+		a.OperatorAddress = ops[strings.ToLower(a.ValidatorAddress)]
 		assigns = append(assigns, a)
 	}
 	rows.Close()
@@ -3927,6 +4112,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	probes, moreProbes := trim(probes, 1000)
+	withOperators(probes, ops)
 	if err := s.blobService(ctx, hash, assigns); err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
@@ -4097,8 +4283,12 @@ type probeRow struct {
 	Vantage          string `json:"-"`
 	PromiseHash      string `json:"promise_hash"`
 	ValidatorAddress string `json:"validator_address"`
-	ValidatorHost    string `json:"validator_host"`
-	Assigned         bool   `json:"assigned"`
+	// OperatorAddress is the validator's celestiavaloper1…, from the staking
+	// set (operatorAddrs); absent when the collector has not read one, or
+	// for an older consensus key of an operator that holds a newer one.
+	OperatorAddress string `json:"operator_address,omitempty"`
+	ValidatorHost   string `json:"validator_host"`
+	Assigned        bool   `json:"assigned"`
 	// Attested: the settled promise proves this validator stored the blob.
 	// false means unproven (so this probe is UNATTESTED and outside the serve
 	// rate), null means the measurement predates signature verification.
@@ -4160,12 +4350,47 @@ type probeRow struct {
 	SettlementHostServed  *bool  `json:"settlement_host_served,omitempty"`
 	// Service is what this reading counts as for the validator, by the rule
 	// the obligations use (rollup.CountedClass): served (its rows came back
-	// verified, at a reading that speaks for the end of the window),
-	// not_served (they did not, and the blob was Unavailable), or empty: it
-	// counts neither way (a failure on a blob that was Available all the
-	// same, a blob not read by Tensile, an earlier schedule's early reading,
-	// a validator that did not endorse).
+	// verified, at a reading that speaks for the end of the window), or
+	// not_served, or empty: it counts neither way.
+	//
+	// At a full reading (schedule_label "full", or "end" from
+	// 2026-10-02T16:09:49Z on: every endorser asked for its own rows; a
+	// "full" one asks again when an answer did not serve) the validator is
+	// judged on its own answers: served is the answer that handed over its
+	// own rows; not_served is its last answer when none served and none was
+	// this observer's gap (no such shard, rows that do not verify or fewer of
+	// its own than it holds, a wrong certificate, no registered host, an
+	// endpoint that could not be reached, a timeout, a rate limit or a
+	// server error, every time); empty is an answer a later one replaced,
+	// one beside a served answer or this observer's gap, this observer's gap
+	// itself (rows of the blob that are not its own and that no settled
+	// promise explains among them), an answer whose next attempt is still to
+	// come or not on record, and every answer of a reading that reached no
+	// server.
+	//
+	// At any other reading not_served is rows that did not come back on a
+	// blob that was Unavailable; empty is a failure on a blob that was
+	// Available all the same, a blob not read by Tensile, an earlier
+	// schedule's early reading. A validator that did not endorse is never
+	// judged.
 	Service string `json:"service,omitempty"`
+	// Attempt is which of the validator's requests at a full reading this
+	// row is: 0 (omitted) the reading's own, 1 and 2 the ones made again
+	// after an answer that did not serve. A row of a later attempt can
+	// repeat the answer of another attempt's request to the same endpoint
+	// (the endpoint failed before any blob was asked for); its raw error
+	// names that request.
+	Attempt int `json:"attempt,omitempty"`
+	// NextAttemptDue, on a row of a full reading that did not serve, is
+	// when its validator is to be asked again: the row is not its last
+	// answer, and until the attempt is on record (made, or recorded as not
+	// made) the validator counts neither way. Absent when none is owed.
+	NextAttemptDue string `json:"next_attempt_due,omitempty"`
+	// RowsSubsetOfAssignment, on a short answer (outcome PARTIAL) only:
+	// true when every row that came back is one this promise assigns the
+	// validator (at a full reading, not served), false when some are not
+	// (rows of the blob that are not its own: counted neither way).
+	RowsSubsetOfAssignment *bool `json:"rows_subset_of_assignment,omitempty"`
 	// Provisional marks a not_served reading younger than
 	// verdict.FaultSettling: it counts, and an x/fibre params change not
 	// reconciled yet can still withdraw it (provisional.go).
@@ -4197,7 +4422,8 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 		COALESCE(shadow_gap, ''), COALESCE(classification_at_probe, ''), COALESCE(amended_at, ''),
 		COALESCE(host_at_settlement, ''), COALESCE(settlement_host_outcome, ''), settlement_host_served,
 		retention_unverified, COALESCE(phase_at_probe, ''), COALESCE(corrected_at, ''),
-		` + rollup.CountedClass("probes") + `, ` + lateSQL + `
+		` + rollup.CountedClass("probes") + `, ` + lateSQL + `, dedupe_key,
+		COALESCE(next_attempt_due, ''), rows_subset_of_assignment
 		FROM probes`
 	if where != "" {
 		q += " WHERE " + where
@@ -4219,15 +4445,21 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 		var att sql.NullInt64
 		var idxJSON string
 		var served sql.NullInt64
-		var counted string
+		var counted, key string
 		var late bool
+		var subset int
 		if err := rows.Scan(&p.Vantage, &p.PromiseHash, &p.ValidatorAddress, &p.ValidatorHost, &assigned, &att, &p.AssignedRowCount, &p.ScheduleLabel,
 			&p.ScheduledAt, &p.StartedAt, &p.Phase, &p.Outcome, &p.Classification, &p.Reason, &p.RowsReturned, &p.RowsExpected,
 			&p.TotalDurationMS, &p.RawError, &p.RetryFirstOutcome,
 			&idxJSON, &p.RowsSHA256, &p.RPCCode, &p.ShadowedBy,
 			&p.ShadowGap, &p.ClassificationAtProbe, &p.AmendedAt, &p.HostAtSettlement, &p.SettlementHostOutcome, &served,
-			&held, &p.PhaseAtProbe, &p.CorrectedAt, &counted, &late); err != nil {
+			&held, &p.PhaseAtProbe, &p.CorrectedAt, &counted, &late, &key, &p.NextAttemptDue, &subset); err != nil {
 			return nil, err
+		}
+		p.Attempt = probe.AttemptOfKey(key)
+		if p.Outcome == string(probe.OutcomePartial) {
+			b := subset == 1
+			p.RowsSubsetOfAssignment = &b
 		}
 		p.RetentionUnverified = held == 1
 		p.Provisional = isProvisional(counted, p.StartedAt, now)
@@ -4268,8 +4500,23 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 // for any schedule) would say otherwise: a not-served reading, and rows
 // that came back verified and count as served whatever their class. What
 // came back on the wire follows.
+//
+// At a full reading the words say what the deciding answer was: fewer of
+// the validator's own rows than it holds (PARTIAL), or none of them; and
+// whether it was asked again (a full reading) or asked once (an end reading
+// from probe.FullReadSince, made before full readings asked again).
 func serviceReason(p probeRow) string {
 	switch {
+	case p.Service == "not_served" && fullReadingRow(p):
+		what := "this validator's own rows did not come back"
+		if p.Outcome == string(probe.OutcomePartial) {
+			what = "fewer of this validator's own rows came back than it holds"
+		}
+		when := "at the reading, and every time it was asked again in the window"
+		if p.ScheduleLabel == probe.EndReadLabel {
+			when = "at the reading, which asked once"
+		}
+		return "not served: " + what + ", " + when + "; on the wire: " + p.Reason
 	case p.Service == "not_served":
 		return "not served: the rows did not come back, and the blob was Unavailable; on the wire: " + p.Reason
 	case p.Service == "served" && p.Classification != string(probe.ClassHealthy):
@@ -4278,11 +4525,21 @@ func serviceReason(p probeRow) string {
 	return p.Reason
 }
 
+// fullReadingRow reports whether a reading row is of a full reading
+// (probe.FullReading).
+func fullReadingRow(p probeRow) bool {
+	t, err := time.Parse(store.TimeLayout, p.StartedAt)
+	if err != nil {
+		t, _ = time.Parse(time.RFC3339Nano, p.StartedAt)
+	}
+	return probe.FullReading(p.ScheduleLabel, t)
+}
+
 // lateSQL says whether a reading of the probes table speaks for the end of
-// its promise's window: the one reading 10 minutes before must_serve_until,
-// or on the earlier schedule a reading in the tail of the window
-// (rollup.ObligationBuckets' late_healthy).
-const lateSQL = `(schedule_label = '` + probe.EndReadLabel + `' OR julianday(scheduled_at) >= julianday(must_serve_until) -
+// its promise's window: the one reading 10 minutes before must_serve_until
+// (end, full or enough), or on the earlier schedule a reading in the tail of
+// the window (rollup.ObligationBuckets' late_healthy).
+const lateSQL = `(schedule_label IN ` + rollup.EndLabelsSQL + ` OR julianday(scheduled_at) >= julianday(must_serve_until) -
 		(julianday(must_serve_until) - julianday(COALESCE((SELECT settlement_time FROM publications pl WHERE pl.promise_hash = probes.promise_hash), must_serve_until))) / 4.0)`
 
 // The most rows /v1/probes returns in one answer: without the row indices,
@@ -4343,8 +4600,9 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 		conds, args = append(conds, rollup.EffectiveClass("")+` = ?`), append(args, strings.ToUpper(c))
 	}
 	// served=no: the readings the obligations count as not served
-	// (rollup.CountedClass): no rows came back, on a blob that was
-	// Unavailable.
+	// (rollup.CountedClass): at a full reading, a validator's last answer
+	// when none served and none was this observer's gap; before it, no rows
+	// came back, on a blob that was Unavailable.
 	if q.Get("served") == "no" {
 		conds = append(conds, rollup.NotServedSQL("probes"))
 	}
@@ -4383,6 +4641,14 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, truncated := trim(rows, limit)
+	if len(rows) > 0 {
+		ops, err := s.operatorAddrs(r.Context())
+		if err != nil {
+			s.writeInternal(w, r.URL.Path, err)
+			return
+		}
+		withOperators(rows, ops)
+	}
 	out := map[string]any{"probes": rows, "limit": limit, "truncated": truncated, "rows_included": withRows}
 	if truncated && len(rows) > 0 {
 		// Where to continue from: everything strictly older than the last row
@@ -4503,6 +4769,10 @@ func (s *Server) handleAvatar(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "no such avatar")
 		return
 	}
+	// ?s=72: the picture at the size the site draws it (avatar_thumb.go)
+	if side := thumbSide(r.URL.Query().Get("s")); side > 0 {
+		ct, data = avatarThumb(id, ct, data, checked, side)
+	}
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Content-Disposition", "inline; filename=avatar")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
@@ -4561,4 +4831,40 @@ func latestAssignmentSQL(only string) (string, []any) {
 		FROM m
 		JOIN assignments a ON a.validator_address = m.va AND a.settlement_height = m.h
 		JOIN publications p ON p.promise_hash = a.promise_hash AND p.settlement_height = m.h`, args
+}
+
+// fillSettledAt sets each reading's SettledAt from its publication: one
+// query for the page's (at most fifty) blobs.
+func (s *Server) fillSettledAt(ctx context.Context, rs []validatorReading) error {
+	if len(rs) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	args := []any{}
+	for _, r := range rs {
+		if !seen[r.PromiseHash] {
+			seen[r.PromiseHash] = true
+			args = append(args, r.PromiseHash)
+		}
+	}
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT promise_hash, settlement_time FROM publications WHERE promise_hash IN (?`+strings.Repeat(", ?", len(args)-1)+`)`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	at := map[string]string{}
+	for rows.Next() {
+		var h, t string
+		if err := rows.Scan(&h, &t); err != nil {
+			return err
+		}
+		at[h] = t
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range rs {
+		rs[i].SettledAt = at[rs[i].PromiseHash]
+	}
+	return nil
 }

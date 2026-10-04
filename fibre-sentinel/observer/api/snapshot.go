@@ -141,9 +141,9 @@ var warmWindows = []string{"24h", "7d", "30d", "all"}
 const (
 	snapshotTimeout    = 5 * time.Minute
 	snapshotTimeoutAll = 20 * time.Minute
-	// slowRefresh is when a refresh is worth a log line: at this point the
-	// operator should be lowering -retain-raw (deploy/README.md, "Backups,
-	// retention, rebuild") rather than waiting for the timeout.
+	// slowRefresh is when a refresh is worth a log line, well before the
+	// timeout: the window has outgrown its refresh, which the per-day
+	// rollups (rather than deleting rows) are there to answer.
 	slowRefresh = 45 * time.Second
 )
 
@@ -479,7 +479,7 @@ func (c *snapshotCache[T]) background(log logf, win Window) {
 		// It is the trend that matters, because the cost of this window grows
 		// with the history behind it and the end of that growth is a window
 		// that stops refreshing at all.
-		log("%s snapshot refresh (%s) took %s (over %s); consider lowering -retain-raw", c.label, win.Name, took.Round(time.Second), slowRefresh)
+		log("%s snapshot refresh (%s) took %s (over %s); the window's rows outgrow its refresh", c.label, win.Name, took.Round(time.Second), slowRefresh)
 		return
 	}
 	if ttl := c.ttl(win.Name); took >= ttl {
@@ -567,13 +567,23 @@ func (c *snapshotCache[T]) precompute(ctx context.Context, dir string, log logf)
 // warm computes every window once, in the background, one at a time.
 // Sequential on purpose: starting four at once against a cold page cache
 // makes each of them slower than running them in turn.
+//
+// A window a reader computed while the warm-up was busy with the ones before
+// it is newer than the warm-up and is left as it is: recomputed with the
+// window as of the warm-up's start, it replaced a snapshot ending later
+// with one ending earlier, and two answers read from the same cache a moment
+// apart (the publishers' table and the market board beside it) described
+// two moments. A window the warm-up does compute ends when the warm-up
+// reaches it. now is when the warm-up began; a snapshot older than it (one
+// loaded from disk) is recomputed.
 func (c *snapshotCache[T]) warm(log logf, now time.Time) {
 	c.bg.Add(1)
 	go func() {
 		defer c.bg.Done()
 		for _, name := range warmWindows {
 			c.mu.Lock()
-			busy := c.refreshing[name]
+			s := c.entries[name]
+			busy := c.refreshing[name] || (s != nil && !s.at.Before(now))
 			if !busy {
 				c.refreshing[name] = true
 			}
@@ -581,7 +591,7 @@ func (c *snapshotCache[T]) warm(log logf, now time.Time) {
 			if busy {
 				continue // a reader got there first
 			}
-			c.background(log, windowFor(name, now))
+			c.background(log, windowFor(name, time.Now()))
 		}
 	}()
 }

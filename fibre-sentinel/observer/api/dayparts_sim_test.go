@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -32,8 +33,9 @@ import (
 // late and restarted readings, backlogs, sampled-out decisions before
 // their publication, holds raised, corrected and never closed,
 // corrections that fail part way, amendments, a collapse of rows written
-// on two days, the rollup and the prune, a second vantage with a tie, odd
-// times, rows that start long before their settlement.
+// on two days, the rollup, the prune of a database an older build pruned
+// (pruneLikeBefore), a second vantage with a tie, odd times, rows that start
+// long before their settlement.
 
 // simConfig sizes a simulation.
 type simConfig struct {
@@ -42,8 +44,10 @@ type simConfig struct {
 	perDay    int
 	days      int
 	retention time.Duration
-	// retainRaw and rollupAfter are the collector's retention policy, short
-	// enough that the rollup and the prune happen inside the run.
+	// rollupAfter is the collector's rollup policy, short enough that the
+	// rollup happens inside the run. retainRaw is the retention a build
+	// before 2026-10-04 pruned rows to (pruneLikeBefore), short enough that
+	// the prune happens inside the run too.
 	retainRaw, rollupAfter time.Duration
 }
 
@@ -162,15 +166,81 @@ func newSim(t testing.TB, cfg simConfig) *sim {
 		St: s.st, Paths: collect.DefaultPaths(dir), Vantage: simVantage, AmendFile: s.amendFile,
 		Logf:           func(format string, args ...any) { s.logs = append(s.logs, fmt.Sprintf(format, args...)) },
 		PruneTolerance: 5 * time.Minute, Corrector: correct.New(s.st, s.corrFile, 5*time.Minute),
-		Retention: rollup.Config{RetainRaw: cfg.retainRaw, RetainRawJSON: 4 * 24 * time.Hour, RollupAfter: cfg.rollupAfter, Vantage: simVantage,
-			AfterPrune: func(step, day string) {
-				if s.afterPrune != nil {
-					s.afterPrune(step, day)
-				}
-			}},
+		Retention:      rollup.Config{RollupAfter: cfg.rollupAfter, Vantage: simVantage},
 		RetentionEvery: time.Hour,
 	})
 	return s
+}
+
+// pruneLikeBefore does to the store what the collector's retention pass did
+// after its rollup until 2026-10-04, when the prune was retired: whole
+// rolled days of rows older than retainRaw deleted, three days a pass at
+// most, a table at a time, each statement its own commit, and raw_from moved
+// past each day. Nothing in the observer prunes any more, but a database an
+// older build pruned carries raw_from and the gap behind it, and the
+// partials still follow raw_from (dayparts_catchup.go), so the sim prunes as
+// that build did, and afterPrune looks at the store between the statements.
+func (s *sim) pruneLikeBefore() {
+	s.t.Helper()
+	if s.cfg.retainRaw <= 0 {
+		return
+	}
+	db := s.st.DB()
+	through, err := s.st.Meta("rollup_through")
+	if err != nil || through == "" {
+		return // nothing rolled: nothing may be pruned
+	}
+	rolled, err := time.Parse(dayLayout, through)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	from, ok := rollup.RawFrom(s.st)
+	if !ok {
+		var first sql.NullString
+		if err := db.QueryRow(`SELECT MIN(t) FROM (
+				SELECT MIN(started_at) AS t FROM probes
+				UNION ALL SELECT MIN(decided_at) FROM sampling_decisions
+				UNION ALL SELECT MIN(started_at) FROM reachability
+				UNION ALL SELECT MIN(settlement_time) FROM publications)`).Scan(&first); err != nil {
+			s.t.Fatal(err)
+		}
+		if !first.Valid || first.String == "" {
+			return
+		}
+		ft, err := time.Parse(store.TimeLayout, first.String)
+		if err != nil {
+			s.t.Fatal(err)
+		}
+		from = ft.UTC().Truncate(24 * time.Hour)
+	}
+	cut := s.now.Add(-s.cfg.retainRaw).UTC().Truncate(24 * time.Hour)
+	step := func(name, day string) {
+		if s.afterPrune != nil {
+			s.afterPrune(name, day)
+		}
+	}
+	for days := 0; days < 3 && !from.After(rolled) && from.Before(cut); days++ {
+		lo, hi := store.TS(from), store.TS(from.Add(24*time.Hour-time.Nanosecond))
+		day := from.Format(dayLayout)
+		for _, table := range []string{"probes", "reachability", "probe_confirmations"} {
+			if _, err := db.Exec(`DELETE FROM `+table+` WHERE started_at >= ? AND started_at <= ?`, lo, hi); err != nil {
+				s.t.Fatal(err)
+			}
+			step(table, day)
+		}
+		// A sampled-out publication's rows are its decision, started at
+		// decided_at: pruned with the day its rows would have been, points
+		// and all (ON DELETE CASCADE).
+		if _, err := db.Exec(`DELETE FROM sampling_decisions WHERE decided_at >= ? AND decided_at <= ?`, lo, hi); err != nil {
+			s.t.Fatal(err)
+		}
+		step("sampling_decisions", day)
+		from = from.Add(24 * time.Hour)
+		if err := s.st.SetMeta("raw_from", from.Format(dayLayout), s.now); err != nil {
+			s.t.Fatal(err)
+		}
+		step("raw_from", from.Format(dayLayout))
+	}
 }
 
 // openAPI opens the API over the store as observer-api does: read-only,
@@ -665,12 +735,14 @@ func (s *sim) advance(at time.Time) {
 	}
 }
 
-// pass runs the collector's pass at the clock.
+// pass runs the collector's pass at the clock, and the prune an older build
+// ran after it (pruneLikeBefore).
 func (s *sim) pass() {
 	s.t.Helper()
 	if errs := s.coll.Pass(context.Background(), s.now); len(errs) > 0 {
 		s.t.Logf("pass at %s: %v", s.now.Format(time.RFC3339), errs)
 	}
+	s.pruneLikeBefore()
 }
 
 // makeSampled turns a planned publication into one drawn out of the

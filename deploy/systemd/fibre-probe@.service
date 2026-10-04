@@ -6,7 +6,10 @@ Wants=network-online.target
 [Service]
 User=fibre-observer
 EnvironmentFile=/etc/fibre-observer/%i.env
-ExecStart=/usr/local/bin/sentinel-probe -rpc ${RPC} -data-dir ${DATA_DIR} -vantage ${VANTAGE} -policy ${POLICY} -end-read -end-read-since ${END_READ_SINCE}
+# PROBE_ARGS (optional, in the env file): extra flags for the prober, for
+# example -max-read-mbps 600 -link-mbps 900. Unbraced so an empty value adds
+# no argument, and each flag is its own argument.
+ExecStart=/usr/local/bin/sentinel-probe -rpc ${RPC} -data-dir ${DATA_DIR} -vantage ${VANTAGE} -policy ${POLICY} -end-read -end-read-since ${END_READ_SINCE} $PROBE_ARGS
 Restart=always
 RestartSec=5
 NoNewPrivileges=true

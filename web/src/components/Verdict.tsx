@@ -17,9 +17,13 @@
  *           cannot say when the obligation ended    RETENTION_UNVERIFIED
  *   gap     not observed at all — a gap, never a verdict    NOT_PROBED, PROBE_ERROR
  *
- * Whether a reading counts against the validator is not its class alone: a
- * failure counts as not served only when the blob could not be
- * reconstructed (observer/verdict).
+ * Whether a reading counts against the validator is not its class alone
+ * (observer/verdict): every endorser is judged on its own answers, a later
+ * answer replaces one that did not serve, and Tensile's own gap (rows of the
+ * blob that are not the validator's own among them) counts neither way.
+ * Readings before 2 October 2026, 16:09 UTC, and readings labelled enough,
+ * counted a failure as not served only when the blob could not be
+ * reconstructed.
  *
  * FAULT owns the only pointed shape in the system and the only status colour
  * allowed to touch a word, so an accusation is pre-attentive and survives total
@@ -34,39 +38,39 @@ type Def = { label: string; tier: Tier; def: string };
 const VERDICTS: Record<string, Def> = {
   HEALTHY: {
     label: "served", tier: "kept",
-    def: "The endorsed rows came back and verified against the blob commitment.",
+    def: "The validator's own endorsed rows came back and verified against the blob commitment.",
   },
   FAULT: {
     label: "not found or bad rows", tier: "fault",
-    def: "Not found, or rows that do not verify against the blob commitment. Not served when the blob could not be reconstructed; otherwise counted neither way.",
+    def: "Not found, or rows that do not verify against the blob commitment. Not served when it is the validator's last answer, unless one of its requests failed on Tensile's side, was not made, or brought back rows of the blob that are not its own.",
   },
   UNREACHABLE: {
     label: "unreachable", tier: "hold",
-    def: "No answer within 15 s, or no route to its host, asked twice (the client's re-dial). Not served when the blob could not be reconstructed; otherwise counted neither way.",
+    def: "No answer within 15 s, or no route to its host, dialled twice at the reading (the client's re-dial), once when asked again. Not served when it is the validator's last answer, unless one of its requests failed on Tensile's side, was not made, or brought back rows of the blob that are not its own.",
   },
   IDENTITY_EXPIRED: {
     label: "certificate expired", tier: "hold",
-    def: "The right key signed the certificate, but outside its validity window. Not served when the blob could not be reconstructed; otherwise counted neither way.",
+    def: "The right key signed the certificate, but outside its validity window. Not served when it is the validator's last answer, unless one of its requests failed on Tensile's side, was not made, or brought back rows of the blob that are not its own.",
   },
   IDENTITY_MISMATCH: {
     label: "wrong certificate", tier: "hold",
-    def: "The certificate is not signed by this validator's consensus key. Not served when the blob could not be reconstructed; otherwise counted neither way.",
+    def: "The certificate is not signed by this validator's consensus key. Not served when it is the validator's last answer, unless one of its requests failed on Tensile's side, was not made, or brought back rows of the blob that are not its own.",
   },
   SERVER_ERROR: {
     label: "server error", tier: "hold",
-    def: "An error, or an answer no client accepts, instead of the shard. Not served when the blob could not be reconstructed; otherwise counted neither way.",
+    def: "An error, or an answer no client accepts, instead of the shard. Not served when it is the validator's last answer, unless one of its requests failed on Tensile's side, was not made, or brought back rows of the blob that are not its own.",
   },
   THROTTLED: {
     label: "rate limited", tier: "hold",
-    def: "Refused with a rate limit instead of the shard. Not served when the blob could not be reconstructed; otherwise counted neither way.",
+    def: "Refused with a rate limit instead of the shard. Not served when it is the validator's last answer, unless one of its requests failed on Tensile's side, was not made, or brought back rows of the blob that are not its own.",
   },
   UNATTESTED: {
     label: "not endorsed", tier: "held",
-    def: "No verified endorsement from this validator on the settled promise, so nothing proves it stored the shard. Asked like the rest; its rows count toward the blob. Not rated.",
+    def: "No verified endorsement from this validator on the settled promise, so nothing proves it stored the shard. Nothing owed, so not asked, and not rated.",
   },
   NOT_REGISTERED: {
     label: "no endpoint", tier: "held",
-    def: "No Fibre host in x/valaddr at the reading, so no client could fetch its rows. Not served when the blob could not be reconstructed; otherwise counted neither way.",
+    def: "No Fibre host in x/valaddr at the reading, so no client could fetch its rows. Not served when it is the validator's last answer, unless one of its requests failed on Tensile's side, was not made, or brought back rows of the blob that are not its own.",
   },
   SHADOWED_SHARD: {
     label: "shadowed", tier: "held",
@@ -74,7 +78,7 @@ const VERDICTS: Record<string, Def> = {
   },
   UNMATCHED_GENUINE: {
     label: "unmatched genuine rows", tier: "held",
-    def: "Genuine rows of the blob that match no settled promise's set. The rows came back verified, so served.",
+    def: "Genuine rows of the blob that match no settled promise's set. A short shard of the validator's own rows is not served when it is its last answer; rows that are not its own leave it counted neither way, since the store answers by commitment and they show neither that it holds its rows nor that it does not. Before 2 October 2026, 16:09 UTC, and at a reading labelled enough, rows that verified counted as served.",
   },
   TOLERATED: {
     label: "tolerated", tier: "held",
@@ -102,11 +106,11 @@ const VERDICTS: Record<string, Def> = {
   },
   PROBE_ERROR: {
     label: "read failed", tier: "gap",
-    def: "Tensile's own request failed before it reached the validator. When no request of a reading reached a validator, the blob was not read by Tensile; otherwise it is this validator's rows not coming back.",
+    def: "Tensile's own request failed on its side: before it reached the validator, or on its own network, resolver or clock. A gap of Tensile's own, never counted against the validator (before 2 October 2026, 16:09 UTC, and at a reading labelled enough, it counted as not served on a blob that could not be reconstructed). When no request of a reading reached a server, the blob was not read by Tensile.",
   },
   NOT_PROBED: {
     label: "not read by Tensile", tier: "gap",
-    def: "Tensile did not read this blob in time. A gap, not a verdict.",
+    def: "Tensile could not make this request in time. A gap, not a verdict.",
   },
   RETENTION_UNVERIFIED: {
     label: "deadline unverified", tier: "held",

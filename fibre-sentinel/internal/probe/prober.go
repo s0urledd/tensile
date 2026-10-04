@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -57,14 +58,43 @@ type Config struct {
 	RunConfig map[string]any
 
 	// Concurrency is how many requests are in flight at once across every
-	// reading (default 64), and BlobConcurrency how many blobs are being
+	// reading (default 256), and BlobConcurrency how many blobs are being
 	// read at once (default 16). They bound this observer's load and only
 	// delay: a request waits for room and its time starts once it is let
-	// go, never dropped. A reading that cannot start before its latest
-	// start is not made, and its blob was not read by Tensile. The most
-	// urgent reading due starts first (popDue).
+	// go. A reading that cannot start before its latest start is not made,
+	// and its blob was not read by Tensile; a request of a full reading
+	// that cannot start before RequestStartMargin is not made either
+	// (NOT_PROBED). The most urgent reading due starts first (popDue).
+	//
+	// A full reading asks every endorser, and a validator that times out
+	// holds a request for the whole 15 s (30 with the re-dial), so the
+	// count is set well above what the healthy requests need: memory is
+	// bounded by InFlightBytes, and the load on any one validator by
+	// BlobConcurrency, not by this.
 	Concurrency     int
 	BlobConcurrency int
+
+	// AskEveryEndorser reads every validator the settled promise names as a
+	// signer (Prober.wants), each for its own rows, instead of stopping once
+	// the rows reconstruct the blob: every endorser is asked on every blob,
+	// so none is left unasked by the order. Validators that did not endorse
+	// are not asked. The blob's slot is held until every answer is in, so
+	// BlobConcurrency still bounds the readings in progress. Its readings
+	// are labelled FullReadLabel, and a validator whose answer did not serve
+	// is asked again later (retry.go).
+	AskEveryEndorser bool
+
+	// RequestStartMargin is how long before must_serve_until the last
+	// request of a full reading may start, the reading's own or a later
+	// attempt (default 60 s). One that cannot start by then is not made, and
+	// its validator's row says so (NOT_PROBED): this observer's gap. The
+	// client's re-dial within a request is part of it and follows it, past
+	// the margin or not.
+	RequestStartMargin time.Duration
+	// RetrySpacing is how long after a validator's answer in a full reading
+	// did not serve it is asked again (default 90 s), up to FullReadRetries
+	// times.
+	RetrySpacing time.Duration
 
 	// AllowUnroutableHosts dials a registered host that resolves to loopback
 	// or a private range. A local devnet needs it; a public vantage must not
@@ -79,6 +109,23 @@ type Config struct {
 	// charged what its shard should weigh. A request larger than the whole
 	// budget still runs, alone. Zero takes the default.
 	InFlightBytes int64
+	// LinkMbps is this observer's measured receive rate, megabits a second
+	// (0: not set). When set, InFlightBytes is held to what the link moves
+	// in half a request's time (LinkBytesCap): every byte in flight at once
+	// then arrives well inside the client's 15 s, so a request that runs out
+	// of time ran out of it at the validator's end, not because this
+	// observer's own link was full.
+	LinkMbps int
+	// MaxReadMbps is the reading-rate ceiling, megabits a second (0: no
+	// ceiling; sentinel-probe sets DefaultMaxReadMbps): every request, the
+	// first pass's and every later attempt's, is charged its shard's
+	// expected bytes against a token bucket of this rate (ceiling.go) and
+	// let go once the bucket has them, so the readings leave room on the
+	// observer's port. The wait only delays, up to the
+	// request's start cutoff, and is not part of the request's time.
+	// LinkMbps bounds the bytes in flight at once and this the rate they
+	// are let go at; with both set, this belongs below the link.
+	MaxReadMbps int
 
 	// BackfillMissed bounds how far back a (re)started prober writes
 	// NOT_PROBED rows for readings it never made. Zero, the default, is no
@@ -109,7 +156,7 @@ func (c Config) withDefaults() Config {
 		c.HostCacheTTL = 60 * time.Second
 	}
 	if c.Concurrency <= 0 {
-		c.Concurrency = 64
+		c.Concurrency = DefaultConcurrency
 	}
 	if c.BlobConcurrency <= 0 {
 		c.BlobConcurrency = 16
@@ -117,18 +164,45 @@ func (c Config) withDefaults() Config {
 	if c.InFlightBytes <= 0 {
 		c.InFlightBytes = defaultInFlightBytes
 	}
+	if c.RequestStartMargin <= 0 {
+		c.RequestStartMargin = time.Minute
+	}
+	if c.RetrySpacing <= 0 {
+		c.RetrySpacing = 90 * time.Second
+	}
 	if c.Timeouts.Download <= 0 {
 		c.Timeouts.Download = ClientRPCTimeout
+	}
+	if limit := LinkBytesCap(c.LinkMbps, c.Timeouts.Download); limit > 0 && limit < c.InFlightBytes {
+		c.InFlightBytes = limit
 	}
 	// The request's whole time is the client's, whatever the shard weighs.
 	c.Timeouts.MinDownloadBytesPerSec = -1
 	if c.BackfillMissed < 0 {
 		c.BackfillMissed = 0
 	}
+	if c.MaxReadMbps < 0 {
+		c.MaxReadMbps = 0
+	}
 	if c.Vantage == "" {
 		c.Vantage = "local"
 	}
 	return c
+}
+
+// DefaultConcurrency is the requests in flight at once when Config sets
+// none.
+const DefaultConcurrency = 256
+
+// LinkBytesCap is the shard bytes a link of mbps megabits a second moves in
+// half of requestTime: the most that may be in flight at once for every
+// one of them to arrive with half the request's time to spare. 0 when mbps
+// is not set.
+func LinkBytesCap(mbps int, requestTime time.Duration) int64 {
+	if mbps <= 0 || requestTime <= 0 {
+		return 0
+	}
+	return int64(float64(mbps) * 1e6 / 8 * requestTime.Seconds() / 2)
 }
 
 // Prober turns the scanner's publications into readings of blobs and raw
@@ -180,11 +254,21 @@ type Prober struct {
 	// failed settlement tx).
 	skippedPubs map[string]bool
 
-	// the reading's load: requests in flight and bytes in flight
-	reqs     chan struct{}
-	bytes    *byteSem
-	sched    *readQueue
-	counters readCounters
+	// the reading's load: requests in flight and bytes in flight, the
+	// reading-rate ceiling (nil: none), and the requests and budget bytes
+	// that hold room while the ceiling paces them (not yet in flight)
+	reqs       chan struct{}
+	bytes      *byteSem
+	ceiling    *readCeiling
+	pacedReqs  atomic.Int64
+	pacedBytes atomic.Int64
+	sched      *readQueue
+	counters   readCounters
+	// retries are the later attempts of full readings (retry.go).
+	retries *retryQueue
+	// reach is when this observer's requests last reached a server, for
+	// telling its own network's failure from a validator's (ownside.go).
+	reach reachLog
 }
 
 // New builds a Prober.
@@ -220,7 +304,9 @@ func New(cfg Config, log *scan.Logger) (*Prober, error) {
 func (p *Prober) initPace() {
 	p.reqs = make(chan struct{}, p.cfg.Concurrency)
 	p.bytes = newByteSem(p.cfg.InFlightBytes)
+	p.ceiling = newReadCeiling(ReadCeiling(p.cfg.MaxReadMbps))
 	p.sched = newReadQueue()
+	p.retries = newRetryQueue()
 }
 
 func (p *Prober) schedCfg() ScheduleConfig { return p.cfg.Schedule.withDefaults() }
@@ -284,17 +370,27 @@ func (p *Prober) Run(parent context.Context) error {
 	p.chainID = id
 	p.measureClock(ctx)
 	p.pollAppVersion(ctx)
-	p.log.Printf("prober up: vantage=%s chain_id=%s tip=%d rpc=%s pubs=%s data=%s concurrency=%d blobs=%d",
-		p.cfg.Vantage, id, tip, p.cfg.RPCURL, p.cfg.PublicationsPath, p.store.Path(), p.cfg.Concurrency, p.cfg.BlobConcurrency)
+	ceiling := "none"
+	if rate, burst := ReadCeiling(p.cfg.MaxReadMbps); rate > 0 {
+		ceiling = fmt.Sprintf("%d Mbit/s (burst %.1f MB)", p.cfg.MaxReadMbps, burst/1e6)
+	}
+	p.log.Printf("prober up: vantage=%s chain_id=%s tip=%d rpc=%s pubs=%s data=%s concurrency=%d blobs=%d in-flight=%d MiB read-ceiling=%s",
+		p.cfg.Vantage, id, tip, p.cfg.RPCURL, p.cfg.PublicationsPath, p.store.Path(), p.cfg.Concurrency, p.cfg.BlobConcurrency,
+		p.cfg.InFlightBytes>>20, ceiling)
 
-	// The dispatcher starts every reading when it is due, while this loop
-	// keeps the queue and the chain state fresh.
+	// The dispatcher starts every reading when it is due, and the retry
+	// runner every later attempt of a full reading, while this loop keeps
+	// the queue and the chain state fresh.
 	dctx, stopDispatch := context.WithCancel(ctx)
 	var dispatched sync.WaitGroup
-	dispatched.Add(1)
+	dispatched.Add(2)
 	go func() {
 		defer dispatched.Done()
 		p.dispatch(dctx)
+	}()
+	go func() {
+		defer dispatched.Done()
+		p.runRetries(dctx)
 	}()
 	defer func() {
 		stopDispatch()
@@ -338,6 +434,7 @@ func (p *Prober) Run(parent context.Context) error {
 		for _, h := range finished {
 			p.feed.forget(h)
 			p.store.Forget(h)
+			p.retries.forget(h)
 		}
 		for _, j := range due {
 			p.sched.push(j)
@@ -349,11 +446,11 @@ func (p *Prober) Run(parent context.Context) error {
 		st.Set("clock_offset_ms", p.clockOffsetMS())
 		st.Set("reads", p.readStatus())
 
-		if (p.cfg.Once || p.cfg.ReadNow) && p.sched.quiet(time.Now()) {
+		if (p.cfg.Once || p.cfg.ReadNow) && p.sched.quiet(time.Now()) && p.retries.idle() {
 			p.log.Printf("done: %d readings this run", p.counters.done.Load())
 			return nil
 		}
-		if p.cfg.Drain && p.sched.idle() {
+		if p.cfg.Drain && p.sched.idle() && p.retries.idle() {
 			p.log.Printf("done (--drain): every known reading is in the past; %d readings this run", p.counters.done.Load())
 			return nil
 		}
@@ -652,10 +749,14 @@ func (p *Prober) planReads(pubs []scan.Publication, now time.Time) (due, missed 
 			finished = append(finished, pub.PromiseHash)
 			continue
 		}
-		pt := ReadPoint(pub, cfg)
+		pt := p.readPoint(pub)
 		if p.store.HandledPoint(p.cfg.Vantage, pub.PromiseHash, pt.At) || archivedFrom(pub, pt, p.liveSince) {
 			// The reading is on record (or may be, in the archive, which
-			// the restart index does not read): nothing to do again.
+			// the restart index does not read): nothing to do again, once
+			// every later attempt it owes is made or recorded as not made.
+			if p.retriesOwed(pub, pt) {
+				continue
+			}
 			finished = append(finished, pub.PromiseHash)
 			continue
 		}
@@ -784,15 +885,29 @@ func (p *Prober) readBlob(ctx context.Context, j *readJob, release func()) {
 }
 
 // finish writes a reading's rows, all together. The caller has taken the
-// reading off the queue (popDue); finish gives it back.
+// reading off the queue (popDue); finish gives it back. A full reading's
+// validators whose answer did not serve are then queued to be asked again
+// (retry.go): the rows are on record first, so the record stays in time
+// order, and the blob is held as owing retries meanwhile (retryQueue.hold),
+// so a cycle does not forget it in between.
 func (p *Prober) finish(b *blobReading) {
 	defer p.sched.done(b.pub.PromiseHash)
+	if b.full {
+		b.ownSide()
+	}
 	result, clientErr := b.result()
 	ms := b.rows(result, clientErr)
+	if b.full {
+		p.retries.hold(b.pub.PromiseHash)
+		defer p.retries.release(b.pub.PromiseHash)
+	}
 	if len(ms) > 0 {
 		if err := p.store.AppendReading(ms); err != nil {
 			p.log.Fatalf("append reading: %v", err)
 		}
+	}
+	if b.full {
+		p.retryAfterReading(b, ms)
 	}
 	p.counters.done.Add(1)
 	what := result
@@ -834,15 +949,115 @@ func (p *Prober) inputFor(pub scan.Publication, t Target, pt SchedulePoint, comm
 	}
 }
 
-// admit waits for room for one request: a request slot and the shard's
-// bytes. The returned func gives both back.
-func (p *Prober) admit(shardBytes int64) func() {
-	p.reqs <- struct{}{}
-	p.bytes.acquire(shardBytes)
-	return func() {
-		p.bytes.release(shardBytes)
+// admitBy waits for room for one request under this observer's limits, in
+// this order: a request slot, the byte budget (budgetBytes: the shard, and
+// a later attempt's own verifier), and the reading-rate ceiling (wireBytes:
+// the shard alone, charged last, so it is let go when it is charged). It
+// waits only until by (a zero by is no bound) or until ctx ends: when room
+// did not come in time it returns the reason, errLimitsFull or errRateHeld
+// (ctx's error when it ended), and holds nothing. Otherwise the request is
+// let go, its own time starts now, and release gives the room back. load is
+// this observer's load once it is let go and how long it waited, the
+// ceiling's part apart (recorded on the row, and in the status file).
+func (p *Prober) admitBy(ctx context.Context, by time.Time, budgetBytes, wireBytes int64) (release func(), load *LoadInfo, err error) {
+	start := time.Now()
+	bounded := !by.IsZero()
+	if bounded && !start.Before(by) {
+		return nil, nil, errLimitsFull
+	}
+	var expired <-chan time.Time // nil: no bound
+	if bounded {
+		t := time.NewTimer(time.Until(by))
+		defer t.Stop()
+		expired = t.C
+	}
+	select {
+	case p.reqs <- struct{}{}:
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	case <-expired:
+		p.counters.admitWait(start, time.Since(start), 0)
+		return nil, nil, errLimitsFull
+	}
+	if !p.bytes.acquireBy(ctx, budgetBytes, by) {
+		<-p.reqs
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+		p.counters.admitWait(start, time.Since(start), 0)
+		return nil, nil, errLimitsFull
+	}
+	release = func() {
+		p.bytes.release(budgetBytes)
 		<-p.reqs
 	}
+	paced := time.Now()
+	wait, charged, ok := p.ceiling.reserve(wireBytes, by)
+	if !ok {
+		release()
+		p.counters.admitWait(start, time.Since(start), 0)
+		return nil, nil, errRateHeld
+	}
+	if wait > 0 {
+		p.pacedReqs.Add(1)
+		p.pacedBytes.Add(budgetBytes)
+		t := time.NewTimer(wait)
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			t.Stop()
+		}
+		p.pacedReqs.Add(-1)
+		p.pacedBytes.Add(-budgetBytes)
+		if ctx.Err() != nil {
+			p.ceiling.refund(charged)
+			release()
+			return nil, nil, ctx.Err()
+		}
+	}
+	now := time.Now()
+	total, rate := now.Sub(start), now.Sub(paced)
+	if wait <= 0 {
+		rate = 0
+	}
+	p.counters.admitWait(start, total, rate)
+	// In flight: let go and not done, so not the requests the ceiling is
+	// still pacing.
+	load = &LoadInfo{RequestsInFlight: len(p.reqs) - int(p.pacedReqs.Load()), ShardBytesInFlight: p.bytes.inFlight() - p.pacedBytes.Load(),
+		AdmitWaitMS: total.Milliseconds(), RateWaitMS: rate.Milliseconds()}
+	return release, load, nil
+}
+
+// requestStartBy is the last moment a request of pub's full reading may
+// start: must_serve_until less RequestStartMargin.
+func (p *Prober) requestStartBy(pub scan.Publication) time.Time {
+	return pub.MustServeUntil.Add(-p.cfg.RequestStartMargin)
+}
+
+// notStartedReason is the NOT_PROBED reason of a request of a full reading
+// (what: "request" or "retry") that could not start in time.
+func (p *Prober) notStartedReason(what string) string {
+	return fmt.Sprintf("not read in time: the %s could not start %s before must_serve_until (this observer's own gap)",
+		what, p.cfg.RequestStartMargin)
+}
+
+// readPoint is when, and under which label, pub is read: ReadPoint, under
+// readLabel.
+func (p *Prober) readPoint(pub scan.Publication) SchedulePoint {
+	pt := ReadPoint(pub, p.schedCfg())
+	pt.Label = p.readLabel()
+	return pt
+}
+
+// readLabel is the label this prober's readings carry: FullReadLabel when
+// it asks every endorser, EnoughReadLabel when it stops once the rows are
+// enough. Neither is EndReadLabel, which from FullReadSince on reads as a
+// full reading.
+func (p *Prober) readLabel() string {
+	if p.cfg.AskEveryEndorser {
+		return FullReadLabel
+	}
+	return EnoughReadLabel
 }
 
 // defaultInFlightBytes is the shard-byte ceiling: half a gibibyte of shards
@@ -853,17 +1068,41 @@ func (p *Prober) admit(shardBytes int64) func() {
 // being read keeps its verifier (about 4.3 MiB at K = 4096, N = 12288) and
 // the rows of the first shard it verified (up to about 7 MiB at mocha's
 // largest shard) until it finishes. Readings are bounded by
-// BlobConcurrency, so at 16 running that is under 200 MiB more.
+// BlobConcurrency, so at 16 running that is under 200 MiB more. A later
+// attempt of a full reading builds a verifier of its own, and is charged
+// it here beside its shard (verifierBytes).
 const defaultInFlightBytes = 512 << 20
 
 // byteSem admits work by weight as well as by count. A single item heavier
 // than the whole budget is admitted alone rather than deadlocking, which is
 // the case that matters: one validator holding every row of a large blob.
+// Waiters are admitted first come, first served: only the one at the head
+// of the queue may take room, so a large shard (the validators that hold
+// the most rows) is not passed over by smaller ones until its cutoff. A
+// waiter that gives up leaves the queue.
 type byteSem struct {
 	mu    sync.Mutex
 	cond  *sync.Cond
 	limit int64
 	held  int64
+	queue []*byte // the waiters, in arrival order; each is a ticket of its own
+}
+
+// leave takes ticket w out of the queue. The caller holds mu.
+func (b *byteSem) leave(w *byte) {
+	for i, q := range b.queue {
+		if q == w {
+			b.queue = append(b.queue[:i], b.queue[i+1:]...)
+			return
+		}
+	}
+}
+
+// blocked reports whether ticket w must still wait for nBytes: it is not at
+// the head of the queue, or the room is not free (an item heavier than the
+// budget goes once nothing else is held). The caller holds mu.
+func (b *byteSem) blocked(w *byte, nBytes int64) bool {
+	return b.queue[0] != w || (b.held > 0 && b.held+nBytes > b.limit)
 }
 
 func newByteSem(limit int64) *byteSem {
@@ -872,16 +1111,66 @@ func newByteSem(limit int64) *byteSem {
 	return b
 }
 
+// inFlight is the shard bytes held now.
+func (b *byteSem) inFlight() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.held
+}
+
 func (b *byteSem) acquire(nBytes int64) {
 	if nBytes <= 0 {
 		nBytes = 1
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for b.held > 0 && b.held+nBytes > b.limit {
+	w := new(byte)
+	b.queue = append(b.queue, w)
+	for b.blocked(w, nBytes) {
 		b.cond.Wait()
 	}
+	b.leave(w)
 	b.held += nBytes
+	// the next in line may fit too
+	b.cond.Broadcast()
+}
+
+// acquireBy is acquire bounded by a deadline (a zero by is none) and a
+// context: false, with nothing held, when the bytes were not free in time.
+func (b *byteSem) acquireBy(ctx context.Context, nBytes int64, by time.Time) bool {
+	if nBytes <= 0 {
+		nBytes = 1
+	}
+	wake := func() {
+		b.mu.Lock()
+		b.cond.Broadcast()
+		b.mu.Unlock()
+	}
+	bounded := !by.IsZero()
+	if bounded {
+		t := time.AfterFunc(time.Until(by), wake)
+		defer t.Stop()
+	}
+	stop := context.AfterFunc(ctx, wake)
+	defer stop()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	w := new(byte)
+	b.queue = append(b.queue, w)
+	for b.blocked(w, nBytes) {
+		if ctx.Err() != nil || (bounded && !time.Now().Before(by)) {
+			// out of line: the one behind may be at the head now
+			b.leave(w)
+			b.cond.Broadcast()
+			return false
+		}
+		b.cond.Wait()
+	}
+	b.leave(w)
+	b.held += nBytes
+	// the next in line may fit too
+	b.cond.Broadcast()
+	return true
 }
 
 func (b *byteSem) release(nBytes int64) {
@@ -980,6 +1269,9 @@ func (p *Prober) logMeasurement(m Measurement) {
 	tail := ""
 	if m.Download.Attempted {
 		tail = fmt.Sprintf(" rows=%d/%d commit=%v assign=%v", m.Download.RowsReturned, m.Download.RowsExpected, m.Download.CommitmentVerified, m.Download.AssignmentVerified)
+	}
+	if m.Attempt > 0 {
+		tail += fmt.Sprintf(" attempt=%d", m.Attempt)
 	}
 	p.log.Printf("PROBE %s val=%s %s[%s] -> %s / %s (%dms)%s",
 		short(m.PromiseHash), short(m.ValidatorAddress), m.ScheduleLabel, m.Phase,
@@ -1141,6 +1433,101 @@ type readCounters struct {
 	done   atomic.Int64
 	late   recentEvents // readings that started more than a minute after their time
 	missed recentEvents // readings not made in time
+	// notStarted: requests of full readings that could not start before
+	// their cutoff (NOT_PROBED rows).
+	notStarted recentEvents
+	// the later attempts of full readings: made (a request of their own),
+	// answered by another attempt's request to the same endpoint (shared),
+	// and owed but not made (NOT_PROBED rows), in all and by validator.
+	retriesMade, retriesShared, retriesNotMade recentEvents
+
+	mu         sync.Mutex
+	notMadeBy  map[string]*recentEvents
+	waits      []admitSample // the last admitSamples waits for room
+	waitsStart int
+}
+
+// admitSample is one request's wait for room (Prober.admitBy), and the part
+// of it the reading-rate ceiling held it.
+type admitSample struct {
+	at         time.Time
+	wait, rate time.Duration
+}
+
+// admitSamples is how many waits the status file's percentile is drawn
+// from.
+const admitSamples = 4096
+
+// retryNotMade counts an attempt that was owed and not made.
+func (c *readCounters) retryNotMade(now time.Time, validator string) {
+	c.retriesNotMade.add(now)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.notMadeBy == nil {
+		c.notMadeBy = map[string]*recentEvents{}
+	}
+	r := c.notMadeBy[validator]
+	if r == nil {
+		r = &recentEvents{}
+		c.notMadeBy[validator] = r
+	}
+	r.add(now)
+}
+
+// notMadeByValidator is, for the last hour, how many attempts owed to each
+// validator were not made: a validator whose attempts often were not made
+// is judged on fewer blobs than it owed.
+func (c *readCounters) notMadeByValidator(now time.Time) map[string]int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := map[string]int{}
+	for v, r := range c.notMadeBy {
+		if n := r.lastHour(now); n > 0 {
+			out[v] = n
+		} else {
+			delete(c.notMadeBy, v)
+		}
+	}
+	return out
+}
+
+// admitWait records how long a request waited for room, from at, and how
+// much of it the reading-rate ceiling held it.
+func (c *readCounters) admitWait(at time.Time, wait, rate time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := admitSample{at: at, wait: wait, rate: rate}
+	if len(c.waits) < admitSamples {
+		c.waits = append(c.waits, s)
+		return
+	}
+	c.waits[c.waitsStart] = s
+	c.waitsStart = (c.waitsStart + 1) % admitSamples
+}
+
+// admitWaitP95 is the 95th percentile of the waits for room recorded, of the
+// last admitSamples within the hour, the same of the ceiling's part of them,
+// and how many there were.
+func (c *readCounters) admitWaitP95(now time.Time) (wait, rate time.Duration, n int) {
+	c.mu.Lock()
+	var ws, rs []time.Duration
+	cut := now.Add(-time.Hour)
+	for _, s := range c.waits {
+		if !s.at.Before(cut) {
+			ws, rs = append(ws, s.wait), append(rs, s.rate)
+		}
+	}
+	c.mu.Unlock()
+	if len(ws) == 0 {
+		return 0, 0, 0
+	}
+	return p95(ws), p95(rs), len(ws)
+}
+
+// p95 is the 95th percentile of ds (sorted in place).
+func p95(ds []time.Duration) time.Duration {
+	sort.Slice(ds, func(i, j int) bool { return ds[i] < ds[j] })
+	return ds[(len(ds)*95+99)/100-1]
 }
 
 // recentEvents counts events of the last hour.
@@ -1173,13 +1560,32 @@ func (r *recentEvents) lastHour(now time.Time) int {
 }
 
 // readStatus is the status file's reads block: what is queued and under
-// way, and how the last hour went.
+// way, the later attempts of full readings owed, and how the last hour
+// went.
 func (p *Prober) readStatus() map[string]any {
 	now := time.Now()
+	queued, waiting, inFlight := p.retries.counts()
+	wait, rate, n := p.counters.admitWaitP95(now)
 	return map[string]any{
 		"queued":           p.sched.len(),
 		"in_progress":      p.sched.running(),
 		"started_late":     p.counters.late.lastHour(now),
 		"missed_last_hour": p.counters.missed.lastHour(now),
+		// requests of full readings that could not start before their
+		// cutoff, and the wait for room of the last requests (up to 4096,
+		// within the hour), all of it and the reading-rate ceiling's part
+		"requests_not_started_last_hour": p.counters.notStarted.lastHour(now),
+		"admit_wait_p95_ms":              wait.Milliseconds(),
+		"rate_wait_p95_ms":               rate.Milliseconds(),
+		"admit_wait_samples":             n,
+		// the later attempts: queued (not yet due), waiting for their
+		// validator's one attempt in flight, being made; and the last hour's
+		"retries_queued":                          queued,
+		"retries_waiting":                         waiting,
+		"retries_in_flight":                       inFlight,
+		"retries_made_last_hour":                  p.counters.retriesMade.lastHour(now),
+		"retries_shared_last_hour":                p.counters.retriesShared.lastHour(now),
+		"retries_not_made_last_hour":              p.counters.retriesNotMade.lastHour(now),
+		"retries_not_made_by_validator_last_hour": p.counters.notMadeByValidator(now),
 	}
 }

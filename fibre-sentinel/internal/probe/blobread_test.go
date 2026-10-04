@@ -654,3 +654,41 @@ func TestClientOrderExpectsTheRowsFibreAssignGives(t *testing.T) {
 		}
 	}
 }
+
+// With AskEveryEndorser the reading does not stop at K: of sixteen
+// validators holding 1024 rows each, every one that endorsed is asked once
+// for its own rows, after the rows were long enough, and the two that did
+// not endorse are not asked at all.
+func TestEveryEndorserIsAsked(t *testing.T) {
+	const k, total, per = 4096, 16384, 1024
+	var vals []fakeVal
+	for i := 0; i < total/per; i++ {
+		vals = append(vals, fakeVal{rows: rowsOf(i, per), serve: fakeServes})
+	}
+	f := newReadFixture(t, k, total, vals)
+	f.targets[5].Attested = false
+	f.targets[9].Attested = false
+	p := readProber(t, f)
+	p.cfg.AskEveryEndorser = true
+	ms := readNow(t, p, f.pub)
+	if len(ms) != 14 {
+		t.Fatalf("%d rows, want the 14 endorsers", len(ms))
+	}
+	got := byValidator(ms)
+	for i, tg := range f.targets {
+		n := f.calls[i].Load()
+		if !tg.Attested {
+			if n != 0 || got[tg.AddressHex].ValidatorAddress != "" {
+				t.Fatalf("validator %d did not endorse but was asked %d times", i, n)
+			}
+			continue
+		}
+		m, ok := got[tg.AddressHex]
+		if n != 1 || !ok {
+			t.Fatalf("endorser %d asked %d times (row %v)", i, n, ok)
+		}
+		if !m.Download.CommitmentVerified || m.Read == nil || m.Read.BlobResult != ReadAvailable {
+			t.Fatalf("endorser %d: %+v read %+v", i, m.Download, m.Read)
+		}
+	}
+}
