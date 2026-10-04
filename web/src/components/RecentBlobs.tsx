@@ -378,7 +378,7 @@ export default function RecentBlobs() {
     ? { ok: t.ok + p.readings.available, bad: t.bad + p.readings.unavailable, none: t.none + p.readings.not_read } : t, { ok: 0, bad: 0, none: 0 }) ?? null;
   const read = reads ? reads.ok + reads.bad : 0;
   const avTitle = reads && read > 0
-    ? `Of the ${int(read)} blobs on record Tensile has read, each near the end of its retention window, ${int(reads.ok)} were available${reads.bad ? ` and ${int(reads.bad)} unavailable` : ""}. ${int(reads.none)} were not read and count neither way.`
+    ? `${int(reads.ok)} of the ${int(read)} blobs Tensile has read were available${reads.bad ? `, ${int(reads.bad)} unavailable` : ""}.${reads.none ? ` ${int(reads.none)} not read, not counted.` : ""}`
     : undefined;
 
   const state = feed.error ? "down" : !feed.loaded ? "wait" : "live";
@@ -387,8 +387,8 @@ export default function RecentBlobs() {
   const liveTitle = feed.error
     ? `The observer API did not answer (${feed.error}); the grid shows the last read.`
     : mark
-      ? "Reads each new blob as soon as Tensile records it, a few seconds after its block, while this page is open."
-      : `Reads the newest blobs every ${FALLBACK_MS / 1000} s while this page is open.`;
+      ? "New blobs come in a few seconds after their block, while this page is open."
+      : `New blobs come in every ${FALLBACK_MS / 1000} s while this page is open.`;
 
   const rows = Array.from({ length: ROWS }, (_, r) => r);
   const mv = shown.move;

@@ -359,7 +359,7 @@ function Publisher({ addr }: { addr: string }) {
   // a long account's escrow history is not whole here: where to find it, quietly, under its blobs
   const someMoves = data.recent_payments.some((x) => x.kind !== "settlement");
   const elsewhere = !wholeMoney && posted && (
-    <p className="pb-more">{someMoves ? "Escrow movements" : "Older escrow movements"} are <a href={`${API_BASE}/v1/exports`} title="Every payment of every account, deposits and withdrawals among them, day by day (payments.jsonl)">in the API →</a></p>
+    <p className="pb-more">{someMoves ? "Escrow movements" : "Older escrow movements"} are <a href={`${API_BASE}/v1/exports`} title="Every account's payments, deposits and withdrawals included, day by day">in the API →</a></p>
   );
 
   // when it last and first posted, and where: all-time; a row still being read holds its place under a placeholder
@@ -395,7 +395,7 @@ function Publisher({ addr }: { addr: string }) {
       <dt>Escrow available</dt>
       <dd title={e ? [
         queued ? `${tia(queued.utia)} queued to withdraw${queued.next_available_at ? `, payable from ${utcWord(queued.next_available_at)}` : ""}; balance ${tia(e.balance_utia)}` : "",
-        `read from the chain at #${int(e.height)}, ${utcWord(e.updated_at)}`,
+        `${queued ? "as" : "As"} of block #${int(e.height)}, ${utcWord(e.updated_at)}`,
       ].filter(Boolean).join("; ") : p.escrow ? "No escrow account on the chain" : "Not read yet"}>
         {e ? <><b>{unit(tia(e.available_utia))}</b>{escWarn && <Warn text={escWarn} />}<em>now</em></> : <em>—</em>}
       </dd>
@@ -416,7 +416,7 @@ function Publisher({ addr }: { addr: string }) {
         <b>{unit(tia(paid))}</b>{p.timeouts > 0 && <Warn tone="fault" text={`${plural(p.timeouts, "payment promise")} timed out; ${tia(p.timed_out_utia)} charged all the same`} />}<em>all time</em>
       </dd>
       <dt className="tz"><Eye />Available</dt>
-      <dd title={read ? `Tensile reads each blob once, near the end of its retention window. Of the ${plural(readN, "blob")} this account paid for: ${[
+      <dd title={read ? `Tensile's reading of its ${plural(readN, "blob")}: ${[
         read.available ? `${int(read.available)} available` : "",
         read.unavailable ? `${int(read.unavailable)} unavailable` : "",
         read["retention window"] ? `${int(read["retention window"])} in the retention window` : "",
@@ -442,7 +442,7 @@ function Publisher({ addr }: { addr: string }) {
         <div className="pb-id">
           <Ident addr={addr} />
           {p.label
-            ? <><h1 className="pb-h1 lab" title={p.label_source ? `label source: ${p.label_source}` : undefined}>{p.label}</h1><span className="pb-chip" title={addr}><span className="hd">{addr.slice(0, i)} •••</span><span className="tl">{addr.slice(-4)}</span></span></>
+            ? <><h1 className="pb-h1 lab" title={p.label_source ? `Label source: ${p.label_source}` : undefined}>{p.label}</h1><span className="pb-chip" title={addr}><span className="hd">{addr.slice(0, i)} •••</span><span className="tl">{addr.slice(-4)}</span></span></>
             : <h1 className="pb-h1" title={addr} aria-label={addr}><span className="hd">{addr.slice(0, i)}</span><span className="dots" aria-hidden="true">•••</span><span className="tl">{addr.slice(-4)}</span></h1>}
         </div>
         <div className="pb-addr"><span className="mono">{addr}</span><Copy text={addr} label="the address" /></div>

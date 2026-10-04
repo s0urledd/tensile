@@ -186,8 +186,8 @@ function Page() {
                 let escTitle = e ? "No escrow account on the chain" : "Not read yet";
                 if (e?.found) {
                   escTitle = low
-                    ? `Available ${tia(e.available_utia)} is less than the fee of one ${bytes(Math.round(avg!))} blob, its average size: ${tia(need)}.`
-                    : `Available ${tia(e.available_utia)}, read at block ${int(e.height)}, ${utcWord(e.updated_at)}.`;
+                    ? `Not enough for one more ${bytes(Math.round(avg!))} blob, its average size (${tia(need)}).`
+                    : `As of block #${int(e.height)}, ${utcWord(e.updated_at)}.`;
                   if (e.balance_utia !== e.available_utia) escTitle += ` Balance ${tia(e.balance_utia)}; ${tia(e.balance_utia - e.available_utia)} is queued to withdraw.`;
                 }
                 const toTitle = p.timeouts > 0 ? `${plural(p.timeouts, "payment promise")} timed out in the period; ${tia(p.timed_out_utia)} charged` : undefined;
