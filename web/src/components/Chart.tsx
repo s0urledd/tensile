@@ -27,10 +27,18 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties
  *
  * The plot is focusable: the arrow keys (and Home / End) walk the buckets
  * and the readout follows, the same one the pointer gets.
+ *
+ * `bare` draws only the bars, their baseline and the axis names, for a chart
+ * set beside a figure of its own (the Blobs top): no head, ticks or
+ * gridlines, the tallest bar filling the plot exactly with its count over
+ * it, flat fills, and any bucket with something in it at least 3px tall. A
+ * row's `partial` (an hour or a day not over yet) takes a lighter tint of
+ * the series, so half a day is not read as a drop. The tallest bar's bucket
+ * is always named on the axis.
  */
 export type Series = { key: string; label: string; color: string };
 /** `short`: the label without its month, "22" for "Sep 22" */
-export type Row = { x: string; label?: string; short?: string; values: Record<string, number>; note?: string };
+export type Row = { x: string; label?: string; short?: string; values: Record<string, number>; note?: string; partial?: boolean };
 
 const PAD = { top: 12, right: 4, bottom: 26, left: 0 };
 /** the axis text size, --t-tiny */
@@ -117,7 +125,7 @@ function stackPx(vals: number[], px: number): { ext: number; gap: number }[] {
   return out;
 }
 
-export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title, head, sub, figure, figureTitle, empty }: {
+export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title, head, sub, figure, figureTitle, empty, bare = false, padTop }: {
   series: Series[];
   rows: Row[];
   fmt: (v: number) => string;
@@ -137,6 +145,10 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
   /** the figure's hover text, when the total needs one sentence of explanation */
   figureTitle?: string;
   empty?: string;
+  /** the bars, their baseline and the axis names only (see above) */
+  bare?: boolean;
+  /** room over the plot, for the tallest bar's count when bare */
+  padTop?: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const plotRef = useRef<HTMLDivElement>(null);
@@ -178,20 +190,23 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
   const max = Math.max(0, ...totals);
   const hasData = max > 0;
   const step = niceStep(max, 4);
-  const top = hasData ? Math.ceil(max / step) * step : 1;
+  // bare: the tallest bar fills the plot, its count printed over it in place of a scale
+  const top = !hasData ? 1 : bare ? max : Math.ceil(max / step) * step;
   // an empty chart keeps its scale's floor: the 0 tick, and gridlines with nothing to count
   const ticks: number[] = [];
   if (hasData) for (let v = 0; v <= top + 1e-9; v += step) ticks.push(v); else ticks.push(0);
   // the left gutter from the widest tick label, and at least 56px, so charts side by side start their plots on one line
-  const left = Math.max(56, Math.ceil(Math.max(...ticks.map((t) => tw(axisFmt(t))))) + 10);
+  const left = bare ? 0 : Math.max(56, Math.ceil(Math.max(...ticks.map((t) => tw(axisFmt(t))))) + 10);
+  const padT = bare ? padTop ?? PAD.top : PAD.top;
   const plotW = Math.max(0, width - left - PAD.right);
-  const plotH = height - PAD.top - PAD.bottom;
-  const base = PAD.top + plotH;
+  const plotH = height - padT - PAD.bottom;
+  const base = padT + plotH;
   const n = rows.length;
   const slot = n > 0 ? plotW / n : 0;
-  const bw = Math.max(2, Math.round(Math.min(26, slot * 0.58)));
-  const y = (v: number) => PAD.top + plotH * (1 - v / top);
-  const barPx = (v: number) => (v > 0 ? Math.max(1, Math.round((plotH * v) / top)) : 0);
+  const bw = Math.max(2, Math.round(bare ? Math.min(24, slot * 0.56) : Math.min(26, slot * 0.58)));
+  const y = (v: number) => padT + plotH * (1 - v / top);
+  // bare: a bucket with anything in it stands at least 3px, so it never reads as an empty one
+  const barPx = (v: number) => (v > 0 ? Math.max(bare ? 3 : 1, Math.round((plotH * v) / top)) : 0);
   const cxOf = (i: number) => left + slot * i + slot / 2;
   const colX = (i: number) => Math.round(cxOf(i) - bw / 2);
   const single = series.length === 1;
@@ -202,13 +217,17 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
   // The axis names: every bucket in full if they fit; else every bucket in
   // its short form (the first, and the first of a month, in full); else every
   // k-th bucket in full, the smallest k that fits.
+  // Bare: every k-th bucket in full, at least 80px apart centre to centre,
+  // counted from the tallest bar (the earliest on a tie), so it is always
+  // named and the axis keeps one even step through it.
   const full = rows.map((r) => r.label ?? r.x);
   const canShort = n > 0 && rows.every((r, i) => !!r.short && full[i].endsWith(r.short));
   const month = (i: number) => full[i].slice(0, full[i].length - (rows[i].short ?? "").length);
-  const plan = (k: number, short: boolean): Map<number, string> | null => {
+  const peak = bare && hasData ? totals.indexOf(max) : -1;
+  const plan = (k: number, short: boolean, from = 0): Map<number, string> | null => {
     const out = new Map<number, string>();
     let prev = -1;
-    for (let i = 0; i < n; i += k) {
+    for (let i = from; i < n; i += k) {
       const s = !short || prev < 0 || month(i) !== month(prev) ? full[i] : (rows[i].short as string);
       if (prev >= 0 && slot * (i - prev) < (tw(out.get(prev) as string) + tw(s)) / 2 + (short ? SHORT_GAP : LABEL_GAP)) return null;
       out.set(i, s);
@@ -216,8 +235,13 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
     }
     return out;
   };
-  let names = plan(1, false) ?? (canShort ? plan(1, true) : null);
-  for (let k = 2; !names && k <= n; k++) names = plan(k, false);
+  let names: Map<number, string> | null = null;
+  if (bare) {
+    for (let k = Math.max(1, Math.ceil(80 / slot)); !names && k <= n; k++) names = plan(k, false, peak >= 0 ? peak % k : 0);
+  } else {
+    names = plan(1, false) ?? (canShort ? plan(1, true) : null);
+    for (let k = 2; !names && k <= n; k++) names = plan(k, false);
+  }
   names = names ?? new Map<number, string>();
   // the hovered bucket is named in full; the names that would touch it make room
   const onW = on !== null ? tw(full[on], 600) : 0;
@@ -230,11 +254,12 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
   let tip = { x: 0, y: 0 };
   if (on !== null && width > 0) {
     const w = tipBox.w, h = tipBox.h;
-    const yTop = PAD.top - 8;
+    const yTop = padT - 8;
     const yLow = -headH;
     type Box = { x0: number; x1: number; top: number; weight: number };
     const boxes: Box[] = [{ x0: 0, x1: left - CLEAR, top: y(top) - 8, weight: 50 }];
-    for (let i = 0; i < n; i++) if (totals[i] > 0) boxes.push({ x0: colX(i), x1: colX(i) + bw, top: base - barPx(totals[i]), weight: i === on ? 1 : 5 });
+    // the tallest bar bare carries its count over it: the readout keeps off that too
+    for (let i = 0; i < n; i++) if (totals[i] > 0) boxes.push({ x0: colX(i), x1: colX(i) + bw, top: i === peak ? 0 : base - barPx(totals[i]), weight: i === on ? 1 : 5 });
     const hx0 = colX(on), hx1 = hx0 + bw;
     const xs = new Set<number>();
     const clampX = (x: number) => Math.max(0, Math.min(width - w, Math.round(x)));
@@ -265,8 +290,8 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
   const move = (to: number) => { setKeyed(true); setHover(Math.min(n - 1, Math.max(0, to))); };
 
   return (
-    <div className={"chart" + (single ? " chart--single" : "")} ref={ref} style={single ? ({ "--series": series[0].color } as CSSProperties) : undefined}>
-      {head ?? (
+    <div className={"chart" + (single ? " chart--single" : "") + (bare ? " chart--bare" : "")} ref={ref} style={single ? ({ "--series": series[0].color } as CSSProperties) : undefined}>
+      {bare ? null : head ?? (
         <div className="chart-head">
           <div className="chart-title">{single && <i className="chart-key" aria-hidden="true" />}{title}</div>
           <div className="chart-figure">
@@ -313,7 +338,7 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
                 <stop offset="1" style={{ stopColor: single ? series[0].color : "var(--accent)", stopOpacity: "var(--band-op)" }} />
               </linearGradient>
             </defs>
-            {hasData
+            {bare ? null : hasData
               ? ticks.map((t) => (
                 <g key={t}>
                   {t > 0 && <line x1={left} x2={left + plotW} y1={Math.round(y(t)) + 0.5} y2={Math.round(y(t)) + 0.5} className="grid" />}
@@ -332,7 +357,10 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
               if (totals[i] > 0) {
                 if (single) {
                   const h = barPx(totals[i]);
-                  bars = <path className="bar" d={column(x0, base - h, bw, h, 4)} fill={`url(#${uid}-g0)`} />;
+                  // bare: a flat fill, lighter for a bucket not over yet
+                  bars = bare
+                    ? <path className="bar" d={column(x0, base - h, bw, h, 3)} style={{ fill: r.partial ? `color-mix(in srgb, ${series[0].color} 55%, var(--paper))` : series[0].color }} />
+                    : <path className="bar" d={column(x0, base - h, bw, h, 4)} fill={`url(#${uid}-g0)`} />;
                 } else {
                   const vals = series.map((s) => Math.max(0, r.values[s.key] ?? 0));
                   const px = stackPx(vals, barPx(totals[i]));
@@ -350,18 +378,26 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
               }
               return (
                 <g key={r.x} className={isOn ? "col hover" : "col"}>
-                  {isOn && <rect x={left + slot * i + 1} y={PAD.top - 4} width={Math.max(0, slot - 2)} height={plotH + 4} rx={Math.min(8, slot / 3)} fill={`url(#${uid}-hl)`} className="hl" />}
+                  {isOn && (bare
+                    ? <rect x={left + slot * i + 1} y={padT - 4} width={Math.max(0, slot - 2)} height={plotH + 4} rx={Math.min(8, slot / 3)} style={{ fill: "var(--wash)" }} className="hl" />
+                    : <rect x={left + slot * i + 1} y={PAD.top - 4} width={Math.max(0, slot - 2)} height={plotH + 4} rx={Math.min(8, slot / 3)} fill={`url(#${uid}-hl)`} className="hl" />)}
                   {bars}
-                  {totals[i] === 0 && <rect x={Math.round(cx - Math.min(bw, 10) / 2)} y={base - 3} width={Math.min(bw, 10)} height={2} rx={1} className="quiet" />}
+                  {totals[i] === 0 && !bare && <rect x={Math.round(cx - Math.min(bw, 10) / 2)} y={base - 3} width={Math.min(bw, 10)} height={2} rx={1} className="quiet" />}
                   {showName(i) && (
-                    <text x={cx} y={height - 7} textAnchor="middle" className={isOn ? "tick on" : on !== null ? "tick dim" : "tick"}>{isOn ? full[i] : names.get(i)}</text>
+                    <text x={cx} y={height - (bare ? 9 : 7)} textAnchor="middle" className={isOn ? "tick on" : on !== null ? "tick dim" : "tick"}>{isOn ? full[i] : names.get(i)}</text>
                   )}
                 </g>
               );
             })}
             <line x1={left} x2={left + plotW} y1={base + 0.5} y2={base + 0.5} className="axis" />
+            {peak >= 0 && (() => {
+              // the tallest bar's count over it, kept inside the plot at either edge
+              const s = fmt(max), w = textWidth(s, `500 12px ${family}`);
+              const x = Math.max(left + w / 2, Math.min(left + plotW - w / 2, cxOf(peak)));
+              return <text x={x} y={12} textAnchor="middle" className="peak">{s}</text>;
+            })()}
           </svg>
-          {!hasData && (
+          {!hasData && !bare && (
             <div className="chart-empty" style={{ left, right: PAD.right, bottom: PAD.bottom }}>
               <span className="chart-empty-badge">
                 <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2 13.5h12M4 10.5v1M8 8.5v3M12 10.5v1" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>

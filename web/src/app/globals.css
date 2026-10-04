@@ -1439,81 +1439,158 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 }
 
 /* =============================================================================
-   The Blobs page (app/blobs): its deck (components/BlobsDeck.tsx).
+   The tops of the Blobs and Publishers pages (components/BlobsDeck.tsx,
+   components/PublishersTop.tsx).
 
-   The overview's panel with two instruments and a hairline between them:
-   the period's lead figure over three quiet ones, and one chart with the
-   chain's rate above it. A quiet period folds it to one band that says when
-   the last blob was, with the period's empty buckets as one flat line.
+   One frame each, the validator window's (.pan). Inside it every figure leads
+   its own short ledger: a caps label carrying its period, the figure, a
+   hairline, then two or three label/value rows. Blobs sets its ledger beside
+   the period's bars, behind one thin divider that meets the middle of the
+   first Publishers gutter, so the two pages share one grid; Publishers sets
+   three ledgers side by side, whitespace between them. One coloured thing a
+   top, in the accent: the bars, and the largest publisher's part of the share
+   bar. Everything else is type in the three greys.
    ========================================================================== */
 .lg-head { align-items: center; }
 
-/* ---- the deck ---- */
-/* framed as the Publishers panel and the tables are (the paper, a hairline, the card radius, the small shadow) and
-   as plain: no stage light, the figure in the text colour, flat bars without a glow */
-.lg-deck { display: grid; grid-template-columns: 288px minmax(0, 1fr); margin: 18px 0 0; --bar-fade: 1; --glow-op: 0%; }
-.deck.lg-deck { border-radius: var(--r-card); box-shadow: var(--shadow-sm); }
-.deck.lg-deck::before { content: none; }
-.lg-lead { display: flex; flex-direction: column; min-width: 0; padding: 16px 28px; border-right: 1px solid var(--border); }
-/* the lead's two windows, the period's count and its other figures: a light rounded frame each, reaching out into the
-   lead's padding so their words stay in the column they had; the count's head on the chart's head line */
-.lg-sum { margin: 0 -12px; padding: 10px 12px 14px; border: 1px solid var(--border); border-radius: var(--r-card); }
-.lg-deck .ov-eyebrow { min-height: 22px; color: var(--text-3); }
-.lg-deck .ov-eyebrow .per { margin-left: 5px; text-transform: none; letter-spacing: .03em; }
-.lg-fig { margin: 10px 0 0; font-size: 46px; font-weight: 600; letter-spacing: -.045em; line-height: 1; color: var(--text); white-space: nowrap; font-variant-numeric: tabular-nums lining-nums; }
-.lg-fig small { margin-left: 8px; font-size: 16px; font-weight: 500; letter-spacing: -.01em; color: var(--text-2); }
-.lg-help { margin: 9px 0 0; font-size: var(--t-cell); color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.lg-help b { color: var(--text); font-weight: 600; }
-.lg-stats { display: grid; margin: 12px -12px 0; padding: 2px 12px; border: 1px solid var(--border); border-radius: var(--r-card); }
-.lg-stats > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 8px 0 7px; border-top: 1px solid var(--border); }
-.lg-stats > div:first-child { border-top: 0; }
-.lg-stats dt { font-size: var(--t-cell); color: var(--text-2); }
-.lg-stats dd { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -.012em; color: var(--text); white-space: nowrap; font-variant-numeric: tabular-nums lining-nums; }
-.lg-stats dd .u, .lg-stats dd .of { font-size: var(--t-cell); font-weight: 400; letter-spacing: 0; color: var(--text-3); }
-.lg-plot { position: relative; min-width: 0; padding: 27px 26px 12px 24px; }
-.lg-plot-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 22px; margin-bottom: 14px; }
-/* the chain's rate, set as the overview's pills set their counts */
-.lg-pace { display: inline-flex; align-items: baseline; gap: 6px; font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
-.lg-pace b { font-size: 14.5px; font-weight: 600; letter-spacing: -.01em; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
-.lg-pace .d { align-self: center; width: 7px; height: 7px; margin-right: 2px; border-radius: 50%; background: var(--accent); }
+.tp { margin: 18px 0 0; }
+.tp-b { display: grid; grid-template-columns: 280px minmax(0, 1fr); }
+.tp-b .tp-lead { min-width: 0; padding: 20px 24px; }
+.tp-b .tp-plot { min-width: 0; padding: 20px 24px; border-left: 1px solid var(--border); }
+.tp-p { display: grid; grid-template-columns: 232px minmax(0, 1fr) minmax(0, 1fr); column-gap: 48px; margin: 18px 0 28px; padding: 20px 24px; }
+/* the list under it keeps the top's own margin, so both tops stand 18 px under the head */
+.tp-p + .pl-list { margin-top: 0; }
+.tp-g { min-width: 0; }
 
-/* a quiet period: the last blob, the period's empty buckets as one flat line, and the period that holds it */
-.lg-deck.is-quiet .lg-plot { display: flex; flex-direction: column; padding-bottom: 18px; }
-.lg-flat { position: relative; display: grid; margin: 16px 0 0; }
-.lg-flat::before { content: ""; position: absolute; left: 0; right: 0; top: 19px; height: 1px; background: var(--baseline); }
-.lg-flat span { display: flex; flex-direction: column; align-items: center; min-width: 0; }
-.lg-flat i { width: 8px; max-width: 60%; height: 2px; margin-top: 16px; border-radius: 1px; background: var(--baseline); opacity: .75; }
-.lg-flat em { margin-top: 9px; font-style: normal; font-size: var(--t-tiny); color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.lg-rest { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; margin-top: auto; padding-top: 14px; }
-.lg-rest p { margin: 0; font-size: var(--t-cell); color: var(--text-2); }
-.lg-go { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px 0 14px; border: 0; border-radius: 999px; background: var(--accent-tint); color: var(--accent-ink); font-size: var(--t-small); font-weight: 600; cursor: pointer; transition: background var(--dur); }
-.lg-go:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
-.lg-go svg { transition: transform var(--dur) ease-out; }
-.lg-go:hover svg { transform: translateX(2px); }
+/* the label names the figure and carries the period of the answer shown */
+.tp-lbl { margin: 0; font-size: var(--t-tiny); line-height: 16px; font-weight: 500; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; }
+.tp-lbl .per, .tp-rows dt .per { font-weight: 400; letter-spacing: .02em; text-transform: none; }
+.tp-fig { margin: 6px 0 0; font-family: var(--font-table); font-size: 36px; line-height: 42px; font-weight: 500; letter-spacing: -.03em; color: var(--text); font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
+.tp-fig.zero { color: var(--text-3); }
+/* a smaller run inside a line is set solid, so the line keeps its own height */
+.tp-fig .u { margin-left: 1px; line-height: 1; font-size: 15px; font-weight: 400; letter-spacing: 0; color: var(--text-3); }
+.tp-fig .beside { margin-left: 12px; line-height: 1; font-size: var(--t-cell); font-weight: 400; letter-spacing: 0; color: var(--text-3); }
+.tp-fig .beside b { font-weight: 500; color: var(--text-2); }
+.tp-fig button.warn { margin-left: 6px; vertical-align: 4px; }
+.tp-fig .wait { letter-spacing: 0; }
+.tp-rule { display: block; height: 1px; margin: 16px 0 6px; border: 0; background: var(--line-soft); }
 
-@media (max-width: 1000px) {
-  .lg-deck { grid-template-columns: 240px minmax(0, 1fr); }
-  /* the last blob's height and time keep one line */
-  .lg-deck.is-quiet { grid-template-columns: 284px minmax(0, 1fr); }
+/* label/value rows: a fixed label column, so every value starts a short step after its label */
+.tp-rows { display: grid; grid-template-columns: var(--lc, 104px) minmax(0, 1fr); margin: 0; }
+/* a row is 28 px whatever its two faces: the label (Plex) and the value (DM Sans) share a baseline inside it */
+.tp-rows > div { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; grid-template-rows: 28px; align-items: baseline; }
+.tp-rows dt { font-size: var(--t-cell); line-height: 28px; color: var(--text-3); white-space: nowrap; }
+.tp-rows dd { min-width: 0; margin: 0; font-family: var(--font-table); font-size: 14px; line-height: 28px; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
+.tp-rows dd .u, .tp-rows dd .of, .tp-rows dd em, .tp-rows dt .per { line-height: 1; }
+.tp-rows dd .u, .tp-rows dd .of { font-size: var(--t-cell); font-weight: 400; color: var(--text-3); }
+.tp-rows dd em { margin-left: 8px; font-style: normal; font-size: var(--t-cell); font-weight: 400; color: var(--text-3); }
+.tp-rows dd.zero { color: var(--text-3); }
+.tp-rows button.warn { vertical-align: -4px; }
+.tp-p .tp-g:nth-child(3) .tp-rows { --lc: 136px; }
+
+/* the largest publisher's part: a bar with no track, its rest a dot at least, never reading as a finished one */
+/* its own block, so the bar keeps its margin under the hairline */
+.tp-share { display: flow-root; min-width: 0; }
+.tp-bar { display: flex; gap: 3px; height: 6px; margin: 11px 0; }
+.tp-bar i { height: 6px; border-radius: 3px; }
+.tp-bar .lead { flex: 1 1 0; min-width: 6px; background: var(--accent); }
+.tp-bar .rest { flex: 0 0 max(6px, calc(100% * var(--r))); background: var(--tick-dim); }
+.tp-bar.wait { border-radius: 3px; }
+.tp-names { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 28px; white-space: nowrap; }
+.tp-names .ld, .tp-names .oth { display: inline-flex; align-items: center; min-width: 0; }
+.tp-names .ld { overflow: hidden; }
+.tp-names .oth { flex: none; font-size: var(--t-cell); color: var(--text-3); }
+.tp-names .sh { margin-left: 10px; font-family: var(--font-table); font-size: 14px; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
+.tp-names .oth b { margin-left: 6px; font-family: var(--font-table); font-weight: 500; color: var(--text-2); font-variant-numeric: tabular-nums lining-nums; }
+.tp-who { display: inline-flex; min-width: 0; }
+.tp-who.short .hd { display: none; }
+.tp-lab .nm { max-width: 170px; overflow: hidden; text-overflow: ellipsis; font-size: var(--t-cell); color: var(--text); }
+.tp-lab:hover .nm { color: var(--accent-ink); }
+
+/* a quiet period: one band, a label over one line, every line on the figures' baseline. Under "Last blob", when it
+   settled (and on Publishers who posted it), then the period that holds it, a short step after the words */
+.tp-quiet { white-space: normal; }
+.tp-quiet .say { font-family: var(--sans); font-size: 14px; line-height: 1; font-weight: 400; letter-spacing: 0; color: var(--text-2); white-space: nowrap; }
+.tp-quiet .tp-go { margin-left: 16px; white-space: nowrap; }
+.tp-quiet .tp-who, .tp-quiet .tp-lab { vertical-align: -3px; }
+.tp-last { margin: 0; height: 28px; font-size: 14px; line-height: 28px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-quiet .age, .tp-last .age { font-weight: 500; color: var(--text); }
+
+/* another period on its way: what is shown steps back until it lands (only when the wait is long enough to see) */
+.tp :is(.tp-fig, .tp-rows, .tp-share, .tp-plot svg) { transition: opacity 120ms ease-out; }
+.tp.is-pending :is(.tp-fig, .tp-rows, .tp-share, .tp-plot svg) { opacity: .5; transition-delay: 150ms; }
+.tp-go { display: inline-flex; flex: none; align-items: center; gap: 6px; padding: 0; border: 0; background: none; font: 500 var(--t-cell)/20px var(--sans); color: var(--accent-ink); cursor: pointer; }
+.tp-go:hover { text-decoration: underline; text-underline-offset: 3px; }
+.tp-go svg { transition: transform var(--dur) ease-out; }
+.tp-go:hover svg { transform: translateX(2px); }
+.tp-go:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+
+/* the bare chart: its tallest bar's count on the label's line, no glow on hover */
+.chart--bare svg .peak { font-family: var(--font-table); font-size: var(--t-small); font-weight: 500; fill: var(--text-2); font-variant-numeric: tabular-nums lining-nums; }
+.chart--bare svg .col.hover .bar { filter: none; }
+
+/* a little narrower: the same grid, the first column smaller, so the Blobs divider still meets the first gutter */
+@media (min-width: 961px) and (max-width: 1199px) {
+  .tp-b { grid-template-columns: 240px minmax(0, 1fr); }
+  .tp-b .tp-lead { padding: 20px; }
+  /* half the Publishers gutter after the divider, so what follows it starts where the second Publishers ledger does */
+  .tp-b .tp-plot { padding-left: 16px; }
+  .tp-b .tp-rows, .tp-p .tp-g:first-child .tp-rows { --lc: 92px; }
+  .tp-p { grid-template-columns: 200px minmax(0, 1fr) minmax(0, 1fr); column-gap: 32px; }
+  /* "on 3 days" moves into the Settlements hover */
+  .tp-p .tp-g:first-child .tp-rows dd em { display: none; }
 }
+/* a tablet: each ledger a band, its label and figure on the left and its rows on the right */
+@media (max-width: 960px) {
+  .tp-b { grid-template-columns: minmax(0, 1fr); }
+  .tp-b .tp-lead { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); grid-template-rows: auto 1fr; column-gap: 24px; }
+  .tp-b .tp-lead > .tp-lbl { grid-area: 1 / 1; }
+  .tp-b .tp-lead > .tp-fig { grid-area: 2 / 1; }
+  .tp-b .tp-lead > .tp-rule { display: none; }
+  .tp-b .tp-lead > .tp-rows { grid-area: 1 / 2 / 3 / 3; }
+  .tp-b .tp-plot { padding: 16px 24px 20px; border-left: 0; border-top: 1px solid var(--border); }
+  .tp-b.is-quiet { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
+  .tp-b.is-quiet .tp-lead { display: block; }
+  .tp-b.is-quiet .tp-plot { padding: 20px 24px 20px 0; border-top: 0; }
+
+  .tp-p { grid-template-columns: minmax(0, 1fr); padding: 4px 24px; }
+  .tp-p .tp-g { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); grid-template-rows: auto 1fr; column-gap: 24px; padding: 16px 0; }
+  .tp-p .tp-g + .tp-g { border-top: 1px solid var(--line-soft); }
+  .tp-p .tp-g > .tp-lbl { grid-area: 1 / 1; }
+  .tp-p .tp-g > .tp-fig { grid-area: 2 / 1; }
+  .tp-p .tp-g > .tp-rule { display: none; }
+  .tp-p .tp-g > .tp-rows, .tp-p .tp-g > .tp-share { grid-area: 1 / 2 / 3 / 3; align-self: center; }
+  /* quiet: the 0 and the escrow side by side, the last blob under them */
+  .tp-p.is-quiet { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 24px; }
+  .tp-p.is-quiet .tp-g { display: block; }
+  .tp-p.is-quiet .tp-g:nth-child(2) { grid-area: 2 / 1 / 3 / 3; }
+  .tp-p.is-quiet .tp-g:nth-child(3) { grid-area: 1 / 2; border-top: 0; }
+}
+/* a phone (to be settled once the desktop is): each ledger as on a desktop, one under the other */
 @media (max-width: 720px) {
   .lg-head { flex-wrap: nowrap; }
   .lg-head .seg button, .lg-head .seg button:first-child { padding: 0 12px; }
-  .lg-deck, .lg-deck.is-quiet { grid-template-columns: minmax(0, 1fr); margin-top: 14px; }
-  .lg-lead { padding: 16px 16px 0; border-right: 0; }
-  .lg-sum { margin: 0; }
-  .lg-fig { font-size: 40px; }
-  .lg-stats { margin: 12px 0 0; }
-  .lg-plot { margin: 16px 0 0; padding: 16px 16px 12px; border-top: 1px solid var(--border); }
-  .lg-deck.is-quiet .lg-lead { padding-bottom: 16px; }
-  .lg-deck.is-quiet .lg-plot { margin-top: 0; }
-  .lg-flat em.alt { display: none; }
+  .tp { margin-top: 14px; }
+  .tp-fig { font-size: 32px; line-height: 38px; }
+  .tp-b .tp-lead { display: block; padding: 18px 16px 0; }
+  .tp-b .tp-lead > .tp-rule { display: block; }
+  .tp-b .tp-plot { padding: 16px; border-top: 0; }
+  .tp-b.is-quiet { grid-template-columns: minmax(0, 1fr); }
+  .tp-b.is-quiet .tp-lead { padding-bottom: 0; }
+  .tp-b.is-quiet .tp-plot { padding: 16px 16px 18px; }
+  .tp-p { margin-bottom: 24px; padding: 18px 16px; }
+  .tp-p .tp-g { display: block; padding: 0; }
+  .tp-p .tp-g + .tp-g { margin-top: 24px; border-top: 0; }
+  .tp-p .tp-g > .tp-rule { display: block; }
+  .tp-p.is-quiet { grid-template-columns: minmax(0, 1fr); }
+  .tp-p.is-quiet .tp-g:nth-child(n) { grid-area: auto; }
+  .tp-p.is-quiet .tp-g + .tp-g { margin-top: 20px; }
 }
 @media (max-width: 400px) {
   .lg-head .seg button, .lg-head .seg button:first-child { padding: 0 10px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .lg-go svg { transition: none; }
+  .tp-go svg, .tp :is(.tp-fig, .tp-rows, .tp-share, .tp-plot svg) { transition: none; }
 }
 
 /* =============================================================================
@@ -1777,9 +1854,6 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 /* the period switch beside these figures: the pressed state as a ring, without the glow */
 :root[data-theme="dark"] .pl-head .seg button[aria-pressed="true"] { box-shadow: inset 0 0 0 1px rgb(51 179 191 / .45); }
 .pl-list { margin-top: 24px; }
-/* six cells on a regular grid, the hairlines the grid's 1 px gaps in the table's rule colour: the period's five
-   figures, then the escrow held now, last as the escrow lane is last in the table, and at full width right over it */
-.pl-pan { --esc-w: 155px; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) var(--esc-w); gap: 1px; margin: 0 0 28px; background: linear-gradient(var(--border), var(--border)) padding-box, var(--paper) border-box; }
 
 /* ---- the table: a publisher a row ---- */
 /* The publisher's chip and the time are as wide as they are, Settlements as wide as its head (its counts are
@@ -1852,10 +1926,6 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .pl-t td.c-pub .nsw { display: none; }
 
 /* ---- narrower ---- */
-/* the summary three a row below the width where six cells hold their figures */
-@media (max-width: 1219.98px) {
-  .pl-pan { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
 /* the chip stays whole where the Blobs list drops its prefix: this row has the room (with the Namespaces column,
    down to 1161 px) */
 @media (min-width: 1081px) and (max-width: 1220px) {
@@ -1916,8 +1986,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .pl-find .lg-pick, .pl-find .lg-chip { width: 100%; max-width: none; }
   .pl-find .lg-pop { left: 0; right: auto; width: 100%; }
   .pl-list { margin-top: 20px; }
-  /* the panels a size smaller; the summary two figures a row, Deposited beside the escrow held now */
-  .pl-pan { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 24px; }
+  /* the panels a size smaller */
   .pan-c { padding: 14px 14px 15px; }
   .pan-c .pan-v { margin-top: 7px; font-size: 22px; line-height: 26px; letter-spacing: -.018em; }
   .pan-v .u { font-size: 13px; }
