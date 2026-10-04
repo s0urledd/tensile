@@ -187,7 +187,7 @@ function nth(n: number): string {
 }
 /**
  * "8s ago", "4m ago", "3h 5m ago", "2d ago", by the given clock: short, so the readout's heading, its blob's state
- * label and its age share one line in the card's width; the settlement's full time is on hover
+ * label and "settled 3h 5m ago" share one line in the card's width; the settlement's full time is on hover
  */
 function liveAgo(t: string, now: number): string {
   const s = Math.floor((now - Date.parse(t)) / 1000);
@@ -215,7 +215,7 @@ function Age({ at, skew }: { at: string; skew: number }) {
     tick();
     return () => window.clearTimeout(t);
   }, [at, skew]);
-  return now ? <span className="ov-when" title={`Settled ${utcWord(at)}`}>{liveAgo(at, now)}</span> : null;
+  return now ? <span className="ov-when" title={`Settled ${utcWord(at)}`}>settled {liveAgo(at, now)}</span> : null;
 }
 
 /** what the grid shows: a snapshot of the feed, and the last move into it */
@@ -377,11 +377,11 @@ export default function RecentBlobs() {
           ))}
         </div>
         {/* two figures under one rule, a full-height line between them: the settlements on record, and how many of
-            those Tensile read were available */}
+            those Tensile read were available. The first label on two lines */}
         <div className="rb-foot">
           <p className="rb-fig">
             {shown.total != null ? <RollNumber value={shown.total} format={int} className="rb-total" /> : <span className="rb-total wait">0,000</span>}
-            <span>settlements on record</span>
+            <span>settlements<br />on record</span>
           </p>
           <i className="rb-div" aria-hidden="true" />
           <p className="rb-fig" title={avTitle}>
