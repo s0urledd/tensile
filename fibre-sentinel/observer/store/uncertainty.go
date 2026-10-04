@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -152,6 +153,13 @@ func (s *Store) UpsertParamUncertainty(u scan.ParamUncertainty, raw []byte, now 
 			}
 			m, _ := r.RowsAffected()
 			raised += m
+		}
+	}
+	if raised > 0 {
+		// The flags moved on rows already stored: the API's day partials
+		// follow the holds by this counter (MetaHeldFlagsRev).
+		if err := bumpHeldFlagsRev(tx, now); err != nil {
+			return false, err
 		}
 	}
 	if n > 0 || raised > 0 {
@@ -348,7 +356,45 @@ func (s *Store) SyncParamHolds(ctx context.Context) (int64, error) {
 		n, _ := res.RowsAffected()
 		changed += n
 	}
+	if changed > 0 {
+		if err := bumpHeldFlagsRev(tx, time.Now()); err != nil {
+			return 0, err
+		}
+	}
 	return changed, tx.Commit()
+}
+
+// MetaHeldFlagsRev counts the transactions that moved a hold flag
+// (retention_unverified) of publications or probe rows already stored:
+// SyncParamHolds and a range's own raise bump it in the same transaction as
+// the flags, so a reader that finds it where it last read it knows that no
+// flag of a stored row has moved since. A row is also born held
+// (ProbeHeldAtInsert), which a reader finds with the row itself.
+//
+// It is not param_holds_rev, which the collector bumps after the hold sync
+// has committed (and after corrections too): a reader between the commit
+// and the bump sees the flags moved and the revision not. The API's day
+// partials follow the holds by this counter, and read the held rows again
+// only when it moves; the aggregate of the held rows' rowids they read
+// before left a hold moved from some rows to as many others with the same
+// sums unseen.
+//
+// It is a key of meta, not a migration: a build before it neither reads nor
+// writes it, and runs as it did against a store that has it.
+const MetaHeldFlagsRev = "held_flags_rev"
+
+// HeldFlagsMoved counts, in tx, a move of hold flags its caller made by
+// hand rather than through the store's own paths: for tests and tools that
+// write the flags directly, as SyncParamHolds would.
+func HeldFlagsMoved(tx *sql.Tx) error { return bumpHeldFlagsRev(tx, time.Now()) }
+
+// bumpHeldFlagsRev advances MetaHeldFlagsRev inside db's transaction.
+func bumpHeldFlagsRev(db execer, now time.Time) error {
+	_, err := db.Exec(`INSERT INTO meta (key, value, updated_at) VALUES (?, '1', ?)
+		ON CONFLICT(key) DO UPDATE SET
+			value      = CAST(CAST(meta.value AS INTEGER) + 1 AS TEXT),
+			updated_at = excluded.updated_at`, MetaHeldFlagsRev, ts(now))
+	return err
 }
 
 // The pieces of syncParamHoldsStmts, kept at package level so
