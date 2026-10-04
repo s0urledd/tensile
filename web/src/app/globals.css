@@ -1302,16 +1302,17 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   border-radius: 18px; background: var(--rb-sheet); box-shadow: var(--rb-sheet-hi);
 }
 .rb-read { display: flex; flex-direction: column; }
-/* the heading, the blob's state label and "settled 3h 59m ago" on one line: the label and the age a little smaller,
-   the gaps tighter. A pointed blob's longer heading ("Blob · 50th newest") is set smaller too, and only then the line
+/* the heading, the blob's state label and "settled 3h 59m ago" on one line, the label halfway between the other two:
+   the label and the age a little smaller, the gaps tighter. A pointed blob's longer heading ("Blob · 50th newest") is set smaller too, and only then the line
    reaches 3px into the sheet's side padding on each side (6px on phones); the latest blob's heading is as the others */
 .rb-read-h { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 24px; margin: 0; font-size: var(--t-small); font-weight: 400; }
 @media (min-width: 1081px) { .rb-read-h.pick { margin: 0 -3px; } }
-/* the blob's state, a small label after the heading: in its retention window, then available or unavailable */
+/* the blob's state, a small label after the heading: in its retention window, then available or unavailable. The
+   Blobs list's Tensile lane wears the same label */
 .rb-read-h > * { white-space: nowrap; flex: none; }
-.rb-st { display: inline-flex; align-items: center; height: 20px; margin-right: auto; padding: 0 5px; border-radius: 999px; border: 1px solid var(--border); background: var(--wash); font-size: 10px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text-2); }
-.rb-st.ok { border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
-.rb-st.bad { border-color: color-mix(in srgb, var(--hold) 45%, transparent); background: color-mix(in srgb, var(--hold) 12%, transparent); color: var(--hold-ink); }
+.rb-st, .lg-t td.tn .lw { display: inline-flex; align-items: center; height: 20px; padding: 0 5px; border-radius: 999px; border: 1px solid var(--border); background: var(--wash); font-size: 10px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text-2); }
+.rb-st.ok, .lg-t td.tn .lw.ok { border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
+.rb-st.bad, .lg-t td.tn .lw.hold { border-color: color-mix(in srgb, var(--hold) 45%, transparent); background: color-mix(in srgb, var(--hold) 12%, transparent); color: var(--hold-ink); }
 .rb-read-h .ov-eyebrow { display: inline; }
 .rb-read-h.pick .ov-eyebrow { font-size: 10px; letter-spacing: 0; }
 .rb-read-h .ov-when { font-size: 11px; }
@@ -1742,11 +1743,9 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .lg-t th.tn svg { margin-right: 6px; vertical-align: -2px; color: var(--accent-ink); }
 .lg-t td.tn { font-family: var(--sans); font-size: var(--t-small); color: var(--text-3); }
 .lg-t tr.row:hover td.tn { background: color-mix(in srgb, var(--accent) 5%, var(--paper)); }
-.lg-t td.tn .lw { appearance: none; border: 0; background: none; padding: 0; margin: 0; font: inherit; color: inherit; cursor: pointer; text-decoration: underline dotted color-mix(in srgb, currentColor 45%, transparent); text-underline-offset: 3px; }
-.lg-t td.tn .lw:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
-.lg-t td.tn .ok { color: var(--ok); font-weight: 500; }
-.lg-t td.tn .hold { color: var(--hold-ink); font-weight: 500; }
-.lg-t td.tn .hold::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--hold); vertical-align: 1px; }
+/* the reading's word in the overview's state label (above), a button that opens its note */
+.lg-t td.tn .lw { appearance: none; margin: 0; font-family: inherit; line-height: normal; white-space: nowrap; vertical-align: middle; cursor: pointer; }
+.lg-t td.tn .lw:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .lg-t .c-m { display: none; }
 /* in the table, the time, the publisher and Tensile's reading sit centred under their heads */
 @media (min-width: 1081px) {
