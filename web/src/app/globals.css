@@ -1241,7 +1241,20 @@ body { background: var(--canvas); }
 .cp-q { position: absolute; left: var(--q); top: -24px; bottom: -5px; width: 0; z-index: 1; pointer-events: none; }
 .cp-q::before { content: ""; position: absolute; left: -1px; top: 19px; bottom: 0; width: 2px; border-radius: 1px; background: var(--text); box-shadow: 0 0 0 2px var(--paper); }
 .cp-q > span { position: absolute; left: 0; top: -2px; transform: translateX(-50%); display: inline-flex; align-items: baseline; gap: 3px; font-size: var(--t-tiny); font-weight: 600; line-height: 18px; letter-spacing: .02em; color: var(--text); white-space: nowrap; }
-.cp-rest { display: grid; gap: 5px; margin: 14px 0 0; padding: 0; list-style: none; font-size: var(--t-small); color: var(--text-3); }
+.cp-rest { display: grid; justify-items: start; gap: 6px; margin: 14px 0 0; padding: 0; list-style: none; font-size: var(--t-small); color: var(--text-3); }
+/* each part in a small frame: its name and share in the text's colour, its count in the help grey; the unreachable one
+   is a button that opens its validators' names */
+.cp-it { display: inline-flex; align-items: center; gap: 6px; margin: 0; padding: 3px 9px 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: transparent; font: inherit; line-height: 18px; color: var(--text-3); white-space: nowrap; }
+.cp-it .cp-sw { margin-right: 0; }
+.cp-it .cp-k { color: var(--text); }
+button.cp-it { appearance: none; cursor: pointer; transition: border-color var(--dur), background var(--dur); }
+button.cp-it:hover, button.cp-it[aria-expanded="true"] { border-color: color-mix(in srgb, var(--hold) 55%, var(--border)); background: var(--wash); }
+button.cp-it:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.info-pop ul.cp-names { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.cp-names li { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+.cp-names a { color: var(--text); font-weight: 500; }
+.cp-names a:hover { color: var(--accent-ink); }
+.cp-names span { color: var(--text-3); font-variant-numeric: tabular-nums; }
 .cp-sw { display: inline-block; width: 9px; height: 9px; margin-right: 6px; border-radius: 2px; background: var(--cp-rest); box-shadow: inset 0 0 0 1px var(--line-soft); vertical-align: -1px; }
 .cp-sw.hold { background: var(--hold); box-shadow: none; }
 .cp-sw.none { background: var(--pending); }
