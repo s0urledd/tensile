@@ -17,9 +17,10 @@ import (
 // what a start needs of it. It runs beside the computations: one of the
 // day's window, which sums nothing, is answered while the load is still
 // going. A load that fails (the store busy, the first caller's deadline) is
-// tried again by the next computation that sums the partials, and loads the
-// same file, rather than building the partials from nothing over it; the
-// computation that met the failure reads the whole window meanwhile.
+// tried again by a computation that sums the partials once it has waited
+// out a delay that doubles with each failure, and loads the same file,
+// rather than building the partials from nothing over it; the computations
+// meanwhile read the whole window, and do not start it again.
 func TestDayPartsLoadInTheBackground(t *testing.T) {
 	skipUnderRace(t)
 	t.Parallel()
@@ -96,7 +97,24 @@ func TestDayPartsLoadInTheBackground(t *testing.T) {
 		}
 		break
 	}
-	// The next computation loads the file.
+	// A computation within the failed load's delay does not start it again:
+	// it reads the whole window.
+	if err := next.readTx(ctx, func(ctx context.Context) error {
+		if epochOf(ctx) != nil {
+			t.Errorf("a computation within the failed load's delay was handed an epoch")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	next.parts.mu.Lock()
+	again := next.parts.loading != nil || next.parts.cur != nil
+	next.parts.mu.Unlock()
+	if again {
+		t.Fatalf("a computation within the failed load's delay started it again")
+	}
+	// The next computation after it loads the file.
+	s.now = s.now.Add(loadRetryBase)
 	tally := s.compare(next, rand.New(rand.NewPCG(66, 1)), 4, "after a load tried again")
 	if !strings.HasPrefix(next.parts.origin, "loaded") || next.parts.rebuilds != 0 || len(next.parts.cur.rows) < sealed {
 		t.Errorf("the load tried again: %s, %d rebuild(s), %d of %d row days", next.parts.origin, next.parts.rebuilds, len(next.parts.cur.rows), sealed)
@@ -123,6 +141,8 @@ func TestDayPartsSavedWhenTheSealerRests(t *testing.T) {
 		s.pass()
 	}
 	srv.sealPace = [2]time.Duration{time.Millisecond, 20 * time.Millisecond}
+	var logs logLines
+	srv.parts.log = logs.logf
 	srv.stop = make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -150,6 +170,12 @@ func TestDayPartsSavedWhenTheSealerRests(t *testing.T) {
 	}
 	close(srv.stop)
 	<-done
+	// One line for the burst, as it came to rest.
+	if lines := logs.with("day partials: sealer: sealed"); len(lines) != 1 {
+		t.Errorf("the sealer logged %d line(s) for one burst, want one:\n%s", len(lines), strings.Join(logs.lines, "\n"))
+	} else {
+		t.Log(lines[0])
+	}
 	next := s.openAPI()
 	tally := s.compare(next, rand.New(rand.NewPCG(67, 1)), 4, "from the file the sealer wrote")
 	if !strings.HasPrefix(next.parts.origin, "loaded") || len(next.parts.cur.rows) < sealed {
@@ -206,7 +232,9 @@ func TestDayPartsSealTempsSwept(t *testing.T) {
 // starts from the copy: the index is loaded, marks, ledger and all, and
 // only the days whose seal files are missing are left unsealed, rather than
 // the whole file refused and everything built again. A seal file that is
-// another's of the same name leaves its day unsealed the same way.
+// another's of the same name, or damaged (a byte flipped, cut short: one
+// such file used to refuse the whole index), leaves its day unsealed the
+// same way.
 func TestDayPartsIndexWithoutItsSeals(t *testing.T) {
 	skipUnderRace(t)
 	t.Parallel()
@@ -271,4 +299,57 @@ func TestDayPartsIndexWithoutItsSeals(t *testing.T) {
 		t.Errorf("a seal file swapped: %s, %d of %d row days", again.parts.origin, len(again.parts.cur.rows), sealed)
 	}
 	t.Logf("%s\n%s", again.parts.origin, tally)
+
+	// A seal file damaged, a byte flipped or cut short as a torn write
+	// leaves it, is a seal file missing: its day alone is read raw, and
+	// sealed again, never under the damaged file's name.
+	for _, damage := range []struct {
+		name string
+		do   func(b []byte) []byte
+	}{
+		{"a byte flipped", func(b []byte) []byte { b[len(b)/2] ^= 1; return b }},
+		{"cut short", func(b []byte) []byte { return b[:len(b)/2] }},
+	} {
+		if _, err := again.sealDue(ctx, math.MaxInt); err != nil {
+			t.Fatal(err)
+		}
+		if err := again.keepDerived(ctx); err != nil {
+			t.Fatal(err)
+		}
+		files, err := filepath.Glob(filepath.Join(dir, "row-*.json"))
+		if err != nil || len(files) < 2 {
+			t.Fatalf("row seal files: %v %v", files, err)
+		}
+		b, err := os.ReadFile(files[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(files[1], damage.do(b), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		next := s.openAPI()
+		tally.add(s.compare(next, rng, 4, "with a seal file "+damage.name))
+		if !strings.HasPrefix(next.parts.origin, "loaded") || next.parts.rebuilds != 0 || len(next.parts.cur.rows) != sealed-1 {
+			t.Errorf("a seal file %s: %s, %d rebuild(s), %d of %d row days", damage.name, next.parts.origin, next.parts.rebuilds, len(next.parts.cur.rows), sealed)
+		}
+		if _, err := next.sealDue(ctx, math.MaxInt); err != nil {
+			t.Fatal(err)
+		}
+		if len(next.parts.cur.rows) != sealed {
+			t.Errorf("a seal file %s: %d of %d row days sealed again", damage.name, len(next.parts.cur.rows), sealed)
+		}
+		if err := next.keepDerived(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var f partsFile
+		if ok, why := readDerived(filepath.Join(s.snaps, dayPartsFile), &f); !ok {
+			t.Fatal(why)
+		}
+		for key, ref := range f.Seals {
+			if filepath.Join(dir, ref.File) == files[1] {
+				t.Errorf("a seal file %s: %s sealed again under its name", damage.name, key)
+			}
+		}
+		again = next
+	}
 }

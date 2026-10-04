@@ -99,6 +99,10 @@ type storeIdentity struct {
 	Created string `json:"created"`
 	ChainID string `json:"chain_id"`
 	Schema  int    `json:"schema"`
+	// Rewrites is, for the day partials, which name the store without its
+	// schema version (Schema 0), how many migrations rewrote rows
+	// (partsIdentity).
+	Rewrites int `json:"rewrites,omitempty"`
 }
 
 func readStoreIdentity(ctx context.Context, db store.Querier) (storeIdentity, error) {
@@ -119,6 +123,9 @@ func storeChange(was, now storeIdentity) string {
 	if was.Created != now.Created || was.ChainID != now.ChainID {
 		return fmt.Sprintf("the store is another one (created %s, chain %s), not the one it was built from (created %s, chain %s)",
 			now.Created, now.ChainID, was.Created, was.ChainID)
+	}
+	if was.Rewrites != now.Rewrites {
+		return fmt.Sprintf("a migration rewrote rows (%d rewriting migration(s) applied, %d before)", now.Rewrites, was.Rewrites)
 	}
 	return fmt.Sprintf("the store moved from schema version %d to %d", was.Schema, now.Schema)
 }

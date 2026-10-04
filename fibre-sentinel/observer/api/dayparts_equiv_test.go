@@ -328,7 +328,7 @@ func equivRun(t *testing.T, cfg simConfig, sample int, restart bool, step [2]int
 	frng := rand.New(rand.NewPCG(cfg.seed, 0xfa57))
 	end := s.t0.Add(time.Duration(cfg.days)*24*time.Hour + 8*time.Hour)
 	sc := s.scen
-	amended, failed, weird, reapplied := false, false, false, false
+	amended, failed, weird, reapplied, swapped := false, false, false, false, false
 	ctx := context.Background()
 	prev := s.now
 	for at := s.t0.Add(time.Hour); !at.After(end); at = at.Add(time.Duration(step[0]+rng.IntN(step[1]-step[0])) * time.Minute) {
@@ -384,6 +384,23 @@ func equivRun(t *testing.T, cfg simConfig, sample int, restart bool, step [2]int
 			// After the sealer's turn too: the second apply of a correction,
 			// which no log records.
 			s.reapplyAgain()
+		}
+		if !swapped && !at.Before(sc.swapAt) {
+			// A hold raised on two readings of sealed days, those days sealed
+			// again with it, then moved in one transaction to two readings
+			// of another validator whose rowids add up alike: the count of
+			// the held rows and their sums stay as they were. The next pass
+			// releases them, no range covering them.
+			if q := s.holdQuad(srv); q != nil {
+				moveHolds(t, s, nil, []int64{q[0], q[3]})
+				if _, err := srv.sealDue(ctx, math.MaxInt); err != nil {
+					t.Fatal(err)
+				}
+				moveHolds(t, s, []int64{q[0], q[3]}, []int64{q[1], q[2]})
+				tally.add(s.compare(srv, rand.New(rand.NewPCG(cfg.seed, 0x5a9)), 0, "a hold moved between readings of equal sums"))
+				s.swapped = true
+			}
+			swapped = true
 		}
 		if !weird && !at.Before(sc.weirdAt) {
 			// After the sealer's turn, so that the comparison below is the
@@ -445,6 +462,9 @@ func (s *sim) checkScenarios(srv *Server) {
 	}
 	if s.fastStored == 0 {
 		s.t.Errorf("the fast tick never stored a publication between passes")
+	}
+	if !s.swapped {
+		s.t.Errorf("no hold was moved between readings of equal rowid sums")
 	}
 	e := srv.parts.cur
 	sealed := 0

@@ -31,7 +31,9 @@ import (
 //	  the same promise)
 //	InsertSampledOut, the collapse's           sampling_decision_points  the points' row days; the settlement
 //	  decisions and points                     and _decisions past the   day; the sealed row days whose
-//	                                           marks                     collapsible promises it names
+//	                                           marks                     collapsible promises it names, and a
+//	                                                                     row day being sealed whose do (the
+//	                                                                     journal)
 //	the collapse's DELETE                      its new decision          the same
 //	UpsertPublication with its assignments     publications past the     the ledger adds it; its settlement day
 //	  (in the pass, or between passes by the   mark                      (span from its rows, seal dropped); the
@@ -49,17 +51,27 @@ import (
 //	ApplySampledOutCorrection (no log)         a fingerprint of every    the points' row days and the
 //	                                           decision a correction     settlement day
 //	                                           can reach
-//	SyncParamHolds, a range's own raise,       an aggregate of the held  the rows' row days and settlement day
-//	  a row born held                          rows and of the held      of a promise whose held rows moved;
-//	                                           publications; per promise the publication's settlement day
-//	                                           once it moves
+//	SyncParamHolds, a range's own raise        the holds' counter, moved the rows' row days and settlement day
+//	                                           in their transaction; a   of a promise whose held rows moved;
+//	                                           digest of every promise's the publication's settlement day
+//	                                           held rows, and the held
+//	                                           publications, once it
+//	                                           moves
+//	a row or a publication born held           past the mark             its days, as any; its promise's held
+//	                                                                     rows read again
 //	the prune of a build before 2026-10-04     raw_from moving; one      the row days before raw_from; the
 //	  (probes, heartbeats, decisions; not one  anchor row per table      settlement days whose span reaches a
-//	  transaction), on a database it pruned    per row day               pruned day or an anchor that went
+//	  transaction), on a database it pruned    per row day               pruned day or an anchor that went,
+//	                                                                     and a day being sealed that does
+//	                                                                     (the journal)
 //	InsertReachability (own vantage)           reachability past the     its row day
 //	                                           mark
-//	a migration, a restore                     the store's identity and  everything: the partials begin again
-//	                                           the rows at the marks
+//	a migration that changes a table or view   the definition the        everything: the partials begin again
+//	  the partials read, or rewrites rows; a   partials hold; the count
+//	  restore                                  of migrations that
+//	                                           rewrote rows; the store's
+//	                                           creation; the rows at the
+//	                                           marks
 //
 // A table's mark is the newest row the catch-up read, by rowid and by its
 // key, and the last sixteen are kept (the ladder). SQLite gives a new row
@@ -145,11 +157,22 @@ type catchUp struct {
 	j   journalEntry
 	// dropped counts the sealed days this catch-up dropped.
 	dropped int
+	// heldDirty are the promises whose held rows moved by a write the
+	// holds' counter does not count (a row born held, a held row the
+	// collapse deleted), and pubsHeld the publications born held: their
+	// part of the holds is read again whatever the counter says
+	// (readHolds). fullHolds reads every hold again and diffs it: after a
+	// load, when the counter may have stood still under a build that did
+	// not keep it.
+	heldDirty map[string]bool
+	pubsHeld  map[string]bool
+	fullHolds bool
 }
 
 func (c *catchUp) touchRow(d string) {
 	if c.e.rows[d] != nil {
 		c.dropped++
+		c.e.content++
 	}
 	if _, err := time.Parse(dayLayout, d); err == nil && (c.e.firstRow == "" || d < c.e.firstRow) {
 		c.e.firstRow = d
@@ -174,6 +197,7 @@ func (c *catchUp) touchSettle(d, lo, hi, msu string) {
 	sd := c.e.settleMut(d)
 	if sd.Seal != nil {
 		c.dropped++
+		c.e.content++
 	}
 	sd.Seal = nil
 	if lo != "" {
@@ -185,8 +209,9 @@ func (c *catchUp) touchSettle(d, lo, hi, msu string) {
 }
 
 // dropSealsReaching drops the seal of every settlement day whose rows
-// reach into [lo, hi].
+// reach into [lo, hi], and journals the span for a seal being read.
 func (c *catchUp) dropSealsReaching(lo, hi string) {
+	c.j.reach = append(c.j.reach, [2]string{lo, hi})
 	for d, sd := range c.e.settle {
 		if sd.Seal != nil && sd.Seal.MinStart != "" && sd.Seal.MinStart <= hi && sd.Seal.MaxStart >= lo {
 			c.touchSettle(d, "", "", "")
@@ -203,13 +228,14 @@ func (dp *dayParts) advance(ctx context.Context, s *Server, q store.Querier, now
 		j   journalEntry
 		err error
 	)
+	built := false
 	if dp.cur == nil {
 		dp.rebuilds++
 		e, err = build(ctx, s, q)
-		j.all = true
+		j.all, built = true, true
 	} else {
 		var dropped int
-		e, j, dropped, err = catchUpFrom(ctx, s, q, dp.cur, now)
+		e, j, dropped, err = catchUpFrom(ctx, s, q, dp.cur, now, dp.fullHolds)
 		dp.dropped += dropped
 		if errors.Is(err, errRegressed) {
 			if dp.log != nil {
@@ -217,16 +243,20 @@ func (dp *dayParts) advance(ctx context.Context, s *Server, q store.Querier, now
 			}
 			dp.rebuilds++
 			e, err = build(ctx, s, q)
-			j = journalEntry{all: true}
+			j, built = journalEntry{all: true}, true
 		}
 	}
 	if err != nil {
 		return nil, err
 	}
+	dp.fullHolds = false
 	if dp.cur != nil {
 		e.seq = dp.cur.seq + 1
 	} else {
 		e.seq = 1
+	}
+	if built {
+		e.born = e.seq
 	}
 	j.seq = e.seq
 	dp.journal = append(dp.journal, j)
@@ -244,7 +274,10 @@ func (dp *dayParts) advance(ctx context.Context, s *Server, q store.Querier, now
 func build(ctx context.Context, s *Server, q store.Querier) (*epoch, error) {
 	e := newEpoch()
 	var err error
-	if e.store, err = readStoreIdentity(ctx, q); err != nil {
+	if e.store, e.schema, err = readPartsIdentity(ctx, q); err != nil {
+		return nil, err
+	}
+	if e.def, err = partsDefinition(ctx, q); err != nil {
 		return nil, err
 	}
 	if from, ok := rollup.RawFromIn(ctx, q); ok {
@@ -305,17 +338,36 @@ func markKey(k string) (key, col string) {
 
 // catchUpFrom is one catch-up: base, copied, brought to the store as q
 // sees it. It returns the new epoch, what it dropped and how many sealed
-// days that was.
-func catchUpFrom(ctx context.Context, s *Server, q store.Querier, base *epoch, now time.Time) (*epoch, journalEntry, int, error) {
-	c := &catchUp{s: s, q: q, ctx: ctx, e: base.clone(), now: now}
-	id, err := readStoreIdentity(ctx, q)
+// days that was. fullHolds reads every hold again (readHolds).
+//
+// A migration is judged by what it did, not by its number: one that
+// changed a table or view the partials read changes the definition read
+// from the store (partsDefinition), and one that rewrote rows moves the
+// store's count of such migrations (partsIdentity); either begins the
+// partials again. One that only added what they do not read (a table, an
+// index, a column of a table they do not read) leaves them as they are, so
+// an upgrade does not cost a full sealing again in the API still serving
+// and in the warm-up beside it at once.
+func catchUpFrom(ctx context.Context, s *Server, q store.Querier, base *epoch, now time.Time, fullHolds bool) (*epoch, journalEntry, int, error) {
+	c := &catchUp{s: s, q: q, ctx: ctx, e: base.clone(), now: now, fullHolds: fullHolds}
+	id, schema, err := readPartsIdentity(ctx, q)
 	if err != nil {
 		return nil, c.j, 0, err
 	}
 	if id != c.e.store {
 		return nil, c.j, 0, fmt.Errorf("%w: %s", errRegressed, storeChange(c.e.store, id))
 	}
-	steps := []func() error{c.rawFrom, c.checkAnchors}
+	if schema != c.e.schema {
+		def, err := partsDefinition(ctx, q)
+		if err != nil {
+			return nil, c.j, 0, err
+		}
+		if def != c.e.def {
+			return nil, c.j, 0, fmt.Errorf("%w: the store moved from schema version %d to %d, which changed a table the partials read", errRegressed, c.e.schema, schema)
+		}
+		c.e.schema = schema
+	}
+	steps := []func() error{c.rawFrom, c.checkAnchors, c.readMSUDue}
 	// Publications first: a row folded below finds its publication's day,
 	// which must already be in the ledger to be widened.
 	for _, t := range ladderTables {
@@ -329,6 +381,19 @@ func catchUpFrom(ctx context.Context, s *Server, q store.Querier, base *epoch, n
 		}
 	}
 	return c.e, c.j, c.dropped, nil
+}
+
+// readMSUDue reads again the latest deadline of the days a step of the
+// ledger build brought in after a correction moved one (buildLedger).
+func (c *catchUp) readMSUDue() error {
+	days := c.e.msuDue
+	c.e.msuDue = nil
+	for d := range days {
+		if err := c.readMaxPubMSU(d); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // rawFrom applies a prune: the row days before raw_from go, and every
@@ -468,11 +533,16 @@ func (c *catchUp) fold(table string, from, hi int64) error {
 	case "publications":
 		return c.foldPublications(from, hi)
 	case "probes":
-		return c.foldRows(`SELECT substr(r.started_at, 1, 10), COALESCE(substr(p.settlement_time, 1, 10), ''),
+		if err := c.foldRows(`SELECT substr(r.started_at, 1, 10), COALESCE(substr(p.settlement_time, 1, 10), ''),
 				MIN(r.started_at), MAX(r.started_at), MAX(r.must_serve_until), MAX(`+weirdSQL("r.started_at")+`)
 			FROM probes r LEFT JOIN publications p ON p.promise_hash = r.promise_hash
 			WHERE r.rowid > ? AND r.rowid <= ? GROUP BY 1, 2`,
-			`SELECT DISTINCT started_at FROM probes WHERE rowid > ? AND rowid <= ? AND `+weirdSQL("started_at"), from, hi)
+			`SELECT DISTINCT started_at FROM probes WHERE rowid > ? AND rowid <= ? AND `+weirdSQL("started_at"), from, hi); err != nil {
+			return err
+		}
+		// A row born held (store.ProbeHeldAtInsert) moves its promise's held
+		// rows with no count of the holds' counter.
+		return c.readNames(newHeldRowsSQL, &c.heldDirty, from, hi)
 	case "sampling_decision_points":
 		return c.foldRows(`SELECT substr(pt.started_at, 1, 10), COALESCE(substr(p.settlement_time, 1, 10), ''),
 				MIN(pt.started_at), MAX(pt.started_at), COALESCE(MAX(d.must_serve_until), ''), MAX(`+weirdSQL("pt.started_at")+`)
@@ -589,6 +659,21 @@ func (c *catchUp) foldDecisions(from, hi int64) error {
 			}
 		}
 	}
+	// A day being sealed is not among them: its seal is matched against the
+	// promises when it is published (sealRow). And the rows the collapse
+	// deleted may have been held.
+	if len(promises) > 0 {
+		if c.j.collapsed == nil {
+			c.j.collapsed = map[string]bool{}
+		}
+		if c.heldDirty == nil {
+			c.heldDirty = map[string]bool{}
+		}
+		for h := range promises {
+			c.j.collapsed[h] = true
+			c.heldDirty[h] = true
+		}
+	}
 	for _, d := range days {
 		c.touchSettle(d, "", "", "")
 	}
@@ -654,6 +739,14 @@ func (c *catchUp) readMaxPubMSU(d string) error {
 	c.touchSettle(d, "", "", "")
 	sd := c.e.settle[d]
 	if sd == nil || sd.Pubs == 0 {
+		// A step of the ledger build that read the day before this may
+		// bring it in after: it has the next catch-up read it then.
+		if !c.e.ledgerBuilt {
+			if c.j.msu == nil {
+				c.j.msu = map[string]bool{}
+			}
+			c.j.msu[d] = true
+		}
 		return nil
 	}
 	var msu sql.NullString
@@ -819,6 +912,9 @@ func (e *epoch) applyLedger(dl *ledgerDelta) {
 	if dl.odd {
 		e.pubsOdd = true
 	}
+	if dl.odd || len(dl.days) > 0 {
+		e.content++
+	}
 	for d, add := range dl.days {
 		sd := e.settleMut(d)
 		if add.Pubs > 0 {
@@ -867,126 +963,201 @@ func (c *catchUp) foldPublications(from, hi int64) error {
 	for d := range dl.pointDays {
 		c.touchRow(d)
 	}
+	// A publication stored held: the held publications have it from now on
+	// (readHolds), with no count of the holds' counter.
+	if err := c.readNames(newHeldPubsSQL, &c.pubsHeld, from, hi); err != nil {
+		return err
+	}
 	return c.coverNew(dl.pubs)
+}
+
+// readNames adds the first column of every row of query to *set.
+func (c *catchUp) readNames(query string, set *map[string]bool, args ...any) error {
+	rows, err := c.q.QueryContext(c.ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return err
+		}
+		if *set == nil {
+			*set = map[string]bool{}
+		}
+		(*set)[h] = true
+	}
+	return rows.Err()
 }
 
 // ---- holds and fingerprints ----
 
 // The holds. A row held or released changes the class it counts as, and a
 // publication held or released its settlement day's figures, so every
-// catch-up asks whether either moved. What SyncParamHolds changes it
-// changes in place, with no log and a revision it bumps only after it has
-// committed, so the question is asked of the flags themselves: an aggregate
-// of the held rows (heldGateSQL, a covering walk of probes_held) and of the
-// held publications (publications_held), which costs what is held and
-// holds nothing in memory. Only when one moved are the held rows read again
-// per promise (heldByPromiseSQL, the same walk), and the promises whose
-// aggregate moved drop their rows' days and their settlement days. A hold
-// that outlasts a whole busy day is then a walk of an index on every
-// catch-up, not a map of every held row built, compared, copied into every
-// epoch and written into every save.
+// catch-up asks whether either moved. What SyncParamHolds and a range's own
+// raise change they change in place, with no log, but in the transaction
+// that changes the flags they bump a counter of their own
+// (store.MetaHeldFlagsRev), so a catch-up that finds it where the last one
+// left it knows that no flag of a stored row moved since, at the cost of one
+// row read. When it moved, every held row is read again, a digest of each
+// promise's held rowids, and every held publication (heldByPromiseSQL,
+// heldPubsSQL, a covering walk of probes_held and of publications_held), and
+// the promises whose digest or hold moved drop their rows' days and their
+// settlement days: exactly, whatever moved (an aggregate of the rowids,
+// read before, left a hold moved from some rows to as many others with the
+// same sums unseen).
+//
+// What moves the held rows with no count of the counter is a write the
+// catch-up meets anyway: a row or a publication born held (it is past its
+// table's mark), a held row the collapse deleted (its decision is). Their
+// promises' part of the holds is read again then (heldDirty, pubsHeld), so
+// what the epoch keeps is always what the store holds and a later move is
+// never measured from a stale picture. After a load every hold is read
+// again and diffed, whatever the counter says: a build that does not keep
+// the counter may have moved the flags meanwhile (a rollback's collector).
 
 // readHolds reads the holds, and with diff drops what moved.
 func (c *catchUp) readHolds(diff bool) error {
+	var rev string
+	if err := c.q.QueryRowContext(c.ctx, metaValueSQL, store.MetaHeldFlagsRev).Scan(&rev); err != nil {
+		return err
+	}
+	if diff && !c.fullHolds && rev == c.e.heldRev {
+		return c.readDirtyHolds()
+	}
+	per := map[string]string{}
+	rows, err := c.q.QueryContext(c.ctx, heldByPromiseSQL)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var h, ids string
+		if err := rows.Scan(&h, &ids); err != nil {
+			rows.Close()
+			return err
+		}
+		per[h] = heldDigest(ids)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	var moved []string
+	for h, d := range per {
+		if c.e.heldProm[h] != d {
+			moved = append(moved, h)
+		}
+	}
+	for h := range c.e.heldProm {
+		if _, ok := per[h]; !ok {
+			moved = append(moved, h)
+		}
+	}
+	pubs := map[string]bool{}
+	if err := c.readNames(heldPubsSQL, &pubs); err != nil {
+		return err
+	}
 	promises := map[string]bool{}
-	var g heldAgg
-	if err := c.q.QueryRowContext(c.ctx, heldGateSQL).Scan(&g[0], &g[1], &g[2]); err != nil {
-		return err
-	}
-	if !diff || g != c.e.heldGate {
-		per := map[string]heldAgg{}
-		rows, err := c.q.QueryContext(c.ctx, heldByPromiseSQL)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var h string
-			var a heldAgg
-			if err := rows.Scan(&h, &a[0], &a[1], &a[2]); err != nil {
-				rows.Close()
-				return err
-			}
-			per[h] = a
-		}
-		if err := rows.Close(); err != nil {
-			return err
-		}
-		var moved []string
-		for h, a := range per {
-			if old, ok := c.e.heldProm[h]; !ok || old != a {
-				moved = append(moved, h)
-			}
-		}
-		for h := range c.e.heldProm {
-			if _, ok := per[h]; !ok {
-				moved = append(moved, h)
-			}
-		}
-		c.e.heldGate, c.e.heldProm = g, per
-		if diff && len(moved) > 0 {
-			sort.Strings(moved)
-			b, _ := json.Marshal(moved)
-			dr, err := c.q.QueryContext(c.ctx, promiseRowDaysSQL, string(b))
-			if err != nil {
-				return err
-			}
-			var days []string
-			for dr.Next() {
-				var d string
-				if err := dr.Scan(&d); err != nil {
-					dr.Close()
-					return err
-				}
-				days = append(days, d)
-			}
-			if err := dr.Close(); err != nil {
-				return err
-			}
-			for _, d := range days {
-				c.touchRow(d)
-			}
-			for _, h := range moved {
-				promises[h] = true
-			}
+	for h := range pubs {
+		if !c.e.heldPubs[h] {
+			promises[h] = true
 		}
 	}
-	var pg heldAgg
-	if err := c.q.QueryRowContext(c.ctx, heldPubGateSQL).Scan(&pg[0], &pg[1], &pg[2]); err != nil {
-		return err
+	for h := range c.e.heldPubs {
+		if !pubs[h] {
+			promises[h] = true
+		}
 	}
-	if !diff || pg != c.e.heldPubGate {
-		pubs := map[string]bool{}
-		pr, err := c.q.QueryContext(c.ctx, heldPubsSQL)
-		if err != nil {
-			return err
-		}
-		for pr.Next() {
-			var h string
-			if err := pr.Scan(&h); err != nil {
-				pr.Close()
-				return err
-			}
-			pubs[h] = true
-		}
-		if err := pr.Close(); err != nil {
-			return err
-		}
-		for h := range pubs {
-			if !c.e.heldPubs[h] {
-				promises[h] = true
-			}
-		}
-		for h := range c.e.heldPubs {
-			if !pubs[h] {
-				promises[h] = true
-			}
-		}
-		c.e.heldPubGate, c.e.heldPubs = pg, pubs
-	}
+	c.e.heldRev, c.e.heldProm, c.e.heldPubs = rev, per, pubs
 	if !diff {
 		return nil
 	}
+	if len(moved) > 0 {
+		sort.Strings(moved)
+		days, err := c.promiseRowDays(moved)
+		if err != nil {
+			return err
+		}
+		for _, d := range days {
+			c.touchRow(d)
+		}
+		for _, h := range moved {
+			promises[h] = true
+		}
+	}
 	return c.touchPromises(promises, nil)
+}
+
+// readDirtyHolds reads again the held rows of the promises a write the
+// counter does not count reached (heldDirty), and adds the publications
+// stored held (pubsHeld), with nothing dropped: those writes dropped what
+// they touched as they were folded.
+func (c *catchUp) readDirtyHolds() error {
+	if len(c.pubsHeld) > 0 {
+		pubs := copySet(c.e.heldPubs)
+		for h := range c.pubsHeld {
+			pubs[h] = true
+		}
+		c.e.heldPubs = pubs
+	}
+	if len(c.heldDirty) == 0 {
+		return nil
+	}
+	list := make([]string, 0, len(c.heldDirty))
+	for h := range c.heldDirty {
+		list = append(list, h)
+	}
+	sort.Strings(list)
+	b, _ := json.Marshal(list)
+	rows, err := c.q.QueryContext(c.ctx, heldOfPromisesSQL, string(b))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	per := make(map[string]string, len(c.e.heldProm)+len(list))
+	for h, d := range c.e.heldProm {
+		if !c.heldDirty[h] {
+			per[h] = d
+		}
+	}
+	for rows.Next() {
+		var h, ids string
+		if err := rows.Scan(&h, &ids); err != nil {
+			return err
+		}
+		per[h] = heldDigest(ids)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	c.e.heldProm = per
+	return nil
+}
+
+// heldDigest is the digest of a promise's held rowids as heldByPromiseSQL
+// lists them.
+func heldDigest(ids string) string {
+	sum := sha256.Sum256([]byte(ids))
+	return hex.EncodeToString(sum[:])
+}
+
+// promiseRowDays is the days the probe rows of the promises started on.
+func (c *catchUp) promiseRowDays(promises []string) ([]string, error) {
+	b, _ := json.Marshal(promises)
+	dr, err := c.q.QueryContext(c.ctx, promiseRowDaysSQL, string(b))
+	if err != nil {
+		return nil, err
+	}
+	defer dr.Close()
+	var days []string
+	for dr.Next() {
+		var d string
+		if err := dr.Scan(&d); err != nil {
+			return nil, err
+		}
+		days = append(days, d)
+	}
+	return days, dr.Err()
 }
 
 // touchPromises drops the settlement day of every promise named.

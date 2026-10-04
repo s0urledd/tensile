@@ -120,6 +120,9 @@ type sim struct {
 	// fastStored counts the publications the fast tick stored between
 	// passes (fastTick).
 	fastStored int64
+	// swapped is set once a hold was moved between readings of equal rowid
+	// sums (holdQuad).
+	swapped bool
 	// the collector's side
 	st         *store.Store
 	coll       *collect.Collector
@@ -979,6 +982,9 @@ type simScen struct {
 	// fullFrom is where full readings begin (readFull): before it a blob's
 	// reading stops once its rows reconstruct it, as before 2026-10-02.
 	fullFrom time.Time
+	// swapAt moves a hold between readings whose rowids add up alike, in
+	// one transaction, after the sealer sealed their days with it.
+	swapAt time.Time
 }
 
 func (s *sim) planScenarios() {
@@ -1005,6 +1011,7 @@ func (s *sim) planScenarios() {
 	sc.reapplyAt = day(7, r(0, 12))
 	sc.dark = [2]time.Time{day(0, r(18, 22)), day(2, r(6, 9))}
 	sc.fullFrom = day(s.cfg.days/2, r(0, 12))
+	sc.swapAt = day(4, r(0, 12))
 }
 
 // inOutage reports whether a reading at t falls in the prober's outage.
@@ -1312,4 +1319,63 @@ func (s *sim) reapplyAgain() {
 		s.t.Fatal(err)
 	}
 	s.again = nil
+}
+
+// holdQuad is four readings a < b < c < d of sealed row days whose rowids
+// add up alike, a + d = b + c, of a class a hold moves (HEALTHY or FAULT,
+// in the window, not held), a and d of one validator and b and c of
+// another: a hold moved from a and d to b and c leaves the count of the
+// held rows and every sum of their rowids as they were. nil when there are
+// no four such.
+func (s *sim) holdQuad(srv *Server) []int64 {
+	s.t.Helper()
+	srv.parts.mu.Lock()
+	sealed := map[string]bool{}
+	if e := srv.parts.cur; e != nil {
+		for d := range e.rows {
+			sealed[d] = true
+		}
+	}
+	srv.parts.mu.Unlock()
+	type row struct {
+		id   int64
+		addr string
+	}
+	rs, err := s.st.DB().Query(`SELECT rowid, validator_address, substr(started_at, 1, 10) FROM probes
+		WHERE classification IN ('HEALTHY', 'FAULT') AND outcome <> 'INVALID_ROWS'
+		  AND retention_unverified = 0 AND phase = 'in_window' AND assigned = 1 ORDER BY rowid`)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	var cand []row
+	byID := map[int64]row{}
+	for rs.Next() {
+		var r row
+		var day string
+		if err := rs.Scan(&r.id, &r.addr, &day); err != nil {
+			s.t.Fatal(err)
+		}
+		if sealed[day] {
+			cand = append(cand, r)
+			byID[r.id] = r
+		}
+	}
+	if err := rs.Close(); err != nil {
+		s.t.Fatal(err)
+	}
+	for i, a := range cand {
+		for j := i + 1; j < len(cand) && j < i+60; j++ {
+			b := cand[j]
+			if b.addr == a.addr {
+				continue
+			}
+			for k := j + 1; k < len(cand) && k < i+60; k++ {
+				c := cand[k]
+				if d, ok := byID[b.id+c.id-a.id]; ok && c.addr == b.addr && d.id > c.id && d.addr == a.addr {
+					return []int64{a.id, b.id, c.id, d.id}
+				}
+			}
+		}
+	}
+	return nil
 }

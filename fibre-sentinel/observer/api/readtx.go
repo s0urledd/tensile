@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
@@ -72,6 +73,12 @@ func (s *Server) readTxWith(ctx context.Context, parts bool, fn func(context.Con
 		// own read, as in the build before them, with no connection held
 		// for a transaction and no slot to wait for. It is the way back
 		// without a rollback of the binary, so it goes all the way back.
+		return fn(ctx)
+	}
+	if s.parts.rawFallback() != "" {
+		// An audit found the partials not what the store holds: every window
+		// is read as with the partials off, for the rest of the process
+		// (fallBack).
 		return fn(ctx)
 	}
 	dp := s.parts
@@ -176,11 +183,21 @@ func (dp *dayParts) enterLocked(ctx context.Context, s *Server, q store.Querier)
 // that sum the partials wait for it (ready), holding nothing; the rest do
 // not (readTxFor), nor does a validator's page served from the snapshots.
 // A load that fails, as opposed to one that refuses the file, installs
-// nothing: the next computation starts it again, rather than building the
-// partials from nothing over a file that may well be good.
+// nothing: a computation after it starts it again, rather than building the
+// partials from nothing over a file that may well be good, once the load
+// has waited out a delay that doubles each time it fails (loadRetryBase to
+// loadRetryCeiling), and the computations meanwhile read the whole window.
 
 // loadTimeout bounds the background load.
 const loadTimeout = snapshotTimeoutAll
+
+// loadRetryBase and loadRetryCeiling bound the delay before a failed load
+// is started again: half a minute after its first failure, twice as long
+// after each one after it, at most half an hour.
+const (
+	loadRetryBase    = 30 * time.Second
+	loadRetryCeiling = 30 * time.Minute
+)
 
 // ready returns once the kept partials have been loaded, refused or found
 // missing, starting the load if nothing has: or with ctx's error, if ctx
@@ -192,6 +209,10 @@ func (dp *dayParts) ready(ctx context.Context, s *Server) error {
 		return nil
 	}
 	done := dp.loading
+	if f := dp.failures["load"]; done == nil && f != nil && s.now().Before(f.until) {
+		dp.mu.Unlock()
+		return nil // the last load failed: the whole window is read meanwhile
+	}
 	if done == nil {
 		done = make(chan struct{})
 		dp.loading = done
@@ -238,7 +259,7 @@ func (dp *dayParts) loadKept(s *Server, done chan struct{}) {
 		}
 		if f != nil {
 			var caught *epoch
-			caught, _, dropped, err = catchUpFrom(ctx, s, q, f, s.now())
+			caught, _, dropped, err = catchUpFrom(ctx, s, q, f, s.now(), true)
 			switch {
 			case errors.Is(err, errRegressed):
 				why = refusal(err.Error())
@@ -270,27 +291,31 @@ func (dp *dayParts) loadKept(s *Server, done chan struct{}) {
 		e, err = build(ctx, s, q)
 		return err
 	})
+	if err != nil {
+		dp.fail("load", s.now(), loadRetryBase, loadRetryCeiling, fmt.Errorf("loading %s: %w (every window is read whole meanwhile)", dp.file, err))
+	} else {
+		dp.recover("load")
+	}
 	dp.mu.Lock()
 	defer dp.mu.Unlock()
 	dp.loading = nil
 	if err != nil {
-		if dp.log != nil {
-			dp.log("day partials: loading %s: %v; the next computation tries again, and reads the whole window meanwhile", dp.file, err)
-		}
 		return
 	}
 	dp.loaded, dp.origin = true, origin
 	if dp.cur != nil {
 		return // cannot happen: nothing catches up before the load ends
 	}
-	e.seq = 1
+	e.seq, e.born = 1, 1
 	dp.cur, dp.journal = e, []journalEntry{{seq: 1, all: true}}
 	dp.dropped += dropped
 	if rebuilt {
 		dp.rebuilds++
 	}
 	if loaded {
-		dp.sealFiles, dp.saved = kept.files, e.seq
+		// What the file holds is content 0: the drops of the catch-up after
+		// the load are a reason to write it again.
+		dp.sealFiles, dp.savedBorn, dp.saved, dp.auditAt = kept.files, e.born, 0, kept.audit
 		if dp.gens == nil {
 			dp.gens = map[string]int{}
 		}

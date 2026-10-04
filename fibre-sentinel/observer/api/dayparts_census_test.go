@@ -42,13 +42,19 @@ var writeCensus = map[string]writeMechanism{
 	"INSERT probes": {"probes past the mark: the row's day, its promise's settlement day (span widened), which holds every answer a full reading's later attempt moves", "a restarted prober's row"},
 	"UPDATE probes SET amended_at,classification,classification_at_probe,classification_reason,shadowed_by":                                                       {"probe_amendments past the mark (written in the same transaction)", "an amendment"},
 	"UPDATE probes SET classification,classification_at_probe,classification_reason,corrected_at,must_serve_until,must_serve_until_at_probe,phase,phase_at_probe": {"probe_corrections past the mark (written in the same transaction); applied again under its range, which adds no line: every row a correction wrote, fingerprinted every catch-up", "a row correction applied again under its range"},
-	"UPDATE probes SET retention_unverified": {"an aggregate of the held rows every catch-up, per promise once it moves", "a held publication"},
+	// The holds: every statement that moves a flag of a stored row counts
+	// the move in its own transaction (store.MetaHeldFlagsRev). A catch-up
+	// that finds the count moved reads every held row again, a digest of
+	// each promise's rowids, and drops what moved, whatever moved: the
+	// harness moves a hold between readings of equal rowid sums
+	// (sim.holdQuad), which the aggregate read before left unseen.
+	"UPDATE probes SET retention_unverified": {"the holds' counter, moved in the same transaction: every held row read again, each promise's digest diffed (a row born held is past the probes mark, and its promise's digest read again)", "a held publication"},
 	// The prune (rows, heartbeats, decisions, by the day they started) was
 	// retired on 2026-10-04 and nothing writes it any more, but a database a
 	// build before then pruned carries raw_from and the gap behind it: the
 	// partials still follow raw_from and the anchors, and the harness prunes
 	// as that build did (pruneLikeBefore, "a prune").
-	"DELETE probes":                                  {"the collapse: its decision past the mark (collapsible sets)", "a collapse"},
+	"DELETE probes":                                  {"the collapse: its decision past the mark; the sealed days whose collapsible sets name it, and a day being sealed by the journal", "a collapse"},
 	"INSERT sampling_decisions":                      {"sampling_decisions past the mark: the collapsible days, the settlement day", "a collapse"},
 	"UPDATE sampling_decisions SET must_serve_until": {"the fingerprint of every decision a correction can reach", "a sampled-out point corrected"},
 	"INSERT sampling_decision_points":                {"sampling_decision_points past the mark: the points' row days, the settlement day", "a collapse"},
@@ -62,33 +68,37 @@ var writeCensus = map[string]writeMechanism{
 	// publications and the payments only: either way past the mark.
 	"INSERT publications":                          {"publications past the mark, by the pass or the fast tick: the ledger, the settlement day's span from its rows, its points' row days", "a publication recorded after its deadline"},
 	"INSERT assignments":                           {"written with its publication in one transaction: folded with it", "a publication recorded after its deadline"},
-	"UPDATE publications SET retention_unverified": {"an aggregate of the held publications every catch-up, the set once it moves", "a held publication"},
+	"UPDATE publications SET retention_unverified": {"the holds' counter, moved in the same transaction: the held publications read again and diffed (one stored held is past the publications mark)", "a held publication"},
 	"UPDATE publications SET corrected_at,must_serve_until,must_serve_until_at_scan,must_serve_until_basis,must_serve_until_basis_at_scan": {"publication_corrections past the mark: the day's latest deadline read again; applied again under its range, which adds no line: the corrected publications fingerprinted", "a publication correction applied again under its range"},
 	"INSERT publication_corrections": {"publication_corrections past the mark", "a publication deadline corrected"},
 	// the ranges: they move the holds and the fingerprints' reach
-	"INSERT param_uncertainty": {"the held rows and publications it raises (diffed); a verified range widens the fingerprints", "a range still holding"},
+	"INSERT param_uncertainty": {"the held rows and publications it raises, counted in its transaction and diffed; a verified range widens the fingerprints", "a range still holding"},
 	"UPSERT param_uncertainty SET heights_read,holds,raw_json,resolution,resolve_error,resolve_method,resolved_at": {"the same", "a range corrected"},
-	"UPDATE param_uncertainty SET corrected_at,holds":                                                              {"the holds it lifts, diffed", "a range corrected"},
-	// meta: raw_from is read by every catch-up (a database pruned before
-	// 2026-10-04 carries it); nothing else a partial reads. The fast tick
-	// writes the scanner's checkpoint keys between passes.
-	"UPSERT meta SET updated_at,value": {"raw_from, read by every catch-up; no other key is read by a partial", "a prune"},
+	"UPDATE param_uncertainty SET corrected_at,holds":                                                              {"the holds it lifts: the hold sync after it counts and diffs them", "a range corrected"},
+	// meta: raw_from (a database pruned before 2026-10-04 carries it), the
+	// holds' counter and the count of migrations that rewrote rows are read
+	// by every catch-up; no other key by a partial. The fast tick writes the
+	// scanner's checkpoint keys between passes.
+	"UPSERT meta SET updated_at,value": {"raw_from, the holds' counter, the migrations that rewrote rows: read by every catch-up; no other key is read by a partial", "a prune"},
 	"INSERT meta":                      {"the same", "a prune"},
 	// the daily rollup: read raw beside the partials (rolledFor), unchanged
 	"INSERT obligation_daily": {notRead + " (the rollup, folded in raw by rolledFor)", ""},
 	"DELETE obligation_daily": {notRead + " (the rollup, folded in raw by rolledFor)", ""},
 	"INSERT probe_daily":      {notRead + " (the rollup, folded in raw by rolledFor)", ""},
 	"DELETE probe_daily":      {notRead + " (the rollup, folded in raw by rolledFor)", ""},
-	// the migrations: the store's identity names the schema, and a new one
-	// begins the partials again
-	"SCHEMA": {"the store's identity (schema version): the partials begin again", ""},
-	// the migrations' backfills, the same way
-	"UPDATE assignments SET settlement_height": {"a migration's backfill: the store's identity (schema version)", ""},
-	"UPDATE param_uncertainty SET holds":       {"a migration's backfill: the store's identity (schema version)", ""},
-	"UPDATE probes SET clock_offset_ms,retry_first_outcome,sampling_binding,sampling_commitment,sampling_p": {"a migration's backfill: the store's identity (schema version)", ""},
-	"UPDATE probes SET shadow_gap":                       {"a migration's backfill: the store's identity (schema version)", ""},
-	"UPDATE probes SET rows_subset_of_assignment":        {"a migration's backfill: the store's identity (schema version)", ""},
-	"UPDATE publications SET must_serve_until_ambiguous": {"a migration's backfill: the store's identity (schema version)", ""},
+	// the migrations: judged by what they do, not by their number. One that
+	// changes a table or view the partials read changes the definition read
+	// from the store, and they begin again; one that only adds what they do
+	// not read leaves them (TestAMigrationIsJudgedByWhatItDid).
+	"SCHEMA": {"the definitions of the tables and views the partials read, in theirs: changed, they begin again", ""},
+	// the migrations' backfills: every migration that rewrites rows is
+	// counted (store.MetaMigrationRewrites), and the count names the store
+	"UPDATE assignments SET settlement_height": {"a migration's backfill: the count of migrations that rewrote rows, in the store's identity", ""},
+	"UPDATE param_uncertainty SET holds":       {"a migration's backfill: the count of migrations that rewrote rows, in the store's identity", ""},
+	"UPDATE probes SET clock_offset_ms,retry_first_outcome,sampling_binding,sampling_commitment,sampling_p": {"a migration's backfill: the count of migrations that rewrote rows, in the store's identity", ""},
+	"UPDATE probes SET shadow_gap":                       {"a migration's backfill: the count of migrations that rewrote rows, in the store's identity", ""},
+	"UPDATE probes SET rows_subset_of_assignment":        {"a migration's backfill: the count of migrations that rewrote rows, in the store's identity", ""},
+	"UPDATE publications SET must_serve_until_ambiguous": {"a migration's backfill: the count of migrations that rewrote rows, in the store's identity", ""},
 }
 
 // notReadTables are tables no partial reads at all: every write to them is

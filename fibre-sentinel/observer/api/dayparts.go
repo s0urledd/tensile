@@ -282,31 +282,37 @@ type dayAnchors struct {
 	Beat  *anchor `json:"beat,omitempty"`
 }
 
-// heldAgg is an aggregate of held rows: how many, the sum of their rowids
-// and the sum of a mix of them (heldGateSQL). A hold raised on some rows and
-// lifted on as many others leaves all three alike only by chance.
-type heldAgg [3]int64
-
 // epoch is the partials as one catch-up left them: immutable once
 // published. A computation reads one epoch; the next catch-up starts from a
 // copy of it.
 type epoch struct {
 	seq uint64
-	// store is the identity of the store the epoch was built from.
-	store storeIdentity
+	// born is the seq of the build this epoch descends from: a seal read
+	// under one build is never published into another.
+	born uint64
+	// content counts the changes to what the files keep of substance (a
+	// day sealed or dropped, the ledger grown): a save is due only when it
+	// moved (dayparts_file.go), not on every catch-up's marks.
+	content uint64
+	// store is the identity of the store the epoch was built from
+	// (partsIdentity), def the definition it was computed under and schema
+	// the schema version it last saw: a migration is judged by what it did
+	// to the tables the partials read (catchUpFrom), not by its number.
+	store  storeIdentity
+	def    string
+	schema int
 	// marks is each table's marks ladder, newest last.
 	marks map[string][]mark
 	// rawFrom is the first day whose raw rows are all still present
 	// (rollup.RawFrom), "" before the first prune.
 	rawFrom string
-	// heldGate is the aggregate of every held probe row, heldProm the same
-	// per promise, heldPubGate of the held publications and heldPubs
-	// those publications (readHolds). The maps are replaced whole, never
-	// changed.
-	heldGate    heldAgg
-	heldProm    map[string]heldAgg
-	heldPubGate heldAgg
-	heldPubs    map[string]bool
+	// heldRev is store.MetaHeldFlagsRev as the last catch-up read it,
+	// heldProm a digest of each promise's held rows (their rowids) and
+	// heldPubs the held publications (readHolds). The maps are replaced
+	// whole, never changed.
+	heldRev  string
+	heldProm map[string]string
+	heldPubs map[string]bool
 	// fps is the fingerprint of every decision of a publication a
 	// correction can reach (dayparts_catchup.go), by promise hash; reach
 	// those publications (a verified params range covers them, or a
@@ -340,13 +346,17 @@ type epoch struct {
 	// pubsOdd: a publication's settlement_time is not a store timestamp, so
 	// it belongs to no day and every settlement figure is read raw.
 	pubsOdd bool
+	// msuDue are the days whose latest deadline the next catch-up reads
+	// again: a step of the ledger build brought them in after a correction
+	// moved one (buildLedger). Replaced whole, never changed.
+	msuDue map[string]bool
 	// firstRow is the first day a row started on, where the sealer begins.
 	firstRow string
 }
 
 func newEpoch() *epoch {
 	return &epoch{
-		marks: map[string][]mark{}, heldProm: map[string]heldAgg{}, heldPubs: map[string]bool{},
+		marks: map[string][]mark{}, heldProm: map[string]string{}, heldPubs: map[string]bool{},
 		fps: map[string]string{}, reach: map[string]bool{}, verified: map[string]bool{},
 		corrPub: map[string]string{}, corrRows: map[string]string{},
 		rows: map[string]*rowDay{}, settle: map[string]*settleDay{}, anchors: map[string]*dayAnchors{},
@@ -459,19 +469,49 @@ type dayParts struct {
 	file string
 	// persisted state (dayparts_file.go), guarded by mu. loaded is set once
 	// the kept partials were loaded, refused or found missing, and loading
-	// while that runs (readtx.go).
+	// while that runs (readtx.go); saved is the content generation last
+	// written (epoch.content), saveErr the last write's error and when.
+	savedBorn uint64
 	saved     uint64
 	savedAt   time.Time
+	saveErr   string
+	saveErrAt time.Time
 	loaded    bool
 	loading   chan struct{}
 	origin    string
 	writing   chan struct{}
 	sealFiles map[string]string
-	// failLoad, when set, fails the load before its check, for tests.
-	failLoad func() error
+	// fallback is why the process reads every window raw, "" while it does
+	// not, and since when (fallBack); guarded by mu.
+	fallback   string
+	fallbackAt time.Time
+	// auditAt is the audit's cursor per kind of day (auditNext), kept with
+	// the partials; audited and auditNote the last audit and what it found,
+	// for /v1/health. Guarded by mu.
+	auditAt   map[string]string
+	audited   time.Time
+	auditNote string
+	// failures are the units of work that failed, by key, backing off
+	// (fail); raw the days kept raw on purpose (keepRaw); dueSince when the
+	// sealer first found each day due and unsealed (noteDue). Guarded by mu.
+	failures map[string]*failure
+	raw      map[string]*keptRaw
+	dueSince map[string]time.Time
+	// failLoad, when set, fails the load before its check; failUnit, when
+	// it returns an error, fails a day's seal with it; beforePublish runs
+	// between a seal's read and its publish (sealRow, sealSettle). For
+	// tests.
+	failLoad      func() error
+	failUnit      func(kind, day string) error
+	beforePublish func(kind, day string)
+	// fullHolds has the next catch-up read every hold again and diff it,
+	// whatever the holds' counter says (readHolds): set by the hourly
+	// audit, so that a flag moved by a build that does not keep the counter
+	// is found within the hour.
+	fullHolds bool
 	// sealing is held while the sealer runs, so one seals at a time.
 	sealing sync.Mutex
-	// retry holds the days the sealer could not seal and when to try them
+	// retry holds the days the sealer did not seal and when to try them
 	// again; gens each day's seal generation. Both guarded by mu.
 	retry map[string]time.Time
 	gens  map[string]int
@@ -486,12 +526,23 @@ type dayParts struct {
 }
 
 // journalEntry is what one catch-up dropped: a sealer that read a day
-// before this catch-up does not publish what it read.
+// before this catch-up does not publish what it read. Besides the days it
+// dropped, it names what it found that reaches days by what a seal holds
+// rather than by day: the promises a collapse made decisions of (a row
+// day's Collapsible), and the row spans a prune took (a settlement day's
+// span). A day being sealed is not among the sealed days those are
+// matched against, so its seal is matched against them when it is
+// published (sealRow, sealSettle).
 type journalEntry struct {
-	seq    uint64
-	rows   map[string]bool
-	settle map[string]bool
-	all    bool
+	seq       uint64
+	rows      map[string]bool
+	settle    map[string]bool
+	collapsed map[string]bool
+	reach     [][2]string
+	// msu are the days whose latest deadline a catch-up read again
+	// (readMaxPubMSU) while the ledger did not hold them yet.
+	msu map[string]bool
+	all bool
 }
 
 // journalKeep is how many catch-ups the journal remembers. A seal computed

@@ -191,26 +191,29 @@ const reachableSQL = `SELECT p.promise_hash FROM json_each(?) j CROSS JOIN publi
 	WHERE p.corrected_at IS NOT NULL OR EXISTS (SELECT 1 FROM param_uncertainty u
 		WHERE u.resolution = 'verified' AND p.settlement_height >= u.from_height AND p.promise_height - 1 <= u.to_height)`
 
-// heldMix mixes a rowid into a second sum (heldAgg): the multiplier and
-// the prime are small enough that neither a product nor a sum of them
-// overflows an integer.
-const heldMix = `(rowid * 48271) % 2147483647`
+// metaValueSQL reads a key of meta (?1), "" when it is absent: the holds'
+// counter (store.MetaHeldFlagsRev), the migrations that rewrote rows.
+const metaValueSQL = `SELECT COALESCE((SELECT value FROM meta WHERE key = ?), '')`
 
-// heldGateSQL is the aggregate of the held probe rows, a walk of
-// probes_held alone; heldByPromiseSQL the same per promise.
+// heldByPromiseSQL is every promise's held probe rows, their rowids listed
+// in order (heldDigest), a walk of probes_held alone; heldOfPromisesSQL the
+// same of the promises named in ?1 (a JSON array), a seek of it each.
 const (
-	heldGateSQL = `SELECT COUNT(*), COALESCE(SUM(rowid), 0), COALESCE(SUM(` + heldMix + `), 0)
-		FROM probes WHERE retention_unverified = 1`
-	heldByPromiseSQL = `SELECT promise_hash, COUNT(*), SUM(rowid), SUM(` + heldMix + `)
+	heldByPromiseSQL = `SELECT promise_hash, group_concat(rowid, ',' ORDER BY rowid)
 		FROM probes WHERE retention_unverified = 1 GROUP BY promise_hash`
+	heldOfPromisesSQL = `SELECT r.promise_hash, group_concat(r.rowid, ',' ORDER BY r.rowid)
+		FROM json_each(?) j CROSS JOIN probes r ON r.promise_hash = j.value AND r.retention_unverified = 1
+		GROUP BY r.promise_hash`
 )
 
-// heldPubGateSQL is the aggregate of the held publications, a walk of
-// publications_held alone; heldPubsSQL those publications.
+// heldPubsSQL is the held publications, a walk of publications_held alone.
+const heldPubsSQL = `SELECT promise_hash FROM publications WHERE retention_unverified = 1`
+
+// newHeldRowsSQL and newHeldPubsSQL are the promises of the rows and the
+// publications with a rowid in (?1, ?2] stored held.
 const (
-	heldPubGateSQL = `SELECT COUNT(*), COALESCE(SUM(rowid), 0), COALESCE(SUM(` + heldMix + `), 0)
-		FROM publications WHERE retention_unverified = 1`
-	heldPubsSQL = `SELECT promise_hash FROM publications WHERE retention_unverified = 1`
+	newHeldRowsSQL = `SELECT DISTINCT promise_hash FROM probes WHERE rowid > ?1 AND rowid <= ?2 AND retention_unverified = 1`
+	newHeldPubsSQL = `SELECT promise_hash FROM publications WHERE rowid > ?1 AND rowid <= ?2 AND retention_unverified = 1`
 )
 
 // promiseRowDaysSQL is the days the probe rows of the promises in ?1 (a

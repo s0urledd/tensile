@@ -147,6 +147,10 @@ type Server struct {
 	// work and how long it rests once there is none; zero is sealBusy and
 	// sealIdle.
 	sealPace [2]time.Duration
+	// sealDuty is the sealer's pace (WithSealPace): after each unit of its
+	// work it rests sealDuty times as long as the unit took; 0 does not
+	// rest.
+	sealDuty float64
 }
 
 // now is the server's clock (clock).
@@ -303,8 +307,16 @@ func WarmSnapshots(ctx context.Context, st *store.Store, info VantageInfo, log *
 		if err != nil {
 			return fmt.Errorf("day partials: %w", err)
 		}
+		s.parts.mu.Lock()
+		origin, ok := s.parts.origin, s.parts.cur != nil
+		s.parts.mu.Unlock()
+		if !ok {
+			// The load failed (the log says why): the files written below
+			// would hand the new API nothing to begin from.
+			return errors.New("day partials: neither loaded nor built; run it again, or with -day-partials=false")
+		}
 		if log != nil {
-			log.Printf("warm-only: day partials: %d step(s) in %s", n, time.Since(t0).Round(time.Second))
+			log.Printf("warm-only: day partials: %s; %d step(s) in %s", origin, n, time.Since(t0).Round(time.Second))
 		}
 	}
 	for _, c := range []interface {

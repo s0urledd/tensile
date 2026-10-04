@@ -49,8 +49,16 @@ func main() {
 		// kept beside the snapshots (observer/api/dayparts.go). Off, every
 		// window is read whole with the shipped statements, as before.
 		dayParts = flag.Bool("day-partials", true, "sum the 7d, 30d and all windows from per-day partials kept in -snapshot-dir; false reads every window whole, each statement on its own, as the build before them did")
+		// The sealer reads a day at a time from the disk the database is on,
+		// which may be shared: after each unit it rests k times as long as
+		// the unit took, live and with -warm-only alike.
+		partsPace = flag.Float64("day-partials-pace", api.DefaultSealPace, "after each unit of the day partials sealer's work, rest this many times as long as it took (3: sealing reads the disk at most a quarter of the time); 0 does not rest")
 	)
 	flag.Parse()
+	if *partsPace < 0 {
+		os.Stderr.WriteString("-day-partials-pace must be 0 or more\n")
+		os.Exit(2)
+	}
 	if *check != "" {
 		os.Exit(healthCheck(*check))
 	}
@@ -118,7 +126,7 @@ func main() {
 	if len(reg) > 0 {
 		log.Printf("publisher labels: %d from %s", len(reg), *labels)
 	}
-	opts := []api.Option{api.WithPublisherLabels(reg), api.WithDataDir(*dataDir), api.WithSnapshotDir(*snapDir), api.WithDayParts(*dayParts), api.WithTipRPC(*tipRPC)}
+	opts := []api.Option{api.WithPublisherLabels(reg), api.WithDataDir(*dataDir), api.WithSnapshotDir(*snapDir), api.WithDayParts(*dayParts), api.WithSealPace(*partsPace), api.WithTipRPC(*tipRPC)}
 	if *warmOnly {
 		// The live API keeps serving meanwhile; this only reads. Every
 		// snapshot depends on the vantage (its heartbeats) and the market
