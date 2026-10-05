@@ -36,6 +36,7 @@ type headsNode struct {
 	queries []string
 	refuse  bool
 	conns   []*headsConn
+	hold    int64 // a height whose block_results the node never answers: the request waits until the client gives up
 }
 
 type headsConn struct {
@@ -120,7 +121,12 @@ func newHeadsNode(t *testing.T, tip int64) *headsNode {
 		case "block_results":
 			n.results[height]++
 		}
+		hold := req.Method == "block_results" && height == n.hold
 		n.mu.Unlock()
+		if hold {
+			<-r.Context().Done()
+			return
+		}
 		var result any
 		switch req.Method {
 		case "status":
@@ -506,4 +512,31 @@ func TestNotifyMergesAnnouncements(t *testing.T) {
 		t.Fatalf("a second wake-up pending: %d", got)
 	default:
 	}
+}
+
+// A stop that lands while a block is being read is a stop: the scan ends cleanly before that height. It was a fatal
+// "fetch block_results" that took the process down with exit 1, and the test binary with it.
+func TestAStopWhileABlockIsReadStopsCleanly(t *testing.T) {
+	node := newHeadsNode(t, 12)
+	node.mu.Lock()
+	node.hold = 13
+	node.mu.Unlock()
+	s, stop := followScanner(t, node, 50*time.Millisecond, 50*time.Millisecond)
+	waitFor(t, 10*time.Second, "caught up", func() bool { return node.read(12) })
+	node.setTip(13)
+	node.announce(13)
+	waitFor(t, 5*time.Second, "the results of 13 asked for", func() bool {
+		node.mu.Lock()
+		defer node.mu.Unlock()
+		return node.results[13] > 0
+	})
+	stop()
+	s.log.mu.Lock()
+	defer s.log.mu.Unlock()
+	for _, l := range s.log.ring {
+		if strings.Contains(l, "stopped (signal): scanned through height 12,") {
+			return
+		}
+	}
+	t.Fatalf("no clean stop at height 12 in the log: %q", s.log.ring)
 }

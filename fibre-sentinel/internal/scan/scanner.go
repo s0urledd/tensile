@@ -237,6 +237,13 @@ func (s *Scanner) Run(parent context.Context) error {
 				s.log.Fatalf("run deadline hit mid-scan at height %d: %v", h, err)
 			}
 			n := s.processBlock(ctx, h)
+			if n == blockStopped {
+				// the stop came while the block was being read: nothing of h is written, so the scan stops at h-1
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return s.stopClean(next-1, "signal", totalPubs)
+				}
+				s.log.Fatalf("run deadline hit mid-scan at height %d: %v", h, ctx.Err())
+			}
 			totalPubs += n
 			s.status.OK()
 			if !s.fibreInactive && h%paramReconcileEvery == 0 {
@@ -1048,6 +1055,10 @@ func (s *Scanner) trySeed(ctx context.Context, h int64) bool {
 	return true
 }
 
+// blockStopped is what processBlock returns when the scan's context ended while it read the block: nothing of the
+// height is written, and the scan stops before it (a stop that lands mid-fetch is a stop, not a failure to read).
+const blockStopped = -1
+
 func (s *Scanner) processBlock(ctx context.Context, h int64) int {
 	// An operator skip comes before anything else that touches the block:
 	// the height is listed because reading it kills the process, so none of
@@ -1080,6 +1091,9 @@ func (s *Scanner) processBlock(ctx context.Context, h int64) int {
 		blk, err = s.chain.Block(ctx, h)
 		return err
 	}); err != nil {
+		if ctx.Err() != nil {
+			return blockStopped
+		}
 		if s.recordGap(h, err, time.Time{}) {
 			return 0
 		}
@@ -1105,6 +1119,9 @@ func (s *Scanner) processBlock(ctx context.Context, h int64) int {
 		res, err = s.chain.BlockResults(ctx, h)
 		return err
 	}); err != nil {
+		if ctx.Err() != nil {
+			return blockStopped
+		}
 		// The header was read a moment ago: the gap gets the chain's clock.
 		if s.recordGap(h, err, blk.Time) {
 			return 0
