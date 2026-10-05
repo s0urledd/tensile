@@ -56,16 +56,14 @@ const CUBE = <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke=
 
 type Theme = "light" | "dark";
 
-/** Two states, sun and moon. The first visit starts from the system
- *  preference; from then on the choice is the reader's and is remembered. */
+/** Two states, sun and moon. The site starts dark; from the first switch on the choice is the reader's and is
+ *  remembered. */
 function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>("light");
+  const [theme, setTheme] = useState<Theme>("dark");
   useEffect(() => {
     let t: string | null = null;
     try { t = localStorage.getItem("theme"); } catch { /* storage unavailable */ }
-    if (t !== "light" && t !== "dark") {
-      t = window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-    }
+    if (t !== "light" && t !== "dark") t = "dark";
     setTheme(t as Theme);
     document.documentElement.dataset.theme = t;
   }, []);

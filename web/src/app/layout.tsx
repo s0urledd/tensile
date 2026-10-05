@@ -17,15 +17,15 @@ export const metadata: Metadata = {
   description: "Tensile: independent measurement of whether Celestia validators keep their Fibre serving promise.",
 };
 
-// Applies a saved theme before the first paint so a dark-mode reader never
-// sees a light flash; with nothing saved, the system preference is the start.
-const themeBoot = `try{var t=localStorage.getItem("theme");if(t!=="light"&&t!=="dark")t=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";document.documentElement.dataset.theme=t}catch(e){}`;
+// The site opens dark for everyone; a theme the reader picked with the toggle is applied before the first paint, so
+// a light reader never sees a dark flash either. The page itself is drawn dark, so it is dark without script too.
+const themeBoot = `try{var t=localStorage.getItem("theme");if(t!=="light"&&t!=="dark")t="dark";document.documentElement.dataset.theme=t}catch(e){}`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   // React emits each as one <link rel="preload"> in the head.
   for (const f of preloaded) preload(`/fonts/${f}.woff2`, { as: "font", type: "font/woff2", crossOrigin: "" });
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" data-theme="dark" suppressHydrationWarning>
       <body>
         <script dangerouslySetInnerHTML={{ __html: themeBoot }} />
         <Header />
