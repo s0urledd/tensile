@@ -1,47 +1,50 @@
 # Tensile
 
-Tensile is an independent observer for Celestia Fibre, built by Huginn Tech.
-When validators sign for a Fibre blob they take on an obligation to serve
-their assigned rows for a retention window; the chain records the signature
-and nothing after it. Tensile reads those obligations from the chain, checks
-from the outside whether each validator keeps them, and publishes every
-reading with the evidence behind it.
+Tensile is an independent explorer and observer for Celestia Fibre, built by
+Huginn Tech. Validators that sign for a Fibre blob owe its rows to anyone who
+asks until its retention window ends; the chain records the signature and
+nothing after it. Tensile indexes every Fibre settlement, checks from the
+outside whether each validator still serves the rows it signed for, and
+publishes every reading with the evidence behind it.
 
-Live at **https://tensile.huginn.tech**.
+Live on Celestia's Mocha testnet at **https://tensile.huginn.tech**:
+[methodology](https://tensile.huginn.tech/methodology/) ·
+[API](https://tensile.huginn.tech/api/).
 
-## What it checks
+## What it does
 
-- **Endpoint reachability and TLS identity** of every registered Fibre
-  endpoint, from two locations: DNS, TCP, TLS 1.3 and the validator-endorsed
-  identity signed by its consensus key.
-- **One reading of each blob**, 10 minutes before its retention window ends:
-  every validator that endorsed the blob is asked for its own rows, the way
-  celestia-app's Fibre client asks for a shard, with every row verified
-  against the on-chain commitment and the recomputed assignment. A
-  validator that did not serve is asked again, up to two more times, while
-  the window is open.
-- **Verdicts** per blob, the client's own result (available, or unavailable
-  with the client's error), and per validator, from a fixed taxonomy in
-  which each validator that endorsed the blob is judged on its own
-  answers: served when its own rows came back and verified, not served
-  when its last answer did not serve, and never counted against it when
-  the gap was this observer's own
-  ([`docs/verdicts.md`](docs/verdicts.md)).
-- **Signed daily exports** of the full record, so every figure can be
-  recomputed offline ([`docs/exports-signing.md`](docs/exports-signing.md)).
-- **A public API**: read-only JSON at `https://tensile.huginn.tech/api/v1/`, with every rate published
-  beside its numerator and denominator, documented at
-  [tensile.huginn.tech/developers](https://tensile.huginn.tech/developers/).
+- **Indexes every Fibre blob** within seconds of its block: publisher,
+  namespace, size, fee, endorsing voting power and the settling transaction.
+  A blob is found by its blob ID (base64 or hex), its transaction hash or its
+  payment promise hash.
+- **Checks every registered Fibre endpoint** every five minutes from two
+  locations: DNS, TCP, TLS 1.3 and the identity signed by the validator's
+  consensus key.
+- **Reads each blob once**, 10 minutes before its retention window ends:
+  every validator that endorsed it is asked for its own rows, the way
+  celestia-app's Fibre client asks, and every row is verified against the
+  on-chain commitment and the recomputed assignment. A validator that did
+  not serve is asked again, up to two more times.
+- **Judges each blob and each validator**: the blob by the client's own
+  result, each endorsing validator on its own answers. Tensile's own gaps
+  never count against a validator ([`docs/verdicts.md`](docs/verdicts.md)).
+- **Keeps the record for good**: nothing is deleted, so every page and rate
+  reads the same later as it does today. Signed daily exports let anyone
+  recompute every figure offline
+  ([`docs/exports-signing.md`](docs/exports-signing.md)).
+- **Serves a public API**: read-only JSON at
+  `https://tensile.huginn.tech/api/v1/`, every rate with its numerator and
+  denominator.
 
 ## Modules
 
 | module | what it is | dependencies |
 |---|---|---|
-| [`fibre-tlsverify`](fibre-tlsverify/) | verifies the validator-endorsed TLS identity a Fibre server presents (consensus-key signed extension, no CA) | stdlib only |
+| [`fibre-tlsverify`](fibre-tlsverify/) | verifies the TLS identity a Fibre server presents (consensus-key signed extension, no CA) | stdlib only |
 | [`fibre-assign`](fibre-assign/) | recomputes which validator must serve which rows; `ShardMap.Verify` classifies what one returned | stdlib only (the differential test in `reftest/` pulls celestia-app) |
 | [`fibre-sentinel`](fibre-sentinel/) | the observer: chain scanner, prober, heartbeat, collector, store, verdicts, exports and API | celestia-app (pinned) and the two above |
 | [`fibre-devnet`](fibre-devnet/) | a multi-validator local devnet with retention at the 10-minute protocol floor, for end-to-end tests | shell and a celestia-app build |
-| [`web`](web/) | the dashboard: a static Next.js export that reads the API | Node 22 |
+| [`web`](web/) | the explorer: a static Next.js export that reads the API | Node 22 |
 
 `fibre-sentinel` and `fibre-assign/reftest` resolve their siblings through
 relative `replace` directives, so build them from a full checkout.
