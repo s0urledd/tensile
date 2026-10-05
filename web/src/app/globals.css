@@ -2432,6 +2432,9 @@ button.warn:focus-visible { outline-offset: 0; }
    what it holds now and the rows it is assigned beside its stake, each a label over its value ---- */
 .vd-oc { min-width: 0; padding: 16px 24px; border-left: 1px solid var(--border); }
 .vd-oc h2 { margin: 0; font-size: var(--t-cell); font-weight: 600; line-height: 18px; letter-spacing: 0; color: var(--text); white-space: nowrap; }
+/* Celestia's mark before it, as the network chip draws it, where the Observed side has Tensile's eye */
+.vd-oc h2 { display: flex; align-items: center; gap: 7px; }
+.vd-oc h2 svg { flex: none; color: var(--celestia); }
 .vd-oc-lead { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; margin-top: 14px; }
 .vd-ocf { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; white-space: nowrap; }
 .vd-ocf .vd-fv { margin-top: 4px; }

@@ -7,6 +7,7 @@ import { useApi, type ValidatorDetail, type ValidatorReading, type Window, type 
 import { useWindow, WindowSwitch, periodName } from "@/lib/window";
 import StatusLine from "@/components/StatusLine";
 import { Eye } from "@/components/Metrics";
+import { CelestiaMark } from "@/components/Chrome";
 import Warn from "@/components/Warn";
 import { unit } from "@/components/Unit";
 import { age, monthDayTime } from "@/components/BlobsDeck";
@@ -579,7 +580,7 @@ function Page() {
       {/* what the chain records, in the same frame and never read as serving: endorsements as its lead figure beside the
           last one, then the period's shard data beside what it holds now, and the assignment beside the stake */}
       <section className="vd-oc" id="chain" aria-labelledby="vd-chain">
-        <h2 id="vd-chain" title="Read from the chain, nothing measured.">On chain</h2>
+        <h2 id="vd-chain" title="Read from the chain, nothing measured."><CelestiaMark size={14} />On chain</h2>
         <div className="vd-oc-lead">
           <div className={"vd-ocf lead" + (endorse ? "" : " na")} title={endorse ? endorse.title : "No settlement assigned it rows."}>
             <span className="vd-lbl">Endorsements <span className="vd-per">· {per}</span></span>
