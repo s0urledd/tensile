@@ -1,12 +1,12 @@
-import { nsDisplay, shortHex } from "@/lib/api";
+import { nsName } from "@/lib/api";
 
 /** a namespace's significant hex, without the leading zero padding */
 export const nsHex = (ns: string) => ns.replace(/^(00)+/, "");
 
 /** a namespace as a list names it: its text, or its hex in the mono face when it is not text */
 export function NsName({ ns }: { ns: string }) {
-  const name = nsDisplay(ns);
-  return name === shortHex(nsHex(ns) || ns, 6) ? <span className="mono">{name}</span> : <>{name}</>;
+  const { text, hex } = nsName(ns);
+  return hex ? <span className="mono">{text}</span> : <>{text}</>;
 }
 
 /** the Namespace filter's mark */

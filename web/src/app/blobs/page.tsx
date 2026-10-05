@@ -2,7 +2,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import PreLive from "@/components/PreLive";
-import { useApi, type Meta, type Market, type Blob, type NamespaceRow, type Publisher, type Tip, int, bytes, nsDisplay, shortHex, shortMid, utcWord, TIP_MS } from "@/lib/api";
+import { useApi, type Meta, type Market, type Blob, type NamespaceRow, type Publisher, type Tip, int, bytes, nsDisplay, nsName, shortMid, utcWord, TIP_MS } from "@/lib/api";
 import Pager, { usePage } from "@/components/Pager";
 import { useWindow, WindowSwitch } from "@/lib/window";
 import BlobsDeck, { age, dayTime } from "@/components/BlobsDeck";
@@ -143,7 +143,7 @@ function Namespaces({ rows, truncated, onPick }: { rows: NamespaceRow[] | null; 
             {rows && rows.length === 0 && <tr className="lg-empty"><td colSpan={7}>No namespace on record.</td></tr>}
             {rows?.map((n) => {
               const hex = nsHex(n.namespace);
-              const text = nsDisplay(n.namespace) !== shortHex(hex || n.namespace, 6);
+              const text = !nsName(n.namespace).hex;
               return (
                 // the whole row shows the namespace's blobs; its name is the control a keyboard reaches
                 <tr key={n.namespace} className="row" onClick={() => onPick(n.namespace)}>
