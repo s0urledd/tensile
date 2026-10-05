@@ -67,9 +67,10 @@ const plural = (n: number, w: string) => `${int(n)} ${w}${n === 1 ? "" : "s"}`;
 
 /**
  * Publishers: the accounts that pay for blobs from escrow. A framed top of
- * the period's figures in three short ledgers (components/PublishersTop.tsx),
- * then the publishers in the Blobs list's own rows: what each posted and paid
- * in the period, and what its escrow can still spend, in a lane of its own.
+ * the period's figures as tabs over the publishers ranked by the one picked
+ * (components/PublishersTop.tsx), then the publishers in the Blobs list's own
+ * rows: what each posted and paid in the period, and what its escrow can
+ * still spend, in a lane of its own.
  * Every figure is the chain's, read through the API; none was measured by
  * Tensile.
  */
@@ -141,7 +142,7 @@ function Page() {
 
       {error && <div className="note hold"><span className="label">Observer</span><p>Cannot reach the observer API: {error}. Nothing below is current.</p></div>}
 
-      {/* the period's three ledgers: activity, blob size with the largest publisher's part, fees and escrow */}
+      {/* the period's figures as tabs over the publishers ranked by the one picked */}
       <PublishersTop m={pre ? null : m} win={win} list={list} all={all} now={now} pre={pre} onWin={setWin} />
 
       <section id="list" className="listing pl-list">
