@@ -565,7 +565,13 @@ dl.kv dd { margin: 0; word-break: break-all; }
 .info { appearance: none; border: 1px solid var(--line); background: transparent; color: var(--text-3); font: 500 10px/1 var(--sans); width: 15px; height: 15px; border-radius: 50%; padding: 0; margin-left: 6px; cursor: pointer; vertical-align: 1px; text-transform: none; letter-spacing: 0; }
 .info { color: var(--accent-ink); border-color: var(--accent); }
 .info:hover, .info:focus-visible { color: var(--paper); background: var(--accent); border-color: var(--accent); }
-.info[aria-expanded="true"] { color: var(--paper); background: var(--accent); border-color: var(--accent); }
+.info[aria-expanded="true"], .info.solid { color: var(--paper); background: var(--accent); border-color: var(--accent); }
+.info.solid:hover, .info.solid:focus-visible { background: var(--accent-ink); border-color: var(--accent-ink); }
+/* beside a caps eyebrow the mark sits a pixel higher, so its middle meets the capitals' middle, not the line's */
+.ov-eyebrow .info { position: relative; top: -1px; }
+/* the label stays centred under its figure, the mark hung at its right end, so the frame keeps its width */
+.rb-avl { position: relative; }
+.rb-i { position: absolute; left: 100%; top: 50%; transform: translateY(calc(-50% - 1px)); line-height: 1; }
 .info-pop { position: fixed; z-index: 50; width: 320px; max-width: calc(100vw - 24px); background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; box-shadow: 0 8px 24px rgb(0 0 0 / .14); font-size: var(--t-cell); line-height: 1.5; color: var(--text-2); }
 .info-pop .label { display: block; margin-bottom: 6px; color: var(--text); }
 .info-pop p { margin: 0 0 8px; }
