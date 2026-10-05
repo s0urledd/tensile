@@ -391,9 +391,7 @@ function Page() {
       <dd title={b.commitment}><span className="mono">{shortMid(b.commitment, 10, 6)}</span><Copy text={b.commitment} label="commitment" /></dd>
       <dt title="This settlement's payment promise. A blob settled again has another promise hash.">Promise hash</dt>
       <dd title={b.promise_hash}><span className="mono">{shortMid(b.promise_hash, 10, 6)}</span><Copy text={b.promise_hash} label="the promise hash" /></dd>
-      {/* the settlement, as the chain records it: when, at what height, by which transaction */}
-      <dt>Settled</dt>
-      <dd><b title={utcWord(b.settlement_time)}>{monthDayTime(b.settlement_time)}</b><em>UTC · height {int(b.settlement_height)}</em></dd>
+      {/* the transaction that settled it; its height and time are in the chip under the title */}
       {txHash && <>
         <dt title="The transaction that settled this blob">Transaction</dt>
         <dd className="bd-tx"><span className="mono" title={txHash}>{shortMid(txHash, 10, 6)}</span><Copy text={txHash} label="transaction hash" /></dd>
