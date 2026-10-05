@@ -487,9 +487,9 @@ The market and the publisher list are one snapshot, so the publisher page's
 board and table describe the same moment. Keepers refresh every window as its
 TTL runs out, read or not (`newKeepers` in `snapshot.go`): the 24h validator
 list and every market window at 10 s (the live lane), network 24h at 1 min,
-7d at 5 min, 30d and `all` at 15 min except network `all` at 5 min. The 24h validator list, the market and network
-24h each have a keeper of their own; the longer windows share one and take
-turns. A TTL is a floor, not a promise: a computation longer than its TTL
+7d at 5 min, 30d and `all` at 15 min except network `all` at 5 min. The 24h
+validator list, the market and network 24h each have a keeper of their own; the
+longer windows share one and take turns. A TTL is a floor, not a promise: a computation longer than its TTL
 waits twice its cost (the 24h validator list took 15–22 s in September 2026,
 so it refreshes about every 35–45 s), and the windows of one cache are taken
 at different moments, so a longer window can count less than a shorter one
