@@ -1,13 +1,14 @@
 "use client";
 import { useId, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import Link from "next/link";
-import { type Window, bytes, fmtShare, int, tia, utcWord } from "@/lib/api";
-import type { MarketWithQueue, PublisherWithQueue } from "@/lib/withdrawals";
+import { type Window, bytes, fmtShare, int, span, tia, useApi, utcWord } from "@/lib/api";
+import type { MarketWithQueue, Params, PublisherWithQueue } from "@/lib/withdrawals";
 import { type WindowName, periodName } from "@/lib/window";
 import { unit } from "@/components/Unit";
 import Ident from "@/components/Ident";
 import { Who } from "@/components/Ledger";
 import Warn from "@/components/Warn";
+import Info from "@/components/Info";
 import { Lbl, ShowPeriod, age, dayTime, holding } from "@/components/BlobsDeck";
 
 /**
@@ -47,6 +48,26 @@ type Metric = "n" | "bytes" | "fees" | "escrow";
 type Row = { p: PublisherWithQueue; v: number };
 /** the rows shown: every one when they fit, else the five largest and the rest as one */
 const TOP = 5;
+
+/**
+ * The two network parameters a publisher's escrow lives by, one tap away beside the list: how long a signed promise
+ * has to settle, and how long a withdrawal waits. Read from /v1/params; every parameter is on the methodology page.
+ * Beside the list, not in the Escrow tab, since a tab holds no button.
+ */
+function EscrowParams() {
+  const { data: p } = useApi<Params>("/v1/params", 300000);
+  const c = p?.current;
+  return (
+    <Info label="Protocol parameters" className="pp-params" title="Payment promise timeout and withdrawal delay"
+      trigger={<>Protocol parameters<span className="pp-i" aria-hidden="true">i</span></>}>
+      <dl className="pp-kv">
+        <dt>Payment promise timeout</dt><dd>{c ? span(c.payment_promise_timeout_s) : "—"}</dd>
+        <dt>Withdrawal delay</dt><dd>{c ? span(c.withdrawal_delay_s) : "—"}</dd>
+      </dl>
+      <p className="pp-all"><Link href="/methodology/#params">Every parameter →</Link></p>
+    </Info>
+  );
+}
 
 export default function PublishersTop({ m, win, list, all, now, pre, onWin }: {
   /** /v1/market for the period; the last answer stays while another period loads */
@@ -209,7 +230,10 @@ export default function PublishersTop({ m, win, list, all, now, pre, onWin }: {
         })}
       </div>
       <div className="pp-plot" role="tabpanel" id={`${uid}-list`} aria-labelledby={`${uid}-${metric}`}>
-        <h3 className="tp-ct">{T.list}{metric === "escrow" && <span className="tz">now{m && accounts && <span className="pp-acc"> · {plural(m.escrow_accounts, "account")}</span>}</span>}{metric === "fees" && timedOut && <Warn tone="fault" text={timedOut} />}</h3>
+        <div className="pp-head">
+          <h3 className="tp-ct">{T.list}{metric === "escrow" && <span className="tz">now{m && accounts && <span className="pp-acc"> · {plural(m.escrow_accounts, "account")}</span>}</span>}{metric === "fees" && timedOut && <Warn tone="fault" text={timedOut} />}</h3>
+          <EscrowParams />
+        </div>
         {pre
           ? <p className="pp-none">No publisher has paid for a blob yet</p>
           : !ranked
