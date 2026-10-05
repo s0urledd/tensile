@@ -175,6 +175,10 @@ export default function Verdict({ cls, title }: { cls: string; title?: string })
  * is how the current pages came to be four thousand pixels tall, and two of
  * those copies had disagreed about which classes exist.
  */
+// The rule every failure shares is stated once above the legend, so each line keeps only what is its own.
+const SHARED = " Not served when it is the validator's last answer, unless one of its requests failed on Tensile's side, was not made, or brought back rows of the blob that are not its own.";
+const legendDef = (def: string) => def.replace(SHARED, "").replace(/ Before 2 October 2026[^.]*\./, "");
+
 export function Legend() {
   const order: Tier[] = ["kept", "fault", "hold", "held", "gap"];
   // the verdicts a reading gives today: not the observer's own gaps, nor the words of the earlier schedule
@@ -187,7 +191,7 @@ export function Legend() {
       {sorted.map((c) => (
         <div key={c} id={`verdict-${c.toLowerCase()}`}>
           <Verdict cls={c} title="" />
-          <span className="def">{verdictDef(c).def}</span>
+          <span className="def">{legendDef(verdictDef(c).def)}</span>
         </div>
       ))}
     </div>

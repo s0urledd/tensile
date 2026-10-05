@@ -29,11 +29,10 @@ Live at **https://tensile.huginn.tech** ·
   validator.
 - **Publishers and escrow.** Who pays for blobs, what they posted and paid,
   and the escrow they pay from, straight from the chain.
-- **A record anyone can check.** Nothing is ever deleted, so every page reads
-  the same later as it does today. Signed daily exports
+- **A record anyone can check.** Past observations are kept, and every result
+  can be recomputed from them: signed daily exports
   ([`docs/exports-signing.md`](docs/exports-signing.md)) and an open API, with
-  every rate beside its numerator and denominator, let anyone recompute every
-  figure.
+  every rate beside its numerator and denominator.
 
 ## Modules
 
