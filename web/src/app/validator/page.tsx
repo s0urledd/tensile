@@ -213,16 +213,17 @@ function keyOf(cells: Cell[]): { sw: string[]; word: string; n: number }[] {
 
 /** the strip's tooltip width, so it can be centred on its cell */
 const TIP_W = 216;
+/** how many of the latest checks the strip shows, whatever the period; the table under it lists every one the page carries */
+const STRIP_N = 20;
 
 /**
- * The latest checks, newest to oldest from the top left as the overview's recent blobs run: one small square per
- * check, coloured by its result, in one line across the frame where there is room for it and in lines of a fixed count
- * where there is not. Not a timeline: the cells are evenly spaced whatever the time between the checks, and nothing
- * marks time along it. A cell names its check (when,
- * which blob, what came back) on hover, on focus and on a tap; a finger can slide along the strip to move from check
- * to check, and the arrow keys do the same.
+ * The latest checks, newest to oldest from the left as the overview's recent blobs run: one small square per check,
+ * coloured by its result, in one line of STRIP_N places; a place with no check yet is drawn empty, so the strip keeps
+ * one length. Not a timeline: the cells are evenly spaced whatever the time between the checks, and nothing marks time
+ * along it. A cell names its check (when, which blob, what came back) on hover, on focus and on a tap; a finger can
+ * slide along the strip to move from check to check, and the arrow keys do the same.
  */
-function Strip({ cells }: { cells: Cell[] }) {
+function Strip({ cells, slots }: { cells: Cell[]; slots: number }) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const box = useRef<HTMLDivElement>(null);
   // the tooltip names its check by key, so a refresh that shifts the strip never puts another check's words on it
@@ -285,6 +286,7 @@ function Strip({ cells }: { cells: Cell[] }) {
             onFocus={() => { setFocusK(x.k); if (!sliding()) show(i); }} onBlur={() => { if (!sliding()) hide(); }}
             onClick={() => { if (!sliding()) show(i); }} onKeyDown={(e) => move(e, i)} />
         ))}
+        {Array.from({ length: Math.max(0, slots - cells.length) }, (_, i) => <i key={"slot" + i} className="vd-c slot" aria-hidden="true" />)}
       </div>
       {c && tip && (
         <div className={"vd-tip" + (tip.below ? " below" : "")} role="tooltip" style={{ top: tip.top, left: tip.left }}>
@@ -396,8 +398,8 @@ function Page() {
   // older than these checks, and the Not served tab says where they are
   const nsInPeriod = notServedRows.filter((r) => !isOpen(r.p) && Date.parse(r.at) >= since).length;
 
-  // the strip: every check this page carries, newest to oldest as the table lists them, worded as its row
-  const cells: Cell[] = grouped.map(({ p, g, made, at }) => {
+  // the strip: the newest checks, as the table lists them first, each worded as its row; the key counts these
+  const cells: Cell[] = grouped.slice(0, STRIP_N).map(({ p, g, made, at }) => {
     const op = isOpen(p);
     const r = resultOf(op ? { ...p, provisional: false } : p, g);
     return { k: `${p.vantage}|${p.promise_hash}|${p.scheduled_at}`, at, hash: p.promise_hash, tone: r.tone, word: r.word, made, open: op };
@@ -420,11 +422,6 @@ function Page() {
   // the words on hover and the guide link
   const noEndpoint = !v.host && !v.last_host && bonded;
 
-  // the not-served figure opens its records: the checks table, filtered to them
-  const showNotServed = () => {
-    setOnlyNotServed(true);
-    document.getElementById("evidence")?.scrollIntoView({ block: "start" });
-  };
   const setFilter = (only: boolean) => setOnlyNotServed(only);
 
   // signing participation, as the chain records it: settlements signed of those assigned, or before signing was
@@ -435,6 +432,8 @@ function Page() {
       ? { n: att.attested_blobs, of: att.blob_coverage.den, title: `${int(att.attested_blobs)} of ${int(att.blob_coverage.den)} blobs carry its signature, counted while it had a Fibre provider. ${ENDORSE_NOTE}` }
       : null;
   const timeouts = v.timeouts_enforced ?? 0;
+  // with no Not served figure on this page, the rate carries the words for the not-served that can still be withdrawn
+  const provText = prov > 0 ? `${int(prov)} of the not-served ${prov === 1 ? "is" : "are"} younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.` : "";
   // the chain's word after the voting power, only when it is not simply bonded
   const bondWord = v.jailed ? "jailed" : !bonded && v.bond_status ? v.bond_status.replace(/^BOND_STATUS_/, "").toLowerCase() : null;
   const reach = bonded && rw && rw.den > 0 ? rw : null;
@@ -456,166 +455,163 @@ function Page() {
         <WindowSwitch value={win} onChange={setWin} />
       </div>
 
-      {/* who it is and where it serves from, in one frame: the name and its state on the left, the endpoint, its
-          hosting and the newest check on the right, the addresses folded away under them */}
+      {/* who it is, as a title bar: the name with its state beside it, its valoper address and since when it is a Fibre
+          provider under it, its links at the far end; then where it serves from, as one row of labelled facts across the
+          frame: the endpoint, its hosting, the newest check */}
       <section className="pan vd-pf" aria-label="Validator">
-        <div className="vd-pf-main">
-          <div className="vd-who">
-            <Avatar v={v} />
-            <div className="vd-who-t">
+        <div className="vd-pf-top">
+          <Avatar v={v} />
+          <div className="vd-who-t">
+            <div className="vd-title">
               <h1>{v.moniker || <span className="mono">{shortMid(v.operator_address || cons, 22, 6)}</span>}{self && <span className="ours" title="Huginn Tech runs both this validator and Tensile. It is measured like every other validator.">runs Tensile</span>}</h1>
               <div className="chips vd-chips">
                 <span className="state" title={e.title}><i className={"dot " + e.dot} />{e.word}</span>
                 {v.host && <span title={v.identity_reason || "The consensus-key check on the newest handshake."}>TLS identity <b className="word">{identityWord[v.identity_status] ?? v.identity_status}</b></span>}
               </div>
-              {/* a state to act on carries the amber dot with its words; one that is not a fault (jailed, unbonded,
-                  not checked yet) says its words on hover, without the dot */}
-              {diag && diag.tone !== "ok" && !noEndpoint && (
-                <p className={"vd-diag " + diag.tone} title={diag.tone === "none" ? diag.text : undefined}>
-                  <span>{diag.title}</span>{diag.tone === "hold" && <Warn text={diag.text} />}
-                  {diag.docs && <a href={diag.docs.href} rel="noopener noreferrer" target="_blank">{diag.docs.word} →</a>}
-                </p>
-              )}
-              {/* an endpoint that stopped answering: since when, by its last completed handshake */}
-              {diag && diag.tone === "hold" && !noEndpoint && e.word === "Unreachable" && v.last_reachable_at && (
-                <p className="vd-since" title={utcWord(v.last_reachable_at)}>Last answered {monthDayTime(v.last_reachable_at).slice(0, -3)} UTC</p>
-              )}
-              <p className="vd-sub">
-                {v.provider_since && <span title={`First seen as a Fibre provider ${utcWord(v.provider_since)}, under any endpoint`}>Fibre provider since <b>{shortDate(v.provider_since)}</b></span>}
-                {site && <a href={site} title={site} rel="nofollow noopener noreferrer" target="_blank">{site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</a>}
-                <a href={`${API_BASE}/v1/validators/${own}/feed.atom`} type="application/atom+xml" title="Endpoint changes of this validator, as an Atom feed">Atom feed</a>
-              </p>
             </div>
+            <p className="vd-own">
+              {v.operator_address && <span className="vd-own-a"><span className="mono" title="Valoper address">{v.operator_address}</span><CopyMark text={v.operator_address} label="the valoper address" /></span>}
+              {v.provider_since && <span className="vd-own-s" title={`First seen as a Fibre provider ${utcWord(v.provider_since)}, under any endpoint`}>Fibre provider since <b>{shortDate(v.provider_since)}</b></span>}
+            </p>
+            {/* a state to act on carries the amber dot with its words; one that is not a fault (jailed, unbonded,
+                not checked yet) says its words on hover, without the dot */}
+            {diag && diag.tone !== "ok" && !noEndpoint && (
+              <p className={"vd-diag " + diag.tone} title={diag.tone === "none" ? diag.text : undefined}>
+                <span>{diag.title}</span>{diag.tone === "hold" && <Warn text={diag.text} />}
+                {diag.docs && <a href={diag.docs.href} rel="noopener noreferrer" target="_blank">{diag.docs.word} →</a>}
+                {/* an endpoint that stopped answering: since when, by its last completed handshake */}
+                {diag.tone === "hold" && e.word === "Unreachable" && v.last_reachable_at && (
+                  <em className="vd-since" title={utcWord(v.last_reachable_at)}>Last answered {monthDayTime(v.last_reachable_at).slice(0, -3)} UTC</em>
+                )}
+              </p>
+            )}
           </div>
-          <dl className="vd-facts">
+          <p className="vd-links">
+            {site && <a href={site} title={site} rel="nofollow noopener noreferrer" target="_blank">{site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</a>}
+            <a href={`${API_BASE}/v1/validators/${own}/feed.atom`} type="application/atom+xml" title="Endpoint changes of this validator, as an Atom feed">Atom feed</a>
+          </p>
+        </div>
+        <dl className="vd-facts">
+          <div className="vd-fact">
             {v.host
               ? <><dt>Endpoint</dt><dd><span className="vd-id"><Host s={v.host} /><CopyMark text={v.host} label="the endpoint" /></span>{endpointSince && <em title={`Registered ${utcWord(endpointSince)}`}>since {shortDate(endpointSince)}</em>}</dd></>
               : v.last_host
                 ? <><dt>Last endpoint</dt><dd title="Still registered on chain; the validator left the bonded set."><span className="vd-id"><Host s={v.last_host} /></span>{v.endpoint_closed_at && <em>left {dateUTC(v.endpoint_closed_at)}</em>}</dd></>
                 : <><dt>Endpoint</dt><dd className="vd-none" title={noEndpoint && diag ? diag.text : undefined}><em>none registered</em>
                   {noEndpoint && diag?.docs && <a href={diag.docs.href} rel="noopener noreferrer" target="_blank">{diag.docs.word} →</a>}</dd></>}
-            {v.host && v.hosting && <><dt>Hosting</dt><dd><HostingFact h={v.hosting} /></dd></>}
-            {v.operator_address && <><dt>Valoper address</dt><dd className="vd-addr"><span className="mono">{v.operator_address}</span><CopyMark text={v.operator_address} label="the valoper address" /></dd></>}
-            {(v.host || c) && <>
-              <dt>Last check</dt>
-              <dd className="vd-chk">{c
-                ? <>
-                  <span className="vd-when"><b title={utcWord(c.at)}>{whenUTC(c.at)}</b> <em>· {ago(c.at)}</em></span>
-                  <span className="vd-stages" title={[c.host !== v.host && `checked ${c.host}`, c.raw_error].filter(Boolean).join(" · ") || "The newest handshake with the registered endpoint, stage by stage."}>
-                    {stages.map(([name, ok, note], i) => {
-                      const skip = firstFail >= 0 && i > firstFail;
-                      return <span key={name} className={ok ? "ok" : skip ? "skip" : "bad"}>{name} <i aria-hidden="true">{ok ? "✓" : skip ? "–" : "✗"}</i>{note && <em>{note}</em>}</span>;
-                    })}
-                  </span>
-                  {c.host !== v.host && <em title={c.host}>on the earlier endpoint</em>}
-                </>
-                : <em>no check yet</em>}</dd>
-            </>}
-          </dl>
-        </div>
+          </div>
+          {v.host && v.hosting && <div className="vd-fact"><dt>Hosting</dt><dd><HostingFact h={v.hosting} /></dd></div>}
+          {(v.host || c) && <div className="vd-fact">
+            <dt>Last check</dt>
+            <dd className="vd-chk">{c
+              ? <>
+                <span><b title={utcWord(c.at)}>{whenUTC(c.at)}</b> <em>· {ago(c.at)}</em></span>
+                <span className="vd-stages" title={[c.host !== v.host && `checked ${c.host}`, c.raw_error].filter(Boolean).join(" · ") || "The newest handshake with the registered endpoint, stage by stage."}>
+                  {stages.map(([name, ok, note], i) => {
+                    const skip = firstFail >= 0 && i > firstFail;
+                    return <span key={name} className={ok ? "ok" : skip ? "skip" : "bad"}>{name} <i aria-hidden="true">{ok ? "✓" : skip ? "–" : "✗"}</i>{note && <em>{note}</em>}</span>;
+                  })}
+                </span>
+                {c.host !== v.host && <em title={c.host}>on the earlier endpoint</em>}
+              </>
+              : <em>no check yet</em>}</dd>
+          </div>}
+        </dl>
       </section>
 
       <PreLive meta={meta} />
       <StatusLine meta={meta} metaError={metaErr} snap={{ record_through: data.record_through, window: data.window }} client={{ error: d.error, fetchedAt: d.fetchedAt, status: d.status }} measuring={measuring} />
 
-      {/* one window: what Tensile found when it read this validator's rows on the left (the period's service rate, its
-          count and the network beside it; the latest checks, one cell each, with their first and last times under them;
-          then the period's other figures on one line), what the chain records on the right, as a quiet list */}
+      {/* one window: what Tensile found when it read this validator's rows on the left (the service rate, the main figure,
+          beside the latest 20 checks; reachability, throughput and what waits for its check each in a frame of its own
+          in a row under them), what the chain records on the right, with endorsements as its lead figure */}
       <div className="pan vd-stat">
       <section className="vd-svc" id="observed" aria-labelledby="vd-observed">
         <div className="vp-h">
           <h2 className="vp-t" id="vd-observed" title="Tensile reads each blob once, 10 minutes before its retention window ends, asking every endorsing validator for its own rows."><Eye />Observed by Tensile</h2>
         </div>
+        {/* the service rate and its latest 20 checks side by side */}
         <div className="vd-svc-top">
           <div className={"vd-rate" + (rateCls ? " " + rateCls : "")} title={rateTitle}>
             <p className="vd-lbl">Service rate <span className="vd-per">· {per}</span></p>
             <p className="vd-rate-v">
               {notLive || !o || decided === 0 ? "—" : pctOf(o.served, decided)}
-              {!notLive && held.length > 0 && <Warn text={`${plural(held.length, "reading")} in this period did not count: ${heldWhy}. ${heldText} The checks below show each one.`} />}
+              {!notLive && (held.length > 0 || prov > 0) && <Warn text={[held.length > 0 ? `${plural(held.length, "reading")} in this period did not count: ${heldWhy}. ${heldText} The checks below show each one.` : "", provText].filter(Boolean).join(" ")} />}
             </p>
-            {!notLive && o && decided > 0 && <p className="vd-rate-s"><b>{int(o.served)}</b> / {int(decided)}{refFig && <> · {refFig[0]} <b>{refFig[1]}</b></>}</p>}
-            {/* why there is no rate, under the dash, where the count goes when there is one; the dash's title keeps the
-                rest of the words */}
+            {!notLive && o && decided > 0 && <p className="vd-rate-s"><b>{int(o.served)}</b> / {int(decided)}{refFig && <span className="vd-ref">{refFig[0]} <b>{refFig[1]}</b></span>}</p>}
             {!notLive && (!o || decided === 0) && <p className="vd-rate-s">{noRate}</p>}
           </div>
-          {/* the latest checks whatever the period, at a fixed size: how many and the key over the cells, the newest and
-              the oldest check's times under them */}
+          {/* the latest 20 checks whatever the period, newest at the left */}
           <div className="vd-latest">
-            {cells.length > 0
-              ? <>
-                <div className="vd-cap">
-                  <span className="vd-ttl">Latest {plural(cells.length, "check")} <span className="vd-per">· regardless of period</span></span>
-                  <ul className="vd-key" aria-label="key">
-                    {key.map((k) => <li key={k.word}>{k.sw.map((s) => <i key={s} className={"vd-c " + s} aria-hidden="true" />)}{k.word} <b>{int(k.n)}</b></li>)}
-                  </ul>
-                </div>
-                <Strip key={addr} cells={cells} />
-                <p className="vd-ends" style={{ "--n1": Math.min(cells.length, 25) } as CSSProperties}>
-                  <span title={utcWord(cells[0].at)}>{monthDayTime(cells[0].at).slice(0, -3)} · {age(now - Date.parse(cells[0].at))} ago</span>
-                  {cells.length > 1 && <span title={utcWord(cells[cells.length - 1].at)}>{monthDayTime(cells[cells.length - 1].at).slice(0, -3)}</span>}
-                </p>
-              </>
-              : <p className="vd-none-yet">No check of this validator on record yet.</p>}
+            <div className="vd-cap">
+              {cells.length > 0
+                ? <span className="vd-ttl">Latest {plural(cells.length, "check")} <span className="vd-per">· regardless of period</span></span>
+                : <span className="vd-ttl">No check of this validator on record yet.</span>}
+              {cells.length > 0 && <ul className="vd-key" aria-label="key">
+                {key.map((k) => <li key={k.word}>{k.sw.map((s) => <i key={s} className={"vd-c " + s} aria-hidden="true" />)}{k.word} <b>{int(k.n)}</b></li>)}
+              </ul>}
+            </div>
+            <Strip key={addr} cells={cells} slots={STRIP_N} />
+            {cells.length > 0 && <p className="vd-ends" style={{ "--f": cells.length / STRIP_N } as CSSProperties}>
+              <span title={utcWord(cells[0].at)}>{monthDayTime(cells[0].at).slice(0, -3)} · {age(now - Date.parse(cells[0].at))} ago</span>
+              {cells.length > 1 && <span title={utcWord(cells[cells.length - 1].at)}>{monthDayTime(cells[cells.length - 1].at).slice(0, -3)}</span>}
+            </p>}
           </div>
         </div>
-        {/* the period's other figures on one line, spread evenly across the frame: reachability with its count, what was
-            not served (a click shows them in the checks), then throughput and what waits for its check once there is
-            something to say */}
-        <div className="vd-more">
-          <span className="vd-fi" title={!bonded ? "Out of the bonded set: not checked." : reach ? `${int(reach.num)} of ${int(reach.den)} handshakes with the registered endpoint completed in the period; not signing uptime.${v.last_unreachable_at ? ` Last failed ${utcWord(v.last_unreachable_at)}.` : ""}` : "No handshake yet."}>
-            Reachability <b>{reach ? pctOf(reach.num, reach.den) : "—"}</b>{reach && <em>{int(reach.num)} / {int(reach.den)}</em>}
-          </span>
-          <span className={"vd-fi" + (!notLive && broken > 0 ? " bad" : "")} title={`Endorsed shards whose own rows did not come back, even when asked again. Before ${FULL_READ_SINCE_WORDS}: only on an unavailable blob.`}>
-            {notLive
-              ? <>Not served <b>—</b></>
-              : broken > 0
-                ? <button type="button" className="vd-go" onClick={showNotServed} aria-label={`${int(broken)} not served: show them in the checks below`}>Not served <b>{int(broken)}</b></button>
-                : <>Not served <b>0</b></>}
-            {!notLive && prov > 0 && <Warn text={`${int(prov)} of these ${prov === 1 ? "is" : "are"} younger than ${Math.round((v.provisional_faults?.settling_seconds ?? 1800) / 60)} minutes: counted, and final at ${whenUTC(v.provisional_faults!.until)} unless withdrawn.`} />}
-          </span>
-          {v.serve_bytes_per_second != null && <span className="vd-fi" title={`Median download speed over ${int(v.serve_throughput_sample)} shards of 2 MiB or more.`}>
-            Throughput <b>{unit(`${bytes(v.serve_bytes_per_second)}/s`)}</b>
-          </span>}
-          {!notLive && (data.in_retention_window ?? 0) > 0 && <span className="vd-fi" title={`Endorsed shards still in their retention window: read 10 minutes before it ends, counted once it closes.${notCountedText(o) ? ` Not counted in the period: ${notCountedText(o)}.` : ""}`}>
-            Awaiting check <b>{int(data.in_retention_window)}</b>
-          </span>}
+        {/* the period's other figures in one row under them, each in a frame of its own: separate measurements, read one
+            by one */}
+        <div className="vd-boxes">
+          <div className="vd-box" title={!bonded ? "Out of the bonded set: not checked." : reach ? `${int(reach.num)} of ${int(reach.den)} handshakes with the registered endpoint completed in the period; not signing uptime.${v.last_unreachable_at ? ` Last failed ${utcWord(v.last_unreachable_at)}.` : ""}` : "No handshake yet."}>
+            <span className="vd-lbl">Reachability</span>
+            <span className="vd-fv"><b>{reach ? pctOf(reach.num, reach.den) : "—"}</b>{reach && <em>{int(reach.num)} / {int(reach.den)}</em>}</span>
+          </div>
+          <div className={"vd-box" + (v.serve_bytes_per_second == null ? " na" : "")} title={v.serve_bytes_per_second != null ? `Median download speed over ${int(v.serve_throughput_sample)} shards of 2 MiB or more.` : "No shard of 2 MiB or more downloaded yet."}>
+            <span className="vd-lbl">Throughput</span>
+            <span className="vd-fv"><b>{v.serve_bytes_per_second != null ? unit(`${bytes(v.serve_bytes_per_second)}/s`) : "—"}</b></span>
+          </div>
+          <div className="vd-box" title={`Endorsed shards still in their retention window: read 10 minutes before it ends, counted once it closes.${notCountedText(o) ? ` Not counted in the period: ${notCountedText(o)}.` : ""}`}>
+            <span className="vd-lbl">Awaiting check</span>
+            <span className="vd-fv"><b>{notLive ? "—" : int(data.in_retention_window ?? 0)}</b></span>
+          </div>
         </div>
       </section>
 
-      {/* what the chain records, as a quiet list in the same frame, so signing is never read as serving: the period's
-          figures, a step of space, then what holds now */}
+      {/* what the chain records, in the same frame and never read as serving: endorsements as its lead figure beside the
+          last one, then the period's shard data beside what it holds now, and the assignment beside the stake */}
       <section className="vd-oc" id="chain" aria-labelledby="vd-chain">
         <h2 id="vd-chain" title="Read from the chain, nothing measured.">On chain</h2>
-        <dl className="vd-oc-l">
-          <div title={endorse ? endorse.title : "No settlement assigned it rows."}>
-            <dt>Endorsements <span className="per">· {per}</span></dt>
-            <dd className={endorse ? undefined : "na"}><b>{endorse ? pctOf(endorse.n, endorse.of) : "—"}</b>{endorse && <em>{int(endorse.n)} / {int(endorse.of)}</em>}</dd>
+        <div className="vd-oc-lead">
+          <div className={"vd-ocf lead" + (endorse ? "" : " na")} title={endorse ? endorse.title : "No settlement assigned it rows."}>
+            <span className="vd-lbl">Endorsements <span className="vd-per">· {per}</span></span>
+            <span className="vd-fv"><b>{endorse ? pctOf(endorse.n, endorse.of) : "—"}</b>{endorse && <em>{int(endorse.n)} / {int(endorse.of)}</em>}</span>
           </div>
-          {sig?.last_endorsed_at && <div title={`Newest settlement with its endorsement: ${utcWord(sig.last_endorsed_at)}`}>
-            <dt>Last endorsed</dt>
-            <dd><b>{monthDayTime(sig.last_endorsed_at).slice(0, -3)}</b><em>UTC</em></dd>
+          {sig?.last_endorsed_at && <div className="vd-ocf" title={`Newest settlement with its endorsement: ${utcWord(sig.last_endorsed_at)}`}>
+            <span className="vd-lbl">Last endorsed</span>
+            <span className="vd-fv"><b>{monthDayTime(sig.last_endorsed_at).slice(0, -3)}</b><em>UTC</em></span>
           </div>}
-          <div title={`${load ? `${int(load.promises)} endorsed blobs in the period. ` : ""}Row data it stored and endorsed for the period's settled blobs, with padding, without row proofs.`}>
-            <dt>Shard data <span className="per">· {per}</span></dt>
-            <dd className={load && !notLive ? undefined : "na"}><b>{load && !notLive ? unit(bytes(load.bytes)) : "—"}</b></dd>
+        </div>
+        <div className="vd-oc-grid">
+          <div className={"vd-ocf" + (load && !notLive ? "" : " na")} title={`${load ? `${int(load.promises)} endorsed blobs in the period. ` : ""}Row data it stored and endorsed for the period's settled blobs, with padding, without row proofs.`}>
+            <span className="vd-lbl">Shard data <span className="vd-per">· {per}</span></span>
+            <span className="vd-fv"><b>{load && !notLive ? unit(bytes(load.bytes)) : "—"}</b></span>
           </div>
-          {timeouts > 0 && <div title="Payment promise timeouts its operator account reported in the period.">
-            <dt>Timeouts <span className="per">· {per}</span></dt>
-            <dd><b>{int(timeouts)}</b></dd>
+          {timeouts > 0 && <div className="vd-ocf" title="Payment promise timeouts its operator account reported in the period.">
+            <span className="vd-lbl">Timeouts <span className="vd-per">· {per}</span></span>
+            <span className="vd-fv"><b>{int(timeouts)}</b></span>
           </div>}
-          <div className="now" title="Shard data it must hold now: endorsed blobs still in their retention window.">
-            <dt>Held now</dt>
-            <dd className={load ? undefined : "na"}><b>{load ? unit(bytes(load.stored_bytes)) : "—"}</b></dd>
+          <div className={"vd-ocf" + (load ? "" : " na")} title="Shard data it must hold now: endorsed blobs still in their retention window.">
+            <span className="vd-lbl">Held now</span>
+            <span className="vd-fv"><b>{load ? unit(bytes(load.stored_bytes)) : "—"}</b></span>
           </div>
-          <div title="Rows it is assigned of each blob, by stake whatever the blob size; from the newest settled blob.">
-            <dt>Rows per blob</dt>
-            <dd className={load ? undefined : "na"}><b>{load ? int(load.rows_per_blob) : "—"}</b></dd>
+          <div className={"vd-ocf" + (load ? "" : " na")} title="Rows it is assigned of each blob, by stake whatever the blob size; from the newest settled blob.">
+            <span className="vd-lbl">Rows per blob</span>
+            <span className="vd-fv"><b>{load ? int(load.rows_per_blob) : "—"}</b></span>
           </div>
-          <div title="Its stake as the chain records it now, the figure the Validators list sorts by.">
-            <dt>Voting power</dt>
-            <dd><b>{int(v.voting_power)}</b>{bondWord && <em>· {bondWord}</em>}</dd>
+          <div className="vd-ocf" title="Its stake as the chain records it now, the figure the Validators list sorts by.">
+            <span className="vd-lbl">Voting power</span>
+            <span className="vd-fv"><b>{int(v.voting_power)}</b>{bondWord && <em>· {bondWord}</em>}</span>
           </div>
-        </dl>
+        </div>
       </section>
       </div>
 
