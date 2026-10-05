@@ -556,17 +556,54 @@ oldest day due and not sealed, last audit, rebuilds, last write error) and a
 `day_partials` check that fails on raw reads, on an audit that found a
 difference, and on a day due and unsealed for over two days.
 
-*Mainnet item: the histograms in memory.* A sealed row day keeps each
-validator's service-time and transfer-rate histograms, exact, one bin per
-distinct value, and the whole epoch is in memory from the start (loaded from
-the files): about 14 bytes a probe row on the September fixtures, so a year
-of a mainnet ten times Mocha's traffic would hold gigabytes. Before that, one
-of two: keep the histograms on disk and read only the days a window sums
-(the seal files are per day already; an index of their offsets, or SQLite
-beside them, and the "all" window's percentiles read from the files as it
-sums), or retire a day's histograms once the rollup holds the day and sum
-older days' percentiles from a coarser histogram kept per day in the rollup
-(exact only to its bin width, which the figure would have to say).
+*The histograms on disk.* A sealed row day's service-time and transfer-rate
+histograms are exact, one bin per distinct value of each validator's
+readings (a transfer rate is nearly always a value of its own), and they
+were most of what the partials held: about 14 bytes a probe row on the
+September fixtures, every sealed day in memory from the start, gigabytes
+for a year of a mainnet ten times Mocha's. They stay in the day's seal
+file now (`dayparts_hist.go`): the sealer writes the day whole before it
+publishes it, the epoch and the index keep the rest of the day (a few
+counts per validator), and a start reads each row seal file through for
+its digest without parsing it. A window reads the histograms of each day
+it sums from that day's file, checked by the digest the epoch names, and
+the newest days' are kept in memory up to `-day-partials-cache-mb` (64 MB;
+0 keeps none). A seal file is written once and never changed, and a day
+sealed again is another file, so a computation sums the seal its own epoch
+names or, when that file is gone, damaged or another's, reads the day raw
+in its own snapshot, which is what the seal held; the day is then dropped
+and sealed again. A window of more than 31 sealed days (`all`, once the
+record is that long) ranks the histograms in bounded memory
+(`dayparts_rank.go`): it counts each population in buckets of 1/64 of an
+octave, then reads only the bins of the bucket each rank falls in, never
+the record's distinct values at once. The live `all` window keeps, for each
+rank, a band of values around it a few days' readings wide and each day's
+part of it (how many values fall below, how many above, the bins inside),
+so a refresh reads only the days sealed since its last and builds a band
+again only when its rank leaves it. On a 32-day synthetic record (311,000
+probe rows) the partials hold 0.9 MB after a start where they held 4.4 MB
+(3 bytes a probe row, not 15), and every window refreshes as fast as
+before. On synthetic seal files of a mainnet ten times Mocha's (100
+validators, 2,000 served readings each a day: 3 MB of seal file a day,
+1.1 GB a year), a start checks a year's files in seconds where it parsed
+them in about 40, the `all` window's bands are built in about 40 seconds
+(once after a start, or when a rank leaves its band) and hold 26 MB, a
+refresh from them takes a quarter of a second, reading at most the day
+sealed since, and a pinned or filtered `all` (`?as_of=`, `?exclude=`),
+ranked by the two reads, takes about half a minute and 0.1 GB; the build
+before held about 1.5 GB for that year and summed every histogram whole on
+each refresh of `all`, 8 seconds and 0.9 GB more at the peak for 90 days of
+it.
+
+*Still open.* A band keeps a part per day, so it still grows with the days,
+by about 20 KB a day at that scale; folding the days older than a few weeks
+into one part, and building a band again when one of them is dropped, would
+stop that. A seal file is JSON, read at about 60 MB/s (50 ms a day at that
+scale), which is most of the work of a window that misses the cache and of
+a band built again; a binary layout of the histograms would cut it. And the
+`all` window's attestation is still read raw over the whole window on every
+refresh, as it always was (a pair counts once at the MAX of its rows, which
+is not a sum over days), so its cost still grows with the record.
 
 **Two paths bypass the cache and are rationed** (4-burst, then one per 2s;
 429 with `Retry-After`):
