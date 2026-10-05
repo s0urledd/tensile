@@ -28,13 +28,14 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties
  * The plot is focusable: the arrow keys (and Home / End) walk the buckets
  * and the readout follows, the same one the pointer gets.
  *
- * `bare` draws only the bars, their baseline and the axis names, for a chart
- * set beside a figure of its own (the Blobs top): no head, ticks or
- * gridlines, the tallest bar filling the plot exactly with its count over
- * it, flat fills, and any bucket with something in it at least 3px tall. A
- * row's `partial` (an hour or a day not over yet) takes a lighter tint of
- * the series, so half a day is not read as a drop. The tallest bar's bucket
- * is always named on the axis.
+ * `bare` draws only the bars, their baseline, a quiet stub on it for each
+ * empty bucket (an hour with nothing settled is a measured zero, kept) and
+ * the axis names, for a chart set beside a figure of its own (the Blobs
+ * top): no head, ticks or gridlines, the tallest bar filling the plot
+ * exactly with its count over it, flat fills, and any bucket with something
+ * in it at least 3px tall. A row's `partial` (an hour or a day not over
+ * yet) takes a lighter tint of the series, so half a day is not read as a
+ * drop. The tallest bar's bucket is always named on the axis.
  */
 export type Series = { key: string; label: string; color: string };
 /** `short`: the label without its month, "22" for "Sep 22" */
@@ -382,7 +383,7 @@ export default function Chart({ series, rows, fmt, height = 200, fmtAxis, title,
                     ? <rect x={left + slot * i + 1} y={padT - 4} width={Math.max(0, slot - 2)} height={plotH + 4} rx={Math.min(8, slot / 3)} style={{ fill: "var(--wash)" }} className="hl" />
                     : <rect x={left + slot * i + 1} y={PAD.top - 4} width={Math.max(0, slot - 2)} height={plotH + 4} rx={Math.min(8, slot / 3)} fill={`url(#${uid}-hl)`} className="hl" />)}
                   {bars}
-                  {totals[i] === 0 && !bare && <rect x={Math.round(cx - Math.min(bw, 10) / 2)} y={base - 3} width={Math.min(bw, 10)} height={2} rx={1} className="quiet" />}
+                  {totals[i] === 0 && (!bare || hasData) && <rect x={Math.round(cx - Math.min(bw, 10) / 2)} y={base - 3} width={Math.min(bw, 10)} height={2} rx={1} className="quiet" />}
                   {showName(i) && (
                     <text x={cx} y={height - (bare ? 9 : 7)} textAnchor="middle" className={isOn ? "tick on" : on !== null ? "tick dim" : "tick"}>{isOn ? full[i] : names.get(i)}</text>
                   )}

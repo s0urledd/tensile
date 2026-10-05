@@ -1,20 +1,19 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
 import { type Blob, type Market, bytes, int, tia, utc } from "@/lib/api";
-import { buckets } from "@/lib/buckets";
+import { buckets, type Bucket } from "@/lib/buckets";
 import { type WindowName, WINDOWS, periodName, windowLabel } from "@/lib/window";
 import { unit } from "@/components/Unit";
 import Chart from "@/components/Chart";
 import Warn from "@/components/Warn";
 
 /**
- * The Blobs page's top: one frame holding the period's settlements as a short
- * ledger (the count, a hairline, then blob size, fees and namespaces) and,
- * behind one thin divider, the same settlements per hour (per day past a
- * day) as bare bars. The tallest bar's top is level with the count and its
- * own count sits on the label's line; the dates sit on the last row's line,
- * so the figure and the chart read as one piece.
+ * The Blobs page's top: how much was settled in the period and when. One frame:
+ * the period's figures in a strip, three of them tabs (the settlements, their
+ * total size, the fees they paid) over a chart that shows the one picked per
+ * hour (per day past a day), titled with what a bar holds; the namespaces close
+ * the strip, a figure with no chart.
  *
  * Everything in it is one /v1/market answer: while another period loads, the
  * last answer stays whole under its own period, a step back, and the top
@@ -74,16 +73,16 @@ function useNow(skew: number): number {
 }
 
 /**
- * The chart's height at the page's width: its bars are 123 px beside the ledger, 102 under it, 88 on a phone. The
+ * The chart's height at the page's width: its bars are 102 px under the figures, as they are on a tablet, 88 on a phone. The
  * page's HTML is drawn for a desktop and the browser takes it over as it is, so the width is read once it has: the
  * chart is measured then too, and draws nothing before.
  */
 const HEIGHTS: [string, number][] = [["(max-width: 720px)", 136], ["(max-width: 960px)", 150]];
 function useChartHeight(): number {
-  const [h, setH] = useState(171);
+  const [h, setH] = useState(150);
   useEffect(() => {
     const qs = HEIGHTS.map(([q]) => window.matchMedia(q));
-    const on = () => setH(HEIGHTS.find(([q]) => window.matchMedia(q).matches)?.[1] ?? 171);
+    const on = () => setH(HEIGHTS.find(([q]) => window.matchMedia(q).matches)?.[1] ?? 150);
     on();
     qs.forEach((q) => q.addEventListener("change", on));
     return () => qs.forEach((q) => q.removeEventListener("change", on));
@@ -117,6 +116,30 @@ export function Lbl({ name, per }: { name: string; per: string }) {
   return <h2 className="tp-lbl">{name} <span className="per">· {per}</span></h2>;
 }
 
+/**
+ * The three figures with a bucket of their own: each is a tab over the chart, the chart showing the one picked (the
+ * settlements to begin with), titled with what a bar holds and the bucket the period uses.
+ */
+type Metric = "n" | "bytes" | "fees";
+const METRICS: Record<Metric, {
+  name: string; chart: string; unit: string; title: (m: Market | null) => string | undefined; wait: string;
+  figure: (m: Market) => React.ReactNode; of: (c: Bucket) => number; fmt: (v: number) => string; note: (c: Bucket) => string;
+}> = {
+  n: {
+    name: "Settlements", chart: "Settlements", unit: "settlements", title: () => "Settlements paid in the period: one per blob paid for.", wait: "0,000",
+    figure: (m) => <>{int(m.settlements)}{m.blobs !== m.settlements && <span className="beside" title="A blob settled twice counts once as a blob and twice as a settlement."><b>{int(m.blobs)}</b> blobs</span>}</>,
+    of: (c) => c.settlements, fmt: (v) => int(v), note: (c) => `${bytes(c.bytes)} · ${tia(c.fees)} fees`,
+  },
+  bytes: {
+    name: "Total size", chart: "Blob size", unit: "blob size", title: () => "Summed over settlements: a blob settled twice counts twice.", wait: "000.00 GiB",
+    figure: (m) => unit(bytes(m.bytes)), of: (c) => c.bytes, fmt: (v) => bytes(v), note: (c) => `${plural(c.settlements, "settlement")} · ${tia(c.fees)} fees`,
+  },
+  fees: {
+    name: "Fees paid", chart: "Fees paid", unit: "fees paid", title: (m) => (m?.paid_per_mib_utia != null ? `${tia(m.paid_per_mib_utia)} per MiB` : undefined), wait: "00,000 TIA",
+    figure: (m) => unit(tia(m.fees_settled_utia)), of: (c) => c.fees, fmt: (v) => tia(v), note: (c) => `${plural(c.settlements, "settlement")} · ${bytes(c.bytes)}`,
+  },
+};
+
 export default function BlobsDeck({ win, onWin, market, newest, skew }: {
   win: WindowName;
   onWin: (w: WindowName) => void;
@@ -128,6 +151,10 @@ export default function BlobsDeck({ win, onWin, market, newest, skew }: {
 }) {
   const now = useNow(skew);
   const height = useChartHeight();
+  // what the chart shows: the settlements, until another tab is picked
+  const [metric, setMetric] = useState<Metric>("n");
+  const uid = useId();
+  const tabsRef = useRef<HTMLDivElement>(null);
   const m = market;
   // every figure, bar and label is this one answer's, the period included: while another period loads it stays whole
   const shownWin = ((m?.window.name ?? win) as WindowName);
@@ -163,41 +190,46 @@ export default function BlobsDeck({ win, onWin, market, newest, skew }: {
     );
   }
 
-  // ---- the period's ledger and its chart ----
+  // ---- the period's figures, the three that have a chart as tabs over it ----
   const series = m ? buckets(m, shownWin) : [];
   const unitWord = shownWin === "24h" ? "hour" : "day";
+  const M = METRICS[metric];
+  const keys = Object.keys(METRICS) as Metric[];
+  // the tabs as a tab list: one stop for Tab, the arrow keys (and Home / End) moving the choice and the focus with it;
+  // a tab is not a <button>, since the fees one may hold the warning dot, which is one
+  const pick = (k: Metric) => { setMetric(k); tabsRef.current?.querySelector<HTMLElement>(`[data-k="${k}"]`)?.focus(); };
+  const onKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const i = keys.indexOf(metric);
+    const to = e.key === "ArrowRight" ? keys[(i + 1) % keys.length] : e.key === "ArrowLeft" ? keys[(i + keys.length - 1) % keys.length]
+      : e.key === "Home" ? keys[0] : e.key === "End" ? keys[keys.length - 1] : null;
+    if (to) { e.preventDefault(); pick(to); }
+  };
   return (
-    <section className={cls("")} aria-label="The period's settlements" aria-busy={pending || undefined}>
-      <div className="tp-lead">
-        <Lbl name="Settlements" per={per} />
-        <p className="tp-fig">
-          {m ? <span title="Settlements paid in the period: one per blob paid for.">{int(m.settlements)}</span> : <span className="wait">0,000</span>}
-          {/* the blobs they paid for, only where they are not the same count */}
-          {m && m.blobs !== m.settlements && <span className="beside" title="A blob settled twice counts once as a blob and twice as a settlement."><b>{int(m.blobs)}</b> blobs</span>}
-        </p>
-        <hr className="tp-rule" />
-        <dl className="tp-rows">
-          <div title="Summed over settlements: a blob settled twice counts twice."><dt>Blob size</dt><dd>{m ? unit(bytes(m.bytes)) : <span className="wait">000.00 GiB</span>}</dd></div>
-          <div>
-            <dt>Fees paid</dt>
-            <dd>{m
-              ? <>
-                <span title={m.paid_per_mib_utia != null ? `${tia(m.paid_per_mib_utia)} per MiB` : undefined}>{unit(tia(m.fees_settled_utia))}</span>
-                {m.timeouts > 0 && <Warn tone="fault" text={`${plural(m.timeouts, "payment promise")} timed out in the period; ${tia(m.timed_out_utia)} charged all the same`} />}
-              </>
-              : <span className="wait">00,000 TIA</span>}</dd>
-          </div>
-          <div title="Namespaces the period's settlements used, of every namespace on record.">
-            <dt>Namespaces</dt>
-            <dd>{m?.namespaces != null ? <>{int(m.namespaces)}{m.namespaces_total != null && <span className="of"> of {int(m.namespaces_total)}</span>}</> : m ? "—" : <span className="wait">0 of 00</span>}</dd>
-          </div>
-        </dl>
+    <section className={cls(" tc")} aria-label="The period's settlements" aria-busy={pending || undefined}>
+      <div className="tc-tabs" role="tablist" aria-label="What the chart shows" ref={tabsRef} onKeyDown={onKey}>
+        {keys.map((k) => {
+          const x = METRICS[k];
+          return (
+            <div key={k} role="tab" id={`${uid}-${k}`} data-k={k} aria-selected={metric === k} aria-controls={`${uid}-plot`} tabIndex={metric === k ? 0 : -1}
+              className="tc-tab" onClick={() => setMetric(k)} onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); setMetric(k); } }} title={x.title(m)}>
+              <span className="tc-k">{x.name}{k === "n" && <span className="per"> · {per}</span>}</span>
+              <span className="tc-v">{m
+                ? <>{x.figure(m)}{k === "fees" && m.timeouts > 0 && <Warn tone="fault" text={`${plural(m.timeouts, "payment promise")} timed out in the period; ${tia(m.timed_out_utia)} charged all the same`} />}</>
+                : <span className="wait">{x.wait}</span>}</span>
+            </div>
+          );
+        })}
+        <div className="tc-tab tc-static" title="Namespaces the period's settlements used, of every namespace on record.">
+          <span className="tc-k">Namespaces</span>
+          <span className="tc-v">{m?.namespaces != null ? <>{int(m.namespaces)}{m.namespaces_total != null && <span className="of"> of {int(m.namespaces_total)}</span>}</> : m ? "—" : <span className="wait">0 of 00</span>}</span>
+        </div>
       </div>
-      <div className="tp-plot">
-        <Chart bare padTop={22} height={height} title={`Settlements per ${unitWord}`}
-          series={[{ key: "n", label: "settlements", color: "var(--accent)" }]}
-          rows={series.map((c) => ({ x: c.title, label: c.label, short: c.short, values: { n: c.settlements }, note: `${bytes(c.bytes)} · ${tia(c.fees)} fees`, partial: c.partial }))}
-          fmt={(v) => int(v)} empty={m ? "nothing settled" : "loading…"} />
+      <div className="tp-plot" role="tabpanel" id={`${uid}-plot`} aria-labelledby={`${uid}-${metric}`}>
+        <h3 className="tp-ct">{M.chart} per {unitWord}<span className="tz">UTC</span></h3>
+        <Chart key={metric} bare padTop={22} height={height} title={`${M.chart} per ${unitWord}`}
+          series={[{ key: "v", label: M.unit, color: "var(--accent)" }]}
+          rows={series.map((c) => ({ x: c.title, label: c.label, short: c.short, values: { v: M.of(c) }, note: M.note(c), partial: c.partial }))}
+          fmt={M.fmt} empty={m ? "nothing settled" : "loading…"} />
       </div>
     </section>
   );
