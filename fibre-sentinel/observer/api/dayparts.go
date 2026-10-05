@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/rollup"
@@ -596,6 +597,10 @@ type dayParts struct {
 	// yet (writeRowSeal), which no write of the partials removes; guarded
 	// by mu.
 	pending map[string]bool
+	// rested is how long sealDue has rested for its pace (WithSealPace), in
+	// all: the rests a pace adds, measured, so a test can hold them to the
+	// work they follow whatever else the machine is doing
+	rested atomic.Int64
 	// hists keeps the histograms of the sealed row days read last, within
 	// its bound (WithHistCache); beforeRead runs before a seal file is read
 	// for them, for tests.

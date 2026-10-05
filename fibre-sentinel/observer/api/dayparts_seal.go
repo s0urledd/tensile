@@ -246,10 +246,14 @@ func (s *Server) pause(ctx context.Context, took time.Duration) bool {
 	if s.sealDuty <= 0 {
 		return true
 	}
-	t := time.NewTimer(time.Duration(s.sealDuty * float64(took)))
+	d := time.Duration(s.sealDuty * float64(took))
+	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
 	case <-t.C:
+		if s.parts != nil {
+			s.parts.rested.Add(int64(d))
+		}
 		return true
 	case <-ctx.Done():
 		return false
