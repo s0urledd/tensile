@@ -39,6 +39,7 @@ export default function Methodology() {
         <li><strong>Unavailable</strong>, &ldquo;not enough shards to reconstruct blob&rdquo;: some rows came back, fewer than 4096.</li>
       </ul>
       <p>Each validator that endorsed a blob is judged on its own answers, whatever the blob&rsquo;s result. It is <strong>served</strong> when its own rows came back and verified, at the reading or when asked again. It is <strong>not served</strong> when none of its answers served; its last answer gives the reason: no such shard, rows that do not verify or fewer of its own than it holds, a wrong or expired certificate, no registered endpoint, an endpoint that could not be reached or refused the connection, a timeout, a rate limit or a server error. While an <code>x/fibre</code> parameter change not yet read could have moved a blob&rsquo;s deadline, nothing is counted and the validator shows <strong>deadline unverified</strong>. A not-served reading can be challenged through the <a href={DISPUTE_URL} rel="noopener noreferrer" target="_blank">dispute route</a>.</p>
+      <p>The words a reading records. A failure among them counts as not served only when it is the validator&rsquo;s last answer.</p>
       <Legend />
 
       <h2 id="signing">Endorsements</h2>
@@ -70,7 +71,7 @@ export default function Methodology() {
       </ul>
 
       <h2 id="evidence">Evidence behind each figure</h2>
-      <p>The validator page shows what the chain records under <strong>On chain</strong> and Tensile&rsquo;s own readings under <strong>Observed by Tensile</strong>; on the blob page and the Blobs list, Tensile&rsquo;s own readings carry its eye. Every snapshot names the block it was computed through (<code>record_through</code>). The 7d, 30d and all figures are summed from per-day records sealed once a day is final, each re-checked against the raw readings in turn; they equal a count over every row. Every reading stays on record for good: nothing is deleted, so a blob&rsquo;s page and every rate read the same later as they do today. Daily exports are signed, <code>/api/v1/exports</code>, and <code>sentinel-recompute</code> re-derives every verdict and figure from them.</p>
+      <p>The validator page shows what the chain records under <strong>On chain</strong> and Tensile&rsquo;s own readings under <strong>Observed by Tensile</strong>; on the blob page and the Blobs list, Tensile&rsquo;s own readings carry its eye. Every snapshot names the block it was computed through (<code>record_through</code>). The 7d, 30d and all figures are summed from per-day records sealed once a day is final, each re-checked against the raw readings in turn; they equal a count over every row. Past observations are kept, and every result can be recomputed from them. Daily exports are signed, <code>/api/v1/exports</code>, and <code>sentinel-recompute</code> re-derives every verdict and figure from them.</p>
 
       <h2 id="vantage">Two locations</h2>
       <p>Endpoints are checked every five minutes from two locations; a host is unreachable only when both fail. Blobs are read from one location, as one client&rsquo;s download is.</p>
