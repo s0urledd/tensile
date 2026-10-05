@@ -1488,14 +1488,13 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
    The tops of the Blobs and Publishers pages (components/BlobsDeck.tsx,
    components/PublishersTop.tsx).
 
-   One frame each, the validator window's (.pan). Inside it every figure leads
-   its own short ledger: a caps label carrying its period, the figure, a
-   hairline, then two or three label/value rows. Blobs sets its ledger beside
-   the period's bars, behind one thin divider that meets the middle of the
-   first Publishers gutter, so the two pages share one grid; Publishers sets
-   three ledgers side by side, whitespace between them. One coloured thing a
-   top, in the accent: the bars, and the largest publisher's part of the share
-   bar. Everything else is type in the three greys.
+   One frame each, the validator window's (.pan), with the period's figures as
+   one strip of tabs across it: Blobs draws the picked one per hour (per day)
+   under the strip, Publishers ranks the publishers by it. A period with no
+   settlement is one quiet band instead: the 0, when the last blob was and the
+   period that holds it (and, on Publishers, the escrow held now), in the
+   tabs' own type scale. One coloured thing a top, in the accent: the bars.
+   Everything else is type in the three greys.
    ========================================================================== */
 .lg-head { align-items: center; }
 
@@ -1509,45 +1508,17 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .tp-g { min-width: 0; }
 
 /* the label names the figure and carries the period of the answer shown */
-.tp-lbl { margin: 0; font-size: var(--t-tiny); line-height: 16px; font-weight: 500; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; }
-.tp-lbl .per, .tp-rows dt .per { font-weight: 400; letter-spacing: .02em; text-transform: none; }
-.tp-fig { margin: 6px 0 0; font-family: var(--font-table); font-size: 36px; line-height: 42px; font-weight: 500; letter-spacing: -.03em; color: var(--text); font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
+.tp-lbl { margin: 0; font-size: var(--t-small); line-height: 16px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; }
+.tp-lbl .per { font-weight: 400; letter-spacing: .02em; text-transform: none; }
+.tp-fig { margin: 10px 0 0; font-family: var(--font-table); font-size: 22px; line-height: 28px; font-weight: 500; letter-spacing: -.01em; color: var(--text); font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
 .tp-fig.zero { color: var(--text-3); }
 /* a smaller run inside a line is set solid, so the line keeps its own height */
-.tp-fig .u { margin-left: 1px; line-height: 1; font-size: 15px; font-weight: 400; letter-spacing: 0; color: var(--text-3); }
-.tp-fig .beside { margin-left: 12px; line-height: 1; font-size: var(--t-cell); font-weight: 400; letter-spacing: 0; color: var(--text-3); }
+.tp-fig .u { margin-left: 2px; line-height: 1; font-size: var(--t-cell); font-weight: 400; letter-spacing: 0; color: var(--text-3); }
+.tp-fig .beside { margin-left: 10px; line-height: 1; font-size: var(--t-cell); font-weight: 400; letter-spacing: 0; color: var(--text-3); }
 .tp-fig .beside b { font-weight: 500; color: var(--text-2); }
-.tp-fig button.warn { margin-left: 6px; vertical-align: 4px; }
+.tp-fig button.warn { margin-left: 4px; vertical-align: 2px; }
 .tp-fig .wait { letter-spacing: 0; }
-.tp-rule { display: block; height: 1px; margin: 16px 0 6px; border: 0; background: var(--line-soft); }
-
-/* label/value rows: a fixed label column, so every value starts a short step after its label */
-.tp-rows { display: grid; grid-template-columns: var(--lc, 104px) minmax(0, 1fr); margin: 0; }
-/* a row is 28 px whatever its two faces: the label (Plex) and the value (DM Sans) share a baseline inside it */
-.tp-rows > div { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; grid-template-rows: 28px; align-items: baseline; }
-.tp-rows dt { font-size: var(--t-cell); line-height: 28px; color: var(--text-3); white-space: nowrap; }
-.tp-rows dd { min-width: 0; margin: 0; font-family: var(--font-table); font-size: 14px; line-height: 28px; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
-.tp-rows dd .u, .tp-rows dd .of, .tp-rows dd em, .tp-rows dt .per { line-height: 1; }
-.tp-rows dd .u, .tp-rows dd .of { font-size: var(--t-cell); font-weight: 400; color: var(--text-3); }
-.tp-rows dd em { margin-left: 8px; font-style: normal; font-size: var(--t-cell); font-weight: 400; color: var(--text-3); }
-.tp-rows dd.zero { color: var(--text-3); }
-.tp-rows button.warn { vertical-align: -4px; }
-.tp-p .tp-g:nth-child(3) .tp-rows { --lc: 136px; }
-
-/* the largest publisher's part: a bar with no track, its rest a dot at least, never reading as a finished one */
-/* its own block, so the bar keeps its margin under the hairline */
-.tp-share { display: flow-root; min-width: 0; }
-.tp-bar { display: flex; gap: 3px; height: 6px; margin: 11px 0; }
-.tp-bar i { height: 6px; border-radius: 3px; }
-.tp-bar .lead { flex: 1 1 0; min-width: 6px; background: var(--accent); }
-.tp-bar .rest { flex: 0 0 max(6px, calc(100% * var(--r))); background: var(--tick-dim); }
-.tp-bar.wait { border-radius: 3px; }
-.tp-names { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 28px; white-space: nowrap; }
-.tp-names .ld, .tp-names .oth { display: inline-flex; align-items: center; min-width: 0; }
-.tp-names .ld { overflow: hidden; }
-.tp-names .oth { flex: none; font-size: var(--t-cell); color: var(--text-3); }
-.tp-names .sh { margin-left: 10px; font-family: var(--font-table); font-size: 14px; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
-.tp-names .oth b { margin-left: 6px; font-family: var(--font-table); font-weight: 500; color: var(--text-2); font-variant-numeric: tabular-nums lining-nums; }
+/* a publisher a quiet band names: its mark and its short name */
 .tp-who { display: inline-flex; min-width: 0; }
 .tp-who.short .hd { display: none; }
 .tp-lab .nm { max-width: 170px; overflow: hidden; text-overflow: ellipsis; font-size: var(--t-cell); color: var(--text); }
@@ -1559,12 +1530,11 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .tp-quiet .say { font-family: var(--sans); font-size: 14px; line-height: 1; font-weight: 400; letter-spacing: 0; color: var(--text-2); white-space: nowrap; }
 .tp-quiet .tp-go { margin-left: 16px; white-space: nowrap; }
 .tp-quiet .tp-who, .tp-quiet .tp-lab { vertical-align: -3px; }
-.tp-last { margin: 0; height: 28px; font-size: 14px; line-height: 28px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tp-quiet .age, .tp-last .age { font-weight: 500; color: var(--text); }
+.tp-quiet .age { font-weight: 500; color: var(--text); }
 
 /* another period on its way: what is shown steps back until it lands (only when the wait is long enough to see) */
-.tp :is(.tp-fig, .tp-rows, .tp-share, .tp-plot svg) { transition: opacity 120ms ease-out; }
-.tp.is-pending :is(.tp-fig, .tp-rows, .tp-share, .tp-plot svg) { opacity: .5; transition-delay: 150ms; }
+.tp :is(.tp-fig, .tp-plot svg) { transition: opacity 120ms ease-out; }
+.tp.is-pending :is(.tp-fig, .tp-plot svg) { opacity: .5; transition-delay: 150ms; }
 .tp-go { display: inline-flex; flex: none; align-items: center; gap: 6px; padding: 0; border: 0; background: none; font: 500 var(--t-cell)/20px var(--sans); color: var(--accent-ink); cursor: pointer; }
 .tp-go:hover { text-decoration: underline; text-underline-offset: 3px; }
 .tp-go svg { transition: transform var(--dur) ease-out; }
@@ -1669,68 +1639,41 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .pp .pp-rows { transition: none; }
 }
 
-/* a little narrower: the same grid, the first column smaller, so the Blobs divider still meets the first gutter */
+/* a little narrower: the quiet bands' first column smaller */
 @media (min-width: 961px) and (max-width: 1199px) {
   .tp-b { grid-template-columns: 240px minmax(0, 1fr); }
   .tp-b .tp-lead { padding: 20px; }
-  /* half the Publishers gutter after the divider, so what follows it starts where the second Publishers ledger does */
   .tp-b .tp-plot { padding-left: 16px; }
-  .tp-b .tp-rows, .tp-p .tp-g:first-child .tp-rows { --lc: 92px; }
   .tp-p { grid-template-columns: 200px minmax(0, 1fr) minmax(0, 1fr); column-gap: 32px; }
-  /* "on 3 days" moves into the Settlements hover */
-  .tp-p .tp-g:first-child .tp-rows dd em { display: none; }
 }
-/* a tablet: each ledger a band, its label and figure on the left and its rows on the right */
+/* a tablet: Blobs' 0 beside the last blob; on Publishers the 0 and the escrow side by side, the last blob under them */
 @media (max-width: 960px) {
-  .tp-b { grid-template-columns: minmax(0, 1fr); }
-  .tp-b .tp-lead { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); grid-template-rows: auto 1fr; column-gap: 24px; }
-  .tp-b .tp-lead > .tp-lbl { grid-area: 1 / 1; }
-  .tp-b .tp-lead > .tp-fig { grid-area: 2 / 1; }
-  .tp-b .tp-lead > .tp-rule { display: none; }
-  .tp-b .tp-lead > .tp-rows { grid-area: 1 / 2 / 3 / 3; }
-  .tp-b .tp-plot { padding: 16px 24px 20px; border-left: 0; border-top: 1px solid var(--border); }
   .tp-b.is-quiet { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
-  .tp-b.is-quiet .tp-lead { display: block; }
-  .tp-b.is-quiet .tp-plot { padding: 20px 24px 20px 0; border-top: 0; }
-
-  .tp-p { grid-template-columns: minmax(0, 1fr); padding: 4px 24px; }
-  .tp-p .tp-g { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); grid-template-rows: auto 1fr; column-gap: 24px; padding: 16px 0; }
-  .tp-p .tp-g + .tp-g { border-top: 1px solid var(--line-soft); }
-  .tp-p .tp-g > .tp-lbl { grid-area: 1 / 1; }
-  .tp-p .tp-g > .tp-fig { grid-area: 2 / 1; }
-  .tp-p .tp-g > .tp-rule { display: none; }
-  .tp-p .tp-g > .tp-rows, .tp-p .tp-g > .tp-share { grid-area: 1 / 2 / 3 / 3; align-self: center; }
-  /* quiet: the 0 and the escrow side by side, the last blob under them */
-  .tp-p.is-quiet { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 24px; }
-  .tp-p.is-quiet .tp-g { display: block; }
-  .tp-p.is-quiet .tp-g:nth-child(2) { grid-area: 2 / 1 / 3 / 3; }
-  .tp-p.is-quiet .tp-g:nth-child(3) { grid-area: 1 / 2; border-top: 0; }
+  .tp-b.is-quiet .tp-plot { padding: 20px 24px 20px 0; border-left: 0; }
+  .tp-p.is-quiet { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 24px; padding: 4px 24px; }
+  .tp-p.is-quiet .tp-g { padding: 16px 0; }
+  .tp-p.is-quiet .tp-g:nth-child(2) { grid-area: 2 / 1 / 3 / 3; border-top: 1px solid var(--line-soft); }
+  .tp-p.is-quiet .tp-g:nth-child(3) { grid-area: 1 / 2; }
 }
-/* a phone (to be settled once the desktop is): each ledger as on a desktop, one under the other */
+/* a phone: one under the other */
 @media (max-width: 720px) {
   .lg-head { flex-wrap: nowrap; }
   .lg-head .seg button, .lg-head .seg button:first-child { padding: 0 12px; }
   .tp { margin-top: 14px; }
-  .tp-fig { font-size: 32px; line-height: 38px; }
-  .tp-b .tp-lead { display: block; padding: 18px 16px 0; }
-  .tp-b .tp-lead > .tp-rule { display: block; }
-  .tp-b .tp-plot { padding: 16px; border-top: 0; }
   .tp-b.is-quiet { grid-template-columns: minmax(0, 1fr); }
-  .tp-b.is-quiet .tp-lead { padding-bottom: 0; }
+  .tp-b.is-quiet .tp-lead { padding: 18px 16px 0; }
   .tp-b.is-quiet .tp-plot { padding: 16px 16px 18px; }
-  .tp-p { margin-bottom: 24px; padding: 18px 16px; }
-  .tp-p .tp-g { display: block; padding: 0; }
-  .tp-p .tp-g + .tp-g { margin-top: 24px; border-top: 0; }
-  .tp-p .tp-g > .tp-rule { display: block; }
-  .tp-p.is-quiet { grid-template-columns: minmax(0, 1fr); }
-  .tp-p.is-quiet .tp-g:nth-child(n) { grid-area: auto; }
+  .tp-p { margin-bottom: 24px; }
+  .tp-p.is-quiet { grid-template-columns: minmax(0, 1fr); padding: 18px 16px; }
+  .tp-p.is-quiet .tp-g { padding: 0; }
+  .tp-p.is-quiet .tp-g:nth-child(n) { grid-area: auto; border-top: 0; }
   .tp-p.is-quiet .tp-g + .tp-g { margin-top: 20px; }
 }
 @media (max-width: 400px) {
   .lg-head .seg button, .lg-head .seg button:first-child { padding: 0 10px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .tp-go svg, .tp :is(.tp-fig, .tp-rows, .tp-share, .tp-plot svg) { transition: none; }
+  .tp-go svg, .tp :is(.tp-fig, .tp-plot svg) { transition: none; }
 }
 
 /* =============================================================================
