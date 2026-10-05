@@ -680,7 +680,7 @@ function Page() {
                     <td className="c-r">{rows}</td>
                     <td className="c-d">{ms}</td>
                     <td className="gap" aria-hidden="true" />
-                    <td className="tn"><span className={r.tone} title={note}>{word}</span></td>
+                    <td className="tn"><span className={"lw " + r.tone} title={note}>{word}</span></td>
                     <td className="c-m"><span className={"rs " + r.tone} title={note}>{word}</span><span className="sep rs-sep">·</span><span>{rows}</span><span className="sep">·</span><span>{ms}</span></td>
                   </tr>
                 );
