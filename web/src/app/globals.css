@@ -2108,11 +2108,10 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
 }
 
 /* =============================================================================
-   A publisher's page (app/publisher): whose account it is; then what it
-   posted and when beside four figures of its own, two light frames of the
-   same make and height, as a blob's page sets its own (.bd-top); then its
-   transactions, its blobs as the Blobs list draws them with its escrow
-   movements between them.
+   A publisher's page (app/publisher): whose account it is; under it two
+   frames of the same make, its four figures and when and where it posted;
+   then its transactions, its blobs as the Blobs list draws them with
+   its escrow movements between them.
    ========================================================================== */
 /* ---- whose account it is ---- */
 .pb-mast { padding: 34px 0 0; min-width: 0; }
@@ -2156,9 +2155,6 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
 .pb-meta dd { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; margin: 0; min-width: 0; }
 .pb-meta b { font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
 .pb-meta em { font-style: normal; color: var(--text-3); }
-.pb-meta .pb-nss { column-gap: 14px; row-gap: 2px; }
-.pb-nss .nsb { color: var(--text); }
-.pb-nss .more { color: var(--text-3); }
 
 /* an escrow that cannot pay for one more blob of the account's usual size: an amber dot beside the figure, its
    reason on hover, on focus or on a tap */
@@ -2173,8 +2169,49 @@ button.warn:focus-visible { outline-offset: 0; }
 .warn-tip { position: fixed; z-index: 50; max-width: min(340px, calc(100vw - 24px)); padding: 7px 10px; border-radius: 8px; background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow-pop); font-family: var(--sans); font-size: var(--t-small); line-height: 17px; font-weight: 500; letter-spacing: 0; color: var(--hold-ink); white-space: normal; animation: tip-in var(--dur) ease-out; }
 .warn-tip.fault { color: var(--fault); }
 
-/* ---- its facts beside its figures: .pb-top shares the blob page's .bd-top rules (below), the figures' rows its
-   .bd-figs rows, Tensile's with its eye ---- */
+/* ---- under its name, two frames side by side (the table's), as tall as each other: the account on the left, its
+   history on the right. Both draw their rows alike: a hairline between, the label (the Blobs top's labels, the period
+   after the name) in a column of its own so every value starts at one x. The history's last and first blob sit level
+   with the figure rows beside them; its namespaces take the room left under them and wrap onto further lines, never
+   cut ---- */
+.pbd { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 24px; align-items: stretch; margin-top: 22px; }
+.pbd-acct, .pbd-hist { display: grid; grid-template-columns: 196px minmax(0, 1fr); align-content: start; margin: 0; padding: 4px 22px; }
+.pbd-hist { grid-template-columns: 132px minmax(0, 1fr); grid-template-rows: auto auto 1fr; align-content: stretch; }
+.pbd dt, .pbd dd { margin: 0; padding: 12px 0; border-top: 1px solid var(--line-soft); }
+.pbd dt:first-of-type, .pbd dt:first-of-type + dd { border-top: 0; }
+.pbd dt { padding: 14px 14px 10px 0; font-size: var(--t-small); line-height: 20px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; }
+.pbd dt .per { font-weight: 400; letter-spacing: .02em; text-transform: none; }
+.pbd dt.tz svg { display: inline-block; width: 13px; height: 13px; margin-right: 6px; vertical-align: -2px; color: var(--accent-ink); }
+.pbd-v { min-width: 0; margin: 0; font-family: var(--font-table); font-size: 17px; line-height: 20px; font-weight: 500; letter-spacing: -.005em; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
+/* a value too long for its column (a long count beside "read by Tensile") wraps before its quiet part, never clipped;
+   a figure and its unit stay together */
+.pbd-v .u, .pbd-v .beside { white-space: nowrap; }
+.pbd-v .u { margin-left: 2px; font-size: var(--t-cell); line-height: 1; font-weight: 400; letter-spacing: 0; color: var(--text-3); }
+.pbd-v .beside { margin-left: 8px; font-family: var(--sans); font-size: var(--t-cell); line-height: 1; font-weight: 400; letter-spacing: 0; color: var(--text-3); }
+.pbd-v .na { color: var(--text-3); }
+.pbd-v.words { font-family: var(--sans); font-size: var(--t-cell); font-weight: 400; letter-spacing: 0; color: var(--text-3); }
+.pbd-v button.warn { margin-left: 3px; vertical-align: -3px; }
+.pbd-v .wait { letter-spacing: 0; }
+/* its dates a step under the figures, at the body size, the date and UTC beside them at the table's; its namespaces at
+   the table's size, a step down from the dates so they read as names, not figures. The top padding puts their baseline
+   on the label's, each date row as tall as the figure row beside it */
+.pbd-hist dd.pbd-v { padding: 13px 0 11px; font-size: var(--t-body); letter-spacing: 0; }
+.pbd-hist dd.nss { display: flex; flex-wrap: wrap; align-content: flex-start; align-items: baseline; gap: 0 14px; min-width: 0; padding-top: 13px; font-size: var(--t-cell); line-height: 20px; }
+.pbd-hist .nsb { color: var(--text); }
+.pbd-hist .more { color: var(--text-3); }
+.pbd + .pb-list { margin-top: 40px; }
+/* narrower: the account, then its history, one under the other, each the full width */
+@media (max-width: 1000px) {
+  .pbd { grid-template-columns: minmax(0, 1fr); row-gap: 12px; }
+  .pbd-hist { grid-template-rows: none; }
+}
+/* a phone: the address, then the account, then its history; each label over its value, a hairline between rows */
+@media (max-width: 560px) {
+  .pbd { margin-top: 18px; }
+  .pbd-acct, .pbd-hist { grid-template-columns: minmax(0, 1fr); padding: 2px 16px; }
+  .pbd dt { padding: 11px 0 0; }
+  .pbd dd, .pbd-hist dd.pbd-v, .pbd-hist dd.nss { padding: 4px 0 11px; border-top: 0; }
+}
 
 /* ---- its transactions ---- */
 .pb-list { margin-top: 44px; }
@@ -2567,9 +2604,8 @@ button.warn:focus-visible { outline-offset: 0; }
 /* the state chip is Tensile's reading, not the chain's: it carries Tensile's eye, as its figures do */
 .bd-chips .state .dot { margin-right: 2px; }
 .bd-chips .state svg { flex: none; width: 13px; height: 13px; color: var(--accent-ink); }
-/* a publisher's page sets its facts and its figures the same way (.pb-top, .pb-figs) */
-.bd-top, .pb-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: stretch; margin-top: 22px; }
-.bd-top .bd-meta, .pb-top .pb-meta { width: auto; grid-template-columns: 118px minmax(0, 1fr); margin: 0; align-content: start; }
+.bd-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: stretch; margin-top: 22px; }
+.bd-top .bd-meta { width: auto; grid-template-columns: 118px minmax(0, 1fr); margin: 0; align-content: start; }
 .bd-meta .bd-ns { font-weight: 500; color: var(--text); }
 .bd-meta .bd-ns:hover { color: var(--accent-ink); text-decoration: none; }
 .bd-meta .mono { font-size: 12.5px; color: var(--text); }
@@ -2583,10 +2619,10 @@ button.warn:focus-visible { outline-offset: 0; }
 .bd-meta .lg-who .hd { font-size: var(--t-cell); }
 .bd-meta .u { font-weight: 400; color: var(--text-3); }
 /* Tensile's three rows carry its eye */
-.bd-figs dt.tz, .pb-figs dt.tz { display: flex; align-items: center; gap: 6px; }
-.bd-figs dt.tz svg, .pb-figs dt.tz svg { flex: none; width: 13px; height: 13px; color: var(--accent-ink); }
+.bd-figs dt.tz { display: flex; align-items: center; gap: 6px; }
+.bd-figs dt.tz svg { flex: none; width: 13px; height: 13px; color: var(--accent-ink); }
 .bd-figs b.bad { color: var(--fault); }
-.bd-figs dd .warn, .pb-figs dd .warn { align-self: center; margin-left: -2px; }
+.bd-figs dd .warn { align-self: center; margin-left: -2px; }
 
 /* the endorsements, in the facts' light frame: a head, then a band each for endorsed and not endorsed */
 .bd-under { margin-top: 16px; }
@@ -2644,11 +2680,11 @@ button.warn:focus-visible { outline-offset: 0; }
 .bd-t td.tn .sv { color: var(--text); font-weight: 500; }
 
 @media (max-width: 900px) {
-  .bd-top, .pb-top { grid-template-columns: minmax(0, 1fr); }
+  .bd-top { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 720px) {
-  .bd-top, .pb-top { margin-top: 18px; gap: 12px; }
-  .bd-top .bd-meta, .pb-top .pb-meta { grid-template-columns: 112px minmax(0, 1fr); }
+  .bd-top { margin-top: 18px; gap: 12px; }
+  .bd-top .bd-meta { grid-template-columns: 112px minmax(0, 1fr); }
   .bd-under { margin-top: 12px; }
   .bd-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 10px 12px; }
   .bd-bh { padding: 7px 14px; }
