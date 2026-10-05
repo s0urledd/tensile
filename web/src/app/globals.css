@@ -631,13 +631,7 @@ dl.kv dd { margin: 0; word-break: break-all; }
 .chart-legend { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; font-size: var(--t-small); color: var(--text-2); }
 .chart-legend li { display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px 3px 8px; border-radius: 999px; background: var(--seg-track); white-space: nowrap; }
 
-/* the methodology page */
-.prose { max-width: var(--measure); padding-top: 20px; }
-.prose h1 { margin-bottom: 8px; }
-.prose h2 { margin: 32px 0 10px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
-.prose p { line-height: 1.6; }
-.prose ul { padding-left: 1.2em; }
-.prose li { margin-bottom: 8px; line-height: 1.6; }
+/* the reading words, wherever the legend is listed (the methodology page sets its own look at the end of this file) */
 .legend { display: grid; gap: 12px; margin: 16px 0 24px; }
 .legend > div { display: grid; grid-template-columns: 200px 1fr; gap: 16px; align-items: start; }
 .legend .def { font-size: var(--t-cell); color: var(--text-2); }
@@ -2682,4 +2676,177 @@ button.warn:focus-visible { outline-offset: 0; }
 @media (max-width: 720px) {
   .lg-bar { margin-top: -2px; }
   .lg-findbox { width: 100%; }
+}
+
+/* ------------------------------------------------------ methodology --- */
+/* A calm reference: a section menu that stays in view beside one readable
+   column. Every figure opens with its meaning in one line, then its formula
+   and what counts. Below 960px the menu folds into one "On this page"
+   control that stays at the top of the screen. */
+.meth { display: grid; grid-template-columns: 200px minmax(0, 720px); grid-template-rows: auto 1fr; column-gap: 64px; padding: 40px 0 40px; }
+.meth-head { grid-column: 2; grid-row: 1; }
+.otp { grid-column: 1; grid-row: 1 / span 2; }
+.meth-doc { grid-column: 2; grid-row: 2; min-width: 0; }
+.meth [id] { scroll-margin-top: 24px; }
+
+.meth-head h1 { font-size: 28px; letter-spacing: -.022em; }
+.meth-lede { margin: 10px 0 0; font-size: 15px; line-height: 1.55; color: var(--text-2); max-width: 60ch; }
+.meth-ver { margin: 12px 0 0; font-size: var(--t-small); color: var(--text-3); }
+.meth-ver a { color: var(--text-2); font-weight: 500; }
+.meth-ver code { font-size: 11.5px; color: var(--text-2); }
+
+/* the column */
+.meth-doc { font-size: 15px; line-height: 1.7; color: var(--text-2); }
+.meth-doc p { margin: 0 0 14px; }
+.meth-doc strong { color: var(--text); font-weight: 600; }
+.meth-doc em { font-style: normal; color: var(--text); }
+.meth-doc a { color: var(--accent-ink); }
+.meth-doc a:hover { text-decoration: underline; text-underline-offset: 2px; }
+.meth-doc code { font-size: 13px; color: var(--text); white-space: nowrap; }
+.meth-doc a code { color: inherit; }
+.ref-sec { margin-top: 48px; }
+.ref-sec:first-child { margin-top: 36px; }
+.ref-h2, .meth-doc .ref-h2 { position: relative; margin: 0 0 12px; padding-top: 28px; border-top: 1px solid var(--border); font-size: 20px; font-weight: 600; letter-spacing: -.012em; line-height: 1.3; color: var(--text); }
+.ref-h3 { position: relative; margin: 32px 0 4px; font-size: 16px; font-weight: 600; letter-spacing: -.005em; line-height: 1.4; color: var(--text); }
+.ref-h4 { margin: 28px 0 6px; font-size: var(--t-tiny); font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); }
+/* the answer first: the section's own sentence, in the text colour */
+.ref-lead { font-size: 15.5px; line-height: 1.65; color: var(--text); }
+.ref-say { color: var(--text); }
+/* an older id the section still answers to, at the heading's own top */
+.ref-alias { position: absolute; top: 0; left: 0; width: 0; height: 0; }
+.ref-hash { margin-left: 8px; color: var(--text-3); font-weight: 400; opacity: 0; transition: opacity var(--dur); }
+.meth-doc .ref-hash { color: var(--text-3); text-decoration: none; }
+.ref-h2:hover .ref-hash, .ref-h3:hover .ref-hash, .ref-terms dt:hover .ref-hash, .ref-hash:focus-visible { opacity: 1; }
+.meth-doc .ref-hash:hover { color: var(--accent-ink); text-decoration: none; }
+
+/* a formula: one quiet strip in the mono face, what it is taken over beside it */
+.ref-f { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; margin: 4px 0 14px; padding: 9px 14px; border-radius: 8px; background: var(--wash); }
+.meth-doc .ref-f code { padding: 0; background: none; font-size: 13px; color: var(--text); white-space: normal; }
+.ref-f-n { font-size: var(--t-small); line-height: 1.5; color: var(--text-3); }
+.ref-terms dd .ref-f { margin: 8px 0 2px; }
+
+/* what counts and what does not: a label column, then one line each */
+.ref-rules { margin: 0 0 14px; font-size: 14px; line-height: 1.6; }
+.ref-rules > div { display: grid; grid-template-columns: 184px minmax(0, 1fr); gap: 2px 20px; padding: 5px 0; }
+.ref-rules dt { color: var(--text); font-weight: 500; }
+.ref-rules dd { margin: 0; }
+
+/* terms: each on its own row, between hairlines */
+.ref-terms { margin: 4px 0 16px; border-bottom: 1px solid var(--border); }
+.ref-terms > div { display: grid; grid-template-columns: 184px minmax(0, 1fr); gap: 4px 20px; padding: 12px 0; border-top: 1px solid var(--border); }
+.ref-terms dt { position: relative; font-size: 14px; font-weight: 600; line-height: 1.6; color: var(--text); }
+.ref-terms dd { margin: 0; font-size: 14.5px; line-height: 1.65; }
+.ref-terms--tight > div { padding: 8px 0; }
+.ref-q { display: block; font-weight: 400; font-size: 13px; color: var(--text-3); }
+.ref-q::before { content: "\201C"; } .ref-q::after { content: "\201D"; }
+.ref-terms--map > div { grid-template-columns: minmax(0, 1fr) 216px; }
+.ref-terms--map dt { font-weight: 400; color: var(--text-2); }
+.ref-terms--map dd { font-size: 14px; color: var(--text); font-weight: 500; }
+.ref-terms--map .ref-terms-h dt, .ref-terms--map .ref-terms-h dd { font-size: var(--t-tiny); font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); }
+.ref-terms--map .ref-terms-h { padding: 8px 0 6px; }
+
+/* a rule many entries share, stated once */
+.ref-box { margin: 16px 0 18px; padding: 12px 16px 2px; border-radius: var(--r-card); background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow-sm); font-size: 14px; line-height: 1.6; }
+.meth-doc .ref-box-k { margin: 0 0 6px; font-size: var(--t-tiny); font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); }
+.ref-box ul { margin: 0 0 10px; padding-left: 18px; }
+.ref-box li { margin: 0 0 6px; }
+.ref-box li::marker { color: var(--text-3); }
+.meth-doc .ref-box p { margin: 0 0 10px; }
+
+/* the overview's three sources, kept apart */
+.ref-scope { margin: 18px 0 18px; border-radius: var(--r-card); background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow-sm); }
+.ref-scope > div { display: grid; grid-template-columns: 184px minmax(0, 1fr); gap: 4px 20px; padding: 16px 20px 14px; border-top: 1px solid var(--border); }
+.ref-scope > div:first-child { border-top: 0; }
+.meth-doc .ref-scope-k { margin: 0; line-height: 1.45; }
+.ref-scope-k b { display: block; font-size: 14px; font-weight: 600; color: var(--text); }
+.ref-scope-k span { display: block; margin-top: 2px; font-size: var(--t-small); color: var(--text-3); }
+.meth-doc .ref-scope-v p { margin: 0 0 6px; font-size: 14px; line-height: 1.6; }
+.meth-doc .ref-scope-g { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; font-size: 13px; }
+.ref-scope-g a { font-weight: 500; }
+
+/* the definitions of a reading's words, between hairlines */
+.meth .legend { display: block; margin: 8px 0 16px; border-bottom: 1px solid var(--border); }
+.meth .legend > div { display: grid; grid-template-columns: 184px minmax(0, 1fr); gap: 4px 20px; padding: 7px 0; border-top: 1px solid var(--border); align-items: baseline; }
+.meth .legend .verdict .w { font-size: 14px; }
+.meth .legend .def { font-size: 14px; line-height: 1.55; color: var(--text-2); }
+.ref-sec > .ref-terms:last-child { border-bottom: 0; }
+
+/* the details a reader can open */
+.ref-more { margin: 2px 0 16px; }
+.ref-more summary { display: inline-flex; align-items: center; gap: 8px; padding: 2px 0; font-size: 13.5px; font-weight: 500; color: var(--text-2); cursor: pointer; list-style: none; }
+.ref-more summary::-webkit-details-marker { display: none; }
+.ref-more summary::before { content: ""; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: translateY(-1px) rotate(-45deg); transition: transform var(--dur); }
+.ref-more[open] summary::before { transform: translateY(-2px) rotate(45deg); }
+.ref-more summary:hover { color: var(--text); }
+.ref-more > div { margin: 8px 0 0 3px; padding: 2px 0 0 16px; border-left: 1px solid var(--border); font-size: 14px; line-height: 1.65; }
+
+/* parameter frames: the name with the chain's own name under it, the value */
+.meth-doc .ref-cap { margin: 0 0 10px; font-size: 13.5px; color: var(--text-3); }
+.ref-kv { margin: 0 0 8px; border-radius: var(--r-card); background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow-sm); font-size: 14px; line-height: 1.5; }
+.ref-kv > div { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 2px 20px; align-items: baseline; padding: 10px 18px; border-top: 1px solid var(--border); }
+.ref-kv > div:first-child { border-top: 0; }
+.ref-kv dt { color: var(--text); font-weight: 500; }
+.meth-doc .ref-kv dt code { display: block; margin-top: 1px; padding: 0; background: none; font-size: 11.5px; font-weight: 400; color: var(--text-3); }
+.ref-kv dd { margin: 0; color: var(--text); }
+.ref-kv .chip { margin-left: 8px; }
+.ref-kv-n { margin-left: 10px; font-size: 13px; color: var(--text-3); }
+.ref-kv-line { display: block; }
+.ref-kv-line .ref-kv-n { margin-left: 8px; }
+.ref-table { margin-bottom: 8px; }
+.ref-table td.wrap { white-space: normal; }
+
+/* a command */
+.ref-code { margin: 4px 0 14px; padding: 12px 14px; overflow-x: auto; border-radius: var(--r-ctl); background: var(--surface-2); border: 1px solid var(--border); font: 12.5px/1.6 var(--mono); color: var(--text); }
+.meth-doc .ref-code code { padding: 0; background: none; font-size: inherit; white-space: pre; overflow-wrap: normal; }
+
+/* the section menu, a rail beside the column */
+.otp-rail { position: sticky; top: 28px; max-height: calc(100vh - 56px); overflow-y: auto; padding: 6px 0 12px; }
+.otp .otp-h { margin: 0 0 10px; font-size: var(--t-tiny); font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); }
+.otp-list { margin: 0; padding: 0; list-style: none; border-left: 1px solid var(--border); }
+.otp-list a { display: block; margin-left: -1px; border-left: 2px solid transparent; color: var(--text-2); transition: color var(--dur), border-color var(--dur); }
+.otp-list a:hover { color: var(--text); text-decoration: none; }
+.otp-list > li > a { padding: 5px 0 5px 14px; font-size: 13.5px; line-height: 1.35; }
+.otp-list > li.on > a { color: var(--text); }
+.otp-list a[aria-current] { color: var(--text); font-weight: 500; border-left-color: var(--accent); }
+.otp-sub { margin: 1px 0 6px; padding: 0; list-style: none; }
+.otp-sub a { padding: 3px 0 3px 26px; font-size: 13px; line-height: 1.35; color: var(--text-3); }
+.otp .otp-ver { margin: 18px 0 0 15px; font-size: var(--t-small); }
+.otp-ver a { color: var(--text-3); }
+.otp-ver a:hover { color: var(--accent-ink); text-decoration: none; }
+.otp-bar { display: none; }
+
+@media (max-width: 959px) {
+  .meth { display: block; padding-top: 24px; }
+  .meth [id] { scroll-margin-top: 76px; }
+  .otp { position: sticky; top: 0; z-index: 25; margin: 18px calc(-1 * var(--gutter)) 0; padding: 8px var(--gutter); background: color-mix(in srgb, var(--canvas) 90%, transparent); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
+  .otp-rail { display: none; }
+  .otp-bar { display: block; position: relative; }
+  .otp-btn { display: flex; align-items: center; gap: 10px; width: 100%; height: 40px; padding: 0 12px 0 14px; border-radius: var(--r-ctl); background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow-sm); color: var(--text); font: inherit; font-size: 13.5px; text-align: left; cursor: pointer; }
+  .otp-btn-k { flex: none; font-size: var(--t-tiny); font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); }
+  .otp-btn-v { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .otp-chev { flex: none; color: var(--text-3); transition: transform var(--dur); }
+  .otp-btn[aria-expanded="true"] .otp-chev { transform: rotate(180deg); }
+  .otp-panel { position: absolute; top: 46px; left: 0; right: 0; max-height: min(70vh, 560px); overflow-y: auto; padding: 6px; border-radius: var(--r-card); background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow-pop); }
+  .otp-panel[hidden] { display: none; }
+  .otp-panel .otp-list { border-left: 0; }
+  .otp-panel .otp-list a { margin: 0; border-left: 0; border-radius: 8px; }
+  .otp-panel .otp-list > li > a { padding: 9px 12px; font-size: 14px; }
+  .otp-panel .otp-sub a { padding: 7px 12px 7px 26px; font-size: 13.5px; }
+  .otp-panel .otp-list a[aria-current] { background: var(--wash); }
+  .ref-sec:first-child { margin-top: 28px; }
+  /* the bar above draws the line here */
+  .ref-sec:first-child .ref-h2 { padding-top: 0; border-top: 0; }
+}
+@media (max-width: 640px) {
+  .meth-head h1 { font-size: 26px; }
+  .ref-terms > div, .ref-scope > div, .meth .legend > div, .ref-kv > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .ref-terms--map > div { grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; }
+  .ref-terms--map dd { text-align: right; }
+  .ref-scope > div { padding: 14px 16px 12px; }
+  .ref-scope-k b, .ref-scope-k span { display: inline; }
+  .ref-scope-k span::before { content: "\00A0\00B7\00A0"; }
+  .ref-kv > div { padding: 10px 14px; }
+  .ref-kv-n { display: block; margin-left: 0; }
+  .ref-kv-line .ref-kv-n { display: inline; }
+  .ref-rules > div { grid-template-columns: minmax(0, 1fr); gap: 0; }
 }
