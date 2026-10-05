@@ -749,27 +749,54 @@ func (s *Server) sealRow(ctx context.Context, e *epoch, d string, now time.Time)
 	if err != nil {
 		return outNone, err
 	}
-	if s.parts.beforePublish != nil {
-		s.parts.beforePublish("row", d)
+	// The day whole goes to its seal file now, and the epoch keeps it
+	// without its histograms (dayparts_hist.go); with the partials kept
+	// nowhere it keeps it whole.
+	dp := s.parts
+	kept, name, digest := rd, "", ""
+	if dp.file != "" {
+		if name, digest, err = dp.writeRowSeal(e, rd); err != nil {
+			return outNone, err
+		}
+		kept = rd.stripped(name, digest)
+	}
+	if dp.beforePublish != nil {
+		dp.beforePublish("row", d)
 	}
 	// Published only if nothing a catch-up found since the read reaches the
 	// day: a drop of it (a row, a hold, a correction), a collapse of a
 	// promise its rows held, or the prune of its rows.
-	if !s.parts.publish(func(cur *epoch, since []journalEntry) bool {
+	if !dp.publish(func(cur *epoch, since []journalEntry) bool {
 		if cur.born != e.born || touched(since, d, true) || collapsedAny(since, rd.Collapsible) ||
 			reached(since, lo, hi) || cur.rows[d] != nil {
 			return false
 		}
-		rd.Gen = s.parts.nextGen("row:" + d)
-		cur.rows[d] = rd
+		if name == "" {
+			rd.Gen = dp.nextGen("row:" + d)
+		} else {
+			// Under the lock the publish holds: a write of the partials
+			// from here on names the file with the day.
+			if dp.sealFiles == nil {
+				dp.sealFiles = map[string]string{}
+			}
+			dp.sealFiles[name] = digest
+			delete(dp.pending, name)
+		}
+		cur.rows[d] = kept
 		cur.addAnchors(anchors)
 		cur.content++
 		return true
 	}, e.seq) {
-		s.parts.retryAt("row:"+d, now.Add(time.Second))
+		if name != "" {
+			dp.unpend(name, true)
+		}
+		dp.retryAt("row:"+d, now.Add(time.Second))
 		return outRefused, nil
 	}
-	s.parts.sealedNow("row:" + d)
+	if name != "" {
+		dp.hists.put(d, digest, histsOf(rd))
+	}
+	dp.sealedNow("row:" + d)
 	return outDone, nil
 }
 

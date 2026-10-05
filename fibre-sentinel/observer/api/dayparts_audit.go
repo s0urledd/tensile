@@ -57,7 +57,8 @@ const (
 )
 
 // checkRowSeal reads row day d again and says how it differs from what the
-// seal holds, "" when it does not.
+// seal holds, "" when it does not. rd is the day whole (wholeRow): the
+// counts the epoch holds and the histograms of its seal file.
 func (s *Server) checkRowSeal(ctx context.Context, q store.Querier, rd *rowDay) (string, error) {
 	got, err := s.rowSpanParts(ctx, q, dayLo(rd.Day), dayHi(rd.Day), "")
 	if err != nil {
@@ -250,7 +251,15 @@ func (s *Server) verifyLoaded(ctx context.Context, q store.Querier, e *epoch) (r
 		}
 	}
 	for _, d := range pick(rowDays) {
-		diff, err := s.checkRowSeal(ctx, q, e.rows[d])
+		whole, err := s.parts.wholeRow(e, e.rows[d])
+		if err != nil {
+			// Checked a moment ago and gone since: the day is left
+			// unsealed, as a seal file missing at the load leaves it.
+			s.parts.logf("day partials: row day %s: %v; it is read raw until it is sealed again", d, err)
+			delete(e.rows, d)
+			continue
+		}
+		diff, err := s.checkRowSeal(ctx, q, whole)
 		if err != nil {
 			return "", err
 		}
@@ -328,6 +337,7 @@ func (s *Server) auditOnce(ctx context.Context) (auditResult, error) {
 	dp.fullHolds = true
 	dp.mu.Unlock()
 	var badRow, badSettle string
+	var unusable []unusableSeal
 	cursors := map[string]string{}
 	err := s.partsTx(ctx, func(ctx context.Context, e *epoch) error {
 		// The cursor as the partials were loaded with it, now that they are.
@@ -350,14 +360,21 @@ func (s *Server) auditOnce(ctx context.Context) (auditResult, error) {
 			}
 		}
 		if d := auditNext(rowDays, cursors[auditRow]); d != "" {
-			diff, err := s.checkRowSeal(ctx, q, e.rows[d])
+			// A day whose seal file cannot be used is dropped, as a window
+			// that meets it drops it: the file is gone, not the day wrong.
+			whole, err := dp.wholeRow(e, e.rows[d])
 			if err != nil {
-				return err
-			}
-			res.days = append(res.days, "row day "+d)
-			if diff != "" {
-				res.diffs = append(res.diffs, "row day "+d+": "+diff)
-				badRow = d
+				unusable = append(unusable, unusableSeal{e.rows[d], err})
+			} else {
+				diff, err := s.checkRowSeal(ctx, q, whole)
+				if err != nil {
+					return err
+				}
+				res.days = append(res.days, "row day "+d)
+				if diff != "" {
+					res.diffs = append(res.diffs, "row day "+d+": "+diff)
+					badRow = d
+				}
 			}
 			cursors[auditRow] = d
 		}
@@ -394,6 +411,9 @@ func (s *Server) auditOnce(ctx context.Context) (auditResult, error) {
 	dp.mu.Lock()
 	dp.auditAt = cursors
 	dp.mu.Unlock()
+	if len(unusable) > 0 {
+		dp.dropUnusable(unusable)
+	}
 	if badRow != "" || badSettle != "" {
 		dp.publish(func(cur *epoch, _ []journalEntry) bool {
 			if badRow != "" && cur.rows[badRow] != nil {

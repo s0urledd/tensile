@@ -27,18 +27,21 @@ func partsFor(win Window) bool {
 // ---- row figures ----
 
 // rowAcc is one validator's row figures over a window, accumulated from
-// days and raw spans.
+// days and raw spans: its histograms whole (lat, tput), or, for a window
+// of more days than are summed whole, their counts and the values at the
+// ranks the figures read (latH, tputH: dayparts_rank.go).
 type rowAcc struct {
-	classes    map[string]int64
-	probes     int64
-	lastSeen   string
-	lastServed string
-	gaps       map[string]int64
-	lat, tput  map[int64]int64
-	beats, up  int64
-	identUp    int64
-	lastDown   string
-	lastUp     string
+	classes     map[string]int64
+	probes      int64
+	lastSeen    string
+	lastServed  string
+	gaps        map[string]int64
+	lat, tput   map[int64]int64
+	latH, tputH *hist
+	beats, up   int64
+	identUp     int64
+	lastDown    string
+	lastUp      string
 }
 
 func newRowAcc() *rowAcc {
@@ -52,8 +55,19 @@ func maxString(a, b string) string {
 	return a
 }
 
-// add folds one partial in.
+// add folds one partial in, its histograms with it.
 func (a *rowAcc) add(p *rowPart) {
+	a.addCounts(p)
+	for _, b := range p.Lat {
+		a.lat[b[0]] += b[1]
+	}
+	for _, b := range p.Tput {
+		a.tput[b[0]] += b[1]
+	}
+}
+
+// addCounts folds one partial in but its histograms.
+func (a *rowAcc) addCounts(p *rowPart) {
 	for c, n := range p.Classes {
 		a.classes[c] += n
 	}
@@ -63,12 +77,6 @@ func (a *rowAcc) add(p *rowPart) {
 	for o, n := range p.Gaps {
 		a.gaps[o] += n
 	}
-	for _, b := range p.Lat {
-		a.lat[b[0]] += b[1]
-	}
-	for _, b := range p.Tput {
-		a.tput[b[0]] += b[1]
-	}
 	a.beats += p.Beats
 	a.up += p.Up
 	a.identUp += p.IdentUp
@@ -76,22 +84,59 @@ func (a *rowAcc) add(p *rowPart) {
 	a.lastUp = maxString(a.lastUp, p.LastUp)
 }
 
-// hist is a histogram's bins in ascending order and its count.
+// addHists folds in a day's histograms read from its seal file.
+func (a *rowAcc) addHists(v *valHists) {
+	for _, b := range v.lat {
+		a.lat[b[0]] += b[1]
+	}
+	for _, b := range v.tput {
+		a.tput[b[0]] += b[1]
+	}
+}
+
+// latHist and tputHist are the validator's histograms as the figures read
+// them.
+func (a *rowAcc) latHist() hist {
+	if a.latH != nil {
+		return *a.latH
+	}
+	return histOf(a.lat)
+}
+
+func (a *rowAcc) tputHist() hist {
+	if a.tputH != nil {
+		return *a.tputH
+	}
+	return histOf(a.tput)
+}
+
+// hist is a histogram as the figures read it: its count, and its bins in
+// ascending order in segments, each with how many values lie below it. A
+// histogram summed whole is one segment from the first value; one ranked
+// in bounded memory (dayparts_rank.go) is a segment of one value at each
+// rank asked, and has no value at any other.
 type hist struct {
-	bins []hbin
 	n    int64
+	segs []histSeg
+}
+
+// histSeg is a run of bins and the count of the values below it.
+type histSeg struct {
+	base int64
+	bins []hbin
 }
 
 func histOf(m map[int64]int64) hist {
-	h := hist{bins: make([]hbin, 0, len(m))}
-	for v, n := range m {
-		if n > 0 {
-			h.bins = append(h.bins, hbin{v, n})
-			h.n += n
+	bins := make([]hbin, 0, len(m))
+	var n int64
+	for v, k := range m {
+		if k > 0 {
+			bins = append(bins, hbin{v, k})
+			n += k
 		}
 	}
-	sort.Slice(h.bins, func(i, j int) bool { return h.bins[i][0] < h.bins[j][0] })
-	return h
+	sort.Slice(bins, func(i, j int) bool { return bins[i][0] < bins[j][0] })
+	return hist{n: n, segs: []histSeg{{bins: bins}}}
 }
 
 // at is the value at rank r (1-based) in ascending order, as ROW_NUMBER over
@@ -100,11 +145,17 @@ func (h hist) at(r int64) (int64, bool) {
 	if r < 1 {
 		return 0, false
 	}
-	for _, b := range h.bins {
-		if r <= b[1] {
-			return b[0], true
+	for _, s := range h.segs {
+		if r <= s.base {
+			continue
 		}
-		r -= b[1]
+		k := r - s.base
+		for _, b := range s.bins {
+			if k <= b[1] {
+				return b[0], true
+			}
+			k -= b[1]
+		}
 	}
 	return 0, false
 }
@@ -112,10 +163,10 @@ func (h hist) at(r int64) (int64, bool) {
 // percentiles are the ranks latencyWhere and valLatencySQL read: the median
 // (c+1)/2 and the 95th percentile (95c+99)/100.
 func (h hist) percentiles() (p50, p95 *int64) {
-	if v, ok := h.at((h.n + 1) / 2); ok {
+	if v, ok := h.at(q50.rank(h.n)); ok {
 		p50 = &v
 	}
-	if v, ok := h.at((h.n*95 + 99) / 100); ok {
+	if v, ok := h.at(q95.rank(h.n)); ok {
 		p95 = &v
 	}
 	return p50, p95
@@ -151,10 +202,26 @@ func (e *epoch) rowSpans(lo, hi string) (sealed []*rowDay, raw [][2]string) {
 	return sealed, raw
 }
 
+// rowNeed is which histograms a computation reads of a window: every
+// validator's own (vals), the network's, over every validator ex does not
+// name (net), and the name the bands of a long window are kept under
+// across computations ("" for none; dayparts_rank.go).
+type rowNeed struct {
+	vals bool
+	net  bool
+	ex   excludeSet
+	keep string
+}
+
 // rowWindow is every validator's row figures over the rows started in
-// [lo, hi]: sealed days and raw spans. only, when set, is the one validator
-// asked for.
-func (s *Server) rowWindow(ctx context.Context, e *epoch, lo, hi, only string) (map[string]*rowAcc, error) {
+// [lo, hi]: sealed days and raw spans, and the network's service times
+// when need asks for them. only, when set, is the one validator asked
+// for. A sealed day's histograms are read from its seal file (dayHists):
+// summed whole over a window of mergeDays sealed days or fewer, ranked in
+// bounded memory over a longer one (dayparts_rank.go). A day whose file
+// cannot be used is read raw, which is what its seal held, and dropped
+// (dropUnusable).
+func (s *Server) rowWindow(ctx context.Context, e *epoch, lo, hi, only string, need rowNeed) (map[string]*rowAcc, hist, error) {
 	out := map[string]*rowAcc{}
 	get := func(addr string) *rowAcc {
 		a, ok := out[addr]
@@ -164,25 +231,160 @@ func (s *Server) rowWindow(ctx context.Context, e *epoch, lo, hi, only string) (
 		}
 		return a
 	}
+	dp := s.parts
 	sealed, raw := e.rowSpans(lo, hi)
-	for _, d := range sealed {
+	var unusable []unusableSeal
+	defer func() {
+		if len(unusable) > 0 {
+			dp.dropUnusable(unusable)
+		}
+	}()
+	if len(sealed) <= dp.mergeDays {
+		for _, d := range sealed {
+			if err := ctx.Err(); err != nil {
+				return nil, hist{}, err
+			}
+			h, err := dp.dayHists(e, d)
+			if err != nil {
+				unusable = append(unusable, unusableSeal{d, err})
+				raw = append(raw, [2]string{dayLo(d.Day), dayHi(d.Day)})
+				continue
+			}
+			for addr, p := range d.Vals {
+				if only != "" && addr != only {
+					continue
+				}
+				a := get(addr)
+				a.addCounts(p)
+				if v := h[addr]; v != nil {
+					a.addHists(v)
+				}
+			}
+		}
+		for _, sp := range raw {
+			parts, err := s.rowSpanParts(ctx, s.q(ctx), sp[0], sp[1], only)
+			if err != nil {
+				return nil, hist{}, err
+			}
+			for addr, p := range parts {
+				get(addr).add(p)
+			}
+		}
+		var net hist
+		if need.net {
+			lat := map[int64]int64{}
+			for addr, a := range out {
+				if need.ex.has(addr) {
+					continue
+				}
+				for v, k := range a.lat {
+					lat[v] += k
+				}
+			}
+			net = histOf(lat)
+		}
+		return out, net, nil
+	}
+
+	// A long window: the raw spans' histograms kept apart, the sealed days'
+	// read in the selection, and the ranks the figures read selected over
+	// both.
+	rawH := dayHists{}
+	addRaw := func(lo, hi string) error {
+		parts, err := s.rowSpanParts(ctx, s.q(ctx), lo, hi, only)
+		if err != nil {
+			return err
+		}
+		for addr, p := range parts {
+			get(addr).addCounts(p)
+			v := rawH[addr]
+			if v == nil {
+				v = &valHists{}
+				rawH[addr] = v
+			}
+			v.lat = append(v.lat, p.Lat...)
+			v.tput = append(v.tput, p.Tput...)
+		}
+		return nil
+	}
+	for _, sp := range raw {
+		if err := addRaw(sp[0], sp[1]); err != nil {
+			return nil, hist{}, err
+		}
+	}
+	days := append([]*rowDay(nil), sealed...)
+	read := func(rd *rowDay) (dayHists, error) { return dp.dayHists(e, rd) }
+	var res rankResult
+	for {
+		var keys []rankKey
+		if need.vals {
+			addrs := map[string]bool{}
+			for _, d := range days {
+				for addr := range d.Vals {
+					addrs[addr] = true
+				}
+			}
+			for addr := range rawH {
+				addrs[addr] = true
+			}
+			for addr := range addrs {
+				if only != "" && addr != only {
+					continue
+				}
+				keys = append(keys, rankKey{scopeKey{addr, kindLat}, q50}, rankKey{scopeKey{addr, kindLat}, q95},
+					rankKey{scopeKey{addr, kindTput}, q50})
+			}
+		}
+		if need.net {
+			keys = append(keys, rankKey{scopeKey{"", kindLat}, q50}, rankKey{scopeKey{"", kindLat}, q95})
+		}
+		sel := &rankSel{read: read, days: days, raw: rawH, keys: keys, ex: need.ex}
+		var err error
+		if need.keep != "" {
+			res, err = sel.runBands(ctx, dp.keptBands(need.keep))
+		} else {
+			res, err = sel.run(ctx)
+		}
+		var bad *errDayUnusable
+		if errors.As(err, &bad) {
+			// Read raw instead, and the selection made again without it.
+			unusable = append(unusable, unusableSeal{bad.rd, bad.err})
+			kept := days[:0]
+			for _, d := range days {
+				if d != bad.rd {
+					kept = append(kept, d)
+				}
+			}
+			days = kept
+			if err := addRaw(dayLo(bad.rd.Day), dayHi(bad.rd.Day)); err != nil {
+				return nil, hist{}, err
+			}
+			continue
+		}
+		if err != nil {
+			return nil, hist{}, err
+		}
+		break
+	}
+	for _, d := range days {
 		for addr, p := range d.Vals {
 			if only != "" && addr != only {
 				continue
 			}
-			get(addr).add(p)
+			get(addr).addCounts(p)
 		}
 	}
-	for _, sp := range raw {
-		parts, err := s.rowSpanParts(ctx, s.q(ctx), sp[0], sp[1], only)
-		if err != nil {
-			return nil, err
-		}
-		for addr, p := range parts {
-			get(addr).add(p)
+	if need.vals {
+		for addr, a := range out {
+			lat, tput := res.histFor(scopeKey{addr, kindLat}), res.histFor(scopeKey{addr, kindTput})
+			a.latH, a.tputH = &lat, &tput
 		}
 	}
-	return out, nil
+	var net hist
+	if need.net {
+		net = res.histFor(scopeKey{"", kindLat})
+	}
+	return out, net, nil
 }
 
 // rowSpanParts reads every validator's rows started in [lo, hi] with the
@@ -261,10 +463,10 @@ func (s *Server) rowSpanParts(ctx context.Context, q store.Querier, lo, hi, only
 	}
 	for _, h := range []struct {
 		q   string
-		dst func(*rowPart) *[]hbin
+		dst func(*rowPart) *hbins
 	}{
-		{valLatencyHistSQL(filter), func(p *rowPart) *[]hbin { return &p.Lat }},
-		{valThroughputHistSQL(filter), func(p *rowPart) *[]hbin { return &p.Tput }},
+		{valLatencyHistSQL(filter), func(p *rowPart) *hbins { return &p.Lat }},
+		{valThroughputHistSQL(filter), func(p *rowPart) *hbins { return &p.Tput }},
 	} {
 		if err := each(h.q, args(lo, hi), func(r *sql.Rows) error {
 			var addr string
@@ -312,9 +514,9 @@ type netRows struct {
 	validators map[string]bool
 }
 
-func netRowsOf(m map[string]*rowAcc, ex excludeSet) netRows {
-	n := netRows{classes: classCounts{}, byOutcome: map[string]int64{}, validators: map[string]bool{}}
-	lat := map[int64]int64{}
+// lat is the network's service times, as rowWindow read them for ex.
+func netRowsOf(m map[string]*rowAcc, ex excludeSet, lat hist) netRows {
+	n := netRows{classes: classCounts{}, byOutcome: map[string]int64{}, validators: map[string]bool{}, lat: lat}
 	for addr, a := range m {
 		if ex.has(addr) {
 			continue
@@ -331,13 +533,9 @@ func netRowsOf(m map[string]*rowAcc, ex excludeSet) netRows {
 			n.byOutcome[o] += k
 			n.gaps += k
 		}
-		for v, k := range a.lat {
-			lat[v] += k
-		}
 		n.beats += a.beats
 		n.up += a.up
 	}
-	n.lat = histOf(lat)
 	return n
 }
 
@@ -897,12 +1095,12 @@ func (a *rowAcc) fill(v *validatorRow) {
 	for c, n := range a.classes {
 		v.Classes[c] = n
 	}
-	if lat := histOf(a.lat); lat.n > 0 {
+	if lat := a.latHist(); lat.n > 0 {
 		v.LatencySample = lat.n
 		v.LatencyP50, v.LatencyP95 = lat.percentiles()
-		tput := histOf(a.tput)
+		tput := a.tputHist()
 		v.ThroughputSample = tput.n
-		if b, ok := tput.at((tput.n + 1) / 2); ok && tput.n >= throughputMinSample {
+		if b, ok := tput.at(q50.rank(tput.n)); ok && tput.n >= throughputMinSample {
 			v.BytesPerSecond = &b
 		}
 	}

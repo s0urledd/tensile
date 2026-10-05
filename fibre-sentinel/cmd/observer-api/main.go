@@ -53,10 +53,18 @@ func main() {
 		// which may be shared: after each unit it rests k times as long as
 		// the unit took, live and with -warm-only alike.
 		partsPace = flag.Float64("day-partials-pace", api.DefaultSealPace, "after each unit of the day partials sealer's work, rest this many times as long as it took (3: sealing reads the disk at most a quarter of the time); 0 does not rest")
+		// A sealed day's service-time and transfer-rate histograms stay in
+		// its seal file and are read when a window sums the day; the newest
+		// days' are kept in memory up to this bound.
+		partsCache = flag.Int("day-partials-cache-mb", api.DefaultHistCacheMB, "megabytes of the sealed days' service-time and transfer-rate histograms kept in memory, the newest days first; the rest are read from the seal files as the windows sum them; 0 keeps none")
 	)
 	flag.Parse()
 	if *partsPace < 0 {
 		os.Stderr.WriteString("-day-partials-pace must be 0 or more\n")
+		os.Exit(2)
+	}
+	if *partsCache < 0 {
+		os.Stderr.WriteString("-day-partials-cache-mb must be 0 or more\n")
 		os.Exit(2)
 	}
 	if *check != "" {
@@ -126,7 +134,7 @@ func main() {
 	if len(reg) > 0 {
 		log.Printf("publisher labels: %d from %s", len(reg), *labels)
 	}
-	opts := []api.Option{api.WithPublisherLabels(reg), api.WithDataDir(*dataDir), api.WithSnapshotDir(*snapDir), api.WithDayParts(*dayParts), api.WithSealPace(*partsPace), api.WithTipRPC(*tipRPC)}
+	opts := []api.Option{api.WithPublisherLabels(reg), api.WithDataDir(*dataDir), api.WithSnapshotDir(*snapDir), api.WithDayParts(*dayParts), api.WithSealPace(*partsPace), api.WithHistCache(*partsCache), api.WithTipRPC(*tipRPC)}
 	if *warmOnly {
 		// The live API keeps serving meanwhile; this only reads. Every
 		// snapshot depends on the vantage (its heartbeats) and the market

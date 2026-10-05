@@ -39,7 +39,9 @@ func TestDayPartsUnderConcurrency(t *testing.T) {
 	}
 	defer ro.Close()
 	s.ro = ro
-	srv := NewWithVantage(ro, VantageInfo{Name: simVantage}, nil, WithSnapshotDir(s.snaps),
+	// Windows of more than a day ranked in bounded memory, the live "all"
+	// from its bands (dayparts_rank.go), with a small histogram cache.
+	srv := NewWithVantage(ro, VantageInfo{Name: simVantage}, nil, WithSnapshotDir(s.snaps), withMergeDays(1), WithHistCache(1),
 		withLanes(lanes{liveTTL: 50 * time.Millisecond, liveEvery: 20 * time.Millisecond, slowEvery: 20 * time.Millisecond}),
 		func(srv *Server) {
 			srv.clock = func() time.Time { return time.Unix(0, clock.Load()).UTC() }
