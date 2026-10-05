@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { API_BASE, useApi, type Blob, type Publisher, type Tip, int, pctOf, bytes, whenUTC, utcWord, TIP_MS } from "@/lib/api";
 import RollNumber, { reducedMotion } from "@/components/RollNumber";
+import Info from "@/components/Info";
 import { lane } from "@/lib/status";
 
 /**
@@ -377,9 +378,9 @@ export default function RecentBlobs() {
   const reads = pubs.data?.publishers.reduce((t, p) => p.readings
     ? { ok: t.ok + p.readings.available, bad: t.bad + p.readings.unavailable, none: t.none + p.readings.not_read } : t, { ok: 0, bad: 0, none: 0 }) ?? null;
   const read = reads ? reads.ok + reads.bad : 0;
-  const avTitle = reads && read > 0
-    ? `${int(reads.ok)} of the ${int(read)} blobs Tensile has read were available${reads.bad ? `, ${int(reads.bad)} unavailable` : ""}.${reads.none ? ` ${int(reads.none)} not read, not counted.` : ""}`
-    : undefined;
+  const avCount = reads && read > 0
+    ? <p><b>{int(reads.ok)}</b> of {int(read)} blobs{reads.bad ? <>, {int(reads.bad)} unavailable</> : null}.</p>
+    : null;
 
   const state = feed.error ? "down" : !feed.loaded ? "wait" : "live";
   const liveWord = feed.error ? "Not answering" : feed.loaded ? "Live" : "Connecting";
@@ -430,9 +431,9 @@ export default function RecentBlobs() {
             <span>settlements<br />on record</span>
           </p>
           <i className="rb-div" aria-hidden="true" />
-          <p className="rb-fig" title={avTitle}>
+          <p className="rb-fig">
             {read > 0 ? <span className={`rb-total${reads!.bad === 0 ? " ok" : ""}`}>{pctOf(reads!.ok, read)}</span> : <span className={`rb-total${reads ? "" : " wait"}`}>{reads ? "—" : "000%"}</span>}
-            <span>available</span>
+            <span className="rb-avl">available<span className="rb-i"><Info label="Available" solid><p>Of the blobs whose retention window has ended, the share Tensile downloaded in full when it read them, 10 minutes before the window closed.</p>{avCount}</Info></span></span>
           </p>
         </div>
       </div>

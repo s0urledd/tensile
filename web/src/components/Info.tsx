@@ -34,8 +34,10 @@ import { createPortal } from "react-dom";
  * either edge, so a mark in the last column does not open a panel half off the
  * screen.
  */
-export default function Info({ label, children, trigger, className, title }: {
+export default function Info({ label, children, trigger, className, title, solid }: {
   label: string; children: React.ReactNode;
+  /** the "i" mark drawn filled, as it is while open, beside a figure rather than a label */
+  solid?: boolean;
   /** a word to open it by instead of the "i" mark, with its own class and hover title */
   trigger?: React.ReactNode; className?: string; title?: string;
 }) {
@@ -90,7 +92,7 @@ export default function Info({ label, children, trigger, className, title }: {
 
   return (
     <>
-      <button ref={btn} type="button" className={trigger ? className : "info"} aria-expanded={open} aria-controls={id}
+      <button ref={btn} type="button" className={trigger ? className : solid ? "info solid" : "info"} aria-expanded={open} aria-controls={id}
         aria-label={trigger ? undefined : `what ${label} means`} title={title} onClick={() => setOpen((v) => !v)}>
         {trigger ?? "i"}
       </button>
