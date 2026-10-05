@@ -87,7 +87,7 @@ export default function StatusLine({ meta, metaError, snap, client }: {
         {chainStopped && impacts.length === 1
           ? <><b>The chain has stopped producing blocks.</b> Nothing new can be settled or measured until it resumes; this is the network, not the observer.</>
           : <><b>Observer partly down:</b> {impacts.join("; ")}. Figures may lag.</>}{" "}
-        <Link href="/methodology/#gaps">Why →</Link>
+        <Link href="/methodology/#not-counted">Why →</Link>
       </p>,
     );
   }

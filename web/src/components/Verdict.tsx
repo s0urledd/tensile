@@ -179,10 +179,14 @@ export default function Verdict({ cls, title }: { cls: string; title?: string })
 const SHARED = " Not served when it is the validator's last answer, unless one of its requests failed on Tensile's side, was not made, or brought back rows of the blob that are not its own.";
 const legendDef = (def: string) => def.replace(SHARED, "").replace(/ Before 2 October 2026[^.]*\./, "");
 
+// Words only earlier records carry: a reading asks only the validators assigned rows of the blob (probe targetsFor
+// skips the rest), so no reading made today is filed unassigned or serving unassigned.
+const EARLIER_RECORDS = new Set(["EXPECTED_UNASSIGNED", "SERVING_UNASSIGNED"]);
+
 export function Legend() {
   const order: Tier[] = ["kept", "fault", "hold", "held", "gap"];
-  // the verdicts a reading gives today: not the observer's own gaps, nor the words of the earlier schedule
-  const shown = ALL_VERDICTS.filter((c) => verdictDef(c).tier !== "gap" && !verdictDef(c).def.startsWith("Earlier schedule"));
+  // the verdicts a reading gives today: not the observer's own gaps, nor the words of earlier records
+  const shown = ALL_VERDICTS.filter((c) => verdictDef(c).tier !== "gap" && !verdictDef(c).def.startsWith("Earlier schedule") && !EARLIER_RECORDS.has(c));
   const sorted = [...shown].sort(
     (a, b) => order.indexOf(verdictDef(a).tier) - order.indexOf(verdictDef(b).tier),
   );

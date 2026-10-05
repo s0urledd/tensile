@@ -487,10 +487,9 @@ The market and the publisher list are one snapshot, so the publisher page's
 board and table describe the same moment. Keepers refresh every window as its
 TTL runs out, read or not (`newKeepers` in `snapshot.go`): the 24h validator
 list and every market window at 10 s (the live lane), network 24h at 1 min,
-7d at 5 min, 30d and `all` at 15 min except network `all` (the overview's
-Available figure) at 5 min. The 24h validator list, the market and network
-24h each have a keeper of their own; the longer windows share one and take
-turns. A TTL is a floor, not a promise: a computation longer than its TTL
+7d at 5 min, 30d and `all` at 15 min except network `all` at 5 min. The 24h
+validator list, the market and network 24h each have a keeper of their own; the
+longer windows share one and take turns. A TTL is a floor, not a promise: a computation longer than its TTL
 waits twice its cost (the 24h validator list took 15–22 s in September 2026,
 so it refreshes about every 35–45 s), and the windows of one cache are taken
 at different moments, so a longer window can count less than a shorter one
@@ -630,7 +629,7 @@ after the identifier was first asked.
 
 | route | reads |
 |---|---|
-| `/` | `/v1/network` (the period, and `all` for Available), `/v1/validators` (the map's "served last" line is the rows' `last_served_at`), `/v1/blobs` (the recent blobs: as soon as `/v1/tip`'s `latest_blob` names a blob the grid does not hold, and every 30 s besides) |
+| `/` | `/v1/network` (the period), `/v1/publishers?window=all` (Available: the readings of every publisher summed, available over available plus unavailable), `/v1/validators` (the map's "served last" line is the rows' `last_served_at`), `/v1/blobs` (the recent blobs: as soon as `/v1/tip`'s `latest_blob` names a blob the grid does not hold, and every 30 s besides) |
 | `/validator/?addr=` | `/v1/validators/{addr}` |
 | `/blobs/` | `/v1/blobs` (the first page again as the chain moves), `/v1/namespaces`, `/v1/market` (the period), `/v1/publishers` (once its filter opens); its search (`?blob=`) asks 64 hex as `/v1/blobs/{hash}`, `?commitment=` and `?tx=`, and a blob ID as `?commitment=` |
 | `/blob/?hash=`, `?id=`, `?tx=` | `/v1/blobs/{hash}`; a blob ID (`?id=`) or a settlement transaction (`?tx=`) is found first with `/v1/blobs?commitment=` or `?tx=`, and several matches open the Blobs list of them; a blob not on record yet is asked for again each time `/v1/tip`'s `latest_blob` changes, and every 30 s |
