@@ -21,6 +21,9 @@ export default function Methodology() {
       <h2 id="promise">The obligation</h2>
       <p>A validator that signs a settled promise owes its assigned rows to anyone who asks until <code>must_serve_until = creation_timestamp + max(payment_promise_timeout, shard_retention)</code>, using the parameters in force when the blob settled.</p>
 
+      <h2 id="names">Blobs, settlements and names</h2>
+      <p>A blob is named by its <strong>blob ID</strong>, the version byte and commitment the Fibre client returns, in base64; search also takes it in hex, and a transaction or payment promise hash. A blob paid for twice is one blob and two settlements, each with its own promise and its own reading; settlement counts count both. A namespace shows as text when its bytes are text, as a name and its trailing tag in hex when a client numbers its namespaces (<code>tensile·04</code>), and in hex otherwise.</p>
+
       <h2 id="params">Protocol parameters</h2>
       <p>Read from chain state and every <code>EventUpdateFibreParams</code>; protocol constants come from the pinned celestia-app build. Served at <code>/api/v1/params</code>.</p>
       <ProtocolParams />
@@ -41,7 +44,7 @@ export default function Methodology() {
       <Legend />
 
       <h2 id="signing">Endorsements</h2>
-      <p>A validator <em>endorses</em> a payment promise by signing it after storing its shard. <strong>Endorsed ⅔</strong> is the settled promises carrying a validator&rsquo;s verified endorsement over the promises that assigned it rows while it had a Fibre host registered: how often it made the two-thirds quorum. Neither is a duty: a missing endorsement is unproven, not a fault.</p>
+      <p>A validator <em>endorses</em> a payment promise by signing it after storing its shard. <strong>Endorsed ⅔</strong> is the settled promises carrying a validator&rsquo;s verified endorsement over the promises that assigned it rows while it had a Fibre host registered: how often it made the two-thirds quorum. An endorsement counts when the blob settles, not when it is read. Neither is a duty: a missing endorsement is unproven, not a fault.</p>
 
       <h2 id="rates">Rates</h2>
       <ul>
@@ -71,7 +74,7 @@ export default function Methodology() {
       </ul>
 
       <h2 id="evidence">Evidence behind each figure</h2>
-      <p>The validator page shows what the chain records under <strong>On chain</strong> and Tensile&rsquo;s own readings under <strong>Observed by Tensile</strong>; on the blob page and the Blobs list, Tensile&rsquo;s own readings carry its eye. Every snapshot names the block it was computed through (<code>record_through</code>). Every reading stays on record for good: nothing is deleted, so a blob&rsquo;s page and every rate read the same later as they do today. Daily exports are signed, <code>/api/v1/exports</code>, and <code>sentinel-recompute</code> re-derives every verdict and figure from them.</p>
+      <p>The validator page shows what the chain records under <strong>On chain</strong> and Tensile&rsquo;s own readings under <strong>Observed by Tensile</strong>; on the blob page and the Blobs list, Tensile&rsquo;s own readings carry its eye. Every snapshot names the block it was computed through (<code>record_through</code>). The 7d, 30d and all figures are summed from per-day records sealed once a day is final, each re-checked against the raw readings in turn; they equal a count over every row. Every reading stays on record for good: nothing is deleted, so a blob&rsquo;s page and every rate read the same later as they do today. Daily exports are signed, <code>/api/v1/exports</code>, and <code>sentinel-recompute</code> re-derives every verdict and figure from them.</p>
 
       <h2 id="vantage">Two locations</h2>
       <p>Endpoints are checked every five minutes from two locations; a host is unreachable only when both fail. Blobs are read from one location, as one client&rsquo;s download is.</p>
