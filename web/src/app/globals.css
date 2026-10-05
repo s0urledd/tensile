@@ -1618,6 +1618,57 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .tp-b.tc .tp-plot { padding: 14px 16px 10px; }
 }
 
+/* ---- Publishers: the Blobs strip's tabs (the publishers active, the blob size, the fees paid, the escrow held now),
+   and under the strip the publishers ranked by the one picked: a row each, its mark, a bar of its part of the whole on
+   a quiet track, the figure, and its share. The tabs take the Blobs rules as they are, four equal ones a row, two by
+   two on a phone. ---- */
+@media (min-width: 721px) { .pp-tabs { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+/* a payment promise that timed out: the warning's dot on the fees tab, a mark only (a tab holds no button) */
+.pp-dot { display: inline-block; width: 7px; height: 7px; margin-left: 10px; border-radius: 50%; background: var(--fault); vertical-align: 3px; }
+.pp-plot { min-width: 0; padding: 18px 26px 12px; }
+.pp-plot .tp-ct { margin-bottom: 4px; }
+.pp-plot .tp-ct button.warn { margin-left: 4px; vertical-align: -5px; }
+/* the escrow's accounts: beside its figure while the tab has the room, else after the list's title (from where the
+   table below turns into a list) */
+.pp-acc { display: none; }
+@media (max-width: 1080px) {
+  .pp-tabs .beside { display: none; }
+  .pp-acc { display: inline; }
+}
+.pp-rows { margin: 0; padding: 0; list-style: none; }
+.pp-row { display: grid; grid-template-columns: 210px minmax(0, 1fr) 104px 64px; column-gap: 24px; align-items: center; height: 38px; }
+.pp-who { display: flex; align-items: center; min-width: 0; overflow: hidden; white-space: nowrap; }
+/* the track is the whole; a bar is never narrower than a sliver */
+.pp-bar { position: relative; height: 8px; border-radius: 2px; background: var(--seg-track); }
+.pp-bar i { position: absolute; top: 0; bottom: 0; left: 0; width: max(3px, calc(100% * var(--w))); border-radius: 2px; background: var(--accent); }
+.pp-rows.is-wait .pp-bar { background: var(--wash); }
+.pp-v { font-family: var(--font-table); font-size: 14px; font-weight: 500; color: var(--text); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums lining-nums; }
+.pp-v .u { margin-left: 1px; font-size: var(--t-cell); font-weight: 400; color: var(--text-3); }
+.pp-sh { font-family: var(--font-table); font-size: var(--t-cell); color: var(--text-2); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums lining-nums; }
+/* the rest as one row, in grey, its words where the names start */
+.pp-rest .pp-bar i { background: var(--tick-dim); }
+.pp-n { padding-left: 23px; font-size: var(--t-cell); color: var(--text-2); }
+.pp-none { margin: 0; padding: 10px 0 12px; font-size: var(--t-cell); color: var(--text-3); }
+.pp .pp-rows { transition: opacity 120ms ease-out; }
+.pp.is-pending .pp-rows { opacity: .5; transition-delay: 150ms; }
+/* a tablet: the Blobs plot's padding, the columns a little narrower */
+@media (max-width: 960px) {
+  .pp-plot { padding: 16px 18px 10px; }
+  .pp-row { grid-template-columns: 180px minmax(0, 1fr) 100px 60px; column-gap: 20px; }
+}
+/* a phone: a row is two lines, the name with its figure and share, then its bar the row's whole width */
+@media (max-width: 720px) {
+  .pp-plot { padding: 14px 16px 8px; }
+  .pp-row { grid-template-columns: minmax(0, 1fr) auto 56px; grid-template-areas: "w v s" "b b b"; column-gap: 14px; row-gap: 7px; height: auto; padding: 9px 0 10px; }
+  .pp-who { grid-area: w; }
+  .pp-v { grid-area: v; }
+  .pp-sh { grid-area: s; }
+  .pp-bar { grid-area: b; height: 6px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pp .pp-rows { transition: none; }
+}
+
 /* a little narrower: the same grid, the first column smaller, so the Blobs divider still meets the first gutter */
 @media (min-width: 961px) and (max-width: 1199px) {
   .tp-b { grid-template-columns: 240px minmax(0, 1fr); }
