@@ -1575,6 +1575,49 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
 .chart--bare svg .peak { font-family: var(--font-table); font-size: var(--t-small); font-weight: 500; fill: var(--text-2); font-variant-numeric: tabular-nums lining-nums; }
 .chart--bare svg .col.hover .bar { filter: none; }
 
+/* ---- Blobs: the period's figures as one strip of tabs across the frame, a hairline between them, as analytics tools
+   set theirs; under the strip's hairline, the chart of the one picked, titled with what a bar holds ---- */
+.tp.tc { display: block; padding: 0; }
+.tc-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, .8fr); margin: 0; border-bottom: 1px solid var(--border); }
+.tc-tab { position: relative; min-width: 0; padding: 20px 26px 18px; text-align: left; }
+.tc-tab + .tc-tab { border-left: 1px solid var(--line-soft); }
+/* a tab: the label, then its figure; the one picked in full ink with the accent under it, on the strip's hairline */
+.tc-tab[role="tab"] { cursor: pointer; transition: background var(--dur); }
+.tc-tab[role="tab"]:hover { background: var(--wash); }
+.tc-tab[role="tab"]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tc-tab[aria-selected="true"]::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--accent); }
+.tc-k { display: block; font-size: var(--t-small); line-height: 16px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tc-k .per { font-weight: 400; letter-spacing: .02em; text-transform: none; }
+.tc-tab[aria-selected="true"] .tc-k { color: var(--text-2); }
+.tc-v { display: block; margin: 10px 0 0; font-family: var(--font-table); font-size: 22px; line-height: 28px; font-weight: 400; letter-spacing: -.01em; color: var(--text-2); font-variant-numeric: proportional-nums lining-nums; white-space: nowrap; }
+.tc-tab[aria-selected="true"] .tc-v { font-weight: 500; color: var(--text); }
+.tc-v .u, .tc-v .of { margin-left: 2px; font-size: var(--t-cell); font-weight: 400; letter-spacing: 0; color: var(--text-3); }
+.tc-v .beside { margin-left: 10px; font-size: var(--t-cell); font-weight: 400; letter-spacing: 0; color: var(--text-3); }
+.tc-v .beside b { font-weight: 500; color: var(--text-2); }
+.tc-v button.warn { margin-left: 4px; vertical-align: 2px; }
+.tc-static .tc-v { color: var(--text-2); }
+.tp-b.tc .tp-plot { padding: 18px 26px 14px; border-left: 0; border-top: 0; }
+.tc :is(.tc-v, .tp-plot svg) { transition: opacity 120ms ease-out; }
+.tc.is-pending :is(.tc-v, .tp-plot svg) { opacity: .5; transition-delay: 150ms; }
+/* the chart's own title: what a bar holds, in the bucket the period uses */
+.tp-ct { margin: 0 0 6px; font-size: var(--t-cell); line-height: 16px; font-weight: 500; letter-spacing: 0; color: var(--text-2); white-space: nowrap; }
+.tp-ct .tz { margin-left: 8px; font-size: var(--t-small); font-weight: 400; color: var(--text-3); }
+/* a tablet: the four still in a row, a little tighter */
+@media (max-width: 960px) {
+  .tc-tab { padding: 16px 18px 14px; }
+  .tc-v { font-size: 20px; }
+  .tp-b.tc .tp-plot { padding: 16px 18px 12px; }
+}
+/* a phone: two by two, a hairline between the rows too */
+@media (max-width: 720px) {
+  .tc-tabs { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .tc-tab { padding: 14px 16px 12px; }
+  .tc-tab:nth-child(odd) { border-left: 0; }
+  .tc-tab:nth-child(n+3) { border-top: 1px solid var(--line-soft); }
+  .tc-v { margin-top: 6px; font-size: 18px; line-height: 24px; }
+  .tp-b.tc .tp-plot { padding: 14px 16px 10px; }
+}
+
 /* a little narrower: the same grid, the first column smaller, so the Blobs divider still meets the first gutter */
 @media (min-width: 961px) and (max-width: 1199px) {
   .tp-b { grid-template-columns: 240px minmax(0, 1fr); }
