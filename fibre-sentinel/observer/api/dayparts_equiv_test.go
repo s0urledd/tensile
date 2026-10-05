@@ -315,6 +315,10 @@ func equivFull() bool { return os.Getenv("TENSILE_DAYPARTS_FULL") != "" }
 func equivRun(t *testing.T, cfg simConfig, sample int, restart bool, step [2]int) *equivTally {
 	t.Helper()
 	s := newSim(t, cfg)
+	// The windows ranked in bounded memory (dayparts_rank.go) in turn with
+	// those summed whole: every window but the day's, those of more than
+	// three sealed days, or those of more than a month (none here).
+	s.apiOpts = []Option{withMergeDays([]int{0, 3, mergeDaysDefault}[cfg.seed%3])}
 	s.plan()
 	srv := s.openAPI()
 	rng := rand.New(rand.NewPCG(cfg.seed, 99))
@@ -627,6 +631,7 @@ func TestDayPartsRollback(t *testing.T) {
 	cfg := defaultSimConfig(101)
 	cfg.perDay = 30
 	s := newSim(t, cfg)
+	s.apiOpts = []Option{withMergeDays(2)}
 	s.plan()
 	srv := s.openAPI()
 	rng := rand.New(rand.NewPCG(101, 7))

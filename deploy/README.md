@@ -323,8 +323,9 @@ is one row each, not a copy of the data directory:
    25 being the older build's `store.SchemaVersion` (or the same statement
    through Python's `sqlite3`);
 5. remove any drop-in that passes the API a flag the older build does not
-   know, `-day-partials` or `-day-partials-pace` among them (an unknown
-   flag stops it at start): `sudo systemctl revert fibre-api@mocha`, or
+   know, `-day-partials`, `-day-partials-pace` or `-day-partials-cache-mb`
+   among them (an unknown flag stops it at start):
+   `sudo systemctl revert fibre-api@mocha`, or
    delete the file under `/etc/systemd/system/fibre-api@mocha.service.d/`,
    then `sudo systemctl daemon-reload`;
 6. install the older collector and API, and start them.
@@ -374,6 +375,16 @@ rewrites rows, begins them again; one that only adds what they do not read
 statement on its own, as the build before them did; the files stay where
 they are, and the next start with the flag on catches up from them.
 
+A sealed day's service-time and transfer-rate histograms, most of what
+the partials weigh, are not held in memory: they stay in the day's seal
+file, written when the day is sealed, and a window reads them from it as
+it sums the day. `-day-partials-cache-mb` (default 64) keeps the newest
+days' in memory within that many megabytes, 0 none; an older build does
+not know the flag and stops at start with it (see "Going back"). A seal
+file that goes missing or is damaged while the API runs costs only its
+own day, as on start: the window that meets it reads the day raw, and the
+sealer seals it again under a new name.
+
 Sealing reads the database a day at a time, and the disk it reads may be
 the one other services write (the validator beside it): it is the
 partials' one burst of reads. `-day-partials-pace` keeps it gentle: after
@@ -422,15 +433,17 @@ warm-up then begins from the live API's partials, its memo and its ledger,
 and seals only the days the live API had not. A partial from a build that
 folds days another way is refused as it is loaded (its definition holds the
 Go that folds them), so a seed is never a stale figure, at worst a cold
-start. Sealing is most of a warm-up's time, and at the default pace takes
-four times its work. On a synthetic record of 32 days (2.2 GB, 19,000
-publications, 311,000 readings), the work of sealing every day from nothing
-is about 20 seconds of reads (4.5 GB read with the database's memory map
-off; 50 seconds from a cold page cache), 80 seconds at the default pace;
-seeded from the files of an API that had sealed them, it seals nothing and
-takes the two seconds of loading them. The four and a half days of Mocha on
-record in late September 2026 took about three minutes unpaced; months of
-traffic ten times as busy take hours, which is what the seed spares.
+start: the build that moved the histograms to the seal files is one, and
+its warm-up seals every day again. Sealing is most of a warm-up's time,
+and at the default pace takes four times its work. On a synthetic record
+of 32 days (2.2 GB, 19,000 publications, 311,000 readings), the work of
+sealing every day from nothing is about 20 seconds of reads (4.5 GB read
+with the database's memory map off; 50 seconds from a cold page cache), 80
+seconds at the default pace; seeded from the files of an API that had
+sealed them, it seals nothing and takes the two seconds of loading them.
+The four and a half days of Mocha on record in late September 2026 took
+about three minutes unpaced; months of traffic ten times as busy take
+hours, which is what the seed spares.
 
 `Nice=10` below lowers the warm-up's CPU priority only. On an NVMe disk with
 the `none` I/O scheduler (`cat /sys/block/nvme0n1/queue/scheduler`) neither

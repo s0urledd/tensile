@@ -151,7 +151,18 @@ type Server struct {
 	// work it rests sealDuty times as long as the unit took; 0 does not
 	// rest.
 	sealDuty float64
+	// histCacheMB bounds the sealed row days' histograms kept in memory
+	// (WithHistCache); -1 until an option sets it, then DefaultHistCacheMB.
+	// mergeDays is how many sealed days a window sums its histograms of
+	// whole (dayparts_rank.go); -1 until a test sets it, then
+	// mergeDaysDefault.
+	histCacheMB int
+	mergeDays   int
 }
+
+// withMergeDays has windows of more than n sealed days ranked in bounded
+// memory (dayparts_rank.go), for tests.
+func withMergeDays(n int) Option { return func(s *Server) { s.mergeDays = n } }
 
 // now is the server's clock (clock).
 func (s *Server) now() time.Time {
@@ -356,7 +367,8 @@ func newServer(st *store.Store, info VantageInfo, log *scan.Logger, opts ...Opti
 		"location": "the operator's word: geolocating an address is a guess, so nothing here proves it",
 	}
 	info.Complete = info.Location != "" && info.Provider != ""
-	s := &Server{st: st, vantage: info.Name, info: info, mux: http.NewServeMux(), log: log, blobs: newBlobCache(), labels: map[string]PublisherLabel{}}
+	s := &Server{st: st, vantage: info.Name, info: info, mux: http.NewServeMux(), log: log, blobs: newBlobCache(), labels: map[string]PublisherLabel{},
+		histCacheMB: -1, mergeDays: -1}
 	s.txSlots = readSlots(st.DB().Stats().MaxOpenConnections)
 	for _, o := range opts {
 		o(s)
@@ -405,7 +417,13 @@ func newServer(st *store.Store, info VantageInfo, log *scan.Logger, opts ...Opti
 		s.origRows.log, s.recent.log = s.logf(), s.logf()
 	}
 	if !s.noParts {
-		s.parts = &dayParts{log: s.logf()}
+		if s.histCacheMB < 0 {
+			s.histCacheMB = DefaultHistCacheMB
+		}
+		if s.mergeDays < 0 {
+			s.mergeDays = mergeDaysDefault
+		}
+		s.parts = &dayParts{log: s.logf(), hists: newHistCache(int64(s.histCacheMB) << 20), mergeDays: s.mergeDays}
 		if dir := s.snapshotsIn(); dir != "" {
 			s.parts.file = filepath.Join(dir, dayPartsFile)
 		}
@@ -1754,11 +1772,11 @@ func (s *Server) previousWindow(ctx context.Context, win Window, ex excludeSet) 
 	// Reachability and the median service time are over every validator
 	// here, whatever ex says: the shipped statements take no exclusion.
 	if e := epochOf(ctx); e != nil && partsFor(prev) {
-		rw, err := s.rowWindow(ctx, e, prev.startArg(), prev.endArg(), "")
+		rw, lat, err := s.rowWindow(ctx, e, prev.startArg(), prev.endArg(), "", rowNeed{net: true})
 		if err != nil {
 			return nil, err
 		}
-		n := netRowsOf(rw, excludeSet{})
+		n := netRowsOf(rw, excludeSet{}, lat)
 		p.Reachability = rate(n.up, n.beats)
 		p.LatencyP50, _ = n.lat.percentiles()
 		return p, nil
@@ -1831,11 +1849,17 @@ func (s *Server) computeNetwork(ctx context.Context, win Window, ex excludeSet, 
 	var rn *netRows
 	e := epochOf(ctx)
 	if e != nil && partsFor(win) {
-		rw, err := s.rowWindow(ctx, e, win.startArg(), win.endArg(), "")
+		// The live "all" window, unfiltered, keeps the bands its ranks are
+		// found in across refreshes (dayparts_rank.go).
+		need := rowNeed{net: true, ex: ex}
+		if win.Span == 0 && !win.AsOf && !ex.on() {
+			need.keep = "all/network"
+		}
+		rw, lat, err := s.rowWindow(ctx, e, win.startArg(), win.endArg(), "", need)
 		if err != nil {
 			return nil, err
 		}
-		n := netRowsOf(rw, ex)
+		n := netRowsOf(rw, ex, lat)
 		rn = &n
 	}
 	if rn != nil {
@@ -2658,7 +2682,11 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	// not a sum over days, is read whole either way.
 	var rw map[string]*rowAcc
 	if e := epochOf(ctx); e != nil && partsFor(win) {
-		if rw, err = s.rowWindow(ctx, e, win.startArg(), win.endArg(), only); err != nil {
+		need := rowNeed{vals: true}
+		if win.Span == 0 && !win.AsOf {
+			need.keep = "all/validators"
+		}
+		if rw, _, err = s.rowWindow(ctx, e, win.startArg(), win.endArg(), only, need); err != nil {
 			return nil, err
 		}
 		for addr, a := range rw {

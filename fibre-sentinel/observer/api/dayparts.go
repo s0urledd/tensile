@@ -1,10 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"math"
 	"math/big"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/rollup"
@@ -53,8 +57,9 @@ import (
 // every figure from that transaction, so a day is never both summed and
 // read raw, and two computations never see one another's half-made state.
 // See docs in dayparts_catchup.go and dayparts_seal.go for when a day is
-// sealed and when it is dropped, and dayparts_file.go for how the partials
-// are kept across restarts.
+// sealed and when it is dropped, dayparts_file.go for how the partials are
+// kept across restarts, dayparts_hist.go for where a row day's histograms
+// are kept, and dayparts_rank.go for how a long window ranks them.
 
 // dayLayout is the day key: the first ten characters of a store.TimeLayout
 // timestamp.
@@ -104,8 +109,8 @@ type rowPart struct {
 	Gaps map[string]int64 `json:"gaps,omitempty"`
 	// Lat and Tput are the service-time and transfer-rate histograms
 	// (valLatencyHistSQL, valThroughputHistSQL), ascending.
-	Lat  []hbin `json:"lat,omitempty"`
-	Tput []hbin `json:"tput,omitempty"`
+	Lat  hbins `json:"lat,omitempty"`
+	Tput hbins `json:"tput,omitempty"`
 	// The heartbeats (valBeatsSQL).
 	Beats    int64  `json:"beats,omitempty"`
 	Up       int64  `json:"up,omitempty"`
@@ -117,6 +122,108 @@ type rowPart struct {
 // hbin is one histogram bin: how many rows had the value.
 type hbin [2]int64
 
+// hbins is a histogram's bins, written as JSON's [[value, count], ...]. It
+// is read without reflection (UnmarshalJSON): the bins are most of a row
+// day's seal file, read whenever a window sums the day, and through the
+// decoder's reflection a seal file took twice as long to read.
+type hbins []hbin
+
+// UnmarshalJSON reads bins as Marshal writes them, and anything else the
+// way the decoder would.
+func (h *hbins) UnmarshalJSON(b []byte) error {
+	i := 0
+	ws := func() {
+		for i < len(b) && (b[i] == ' ' || b[i] == '\t' || b[i] == '\n' || b[i] == '\r') {
+			i++
+		}
+	}
+	num := func() (int64, bool) {
+		neg := i < len(b) && b[i] == '-'
+		if neg {
+			i++
+		}
+		start := i
+		var v uint64
+		for i < len(b) && b[i] >= '0' && b[i] <= '9' {
+			if v > (math.MaxInt64+1)/10 {
+				return 0, false
+			}
+			v = v*10 + uint64(b[i]-'0')
+			i++
+		}
+		switch {
+		case i == start, i-start > 1 && b[start] == '0', i < len(b) && (b[i] == '.' || b[i] == 'e' || b[i] == 'E'):
+			return 0, false
+		case neg && v <= math.MaxInt64+1:
+			return -int64(v-1) - 1, true
+		case !neg && v <= math.MaxInt64:
+			return int64(v), true
+		}
+		return 0, false
+	}
+	slow := func() error {
+		var out []hbin
+		if err := json.Unmarshal(b, &out); err != nil {
+			return err
+		}
+		*h = out
+		return nil
+	}
+	ws()
+	if string(b[i:]) == "null" {
+		*h = nil
+		return nil
+	}
+	if i >= len(b) || b[i] != '[' {
+		return slow()
+	}
+	i++
+	out := make(hbins, 0, max(0, bytes.Count(b, []byte{'['})-1))
+	ws()
+	if i < len(b) && b[i] == ']' {
+		i++
+	} else {
+		for {
+			ws()
+			if i >= len(b) || b[i] != '[' {
+				return slow()
+			}
+			i++
+			ws()
+			v, ok := num()
+			ws()
+			if !ok || i >= len(b) || b[i] != ',' {
+				return slow()
+			}
+			i++
+			ws()
+			n, ok := num()
+			ws()
+			if !ok || i >= len(b) || b[i] != ']' {
+				return slow()
+			}
+			i++
+			out = append(out, hbin{v, n})
+			ws()
+			if i < len(b) && b[i] == ',' {
+				i++
+				continue
+			}
+			if i < len(b) && b[i] == ']' {
+				i++
+				break
+			}
+			return slow()
+		}
+	}
+	ws()
+	if i != len(b) {
+		return slow()
+	}
+	*h = out
+	return nil
+}
+
 // rowDay is a sealed row day: every validator's rows started on it.
 type rowDay struct {
 	Day  string              `json:"day"`
@@ -127,6 +234,11 @@ type rowDay struct {
 	Collapsible []string `json:"collapsible,omitempty"`
 	SealedAt    string   `json:"sealed_at"`
 	Gen         int      `json:"gen"`
+	// file and digest name the seal file that holds the day whole, and
+	// then Vals holds no histogram: they are read from the file when a
+	// window sums the day (dayparts_hist.go). With no file, the partials
+	// kept nowhere, Vals holds them.
+	file, digest string
 }
 
 // sigPart is one validator's signing counts over some promises, in
@@ -481,6 +593,24 @@ type dayParts struct {
 	origin    string
 	writing   chan struct{}
 	sealFiles map[string]string
+	// pending are the seal files the sealer has written and not published
+	// yet (writeRowSeal), which no write of the partials removes; guarded
+	// by mu.
+	pending map[string]bool
+	// rested is how long sealDue has rested for its pace (WithSealPace), in
+	// all: the rests a pace adds, measured, so a test can hold them to the
+	// work they follow whatever else the machine is doing
+	rested atomic.Int64
+	// hists keeps the histograms of the sealed row days read last, within
+	// its bound (WithHistCache); beforeRead runs before a seal file is read
+	// for them, for tests.
+	hists      *histCache
+	beforeRead func(day string)
+	// mergeDays is how many sealed days a window sums its histograms of
+	// whole, and bands the bands a longer one ranks in, by the name of the
+	// window they are kept for (dayparts_rank.go); bands guarded by mu.
+	mergeDays int
+	bands     map[string]*bandSet
 	// fallback is why the process reads every window raw, "" while it does
 	// not, and since when (fallBack); guarded by mu.
 	fallback   string
@@ -519,10 +649,12 @@ type dayParts struct {
 	// it is while the ledger is built (ledgerTurn); guarded by mu.
 	logged map[string]bool
 	turn   bool
-	// rebuilds counts the times the partials were begun again, and dropped
-	// the sealed days a catch-up dropped, for tests.
+	// rebuilds counts the times the partials were begun again, dropped the
+	// sealed days a catch-up dropped, and unusable the seal files a
+	// computation could not use, for tests.
 	rebuilds int
 	dropped  int
+	unusable int
 }
 
 // journalEntry is what one catch-up dropped: a sealer that read a day

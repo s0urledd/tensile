@@ -37,11 +37,13 @@ import (
 //     the vantage, every settlement day's ledger and span, the holds (the
 //     holds' counter, a digest of the held rows per promise, and the held
 //     publications), the fingerprints and the corrected publications, the
-//     anchors, the audit's cursor, and an index of the sealed days naming
-//     each one's file and digest;
+//     anchors, the audit's cursor, every sealed row day but its histograms,
+//     and an index of the sealed days naming each one's file and digest;
 //   - day-partials/row-<day>.g<n>.json and settle-<day>.g<n>.json hold one
-//     sealed day each, written once and never changed; a day sealed again
-//     is another file.
+//     sealed day each, whole, written once and never changed; a day sealed
+//     again is another file. A row day's is written when it is sealed, and
+//     its histograms are read from it by the windows that sum it
+//     (dayparts_hist.go).
 //
 // The definition is a digest of every statement and constant a partial is
 // computed with, of the Go that folds and sums them (as tokens), and of the
@@ -52,11 +54,12 @@ import (
 // only added what the partials do not read leaves the files good. Loading
 // checks the header, every seal file's digest against the index (a seal
 // file missing, damaged, or not the one the index names, leaves only its
-// own day unsealed), and then recomputes the newest sealed day of each kind
-// and one other at random and compares; the catch-up that follows checks
-// every mark and anchor and reads every hold again, as a catch-up does when
-// the holds' counter moved. Any other doubt begins the partials again, as a
-// start with no file does.
+// own day unsealed; a row day's file is read through for its digest and not
+// parsed, the index holding the rest of the day), and then recomputes the
+// newest sealed day of each kind and one other at random and compares; the
+// catch-up that follows checks every mark and anchor and reads every hold
+// again, as a catch-up does when the holds' counter moved. Any other doubt
+// begins the partials again, as a start with no file does.
 //
 // An older build does not know the files and never reads them. Coming back,
 // a file written before has marks the store has only grown past since, and
@@ -68,7 +71,7 @@ const (
 	// partsVersion names the files' layout; the Go that folds and
 	// assembles the partials is in the definition by its own text
 	// (partsSourcesDigest).
-	partsVersion = 4
+	partsVersion = 5
 )
 
 // partsFile is day-partials.json.
@@ -94,7 +97,10 @@ type partsFile struct {
 	MSUDue      []string               `json:"msu_due,omitempty"`
 	Settle      map[string]*settleDay  `json:"settle"`
 	Anchors     map[string]*dayAnchors `json:"anchors,omitempty"`
-	Seals       map[string]sealRef     `json:"seals,omitempty"`
+	// Rows are the sealed row days without their histograms, which their
+	// seal files hold.
+	Rows  map[string]*rowDay `json:"rows,omitempty"`
+	Seals map[string]sealRef `json:"seals,omitempty"`
 	// Audit is the audit's cursor per kind of day (auditNext).
 	Audit map[string]string `json:"audit,omitempty"`
 }
@@ -164,7 +170,7 @@ func partsDefinition(ctx context.Context, q store.Querier) (string, error) {
 // gofmt does not cost a sealing again. TestPartsSourcesEmbedded holds the
 // list to every dayparts file of the package.
 //
-//go:embed dayparts.go dayparts_audit.go dayparts_catchup.go dayparts_file.go dayparts_health.go dayparts_seal.go dayparts_sql.go dayparts_window.go
+//go:embed dayparts.go dayparts_audit.go dayparts_catchup.go dayparts_file.go dayparts_health.go dayparts_hist.go dayparts_rank.go dayparts_seal.go dayparts_sql.go dayparts_window.go
 var partsSources embed.FS
 
 var (
@@ -430,10 +436,19 @@ func (dp *dayParts) write(ctx context.Context, s *Server, e *epoch) error {
 		f.Seals[key] = sealRef{File: name, Digest: digest}
 		return nil
 	}
+	f.Rows = make(map[string]*rowDay, len(e.rows))
 	for d, rd := range e.rows {
+		if rd.file != "" {
+			// Written whole when it was sealed (writeRowSeal).
+			written[rd.file] = true
+			f.Seals["row:"+d] = sealRef{File: rd.file, Digest: rd.digest}
+			f.Rows[d] = rd
+			continue
+		}
 		if err := put("row:"+d, "row", d, rd.Gen, sealFile{Row: rd}); err != nil {
 			return err
 		}
+		f.Rows[d] = rd.stripped("", "")
 	}
 	for d, sd := range e.settle {
 		if sd.Seal == nil {
@@ -450,24 +465,45 @@ func (dp *dayParts) write(ctx context.Context, s *Server, e *epoch) error {
 	dp.savedBorn, dp.saved, dp.savedAt = e.born, e.content, time.Now()
 	dp.mu.Unlock()
 	// The seal files nothing names any more; each is replaced by another
-	// generation or dropped. And the temporary files of seal writes that
-	// never reached their rename (a process killed mid-write), each the size
-	// of its seal, once they are old enough that no write can still be at
-	// them (staleDerivedTemp).
+	// generation or dropped. Not those the newest epoch names, sealed since
+	// e was taken, nor those the sealer has written and not published yet
+	// (pending): they are told apart under the lock the sealer marks a file
+	// pending under before it writes it and publishes it under. The
+	// histograms kept of a day dropped or sealed again go too. And the
+	// temporary files of seal writes that never reached their rename (a
+	// process killed mid-write), each the size of its seal, once they are
+	// old enough that no write can still be at them (staleDerivedTemp).
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
 	now := time.Now()
+	digests := map[string]bool{}
+	dp.mu.Lock()
+	named := map[string]bool{}
+	if cur := dp.cur; cur != nil {
+		for _, rd := range cur.rows {
+			named[rd.file] = true
+			digests[rd.digest] = true
+		}
+		for d, sd := range cur.settle {
+			if sd.Seal != nil {
+				named[sealName("settle", d, sd.Seal.Gen)] = true
+			}
+		}
+	}
 	for _, ent := range entries {
 		name := ent.Name()
-		switch {
-		case strings.HasSuffix(name, ".json") && !written[name]:
+		if strings.HasSuffix(name, ".json") && !written[name] && !named[name] && !dp.pending[name] {
 			_ = os.Remove(filepath.Join(dir, name))
-			dp.mu.Lock()
 			delete(dp.sealFiles, name)
-			dp.mu.Unlock()
-		case strings.HasSuffix(name, ".tmp") && !ent.IsDir():
+		}
+	}
+	dp.mu.Unlock()
+	dp.hists.retain(digests)
+	for _, ent := range entries {
+		name := ent.Name()
+		if strings.HasSuffix(name, ".tmp") && !ent.IsDir() {
 			if fi, err := ent.Info(); err == nil && now.Sub(fi.ModTime()) > staleDerivedTemp {
 				_ = os.Remove(filepath.Join(dir, name))
 			}
@@ -580,6 +616,37 @@ func (dp *dayParts) load(ctx context.Context, s *Server, q store.Querier) (*epoc
 		// rests on it, so a copy that left the seal files behind, a torn
 		// write or a bit gone wrong, or another directory's files mixed in,
 		// costs those days and not every other one.
+		kind, day, _ := strings.Cut(key, ":")
+		if kind == "row" {
+			// The day but its histograms is in the index; its file is read
+			// through for its digest and not parsed, and its histograms are
+			// read when a window sums the day (dayparts_hist.go).
+			rd := f.Rows[day]
+			if rd == nil || rd.Day != day {
+				damaged = append(damaged, ref.File+" (the index holds no "+key+")")
+				continue
+			}
+			kept.gens[key] = max(kept.gens[key], rd.Gen)
+			gone, why := checkSealFile(filepath.Join(dir, ref.File), ref.Digest)
+			if gone {
+				missing = append(missing, ref.File)
+				continue
+			}
+			if why != "" {
+				damaged = append(damaged, ref.File+" ("+string(why)+")")
+				continue
+			}
+			if rd.Vals == nil {
+				rd.Vals = map[string]*rowPart{}
+			}
+			for _, p := range rd.Vals {
+				p.Lat, p.Tput = nil, nil
+			}
+			rd.file, rd.digest = ref.File, ref.Digest
+			e.rows[day] = rd
+			kept.files[ref.File] = ref.Digest
+			continue
+		}
 		var sf sealFile
 		ok, why := readDerived(filepath.Join(dir, ref.File), &sf)
 		if !ok && why == "" {
@@ -594,13 +661,10 @@ func (dp *dayParts) load(ctx context.Context, s *Server, q store.Querier) (*epoc
 			missing = append(missing, ref.File)
 			continue
 		}
-		kind, day, _ := strings.Cut(key, ":")
 		switch {
 		case sf.Kind != "day-partial-"+kind || sf.Definition != def || sf.Store != f.Store:
 			damaged = append(damaged, ref.File+" (of another kind, definition or store)")
 			continue
-		case kind == "row" && sf.Row != nil && sf.Row.Day == day:
-			e.rows[day] = sf.Row
 		case kind == "settle" && sf.Settle != nil && e.settle[day] != nil:
 			e.settle[day].Seal = sf.Settle
 		default:

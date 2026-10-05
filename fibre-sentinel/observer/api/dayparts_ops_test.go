@@ -65,7 +65,7 @@ func (l *logLines) with(sub string) []string {
 func TestThePaceRestsAfterEachUnit(t *testing.T) {
 	skipUnderRace(t)
 	ctx := context.Background()
-	run := func(k float64) (time.Duration, int) {
+	run := func(k float64) (time.Duration, time.Duration, int) {
 		_, srv := opsSim(t, 71)
 		WithSealPace(k)(srv)
 		if err := srv.readTx(ctx, func(context.Context) error { return nil }); err != nil {
@@ -76,17 +76,27 @@ func TestThePaceRestsAfterEachUnit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return time.Since(t0), n
+		return time.Since(t0), time.Duration(srv.parts.rested.Load()), n
 	}
-	free, n0 := run(0)
-	paced, n2 := run(3)
+	free, freeRest, n0 := run(0)
+	paced, rest, n2 := run(3)
 	if n0 != n2 || n0 < 5 {
 		t.Fatalf("the two runs did %d and %d unit(s)", n0, n2)
 	}
-	if paced < 2*free {
-		t.Errorf("%d unit(s): %s without a pace, %s with a pace of 3; want about four times as long", n0, free, paced)
+	if freeRest != 0 {
+		t.Errorf("rested %s without a pace", freeRest)
 	}
-	t.Logf("%d unit(s): %s without a pace, %s with a pace of 3", n0, free.Round(time.Millisecond), paced.Round(time.Millisecond))
+	// Each unit but the last is followed by a rest three times as long as
+	// it took, so the rests come to nearly three times the work. Held to the
+	// run's own work rather than to another run's time, which the machine's
+	// load moves (on a busy CI runner the unpaced run took as long as the
+	// paced one's work and rests together).
+	work := paced - rest
+	if rest < 2*work || rest > 4*work {
+		t.Errorf("%d unit(s): %s of work and %s of rest with a pace of 3; want about three times the work", n0, work, rest)
+	}
+	t.Logf("%d unit(s): %s without a pace; with a pace of 3, %s of work and %s of rest", n0, free.Round(time.Millisecond),
+		work.Round(time.Millisecond), rest.Round(time.Millisecond))
 }
 
 // TestAFailedUnitBacksOff: a day whose seal fails is not tried again on the

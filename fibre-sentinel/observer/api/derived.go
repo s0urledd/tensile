@@ -210,20 +210,28 @@ func readDerived(path string, v any) (ok bool, why refusal) {
 // name for every writer, one truncated the other's while it was being
 // renamed, and published half a file or failed.
 func writeDerived(path string, v any) error {
+	_, err := writeDerivedSum(path, v)
+	return err
+}
+
+// writeDerivedSum is writeDerived, and returns the digest the file opens
+// with.
+func writeDerivedSum(path string, v any) (string, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if b, err = sealDerived(b); err != nil {
-		return err
+		return "", err
 	}
+	digest := string(b[len(digestOpen) : len(digestOpen)+2*sha256.Size])
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return "", err
 	}
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
 	if err != nil {
-		return err
+		return "", err
 	}
 	_, err = tmp.Write(b)
 	if err == nil {
@@ -240,8 +248,9 @@ func writeDerived(path string, v any) error {
 	}
 	if err != nil {
 		_ = os.Remove(tmp.Name())
+		return "", err
 	}
-	return err
+	return digest, nil
 }
 
 // staleDerivedTemp is how old a temporary file beside a derived file must

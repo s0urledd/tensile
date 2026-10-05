@@ -129,9 +129,11 @@ type sim struct {
 	corrFile   *os.File
 	amendFile  *os.File
 	afterPrune func(step, day string)
-	// the API's side
-	ro  *store.Store
-	srv *Server
+	// the API's side; apiOpts are the options every API the sim opens
+	// takes (openAPI)
+	ro      *store.Store
+	srv     *Server
+	apiOpts []Option
 }
 
 const simVantage = "v1"
@@ -265,7 +267,8 @@ func (s *sim) openAPI(opts ...Option) *Server {
 		s.ro = ro
 		s.t.Cleanup(func() { ro.Close() })
 	}
-	srv := newServer(s.ro, VantageInfo{Name: simVantage}, nil, append([]Option{WithSnapshotDir(s.snaps)}, opts...)...)
+	opts = append(append([]Option{WithSnapshotDir(s.snaps)}, s.apiOpts...), opts...)
+	srv := newServer(s.ro, VantageInfo{Name: simVantage}, nil, opts...)
 	srv.clock = func() time.Time { return s.now }
 	return srv
 }
