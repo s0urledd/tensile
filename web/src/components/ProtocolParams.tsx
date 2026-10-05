@@ -80,13 +80,19 @@ export default function ProtocolParams() {
                 <span className="mono">{v}</span>{c.changed.includes(key) && <span className="chip">changed here</span>}
               </Row>
             ))}
-            {p.derived && (
-              <Row name="Serving window">
-                <span className="mono">{span(p.derived.must_serve_window_s)}</span>
-                <span className="ref-kv-n">max(timeout, retention), from each promise&rsquo;s creation</span>
-              </Row>
-            )}
           </dl>
+          {/* computed here from two of the values above, so it stands apart from what the chain holds */}
+          {p.derived && (
+            <div className="ref-derived" id="serving-window">
+              <p className="ref-derived-k">Derived <span>computed from the parameters above, not read from the chain</span></p>
+              <dl className="ref-kv">
+                <Row name="Serving window">
+                  <span className="mono">{span(p.derived.must_serve_window_s)}</span><span className="ref-kv-n">from each promise&rsquo;s creation</span>
+                  <span className="ref-derived-f"><code>= max(payment_promise_timeout, shard_retention)</code></span>
+                </Row>
+              </dl>
+            </div>
+          )}
         </>
       ) : (
         <p className="muted">No x/fibre parameters on record yet: the scanner records them the first time it reads a block where Fibre exists.</p>

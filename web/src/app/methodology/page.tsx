@@ -184,17 +184,25 @@ export default function Methodology() {
             <p>Rows of another settled promise over the same blob count too (<em>shadowed</em>; see <a href="#verification">Verifying the validator’s own rows</a>). Only rows that came back count; nothing is extrapolated.</p>
           </Def>
 
-          <Def id="not-served" aliases={["gaps"]} name="Not served" say="None of the validator’s answers served its rows. Its last answer gives the reason, in one of the words below.">
-            <div className="ref-box">
-              <p className="ref-box-k">One exception, for every reason</p>
-              <p>The validator counts neither way when one of its requests failed on Tensile&rsquo;s side, was not made, or brought back rows of the blob that are not its own.</p>
+          <Def id="not-served" name="Not served" say="None of the validator’s answers served its rows. Its last answer gives the reason, in one of the words below.">
+            <div className="ref-box ref-box--anchor" id="not-counted">
+              <span id="gaps" className="ref-alias" aria-hidden="true" />
+              <p className="ref-box-k">Counted neither way</p>
+              <p>A validator whose rows did not come back is not counted as not served when any of its answers at the reading was:</p>
+              <ul>
+                <li>a request that failed on Tensile&rsquo;s side: before it reached the validator, on Tensile&rsquo;s own network, resolver or clock, or cut off by a restart;</li>
+                <li>a request, or a re-ask it was owed, that was not made;</li>
+                <li>rows of the blob that are not its own and that no settled promise explains;</li>
+                <li>an answer that cannot be judged: an unrecognised outcome, or a chain version whose row assignment the pinned code cannot compute.</li>
+              </ul>
+              <p>Nor is anyone not served on a reading in which no request reached any server. In each case the validator counts neither way on that blob.</p>
             </div>
             <Rules rows={[
               ["Provisional", "A not-served reading younger than 30 minutes: counted, and still open to withdrawal until then.", "provisional"],
             ]} />
             <p>A not-served reading can be challenged; see <a href="#corrections">Disputes and corrections</a>.</p>
             <h4 id="words" className="ref-h4">Words on a reading</h4>
-            <p>Each answer is recorded with one of these words. A failure among them is not served only as the validator&rsquo;s last answer, and never when the exception above applies.</p>
+            <p>Each answer is recorded with one of these words. A failure among them is not served only as the validator&rsquo;s last answer, and never in the cases above.</p>
             <Legend />
           </Def>
 
@@ -209,7 +217,12 @@ export default function Methodology() {
 
           <Def id="reachability" name="Reachability" say="The share of endpoint checks in the period that completed a TLS handshake with the validator’s registered Fibre endpoint.">
             <Formula note="a check every five minutes">completed handshakes / checks</Formula>
-            <p>A check asks for no blob data, so reachability says nothing about serving rows, and it is not signing uptime. One failed check after a success still shows reachable; two in a row show unreachable. How the two locations combine is under <a href="#locations">Observation locations</a>.</p>
+            <Rules rows={[
+              ["Counts", "Every check from the main location, failed ones included."],
+              ["Not counted", "Checks from the second location, and a check that failed before it left Tensile."],
+            ]} />
+            <p>A check asks for no blob data, so reachability says nothing about serving rows, and it is not signing uptime.</p>
+            <p id="reachable-now">The status shown now, reachable or unreachable, is the newest check, with two allowances. One failed check after a success still shows reachable; two in a row show unreachable. An endpoint the main location cannot reach shows reachable when the second location completed a handshake with it in the last 15 minutes. Neither allowance changes the percentage.</p>
           </Def>
 
           <Def id="throughput" name="Throughput" say="The median download speed of the validator’s served shards of 2 MiB or more.">
@@ -277,15 +290,15 @@ export default function Methodology() {
           </Def>
 
           <Def id="locations" aliases={["vantage"]} name="Observation locations" say="Endpoints are checked from two locations; blobs are read from one, as one client’s download is.">
-            <p>An endpoint that fails from the main location shows reachable when the second location completed a handshake with it in the last 15 minutes; the reachability percentage counts the main location&rsquo;s checks. A blob reading follows one network path, and asking again, twice, 90 s apart, keeps a passing failure on that path from counting.</p>
+            <p>The second location&rsquo;s checks confirm the status shown now (see <a href="#reachable-now">Reachability</a>) and enter no percentage. A blob reading follows one network path, and asking again, twice, 90 s apart, keeps a passing failure on that path from counting.</p>
           </Def>
         </section>
 
         {/* -------------------------------------------------------- publishers */}
         <section className="ref-sec">
           <H2 id="publishers">Publishers and escrow</H2>
-          <p className="ref-lead">A publisher is the account whose escrow pays for a blob. Every escrow and payment figure is read from the chain.</p>
-          <p><strong>Available</strong> on a publisher&rsquo;s page is Tensile&rsquo;s reading of its blobs, as defined under <a href="#available">Available</a>.</p>
+          <p className="ref-lead">A publisher is the account whose escrow pays for a blob. Every figure on the Publishers pages is read from the chain, except Tensile&rsquo;s readings of the blobs.</p>
+          <p>Those carry Tensile&rsquo;s eye: <strong>Available</strong> on a publisher&rsquo;s page, and the <strong>Tensile</strong> column beside its blobs, as defined under <a href="#available">Available</a>.</p>
           <dl className="ref-terms">
             <Term id="fees" term="Fees">
               The module&rsquo;s charge for a blob, taken from the publisher&rsquo;s escrow; not the settlement transaction&rsquo;s own fee. No event carries the amount, so it is recomputed with the module&rsquo;s formula, at one utia per gas:
