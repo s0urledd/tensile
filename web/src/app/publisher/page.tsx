@@ -210,10 +210,10 @@ function Statement({ d, moves, page, onPage, now }: { d: Detail; moves: Move[]; 
 }
 
 /**
- * One publisher: whose account it is; what it posted and when beside four figures of its own (the escrow it has left
- * now, and over its whole record its blobs, what it paid, and how many of its blobs Tensile found available), two
- * light frames side by side; then its transactions, newest first: its blobs as the Blobs list draws them, and its
- * escrow movements between them.
+ * One publisher: whose account it is; under it, on the left, its four figures in one frame, a row each (the escrow it
+ * has left now, and over its whole record its blobs, what it paid, and how many of its blobs Tensile found available);
+ * on the right, in a frame of the same make, when it last and first posted and where; then its transactions, newest
+ * first: its blobs as the Blobs list draws them, and its escrow movements between them.
  */
 function Publisher({ addr }: { addr: string }) {
   const params = useSearchParams();
@@ -362,74 +362,49 @@ function Publisher({ addr }: { addr: string }) {
     <p className="pb-more">{someMoves ? "Escrow movements" : "Older escrow movements"} are <a href={`${API_BASE}/v1/exports`} title="Every account's payments, deposits and withdrawals included, day by day">in the API →</a></p>
   );
 
-  // when it last and first posted, and where: all-time; a row still being read holds its place under a placeholder
-  const facts = posted && (newest || reading) && (
-    <dl className="pb-meta">
-      <dt>Last blob</dt>
-      <dd>{newest
-        ? <><b>{age(now - Date.parse(newest))} ago</b><em title={utcWord(newest)}>{monthDayTime(newest)} UTC</em></>
-        : <span className="wait">2 d 21 h ago Sep 28 20:48:38 UTC</span>}</dd>
-      {(first || firstWait) && <><dt>First blob</dt><dd>{first
-        ? <><b title={firstBlob ? `${utcWord(first)} · height ${int(firstBlob.settlement_height)}` : utcWord(first)}>{monthDayTime(first)}</b><em>UTC</em></>
-        : <span className="wait">Sep 28 12:47:32 UTC</span>}</dd></>}
-      {nss && nss.length > 0 && <>
-        <dt>Namespace{nss.length + nsMore === 1 ? "" : "s"}</dt>
-        <dd className="pb-nss">
-          {nss.map((x) => (
-            <button key={x.ns} type="button" className="nsb" title={`${x.ns} · ${int(x.n)} settlement${x.n === 1 ? "" : "s"} · show only these`}
-              onClick={() => { setView({ ns: x.ns, ...(kind === "escrow" ? { kind: "all" as const } : {}) }); document.getElementById("list")?.scrollIntoView({ block: "start" }); }}>{nsDisplay(x.ns)}</button>
-          ))}
-          {nsMore > 0 && <span className="more">+{int(nsMore)} more</span>}
-        </dd>
-      </>}
-      {!nss && nsWait && <><dt>Namespaces</dt><dd><span className="wait">sov-niko-a</span></dd></>}
-    </dl>
-  );
-
-  // Four figures of the account's own, each a label and a figure, what qualifies it on hover: the escrow it has left
-  // now (an amber dot when it cannot pay for one more blob of its usual size, or settlements took part of a queued
+  // The account's four figures, each a label and a value, what qualifies it on hover: the escrow it has left now (an
+  // amber dot when it cannot pay for one more blob of its usual size, or settlements took part of a queued
   // withdrawal), then over its whole record its blobs, what it paid (a red dot for a timed-out promise), and how many
   // of its blobs Tensile found available (a red dot for one it did not).
-  const figs = (
-    <dl className="pb-meta pb-figs" aria-label="The account at a glance">
-      <dt>Escrow available</dt>
-      <dd title={e ? [
-        queued ? `${tia(queued.utia)} queued to withdraw${queued.next_available_at ? `, payable from ${utcWord(queued.next_available_at)}` : ""}; balance ${tia(e.balance_utia)}` : "",
-        `${queued ? "as" : "As"} of block #${int(e.height)}, ${utcWord(e.updated_at)}`,
-      ].filter(Boolean).join("; ") : p.escrow ? "No escrow account on the chain" : "Not read yet"}>
-        {e ? <><b>{unit(tia(e.available_utia))}</b>{escWarn && <Warn text={escWarn} />}<em>now</em></> : <em>—</em>}
-      </dd>
-      <dt>Blobs</dt>
-      <dd title={posted && newest ? [
-        first ? `First ${utcWord(first)}` : "",
-        `last ${utcWord(newest)}`,
-        readN && readN !== p.settlements ? `${plural(p.settlements, "settlement")}: a blob settled twice is one blob` : "",
-      ].filter(Boolean).join("; ") : undefined}>
-        <b>{int(blobN)}</b>{readN > 0 && readN !== p.settlements && <em>{plural(p.settlements, "settlement")}</em>}
-      </dd>
-      <dt>Total paid</dt>
-      <dd title={paid > 0 ? [
-        `${tia(p.fees_utia)} in fees for ${plural(p.settlements, "settlement")}`,
-        p.timeouts > 0 ? `${tia(p.timed_out_utia)} charged for ${plural(p.timeouts, "timed-out promise")}` : "",
-        p.paid_per_mib_utia != null ? `${tia(p.paid_per_mib_utia)} per MiB` : "",
-      ].filter(Boolean).join("; ") : undefined}>
-        <b>{unit(tia(paid))}</b>{p.timeouts > 0 && <Warn tone="fault" text={`${plural(p.timeouts, "payment promise")} timed out; ${tia(p.timed_out_utia)} charged all the same`} />}<em>all time</em>
-      </dd>
-      <dt className="tz"><Eye />Available</dt>
-      <dd title={read ? `Tensile's reading of its ${plural(readN, "blob")}: ${[
-        read.available ? `${int(read.available)} available` : "",
-        read.unavailable ? `${int(read.unavailable)} unavailable` : "",
-        read["retention window"] ? `${int(read["retention window"])} in the retention window` : "",
-        read["not read"] ? `${int(read["not read"])} not read` : "",
-      ].filter(Boolean).join(", ")}` : posted ? "Tensile's reading of its blobs is not counted yet" : undefined}>
-        {read
-          ? readDone > 0
-            ? <><b>{int(read.available ?? 0)}</b><em>of {int(readDone)} read by Tensile</em>{(read.unavailable ?? 0) > 0 && <Warn tone="fault" text={`${plural(read.unavailable, "blob")} unavailable: Tensile could not read ${read.unavailable === 1 ? "it" : "them"} back from the validators`} />}</>
-            : <em>none read by Tensile yet</em>
-          : readWait ? <span className="wait">5 of 5 read by Tensile</span> : <em>—</em>}
-      </dd>
-    </dl>
-  );
+  const escTitle = e ? [
+    queued ? `${tia(queued.utia)} queued to withdraw${queued.next_available_at ? `, payable from ${utcWord(queued.next_available_at)}` : ""}; balance ${tia(e.balance_utia)}` : "",
+    `${queued ? "as" : "As"} of block #${int(e.height)}, ${utcWord(e.updated_at)}`,
+  ].filter(Boolean).join("; ") : p.escrow ? "No escrow account on the chain" : "Not read yet";
+  const escVal = e ? <>{unit(tia(e.available_utia))}{escWarn && <Warn text={escWarn} />}</> : <span className="na">—</span>;
+  const blobsTitle = posted && newest ? [
+    first ? `First ${utcWord(first)}` : "",
+    `last ${utcWord(newest)}`,
+    readN && readN !== p.settlements ? `${plural(p.settlements, "settlement")}: a blob settled twice is one blob` : "",
+  ].filter(Boolean).join("; ") : undefined;
+  // a blob settled twice is one blob: its settlements beside it, quietly, when they are more
+  const twice = readN > 0 && readN !== p.settlements ? plural(p.settlements, "settlement") : null;
+  const paidTitle = paid > 0 ? [
+    `${tia(p.fees_utia)} in fees for ${plural(p.settlements, "settlement")}`,
+    p.timeouts > 0 ? `${tia(p.timed_out_utia)} charged for ${plural(p.timeouts, "timed-out promise")}` : "",
+    p.paid_per_mib_utia != null ? `${tia(p.paid_per_mib_utia)} per MiB` : "",
+  ].filter(Boolean).join("; ") : undefined;
+  const paidDot = p.timeouts > 0 && <Warn tone="fault" text={`${plural(p.timeouts, "payment promise")} timed out; ${tia(p.timed_out_utia)} charged all the same`} />;
+  const paidVal = <>{unit(tia(paid))}{paidDot}</>;
+  const readTitle = read ? `Tensile's reading of its ${plural(readN, "blob")}: ${[
+    read.available ? `${int(read.available)} available` : "",
+    read.unavailable ? `${int(read.unavailable)} unavailable` : "",
+    read["retention window"] ? `${int(read["retention window"])} in the retention window` : "",
+    read["not read"] ? `${int(read["not read"])} not read` : "",
+  ].filter(Boolean).join(", ")}` : posted ? "Tensile's reading of its blobs is not counted yet" : undefined;
+  const unreadDot = read && (read.unavailable ?? 0) > 0 && <Warn tone="fault" text={`${plural(read.unavailable, "blob")} unavailable: Tensile could not read ${read.unavailable === 1 ? "it" : "them"} back from the validators`} />;
+  // what Tensile read: "none yet" when it has read none, a placeholder while the count is on its way
+  const readState: "some" | "none" | "wait" | "na" = read ? (readDone > 0 ? "some" : "none") : readWait ? "wait" : "na";
+
+  // its namespaces, the most used first: each one shows its blobs alone in the list below
+  const pickNs = (x: string) => { setView({ ns: x, ...(kind === "escrow" ? { kind: "all" as const } : {}) }); document.getElementById("list")?.scrollIntoView({ block: "start" }); };
+  const nsLinks = nss && nss.length > 0 && <>
+    {nss.map((x) => (
+      <button key={x.ns} type="button" className="nsb" title={`${x.ns} · ${int(x.n)} settlement${x.n === 1 ? "" : "s"} · show only these`} onClick={() => pickNs(x.ns)}>{nsDisplay(x.ns)}</button>
+    ))}
+    {nsMore > 0 && <span className="more">+{int(nsMore)} more</span>}
+  </>;
+  const nsWord = `Namespace${nss && nss.length + nsMore === 1 ? "" : "s"}`;
+  const showFacts = posted && (!!newest || reading);
 
   return (
     <>
@@ -448,9 +423,39 @@ function Publisher({ addr }: { addr: string }) {
         <div className="pb-addr"><span className="mono">{addr}</span><Copy text={addr} label="the address" /></div>
       </section>
 
-      {/* the facts beside the figures: two light frames of the same make and height; an account that never posted has
-          its figures alone, at the same width */}
-      <div className="pb-top">{facts}{figs}</div>
+      {/* Under its name, two frames side by side, as tall as each other, a row each with its label in a column of its
+          own so every value starts at one x: the account on the left, its four figures; its history on the right, when
+          it last and first posted level with the figure rows beside them and its namespaces in the room left under
+          them. An account that never posted has its figures alone. */}
+      <div className="pbd">
+        <dl className="pan pbd-acct" aria-label="The account at a glance">
+          <dt>Escrow available<span className="per"> · now</span></dt>
+          <dd className="pbd-v" title={escTitle}>{escVal}</dd>
+          <dt>Blobs<span className="per"> · all time</span></dt>
+          <dd className="pbd-v" title={blobsTitle}>{int(blobN)}{twice && <span className="beside">{twice}</span>}</dd>
+          <dt>Total paid<span className="per"> · all time</span></dt>
+          <dd className="pbd-v" title={paidTitle}>{paidVal}</dd>
+          <dt className="tz"><Eye /><span>Available<span className="per"> · all time</span></span></dt>
+          {readState === "some"
+            ? <dd className="pbd-v" title={readTitle}>{int(read!.available ?? 0)}<span className="beside">of {int(readDone)} read by Tensile</span>{unreadDot}</dd>
+            : readState === "none" ? <dd className="pbd-v words" title={readTitle}>none read by Tensile yet</dd>
+            : readState === "wait" ? <dd className="pbd-v"><span className="wait">5 of 5 read by Tensile</span></dd>
+            : <dd className="pbd-v" title={readTitle}><span className="na">—</span></dd>}
+        </dl>
+        {showFacts && (
+          <dl className="pan pbd-hist" aria-label="When and where it posted">
+            <dt>Last blob</dt>
+            <dd className="pbd-v">{newest
+              ? <>{age(now - Date.parse(newest))} ago<span className="beside" title={utcWord(newest)}>{monthDayTime(newest)} UTC</span></>
+              : <span className="wait">2 d 21 h ago Sep 28 20:48:38 UTC</span>}</dd>
+            {(first || firstWait) && <><dt>First blob</dt><dd className="pbd-v">{first
+              ? <span title={firstBlob ? `${utcWord(first)} · height ${int(firstBlob.settlement_height)}` : utcWord(first)}>{unit(`${monthDayTime(first)} UTC`)}</span>
+              : <span className="wait">Sep 28 12:47:32 UTC</span>}</dd></>}
+            {nsLinks && <><dt>{nsWord}</dt><dd className="nss">{nsLinks}</dd></>}
+            {!nsLinks && nsWait && <><dt>Namespaces</dt><dd className="nss"><span className="wait">sov-niko-a</span></dd></>}
+          </dl>
+        )}
+      </div>
 
       <section id="list" className="listing lg-list pb-list">
         <div className="list-head">
