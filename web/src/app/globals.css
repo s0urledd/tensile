@@ -2274,48 +2274,53 @@ button.warn:focus-visible { outline-offset: 0; }
 }
 
 /* =============================================================================
-   A validator (app/validator), in the order an operator asks: who it is and where it serves from (one profile
-   frame: the name and its state on the left, the endpoint facts on the right, the addresses folded under them); what
-   Tensile found when it read its rows (the service rate and the period's other figures on one line, the latest checks
-   across the frame under them, one small cell a check); what the chain records of it (a calmer frame of four figures);
-   then the latest checks in the Blobs list's own rows (.lg-tw, .lg-t), the whole row opening the blob.
+   A validator (app/validator), in the order an operator asks: who it is and where it serves from (one frame: a title
+   bar with the name, its state beside it and its valoper address under it, then the endpoint, its hosting and the
+   newest check as one row of labelled facts); what Tensile found when it read its rows (the service rate beside the
+   latest checks, one small square a check, and the period's other figures each in a frame of its own under them)
+   beside what the chain records of it (endorsements as its lead figure, the rest two to a row), in one frame whose
+   column line runs on through the facts row above; then the latest checks in the Blobs list's own rows (.lg-tw,
+   .lg-t), the whole row opening the blob.
    ========================================================================== */
 .vd-head { display: flex; align-items: center; justify-content: space-between; gap: 12px 24px; flex-wrap: wrap; padding: 22px 0 0; }
 .vd-head .crumb { margin: 0; }
 
-/* ---- the profile ---- */
-/* the profile and the chain frame share one column line: about a third (never under 380px, so the name's state chips
-   keep one line) for the name and the chain frame's own name, the rest for the endpoint facts and the chain's figures,
-   so their left edges stand on one line; no rule draws it */
-.vd-pf-main, .vd-oc { --vd-cols: minmax(380px, 9fr) minmax(0, 16fr); }
+/* ---- who it is: the avatar, the name with its state chips, its address and provider date under them, its links at
+   the far end ---- */
 .vd-pf { margin-top: 14px; }
-.vd-pf-main { display: grid; grid-template-columns: var(--vd-cols); }
-.vd-who { display: flex; align-items: flex-start; gap: 16px; min-width: 0; padding: 22px 24px 22px; }
-.vd-who .avatar { width: 52px; height: 52px; border-radius: 12px; font-size: 16px; }
+.vd-pf-top { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 16px; align-items: start; padding: 20px 24px 18px; }
+.vd-pf .avatar { width: 48px; height: 48px; border-radius: 11px; font-size: 15px; }
 .vd-who-t { min-width: 0; }
-.vd-who h1 { margin: 0; font-size: var(--t-h1); line-height: 36px; overflow-wrap: anywhere; }
-.vd-who h1 .ours { vertical-align: 5px; }
-.vd-chips { margin-top: 8px; }
-/* the endpoint's state when it needs a look: its title, the amber dot with the words, the docs */
-.vd-diag { display: flex; align-items: center; flex-wrap: wrap; column-gap: 8px; row-gap: 2px; margin: 12px 0 0; font-size: var(--t-cell); line-height: 19px; color: var(--text-2); }
+.vd-title { display: flex; align-items: center; flex-wrap: wrap; column-gap: 14px; row-gap: 6px; min-height: 36px; }
+.vd-title h1 { margin: 0; font-size: var(--t-h1); line-height: 36px; overflow-wrap: anywhere; }
+.vd-title h1 .ours { vertical-align: 5px; }
+.vd-chips { margin: 0; }
+/* the valoper address whole, with its copy mark, then since when it is a Fibre provider */
+.vd-own { display: flex; flex-wrap: wrap; align-items: center; column-gap: 20px; row-gap: 2px; margin: 3px 0 0; font-size: var(--t-cell); line-height: 20px; color: var(--text-3); }
+.vd-own-a { display: inline-flex; align-items: center; min-width: 0; }
+.vd-pf .vd-own .mono { color: var(--text-2); }
+.vd-own-s b { font-weight: 500; color: var(--text-2); }
+/* the endpoint's state when it needs a look: its title, the amber dot with the words, the docs, and when an endpoint
+   that stopped answering last did */
+.vd-diag { display: flex; align-items: center; flex-wrap: wrap; column-gap: 8px; row-gap: 2px; margin: 8px 0 0; font-size: var(--t-cell); line-height: 19px; color: var(--text-2); }
 .vd-diag > span { font-weight: 500; color: var(--text); }
 .vd-diag.hold > span { color: var(--hold-ink); }
 .vd-diag .warn { margin-left: -7px; }
-/* when an endpoint that stopped answering last did */
-.vd-since { margin: 2px 0 0; font-size: var(--t-cell); line-height: 19px; color: var(--text-3); }
+.vd-since { margin-left: 4px; font-style: normal; color: var(--text-3); }
 .vd-diag a, .vd-none a { font-weight: 500; color: var(--accent-ink); }
-.vd-sub { display: flex; flex-wrap: wrap; column-gap: 14px; row-gap: 2px; margin: 12px 0 0; font-size: var(--t-cell); line-height: 18px; color: var(--text-3); }
-.vd-sub b { font-weight: 500; color: var(--text-2); }
-.vd-sub a { max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--accent-ink); }
+/* the website and the feed: plain links, not chips, so they never read as a state */
+.vd-links { display: flex; flex-wrap: wrap; justify-content: flex-end; column-gap: 18px; margin: 9px 0 0; font-size: var(--t-cell); line-height: 18px; }
+.vd-links a { font-weight: 500; color: var(--accent-ink); white-space: nowrap; }
 
-/* the endpoint, where it is hosted and the newest check: a label column of its own, hairlines between */
-.vd-facts { display: grid; grid-template-columns: 124px minmax(0, 1fr); align-content: center; margin: 0; padding: 12px 24px; font-size: var(--t-cell); line-height: 18px; color: var(--text-2); }
-.vd-facts dt, .vd-facts dd { padding: 10px 0; border-top: 1px solid var(--line-soft); }
-.vd-facts dt:first-of-type, .vd-facts dt:first-of-type + dd { border-top: 0; }
-.vd-facts dt { padding-right: 12px; color: var(--text-3); white-space: nowrap; }
-.vd-facts dd { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 10px; row-gap: 4px; margin: 0; min-width: 0; color: var(--text); }
-.vd-facts b { font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
-.vd-facts em { font-style: normal; color: var(--text-3); }
+/* ---- where it serves from: a label over each fact, a hairline over the row and between the facts; the last as wide
+   as On chain below it, so the rule before it runs on through both frames ---- */
+.vd-facts { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 440px; margin: 0; border-top: 1px solid var(--line-soft); }
+.vd-fact { min-width: 0; padding: 14px 24px 16px; }
+.vd-fact + .vd-fact { border-left: 1px solid var(--line-soft); }
+.vd-fact dt { font-size: var(--t-tiny); line-height: 16px; font-weight: 500; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; }
+.vd-fact dd { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 10px; row-gap: 3px; min-width: 0; margin: 6px 0 0; font-size: var(--t-cell); line-height: 18px; color: var(--text); }
+.vd-fact dd em { font-style: normal; color: var(--text-3); }
+.vd-fact b { font-weight: 500; }
 .vd-pf .mono { font-size: 12.5px; color: var(--text); }
 /* a host and its copy mark: a long host wraps after a dot, the copy mark follows its last character */
 .vd-id { display: inline; min-width: 0; }
@@ -2329,8 +2334,9 @@ button.warn:focus-visible { outline-offset: 0; }
 .vd-hosting .flag { margin-right: 7px; }
 .vd-hosting .soft { color: var(--text-3); }
 .vd-hosting .nw { white-space: nowrap; }
-/* the newest handshake, stage by stage, after its time; the error it stopped on under them */
-.vd-stages { display: inline-flex; flex-wrap: wrap; column-gap: 12px; }
+/* the newest handshake: its time, then its stages under it; the error it stopped on is the stages' title */
+.vd-chk { flex-direction: column; align-items: flex-start; }
+.vd-stages { display: inline-flex; flex-wrap: wrap; column-gap: 10px; }
 .vd-stages > span { color: var(--text-2); white-space: nowrap; }
 .vd-stages i { margin-left: 1px; font-style: normal; }
 .vd-stages .ok i { color: var(--ok-ink); }
@@ -2339,135 +2345,44 @@ button.warn:focus-visible { outline-offset: 0; }
 .vd-stages .skip { color: var(--text-3); }
 .vd-stages em { margin-left: 4px; }
 
-/* the addresses, folded at the frame's foot; the endpoint's feed at the other end of the same line */
-.vd-pf-foot { position: relative; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--paper) 97.5%, var(--text)); }
-.vd-addrs summary { display: flex; align-items: center; gap: 6px; width: fit-content; height: 42px; padding: 0 24px; font-size: var(--t-cell); font-weight: 500; color: var(--text-2); list-style: none; cursor: pointer; transition: color var(--dur); }
-.vd-addrs summary::-webkit-details-marker { display: none; }
-.vd-addrs summary:hover { color: var(--text); }
-.vd-addrs summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; border-radius: 8px; }
-.vd-addrs summary svg { color: var(--text-3); transform: rotate(-90deg); transition: transform var(--dur); }
-.vd-addrs[open] summary svg { transform: none; }
-.vd-addrs dl { display: grid; grid-template-columns: 96px minmax(0, max-content); margin: -4px 0 0; padding: 0 24px 14px 44px; font-size: var(--t-cell); line-height: 18px; }
-.vd-addrs dt, .vd-addrs dd { padding: 5px 0; }
-.vd-addrs dt { padding-right: 12px; color: var(--text-3); white-space: nowrap; }
-.vd-addrs dd { display: flex; align-items: flex-start; min-width: 0; margin: 0; }
-/* opened to be read and copied: the whole address, breaking anywhere where the frame is narrow, the copy mark after it */
-.vd-addrs .mono { min-width: 0; overflow-wrap: anywhere; }
-.vd-feed { position: absolute; top: 12px; right: 24px; font-size: var(--t-cell); line-height: 18px; font-weight: 500; color: var(--accent-ink); }
-.vd-facts .vd-addr { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
-.vd-facts .vd-addr .mono { min-width: 0; overflow-wrap: anywhere; }
-/* the time and its age one group, the stages another */
-.vd-facts .vd-chk { column-gap: 20px; }
-
-/* one frame: what Tensile observed on the left, sized to its content (the rate, a 32px gap and the strip at its fixed
-   size, 736px, in 24px of padding a side); what the chain records in the rest, after a rule; their headings on one line
-   and both columns as tall as the taller */
-.vd-stat { display: grid; grid-template-columns: 784px minmax(0, 1fr); margin-top: 16px; }
-.vd-stat > .vd-svc { display: block; margin-top: 0; padding: 16px 24px; }
-.vd-stat .vp-h { padding: 0; }
-/* the rate and the strip side by side, both from the top, 12px under the heading; the rate's column wide enough for its
-   count line with 5- and 6-digit counts */
-.vd-stat .vd-svc-top { display: grid; grid-template-columns: 240px 472px; column-gap: 24px; align-items: start; margin-top: 12px; padding: 0; }
-/* the rate's label on the caption's 16px line, so SERVICE RATE, the strip's caption and On chain's first row share a
-   baseline, and the count line sits level with the strip's end times */
-.vd-stat .vd-lbl { line-height: 16px; }
-.vd-stat .vd-rate-v { margin-top: 6px; font-size: 32px; line-height: 38px; }
-.vd-stat .vd-rate-s { margin-top: 4px; font-size: 12.5px; line-height: 18px; white-space: nowrap; }
-.vd-stat .vd-latest { grid-area: auto; align-self: start; width: 472px; padding: 0; }
-/* how many and the key on one line over the cells, the key at the strip's right end */
-.vd-stat .vd-cap { justify-content: space-between; gap: 4px 16px; margin-bottom: 8px; }
-/* a fixed strip: 25 cells of 16px a line with 3px between them, 472 x 35 when full; fewer checks keep the same pitch
-   from the first cell, and 25 or fewer take one line, so the end times stay 6px under the cells they date */
-.vd-stat .vd-strip { grid-template-columns: repeat(25, 16px); grid-template-rows: none; grid-auto-rows: 16px; gap: 3px; justify-content: start; max-width: none; }
-/* the newest check's time and its age under the first cell, the oldest's ending under the first line's last cell */
-.vd-ends { display: flex; justify-content: space-between; gap: 16px; width: calc(var(--n1, 25) * 19px - 3px); min-width: max-content; margin: 6px 0 0; font-family: var(--font-table); font-size: var(--t-small); line-height: 16px; color: var(--text-3); font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
-/* the period's other figures in one line across the column, over a hairline */
-.vd-stat .vd-more { display: flex; flex-wrap: wrap; justify-content: space-between; column-gap: 28px; row-gap: 2px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft); line-height: 20px; }
-.vd-fi > em { margin-left: 6px; font-style: normal; font-family: var(--font-table); line-height: 1; color: var(--text-3); font-variant-numeric: tabular-nums lining-nums; }
-.vd-stat .vd-fi b { line-height: 1; }
-/* the chain's column: its name, then a fixed label column, so the values start at one x whatever the period, and a
-   step of space between the period's figures and what holds now */
-.vd-stat > .vd-oc { display: block; margin-top: 0; padding: 16px 24px; border: 0; border-left: 1px solid var(--border); border-radius: 0; background: none; }
-.vd-stat > .vd-oc h2 { margin: 0; font-size: var(--t-cell); font-weight: 600; line-height: 18px; letter-spacing: 0; color: var(--text); white-space: nowrap; }
-.vd-stat .vd-oc-l { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 0; margin: 7px 0 0; padding: 0; }
-.vd-stat .vd-oc-l > div { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; grid-template-rows: 24px; align-items: baseline; }
-.vd-stat .vd-oc-l dt { padding-right: 12px; font-size: var(--t-cell); line-height: 24px; overflow: visible; }
-.vd-stat .vd-oc-l dd { margin: 0; line-height: 24px; }
-.vd-stat .vd-oc-l b { font-size: 14px; line-height: 24px; letter-spacing: 0; }
-.vd-stat .vd-oc-l em { font-size: var(--t-cell); line-height: 1; }
-.vd-stat .vd-oc-l b .u { line-height: 1; }
-/* 11px, so the last row stays level with the period's figures under the hairline on the left */
-.vd-stat .vd-oc-l .now { margin-top: 11px; }
-/* between 961 and 1199px the two columns stay side by side, Observed by Tensile taking the rest and the rate over the strip */
-@media (min-width: 961px) and (max-width: 1199px) {
-  .vd-stat { grid-template-columns: minmax(0, 1fr) 334px; }
-  .vd-stat .vd-svc-top { grid-template-columns: 472px; row-gap: 12px; }
-}
-@media (max-width: 960px) {
-  .vd-stat { grid-template-columns: minmax(0, 1fr); }
-  .vd-stat > .vd-oc { border-left: 0; border-top: 1px solid var(--border); }
-  .vd-stat .vd-svc-top { grid-template-columns: minmax(0, 1fr); row-gap: 16px; }
-  .vd-stat .vd-latest { width: auto; max-width: 472px; }
-  /* the cells take the strip's width again, square, so the desktop's 16 px rows let go too */
-  .vd-stat .vd-strip { grid-template-columns: repeat(25, minmax(0, 1fr)); grid-template-rows: none; grid-auto-rows: auto; }
-  .vd-stat .vd-ends { width: auto; }
-}
-@container (max-width: 420px) { .vd-stat .vd-strip { grid-template-columns: repeat(10, minmax(0, 1fr)); grid-template-rows: none; grid-auto-rows: auto; max-width: 256px; } }
-@media (max-width: 720px) {
-  .vd-stat > .vd-svc, .vd-stat > .vd-oc { padding: 16px; }
-}
-
-/* ---- what Tensile found: the rate and the period's other figures on one line, the latest checks across the frame ---- */
-/* one surface with no rule inside it: the name; the rate and its fraction on the left, what was not served, what waits
-   for its check, reachability and throughput on the fraction's line to the right; then the strip under them */
-.vd-svc { margin-top: 16px; display: grid; grid-template-columns: minmax(240px, 280px) minmax(0, 1fr); grid-template-areas: "h h" "top latest"; column-gap: 40px; }
-.vd-svc > .vp-h { grid-area: h; }
-.vp-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 24px 0; }
+/* ---- one frame: what Tensile observed on the left, what the chain records in a column of 440px after a rule ---- */
+.vd-stat { display: grid; grid-template-columns: minmax(0, 1fr) 440px; margin-top: 16px; }
+.vd-svc { min-width: 0; padding: 16px 24px; }
+.vp-h { display: flex; align-items: center; gap: 12px; }
 .vp-t { display: inline-flex; align-items: center; gap: 7px; margin: 0; font-size: var(--t-cell); font-weight: 600; letter-spacing: 0; line-height: 18px; color: var(--text); white-space: nowrap; }
 .vp-t svg { flex: none; color: var(--accent-ink); }
-.vd-svc-top { grid-area: top; display: flex; flex-direction: column; align-items: stretch; gap: 14px; padding: 14px 0 20px 24px; }
-.vd-lbl { margin: 0; font-size: var(--t-tiny); line-height: 14px; font-weight: 500; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* which period the rate is of, beside its label */
+/* a figure's label: small capitals, the period it is of a quieter suffix */
+.vd-lbl { margin: 0; font-size: var(--t-tiny); line-height: 16px; font-weight: 500; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; }
 .vd-per { letter-spacing: .02em; text-transform: none; font-weight: 400; }
+
+/* the service rate, the page's one large figure, and its latest checks beside it, both from the top; the rate takes what
+   the strip leaves, its count over the network's median */
+.vd-svc-top { display: grid; grid-template-columns: minmax(0, 1fr) 436px; column-gap: 24px; align-items: start; margin-top: 14px; }
 .vd-rate { min-width: 0; }
-.vd-rate-v { display: flex; align-items: center; margin: 8px 0 0; font-family: var(--font-table); font-size: 34px; line-height: 40px; font-weight: 500; letter-spacing: -.03em; color: var(--text); font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
+.vd-rate-v { display: flex; align-items: center; margin: 6px 0 0; font-family: var(--font-table); font-size: 32px; line-height: 38px; font-weight: 500; letter-spacing: -.03em; color: var(--text); font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
 .vd-rate-v .warn { margin-left: 8px; }
 .vd-rate.bad .vd-rate-v { color: var(--fault); }
 .vd-rate.warn .vd-rate-v { color: var(--hold-ink); }
 .vd-rate.na .vd-rate-v { color: var(--text-3); }
-.vd-rate-s { margin: 2px 0 0; font-family: var(--font-table); font-size: 14px; line-height: 20px; color: var(--text-3); font-variant-numeric: tabular-nums lining-nums; }
+.vd-rate-s { margin: 4px 0 0; font-family: var(--font-table); font-size: 12.5px; line-height: 18px; color: var(--text-3); font-variant-numeric: tabular-nums lining-nums; text-wrap: balance; }
 .vd-rate-s b { font-weight: 500; color: var(--text-2); }
+.vd-ref { display: block; }
 .vd-rate.na .vd-rate-s { font-family: var(--sans); font-size: var(--t-cell); }
 
-/* the period's other figures, on the fraction's line: what was not served (a click shows them in the checks), what
-   waits for its check, then reachability and throughput */
-.vd-more { display: grid; grid-template-columns: repeat(2, max-content); gap: 4px 20px; font-size: var(--t-cell); line-height: 20px; color: var(--text-3); }
-.vd-fi { display: inline-flex; align-items: baseline; white-space: nowrap; }
-.vd-fi b { margin-left: 7px; font-family: var(--font-table); font-size: 14px; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
-.vd-fi b .u { margin-left: 1px; font-weight: 400; color: var(--text-3); }
-.vd-fi.bad b { color: var(--fault); }
-.vd-fi .warn { align-self: center; margin-left: 2px; }
-.vd-go { display: inline-flex; align-items: baseline; padding: 0; border: 0; border-radius: 4px; background: none; font: inherit; color: inherit; cursor: pointer; }
-.vd-go:hover { color: var(--text); }
-.vd-go:hover b { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
-.vd-go:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-
-/* the strip: one small square a check, oldest to newest, across the frame under the figures, its caption and key over
-   it, and nothing marks time along it. The 50 the page carries take one line that spans the frame, the squares never
-   over 16px and the room left over shared between them; where the frame is too narrow for that, two lines of 25, then
-   a fixed count to a line on a phone, so no line ends short. The slots are fixed, so fewer checks keep the same pitch.
-   A finger slides along it sideways (the page still scrolls up and down from it) */
-.vd-latest { grid-area: latest; align-self: center; min-width: 0; padding: 14px 24px 20px 0; container-type: inline-size; }
-.vd-cap { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 24px; margin-bottom: 10px; font-size: var(--t-small); line-height: 16px; color: var(--text-3); }
+/* the strip: the latest checks, one 18px square a check in a row of 20 places, newest at the left; how many and the
+   key over it, the newest check's time under its first square and the oldest's under its last. A place without a
+   check is drawn empty, so the strip keeps one length. A finger slides along it sideways (the page still scrolls up
+   and down from it) */
+.vd-latest { min-width: 0; }
+.vd-cap { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 16px; margin-bottom: 8px; font-size: var(--t-small); line-height: 16px; color: var(--text-3); }
 .vd-ttl { color: var(--text-2); }
+.vd-ttl:only-child { color: var(--text-3); }
 .vd-key { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; padding: 0; list-style: none; }
 .vd-key li { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .vd-key b { font-weight: 500; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .vd-key .vd-c { width: 9px; height: 9px; border-radius: 2px; cursor: default; }
 .vd-key .vd-c + .vd-c { margin-left: -4px; }
-.vd-strip { display: grid; grid-template-columns: repeat(25, minmax(0, 1fr)); gap: 4px; max-width: 746px; touch-action: pan-y; }
-/* by the strip's own width: 50 x 14px + 49 x 3px is 847px, 25 x 16px + 24 x 4px is 496px, 17 x 14px + 16 x 4px is 302px */
-@container (max-width: 420px) { .vd-strip { grid-template-columns: repeat(10, minmax(0, 1fr)); max-width: 256px; } }
+.vd-strip { display: grid; grid-template-columns: repeat(20, 18px); grid-auto-rows: 18px; gap: 4px; touch-action: pan-y; }
 .vd-c { --cc: var(--neutral); display: block; width: 100%; height: auto; aspect-ratio: 1 / 1; padding: 0; border: 0; border-radius: 3px; background: var(--cc); cursor: pointer; transition: box-shadow var(--dur), opacity var(--dur); }
 .vd-c.ok { --cc: var(--ok); }
 .vd-c.fault { --cc: var(--fault); }
@@ -2475,10 +2390,13 @@ button.warn:focus-visible { outline-offset: 0; }
 .vd-c.quiet { --cc: var(--neutral); }
 /* still in its retention window: the result's colour as an outline, filled when it is final */
 .vd-c.open { background: color-mix(in srgb, var(--cc) 14%, transparent); box-shadow: inset 0 0 0 1.5px var(--cc); }
+/* a place with no check yet, as a status page keeps a day with no data */
+.vd-c.slot { background: var(--wash); box-shadow: inset 0 0 0 1px var(--line-soft); cursor: default; }
 .vd-strip .vd-c:hover, .vd-strip .vd-c.on { box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--cc); }
 .vd-strip .vd-c.open:hover, .vd-strip .vd-c.open.on { box-shadow: inset 0 0 0 1.5px var(--cc), 0 0 0 2px var(--paper), 0 0 0 3.5px var(--cc); }
+.vd-strip .vd-c.slot:hover { box-shadow: inset 0 0 0 1px var(--line-soft); }
 .vd-strip .vd-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.vd-none-yet { margin: 0; font-size: var(--t-cell); color: var(--text-3); }
+.vd-ends { display: flex; justify-content: space-between; gap: 16px; width: calc(var(--f, 1) * 100%); min-width: max-content; margin: 6px 0 0; font-family: var(--font-table); font-size: var(--t-small); line-height: 16px; color: var(--text-3); font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
 /* a cell's check, in the charts' tooltip surface */
 .vd-tip { position: fixed; z-index: 50; transform: translateY(-100%); display: flex; flex-direction: column; gap: 2px; width: 216px; padding: 9px 12px 10px; border-radius: 10px; background: color-mix(in srgb, var(--paper) 94%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); border: 1px solid var(--border); box-shadow: var(--shadow-tip); font-size: var(--t-small); line-height: 16px; color: var(--text-2); pointer-events: none; animation: tip-in var(--dur) ease-out; }
 .vd-tip.below { transform: none; }
@@ -2491,21 +2409,61 @@ button.warn:focus-visible { outline-offset: 0; }
 .vd-tip .tip-q { font-weight: 400; color: var(--text-3); }
 .vd-tip .tip-n { margin-top: 4px; padding-top: 5px; border-top: 1px solid var(--border); color: var(--text-3); }
 
-/* ---- what the chain records: one calmer frame, its name on the left, a label over each figure ---- */
-.vd-oc { display: flex; flex-wrap: wrap; align-items: center; column-gap: 48px; margin-top: 16px; border: 1px solid var(--border); border-radius: var(--r-card); background: color-mix(in srgb, var(--paper) 40%, transparent); }
-.vd-oc-h { display: flex; flex-direction: column; justify-content: center; min-width: 0; padding: 16px 24px; }
-.vd-oc-h h2 { margin: 0; font-size: var(--t-cell); font-weight: 600; line-height: 18px; letter-spacing: 0; color: var(--text); white-space: nowrap; }
-.vd-oc-h h2 .per { font-weight: 400; color: var(--text-3); }
-.vd-oc-h p { margin: 3px 0 0; font-size: var(--t-small); line-height: 16px; color: var(--text-3); white-space: nowrap; }
-/* the figures from the endpoint facts' left edge, spaced, with no rule between them */
-.vd-oc-l { display: flex; flex-wrap: wrap; column-gap: 40px; row-gap: 12px; margin: 0; padding: 16px 24px 17px 0; }
-.vd-oc-l > div { min-width: 0; }
-.vd-oc-l dt { font-size: var(--t-small); line-height: 16px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.vd-oc-l dd { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; margin: 5px 0 0; white-space: nowrap; font-family: var(--font-table); font-variant-numeric: tabular-nums lining-nums; }
-.vd-oc-l b { font-size: 19px; line-height: 24px; font-weight: 500; letter-spacing: -.01em; color: var(--text); }
-.vd-oc-l b .u { margin-left: 1px; font-size: 13px; font-weight: 400; letter-spacing: 0; color: var(--text-3); }
-.vd-oc-l em { font-style: normal; font-size: var(--t-small); color: var(--text-3); }
-.vd-oc-l .na b { color: var(--text-3); }
+/* the period's other figures, each in a frame of its own so each reads as its own measurement, three to the row and as
+   wide as the rate and the strip together; their foot level with On chain's last row. The observed areas' own tint
+   and edge, no border */
+.vd-boxes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 26px; }
+.vd-box { display: flex; flex-direction: column; justify-content: center; min-width: 0; padding: 8px 14px 9px; border-radius: 10px; background: var(--obs-bg); box-shadow: var(--obs-edge); white-space: nowrap; }
+.vd-box .vd-lbl { line-height: 15px; }
+.vd-fv { display: inline-flex; flex-wrap: wrap; align-items: baseline; column-gap: 7px; font-family: var(--font-table); font-variant-numeric: tabular-nums lining-nums; }
+.vd-fv b { font-size: 16px; line-height: 22px; font-weight: 500; color: var(--text); }
+.vd-fv b .u { margin-left: 1px; font-size: 13px; font-weight: 400; color: var(--text-3); }
+.vd-fv em { font-style: normal; font-size: 12.5px; line-height: 1; color: var(--text-3); }
+.vd-box .vd-fv { margin-top: 3px; }
+.vd-box.na b, .vd-ocf.na b { color: var(--text-3); }
+
+/* ---- what the chain records: endorsements as its lead figure beside the last one, then the period's shard data beside
+   what it holds now and the rows it is assigned beside its stake, each a label over its value ---- */
+.vd-oc { min-width: 0; padding: 16px 24px; border-left: 1px solid var(--border); }
+.vd-oc h2 { margin: 0; font-size: var(--t-cell); font-weight: 600; line-height: 18px; letter-spacing: 0; color: var(--text); white-space: nowrap; }
+.vd-oc-lead { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; margin-top: 14px; }
+.vd-ocf { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; white-space: nowrap; }
+.vd-ocf .vd-fv { margin-top: 4px; }
+/* the lead a step larger; the figure beside it on the lead's baseline */
+.vd-ocf.lead .vd-fv { margin-top: 6px; }
+.vd-ocf.lead .vd-fv b { font-size: 26px; line-height: 32px; letter-spacing: -.02em; }
+.vd-oc-lead .vd-ocf:not(.lead) .vd-fv { margin-top: 14px; }
+.vd-oc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; row-gap: 14px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
+
+/* between 1080 and 1199px the two columns stay side by side, On chain at 380px and the strip's squares at 17px, so the
+   rate keeps room beside it */
+@media (min-width: 1080px) and (max-width: 1199px) {
+  .vd-stat { grid-template-columns: minmax(0, 1fr) 380px; }
+  .vd-facts { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 380px; }
+  .vd-svc-top { grid-template-columns: minmax(0, 1fr) 416px; column-gap: 20px; }
+  .vd-strip { grid-template-columns: repeat(20, 17px); grid-auto-rows: 17px; }
+}
+/* under 1080px the rate, the strip and the three frames want the whole width: On chain moves under them, its figures
+   four to the row (the lead and the last endorsement two of them wide), and the facts row puts the newest check, its
+   time and its stages on one line, under the endpoint and its hosting. The rate stands over the first frame and the
+   strip over the other two, so the two rows share their lines; the squares grow to fill, up to 20px */
+@media (max-width: 1079px) {
+  .vd-stat { grid-template-columns: minmax(0, 1fr); }
+  .vd-svc-top { grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 10px; }
+  .vd-latest { grid-column: 2 / -1; max-width: 476px; }
+  .vd-strip { grid-template-columns: repeat(20, minmax(0, 1fr)); grid-auto-rows: auto; }
+  .vd-oc { border-left: 0; border-top: 1px solid var(--border); }
+  .vd-oc-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .vd-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .vd-fact:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .vd-fact + .vd-fact:last-child:nth-child(odd) { border-left: 0; border-top: 1px solid var(--line-soft); }
+  .vd-chk { flex-direction: row; align-items: baseline; column-gap: 20px; }
+}
+/* a tablet: the links under the address, where the name and its chips keep their line */
+@media (max-width: 960px) {
+  .vd-pf-top { grid-template-columns: auto minmax(0, 1fr); }
+  .vd-links { grid-column: 2; justify-content: flex-start; margin-top: 4px; }
+}
 
 /* ---- the latest checks: the Blobs list's rows, every column centred under its head so the gaps between them are even ---- */
 .vd-list { margin-top: 44px; scroll-margin-top: 16px; }
@@ -2536,7 +2494,7 @@ button.warn:focus-visible { outline-offset: 0; }
 .vr-t .c-m .u { margin-left: 0; }
 
 @media (prefers-reduced-motion: reduce) {
-  .vd-addrs summary svg, .vd-c { transition: none; }
+  .vd-c { transition: none; }
   .vd-tip { animation: none; }
 }
 
@@ -2547,40 +2505,38 @@ button.warn:focus-visible { outline-offset: 0; }
   .vr-t .c-m .rs, .vr-t .c-m .rs-sep { display: none; }
   .vr-t .c-m { white-space: nowrap; }
 }
-@media (max-width: 960px) {
-  /* one column in the profile and the chain frame: the name and its state over the endpoint facts; the chain frame's
-     name over its figures */
-  .vd-pf-main, .vd-oc { --vd-cols: minmax(0, 1fr); }
-  .vd-facts { padding: 6px 24px 8px; border-top: 1px solid var(--border); }
-  .vd-oc-h { flex-direction: row; align-items: baseline; justify-content: flex-start; gap: 4px 12px; flex-wrap: wrap; padding: 14px 24px 0; }
-  .vd-oc-h p { margin: 0; }
-  .vd-oc-l { padding: 12px 24px 17px; }
-}
 @media (max-width: 720px) {
   .vd-head { padding-top: 16px; }
   .vd-pf { margin-top: 12px; }
-  .vd-who { gap: 12px; padding: 16px 16px 16px; }
-  .vd-who .avatar { width: 40px; height: 40px; border-radius: 10px; font-size: 13px; }
-  .vd-who h1 { font-size: 24px; line-height: 30px; }
-  .vd-facts { grid-template-columns: 84px minmax(0, 1fr); padding: 4px 16px 6px; }
-  /* a label longer than its column (Valoper address) takes two lines rather than run under the value */
-  .vd-facts dt { white-space: normal; }
-  .vd-addrs summary { padding: 0 16px; }
-  .vd-addrs dl { grid-template-columns: 84px minmax(0, 1fr); padding: 0 16px 12px; }
-  .vd-feed { right: 16px; }
-  .vp-h { padding: 16px 16px 0; }
-  /* the rate over the period's other figures, two to a line */
-  .vd-svc { display: block; }
-  .vd-svc-top { gap: 12px; padding: 12px 16px 0; }
-  .vd-more { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; }
+  /* the title bar: a smaller avatar and name, the chips under the name where they do not fit beside it, the address
+     free to break anywhere, whole, with its copy mark after it */
+  .vd-pf-top { column-gap: 12px; padding: 16px; }
+  .vd-pf .avatar { width: 40px; height: 40px; border-radius: 10px; font-size: 13px; }
+  .vd-title { min-height: 30px; column-gap: 10px; }
+  .vd-title h1 { font-size: 24px; line-height: 30px; }
+  .vd-pf .vd-own .mono { overflow-wrap: anywhere; }
+  .vd-own-a { display: block; }
+  .vd-own-a .cp { vertical-align: -4px; }
+  /* the facts one under another, the newest check's time over its stages */
+  .vd-facts { grid-template-columns: minmax(0, 1fr); }
+  .vd-fact { padding: 12px 16px 13px; }
+  .vd-fact + .vd-fact { border-left: 0; border-top: 1px solid var(--line-soft); }
+  .vd-chk { flex-direction: column; align-items: flex-start; }
+  .vd-svc, .vd-oc { padding: 16px; }
+  /* the rate over its strip; the strip as wide as the frame, its squares shrinking with it and staying square */
+  .vd-svc-top { grid-template-columns: minmax(0, 1fr); row-gap: 16px; }
+  .vd-latest { grid-column: auto; max-width: none; }
   .vd-rate-v { font-size: 30px; line-height: 36px; }
-  .vd-latest { padding: 16px 16px 16px; }
-  .vd-oc-h { padding: 14px 16px 0; }
-  .vd-oc-l { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; padding: 12px 16px 15px; }
-  .vd-oc-l > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .vd-strip { gap: 3px; }
+  /* the three frames as compact rows, the label at the left and the value at the right */
+  .vd-boxes { grid-template-columns: minmax(0, 1fr); gap: 6px; margin-top: 18px; }
+  .vd-box { flex-direction: row; align-items: baseline; justify-content: space-between; column-gap: 12px; padding: 10px 12px; }
+  .vd-box .vd-fv { margin-top: 0; }
+  /* On chain two to a row again */
+  .vd-oc-lead, .vd-oc-grid { column-gap: 16px; }
+  .vd-oc-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .vd-list { margin-top: 34px; }
   .vd-list .list-head { row-gap: 20px; }
-  .vd-oc-h p { white-space: normal; }
   /* a phone has no lane: the result leads the second line, in its colour */
   .vr-t .c-m .rs, .vr-t .c-m .rs-sep { display: inline; }
   .vr-t tr.row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "b t" "m m"; }
