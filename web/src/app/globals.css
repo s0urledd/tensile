@@ -2478,8 +2478,10 @@ button.warn:focus-visible { outline-offset: 0; }
 .vr-t td.c-t .ag { margin-left: 9px; }
 .vr-t .c-r b { font-weight: 500; }
 .vr-t .u { font-weight: 400; color: var(--text-3); }
-.vr-t td.tn .fault { color: var(--fault); font-weight: 500; }
-.vr-t td.tn .quiet { color: var(--text-3); }
+/* the result in the Blobs list's Tensile chip: served green, a failure that did not count amber, the rest quiet; not
+   served red, the one tone the list has no use for */
+.vr-t td.tn .lw.fault { border-color: color-mix(in srgb, var(--fault) 40%, transparent); background: color-mix(in srgb, var(--fault) 10%, transparent); color: var(--fault); }
+.vr-t td.tn .lw.quiet { color: var(--text-3); }
 .vr-t .c-m .rs.ok { color: var(--ok-ink); font-weight: 500; }
 .vr-t .c-m .rs.fault { color: var(--fault); font-weight: 500; }
 .vr-t .c-m .rs.hold { color: var(--hold-ink); font-weight: 500; }
