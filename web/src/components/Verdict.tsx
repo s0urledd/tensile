@@ -177,7 +177,9 @@ export default function Verdict({ cls, title }: { cls: string; title?: string })
  */
 export function Legend() {
   const order: Tier[] = ["kept", "fault", "hold", "held", "gap"];
-  const sorted = [...ALL_VERDICTS].sort(
+  // the verdicts a reading gives today: not the observer's own gaps, nor the words of the earlier schedule
+  const shown = ALL_VERDICTS.filter((c) => verdictDef(c).tier !== "gap" && !verdictDef(c).def.startsWith("Earlier schedule"));
+  const sorted = [...shown].sort(
     (a, b) => order.indexOf(verdictDef(a).tier) - order.indexOf(verdictDef(b).tier),
   );
   return (

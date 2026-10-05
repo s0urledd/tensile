@@ -444,7 +444,7 @@ function Page() {
     : o.not_counted > 0 ? "Read, none counted" : "Not read yet";
   const rateTitle = notLive ? undefined : (!o || o.total === 0 ? ((v.signing?.signed ?? 0) > 0 ? "Not read yet." : "Nothing endorsed in this period.")
     : decided === 0 ? (o.not_counted > 0 ? `Read, none counted: ${notCountedText(o)}.` : "Not read yet.")
-    : `${int(o.served)} of ${int(decided)} counted readings served. Tensile’s own gaps, and rows that are not the validator’s own, count neither way.`)
+    : `${int(o.served)} of ${int(decided)} counted readings served.`)
     + (data.rolled_up ? ` Before ${data.rolled_up.raw_from}, from the daily rollup.` : "");
   const visible = shown;
 

@@ -1,40 +1,39 @@
 # Tensile
 
-Tensile is an independent explorer and observer for Celestia Fibre, built by
-Huginn Tech. Validators that sign for a Fibre blob owe its rows to anyone who
-asks until its retention window ends; the chain records the signature and
-nothing after it. Tensile indexes every Fibre settlement, checks from the
-outside whether each validator still serves the rows it signed for, and
-publishes every reading with the evidence behind it.
+**The explorer for Celestia Fibre.** Tensile follows every Fibre blob in real
+time, from the block that settles it to the end of its retention window, and
+verifies that each validator still serves the rows it signed for. Built by
+Huginn Tech.
 
-Live on Celestia's Mocha testnet at **https://tensile.huginn.tech**:
+Live at **https://tensile.huginn.tech** ·
 [methodology](https://tensile.huginn.tech/methodology/) ·
-[API](https://tensile.huginn.tech/api/).
+[API](https://tensile.huginn.tech/api/)
 
-## What it does
+## What Tensile does
 
-- **Indexes every Fibre blob** within seconds of its block: publisher,
-  namespace, size, fee, endorsing voting power and the settling transaction.
-  A blob is found by its blob ID (base64 or hex), its transaction hash or its
-  payment promise hash.
-- **Checks every registered Fibre endpoint** every five minutes from two
-  locations: DNS, TCP, TLS 1.3 and the identity signed by the validator's
-  consensus key.
-- **Reads each blob once**, 10 minutes before its retention window ends:
-  every validator that endorsed it is asked for its own rows, the way
-  celestia-app's Fibre client asks, and every row is verified against the
-  on-chain commitment and the recomputed assignment. A validator that did
-  not serve is asked again, up to two more times.
-- **Judges each blob and each validator**: the blob by the client's own
-  result, each endorsing validator on its own answers. Tensile's own gaps
-  never count against a validator ([`docs/verdicts.md`](docs/verdicts.md)).
-- **Keeps the record for good**: nothing is deleted, so every page and rate
-  reads the same later as it does today. Signed daily exports let anyone
-  recompute every figure offline
-  ([`docs/exports-signing.md`](docs/exports-signing.md)).
-- **Serves a public API**: read-only JSON at
-  `https://tensile.huginn.tech/api/v1/`, every rate with its numerator and
-  denominator.
+- **Real time.** Blocks are read the moment the node announces them: a new
+  blob is on the site within seconds of its block, and the live pages update
+  on their own.
+- **Every blob, searchable.** Each settlement with its publisher, namespace,
+  size, fee, endorsing voting power and transaction. Any blob is one search
+  away by its blob ID (base64 or hex), transaction hash or payment promise
+  hash.
+- **Service, verified.** Before each blob's retention window ends, every
+  validator that endorsed it is asked for its own rows the way the Fibre
+  client asks, and every row is checked against the on-chain commitment.
+  Each validator's service rate comes from what it actually served
+  ([`docs/verdicts.md`](docs/verdicts.md)).
+- **Endpoints, watched.** Every registered Fibre endpoint is checked every five
+  minutes from two locations: DNS, TCP, TLS 1.3 and the identity signed by
+  the validator's consensus key. Reachability and throughput for every
+  validator.
+- **Publishers and escrow.** Who pays for blobs, what they posted and paid,
+  and the escrow they pay from, straight from the chain.
+- **A record anyone can check.** Nothing is ever deleted, so every page reads
+  the same later as it does today. Signed daily exports
+  ([`docs/exports-signing.md`](docs/exports-signing.md)) and an open API, with
+  every rate beside its numerator and denominator, let anyone recompute every
+  figure.
 
 ## Modules
 

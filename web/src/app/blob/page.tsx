@@ -359,7 +359,7 @@ function Page() {
     : rc?.status === "no" ? ["hold", "Unavailable", `${rc.error ? `${rc.error[0].toUpperCase()}${rc.error.slice(1)}: ` : ""}${rc.error === "no shards retrieved" ? "no rows came back" : `fewer than the ${int(rc.needed_rows)} rows needed came back`} from the ${int(asked)} endorsing validators asked.`]
     : !over ? ["none", "In retention window", "Read once, 10 minutes before the retention window ends."]
     : counted ? ["none", "Not read by Tensile", "Tensile could not make every request in time, and the rows that came back fell short. Each validator it asked is judged on its own answers."]
-    : ["none", "Not read by Tensile", "Tensile did not read this blob. Its own gaps count against no validator."];
+    : ["none", "Not read by Tensile", "Tensile did not read this blob."];
   // failures on the validators' side that the rule did not count, as the validator page names them
   const held = rows.filter((a) => marks.get(a.validator_address)!.tone === "hold");
   const heldWhy = [...held.reduce((m, a) => {
