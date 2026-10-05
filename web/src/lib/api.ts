@@ -1121,17 +1121,30 @@ export function bytesPerSecond(n: number): string {
   return `${bytes(n)}/s`;
 }
 /**
- * A namespace as a reader can take it in: its bytes as text when every
- * significant byte is printable ASCII ("mochafibre"), else the hex with the
- * leading zero padding dropped. The full hex belongs in a tooltip beside it.
+ * A namespace as a reader can take it in, from its significant bytes (the leading zero padding dropped):
+ * - every byte printable ASCII: the text ("mochafibre");
+ * - a name of three characters or more, then up to four bytes that are not text, as a client numbers the
+ *   namespaces of one name: the name and those bytes' hex after a dot ("tensile·04");
+ * - else the hex, whole up to six bytes, past that its first and last four characters ("8e5f…116c").
+ * `hex` says the name is hex, set in the mono face. The full hex belongs in a tooltip beside it.
  */
-export function nsDisplay(ns: string): string {
-  const stripped = ns.replace(/^(00)+/, "");
-  if (stripped.length >= 4 && stripped.length % 2 === 0) {
-    const bytes = stripped.match(/../g)!.map((h) => parseInt(h, 16));
-    if (bytes.every((b) => b >= 0x20 && b < 0x7f)) return String.fromCharCode(...bytes);
+export function nsName(ns: string): { text: string; hex: boolean } {
+  const s = ns.replace(/^(00)+/, "");
+  if (s.length >= 4 && s.length % 2 === 0) {
+    const b = s.match(/../g)!.map((h) => parseInt(h, 16));
+    const printable = (x: number) => x >= 0x20 && x < 0x7f;
+    if (b.every(printable)) return { text: String.fromCharCode(...b), hex: false };
+    const n = b.findIndex((x) => !printable(x));
+    if (n >= 3 && b.length - n <= 4 && b.slice(n).every((x) => !printable(x))) {
+      return { text: `${String.fromCharCode(...b.slice(0, n))}·${s.slice(2 * n)}`, hex: false };
+    }
   }
-  return shortHex(stripped || ns, 6);
+  const h = s || ns;
+  return { text: h.length <= 12 ? h : `${h.slice(0, 4)}…${h.slice(-4)}`, hex: true };
+}
+/** a namespace's name as text: nsName's */
+export function nsDisplay(ns: string): string {
+  return nsName(ns).text;
 }
 
 /** one row of /v1/namespaces */
