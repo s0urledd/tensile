@@ -761,9 +761,11 @@ the chain tip the collector had last seen (`height`, `block_time`,
 `chain_height`, `chain_tip_time`).
 `computed_at` says when the figures were taken; `record_through` says over
 which part of the record, which is what a reader needs to check them against
-the chain. The site tags each headline figure with the kind of evidence it
-rests on: a chain record, a verified response, or an observation from
-Tensile's own network (`EVIDENCE` in `web/src/components/Panel.tsx`).
+the chain. The site keeps the two kinds of evidence apart: what the chain
+records under On chain, and Tensile's own readings under Observed by
+Tensile, marked with its eye (`Eye` in `web/src/components/Metrics.tsx`;
+the validator page, the blob page and the Tensile column of the Blobs and
+publisher lists).
 
 Every figure on the site is a function of the record and the code, and the
 pieces needed to re-run that function are published:

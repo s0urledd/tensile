@@ -412,7 +412,7 @@ const EX_EXPORTS = `{
       "bytes": 30490344,
       "sha256": "0ea0eda3f14487eae44f44cd10ccd5329a09efe4186a1aebb95eb9b5de6177b6",
       "day": "2026-09-29",
-      "methodology_version": "2026-09-29.2",
+      "methodology_version": "2026-10-02",
       "signature": {
         "algorithm": "ed25519",
         "key_fingerprint": "sha256:8eb4c98fd59e067ce8651f0edec06bcccc6d92b49b2ddd8161929ec3826a5412"
