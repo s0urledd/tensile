@@ -232,6 +232,13 @@ func (n *headsNode) read(h int64) bool {
 // once, in order, and its results once.
 func (n *headsNode) readsInOrder(t *testing.T, first, last int64) {
 	t.Helper()
+	// a height's results are asked right after its block, so the caller, which
+	// waited for the last block, can get here between the two requests
+	waitFor(t, 2*time.Second, fmt.Sprintf("block_results %d asked", last), func() bool {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		return n.results[last] > 0
+	})
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	want := []int64{}
