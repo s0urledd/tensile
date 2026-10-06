@@ -32,6 +32,12 @@
 // Recompute such a day together with the next one (both exports untarred
 // into one directory, the measurement files concatenated).
 //
+// Every record file is read whole, its archived segments before the live
+// file (record.OpenAll): in the observer's own data directory the older
+// lines of a rotated file are no longer in the live file, and reading that
+// alone would redraw the verdicts from part of the record. A file that was
+// never archived, which is every file of an untarred export, reads as it is.
+//
 // Exit status 1 when anything differs, 2 on a usage or read error.
 package main
 
@@ -55,6 +61,7 @@ import (
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/policy"
@@ -500,7 +507,7 @@ type proberRun struct {
 // loadRuns reads the prober starts from runs.jsonl, oldest first. A
 // missing or unreadable file is no runs.
 func loadRuns(path string) []proberRun {
-	f, err := os.Open(path)
+	f, err := record.OpenAll(path)
 	if err != nil {
 		return nil
 	}
@@ -595,7 +602,7 @@ func loadAPI(base, file, window string, asOf time.Time) (*apiValidators, error) 
 // is the one the rows carry; a publication with no rows is not checked,
 // and one with rows stamped at p = 1 was never drawn.
 func checkSampling(path string, pubs []scan.Publication, ms []probe.Measurement, maxDiff int) (checked, diffs int, err error) {
-	f, err := os.Open(path)
+	f, err := record.OpenAll(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			fmt.Println("sampling| no sampling-secrets.jsonl: no day is revealed yet")
@@ -768,7 +775,7 @@ func loadFrontier(dir string, pubs []scan.Publication) time.Time {
 // no amendments.
 func loadAmendments(path string) map[string]store.Amendment {
 	out := map[string]store.Amendment{}
-	f, err := os.Open(path)
+	f, err := record.OpenAll(path)
 	if err != nil {
 		return out
 	}
@@ -791,7 +798,7 @@ func loadAmendments(path string) map[string]store.Amendment {
 // host_history.jsonl and the scan gaps from state.json; ok is false when
 // the record carries no history.
 func loadHostHistory(dir string) (*scan.HostHistory, []scan.ScanGap, bool) {
-	f, err := os.Open(filepath.Join(dir, "host_history.jsonl"))
+	f, err := record.OpenAll(filepath.Join(dir, "host_history.jsonl"))
 	if err != nil {
 		return nil, nil, false
 	}
@@ -829,7 +836,7 @@ func loadHostHistory(dir string) (*scan.HostHistory, []scan.ScanGap, bool) {
 // line for the same id supersedes an earlier one, which is how a range
 // that was open when it was written and verified later reads.
 func loadParamRanges(path string) []scan.ParamUncertainty {
-	f, err := os.Open(path)
+	f, err := record.OpenAll(path)
 	if err != nil {
 		return nil
 	}
@@ -869,7 +876,7 @@ func loadParamRanges(path string) []scan.ParamUncertainty {
 func loadCorrections(path string) (map[string]store.Correction, map[string]bool, map[string]time.Time) {
 	done := map[string]bool{}
 	deadlines := map[string]time.Time{}
-	f, err := os.Open(path)
+	f, err := record.OpenAll(path)
 	if err != nil {
 		return nil, done, deadlines
 	}

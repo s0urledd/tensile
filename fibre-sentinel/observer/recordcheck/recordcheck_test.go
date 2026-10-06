@@ -1,4 +1,4 @@
-package main
+package recordcheck
 
 import (
 	"archive/tar"
@@ -143,7 +143,7 @@ func TestLinesComeBackByteForByte(t *testing.T) {
 		"reachability.jsonl": f.reachLines,
 	} {
 		src := file(lines...)
-		r, err := checkLines(ctx, f.st, name, kinds[name], bytes.NewReader(src), 1)
+		r, err := CheckLines(ctx, f.st, name, bytes.NewReader(src), 1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -162,7 +162,7 @@ func TestLinesNotBackAreCountedByWhy(t *testing.T) {
 	ctx := context.Background()
 	changed := bytes.Replace(f.readings[1], []byte(`"full"`), []byte(`"fuII"`), 1)
 	src := file(f.readings[0], changed, f.readings[0], f.readings[2], []byte(`{"vantage":`))
-	r, err := checkLines(ctx, f.st, "measurements.jsonl", kinds["measurements.jsonl"], bytes.NewReader(src), 1)
+	r, err := CheckLines(ctx, f.st, "measurements.jsonl", bytes.NewReader(src), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestLinesNotBackAreCountedByWhy(t *testing.T) {
 		t.Fatalf("examples: %v", r.Examples)
 	}
 
-	r, err = checkLines(ctx, f.st, "publications.jsonl", kinds["publications.jsonl"], bytes.NewReader(file(f.pubLine, f.other)), 1)
+	r, err = CheckLines(ctx, f.st, "publications.jsonl", bytes.NewReader(file(f.pubLine, f.other)), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestLinesNotBackAreCountedByWhy(t *testing.T) {
 	}
 
 	// -from-line skips the lines before it
-	r, err = checkLines(ctx, f.st, "publications.jsonl", kinds["publications.jsonl"], bytes.NewReader(file(f.other, f.pubLine)), 2)
+	r, err = CheckLines(ctx, f.st, "publications.jsonl", bytes.NewReader(file(f.other, f.pubLine)), 2)
 	if err != nil || r.Lines != 1 || !r.Reproducible {
 		t.Fatalf("%+v %v", r, err)
 	}
@@ -237,7 +237,7 @@ func TestDay(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	r, err := checkDay(ctx, f.st, dir, build(dir, nil))
+	r, err := CheckDay(ctx, f.st, dir, build(dir, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestDay(t *testing.T) {
 
 	// a member that is not what the manifest says: the export is not intact
 	dir = t.TempDir()
-	r, err = checkDay(ctx, f.st, dir, build(dir, func(m map[string][]byte) { m["registry.jsonl"] = file([]byte(`{"x":2}`)) }))
+	r, err = CheckDay(ctx, f.st, dir, build(dir, func(m map[string][]byte) { m["registry.jsonl"] = file([]byte(`{"x":2}`)) }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestDay(t *testing.T) {
 	dir = t.TempDir()
 	e := build(dir, nil)
 	e.SHA256 = digest(nil)
-	if r, err = checkDay(ctx, f.st, dir, e); err != nil || r.ExportIntact || r.Reproducible {
+	if r, err = CheckDay(ctx, f.st, dir, e); err != nil || r.ExportIntact || r.Reproducible {
 		t.Fatalf("%+v %v", r, err)
 	}
 }
