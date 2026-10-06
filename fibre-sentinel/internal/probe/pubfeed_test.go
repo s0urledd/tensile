@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"archive/tar"
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
@@ -8,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"slices"
@@ -248,6 +251,7 @@ func TestPubFeedReadsOnAcrossRotation(t *testing.T) {
 			if n, err := feed.refresh(); err != nil || n != 10 {
 				t.Fatalf("first refresh: %d %v", n, err)
 			}
+			readTo(t, feed, 10)
 			for _, h := range []string{"p00", "p01", "p05"} {
 				feed.forget(h) // read on schedule: done with
 			}
@@ -260,6 +264,7 @@ func TestPubFeedReadsOnAcrossRotation(t *testing.T) {
 			if n, err := feed.refresh(); err != nil || n != 20 {
 				t.Fatalf("refresh after the rotation added %d (%v), want the 20 written since", n, err)
 			}
+			readTo(t, feed, 30)
 			if got, want := feedHashes(feed), pubRange(2, 30, 5); !slices.Equal(got, want) {
 				t.Fatalf("held %v\nwant %v", got, want)
 			}
@@ -267,6 +272,7 @@ func TestPubFeedReadsOnAcrossRotation(t *testing.T) {
 			if n, err := feed.refresh(); err != nil || n != 1 {
 				t.Fatalf("the next append: %d %v", n, err)
 			}
+			readTo(t, feed, 31)
 			appendBad(t, path)
 			// p03..p30 are the new file's first 28 lines, p00..p30 the record's first 31
 			if want := badLine(how, 29, 32); !feedFails(feed, want) {
@@ -280,6 +286,7 @@ func TestPubFeedReadsOnAcrossRotation(t *testing.T) {
 			if n, err := feed.refresh(); err != nil || n != 10 {
 				t.Fatalf("first refresh: %d %v", n, err)
 			}
+			readTo(t, feed, 10)
 			for _, h := range []string{"p00", "p01", "p09"} {
 				feed.forget(h)
 			}
@@ -292,6 +299,7 @@ func TestPubFeedReadsOnAcrossRotation(t *testing.T) {
 			if n, err := feed.refresh(); err != nil || n != 2 {
 				t.Fatalf("refresh after the rotation added %d (%v), want the 2 written since", n, err)
 			}
+			readTo(t, feed, 12)
 			if got, want := feedHashes(feed), append(pubRange(2, 9), pubRange(10, 12)...); !slices.Equal(got, want) {
 				t.Fatalf("held %v\nwant %v", got, want)
 			}
@@ -307,6 +315,7 @@ func TestPubFeedReadsOnAcrossRotation(t *testing.T) {
 				if n, err := feed.refresh(); err != nil || n != 5 {
 					t.Fatalf("first refresh: %d %v", n, err)
 				}
+				readTo(t, feed, 5)
 				appendPubs(t, path, 5, 10)
 				rotatePubs(t, how, path, keep)
 				if how == "unlisted" && keep == 7 {
@@ -324,6 +333,7 @@ func TestPubFeedReadsOnAcrossRotation(t *testing.T) {
 				if n, err := feed.refresh(); err != nil || n != 5 {
 					t.Fatalf("refresh after the rotation added %d (%v), want the 5 written since", n, err)
 				}
+				readTo(t, feed, 10)
 				if got, want := feedHashes(feed), pubRange(0, 10); !slices.Equal(got, want) {
 					t.Fatalf("held %v\nwant %v", got, want)
 				}
@@ -340,6 +350,7 @@ func TestPubFeedReadsOnAcrossRotation(t *testing.T) {
 			if n, err := feed.refresh(); err != nil || n != 10 {
 				t.Fatalf("first refresh: %d %v", n, err)
 			}
+			readTo(t, feed, 10)
 			for _, h := range []string{"p00", "p01", "p07"} {
 				feed.forget(h)
 			}
@@ -350,6 +361,7 @@ func TestPubFeedReadsOnAcrossRotation(t *testing.T) {
 			if n, err := feed.refresh(); err != nil || n != 5 {
 				t.Fatalf("refresh after two rotations added %d (%v), want the 5 written since", n, err)
 			}
+			readTo(t, feed, 15)
 			if got, want := feedHashes(feed), pubRange(2, 15, 7); !slices.Equal(got, want) {
 				t.Fatalf("held %v\nwant %v", got, want)
 			}
@@ -362,16 +374,10 @@ func TestPubFeedReadsOnAcrossRotation(t *testing.T) {
 	}
 }
 
-// A file created after a rotation can compare equal to one the feed read
-// before it: ext4 gives a freed inode to the next file created, so after
-// two rotations between refreshes the live file can carry the first one's
-// identity, and a feed that told files apart by identity read on at its
-// old offset in the new file, or reloaded it whole when it was shorter.
-// The "inplace" rotation gives that view on every platform. Whether the
-// live file after two rotations is shorter or longer than the offset read
-// in the first, and after a third that cut past what the feed had read,
-// every publication written since is added once, the ones the cut took
-// before the feed read them from the segment.
+// After rotations that keep the live file's identity, as a reused inode
+// does, the feed reads on by logical offset whether the file is now shorter
+// or longer than the offset first read, and from the segment once a cut
+// passes what it had read.
 func TestPubFeedReadsByLogicalOffset(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -388,6 +394,7 @@ func TestPubFeedReadsByLogicalOffset(t *testing.T) {
 			if n, err := feed.refresh(); err != nil || n != 10 {
 				t.Fatalf("first refresh: %d %v", n, err)
 			}
+			readTo(t, feed, 10)
 			appendPubs(t, path, 10, 12)
 			rotatePubs(t, "inplace", path, 3)
 			appendPubs(t, path, 12, tc.upTo)
@@ -402,6 +409,7 @@ func TestPubFeedReadsByLogicalOffset(t *testing.T) {
 			if n, err := feed.refresh(); err != nil || n != tc.upTo-10 {
 				t.Fatalf("refresh after two rotations added %d (%v), want the %d written since", n, err, tc.upTo-10)
 			}
+			readTo(t, feed, int64(tc.upTo))
 			if got, want := feedHashes(feed), pubRange(0, tc.upTo); !slices.Equal(got, want) {
 				t.Fatalf("held %v\nwant %v", got, want)
 			}
@@ -411,6 +419,7 @@ func TestPubFeedReadsByLogicalOffset(t *testing.T) {
 			if n, err := feed.refresh(); err != nil || n != 5 {
 				t.Fatalf("refresh after a cut past what was read added %d (%v), want the 5 written since", n, err)
 			}
+			readTo(t, feed, int64(tc.upTo+5))
 			if got, want := feedHashes(feed), pubRange(0, tc.upTo+5); !slices.Equal(got, want) {
 				t.Fatalf("held %v\nwant %v", got, want)
 			}
@@ -480,6 +489,21 @@ func feedFails(f *pubFeed, want string) bool {
 	return true
 }
 
+// readTo fails the test unless the feed stands at the record's logical end
+// having counted lines lines. A line skipped or read twice moves one or
+// the other, where the publications held cannot show it: take keeps one
+// per promise hash.
+func readTo(t *testing.T, f *pubFeed, lines int64) {
+	t.Helper()
+	end, err := record.LogicalEnd(f.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.offset != end || f.lines != lines {
+		t.Fatalf("the feed stands at logical byte %d after %d lines, want the record's end %d after %d", f.offset, f.lines, end, lines)
+	}
+}
+
 // appendBad appends a line that is not JSON, to see which line number the
 // feed names it by.
 func appendBad(t *testing.T, path string) {
@@ -515,5 +539,262 @@ func TestPubFeedReloadsAFileTheArchiverDidNotWrite(t *testing.T) {
 	}
 	if got, want := feedHashes(feed), pubRange(40, 50); !slices.Equal(got, want) {
 		t.Fatalf("held %v, want %v", got, want)
+	}
+}
+
+// A feed that read a file put in the path's place outside the archiver
+// reloads the real live file once it is back, rather than read on into the
+// record from an offset that counted in the other file.
+func TestPubFeedReloadsTheRealFileAfterAStranger(t *testing.T) {
+	// p14 is as long as p00, so its end falls on a line boundary of the
+	// record; p20 is longer, and its end falls inside p01.
+	for _, stranger := range []int{14, 20} {
+		t.Run(fmt.Sprintf("p%02d", stranger), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "publications.jsonl")
+			appendPubs(t, path, 0, 10)
+			feed := newPubFeed(path)
+			if n, err := feed.refresh(); err != nil || n != 10 {
+				t.Fatalf("first refresh: %d %v", n, err)
+			}
+			rotatePubs(t, "rename", path, 3)
+			real := filepath.Join(dir, "real.jsonl")
+			if err := os.Rename(path, real); err != nil {
+				t.Fatal(err)
+			}
+			appendPubs(t, path, stranger, stranger+1)
+			if n, err := feed.refresh(); err != nil || n != 1 {
+				t.Fatalf("refresh of the stranger: %d %v", n, err)
+			}
+			if got, want := feedHashes(feed), pubRange(stranger, stranger+1); !slices.Equal(got, want) {
+				t.Fatalf("held %v, want %v", got, want)
+			}
+			if err := os.Rename(real, path); err != nil {
+				t.Fatal(err)
+			}
+			if n, err := feed.refresh(); err != nil || n != 7 {
+				t.Fatalf("refresh of the real file back added %d (%v), want p03..p09 from its start", n, err)
+			}
+			if got, want := feedHashes(feed), pubRange(3, 10); !slices.Equal(got, want) {
+				t.Fatalf("held %v, want %v", got, want)
+			}
+			readTo(t, feed, 10)
+		})
+	}
+}
+
+// A segment the feed cannot read back stops every refresh with an error
+// naming the segment and the line it could not read.
+func TestPubFeedNamesASegmentItCannotRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "publications.jsonl")
+	appendPubs(t, path, 0, 5)
+	feed := newPubFeed(path)
+	if n, err := feed.refresh(); err != nil || n != 5 {
+		t.Fatalf("first refresh: %d %v", n, err)
+	}
+	appendPubs(t, path, 5, 10)
+	rotatePubs(t, "rename", path, 8)
+	seg := filepath.Join(record.ArchiveDir(path), "000001-hand.jsonl.gz")
+	cutSegment(t, seg, 7)
+	// p05 and p06 come back whole; p07 is the segment's line 8
+	want := seg + " line 8:"
+	n, err := feed.refresh()
+	if n != 2 || !errors.Is(err, io.ErrUnexpectedEOF) || !strings.Contains(err.Error(), want) {
+		t.Fatalf("refresh over the cut segment added %d (%v), want p05 and p06 and the line named as %q", n, err, want)
+	}
+	if !feedFails(feed, want) {
+		t.Fatalf("a second refresh did not stop at the segment again")
+	}
+	if got, want := feedHashes(feed), pubRange(0, 7); !slices.Equal(got, want) {
+		t.Fatalf("held %v\nwant %v", got, want)
+	}
+}
+
+// cutSegment rewrites a segment's gzip file so that its stream stops after
+// its first keep lines, at a flush point with no end after it: a reader
+// gets those lines whole and then io.ErrUnexpectedEOF, as from a file cut
+// short on disk.
+func cutSegment(t *testing.T, seg string, keep int) {
+	t.Helper()
+	raw := gunzipFile(t, seg)
+	var gz bytes.Buffer
+	z := gzip.NewWriter(&gz)
+	for _, l := range bytes.SplitAfter(raw, []byte{'\n'})[:keep] {
+		if _, err := z.Write(l); err != nil {
+			t.Fatal(err)
+		}
+		if err := z.Flush(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(seg, gz.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// gunzipFile is what the gzip file at path holds, uncompressed.
+func gunzipFile(t *testing.T, path string) []byte {
+	t.Helper()
+	gz, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	z, err := gzip.NewReader(bytes.NewReader(gz))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := io.ReadAll(z)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// A feed behind a cut whose segment was retired reads the lines it had not
+// read back from the daily exports, each once, and reads on in the live
+// file.
+func TestPubFeedReadsARetiredSegment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "publications.jsonl")
+	appendPubs(t, path, 0, 5)
+	feed := newPubFeed(path)
+	if n, err := feed.refresh(); err != nil || n != 5 {
+		t.Fatalf("first refresh: %d %v", n, err)
+	}
+	appendPubs(t, path, 5, 10)
+	rotatePubs(t, "rename", path, 7)
+	retirePubs(t, path)
+	if n, err := feed.refresh(); err != nil || n != 5 {
+		t.Fatalf("refresh behind a retired cut added %d (%v), want the 5 written since", n, err)
+	}
+	readTo(t, feed, 10)
+	if got, want := feedHashes(feed), pubRange(0, 10); !slices.Equal(got, want) {
+		t.Fatalf("held %v\nwant %v", got, want)
+	}
+	appendPubs(t, path, 10, 11)
+	if n, err := feed.refresh(); err != nil || n != 1 {
+		t.Fatalf("the next append: %d %v", n, err)
+	}
+	readTo(t, feed, 11)
+}
+
+// retirePubs retires path's first segment by hand, which runs on every
+// platform (record.Retire needs flock): one export tarball whose
+// publications.jsonl member is exactly the segment's bytes, listed in
+// exports/index.json beside the data directory, the segment marked retired
+// in the index, and its gzip file removed.
+func retirePubs(t *testing.T, path string) {
+	t.Helper()
+	idx, err := record.LoadIndex(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sg := idx.Segments[0]
+	seg := filepath.Join(record.ArchiveDir(path), sg.Name)
+	data := gunzipFile(t, seg)
+	var tarball bytes.Buffer
+	z := gzip.NewWriter(&tarball)
+	tw := tar.NewWriter(z)
+	if err := tw.WriteHeader(&tar.Header{Name: "publications.jsonl", Mode: 0o644, Size: int64(len(data)), ModTime: feedT0, Format: tar.FormatPAX}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	hexSum := func(b []byte) string {
+		sum := sha256.Sum256(b)
+		return hex.EncodeToString(sum[:])
+	}
+	exports := filepath.Join(filepath.Dir(path), "exports")
+	name := "tensile-test-" + feedT0.Format("2006-01-02") + ".tar.gz"
+	if err := os.MkdirAll(exports, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(exports, name), tarball.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	list, err := json.Marshal([]map[string]any{{
+		"name": name, "bytes": tarball.Len(), "sha256": hexSum(tarball.Bytes()),
+		"files": []map[string]any{{"name": "publications.jsonl", "bytes": len(data), "sha256": hexSum(data), "source_from": sg.From, "source_to": sg.To}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(exports, "index.json"), list, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx.Segments[0].Retired = &record.Retired{At: feedT0, Exports: []string{name}, Member: "publications.jsonl", ExportsDir: "../../exports", Proof: "test"}
+	b, err := json.Marshal(idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(record.ArchiveDir(path), record.IndexFile), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(seg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Whatever order appends, rotations (several between two refreshes, and
+// cuts behind and ahead of what the feed read) and forgets come in, every
+// refresh adds each line written since once and leaves the feed at the
+// record's end, holding every publication written and not forgotten.
+func TestPubFeedReadsEachLineOnce(t *testing.T) {
+	for seed := range uint64(24) {
+		how := []string{"archive", "rename", "inplace"}[seed%3]
+		t.Run(fmt.Sprintf("%s/%d", how, seed), func(t *testing.T) {
+			rng := rand.New(rand.NewPCG(seed, 1))
+			path := filepath.Join(t.TempDir(), "publications.jsonl")
+			appendPubs(t, path, 0, 2)
+			feed := newPubFeed(path)
+			// the publications written so far, the first still in the
+			// live file, how many the feed has read, and those it forgot
+			written, live, read := 2, 0, 0
+			var forgotten []int
+			refresh := func() {
+				t.Helper()
+				if n, err := feed.refresh(); err != nil || n != written-read {
+					t.Fatalf("refresh added %d (%v), want the %d written since", n, err, written-read)
+				}
+				read = written
+				readTo(t, feed, int64(written))
+				if got, want := feedHashes(feed), pubRange(0, written, forgotten...); !slices.Equal(got, want) {
+					t.Fatalf("held %v\nwant %v", got, want)
+				}
+			}
+			// A feed starts at the live file, so it reads once before any
+			// rotation for every line to be its to read.
+			refresh()
+			for range 30 {
+				switch op := rng.IntN(4); {
+				case op == 1 && written-live >= 2:
+					live += 1 + rng.IntN(written-live-1)
+					rotatePubs(t, how, path, live)
+				case op == 2:
+					refresh()
+				case op == 3 && read > len(forgotten):
+					var held []int
+					for i := range read {
+						if !slices.Contains(forgotten, i) {
+							held = append(held, i)
+						}
+					}
+					i := held[rng.IntN(len(held))]
+					feed.forget(fmt.Sprintf("p%02d", i))
+					forgotten = append(forgotten, i)
+				default:
+					n := 1 + rng.IntN(3)
+					appendPubs(t, path, written, written+n)
+					written += n
+				}
+			}
+			refresh()
+		})
 	}
 }

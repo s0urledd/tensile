@@ -59,13 +59,16 @@ type pubFeed struct {
 	// same lines, and guards the fields up to mu. offset is the logical
 	// offset of the first byte the feed has not read, and lines the number
 	// of lines before it in the whole record (-1 when the index does not
-	// say how many lines precede the byte the feed began at). last is the
-	// SHA-256 of the line that ends at offset, which starts at lastFrom: ""
-	// when nothing has been read, and the next refresh places the feed
-	// afresh.
+	// say how many lines precede the byte the feed began at). placed is
+	// whether offset was taken in a live file the index places
+	// (record.Stream.Placed); when it was not, offset counts in that file
+	// alone. last is the SHA-256 of the line that ends at offset, which
+	// starts at lastFrom: "" when nothing has been read, and the next
+	// refresh places the feed afresh.
 	reading  sync.Mutex
 	offset   int64
 	lines    int64
+	placed   bool
 	last     string
 	lastFrom int64
 
@@ -143,7 +146,9 @@ func (f *pubFeed) refresh() (int, error) {
 		raw, err := r.ReadBytes('\n')
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
-				stop = err
+				// Behind the cut this reads a segment or the exports, so the
+				// error must say which file failed, and where.
+				stop = fmt.Errorf("%s: %w", f.lineName(s, at, lines), err)
 			}
 			break // a partial trailing line waits for its newline
 		}
@@ -166,7 +171,7 @@ func (f *pubFeed) refresh() (int, error) {
 		}
 	}
 	added := f.take(got, !same)
-	f.offset, f.lines = at, lines
+	f.offset, f.lines, f.placed = at, lines, s.Placed()
 	switch {
 	case last != nil:
 		f.last, f.lastFrom = lineSHA256(last), lastFrom
@@ -181,16 +186,22 @@ func (f *pubFeed) refresh() (int, error) {
 // While that line is in the live file it is read again and compared, which
 // is one line, not a file. Once a rotation has moved it to the archive, the
 // live file starts at or after its end: record.Open placed it there by its
-// own first line in the index (it gives a live file the index does not
-// place base 0, so such a file is always compared). A record shorter than
-// what was read does not go on, nor one whose live file starts inside the
-// line read last. With nothing read yet there is nothing to compare, and
-// the feed is placed afresh in any case.
+// own first line in the index. That word is taken only when the feed's
+// offset was counted in the record too: a live file the index does not
+// place (put in the path's place outside the archiver) is read as base 0
+// by its own offsets, so the record does not go on from one read in such a
+// file when the real one is back, nor from one read in the record when
+// such a file stands in its place. A record shorter than what was read
+// does not go on, nor one whose live file starts inside the line read
+// last. With nothing read yet there is nothing to compare, and the feed is
+// placed afresh in any case.
 func (f *pubFeed) goesOn(s *record.Stream) (bool, error) {
 	base := s.Base()
 	switch {
 	case f.last == "":
 		return true, nil
+	case s.Placed() != f.placed:
+		return false, nil
 	case s.End() < f.offset:
 		return false, nil
 	case f.lastFrom < base:

@@ -17,6 +17,7 @@ type Stream struct {
 	live    *os.File
 	base    int64
 	size    int64
+	placed  bool
 	idx     *Index
 	closers []io.Closer
 	// exports holds the exports indexes read for retired segments, by
@@ -46,19 +47,29 @@ func Open(path string) (*Stream, error) {
 		return nil, err
 	}
 	s.idx = idx
-	if len(idx.Generations) > 0 {
+	s.placed = len(idx.Generations) == 0
+	if !s.placed {
 		head, err := headOf(f, 0)
 		if err != nil {
 			f.Close()
 			return nil, err
 		}
-		s.base, _ = idx.base(head)
+		s.base, s.placed = idx.base(head)
 	}
 	return s, nil
 }
 
 // Base is the logical offset of the live file's first byte.
 func (s *Stream) Base() int64 { return s.base }
+
+// Placed reports whether the index places the live file in the record: the
+// file was never archived (base 0, as every offset already meant), or its
+// first line is a generation's. A live file that matches no generation of
+// a non-empty index was put in the path's place outside the archiver. Open
+// reads it as base 0, but its offsets are its own and name no byte of the
+// record, so an offset a reader kept must not be carried into such a file
+// or out of it.
+func (s *Stream) Placed() bool { return s.placed }
 
 // End is the logical offset of the live file's end when it was opened.
 func (s *Stream) End() int64 { return s.base + s.size }
@@ -77,14 +88,8 @@ func LogicalEnd(path string) (int64, error) {
 		return 0, err
 	}
 	defer s.Close()
-	if len(s.idx.Generations) > 0 {
-		head, err := headOf(s.live, 0)
-		if err != nil {
-			return 0, err
-		}
-		if _, ok := s.idx.base(head); !ok {
-			return 0, fmt.Errorf("%s: the live file's first line matches no generation in %s", path, filepath.Join(ArchiveDir(path), IndexFile))
-		}
+	if !s.Placed() {
+		return 0, fmt.Errorf("%s: the live file's first line matches no generation in %s", path, filepath.Join(ArchiveDir(path), IndexFile))
 	}
 	return s.End(), nil
 }
