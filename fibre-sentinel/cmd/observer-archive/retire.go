@@ -21,11 +21,13 @@ package main
 //  3. exports/remote.jsonl, where deploy/backup.sh records each tarball it
 //     read back from the remote, says the remote copy has the same digest;
 //
-// and then record.Retire reads the segment back from those exports and
-// requires its exact bytes before the file goes. Anything not proven is
-// kept, and the run says why; a second run retires nothing new and gives
-// the same reasons. Files the store does not keep line by line (of those
-// archived, the sampling decisions) are never retired.
+// and then, each tarball digested again just before and found to be still
+// the bytes all of that was about, record.Retire reads the segment back
+// from those exports and requires its exact bytes before the file goes.
+// Anything not proven is kept, and the run says why; a second run retires
+// nothing new and gives the same reasons. Files the store does not keep
+// line by line (of those archived, the sampling decisions) are never
+// retired.
 //
 // The run needs no network, and the archive unit has none: what the remote
 // holds is what backup.sh, which runs earlier, read back and recorded.
@@ -64,6 +66,11 @@ const ReportFile = "retire-report.json"
 // here that edits the index the same way, so that everything this file
 // decides is tested there too.
 var retireSegment = record.Retire
+
+// checkDay checks a day's export against the store. It is
+// recordcheck.CheckDay; a test puts a stand-in here that rebuilds the
+// tarball while it is checked.
+var checkDay = recordcheck.CheckDay
 
 // Report is one -retire run, file by file, as printed and as written to
 // ReportFile.
@@ -272,7 +279,16 @@ func (r *retirer) file(f FileSpec) FileReport {
 			case len(reasons) > 0:
 				keep(sg, strings.Join(reasons, "; "))
 			default:
-				r.apply(&fr, path, sg, ret, keep)
+				why, err := r.unchanged(ret.Exports)
+				switch {
+				case err != nil:
+					fr.Errors = append(fr.Errors, sg.Name+": "+err.Error())
+					keep(sg, "not checked: "+err.Error())
+				case why != "":
+					keep(sg, why)
+				default:
+					r.apply(&fr, path, sg, ret, keep)
+				}
 			}
 		}
 	}
@@ -468,7 +484,7 @@ func (r *retirer) proof(e export.Entry) (*exportProof, error) {
 	if r.stErr != nil {
 		return nil, fmt.Errorf("%s is not in the ledger and the store could not be opened to check it: %w", e.Name, r.stErr)
 	}
-	rep, err := recordcheck.CheckDay(r.ctx, r.st, r.expDir, e)
+	rep, err := checkDay(r.ctx, r.st, r.expDir, e)
 	if err != nil {
 		return nil, fmt.Errorf("checking %s against the store: %w", e.Name, err)
 	}
@@ -495,7 +511,6 @@ func (r *retirer) proof(e export.Entry) (*exportProof, error) {
 		}
 	}
 	r.ledger[e.Name] = d
-	p.day = &d
 	verdict := "every checked member reproducible byte for byte"
 	if !d.Reproducible() {
 		var not []string
@@ -511,8 +526,47 @@ func (r *retirer) proof(e export.Entry) (*exportProof, error) {
 		}
 	}
 	r.checked = append(r.checked, fmt.Sprintf("%s %s: %s", e.Day, e.Name, verdict))
+	if d.SHA256 != sum {
+		// The check read other bytes than the ones digested above, which the
+		// remote's answer is compared with: the tarball changed in between.
+		// What it found is recorded, being about the bytes it read, but it
+		// cannot stand beside a remote check of other bytes.
+		p.why = fmt.Sprintf("%s export tarball changed while it was checked (sha256 %s, then %s)", e.Day, short(sum), short(d.SHA256))
+	} else {
+		p.day = &d
+	}
 	r.proofs[e.Name] = p
 	return p, nil
+}
+
+// unchanged is why the tarballs named are no longer the bytes this run
+// proved them as (exportProof.sum); empty when each still is. A proof is
+// taken once per run, and a run that checks days against the store can
+// take hours: a tarball rebuilt in that time, with its sidecar and index
+// entry, which is all record.Retire reads it back by, would otherwise have
+// a segment removed on bytes that neither the ledger nor the remote check
+// was about. Each is digested again here, just before record.Retire, which
+// leaves only the moments between the two; record.Retire takes no digest
+// to hold the tarball to, which is what closing those would need. A
+// tarball found changed proves nothing for the rest of the run.
+func (r *retirer) unchanged(names []string) (string, error) {
+	for _, name := range names {
+		p := r.proofs[name]
+		sum, _, err := recordcheck.DigestFile(filepath.Join(r.expDir, name))
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			p.why = fmt.Sprintf("%s export %s left the exports directory during this run", p.e.Day, name)
+		case err != nil:
+			return "", fmt.Errorf("export %s: %w", name, err)
+		case sum != p.sum:
+			p.why = fmt.Sprintf("%s export tarball changed during this run (sha256 %s when it was proven, %s now)", p.e.Day, short(p.sum), short(sum))
+		default:
+			continue
+		}
+		p.day = nil
+		return p.why, nil
+	}
+	return "", nil
 }
 
 // remoteCheck is one line of RemoteFile.
@@ -608,8 +662,21 @@ func printReport(stdout, stderr io.Writer, rep *Report) {
 // sees one whole report or the other.
 func writeReport(dataDir string, rep *Report) (string, error) {
 	dir := filepath.Join(dataDir, record.Dir)
+	_, statErr := os.Stat(dir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
+	}
+	// A data directory nothing was archived in yet has no archive
+	// directory. One made here is owned like the data directory, as
+	// record.Archive leaves the ones it makes: after a run as root, the
+	// archive unit, running as the service user, must still be able to take
+	// the lock and archive into it.
+	if errors.Is(statErr, os.ErrNotExist) {
+		if di, err := os.Stat(dataDir); err == nil {
+			if err := ownLike(dir, di); err != nil {
+				return "", err
+			}
+		}
 	}
 	raw, err := json.MarshalIndent(rep, "", "  ")
 	if err != nil {

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -135,6 +136,82 @@ func newRetireData(t *testing.T) *retireData {
 }
 
 func (d *retireData) expDir() string { return filepath.Join(d.dir, "exports") }
+
+// entry is day's export as index.json lists it now.
+func (d *retireData) entry(t *testing.T, day int) export.Entry {
+	t.Helper()
+	entries, err := export.ReadIndex(d.expDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name == d.exports[day] {
+			return e
+		}
+	}
+	t.Fatalf("no %s in index.json", d.exports[day])
+	return export.Entry{}
+}
+
+// editIndex rewrites index.json with edit applied to day's entry.
+func (d *retireData) editIndex(t *testing.T, day int, edit func(*export.Entry)) {
+	t.Helper()
+	entries, err := export.ReadIndex(d.expDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range entries {
+		if entries[i].Name == d.exports[day] {
+			edit(&entries[i])
+		}
+	}
+	raw, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d.expDir(), "index.json"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// rebuildExport writes day's tarball again as a rebuild of the day from the
+// same offsets would: the same members in other gzip bytes, with the
+// sidecar and the index entry to match. It returns the new digest.
+func (d *retireData) rebuildExport(t *testing.T, day int) string {
+	t.Helper()
+	path := filepath.Join(d.expDir(), d.exports[day])
+	old, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(old))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gz bytes.Buffer
+	zw, err := gzip.NewWriterLevel(&gz, gzip.BestSpeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw.Name = "rebuilt"
+	zw.Write(stream)
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sum := sum256(gz.Bytes())
+	if err := os.WriteFile(path, gz.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".sha256", []byte(sum+"  "+d.exports[day]+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.editIndex(t, day, func(e *export.Entry) { e.SHA256, e.Bytes = sum, int64(gz.Len()) })
+	return sum
+}
 
 // remoteOK appends to remote.jsonl what backup.sh appends once it has read
 // day's tarball back from the remote with the digest it has now.
@@ -392,9 +469,10 @@ var proven = []string{"publications.jsonl", "payments.jsonl", "measurements.json
 // segment per day of days 0 to 2: it holds -retire to removing exactly the
 // segments every export of which is intact, reproduced from the store and
 // on the remote, to keeping each other one with its reason, to a dry run
-// and a second run that change nothing, to a tampered export proving
-// nothing, to failing on a segment lost without being retired, and to a
-// record that reads back byte for byte throughout.
+// and a second run that change nothing, to finishing a retirement a run
+// left half done, to a tampered export or one index.json lists other bytes
+// for proving nothing, to failing on a segment lost without being retired,
+// and to a record that reads back byte for byte throughout.
 func testRetire(t *testing.T, archive func(d *retireData, cutoff time.Time)) {
 	d := newRetireData(t)
 	for day := 1; day <= 3; day++ {
@@ -402,6 +480,14 @@ func testRetire(t *testing.T, archive func(d *retireData, cutoff time.Time)) {
 	}
 	d.readsWhole(t)
 	at := day0.AddDate(0, 0, 4).Add(4*time.Hour + 50*time.Minute)
+
+	// A copy of a segment's file, to leave it as a run that stopped half way
+	// through retiring it would.
+	pubDay0 := filepath.Join(record.ArchiveDir(filePath(d.dir, "publications.jsonl")), "000001-2026-10-02.jsonl.gz")
+	pubDay0Gz, err := os.ReadFile(pubDay0)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// A dry run says what would go and writes nothing: no file removed, no
 	// ledger, no report.
@@ -487,6 +573,29 @@ func testRetire(t *testing.T, archive func(d *retireData, cutoff time.Time)) {
 		t.Fatalf("second run, publications: %+v", f)
 	}
 
+	// A run that stopped between saving the index and removing the file
+	// left a retired segment whose file is still there: a dry run leaves
+	// it, and the next run removes it, as retired now.
+	if err := os.WriteFile(pubDay0, pubDay0Gz, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errs = runAt(t, at, "-data-dir", d.dir, "-retire", "-db", d.db, "-dry-run")
+	if code != 0 || !strings.Contains(out, "publications.jsonl: 3 segment(s): 1 would be retired (") || !strings.Contains(out, "summary| 1 segment(s) would be retired") {
+		t.Fatalf("dry run over a half retired segment: %d\n%s%s", code, out, errs)
+	}
+	if _, err := os.Stat(pubDay0); err != nil {
+		t.Fatalf("the dry run removed a half retired segment's file: %v", err)
+	}
+	resumed := d.retire(t, at)
+	if f := resumed.file(t, "publications.jsonl"); resumed.code != 0 || resumed.rep.RetiredNow != 1 || f.RetiredNow != 1 || f.RetiredBefore != 1 ||
+		fmt.Sprint(resumed.kept()) != fmt.Sprint(first.kept()) {
+		t.Fatalf("a half retired segment: %d %+v\n%s%s", resumed.code, resumed.rep, resumed.out, resumed.errs)
+	}
+	if _, err := os.Stat(pubDay0); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a half retired segment's file is still there: %v", err)
+	}
+	d.readsWhole(t)
+
 	// Day 2's tarball now has an ok line on the remote, but its bytes on the
 	// disk changed since the ledger's check: it proves nothing and says so.
 	d.remoteOK(t, 2)
@@ -513,11 +622,33 @@ func testRetire(t *testing.T, archive func(d *retireData, cutoff time.Time)) {
 		t.Fatal("a run after the tampered one gave other reasons")
 	}
 
-	// The tarball as it was: the ledger's answer stands again, and day 2 is
-	// retired; day 1's measurements stay.
+	// The tarball as it was, but index.json lists other bytes for it: the
+	// ledger's answer is about the tarball, and a retired segment is read
+	// back by the index, so nothing goes while the two disagree.
 	if err := os.WriteFile(tarball, orig, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	indexPath := filepath.Join(d.expDir(), "index.json")
+	index, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.editIndex(t, 2, func(e *export.Entry) { e.SHA256 = strings.Repeat("0", 64) })
+	listed := d.retire(t, at)
+	if listed.code != 0 || listed.rep.RetiredNow != 0 || len(listed.rep.Checked) != 0 {
+		t.Fatalf("index.json lists other bytes: %d %+v\n%s%s", listed.code, listed.rep, listed.out, listed.errs)
+	}
+	for _, name := range proven {
+		if got := listed.kept()[name+" 000003-2026-10-04.jsonl.gz"]; !strings.HasPrefix(got, "2026-10-03 export tarball is not the one index.json lists (") {
+			t.Fatalf("%s: day 2, which index.json lists other bytes for, kept for %q", name, got)
+		}
+	}
+	if err := os.WriteFile(indexPath, index, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The tarball and its index entry as they were: the ledger's answer
+	// stands again, and day 2 is retired; day 1's measurements stay.
 	fourth := d.retire(t, at)
 	if fourth.code != 0 || fourth.rep.RetiredNow != len(proven) || len(fourth.rep.Checked) != 0 || fourth.rep.Kept != 4 {
 		t.Fatalf("restored: %d %+v\n%s%s", fourth.code, fourth.rep, fourth.out, fourth.errs)
@@ -741,4 +872,133 @@ func TestRetireWithoutRotation(t *testing.T) {
 			archiveByHand(t, filePath(d.dir, f.Name), f.TimeField, cutoff)
 		}
 	})
+}
+
+// archivedByHand is the fixture with every file archived by hand at the
+// start of days 1, 2 and 3, as TestRetireWithoutRotation archives it, and
+// the record.Retire to retire with: the real one where it runs.
+func archivedByHand(t *testing.T) (*retireData, func(path, segment string, r record.Retired) error) {
+	t.Helper()
+	d := newRetireData(t)
+	specs, err := archived(d.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for day := 1; day <= 3; day++ {
+		for _, f := range specs {
+			archiveByHand(t, filePath(d.dir, f.Name), f.TimeField, day0.AddDate(0, 0, day))
+		}
+	}
+	retire := retireByHand
+	if rotates(t) {
+		retire = record.Retire
+	}
+	return d, retire
+}
+
+// retireAt is when the fixture's -retire runs: after the export and the
+// archive run of day 4.
+var retireAt = day0.AddDate(0, 0, 4).Add(4*time.Hour + 50*time.Minute)
+
+// A tarball rebuilt while -retire runs (the same members in other bytes,
+// with its sidecar and index entry to match) proves nothing for the rest of
+// the run: no segment is removed on bytes that neither the ledger nor the
+// remote check was about, and the rest of its day goes only once the next
+// runs have proven the new bytes.
+func TestRetireKeepsAnExportRebuiltDuringTheRun(t *testing.T) {
+	d, retire := archivedByHand(t)
+	old, _, err := recordcheck.DigestFile(filepath.Join(d.expDir(), d.exports[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Day 0's tarball is rebuilt right after the first segment it proves,
+	// measurements', is retired.
+	rebuilt := ""
+	retireSegment = func(path, segment string, r record.Retired) error {
+		err := retire(path, segment, r)
+		if rebuilt == "" {
+			rebuilt = d.rebuildExport(t, 0)
+		}
+		return err
+	}
+	t.Cleanup(func() { retireSegment = record.Retire })
+
+	first := d.retire(t, retireAt)
+	if first.code != 0 || first.rep.RetiredNow != 5 {
+		t.Fatalf("first run: %d %+v\n%s%s", first.code, first.rep, first.out, first.errs)
+	}
+	if f := first.file(t, "measurements.jsonl"); f.RetiredNow != 1 || f.Retired[0].Segment != "000001-2026-10-02.jsonl.gz" {
+		t.Fatalf("measurements: %+v", f)
+	}
+	changed := fmt.Sprintf("2026-10-01 export tarball changed during this run (sha256 %s when it was proven, %s now)", short(old), short(rebuilt))
+	for _, name := range proven {
+		if name == "measurements.jsonl" {
+			continue
+		}
+		if got := first.kept()[name+" 000001-2026-10-02.jsonl.gz"]; got != changed {
+			t.Fatalf("%s: day 0, rebuilt during the run, kept for %q, want %q", name, got, changed)
+		}
+	}
+	d.readsWhole(t)
+
+	// The next run checks the new bytes against the store, and keeps the
+	// rest of day 0 until the remote has read them back.
+	retireSegment = retire
+	second := d.retire(t, retireAt)
+	if second.code != 0 || second.rep.RetiredNow != 0 || len(second.rep.Checked) != 1 {
+		t.Fatalf("second run: %d %+v\n%s%s", second.code, second.rep, second.out, second.errs)
+	}
+	notBack := fmt.Sprintf("2026-10-01 not proven on the remote: its last check (2026-10-05T03:36:00Z) read back sha256 %s, the tarball now is %s", short(old), short(rebuilt))
+	for _, name := range proven {
+		if name == "measurements.jsonl" {
+			continue
+		}
+		if got := second.kept()[name+" 000001-2026-10-02.jsonl.gz"]; got != notBack {
+			t.Fatalf("%s: day 0, rebuilt, kept for %q, want %q", name, got, notBack)
+		}
+	}
+	d.remoteOK(t, 0)
+	third := d.retire(t, retireAt)
+	if third.code != 0 || third.rep.RetiredNow != 4 || len(third.rep.Checked) != 0 {
+		t.Fatalf("third run: %d %+v\n%s%s", third.code, third.rep, third.out, third.errs)
+	}
+	d.readsWhole(t)
+}
+
+// A store check that read other bytes than the run digested just before it
+// (the tarball rebuilt in between) proves nothing beside a remote check
+// compared with that digest, and what it found is recorded under the
+// digest of the bytes it read.
+func TestRetireKeepsAnExportRebuiltWhileChecked(t *testing.T) {
+	d, retire := archivedByHand(t)
+	old, _, err := recordcheck.DigestFile(filepath.Join(d.expDir(), d.exports[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebuilt := ""
+	retireSegment = retire
+	checkDay = func(ctx context.Context, st *store.Store, dir string, e export.Entry) (recordcheck.DayReport, error) {
+		if e.Name == d.exports[0] {
+			rebuilt = d.rebuildExport(t, 0)
+			e = d.entry(t, 0)
+		}
+		return recordcheck.CheckDay(ctx, st, dir, e)
+	}
+	t.Cleanup(func() { retireSegment, checkDay = record.Retire, recordcheck.CheckDay })
+
+	first := d.retire(t, retireAt)
+	if first.code != 0 || first.rep.RetiredNow != 4 {
+		t.Fatalf("first run: %d %+v\n%s%s", first.code, first.rep, first.out, first.errs)
+	}
+	changed := fmt.Sprintf("2026-10-01 export tarball changed while it was checked (sha256 %s, then %s)", short(old), short(rebuilt))
+	for _, name := range proven {
+		if got := first.kept()[name+" 000001-2026-10-02.jsonl.gz"]; got != changed {
+			t.Fatalf("%s: day 0, rebuilt while checked, kept for %q, want %q", name, got, changed)
+		}
+	}
+	ledger, err := recordcheck.ReadLedger(filepath.Join(d.expDir(), recordcheck.LedgerFile))
+	if err != nil || ledger[d.exports[0]].SHA256 != rebuilt {
+		t.Fatalf("day 0 in the ledger: %+v %v, want it under %s", ledger[d.exports[0]], err, rebuilt)
+	}
+	d.readsWhole(t)
 }
