@@ -2,13 +2,13 @@ package scan
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
 )
 
 // Store is the scanner's durable state on disk:
@@ -21,14 +21,20 @@ import (
 // cursor in state.json advances past that block (atomic temp+rename). A crash in
 // between re-scans the block; DedupeKey (settlement tx hash) makes the re-append
 // a no-op because seen keys are loaded on startup.
+//
+// publications.jsonl and payments.jsonl are archived like the other record
+// files (observer-archive moves their older lines into segments and replaces
+// the live file with its tail), so both are written through record.Appender:
+// a write made while the archiver swaps the file lands in the new one, never
+// in the copy it has already taken.
 type Store struct {
 	dir      string
 	pubPath  string
 	payPath  string
 	statePth string
 
-	pubFile  *os.File
-	payFile  *os.File
+	pubFile  *record.Appender
+	payFile  *record.Appender
 	hostFile *os.File
 	uncFile  *os.File
 	seen     map[string]bool
@@ -216,12 +222,12 @@ func OpenStore(dir string) (*Store, error) {
 	if err := s.loadPaySeen(); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(s.pubPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := record.OpenAppender(s.pubPath)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", s.pubPath, err)
 	}
 	s.pubFile = f
-	pf, err := os.OpenFile(s.payPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	pf, err := record.OpenAppender(s.payPath)
 	if err != nil {
 		f.Close()
 		return nil, fmt.Errorf("open %s: %w", s.payPath, err)
@@ -234,51 +240,22 @@ func OpenStore(dir string) (*Store, error) {
 // append-only JSONL file and reports how many bytes were removed. A crash or
 // power loss mid-write leaves exactly such a tail; without this repair the
 // tool refuses to start until someone edits the file by hand. Files that end
-// in a newline, are empty, or do not exist are left alone.
+// in a newline, are empty, or do not exist are left alone. It holds the
+// file's exclusive lock meanwhile, so an archive run is never copying the
+// bytes it cuts (record.RepairTail).
 func TruncateTornTail(path string) (int64, error) {
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
-	if os.IsNotExist(err) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil || info.Size() == 0 {
-		return 0, err
-	}
-	size := info.Size()
-	last := make([]byte, 1)
-	if _, err := f.ReadAt(last, size-1); err != nil {
-		return 0, err
-	}
-	if last[0] == '\n' {
-		return 0, nil
-	}
-	cut := size
-	const chunk = 1 << 16
-	for cut > 0 {
-		start := cut - chunk
-		if start < 0 {
-			start = 0
-		}
-		b := make([]byte, cut-start)
-		if _, err := f.ReadAt(b, start); err != nil && err != io.EOF {
-			return 0, err
-		}
-		if i := bytes.LastIndexByte(b, '\n'); i >= 0 {
-			cut = start + int64(i) + 1
-			break
-		}
-		cut = start
-	}
-	if err := f.Truncate(cut); err != nil {
-		return 0, err
-	}
-	return size - cut, f.Sync()
+	return record.RepairTail(path)
 }
 
+// loadSeen and loadPaySeen read the live file only, not the archived
+// segments before it. The dedupe set has to hold what a restart can append
+// again: the blocks after the last checkpoint, which are always among the
+// newest lines and so in the live window. Reading the segments too would
+// make every start read the whole history of the chain for nothing. A
+// manual re-scan of heights older than the live window may append a record
+// again; the collector's store keeps the first one, and that day's export
+// then holds a repeated key, which record-verify reports, so the day is
+// never retired.
 func (s *Store) loadSeen() error {
 	if cut, err := TruncateTornTail(s.pubPath); err != nil {
 		return fmt.Errorf("repair %s: %w", s.pubPath, err)
