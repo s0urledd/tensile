@@ -58,7 +58,7 @@ same() { cmp -s "$1" "$2"; }
 
 rreach="$remote/vantage/de-1/reachability.jsonl"
 lreach="$data/vantages/de-1/reachability.jsonl"
-sftp=":sftp,host=example,user=tensile-backup,key_file=/dev/null,known_hosts_file=/dev/null:vantage/de-1/reachability.jsonl"
+sftp=":sftp,host=example,user=tensile-backup,key_file=/dev/null,known_hosts_file=/dev/null,shell_type=none:vantage/de-1/reachability.jsonl"
 
 echo "vantage-sync"
 echo '{"beat":1}' >"$rreach"

@@ -1386,7 +1386,7 @@ local record is never cut to match. rclone checks the host key against
 `VANTAGE_PULL_KNOWN` and may settle on another key type than OpenSSH did,
 so that file should hold every key the host offers (`ssh-keyscan <host>`,
 all types). Check it once as the service user:
-`sudo -u fibre-observer rclone lsf --format s ':sftp,host=<host>,user=tensile-backup,key_file=/etc/fibre-observer/backup_ed25519,known_hosts_file=/etc/fibre-observer/backup_known_hosts:vantage/de-1/reachability.jsonl'`
+`sudo -u fibre-observer rclone lsf --format s ':sftp,host=<host>,user=tensile-backup,key_file=/etc/fibre-observer/backup_ed25519,known_hosts_file=/etc/fibre-observer/backup_known_hosts,shell_type=none:vantage/de-1/reachability.jsonl'`
 prints the remote file's size. Configure it in the network's env file:
 
 ```

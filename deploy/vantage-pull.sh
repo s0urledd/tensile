@@ -85,7 +85,11 @@ if [ -z "$source_dir" ]; then
 			*[,:\"\']*) echo "vantage-pull[$net]: '$v' cannot be written into an rclone connection string" >&2; exit 1 ;;
 		esac
 	done
-	remote=":sftp,host=$h,user=$user,key_file=$key,known_hosts_file=$known:"
+	# shell_type=none: the account is sftp-only, and without it rclone
+	# probes for a shell and tries to save what it found into a config
+	# file, which the service user cannot write (each try is an error line
+	# and seconds lost, twice a pull).
+	remote=":sftp,host=$h,user=$user,key_file=$key,known_hosts_file=$known,shell_type=none:"
 fi
 
 # pull <name>: one vantage, by one pull at a time (fd 8 holds its
