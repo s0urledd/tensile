@@ -66,23 +66,34 @@ var ErrUnsupported = errors.New("record: rotation needs flock, which this platfo
 //     cutoff (or without a date), never past the last line and never past
 //     o.Limit, so the live file always keeps at least one line;
 //  3. write [0, cut) to <seq>-<cutoff day>.jsonl.gz.tmp, fsync, read it
-//     back, compare the SHA-256 of the uncompressed bytes, rename, fsync
-//     the directory;
+//     back, compare the SHA-256 of the uncompressed bytes;
 //  4. copy [cut, end) of the live file to <file>.rotate.tmp and fsync it,
 //     without a lock (it can be large);
 //  5. take the exclusive flock on the live file: every writer's in-flight
 //     line completes first and no new one starts. Copy what was appended
 //     since step 4, fsync, write the index with the new segment and the
-//     new generation, rename the copy over the live file, fsync the
-//     directory, release. Writers find the path moved and reopen it.
+//     new generation, rename the segment into place and fsync its
+//     directory, rename the copy over the live file, fsync the directory,
+//     release. Writers find the path moved and reopen it.
 //
-// A crash before the index is written leaves the live file untouched and
-// a stray segment or temp file that the next run removes. A crash after the
-// index but before the rename leaves an index naming a generation that is
-// not the live file; readers find their base by the live file's first line,
-// so they read the old file as it is, and the next run drops the segment
-// and generation that never took effect. Nothing is ever deleted from the
-// live file except by the rename that replaces it with a copy of its tail.
+// The segment keeps its temp name until the index naming it is saved, so a
+// run that fails or stops before then leaves only temp files, which it
+// removes itself or the next run does; a segment file under its own name is
+// always one an index lists. A crash after the index but before the live
+// file's rename leaves an index naming a generation that is not the live
+// file; readers find their base by the live file's first line, so they read
+// the old file as it is, and the next run drops the segment and generation
+// that never took effect, with the segment's file. Nothing is ever deleted
+// from the live file except by the rename that replaces it with a copy of
+// its tail.
+//
+// A live file that ends inside a line at the swap is left as it is, and
+// the run reports it in Skipped rather than as an error: no tail is copied
+// over a torn line, and the line's writer finishes or cuts it (the
+// observer's own writers when they restart, deploy/vantage-pull.sh, which
+// appends whole lines only, with its next pull), so a later run archives
+// the file. It is not the run's failure, and the other files' archiving and
+// the retirement after it go on.
 func Archive(path string, o Options) (Result, error) {
 	res := Result{File: filepath.Base(path)}
 	if !rotationSupported {
@@ -167,7 +178,17 @@ func Archive(path string, o Options) (Result, error) {
 		Cutoff:     o.Cutoff.UTC(),
 		ArchivedAt: o.Now.UTC(),
 	}
-	if err := writeSegment(f, cut, filepath.Join(adir, seg.Name), &seg); err != nil {
+	segPath := filepath.Join(adir, seg.Name)
+	segTmp := segPath + ".tmp"
+	placed := false
+	defer func() {
+		// A run that ends before the segment is renamed into place takes its
+		// temp file back: the live file still holds its bytes.
+		if !placed {
+			_ = os.Remove(segTmp)
+		}
+	}()
+	if err := writeSegment(f, cut, segTmp, &seg); err != nil {
 		return res, err
 	}
 	res.Segment, res.GzBytes = seg.Name, seg.GzBytes
@@ -233,9 +254,14 @@ func Archive(path string, o Options) (Result, error) {
 			return res, err
 		}
 		if last[0] != '\n' {
-			// A writer died mid-line; its own restart repairs that under
-			// this same lock. Nothing is swapped over a torn line.
-			return res, fmt.Errorf("%s ends inside a line (a torn write); nothing swapped (the writer's restart repairs it)", path)
+			// Every writer appends whole lines under the shared lock, which
+			// this run now holds exclusively, so a torn line here was left
+			// by a writer that died mid-line, or by a copier that stopped
+			// part-way: its restart, or the copier's next run, finishes or
+			// cuts the line. Nothing is swapped over it, and this run's
+			// segment is taken back.
+			return Result{File: res.File, Base: res.Base, Live: res.Live,
+				Skipped: "ends inside a line (a torn write), so nothing was swapped; its writer finishes or cuts the line (the observer's own writers when they restart, vantage-pull with its next pull), and a later run archives the file"}, nil
 		}
 		if _, err := io.Copy(tmp, io.NewSectionReader(f, end1, end2-end1)); err != nil {
 			return res, err
@@ -267,6 +293,16 @@ func Archive(path string, o Options) (Result, error) {
 		return res, err
 	}
 	if err := step(o, "index"); err != nil {
+		return res, err
+	}
+	// The segment under its own name, durable before the live file gives up
+	// its bytes: a crash between the two renames leaves a segment the next
+	// run drops, with the index entry that never took effect.
+	if err := os.Rename(segTmp, segPath); err != nil {
+		return res, err
+	}
+	placed = true
+	if err := syncDir(adir); err != nil {
 		return res, err
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
@@ -414,11 +450,10 @@ func lineTime(line []byte, field string) (time.Time, bool) {
 	return t, true
 }
 
-// writeSegment writes f's first n bytes gzipped to path via a temp file,
-// fsyncs it, reads it back and requires the same bytes before renaming it
-// into place.
-func writeSegment(f *os.File, n int64, path string, seg *Segment) error {
-	tmp := path + ".tmp"
+// writeSegment writes f's first n bytes gzipped to tmp, fsyncs it, reads it
+// back and requires the same bytes. The caller renames it into place once
+// the index naming it is saved.
+func writeSegment(f *os.File, n int64, tmp string, seg *Segment) error {
 	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
@@ -453,10 +488,7 @@ func writeSegment(f *os.File, n int64, path string, seg *Segment) error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("segment did not read back: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		return err
-	}
-	return syncDir(filepath.Dir(path))
+	return nil
 }
 
 type countWriter struct {

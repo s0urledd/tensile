@@ -135,7 +135,12 @@ fi
 [ -f "$TMP/sampling-master.key" ] && fail "the master key was copied into the cut" || pass "master key not in the cut"
 TAKEN_AT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["taken_at"])' "$TMP/manifest.json")
 read -r plines pkeys pdup mlines mkeys mdup <<<"$(distinct_keys "$TMP")"
-[ "$pdup" = 0 ] && pass "publications: $plines lines, $pkeys distinct promises, 0 duplicates" || fail "publications: $pdup duplicate promise line(s)"
+# A publication appended again is a line the store keeps once (ON CONFLICT
+# DO NOTHING on its promise): a re-scan of heights older than the scanner's
+# dedupe window, which is its live file since publications.jsonl rotates,
+# writes one. Said, not failed; the rebuild is held to the distinct
+# promises below.
+[ "$pdup" = 0 ] && pass "publications: $plines lines, $pkeys distinct promises, 0 duplicates" || warn "publications: $pdup line(s) repeat a promise already on record (a re-scan); the store keeps the first"
 [ "$mdup" = 0 ] && pass "measurements: $mlines lines, $mkeys distinct slots, 0 duplicates" || fail "measurements: $mdup duplicate slot line(s)"
 
 echo "== 4. rebuild the index from the cut"

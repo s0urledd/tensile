@@ -279,7 +279,13 @@ the health watch below instead.
 `fibre-healthwatch@<network>.timer` asks `/v1/health` every five minutes as
 the service user and posts when the verdict or the set of failing checks
 changes, again every `ALERT_REPEAT_MIN` while it stays bad, and once on
-recovery, with every failing check and its detail. It posts to
+recovery, with every failing check and its detail. The nightly
+`fibre-backup@<network>` and `fibre-archive@<network>` units are checks
+of their own, which `/v1/health` cannot see: one whose last run failed
+(`systemctl is-failed`) joins the failing checks under its unit's name
+until its next run succeeds. A backup that stops finishing stops the
+retirement of local copies after its second failed night ("Retiring
+local copies" below), so it is heard of the first night. It posts to
 `ALERT_WEBHOOK`, any URL that accepts a JSON body with a `content` field
 (Discord, Slack incoming webhooks, Matrix), and to Telegram when
 `TELEGRAM_BOT_TOKEN` (from @BotFather) and `TELEGRAM_CHAT_ID` (a chat the
@@ -310,6 +316,12 @@ them: one installed from before this change also fetches each vantage's
 `measurements.jsonl` and pushes requests to it (`VANTAGE_PUSH`), neither of
 which anything uses any more, and the current one resumes from the logical
 end that `observer-archive -logical-end` of the same build reports.
+
+A build that changes what `observer-archive` rotates, or the deploy
+scripts and units beside it, as the build that retires local copies does,
+is installed with the archive timer stopped, and its writers restarted
+before the timer runs again ("Archive: bounded live files", upgrade
+order).
 
 The API also refuses a database **newer** than itself, so an API left on an
 old build after the collector moved on says so rather than serving columns
@@ -396,7 +408,8 @@ observation made after the copy is lost:
    belong to another store and builds them again, once.
 4. **Without a copy**, the same steps with no store: the older collector
    rebuilds it from the whole record ("Rebuild from the record" below).
-   Slower, the same result.
+   Slower, the same result, but only while nothing is retired: a build
+   from before retirement cannot read a retired range (below).
 
 What comes back from neither (it has no record line) is what a rebuild
 never brings back: escrow balances, validator identities and pictures,
@@ -411,33 +424,50 @@ Before going back, `record-verify` found every line of the four days in the
 schema-27 store, byte for byte. The older build refuses the schema-27 store
 at start ("database schema version 27 is newer than this binary's 26").
 
-A collector that reads a retired range ("Retiring local copies" below)
-reads it from the exports; one from before retirement does not know the
-`retired` record, opens the segment's file and stops when it is gone.
-From a copy taken at the upgrade its cursors lie past every retired range
-as long as the copy is younger than `-keep` (a segment holds only lines
-older than that); compare its `ingest_cursors` with the segments' `to` in
-each `archive/<file>/index.json` to be sure. A rebuild from zero by such a
-build, or a cursor behind a retired segment, needs the segments' files
-back first. The remote backup keeps every segment it was sent, so as the
-service user, with the collector stopped, stop the nightly retirement
-first and then copy them back:
+**Once anything is retired.** A collector that reads a retired range
+("Retiring local copies" below) reads it from the exports; one from before
+retirement does not know the `retired` record, opens the segment's file
+and stops when it is gone. Most retired segments' files are nowhere else:
+the nightly run archives a segment and retires it minutes later, while the
+backup copies `archive/` only before that run, so the file never reaches
+the remote, and the next backup replaces the remote's live file with the
+shorter rotated one. Those lines are on this disk and on the remote in the
+daily exports alone, which this build reads and a build from before
+retirement cannot. So, going back to such a build:
+
+- it can read on only from cursors past every retired range: from a store
+  copy taken at the upgrade, as long as the copy is younger than `-keep`
+  (a segment holds only lines older than that). Compare its
+  `ingest_cursors` with the `to` of the retired segments in each
+  `archive/<file>/index.json` to be sure. A rebuild from zero, or a
+  cursor behind a retired segment, is for this build or a later one;
+- its `observer-archive` must never run. It saves `index.json` without
+  the `retired` records it does not know, after which this build finds
+  them only in `archive/<file>/retired.json` (which the older build never
+  touches, and from which this build's next run writes them back into the
+  index), and the older build's readers stop at the first. Stop the timer
+  before installing the older binaries, and keep it off for as long as
+  they run: `sudo systemctl disable --now fibre-archive@mocha.timer`, and
+  `sudo systemctl enable --now fibre-archive@mocha.timer` once this build
+  is back. (This build's `-retire` would also remove a retired segment's
+  file wherever it finds one, as a retirement a crash cut short.)
+
+A rollback window that must keep a rebuild from zero open to the older
+build keeps retirement off for that window and the rotation on: a drop-in
+that runs the unit's first `ExecStart` alone (`sudo systemctl edit
+fibre-archive@mocha`: an empty `ExecStart=`, then the first `ExecStart`
+line again). A segment archived in that window keeps its file, the next
+backup copies it to the remote, and it can be copied back, as the service
+user and with the collector stopped:
 
 ```sh
-sudo systemctl disable --now fibre-archive@mocha.timer
 sudo -u fibre-observer env RCLONE_CONFIG=/etc/fibre-observer/rclone.conf \
   rclone copy '<BACKUP_REMOTE>/mocha/archive' /var/lib/fibre-observer/mocha/archive --include '*.jsonl.gz'   # BACKUP_REMOTE as in mocha.env
 ```
 
-(and the same for each `vantages/<name>/archive`). The timer stays off for
-as long as the older build runs: `observer-archive -retire` takes a
-retired segment whose file is present for a retirement a crash cut short
-and removes the file again, and the older collector would then stop at it
-the next time it reads that range. Enable the timer again
-(`sudo systemctl enable --now fibre-archive@mocha.timer`) once the newer
-build is back. A segment retired before the backup first copied it is not
-on the remote; its lines are in the exports alone, and only a build that
-knows retirement reads them.
+(and the same for each `vantages/<name>/archive`). That brings back only
+the segments a backup copied, never one archived and retired the same
+night.
 
 Once a segment is retired, the exports are the copy of its lines on this
 disk: each member is a contiguous byte range of the source file, so the
@@ -740,9 +770,11 @@ points past the records the cut holds. A copy that came back missing,
 short, altered or unparseable is a failed restore, not a surprise. The
 master key is never in it. A segment retired on the host is listed in the
 cut with its `retired` record; `verify` checks it by its file when the
-copy has one (the remote keeps every segment it was sent) and otherwise
-reads it back from the copy's `exports/`, every tarball and member against
-`exports/index.json` and the range against the segment's SHA-256. Each
+copy has one (the remote has a segment's file only when a backup ran
+while the file existed, which a segment archived and retired the same
+night never was) and otherwise reads it back from the copy's `exports/`,
+every tarball and member against `exports/index.json` and the range
+against the segment's SHA-256. Each
 other vantage's heartbeats (`vantages/<name>/reachability.jsonl`, with
 their own `archive/` beside them) are cut and checked like the observer's
 own files.
@@ -762,24 +794,35 @@ own files.
   and the daily exports to `BACKUP_REMOTE/<network>` nightly (`deploy/backup.sh`),
   with the rclone remote configured once in `/etc/fibre-observer/rclone.conf`.
   It copies rather than mirrors, so moving old files off a full disk, or
-  retiring a segment, can never delete them from the remote.
+  retiring a segment, can never delete them from the remote; a segment
+  archived and retired the same night was never sent, and its lines are
+  on the remote in the exports alone.
   It never copies `sampling-master.key`, which must not leave the host, nor
-  the database, which litestream covers. After the copy it reads each
-  export not yet proven back from the remote (`rclone cat`), hashes it, and
-  appends one line to `exports/remote.jsonl`:
-  `{"name", "sha256", "checked_at", "ok"}`, `sha256` being the local
-  `.sha256` it was checked against. The newest line for a name counts; a
-  tarball rebuilt under a new digest, or one whose check failed, is read
-  again the next night. A failed check is `"ok": false` and does not fail
-  the unit, whose status is the copy's; it only keeps the segments that
-  export holds on the disk a night longer. The first run reads every
-  export back once. A last line that a crash or a full disk cut short is
+  the database, which litestream covers. A copy that finishes is recorded
+  in `exports/remote-copy.json`: `{"copied_at", "remote"}`, `remote` being
+  the remote's fingerprint (the first 16 hex digits of the SHA-256 of
+  `BACKUP_REMOTE/<network>`, never the remote itself). After the copy it
+  reads each export not yet proven back from the remote (`rclone cat`),
+  hashes it, and appends one line to `exports/remote.jsonl`:
+  `{"name", "sha256", "checked_at", "ok", "remote"}`, `sha256` being the
+  local `.sha256` it was checked against. The newest line for a name
+  counts; a tarball rebuilt under a new digest, one whose check failed, or
+  one last proven on another remote (a new `BACKUP_REMOTE`) is read again
+  the next night. A failed check is `"ok": false` and does not fail the
+  unit, whose status is the copy's; it only keeps the segments that export
+  holds on the disk a night longer. The first run reads every export back
+  once, and so does the first run after `BACKUP_REMOTE` changes. A last
+  line that a crash or a full disk cut short (NUL bytes included) is
   dropped before the next line is appended, since `observer-archive`
   refuses a complete line that is not a check; no complete line is ever
-  changed. The remote is never printed (a remote given whole on
-  the command line carries its credentials). With `BACKUP_REMOTE` empty the
-  timer runs and does nothing, so enable it everywhere and arm it with one
-  variable.
+  changed. The remote is never printed: the script's lines call it
+  `BACKUP_REMOTE`, and rclone's messages from the copies have it replaced.
+  A remote given whole on the command line
+  (`:s3,access_key_id=…,secret_access_key=…:bucket`) is still in rclone's
+  command line while it runs, where anyone on the host can read it; a
+  named remote in `rclone.conf` keeps the credentials out of both. With
+  `BACKUP_REMOTE` empty the timer runs and does nothing, so enable it
+  everywhere and arm it with one variable.
 
 **Rebuild from the record.** Stop the instance's collector and API, move
 `observer.db*` aside, start the collector: it recreates the schema, replays
@@ -883,8 +926,23 @@ writers (`sentinel-probe`, `observer-heartbeat`, `sentinel-scan` for
 publications and payments, and `vantage-pull` for the other vantages'
 heartbeats) append under a shared `flock` and reopen the path when it no
 longer names the file they hold, so no line is lost or written twice. A
-crash at any step leaves the record readable as before; the next run
-removes the leftovers. A second run the same day moves nothing.
+crash at any step leaves the record readable as before; the new segment
+keeps a temp name until the index naming it is saved, and the next run
+removes the leftovers. A second run the same day moves nothing. A live
+file that ends inside a line at the swap is left as it is for the night
+("ends inside a line ... a later run archives the file"), not a failure:
+its writer finishes or cuts the line (the observer's own writers when
+they restart; `vantage-pull`, which appends whole lines only, with its
+next pull).
+
+`publications.jsonl` and `payments.jsonl` are rotated only once the
+newest scanner start in `runs.jsonl` says it follows a rotation
+(`follows_rotation`, which `sentinel-scan` of this build and later
+records): a scanner of an older build appends through descriptors it
+opened once, and one not restarted since the upgrade would write on into
+the file a rotation replaced, losing those publications and payments from
+the record. Until then the run says `left as it is: ... restart fibre-scan
+on this build first`.
 
 A run reads each live file up to its cut, writes the segment and copies
 the rest of the live file, on the disk the validator shares. `Nice=10` and
@@ -929,12 +987,38 @@ vantage's own host: the file there is what the pull reads its offsets from,
 and a file shorter than the local record stops the pull ("Second vantage"
 below).
 
-Upgrade order: install binaries and the deploy scripts (`fibre-backup`,
-`fibre-backup-manifest`, `fibre-vantage-pull`: an older pull resumes by
-size and would fetch a rotated vantage file's older bytes again, and an
-older backup copies no vantage archive), restart `fibre-probe`,
-`fibre-heartbeat` and `fibre-scan` (the writers must hold the lock before
-any rotation) and `fibre-collector`, then enable the timer.
+Upgrade order, for the build that adds publications, payments and the
+other vantages to the rotation and retires local copies (and any later
+one that changes what is rotated). On the live observer the timer is
+already enabled, and a 04:40 run between installing the binaries and
+restarting the writers would rotate files under writers of the older
+build, so it is stopped first and started again last:
+
+```sh
+sudo systemctl stop fibre-archive@mocha.timer
+sudo install -m 0755 fibre-sentinel/bin/* /usr/local/bin/
+sudo install -m 0755 deploy/vantage-pull.sh /usr/local/bin/fibre-vantage-pull
+sudo install -m 0755 deploy/backup.sh /usr/local/bin/fibre-backup
+sudo install -m 0755 deploy/backup-manifest.py /usr/local/bin/fibre-backup-manifest
+sudo install -m 0755 deploy/healthwatch.sh /usr/local/bin/fibre-healthwatch
+sudo cp deploy/systemd/*.service deploy/systemd/*.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl restart fibre-collector@mocha       # applies migrations, if any
+sudo systemctl restart fibre-scan@mocha fibre-probe@mocha fibre-heartbeat@mocha fibre-api@mocha
+sudo systemctl start fibre-archive@mocha.timer
+```
+
+The deploy scripts change with the binaries: an older pull resumes by
+size and would fetch a rotated vantage file's older bytes again, an older
+backup copies no vantage archive and proves no export on the remote, and
+an older manifest tool cannot read a retired segment. The writers are
+restarted at once, the scanner among them, not after a warm-up: the
+archive run rotates `publications.jsonl` and `payments.jsonl` only once a
+scanner of this build has started (above), but the timer stays off until
+every writer follows a rotation. The first retirement runs that night,
+once the backup has recorded a finished copy and its remote proofs; it
+checks at most `-check-days` days against the store a night ("Retiring
+local copies" below).
 
 ### Retiring local copies
 
@@ -955,34 +1039,60 @@ file, and nothing else, once every byte of it is
    the store opened read-only;
 3. on the remote backup with the same SHA-256: an `"ok": true` line for
    the tarball's current digest in `exports/remote.jsonl`, written by
-   `fibre-backup` after its copy (the archive unit has no network).
+   `fibre-backup` after its copy (the archive unit has no network), read
+   from the remote `fibre-backup` copies to now; and that copy last
+   finished within `-remote-max-age` (default 48 h,
+   `exports/remote-copy.json`). A tarball is proven on the remote once,
+   so the proof stands for the remote's copy only while the copies to that
+   remote go on finishing: a remote lost, emptied or locked out shows as
+   a backup that no longer finishes (one failed night is waited out, two
+   are not), and a new `BACKUP_REMOTE` as a copy to another remote, whose
+   proofs the backup then takes again. Until then every segment is kept,
+   with that reason.
 
 `record.Retire` then, under the file's archive lock, reads the segment
 back from those exports once more (every tarball and member digest, the
-range's length, lines and SHA-256 against the segment), saves `index.json`
-with the segment's `retired` record (the exports, the member name, the
-exports directory relative to the archive directory, the proof in words),
-and only then removes the file. A crash in between leaves the file, which
-readers go on reading and the next run removes. A segment that misses any
-of the three is kept, and the run says why: one line per file (retired
-now, retired before, kept, bytes freed), one per kept segment
-(`2026-09-25 measurements.jsonl: 22560 lines sampled out, not reproducible
-from the store`, `2026-10-07 not yet on the remote`), and the same in
-`archive/retire-report.json`. A kept segment is the normal answer for a
-recent day, not a failure; the unit fails only on an error.
+range's length, lines and SHA-256 against the segment), saves the
+segment's `retired` record (the exports, the member name, the exports
+directory relative to the archive directory, the proof in words) first in
+`archive/<file>/retired.json` and then in `index.json`, and only then
+removes the file. A crash in between leaves the file, which readers go on
+reading and the next run removes. `retired.json` is the copy an
+`observer-archive` from before retirement never touches: it rewrites
+`index.json` without the records it does not know, and every reader of
+this build takes a missing record from `retired.json` (and this build's
+next archive run writes it back into the index). A segment that misses
+any of the three is kept, and the run says why: one line per file
+(retired now, retired before, kept, bytes freed), one per kept segment
+(`2026-09-25 measurements.jsonl: 22560 lines sampled out, not
+reproducible from the store`, `2026-10-07 not yet proven on the remote`),
+and the same in `archive/retire-report.json`. A kept segment is the
+normal answer for a recent day, not a failure; the unit fails only on an
+error.
 
-Its reads are the heavy part: each export holding a segment not yet
-retired is read whole for its digest, a day `exports/verified.json` does
-not hold is read again with every line looked up in the store, and each
-segment retired is read back from its exports. The retirement paces
-itself as the archive step does (above: the same flags, the same `pace|`
-lines): it waits before each export it reads, inside the store check
-before each member of the tarball and every 10,000 lines (no read
-transaction stays open between two lookups, and the ledger is written
-only after the check), and before each segment it retires. It never
-waits inside `record.Retire`, whose read back holds `archive/.lock`: a
-pause there would hold back with it any backup waiting on that lock
-(which gives up after two hours).
+Its reads are the heavy part, so what keeps a segment is found before
+anything is read: a day not proven on the remote, one the ledger already
+says the store does not give back, or a backup that has not finished
+lately keeps the segment without a tarball read, night after night. Only
+a segment that would go has each of its exports read whole for its
+digest, and a day `exports/verified.json` does not hold yet read again
+with every line looked up in the store; then `record.Retire` reads it
+back from its exports. A run checks at most `-check-days` days (default
+3) against the store; the segments of the days past that are kept (`not
+checked against the store yet`) for the next nights, so the first run,
+which finds the ledger empty and every exported day before it, spreads
+that over several nights rather than keep the disk busy for hours. The
+retirement paces itself as the archive step does (above: the same flags,
+the same `pace|` lines): it waits before each export it reads, inside the
+store check before each member of the tarball and every 10,000 lines (no
+read transaction stays open between two lookups, and the ledger is
+written only after the check), and before each segment it retires. It
+never waits inside `record.Retire`, whose read back holds `archive/.lock`:
+a pause there would hold back with it any backup waiting on that lock
+(which gives up after two hours). The timer is not `Persistent`: a night
+missed while the host was down is not made up at boot, when the
+validator catches up and the disk is at its busiest, but by the next
+04:40 run.
 
 Never retired:
 
@@ -1000,7 +1110,9 @@ A segment whose day the store does not give back whole (the NOT_PROBED
 rows of a publication it keeps as one sampling decision, a line it dropped
 as a repeat) stays as long as that holds; once the store has caught up,
 `record-verify -db <DATA_DIR>/observer.db -exports <DATA_DIR>/exports -day <day> -ledger <DATA_DIR>/exports/verified.json`
-checks the day again and replaces its entry.
+checks the day again and replaces its entry. It pauses as the retirement
+does (the same `-pace-*` flags and defaults, `pace|` lines), so it can be
+run by hand on the live host.
 
 Every reader of the whole record reads a retired range from the exports
 (`internal/record`), held to the same digests, in two passes: the first
@@ -1021,8 +1133,8 @@ The nightly order, all UTC:
 | when | unit | what |
 |---|---|---|
 | 03:00 | `fibre-collector@` (`-export-hour`) | the previous day's export |
-| 03:17, plus up to 20 min | `fibre-backup@` | the manifest's cut; the copy, segments first, then the live files and the exports; then the remote proof of each export not yet proven |
-| 04:40 | `fibre-archive@` | rotation, then retirement, each pausing while the disk is busy |
+| 03:17, plus up to 20 min | `fibre-backup@` | the manifest's cut; the copy, segments first, then the live files and the exports; the finished copy recorded (`exports/remote-copy.json`); then the remote proof of each export not yet proven on that remote |
+| 04:40 | `fibre-archive@` | rotation, then retirement (at most `-check-days` days checked against the store), each pausing while the disk is busy |
 
 The backup holds `archive/.lock` (and each `vantages/<name>/archive/.lock`)
 shared from the cut to its last check, and an archive run holds a file's
@@ -1034,6 +1146,7 @@ segments a night late.
 sudo systemctl start fibre-archive@mocha                                     # rotation and retirement now
 jq . /var/lib/fibre-observer/mocha/archive/retire-report.json               # what went, what stayed and why
 tail -n 3 /var/lib/fibre-observer/mocha/exports/remote.jsonl                # the newest remote proofs
+cat /var/lib/fibre-observer/mocha/exports/remote-copy.json                  # the backup's last finished copy
 ```
 
 ### Runbook
@@ -1046,6 +1159,19 @@ tail -n 3 /var/lib/fibre-observer/mocha/exports/remote.jsonl                # th
   the scanner at a node that keeps them and delete `gaps` from `state.json`
   after re-scanning from the lowest gap height with `-start-height`, or
   accept the gap (the dashboard says which blocks). A `pin`: see below.
+- **The collector says `has no index.json but holds N export tarball(s)`.**
+  `exports/index.json` is gone while the tarballs are there. The export
+  builder stops rather than start a new index listing one day: the API
+  would stop listing every older export, every retired segment is read
+  back by its export's entry there, and the next backup would copy the
+  short index over the remote's good one. Put the last good copy back as
+  the service user (`rclone copyto '<BACKUP_REMOTE>/mocha/exports/index.json'
+  /var/lib/fibre-observer/mocha/exports/index.json`, `RCLONE_CONFIG` as in
+  the unit); the next export run goes on. A day built after that copy was
+  taken has no entry in it: each tarball carries its own `manifest.json`,
+  from which the entry is made again (the entry is the manifest's fields
+  with the tarball's `name`, `bytes` and `sha256`, and `signature` from
+  `<name>.sig` when the export is signed).
 - **The chain upgraded past the pin** (`pin_status: chain_ahead`). The row
   assignment this observer computes depends on constants pinned to a
   celestia-app commit (`fibre-assign/params.go`), and a new major may change

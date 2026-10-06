@@ -23,7 +23,8 @@
 #     back from the copy's exports/, every digest held, as the rebuild
 #     below then reads it.
 #   - rebuilds the database from the verified cut and requires it to hold
-#     exactly the cut's records;
+#     exactly the cut's records (publications one per promise, as the store
+#     keeps them: a line appended again by a re-scan is said, not failed);
 #   - starts a second observer-api on a spare port against it and reads
 #     /v1/meta, /v1/network and /v1/validators, waiting out the first
 #     computation of each window; the counts it serves must be the rebuilt
@@ -69,7 +70,9 @@ print(*con.execute("""SELECT (SELECT COUNT(*) FROM publications), (SELECT COUNT(
 PY
 }
 
-echo "== 1. pull the copy from $REMOTE/$INSTANCE"
+# The remote is not printed: one given whole (":s3,access_key_id=...:bucket")
+# carries its credentials.
+echo "== 1. pull the copy from BACKUP_REMOTE/$INSTANCE"
 if rclone copy "$REMOTE/$INSTANCE" "$TMP" --transfers 4 --checkers 8 --stats-one-line --stats 0 --log-level NOTICE; then
   pass "copied $(find "$TMP" -type f | wc -l) file(s), $(du -sh "$TMP" | cut -f1)"
 else
@@ -97,9 +100,19 @@ fi
 # the live lines and the archived ones, retired included: the rebuild reads
 # every file from its first byte (archive/, and the exports for a retired
 # range), and observer-archive rotates publications.jsonl as it does
-# measurements.jsonl
-want_pub=$(manifest_records "$TMP/backup-manifest.json" publications.jsonl)
+# measurements.jsonl. The store keeps one publication per promise, and a
+# re-scan of heights older than the scanner's dedupe window (its live file)
+# can append one again, so the rebuilt publications are the distinct
+# promises of the cut, read as the rebuild reads them; the lines read must
+# be every record the manifest names.
 want_probe=$(manifest_records "$TMP/backup-manifest.json" measurements.jsonl)
+pub_records=$(manifest_records "$TMP/backup-manifest.json" publications.jsonl)
+if read -r pub_lines want_pub <<<"$(record_promises "$MANIFEST_TOOL" "$TMP")" && [ -n "$want_pub" ]; then
+  [ "$pub_lines" = "$pub_records" ] && pass "publications.jsonl reads whole: $pub_lines line(s), every record the manifest names" || fail "publications.jsonl reads $pub_lines line(s), the manifest names $pub_records"
+  [ "$pub_lines" = "$want_pub" ] || warn "publications.jsonl: $((pub_lines - want_pub)) line(s) repeat a promise already on record (a re-scan); the store keeps the first"
+else
+  fail "publications.jsonl could not be read through the manifest tool"; exit 1
+fi
 
 echo "== 3. rebuild the database from the verified cut"
 if timeout 1200 /usr/local/bin/observer-collector -rpc "$RPC" -data-dir "$TMP" -vantage "$VANTAGE" -once \
@@ -109,7 +122,7 @@ else
   fail "rebuild failed: $(tail -3 "$TMP/rebuild.log")"; exit 1
 fi
 read -r rpub rprobe rlines <<<"$(counts "$TMP/observer.db")"
-[ "$rpub" = "$want_pub" ] && pass "rebuilt publications ($rpub) == manifest records ($want_pub)" || fail "rebuilt publications $rpub != manifest records $want_pub"
+[ "$rpub" = "$want_pub" ] && pass "rebuilt publications ($rpub) == distinct promises in the cut ($want_pub)" || fail "rebuilt publications $rpub != distinct promises in the cut $want_pub"
 [ "$rlines" = "$want_probe" ] && pass "rebuilt probes ($rprobe, standing for $rlines lines) == manifest records ($want_probe)" || fail "rebuilt probes stand for $rlines lines != manifest records $want_probe"
 
 echo "== 4. serve it on :$PORT"

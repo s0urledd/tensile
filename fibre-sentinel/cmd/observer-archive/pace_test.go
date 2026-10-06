@@ -133,20 +133,20 @@ func TestRetirePacesWhereItHoldsNothing(t *testing.T) {
 	if err == nil {
 		err = json.Unmarshal(raw, &rep)
 	}
-	if code != 0 || err != nil || rep.RetiredNow != 9 || len(rep.Checked) != 3 {
+	if code != 0 || err != nil || rep.RetiredNow != 9 || len(rep.Checked) != 2 {
 		t.Fatalf("%d %v %+v\n%s%s", code, err, rep, out, errs)
 	}
 	for _, line := range []string{
 		"pace| reading the 2026-10-01 export: the disk is busy (some avg10 9.00 > 6, ",
 		"pace| checking the 2026-10-01 export against the store: the disk is busy (",
-		"pace| checking the 2026-10-03 export against the store: the disk is busy (",
+		"pace| checking the 2026-10-02 export against the store: the disk is busy (",
 	} {
 		if !strings.Contains(out, line) {
 			t.Fatalf("no %q in:\n%s", line, out)
 		}
 	}
-	// Each segment retired was waited for, and nothing but the tarballs'
-	// digests came between the wait and record.Retire.
+	// Each segment retired was waited for, and nothing came between the wait
+	// and record.Retire.
 	retired := 0
 	for i, ev := range p.events {
 		name, ok := strings.CutPrefix(ev, "retire ")

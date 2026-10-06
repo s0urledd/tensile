@@ -8,7 +8,10 @@ Description=Fibre observer (%i): daily archive of the older record lines
 # any case: the backup holds archive/.lock shared, a run holds it
 # exclusively.
 OnCalendar=*-*-* 04:40:00 UTC
-Persistent=true
+# Not Persistent: a run missed while the host was down is not made up at
+# boot, when the validator beside it catches up and the disk is at its
+# busiest. Nothing is lost by the wait: the next 04:40 run archives both
+# days and retires what the backups proved meanwhile.
 Unit=fibre-archive@%i.service
 
 [Install]

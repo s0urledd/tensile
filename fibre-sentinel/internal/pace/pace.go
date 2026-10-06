@@ -35,6 +35,19 @@ const ProcFile = "/proc/pressure/io"
 // over ten seconds, so a few seconds between readings miss nothing.
 const DefaultPoll = 5 * time.Second
 
+// The defaults are the rule the deploys pause their own heavy work by: hold
+// while "some avg10" is above 6 or "full avg10" above 4, and go on once
+// "some avg10" has stayed below 2 for 20 seconds. No single pause lasts
+// longer than half an hour: a nightly job that waited for as long as the
+// validator kept the disk busy might not end at all.
+const (
+	DefaultSome    = 6.0
+	DefaultFull    = 4.0
+	DefaultCalm    = 2.0
+	DefaultCalmFor = 20 * time.Second
+	DefaultMaxWait = 30 * time.Minute
+)
+
 // Pressure is one reading: avg10 of the "some" and the "full" line, in
 // percent of the last ten seconds.
 type Pressure struct {

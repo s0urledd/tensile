@@ -21,6 +21,7 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/export"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/recordcheck"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
@@ -132,7 +133,50 @@ func newRetireData(t *testing.T) *retireData {
 	}
 	d.remoteOK(t, 0)
 	d.remoteOK(t, 1)
+	d.copied(t, copiedAt, remoteFP)
+	scannerStarted(t, d.dir, true)
 	return d
+}
+
+// remoteFP is the fingerprint backup.sh gives the fixture's remote, and
+// copiedAt when its last copy finished: the night of day 4, before the
+// fixture's -retire runs.
+const (
+	remoteFP = "0123456789abcdef"
+	copiedAt = "2026-10-05T03:36:00Z"
+)
+
+// copied writes exports/remote-copy.json as backup.sh does once a copy to
+// the remote with fingerprint fp finished at at.
+func (d *retireData) copied(t *testing.T, at, fp string) {
+	t.Helper()
+	raw := fmt.Sprintf(`{"copied_at":%q,"remote":%q}`+"\n", at, fp)
+	if err := os.WriteFile(filepath.Join(d.expDir(), RemoteCopyFile), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// scannerStarted appends to dir's runs.jsonl the start of a scanner as
+// sentinel-scan records it: of this build (follows), which writes through
+// record.Appender, or of one from before, which does not say so.
+func scannerStarted(t *testing.T, dir string, follows bool) {
+	t.Helper()
+	e := status.RunEvent{Kind: status.RunStarted, Component: scan.RunComponent, Version: "t", PID: 1, At: day0, Config: map[string]any{"rpc": "http://node"}}
+	if follows {
+		e.Config[scan.FollowsRotation] = true
+	}
+	l, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, status.RunsFile), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.Write(append(l, '\n')); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (d *retireData) expDir() string { return filepath.Join(d.dir, "exports") }
@@ -214,19 +258,47 @@ func (d *retireData) rebuildExport(t *testing.T, day int) string {
 }
 
 // remoteOK appends to remote.jsonl what backup.sh appends once it has read
-// day's tarball back from the remote with the digest it has now.
+// day's tarball back from the fixture's remote with the digest it has now.
 func (d *retireData) remoteOK(t *testing.T, day int) {
 	t.Helper()
 	sum, _, err := recordcheck.DigestFile(filepath.Join(d.expDir(), d.exports[day]))
 	if err != nil {
 		t.Fatal(err)
 	}
+	d.remoteLine(t, fmt.Sprintf(`{"name":%q,"sha256":%q,"checked_at":"2026-10-05T03:36:00Z","ok":true,"remote":%q}`, d.exports[day], sum, remoteFP))
+}
+
+// remoteLine appends one line to remote.jsonl.
+func (d *retireData) remoteLine(t *testing.T, line string) {
+	t.Helper()
 	f, err := os.OpenFile(filepath.Join(d.expDir(), RemoteFile), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	fmt.Fprintf(f, `{"name":%q,"sha256":%q,"checked_at":"2026-10-05T03:36:00Z","ok":true}`+"\n", d.exports[day], sum)
+	fmt.Fprintln(f, line)
+}
+
+// checkByHand checks day against the store and merges the answer into the
+// ledger, as record-verify -day <day> -ledger does.
+func (d *retireData) checkByHand(t *testing.T, day int) {
+	t.Helper()
+	st, err := store.OpenReadOnly(d.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	rep, err := recordcheck.CheckDay(context.Background(), st, d.expDir(), d.entry(t, day))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ld, ok := rep.LedgerDay("t", day0)
+	if !ok {
+		t.Fatalf("day %d: not recorded: %+v", day, rep)
+	}
+	if err := recordcheck.MergeLedger(filepath.Join(d.expDir(), recordcheck.LedgerFile), map[string]recordcheck.LedgerDay{d.exports[day]: ld}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // publicationAt is a publication settled at at+9s whose assignment is the
@@ -509,8 +581,10 @@ func testRetire(t *testing.T, archive func(d *retireData, cutoff time.Time)) {
 	if first.code != 0 || first.errs != "" {
 		t.Fatalf("first run: %d\n%s%s", first.code, first.out, first.errs)
 	}
-	if len(first.rep.Checked) != 3 {
-		t.Fatalf("first run checked %v against the store, want days 0 to 2", first.rep.Checked)
+	// Day 2 is not on the remote, which keeps its segments without a read:
+	// it is not checked against the store either.
+	if len(first.rep.Checked) != 2 {
+		t.Fatalf("first run checked %v against the store, want days 0 and 1", first.rep.Checked)
 	}
 	remote2 := "2026-10-03 not yet proven on the remote"
 	for _, name := range proven {
@@ -558,7 +632,7 @@ func testRetire(t *testing.T, archive func(d *retireData, cutoff time.Time)) {
 		}
 	}
 	ledger, err := recordcheck.ReadLedger(filepath.Join(d.expDir(), recordcheck.LedgerFile))
-	if err != nil || len(ledger) != 3 {
+	if err != nil || len(ledger) != 2 {
 		t.Fatalf("the days checked are not in the ledger: %v %v", ledger, err)
 	}
 	d.readsWhole(t)
@@ -596,9 +670,11 @@ func testRetire(t *testing.T, archive func(d *retireData, cutoff time.Time)) {
 	}
 	d.readsWhole(t)
 
-	// Day 2's tarball now has an ok line on the remote, but its bytes on the
-	// disk changed since the ledger's check: it proves nothing and says so.
+	// Day 2's tarball now has an ok line on the remote and a ledger entry
+	// (record-verify by hand), but its bytes on the disk changed since the
+	// ledger's check: it proves nothing and says so.
 	d.remoteOK(t, 2)
+	d.checkByHand(t, 2)
 	tarball := filepath.Join(d.expDir(), d.exports[2])
 	orig, err := os.ReadFile(tarball)
 	if err != nil {
@@ -623,8 +699,8 @@ func testRetire(t *testing.T, archive func(d *retireData, cutoff time.Time)) {
 	}
 
 	// The tarball as it was, but index.json lists other bytes for it: the
-	// ledger's answer is about the tarball, and a retired segment is read
-	// back by the index, so nothing goes while the two disagree.
+	// remote's proof is of the tarball's bytes, not the ones listed, which
+	// keeps the segment before anything is read.
 	if err := os.WriteFile(tarball, orig, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -633,10 +709,25 @@ func testRetire(t *testing.T, archive func(d *retireData, cutoff time.Time)) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d.editIndex(t, 2, func(e *export.Entry) { e.SHA256 = strings.Repeat("0", 64) })
+	zeros := strings.Repeat("0", 64)
+	d.editIndex(t, 2, func(e *export.Entry) { e.SHA256 = zeros })
 	listed := d.retire(t, at)
 	if listed.code != 0 || listed.rep.RetiredNow != 0 || len(listed.rep.Checked) != 0 {
 		t.Fatalf("index.json lists other bytes: %d %+v\n%s%s", listed.code, listed.rep, listed.out, listed.errs)
+	}
+	for _, name := range proven {
+		if got := listed.kept()[name+" 000003-2026-10-04.jsonl.gz"]; !strings.HasPrefix(got, "2026-10-03 not proven on the remote: its last check (") ||
+			!strings.HasSuffix(got, ", index.json lists 000000000000") {
+			t.Fatalf("%s: day 2, which index.json lists other bytes for, kept for %q", name, got)
+		}
+	}
+	// And with a remote proof of the listed bytes too: the ledger's answer is
+	// about the tarball, and a retired segment is read back by the index, so
+	// nothing goes while the two disagree.
+	d.remoteLine(t, fmt.Sprintf(`{"name":%q,"sha256":%q,"checked_at":"2026-10-05T03:37:00Z","ok":true,"remote":%q}`, d.exports[2], zeros, remoteFP))
+	listed = d.retire(t, at)
+	if listed.code != 0 || listed.rep.RetiredNow != 0 || len(listed.rep.Checked) != 0 {
+		t.Fatalf("index.json and the remote list other bytes: %d %+v\n%s%s", listed.code, listed.rep, listed.out, listed.errs)
 	}
 	for _, name := range proven {
 		if got := listed.kept()[name+" 000003-2026-10-04.jsonl.gz"]; !strings.HasPrefix(got, "2026-10-03 export tarball is not the one index.json lists (") {
@@ -646,6 +737,7 @@ func testRetire(t *testing.T, archive func(d *retireData, cutoff time.Time)) {
 	if err := os.WriteFile(indexPath, index, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	d.remoteOK(t, 2)
 
 	// The tarball and its index entry as they were: the ledger's answer
 	// stands again, and day 2 is retired; day 1's measurements stay.
@@ -746,35 +838,72 @@ func TestCoverNeedsOneContiguousCopy(t *testing.T) {
 // The newest check of a tarball on the remote is the one that counts, so a
 // check that failed takes back one that passed; a line still being
 // appended proves nothing yet, and a line that does not read as a check
-// fails the run rather than being passed over.
+// fails the run rather than being passed over. A check counts only when it
+// read the remote the backup's last finished copy went to, and only while
+// that copy is recent: a proof is taken once, and a remote lost or
+// replaced since shows only in the copies.
 func TestRemoteChecksNewestCounts(t *testing.T) {
 	path := filepath.Join(t.TempDir(), RemoteFile)
-	lines := `{"name":"a.tar.gz","sha256":"aa","checked_at":"2026-10-05T03:36:00Z","ok":true}` + "\n" +
-		`{"name":"b.tar.gz","sha256":"bb","checked_at":"2026-10-05T03:36:00Z","ok":true}` + "\n" +
-		`{"name":"a.tar.gz","sha256":"aa","checked_at":"2026-10-06T03:36:00Z","ok":false}` + "\n" +
+	lines := `{"name":"a.tar.gz","sha256":"aa","checked_at":"2026-10-05T03:36:00Z","ok":true,"remote":"fp1"}` + "\n" +
+		`{"name":"b.tar.gz","sha256":"bb","checked_at":"2026-10-05T03:36:00Z","ok":true,"remote":"fp1"}` + "\n" +
+		`{"name":"a.tar.gz","sha256":"aa","checked_at":"2026-10-06T03:36:00Z","ok":false,"remote":"fp1"}` + "\n" +
+		`{"name":"d.tar.gz","sha256":"dd","checked_at":"2026-10-06T03:36:00Z","ok":true,"remote":"fp0"}` + "\n" +
+		`{"name":"e.tar.gz","sha256":"ee","checked_at":"2026-10-06T03:36:00Z","ok":true}` + "\n" +
 		`{"name":"c.tar.gz","sha256":"cc","checked_at":"2026-10-06T03:3`
 	if err := os.WriteFile(path, []byte(lines), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	got, err := readRemote(path)
-	if err != nil || len(got) != 2 {
+	if err != nil || len(got) != 4 {
 		t.Fatalf("%+v %v", got, err)
 	}
-	r := &retirer{remote: got}
-	proof := func(name, sum string) *exportProof {
+	now := time.Date(2026, 10, 7, 4, 40, 0, 0, time.UTC)
+	r := &retirer{remote: got, now: now, remoteMaxAge: DefaultRemoteMaxAge, copied: &remoteCopy{CopiedAt: now.Add(-25 * time.Hour), Remote: "fp1"}}
+	r.stale = r.remoteStale()
+	entry := func(name string) export.Entry {
 		e := export.Entry{Name: name}
 		e.Day = "2026-10-04"
-		return &exportProof{e: e, sum: sum}
+		return e
 	}
 	for _, c := range []struct{ name, sum, want string }{
 		{"a.tar.gz", "aa", "2026-10-04 not proven on the remote: its last check (2026-10-06T03:36:00Z) did not read the tarball back"},
 		{"b.tar.gz", "bb", ""},
 		{"b.tar.gz", "b2", "2026-10-04 not proven on the remote: its last check (2026-10-05T03:36:00Z) read back sha256 bb, the tarball now is b2"},
 		{"c.tar.gz", "cc", "2026-10-04 not yet proven on the remote"},
+		{"d.tar.gz", "dd", "2026-10-04 not proven on the remote the backup copies to now: its last check (2026-10-06T03:36:00Z) read another one"},
+		{"e.tar.gz", "ee", "2026-10-04 not proven on the remote: its last check (2026-10-06T03:36:00Z) does not say which remote it read"},
 	} {
-		if why := r.onRemote(proof(c.name, c.sum)); why != c.want {
+		if why := r.onRemote(entry(c.name), c.sum, "the tarball now is"); why != c.want {
 			t.Fatalf("%s %s: %q, want %q", c.name, c.sum, why, c.want)
 		}
+	}
+	// The backup's last copy: none, one too old, one that names nothing.
+	for _, c := range []struct {
+		copied *remoteCopy
+		maxAge time.Duration
+		want   string
+	}{
+		{nil, DefaultRemoteMaxAge, "no finished backup copy is recorded (exports/remote-copy.json): nothing shows the remote holds the exports"},
+		{&remoteCopy{CopiedAt: now.Add(-49 * time.Hour), Remote: "fp1"}, DefaultRemoteMaxAge,
+			"the backup last finished a copy at 2026-10-05T03:40:00Z, 49h0m0s before this run, longer ago than -remote-max-age 48h0m0s: nothing shows the remote still holds the exports"},
+		{&remoteCopy{CopiedAt: now.Add(-49 * time.Hour), Remote: "fp1"}, 0, ""},
+		{&remoteCopy{Remote: "fp1"}, DefaultRemoteMaxAge, "exports/remote-copy.json names no remote or no time"},
+	} {
+		r := &retirer{remote: got, now: now, remoteMaxAge: c.maxAge, copied: c.copied}
+		if r.stale = r.remoteStale(); r.stale != c.want {
+			t.Fatalf("copy %+v: %q, want %q", c.copied, r.stale, c.want)
+		}
+		if why := r.onRemote(entry("b.tar.gz"), "bb", "the tarball now is"); why != c.want {
+			t.Fatalf("copy %+v: b.tar.gz kept for %q", c.copied, why)
+		}
+	}
+	if _, err := readRemoteCopy(filepath.Join(t.TempDir(), RemoteCopyFile)); err != nil {
+		t.Fatalf("no remote-copy.json: %v", err)
+	}
+	bad := filepath.Join(t.TempDir(), RemoteCopyFile)
+	os.WriteFile(bad, []byte(`{"copied_at":`), 0o644)
+	if _, err := readRemoteCopy(bad); err == nil {
+		t.Fatal("a remote-copy.json that does not read was taken")
 	}
 	if err := os.WriteFile(path, []byte(lines[:40]+"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -930,7 +1059,7 @@ func TestRetireKeepsAnExportRebuiltDuringTheRun(t *testing.T) {
 	if f := first.file(t, "measurements.jsonl"); f.RetiredNow != 1 || f.Retired[0].Segment != "000001-2026-10-02.jsonl.gz" {
 		t.Fatalf("measurements: %+v", f)
 	}
-	changed := fmt.Sprintf("2026-10-01 export tarball changed during this run (sha256 %s when it was proven, %s now)", short(old), short(rebuilt))
+	changed := fmt.Sprintf("2026-10-01 export tarball changed during this run (sha256 %s when it was proven, index.json lists %s now)", short(old), short(rebuilt))
 	for _, name := range proven {
 		if name == "measurements.jsonl" {
 			continue
@@ -941,14 +1070,15 @@ func TestRetireKeepsAnExportRebuiltDuringTheRun(t *testing.T) {
 	}
 	d.readsWhole(t)
 
-	// The next run checks the new bytes against the store, and keeps the
-	// rest of day 0 until the remote has read them back.
+	// The next run keeps the rest of day 0, without a read, until the remote
+	// has read the new bytes back; the run after checks them against the
+	// store and retires it.
 	retireSegment = retire
 	second := d.retire(t, retireAt)
-	if second.code != 0 || second.rep.RetiredNow != 0 || len(second.rep.Checked) != 1 {
+	if second.code != 0 || second.rep.RetiredNow != 0 || len(second.rep.Checked) != 0 {
 		t.Fatalf("second run: %d %+v\n%s%s", second.code, second.rep, second.out, second.errs)
 	}
-	notBack := fmt.Sprintf("2026-10-01 not proven on the remote: its last check (2026-10-05T03:36:00Z) read back sha256 %s, the tarball now is %s", short(old), short(rebuilt))
+	notBack := fmt.Sprintf("2026-10-01 not proven on the remote: its last check (2026-10-05T03:36:00Z) read back sha256 %s, index.json lists %s", short(old), short(rebuilt))
 	for _, name := range proven {
 		if name == "measurements.jsonl" {
 			continue
@@ -959,7 +1089,7 @@ func TestRetireKeepsAnExportRebuiltDuringTheRun(t *testing.T) {
 	}
 	d.remoteOK(t, 0)
 	third := d.retire(t, retireAt)
-	if third.code != 0 || third.rep.RetiredNow != 4 || len(third.rep.Checked) != 0 {
+	if third.code != 0 || third.rep.RetiredNow != 4 || len(third.rep.Checked) != 1 {
 		t.Fatalf("third run: %d %+v\n%s%s", third.code, third.rep, third.out, third.errs)
 	}
 	d.readsWhole(t)
@@ -999,6 +1129,133 @@ func TestRetireKeepsAnExportRebuiltWhileChecked(t *testing.T) {
 	ledger, err := recordcheck.ReadLedger(filepath.Join(d.expDir(), recordcheck.LedgerFile))
 	if err != nil || ledger[d.exports[0]].SHA256 != rebuilt {
 		t.Fatalf("day 0 in the ledger: %+v %v, want it under %s", ledger[d.exports[0]], err, rebuilt)
+	}
+	d.readsWhole(t)
+}
+
+// A remote proof is taken once per tarball, so it stands for the remote's
+// copy only while the backup goes on finishing its copy to that remote:
+// with no finished copy recorded, one older than -remote-max-age, one to
+// another remote than the proofs read, or proofs that do not say which
+// remote they read, nothing is retired and each segment says why; once the
+// copy is recent and the proofs are of its remote, the same run retires.
+func TestRetireNeedsARecentCopyToTheSameRemote(t *testing.T) {
+	d, retire := archivedByHand(t)
+	retireSegment = retire
+	t.Cleanup(func() { retireSegment = record.Retire })
+	copyFile := filepath.Join(d.expDir(), RemoteCopyFile)
+	remoteFile := filepath.Join(d.expDir(), RemoteFile)
+	proofs, err := os.ReadFile(remoteFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keptAll := func(what, want string) {
+		t.Helper()
+		r := d.retire(t, retireAt)
+		if r.code != 0 || r.rep.RetiredNow != 0 || len(r.rep.Checked) != 0 {
+			t.Fatalf("%s: %d %+v\n%s%s", what, r.code, r.rep, r.out, r.errs)
+		}
+		for _, name := range proven {
+			if got := r.kept()[name+" 000001-2026-10-02.jsonl.gz"]; !strings.Contains(got, want) {
+				t.Fatalf("%s: %s kept for %q, want %q", what, name, got, want)
+			}
+		}
+	}
+
+	if err := os.Remove(copyFile); err != nil {
+		t.Fatal(err)
+	}
+	keptAll("no copy recorded", "no finished backup copy is recorded (exports/remote-copy.json)")
+	d.copied(t, "2026-10-03T03:36:00Z", remoteFP)
+	keptAll("a copy two nights old", "the backup last finished a copy at 2026-10-03T03:36:00Z, 49h14m0s before this run, longer ago than -remote-max-age 48h0m0s")
+	d.copied(t, copiedAt, "fedcba9876543210")
+	keptAll("a copy to another remote", "2026-10-01 not proven on the remote the backup copies to now: its last check (2026-10-05T03:36:00Z) read another one")
+	d.copied(t, copiedAt, remoteFP)
+	unnamed := strings.ReplaceAll(string(proofs), `,"remote":"`+remoteFP+`"`, "")
+	if err := os.WriteFile(remoteFile, []byte(unnamed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	keptAll("proofs that name no remote", "2026-10-01 not proven on the remote: its last check (2026-10-05T03:36:00Z) does not say which remote it read")
+
+	if err := os.WriteFile(remoteFile, proofs, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := d.retire(t, retireAt); r.code != 0 || r.rep.RetiredNow != 9 {
+		t.Fatalf("a recent copy to the remote the proofs read: %d %+v\n%s%s", r.code, r.rep, r.out, r.errs)
+	}
+	// An older copy passes with -remote-max-age 0.
+	d2, retire2 := archivedByHand(t)
+	retireSegment = retire2
+	d2.copied(t, "2026-09-01T03:36:00Z", remoteFP)
+	code, out, errs := runAt(t, retireAt, "-data-dir", d2.dir, "-retire", "-db", d2.db, "-remote-max-age", "0")
+	if code != 0 || !strings.Contains(out, "summary| 9 segment(s) retired now") {
+		t.Fatalf("-remote-max-age 0: %d\n%s%s", code, out, errs)
+	}
+	if code, _, errs := runAt(t, retireAt, "-data-dir", d2.dir, "-retire", "-remote-max-age", "-1h"); code != 2 || !strings.Contains(errs, "cannot be negative") {
+		t.Fatalf("a negative -remote-max-age: %d %s", code, errs)
+	}
+}
+
+// A segment that cannot go costs no tarball read: what keeps it (a day not
+// on the remote, a day the ledger already says the store does not give
+// back) is found from remote.jsonl and the ledger before a tarball is
+// opened, so a second run keeps the same segments for the same reasons
+// with those tarballs out of the exports directory, and checks nothing.
+func TestRetireReadsNoTarballToKeepASegment(t *testing.T) {
+	d, retire := archivedByHand(t)
+	retireSegment = retire
+	t.Cleanup(func() { retireSegment = record.Retire })
+	first := d.retire(t, retireAt)
+	if first.code != 0 || first.rep.RetiredNow != 9 || first.rep.Kept != 9 {
+		t.Fatalf("first run: %d %+v\n%s%s", first.code, first.rep, first.out, first.errs)
+	}
+	for _, day := range []int{1, 2} {
+		p := filepath.Join(d.expDir(), d.exports[day])
+		if err := os.Rename(p, p+".away"); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Rename(p+".away", p) })
+	}
+	second := d.retire(t, retireAt)
+	if second.code != 0 || second.errs != "" || second.rep.RetiredNow != 0 || len(second.rep.Checked) != 0 || fmt.Sprint(second.kept()) != fmt.Sprint(first.kept()) {
+		t.Fatalf("second run, days 1 and 2 away: %d %+v\nfirst kept %v\n%s%s", second.code, second.rep, first.kept(), second.out, second.errs)
+	}
+	if got := second.kept()["measurements.jsonl 000002-2026-10-03.jsonl.gz"]; !strings.HasSuffix(got, ", not reproducible from the store") {
+		t.Fatalf("day 1's measurements kept for %q", got)
+	}
+	if got := second.kept()["publications.jsonl 000003-2026-10-04.jsonl.gz"]; got != "2026-10-03 not yet proven on the remote" {
+		t.Fatalf("day 2's publications kept for %q", got)
+	}
+}
+
+// A run checks at most -check-days days against the store: the segments
+// of a day past that are kept, with the reason, before even its digest is
+// read, and a later run checks it and retires them.
+func TestRetireChecksAtMostCheckDays(t *testing.T) {
+	d, retire := archivedByHand(t)
+	retireSegment = retire
+	t.Cleanup(func() { retireSegment = record.Retire })
+	code, out, errs := runAt(t, retireAt, "-data-dir", d.dir, "-retire", "-db", d.db, "-check-days", "1")
+	var rep Report
+	raw, err := os.ReadFile(filepath.Join(d.dir, record.Dir, ReportFile))
+	if err == nil {
+		err = json.Unmarshal(raw, &rep)
+	}
+	if code != 0 || err != nil || len(rep.Checked) != 1 || !strings.HasPrefix(rep.Checked[0], "2026-10-01 ") || rep.RetiredNow != 5 {
+		t.Fatalf("-check-days 1: %d %v %+v\n%s%s", code, err, rep, out, errs)
+	}
+	r := retirement{rep: rep}
+	for _, name := range proven {
+		if got := r.kept()[name+" 000002-2026-10-03.jsonl.gz"]; got != "2026-10-02 not checked against the store yet: this run checked the 1 day(s) -check-days allows, and a later run checks it" {
+			t.Fatalf("%s: day 1 kept for %q", name, got)
+		}
+	}
+	code, out, errs = runAt(t, retireAt, "-data-dir", d.dir, "-retire", "-db", d.db, "-check-days", "1")
+	if code != 0 || !strings.Contains(out, "checked| 2026-10-02 ") || !strings.Contains(out, "summary| 4 segment(s) retired now") {
+		t.Fatalf("the next run: %d\n%s%s", code, out, errs)
+	}
+	if code, _, errs := runAt(t, retireAt, "-data-dir", d.dir, "-retire", "-check-days", "-1"); code != 2 || !strings.Contains(errs, "cannot be negative") {
+		t.Fatalf("a negative -check-days: %d %s", code, errs)
 	}
 	d.readsWhole(t)
 }

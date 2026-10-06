@@ -13,7 +13,12 @@
 // observer's own through record.Appender, deploy/vantage-pull.sh by
 // appending under a shared flock on the file from its logical end
 // (-logical-end). The other record files are small and their writers hold
-// them open without that protocol; they are left alone.
+// them open without that protocol; they are left alone. The scanner's two
+// files are rotated only once runs.jsonl shows that the scanner running
+// now is one that follows a rotation (scan.FollowsRotation): a scanner of
+// an older build, not restarted since an upgrade, appends to its files
+// through descriptors it opened once, and would write on into the file a
+// rotation replaced, losing those lines from the record.
 //
 // The run is idempotent (a second run the same day finds nothing older than
 // the cutoff) and crash-safe (record.Archive): the source bytes stay in the
@@ -46,6 +51,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -123,17 +129,17 @@ func filePath(dataDir, name string) string {
 const DefaultKeep = 7 * 24 * time.Hour
 
 // The pace's defaults are the rule the deploys pause their own heavy work
-// by: hold while "some avg10" is above 6 or "full avg10" above 4, and go on
-// once "some avg10" has stayed below 2 for 20 seconds. No single pause
-// lasts longer than half an hour: a run that waited for as long as the
-// validator kept the disk busy might not end at all, and the live files
-// would go on growing with nothing archived.
+// by (internal/pace): hold while "some avg10" is above 6 or "full avg10"
+// above 4, and go on once "some avg10" has stayed below 2 for 20 seconds.
+// No single pause lasts longer than half an hour: a run that waited for as
+// long as the validator kept the disk busy might not end at all, and the
+// live files would go on growing with nothing archived.
 const (
-	DefaultPaceSome    = 6.0
-	DefaultPaceFull    = 4.0
-	DefaultPaceCalm    = 2.0
-	DefaultPaceCalmFor = 20 * time.Second
-	DefaultPaceMaxWait = 30 * time.Minute
+	DefaultPaceSome    = pace.DefaultSome
+	DefaultPaceFull    = pace.DefaultFull
+	DefaultPaceCalm    = pace.DefaultCalm
+	DefaultPaceCalmFor = pace.DefaultCalmFor
+	DefaultPaceMaxWait = pace.DefaultMaxWait
 )
 
 // pressure is where the pace reads the disk's I/O pressure, and pollEvery
@@ -179,6 +185,8 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		paceCalm  = fs.Float64("pace-calm", DefaultPaceCalm, `a pause ends once "some avg10" has stayed below this for -pace-calm-for`)
 		calmFor   = fs.Duration("pace-calm-for", DefaultPaceCalmFor, `how long "some avg10" must stay below -pace-calm to end a pause`)
 		maxWait   = fs.Duration("pace-max-wait", DefaultPaceMaxWait, "the longest a single pause lasts: the run then goes on whatever the pressure, and says so")
+		remoteAge = fs.Duration("remote-max-age", DefaultRemoteMaxAge, "with -retire: retire nothing unless fibre-backup finished a copy within this long (exports/"+RemoteCopyFile+"), and count only remote proofs read from the remote it copied to (0: a copy of any age)")
+		checkDays = fs.Int("check-days", DefaultCheckDays, "with -retire: the most export days one run checks against the store; the others wait for the next runs (0: no limit)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -189,6 +197,10 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		Poll: pollEvery, Source: pressure, Log: func(s string) { fmt.Fprintf(stdout, "pace| %s\n", s) }}
 	if err := pacer.Check(); err != nil {
 		fmt.Fprintln(stderr, "observer-archive:", err)
+		return 2
+	}
+	if *remoteAge < 0 || *checkDays < 0 {
+		fmt.Fprintln(stderr, "observer-archive: -remote-max-age and -check-days cannot be negative")
 		return 2
 	}
 	modes := 0
@@ -229,6 +241,7 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		r := &retirer{
 			dataDir: *dataDir, expDir: *expDir, dbPath: *dbPath, dry: *dryRun, now: now.UTC(),
 			build: status.BuildRevision(), retire: retireSegment, pace: pacer,
+			remoteMaxAge: *remoteAge, checkMax: *checkDays,
 		}
 		code := r.run(specs, stdout, stderr)
 		pauses(stdout, pacer)
@@ -257,7 +270,18 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 	}
 	failed := false
 	ctx := context.Background()
+	scannerWhy := ""
 	for _, f := range specs {
+		if scannerFiles[f.Name] {
+			scannerWhy = scannerFollows(*dataDir)
+			break
+		}
+	}
+	for _, f := range specs {
+		if scannerFiles[f.Name] && scannerWhy != "" {
+			fmt.Fprintf(stdout, "%s: left as it is: %s\n", f.Name, scannerWhy)
+			continue
+		}
 		limit := int64(-1)
 		if exported != nil {
 			limit = exported[f.Name] // 0 when the export has not read the file: nothing moves
@@ -295,6 +319,43 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		return 1
 	}
 	return 0
+}
+
+// scannerFiles are the files sentinel-scan writes.
+var scannerFiles = map[string]bool{"publications.jsonl": true, "payments.jsonl": true}
+
+// scannerFollows is why the scanner's files must not be rotated now; empty
+// when they may. They may once the newest scanner start in runs.jsonl
+// says that scanner follows a rotation (scan.FollowsRotation): it writes
+// through record.Appender, which reopens a path rotated under it. A scanner
+// of an earlier build held both files open with plain appends and, not
+// restarted since an upgrade installed this command, would go on writing
+// into the files a rotation replaced: every publication and payment it
+// wrote until its restart would be lost from the record, and its
+// checkpoint would move past them. A start line that does not read is
+// passed over: runs.jsonl is best-effort evidence, and the newest start
+// that reads decides.
+func scannerFollows(dataDir string) string {
+	raw, err := os.ReadFile(filepath.Join(dataDir, status.RunsFile))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Sprintf("%s cannot be read (%v), so nothing shows the scanner follows a rotation", status.RunsFile, err)
+	}
+	var newest *status.RunEvent
+	for _, l := range bytes.Split(raw, []byte{'\n'}) {
+		var e status.RunEvent
+		if json.Unmarshal(l, &e) != nil || e.Component != scan.RunComponent || e.Kind != status.RunStarted {
+			continue
+		}
+		newest = &e
+	}
+	switch {
+	case newest == nil:
+		return "no scanner start in " + status.RunsFile + ", so nothing shows the scanner follows a rotation"
+	case newest.Config[scan.FollowsRotation] != true:
+		return fmt.Sprintf("the scanner started at %s (build %s) writes it without following a rotation; restart fibre-scan on this build first",
+			newest.At.UTC().Format(time.RFC3339), newest.Version)
+	}
+	return ""
 }
 
 // pauses says how long the run waited for the disk in all, if it did.

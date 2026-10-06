@@ -582,6 +582,102 @@ func TestRetireAfterACrashBeforeTheFileWent(t *testing.T) {
 	}
 }
 
+// A build from before retirement rewrites index.json without the retired
+// records whenever it archives (its Segment has no Retired, and an unknown
+// field does not survive a decode and an encode). The records survive in
+// retired.json, which it never opens: the record still reads whole, Verify
+// passes, Retire stays idempotent, and the next archive run writes them
+// into the index again.
+func TestRetiredRecordsSurviveAnOlderBuildsIndex(t *testing.T) {
+	skipUnsupported(t)
+	f := newRetireFixture(t, "measurements.jsonl")
+	f.retire(t, 0)
+	f.retire(t, 1)
+	// The index as an older observer-archive saves it after its own run.
+	type olderSegment struct {
+		Name       string    `json:"name"`
+		From       int64     `json:"from"`
+		To         int64     `json:"to"`
+		Lines      int64     `json:"lines"`
+		SHA256     string    `json:"sha256"`
+		GzSHA256   string    `json:"gz_sha256"`
+		GzBytes    int64     `json:"gz_bytes"`
+		Cutoff     time.Time `json:"cutoff"`
+		ArchivedAt time.Time `json:"archived_at"`
+	}
+	type olderIndex struct {
+		Version     int            `json:"version"`
+		File        string         `json:"file"`
+		TimeField   string         `json:"time_field"`
+		LiveSince   time.Time      `json:"live_since"`
+		Segments    []olderSegment `json:"segments"`
+		Generations []Generation   `json:"generations"`
+	}
+	ip := filepath.Join(ArchiveDir(f.path), IndexFile)
+	raw, err := os.ReadFile(ip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var older olderIndex
+	if err := json.Unmarshal(raw, &older); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err = json.MarshalIndent(older, "", "  "); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte(`"retired"`)) {
+		t.Fatal("the older index still carries the retired records; the test no longer shows anything")
+	}
+	if err := os.WriteFile(ip, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f.checkReads(t)
+	if n, err := Verify(f.path); err != nil || n != 2 {
+		t.Fatalf("verify: %d %v", n, err)
+	}
+	idx, err := LoadIndex(f.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, sg := range idx.Segments {
+		if want := f.retired(t, i); sg.Retired == nil || strings.Join(sg.Retired.Exports, ",") != strings.Join(want.Exports, ",") {
+			t.Fatalf("segment %s: retired %+v, want %+v", sg.Name, sg.Retired, want)
+		}
+	}
+	if err := Retire(f.path, f.segs[1].Name, Retired{}); err != nil {
+		t.Fatalf("Retire of a segment retired before: %v", err)
+	}
+	// The next run of this build saves the index with the records again.
+	archiveAt(t, f.path, t0.Add(132*time.Hour))
+	if raw, err = os.ReadFile(ip); err != nil {
+		t.Fatal(err)
+	}
+	var saved Index
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Segments) != 3 || saved.Segments[0].Retired == nil || saved.Segments[1].Retired == nil || saved.Segments[2].Retired != nil {
+		t.Fatalf("the index saved by the next run: %s", raw)
+	}
+	f.checkReads(t)
+
+	// A record for another segment by that name (other range or digest) is
+	// not taken for this one's.
+	var other Index
+	if err := json.Unmarshal(raw, &other); err != nil {
+		t.Fatal(err)
+	}
+	other.Segments[2].SHA256 = strings.Repeat("0", 64)
+	if err := keepRetired(ArchiveDir(f.path), filepath.Base(f.path), Segment{Name: other.Segments[2].Name, From: other.Segments[2].From,
+		To: other.Segments[2].To, SHA256: other.Segments[2].SHA256, Retired: &Retired{Exports: f.exports[:1], Member: f.member, ExportsDir: "../../exports"}}); err != nil {
+		t.Fatal(err)
+	}
+	if idx, err = LoadIndex(f.path); err != nil || idx.Segments[2].Retired != nil {
+		t.Fatalf("a record of other bytes taken for segment 3: %+v %v", idx.Segments[2].Retired, err)
+	}
+}
+
 // A Stream opened before a Retire reads and verifies the retired segment
 // from the exports rather than calling it lost, since Retire saves the
 // index before it removes the file and a reader that finds the file gone

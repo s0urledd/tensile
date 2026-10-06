@@ -269,6 +269,9 @@ func (b *Builder) build(day string, st *state, now time.Time) error {
 	if err := os.MkdirAll(b.Dir, 0o755); err != nil {
 		return err
 	}
+	if err := indexLost(b.Dir, b.name(day)); err != nil {
+		return err
+	}
 	man := Manifest{Vantage: b.Vantage, Day: day, GeneratedAt: now.UTC(), Build: b.Build, Methodology: verdict.MethodologyVersion, Rule: rule}
 	newOffsets := map[string]int64{}
 	// The whole state, as it stands, not the part dated today: it is a
@@ -551,10 +554,68 @@ func ReadIndex(dir string) ([]Entry, error) {
 	return out, nil
 }
 
+// atomicWrite replaces path with data: a temp file, fsynced, renamed over
+// path, and the directory fsynced. index.json is rewritten every night and
+// is what the API lists the exports by; a power cut soon after a rename of
+// a file whose data had not reached the disk can leave it empty or short,
+// and the backup would then copy that over the remote's good copy. The
+// directory is synced where the platform can: without it a power cut can
+// at worst bring back the file as it was before the rename, whole.
 func atomicWrite(path string, data []byte) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	if d, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = d.Sync()
+		d.Close()
+	}
+	return nil
+}
+
+// indexLost is why dir must not get a new index.json for the export name:
+// the index is missing while other export tarballs are there. A missing
+// index reads as no exports at all, so a build would start a new one that
+// lists only this day: the API would stop listing every older export, and
+// observer-archive -retire and every reader of a retired segment's
+// exports, which look each tarball up in the index, would find none of
+// them. The tarballs carry their own manifests, but nothing builds the
+// index again from them, so the build stops until the index is put back
+// (the remote backup has the last good one). A crashed first build leaves
+// only its own tarball, which the next build of that day replaces.
+func indexLost(dir, name string) error {
+	if _, err := os.Stat(filepath.Join(dir, "index.json")); !errors.Is(err, os.ErrNotExist) {
+		return nil // there, or unreadable: ReadIndex says which
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	var others []string
+	for _, e := range ents {
+		if n := e.Name(); n != name && strings.HasSuffix(n, ".tar.gz") && NamePattern.MatchString(n) {
+			others = append(others, n)
+		}
+	}
+	if len(others) == 0 {
+		return nil
+	}
+	sort.Strings(others)
+	return fmt.Errorf("%s has no index.json but holds %d export tarball(s) (%s ... %s): a new index would list only %s; put index.json back (the remote backup keeps a copy) before exports are built again",
+		dir, len(others), others[0], others[len(others)-1], name)
 }

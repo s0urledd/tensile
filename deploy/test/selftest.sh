@@ -37,29 +37,39 @@
 #                   checked by the file; an export altered or missing, an
 #                   index entry that is not the member, or exports that
 #                   leave part of the range out fail; cat over a bad export
-#                   fails and hands out no byte of the segment; another
-#                   vantage's rotated heartbeats are cut, read and verified
+#                   fails and hands out no byte of the segment; an index
+#                   an older build rewrote without the retired record reads
+#                   it from retired.json; another vantage's rotated
+#                   heartbeats are cut, read and verified
 #   remote proof    backup.sh with the fake rclone: the observer's segments
 #                   and each other vantage's go before the live files, with
-#                   their indexes, and no lock or master key goes; each
-#                   export is read back once and recorded in
-#                   exports/remote.jsonl; a remote copy that differs or
-#                   cannot be read is ok false and the run passes, and is
-#                   read again the next night; a rebuilt tarball is read
-#                   again; a failed copy fails the run and proves nothing; a
-#                   torn last line is dropped, not closed into a line that
-#                   is not a check; the remote is never printed
+#                   their indexes and retired.json, and no lock or master
+#                   key goes; each export is read back once and recorded in
+#                   exports/remote.jsonl with the remote's fingerprint; a
+#                   remote copy that differs or cannot be read is ok false
+#                   and the run passes, and is read again the next night; a
+#                   rebuilt tarball is read again; a failed copy fails the
+#                   run, proves nothing and leaves exports/remote-copy.json
+#                   as the last copy that finished; a new BACKUP_REMOTE
+#                   reads every export back again; a torn last line, NUL
+#                   bytes included, is dropped, not closed into a line that
+#                   is not a check; the remote is never printed, rclone's
+#                   own messages from a failed copy included
 #   vantage pull    vantage-sync.sh: the pull resumes from the local file's
 #                   logical end, a rotated one included, and a remote file
 #                   shorter than the record fetches nothing and fails; two
-#                   pulls at once append the new bytes once
+#                   pulls at once append the new bytes once; only whole
+#                   lines are appended, from a remote line still being
+#                   written or a link that breaks part-way
 #   rpc-check       app version 9 + fibre code 6 passes; 10 + 6 fails; 10 + 0
 #                   passes; no block_results fails; a second RPC that does
 #                   not answer fails; two nodes disagreeing on a hash fails;
 #                   two agreeing pass
 #   healthwatch     one alert per fault; a second failing check alerts while
 #                   the state stays degraded; recovery alerts; a two-line
-#                   state file from the older build does not alert by itself
+#                   state file from the older build does not alert by
+#                   itself; a failed nightly backup or archive unit is a
+#                   failing check of its own
 #   snapshot_code   a 503 with "computing": true is asked again until the
 #                   deadline; a 503 without it and a 200 are final at once
 #
@@ -267,6 +277,12 @@ check eq "$(manifest_records "$T/am.json" measurements.jsonl)" 5
 printf '{"files":{"publications.jsonl":{"bytes":1,"sha256":"","records":2,"archived_records":3}}}' > "$T/pm.json"
 check eq "$(manifest_records "$T/pm.json" publications.jsonl)" 5
 check eq "$(manifest_records "$T/pm.json" payments.jsonl)" 0
+# and holds the rebuilt publications to the distinct promises of the whole
+# record, since the store keeps one row per promise and a re-scan can append
+# a publication again (the drill once failed a good backup on that)
+PD="$T/pdata"; mkdir -p "$PD"
+printf '{"promise_hash":"a"}\n{"promise_hash":"b"}\n{"promise_hash":"a"}\n' > "$PD/publications.jsonl"
+check eq "$(record_promises "$MANIFEST" "$PD")" "3 2"
 # the whole record reads archived lines first, and its logical end is base + live
 check eq "$(python3 "$MANIFEST" cat "$A" measurements.jsonl | grep -o '"validator_address":"v[0-9]"' | tr -d '\n')" '"validator_address":"v0""validator_address":"v1""validator_address":"v2""validator_address":"v3""validator_address":"v4"'
 check eq "$(python3 "$MANIFEST" end "$A" measurements.jsonl)" "$(python3 "$MANIFEST" cat "$A" measurements.jsonl | wc -c | tr -d ' ')"
@@ -340,8 +356,9 @@ check test -f "$T/rsnap/exports/tensile-t-2026-09-12.tar.gz"
 check test ! -e "$T/rsnap/archive/measurements.jsonl/000001-2026-09-13.jsonl.gz"
 check python3 "$MANIFEST" verify "$T/rsnap"
 rcopy() { rm -rf "$T/rcopy"; cp -r "$T/rsnap" "$T/rcopy"; }
-# a copy that has the segment's file (the remote keeps every segment it was
-# sent) is checked by the file: the right one verifies, another fails
+# a copy that has the segment's file (the remote has it when a backup ran
+# while the file existed) is checked by the file: the right one verifies,
+# another fails
 rcopy; cp "$A/archive/measurements.jsonl/000001-2026-09-13.jsonl.gz" "$T/rcopy/archive/measurements.jsonl/"
 check python3 "$MANIFEST" verify "$T/rcopy"
 rcopy; printf 'x' > "$T/rcopy/archive/measurements.jsonl/000001-2026-09-13.jsonl.gz"
@@ -368,6 +385,28 @@ cp "$RD/exports/tensile-t-2026-09-12.tar.gz" "$T/tgz.bak"; printf 'x' >> "$RD/ex
 check not python3 "$MANIFEST" cat "$RD" measurements.jsonl
 check eq "$(python3 "$MANIFEST" cat "$RD" measurements.jsonl 2>/dev/null | wc -c | tr -d ' ')" 0
 cp "$T/tgz.bak" "$RD/exports/tensile-t-2026-09-12.tar.gz"
+# an observer-archive from before retirement rewrote index.json without the
+# retired record; retired.json, which it never touches, keeps it, so the
+# record still reads whole, the cut still lists the segment as retired, and
+# a snapshot carries retired.json and verifies
+cp "$RD/archive/measurements.jsonl/index.json" "$T/rindex.bak"
+python3 - "$RD/archive/measurements.jsonl" <<'PY'
+import json, os, sys
+d = sys.argv[1]
+idx = json.load(open(os.path.join(d, "index.json")))
+json.dump({"version": 1, "file": "measurements.jsonl", "segments": [s for s in idx["segments"] if s.get("retired")]}, open(os.path.join(d, "retired.json"), "w"))
+for s in idx["segments"]:
+    s.pop("retired", None)
+json.dump(idx, open(os.path.join(d, "index.json"), "w"))
+PY
+check not grep -q '"retired"' "$RD/archive/measurements.jsonl/index.json"
+check eq "$(python3 "$MANIFEST" cat "$RD" measurements.jsonl | sha256sum)" "$(sha256sum < "$T/whole.jsonl")"
+check python3 "$MANIFEST" write "$RD" "$T/rm-older.json"
+check eq "$(python3 -c 'import json,sys; f=json.load(open(sys.argv[1]))["files"]["measurements.jsonl"]; print(len(f["archive"]["segments"][0]["retired"]["exports"]))' "$T/rm-older.json")" 2
+rm -rf "$T/rosnap"; check python3 "$MANIFEST" snapshot "$RD" "$T/rosnap"
+check test -f "$T/rosnap/archive/measurements.jsonl/retired.json"
+check python3 "$MANIFEST" verify "$T/rosnap"
+cp "$T/rindex.bak" "$RD/archive/measurements.jsonl/index.json"
 # another vantage's heartbeats, rotated under vantages/<name>/archive/, are
 # cut, read, copied and verified like the observer's own
 python3 - "$RD" <<'PY'
@@ -405,6 +444,7 @@ printf 'secret' > "$B/sampling-master.key"
 # its index (the bytes are not read here, only copied)
 for a in "$B/archive/measurements.jsonl" "$B/vantages/de-1/archive/reachability.jsonl"; do
   mkdir -p "$a"; printf 'segment' | gzip -c > "$a/000001-2026-09-30.jsonl.gz"; printf '{"version":1}\n' > "$a/index.json"
+  printf '{"version":1,"segments":[]}\n' > "$a/retired.json"
 done
 BRT="$BR/bucket/sekret-token/t"
 mkexport() { # mkexport <day> <bytes>: an export tarball and its .sha256 sidecar
@@ -441,6 +481,7 @@ check cmp -s "$B/exports/$e1" "$BRT/exports/$e1"
 for a in archive/measurements.jsonl vantages/de-1/archive/reachability.jsonl; do
   check cmp -s "$B/$a/000001-2026-09-30.jsonl.gz" "$BRT/$a/000001-2026-09-30.jsonl.gz"
   check cmp -s "$B/$a/index.json" "$BRT/$a/index.json"
+  check cmp -s "$B/$a/retired.json" "$BRT/$a/retired.json"
 done
 check cmp -s "$B/vantages/de-1/reachability.jsonl" "$BRT/vantages/de-1/reachability.jsonl"
 check eq "$(grep '^copy ' "$T/rclone.log" | cut -d' ' -f2 | tr '\n' ' ')" "$B/archive $B/vantages/de-1/archive $B "
@@ -485,6 +526,39 @@ check backup
 check python3 -c 'import json, sys; [json.loads(l) for l in open(sys.argv[1])]' "$B/exports/remote.jsonl"
 check eq "$(proofs $e5)" "$(sha_of "$B/exports/$e5") true"
 check eq "$(wc -l < "$B/exports/remote.jsonl" | tr -d ' ')" 8   # e4 and e5 proven, nothing of the torn line
+# every proof names the remote it read (the first 16 hex digits of the
+# SHA-256 of the destination, never the destination), and a copy that
+# finished is recorded with it: observer-archive counts a proof only while
+# the copies to that remote go on finishing
+fp=$(printf '%s' "fake:bucket/sekret-token/t" | sha256sum | cut -c1-16)
+check eq "$(grep -c "\"remote\":\"$fp\"}" "$B/exports/remote.jsonl" | tr -d ' ')" 8
+check python3 -c 'import json, sys; c = json.load(open(sys.argv[1])); assert c["copied_at"].endswith("Z") and c["remote"] == sys.argv[2], c' "$B/exports/remote-copy.json" "$fp"
+check not grep -q sekret "$B/exports/remote-copy.json"
+# a new BACKUP_REMOTE: every export is read back from it, since a proof of
+# another remote proves nothing of this one, and the copy recorded names it
+: > "$T/rclone.log"
+check backup BACKUP_REMOTE=fake:moved/sekret-token
+check eq "$(grep -c '^cat ' "$T/rclone.log" | tr -d ' ')" 5
+fp2=$(printf '%s' "fake:moved/sekret-token/t" | sha256sum | cut -c1-16)
+check eq "$(proofs $e1 | tail -n 1)" "$(sha_of "$B/exports/$e1") true"
+check grep -q "\"remote\":\"$fp2\"}" "$B/exports/remote-copy.json"
+# a copy that fails names no remote: rclone's message for a remote it
+# cannot set up gives the remote as given, and it is replaced; the copy
+# recorded stays the last one that finished
+check not backup BACKUP_REMOTE=fake:third/sekret-token FAKE_RCLONE_FAIL=copy
+check grep -q 'Failed to create file system for "BACKUP_REMOTE/t/archive"' "$T/backup.out"
+check not grep -q sekret "$T/backup.out"
+check grep -q "\"remote\":\"$fp2\"}" "$B/exports/remote-copy.json"
+# a torn last line that ends in NUL bytes (the size reached the disk, the
+# data did not) is dropped too: read through $(...) the NUL would vanish,
+# the line would pass for a whole one, and the next proof would be written
+# onto it
+printf '{"name":"%s","sh\0\0\0\0' "$e5" >> "$B/exports/remote.jsonl"
+: > "$T/rclone.log"
+check backup BACKUP_REMOTE=fake:moved/sekret-token
+check not grep -q '^cat ' "$T/rclone.log"
+check python3 -c 'import json, sys; [json.loads(l) for l in open(sys.argv[1])]' "$B/exports/remote.jsonl"
+check eq "$(tail -c 1 "$B/exports/remote.jsonl" | od -An -tx1 | tr -d ' \n')" 0a
 
 echo "== vantage pull"
 # deploy/vantage-pull.sh against the fake rclone, with util-linux's flock
@@ -515,8 +589,17 @@ cat > "$T/degraded2.json" <<'J'
 J
 serve fake-http.py --code 503 --body "$T/degraded2.json"; p503b=$PORT
 hwstate="$T/hw/status/healthwatch.state"
+# a fake systemctl: is-failed --quiet <unit> passes for each unit listed in
+# $T/failed-units
+cat > "$T/systemctl" <<'SH'
+#!/bin/sh
+[ "$1" = is-failed ] && [ "$2" = --quiet ] || exit 2
+grep -qxF "$3" "$FAKE_FAILED_UNITS" 2>/dev/null
+SH
+chmod +x "$T/systemctl"; : > "$T/failed-units"
 hw() { # hw <api port>: one healthwatch run; its exit code says ok or not
   API_LISTEN="127.0.0.1:$1" DATA_DIR="$T/hw" NETWORK=t ALERT_REPEAT_MIN=60 \
+    SYSTEMCTL="$T/systemctl" FAKE_FAILED_UNITS="$T/failed-units" \
     ALERT_WEBHOOK="http://127.0.0.1:$hook/" bash "$HW" t >> "$T/check.log" 2>&1 || true
 }
 posts() { if [ -f "$T/hook.log" ]; then wc -l < "$T/hook.log" | tr -d ' '; else echo 0; fi; }
@@ -536,6 +619,21 @@ check contains "$(lastpost)" recovered
 # empty, so the upgrade alone does not alert
 printf 'degraded\n%s\n' "$(date +%s)" > "$hwstate"
 hw "$p503"; check eq "$(posts)" 3
+# a nightly unit that failed (the backup, which the remote proofs rest on,
+# or the archive run) is a failing check of its own, which /v1/health
+# cannot see: it alerts beside a healthy API, joins the set beside a
+# degraded one, and its next good run recovers
+printf 'ok\n%s\n\n' "$(date +%s)" > "$hwstate"
+echo "fibre-backup@t.service" > "$T/failed-units"
+hw "$p200"; check eq "$(posts)" 4
+check contains "$(lastpost)" "fibre-backup@t.service failed"
+check eq "$(sed -n 3p "$hwstate")" fibre-backup@t
+echo "fibre-archive@t.service" >> "$T/failed-units"
+hw "$p503"; check eq "$(posts)" 5
+check eq "$(sed -n 3p "$hwstate")" chain_liveness,fibre-archive@t,fibre-backup@t
+: > "$T/failed-units"
+hw "$p200"; check eq "$(posts)" 6
+check contains "$(lastpost)" recovered
 # Telegram: the bot API's sendMessage with the chat and the text; a refused
 # post (an unknown token is a 404 there) is said, and the token never printed
 tgtest() { # tgtest <bot api port>: healthwatch --test against it

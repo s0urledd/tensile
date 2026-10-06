@@ -408,3 +408,17 @@ func TestStoreRestartsAfterRotation(t *testing.T) {
 	wantKeys(t, "publications", recordKeys(t, st2.PublicationsPath(), "promise_hash"), "p", first, 11)
 	wantKeys(t, "payments", recordKeys(t, st2.PaymentsPath(), "dedupe_key"), "k", first, 11)
 }
+
+// A run's start says the scanner follows a rotation of its files, which
+// observer-archive waits for before it rotates publications.jsonl and
+// payments.jsonl; the operator's config goes in as it is and is not changed.
+func TestRunConfigSaysTheScannerFollowsRotation(t *testing.T) {
+	in := map[string]any{"rpc": "http://node"}
+	out := runConfig(in)
+	if out["rpc"] != "http://node" || out[FollowsRotation] != true || len(in) != 1 {
+		t.Fatalf("%v from %v", out, in)
+	}
+	if out := runConfig(nil); len(out) != 1 || out[FollowsRotation] != true {
+		t.Fatalf("no config: %v", out)
+	}
+}

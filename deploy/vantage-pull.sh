@@ -33,6 +33,14 @@
 # nothing, since appending from a lower offset would put other bytes at
 # offsets the record already holds.
 #
+# Only whole lines are appended. The fetched bytes go to a file of their
+# own first (vantages/<name>/.pull.part), and the local file gets them up to
+# their last newline: a line the vantage is still writing, or a fetch that
+# breaks part-way, would otherwise leave the record ending inside a line,
+# which nothing on this host completes or cuts (observer-archive leaves such
+# a file as it is until it ends in a whole line). The rest is fetched again
+# by the next pull, which starts at the local logical end.
+#
 # Environment (the network's env file):
 #   VANTAGE_PULL_HOST    user@host of an sftp-only account on that server
 #   VANTAGE_PULL_NAMES   space-separated vantage names; each is read from
@@ -96,6 +104,19 @@ pull() {
 	return $st
 }
 
+# whole <file>: the length of <file> up to and including its last newline,
+# 0 when it holds none. The last byte is read as a number (a NUL read
+# through $(...) is dropped), and tail -n 1 prints the bytes after the last
+# newline alone when the file does not end with one.
+whole() {
+	total=$(wc -c <"$1" | tr -d ' ') || return 1
+	if [ "$total" -eq 0 ] || [ "$(tail -c 1 "$1" | od -An -tx1 | tr -d ' \n')" = 0a ]; then
+		echo "$total"
+		return 0
+	fi
+	echo $((total - $(tail -n 1 "$1" | wc -c)))
+}
+
 # fetch <name>: the pull itself, under the shared lock of the local file.
 fetch() {
 	n=$1
@@ -151,10 +172,26 @@ fetch() {
 		return 1
 	fi
 	if [ "$size" -gt "$end" ]; then
+		# Whatever arrives, before a failure too, is the remote's bytes at
+		# their offsets from the logical end: its whole lines are appended,
+		# and the next pull goes on from there.
+		part="$data/vantages/$n/.pull.part"
 		# shellcheck disable=SC2086
-		if ! "$rclone" cat --offset "$end" $flags "$src" >&9; then
-			# Whatever arrived before the failure is the remote's bytes at
-			# their offsets: the next pull goes on from there.
+		if "$rclone" cat --offset "$end" $flags "$src" >"$part"; then fetched=0; else fetched=1; fi
+		if ! keep=$(whole "$part"); then
+			echo "vantage-pull[$net]: $n: the fetched bytes could not be read; appended nothing" >&2
+			rm -f "$part"
+			exec 9>&-
+			return 1
+		fi
+		if [ "$keep" -gt 0 ] && ! head -c "$keep" "$part" >&9; then
+			echo "vantage-pull[$net]: $n: could not append to the local file" >&2
+			rm -f "$part"
+			exec 9>&-
+			return 1
+		fi
+		rm -f "$part"
+		if [ "$fetched" != 0 ]; then
 			echo "vantage-pull[$net]: $n: fetch failed" >&2
 			exec 9>&-
 			return 1
