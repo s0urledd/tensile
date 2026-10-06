@@ -556,6 +556,9 @@ func (s *Server) comparePaths(ctx context.Context, cases []pathCase) (int, []str
 		if epochOf(ctx) == nil {
 			return errNoParts
 		}
+		// The endorsement ledger is read outside the transaction and is not
+		// a partial: both ways get one reading of it (ledgerOnce).
+		ctx = withLedgerOnce(ctx)
 		ref := withEpoch(ctx, nil)
 		for _, c := range cases {
 			want, err := c.run(ref)

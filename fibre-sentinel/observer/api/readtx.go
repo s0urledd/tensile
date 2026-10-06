@@ -20,7 +20,10 @@ import (
 //
 // The memo of original_rows and the endorsement ledger are the exception:
 // they are caches of the whole record kept across computations
-// (origrows.go, signing.go), and read the database as they always did.
+// (origrows.go, signing.go), and read the database as they always did. A
+// comparison of the partials with the shipped statements (comparePaths)
+// reads the ledger once for both ways (ledgerOnce): read per way, a
+// publication stored in between moved one way's newest endorsements.
 
 // querierKey carries the querier a computation reads through.
 type querierKey struct{}
