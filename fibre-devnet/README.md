@@ -254,7 +254,7 @@ API `1317+i·10`, privval gRPC `26669+i·100`, core BlockAPI gRPC `19098+i·100`
 
 `celestia-appd` and `fibre` on `PATH`, plus `curl` (`jq` optional, only for
 prettier output). Build them from a celestia-app checkout at the pinned commit
-`3b77dc2f5b00e1a646a2e9dd98b5c024a0d9ad8a` (v10.2.0-mocha; `x/fibre` and `x/valaddr` are
+`5187d2fb5eb8bc4b534c74724882943c54253ae9` (v10.4.0-mocha; `x/fibre` and `x/valaddr` are
 live from block 1, no upgrade):
 
 ```

@@ -25,7 +25,7 @@ port, behind one Caddy with a site per network (see "Two networks").
 
 ## 1. Prerequisites
 
-- A Linux VM with Go 1.23+ (the celestia-app pin needs 1.26.5; `GOTOOLCHAIN=auto` downloads it), Node 22, Caddy 2.
+- A Linux VM with Go 1.23+ (the celestia-app pin needs 1.26.6; `GOTOOLCHAIN=auto` downloads it), Node 22, Caddy 2.
 - A CometBFT RPC endpoint for the chain you observe. Use your own full node
   (default pruning is fine; no archive node is needed) with
   `storage.discard_abci_responses = false` in `config.toml`: the scanner

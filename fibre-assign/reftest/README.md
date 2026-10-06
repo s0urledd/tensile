@@ -16,11 +16,11 @@ cd fibre-assign/reftest && go test ./...
 
 Needs only:
 
-- **Go with toolchain auto-download.** celestia-app pins `go 1.26.5`; the default
+- **Go with toolchain auto-download.** celestia-app pins `go 1.26.6`; the default
   `GOTOOLCHAIN=auto` fetches it.
 - **Network to the module proxy.** celestia-app is a normal pinned dependency —
-  `require github.com/celestiaorg/celestia-app/v10 v10.2.0-mocha`,
-  the tag for commit `3b77dc2f5b00e1a646a2e9dd98b5c024a0d9ad8a`. No
+  `require github.com/celestiaorg/celestia-app/v10 v10.4.0-mocha`,
+  the tag for commit `5187d2fb5eb8bc4b534c74724882943c54253ae9`. No
   local checkout.
 
 The `replace (...)` block in `go.mod` is copied verbatim from celestia-app's own
