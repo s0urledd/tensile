@@ -7,14 +7,18 @@
 # /v1/health is 200 when every process is alive and the disk has room, 503
 # with the failing checks otherwise. The check is deliberately outside the
 # processes it judges: a dead prober cannot report itself, and this script
-# has no state to lose. It posts to ALERT_WEBHOOK (a Discord, Slack, Matrix
-# or Telegram-bridge URL that accepts a JSON body with "content"), once
-# when the state or the set of failing checks changes, and again every
-# ALERT_REPEAT_MIN minutes while it stays bad, so a broken observer nags, a
-# second fault is heard even while the first persists, and a fixed one says
-# so once.
+# has no state to lose. It posts to ALERT_WEBHOOK (a Discord, Slack or
+# Matrix URL that accepts a JSON body with "content") and to a Telegram chat
+# through a bot (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID), whichever are
+# set, once when the state or the set of failing checks changes, and again
+# every ALERT_REPEAT_MIN minutes while it stays bad, so a broken observer
+# nags, a second fault is heard even while the first persists, and a fixed
+# one says so once.
 #
-# With ALERT_WEBHOOK empty it only logs, which journalctl -u
+# The site shows no check, only an API that does not answer: a failing
+# check reaches the operator here alone.
+#
+# With neither set it only logs, which journalctl -u
 # fibre-healthwatch@<instance> shows; point any external uptime monitor at
 # /api/v1/health for the same signal without this script.
 set -o errexit -o nounset -o pipefail
@@ -23,26 +27,56 @@ instance="${1:?instance}"
 listen="${API_LISTEN:-127.0.0.1:8080}"
 url="http://${listen}/v1/health"
 webhook="${ALERT_WEBHOOK:-}"
+tg_token="${TELEGRAM_BOT_TOKEN:-}"
+tg_chat="${TELEGRAM_CHAT_ID:-}"
+tg_api="${TELEGRAM_API:-https://api.telegram.org}" # the selftest points it at a fake
+tg=0; if [ -n "$tg_token" ] && [ -n "$tg_chat" ]; then tg=1; fi
 repeat="${ALERT_REPEAT_MIN:-60}"
 state="${DATA_DIR:-/var/lib/fibre-observer/$instance}/status/healthwatch.state"
 name="${NETWORK:-$instance}"
 
-# --test: post one message to the webhook and exit with curl's verdict,
-# touching no state. A webhook that was pasted wrong, or a channel that
-# dropped the integration, looks exactly like a healthy observer until the
-# day it is not; this is how an operator proves delivery before that day.
-# deploy/test/exposure.sh runs it.
+# post URL JSON prints the HTTP status, 000 when nothing answered. Only the
+# status is ever printed: curl's own error text can carry the URL, and the
+# URL is the secret (the webhook, or the bot token inside Telegram's).
+post() {
+  curl -sS -m 20 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d "$2" "$1" 2>/dev/null || echo 000
+}
+
+# deliver MSG posts to every destination that is set, says which one
+# refused it (never its URL), and fails if any did.
+deliver() {
+  local msg=$1 failed=0 code payload
+  if [ -n "$webhook" ]; then
+    # Read stdin once. Reading it twice in one dict literal left "text"
+    # empty, because Python evaluates the values in order and the first read
+    # exhausts it: Discord reads "content" and worked, Slack reads "text",
+    # rejected the empty payload with a 400, and nothing said so.
+    payload=$(printf '%s' "$msg" | python3 -c 'import json,sys; m=sys.stdin.read()[:1900]; print(json.dumps({"content": m, "text": m}))' 2>/dev/null \
+      || printf '{"content":"%s"}' "$msg")
+    code=$(post "$webhook" "$payload")
+    case "$code" in 2*) ;; *) echo "healthwatch[$name]: webhook post failed (HTTP $code)" >&2; failed=1 ;; esac
+  fi
+  if [ "$tg" = 1 ]; then
+    payload=$(printf '%s' "$msg" | TG_CHAT="$tg_chat" python3 -c 'import json,os,sys; m=sys.stdin.read()[:3500]; print(json.dumps({"chat_id": os.environ["TG_CHAT"], "text": m, "disable_web_page_preview": True}))')
+    code=$(post "${tg_api}/bot${tg_token}/sendMessage" "$payload")
+    case "$code" in 2*) ;; *) echo "healthwatch[$name]: telegram post failed (HTTP $code)" >&2; failed=1 ;; esac
+  fi
+  return $failed
+}
+
+# --test: post one message to every destination set and exit with the
+# verdict, touching no state. A webhook pasted wrong, a bot not in the chat,
+# or a channel that dropped the integration looks exactly like a healthy
+# observer until the day it is not; this is how an operator proves delivery
+# before that day. deploy/test/exposure.sh runs it.
 if [ "${2:-}" = "--test" ]; then
-  [ -n "$webhook" ] || { echo "healthwatch[$name]: ALERT_WEBHOOK is empty; nothing to test" >&2; exit 1; }
-  msg="Fibre observer [$name] test: alert delivery check from $(hostname) at $(date -u +%Y-%m-%dT%H:%M:%SZ); no action needed"
-  payload=$(printf '%s' "$msg" | python3 -c 'import json,sys; m=sys.stdin.read()[:1900]; print(json.dumps({"content": m, "text": m}))')
-  # Only the status code is printed: curl's own error text can carry the
-  # URL, and the URL is the secret.
-  code=$(curl -sS -m 20 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d "$payload" "$webhook" 2>/dev/null) || code=000
-  case "$code" in
-    2*) echo "healthwatch[$name]: test message delivered (HTTP $code)"; exit 0 ;;
-    *)  echo "healthwatch[$name]: webhook post failed (HTTP ${code:-000})" >&2; exit 1 ;;
-  esac
+  if [ -z "$webhook" ] && [ "$tg" = 0 ]; then
+    echo "healthwatch[$name]: neither ALERT_WEBHOOK nor TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set; nothing to test" >&2; exit 1
+  fi
+  if deliver "Fibre observer [$name] test: alert delivery check from $(hostname) at $(date -u +%Y-%m-%dT%H:%M:%SZ); no action needed"; then
+    echo "healthwatch[$name]: test message delivered"; exit 0
+  fi
+  exit 1
 fi
 
 body=$(curl -sS -m 20 -o /dev/stdout -w '\n%{http_code}' "$url" 2>/dev/null || echo -e '\n000')
@@ -108,22 +142,13 @@ fi
 if [ "$notify" = 1 ]; then
   mkdir -p "$(dirname "$state")"
   printf '%s\n%s\n%s\n' "$now" "$epoch" "$failing" > "$state"
-  if [ -n "$webhook" ]; then
+  if [ -n "$webhook" ] || [ "$tg" = 1 ]; then
     msg="Fibre observer [$name] $now: $summary"
     if [ "$changed" = 1 ]; then msg="Fibre observer [$name] $now, failing checks changed (was: ${prev_failing:-none}): $summary"; fi
     if [ "$now" = "ok" ] && [ -n "$prev_state" ]; then msg="Fibre observer [$name] recovered: $summary"; fi
-    # Read stdin once. Reading it twice in one dict literal left "text"
-    # empty, because Python evaluates the values in order and the first read
-    # exhausts it: Discord reads "content" and worked, Slack reads "text",
-    # rejected the empty payload with a 400, and curl without --fail exited 0
-    # — so the alert was never delivered and the log said nothing.
-    payload=$(printf '%s' "$msg" | python3 -c 'import json,sys; m=sys.stdin.read()[:1900]; print(json.dumps({"content": m, "text": m}))' 2>/dev/null \
-      || printf '{"content":"%s"}' "$msg")
-    # --fail-with-body so a rejected post is an error here rather than a
-    # silence. The point of this script is that somebody hears about it.
-    if ! out=$(curl -sS --fail-with-body -m 20 -X POST -H 'content-type: application/json' -d "$payload" "$webhook" 2>&1); then
-      echo "healthwatch: webhook post failed: $out" >&2
-    fi
+    # A refused post is said in the log rather than kept silent: the point
+    # of this script is that somebody hears about it.
+    deliver "$msg" || true
   fi
 fi
 [ "$now" = "ok" ]
