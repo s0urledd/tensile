@@ -11,6 +11,6 @@ test that pins it to a specific celestia-app commit:
 
   - fibre-tlsverify/testdata/identity_vectors.json is a byte-for-byte copy of
     celestia-app's golden vectors at commit dba155084505a8f6c5d37260a94f70f939fb96de.
-  - fibre-assign/reftest/ builds celestia-app v10.2.0-mocha
-    (commit 3b77dc2f5b00e1a646a2e9dd98b5c024a0d9ad8a) from the module proxy
+  - fibre-assign/reftest/ builds celestia-app v10.4.0-mocha
+    (commit 5187d2fb5eb8bc4b534c74724882943c54253ae9) from the module proxy
     and diffs against its real implementation.

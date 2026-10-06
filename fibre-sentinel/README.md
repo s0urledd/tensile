@@ -439,7 +439,7 @@ sample/                    outputs from a real devtest / probe-devtest run
 
 ## Build
 
-Go 1.23+ with `GOTOOLCHAIN=auto` (celestia-app pins `go 1.26.5` and the toolchain
+Go 1.23+ with `GOTOOLCHAIN=auto` (celestia-app pins `go 1.26.6` and the toolchain
 auto-downloads). `fibre-assign` and `fibre-tlsverify` are sibling modules in this
 repo, resolved by relative `replace` directives — build from a full checkout of
 the repo, not from this subdirectory alone.

@@ -73,8 +73,8 @@ distributions, blob-v0 parameters and randomised `(K, N, MinRowsPerValidator,
 LivenessThreshold)` — through **both** this package and celestia-app's real
 `validator.Set.Assign`, asserting the two `ShardMap`s are **bit-identical**
 (same validators, same row slices, same order). Plus the called-out edge shapes
-and shuffled input order. `reftest/go.mod` pins celestia-app to `v10.2.0-mocha`, the
-tag for commit `3b77dc2f5b00e1a646a2e9dd98b5c024a0d9ad8a`, and repeats
+and shuffled input order. `reftest/go.mod` pins celestia-app to `v10.4.0-mocha`, the
+tag for commit `5187d2fb5eb8bc4b534c74724882943c54253ae9`, and repeats
 its `replace` block (Go does not apply a dependency's replaces).
 
 CI runs both on every push (`fibre-assign` with `-race`, `fibre-assign-reftest`
