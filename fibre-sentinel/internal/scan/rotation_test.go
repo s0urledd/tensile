@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -245,6 +247,100 @@ func TestStoreWritesFollowRotation(t *testing.T) {
 			t.Fatalf("%s: verify: %d segments, %v", p, segs, err)
 		}
 	}
+}
+
+// A running store writes each publication and payment to the file its path
+// names at that write: once a new file holding the old one's tail takes
+// the path, as the archiver's swap leaves it, the next lines follow the
+// old ones there, and none goes on into the file it replaced, where no
+// reader would see it. The swap is done by hand so this runs without
+// flock: renamed over the path where a file held open can be replaced, and
+// on every platform by pointing the data directory, a link, at a directory
+// holding the new files (Windows refuses the rename).
+func TestStoreFollowsANewFileAtItsPath(t *testing.T) {
+	for _, how := range []string{"rename", "link"} {
+		t.Run(how, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, "data")
+			if how == "link" {
+				for _, d := range []string{"1", "2"} {
+					if err := os.Mkdir(filepath.Join(root, d), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := linkDir(filepath.Join(root, "1"), dir); err != nil {
+					t.Skipf("no directory link here (%v); the rename variant runs the same checks", err)
+				}
+			}
+			st, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			for i := 0; i < 5; i++ {
+				if err := appendRecord(st, i, rotDay(i)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := st.Sync(); err != nil {
+				t.Fatal(err)
+			}
+			files := []struct{ path, field, key, prefix string }{
+				{st.PublicationsPath(), "settlement_time", "promise_hash", "p"},
+				{st.PaymentsPath(), "time", "dedupe_key", "k"},
+			}
+			for _, f := range files {
+				raw, err := os.ReadFile(f.path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				tail := raw[int64(len(raw))-tailFrom(t, f.path, f.field, rotDay(2)):]
+				if how == "link" {
+					if err := os.WriteFile(filepath.Join(root, "2", filepath.Base(f.path)), tail, 0o644); err != nil {
+						t.Fatal(err)
+					}
+					continue
+				}
+				if err := os.WriteFile(f.path+".rotate.tmp", tail, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(f.path+".rotate.tmp", f.path); err != nil {
+					t.Skipf("this platform does not replace a file held open (%v); the link variant runs the same checks", err)
+				}
+			}
+			if how == "link" {
+				if err := os.Remove(dir); err != nil {
+					t.Fatal(err)
+				}
+				if err := linkDir(filepath.Join(root, "2"), dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i := 5; i < 8; i++ {
+				if err := appendRecord(st, i, rotDay(i)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := st.Sync(); err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range files {
+				wantKeys(t, filepath.Base(f.path), recordKeys(t, f.path, f.key), f.prefix, 2, 8)
+			}
+		})
+	}
+}
+
+// linkDir makes link name the directory target: a symlink, or on Windows a
+// junction, which unlike a symlink needs no privilege there.
+func linkDir(target, link string) error {
+	if runtime.GOOS != "windows" {
+		return os.Symlink(target, link)
+	}
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+		return fmt.Errorf("mklink /J: %v: %s", err, bytes.TrimSpace(out))
+	}
+	return nil
 }
 
 // A scanner restarted after its files were rotated loads its dedupe sets

@@ -249,13 +249,16 @@ func TruncateTornTail(path string) (int64, error) {
 
 // loadSeen and loadPaySeen read the live file only, not the archived
 // segments before it. The dedupe set has to hold what a restart can append
-// again: the blocks after the last checkpoint, which are always among the
-// newest lines and so in the live window. Reading the segments too would
-// make every start read the whole history of the chain for nothing. A
-// manual re-scan of heights older than the live window may append a record
-// again; the collector's store keeps the first one, and that day's export
-// then holds a repeated key, which record-verify reports, so the day is
-// never retired.
+// again: the blocks after the last checkpoint. Those are in the live file
+// unless an archive run came while the scanner was stopped in the middle
+// of catching up on heights older than -keep, which can move most of them
+// into a segment; a manual re-scan of older heights is the same case.
+// Reading the segments too would make every start read the whole history
+// of the chain for nothing. A record appended again is a duplicate the
+// collector's store ignores, keeping the first copy, and record-verify
+// either finds the second copy byte for byte what the store gives back or
+// reports it (a key repeated within one day's export, or different bytes),
+// so no day is retired on bytes the store does not reproduce.
 func (s *Store) loadSeen() error {
 	if cut, err := TruncateTornTail(s.pubPath); err != nil {
 		return fmt.Errorf("repair %s: %w", s.pubPath, err)

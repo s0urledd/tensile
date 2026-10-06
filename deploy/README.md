@@ -790,9 +790,10 @@ export has read, always leaving the last line; write the segment, fsync it,
 read it back and match its digest; copy the rest to a temp file; then,
 holding the file's exclusive `flock`, copy what was appended since, write
 the index and rename the copy over the live file. The writers
-(`sentinel-probe`, `observer-heartbeat`) append under a shared `flock` and
-reopen the path when it no longer names the file they hold, so no line is
-lost or written twice. A crash at any step leaves the record readable as
+(`sentinel-probe`, `observer-heartbeat`, and `sentinel-scan` for
+publications and payments) append under a shared `flock` and reopen the
+path when it no longer names the file they hold, so no line is lost or
+written twice. A crash at any step leaves the record readable as
 before; the next run removes the leftovers. A second run the same day moves
 nothing.
 
@@ -814,14 +815,16 @@ fibre-backup-manifest cat /var/lib/fibre-observer/mocha measurements.jsonl | wc 
 `-keep 336h` in `ARCHIVE_ARGS` in the env file keeps two weeks live. The
 backup copies `archive/` before the live files, and its manifest names every
 segment and the live base; `restore.sh` and `verify` check each segment. The
-small record files (publications, payments, host history, the collector's
-own logs, runs) are not archived: their writers hold them open without the
-lock. Neither are the files under `vantages/`, which `vantage-pull` resumes
+small record files (host history, the collector's own logs, runs) are not
+archived: their writers hold them open without the lock. Publications and
+payments are not archived either, though `sentinel-scan` writes them under
+the lock and the prober's tail of publications follows a rotation. Neither
+are the files under `vantages/`, which `vantage-pull` resumes
 by size; do not run `observer-archive` on a second vantage, whose files the
 observer pulls that way.
 
-Upgrade order: install binaries, restart `fibre-probe` and
-`fibre-heartbeat` (the writers must hold the lock before any rotation) and
+Upgrade order: install binaries, restart `fibre-probe`, `fibre-heartbeat`
+and `fibre-scan` (the writers must hold the lock before any rotation) and
 `fibre-collector`, then enable the timer.
 
 ### Runbook

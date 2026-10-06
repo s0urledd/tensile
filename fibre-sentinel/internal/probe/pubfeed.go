@@ -212,12 +212,40 @@ func (f *pubFeed) rotated(fh *os.File, size int64) error {
 		f.reset()
 		return nil
 	}
-	lines, err := countLines(fh, skip)
-	if err != nil {
-		return err
+	// f.line counts the lines of logical bytes [oldBase, oldBase+offset),
+	// and the segments cut since hold [oldBase, newBase) and say how many
+	// lines each has: the new file's lines before skip are the difference.
+	// Counting them by reading would hold mu, which the readings wait on,
+	// over most of a live file of days of publications on every rotation.
+	cut, ok := segmentLines(idx, oldBase, newBase)
+	lines := f.line - cut
+	if !ok || lines < 0 {
+		// segments the index does not list: count the lines themselves
+		if lines, err = countLines(fh, skip); err != nil {
+			return err
+		}
 	}
 	f.offset, f.line, f.head = skip, lines, head
 	return nil
+}
+
+// segmentLines is the number of lines in logical bytes [from, to), read
+// from the segments of idx that hold them. False when the segments listed
+// do not hold exactly that range, one after another.
+func segmentLines(idx *record.Index, from, to int64) (int64, bool) {
+	var lines int64
+	at := from
+	for _, sg := range idx.Segments {
+		if sg.To <= from || sg.From >= to {
+			continue
+		}
+		if sg.From != at || sg.To > to {
+			return 0, false
+		}
+		lines += sg.Lines
+		at = sg.To
+	}
+	return lines, at == to
 }
 
 // reset forgets everything read, to read the file again from its start.
@@ -264,7 +292,8 @@ func firstLineSHA256(fh *os.File) (string, error) {
 	return lineSHA256(line), nil
 }
 
-// countLines counts the newlines in r's first n bytes.
+// countLines counts the newlines in r's first n bytes. Only an index that
+// does not list the segments a rotation cut needs it (rotated).
 func countLines(r io.ReaderAt, n int64) (int64, error) {
 	buf := make([]byte, 1<<20)
 	var lines int64

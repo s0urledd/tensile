@@ -128,8 +128,11 @@ func pubRange(from, to int, except ...int) []string {
 // every one after it. "archive" is record.Archive itself, where flock lets
 // it run. "rename" does by hand what it does to the live file and the
 // index, and runs on every platform: the tail is copied to a new file, the
-// index gains a generation naming the copy by its first line, and the copy
-// is renamed over the path.
+// index gains the segment of the lines cut (its entry only: the feed never
+// reads a segment's file) and a generation naming the copy by its first
+// line, and the copy is renamed over the path. "unlisted" is "rename"
+// without the segment entry, an index the feed cannot count the lines cut
+// by.
 func rotatePubs(t *testing.T, how, path string, keepFrom int) {
 	t.Helper()
 	cutoff := feedPub(keepFrom).SettlementTime
@@ -151,13 +154,14 @@ func rotatePubs(t *testing.T, how, path string, keepFrom int) {
 		sum := sha256.Sum256(b[:bytes.IndexByte(b, '\n')+1])
 		return hex.EncodeToString(sum[:])
 	}
-	cut := 0
+	cut, lines := 0, int64(0)
 	for _, l := range bytes.SplitAfter(raw, []byte{'\n'}) {
 		var p scan.Publication
 		if json.Unmarshal(l, &p) != nil || !p.SettlementTime.Before(cutoff) {
 			break
 		}
 		cut += len(l)
+		lines++
 	}
 	idx, err := record.LoadIndex(path)
 	if err != nil {
@@ -174,6 +178,11 @@ func rotatePubs(t *testing.T, how, path string, keepFrom int) {
 	}
 	if len(idx.Generations) == 0 {
 		idx.Generations = []record.Generation{{Base: 0, Head: digest(raw)}}
+	}
+	if how == "rename" {
+		idx.Segments = append(idx.Segments, record.Segment{
+			Name: fmt.Sprintf("%06d-hand.jsonl.gz", len(idx.Segments)+1), From: base, To: base + int64(cut), Lines: lines,
+		})
 	}
 	idx.Generations = append(idx.Generations, record.Generation{Base: base + int64(cut), Head: digest(raw[cut:])})
 	b, err := json.Marshal(idx)
@@ -197,12 +206,14 @@ func rotatePubs(t *testing.T, how, path string, keepFrom int) {
 
 // A rotated publications.jsonl is told by its identity, not its size. When
 // the live file the archiver leaves is longer than the offset read in the
-// old one, which a size check takes for the same file, and when it is
-// shorter, the feed reads on at the first line it had not read: each later
-// publication is added once, every one it holds stays (archived or not),
-// none it has forgotten comes back, and it counts lines in the new file.
+// old one, which a size check takes for the same file, when it is shorter,
+// when the cut passed what the feed had read, and when two rotations came
+// between refreshes, the feed reads on at the first line it had not read:
+// each later publication is added once, every one it holds stays (archived
+// or not), none it has forgotten comes back, and it counts lines in the
+// new file, by the index's segments or by reading where they are unlisted.
 func TestPubFeedReadsOnAcrossRotation(t *testing.T) {
-	for _, how := range []string{"archive", "rename"} {
+	for _, how := range []string{"archive", "rename", "unlisted"} {
 		t.Run(how+"/longer", func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "publications.jsonl")
 			appendPubs(t, path, 0, 10)
@@ -229,12 +240,7 @@ func TestPubFeedReadsOnAcrossRotation(t *testing.T) {
 			if n, err := feed.refresh(); err != nil || n != 1 {
 				t.Fatalf("the next append: %d %v", n, err)
 			}
-			f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			f.WriteString("{not json}\n")
-			f.Close()
+			appendBad(t, path)
 			// p03..p30 are the new file's first 28 lines
 			if _, err := feed.refresh(); err == nil || !strings.Contains(err.Error(), "line 29:") {
 				t.Fatalf("a bad line after the rotation: %v, want it named as line 29", err)
@@ -263,6 +269,72 @@ func TestPubFeedReadsOnAcrossRotation(t *testing.T) {
 				t.Fatalf("held %v\nwant %v", got, want)
 			}
 		})
+		// The cut at (keep 5) or past (keep 7) the end of what the feed had
+		// read: the new file starts at a line it never read, and the lines
+		// it never read that went to the segment are not looked for there
+		// (the -keep rule puts their schedules a day in the past).
+		for _, keep := range []int{5, 7} {
+			t.Run(fmt.Sprintf("%s/behind-%d", how, keep), func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "publications.jsonl")
+				appendPubs(t, path, 0, 5)
+				feed := newPubFeed(path)
+				if n, err := feed.refresh(); err != nil || n != 5 {
+					t.Fatalf("first refresh: %d %v", n, err)
+				}
+				appendPubs(t, path, 5, 10)
+				rotatePubs(t, how, path, keep)
+				if n, err := feed.refresh(); err != nil || n != 10-keep {
+					t.Fatalf("refresh after the rotation added %d (%v), want the %d the new file holds", n, err, 10-keep)
+				}
+				if got, want := feedHashes(feed), append(pubRange(0, 5), pubRange(keep, 10)...); !slices.Equal(got, want) {
+					t.Fatalf("held %v\nwant %v", got, want)
+				}
+				appendBad(t, path)
+				if _, err := feed.refresh(); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("line %d:", 10-keep+1)) {
+					t.Fatalf("a bad line after the rotation: %v, want it named as line %d", err, 10-keep+1)
+				}
+			})
+		}
+		t.Run(how+"/twice", func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "publications.jsonl")
+			appendPubs(t, path, 0, 10)
+			feed := newPubFeed(path)
+			if n, err := feed.refresh(); err != nil || n != 10 {
+				t.Fatalf("first refresh: %d %v", n, err)
+			}
+			for _, h := range []string{"p00", "p01", "p07"} {
+				feed.forget(h)
+			}
+			appendPubs(t, path, 10, 12)
+			rotatePubs(t, how, path, 3)
+			appendPubs(t, path, 12, 15)
+			rotatePubs(t, how, path, 6)
+			if n, err := feed.refresh(); err != nil || n != 5 {
+				t.Fatalf("refresh after two rotations added %d (%v), want the 5 written since", n, err)
+			}
+			if got, want := feedHashes(feed), pubRange(2, 15, 7); !slices.Equal(got, want) {
+				t.Fatalf("held %v\nwant %v", got, want)
+			}
+			appendBad(t, path)
+			// p06..p14 are the new file's first 9 lines
+			if _, err := feed.refresh(); err == nil || !strings.Contains(err.Error(), "line 10:") {
+				t.Fatalf("a bad line after two rotations: %v, want it named as line 10", err)
+			}
+		})
+	}
+}
+
+// appendBad appends a line that is not JSON, to see which line number the
+// feed names it by.
+func appendBad(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString("{not json}\n"); err != nil {
+		t.Fatal(err)
 	}
 }
 
