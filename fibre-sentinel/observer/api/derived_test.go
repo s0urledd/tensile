@@ -441,8 +441,9 @@ func TestAMemoAndALedgerReadBeforeAMigrationAreNotWrittenUnderIt(t *testing.T) {
 	if recent1 == recent0 {
 		t.Fatal("fixture: the endorsements backfilled move no recent endorsement")
 	}
+	// the record and the column the API reads it from (migration 27), as a backfill would write them
 	if _, err := db.Exec(`UPDATE publications
-		SET raw_json = json_set(raw_json, '$.assignment.protocol_params.original_rows', 4096)
+		SET raw_json = json_set(raw_json, '$.assignment.protocol_params.original_rows', 4096), original_rows = 4096
 		WHERE json_type(raw_json, '$.assignment.protocol_params.original_rows') IS NULL
 			AND rowid <= (SELECT MAX(rowid) FROM publications) - ?`, memoChecked); err != nil {
 		t.Fatal(err)

@@ -74,7 +74,7 @@ func loadSpanSQL(filter string) string {
 // origSQL is original_rows as rowBytesSQL reads it: the memo's entry (m)
 // when it has one, the record's own otherwise.
 const origSQL = `CASE WHEN m.promise_hash IS NOT NULL THEN m.original_rows
-					ELSE json_extract(p.raw_json, '$.assignment.protocol_params.original_rows') END`
+					ELSE p.original_rows END`
 
 // loadHeldSQL is loadSQL's other half, what each validator holds at ?3, over
 // its own population: the held publications only (heldSQL), read through

@@ -124,7 +124,7 @@ type memoRows struct {
 }
 
 // originalRowsSQL is the value the memo remembers, as rowBytesSQL reads it.
-const originalRowsSQL = `json_extract(p.raw_json, '$.assignment.protocol_params.original_rows')`
+const originalRowsSQL = `p.original_rows`
 
 // memoKey reports whether a hash can go into the JSON object doc builds
 // without escaping. Promise hashes are hex; anything else is left to the

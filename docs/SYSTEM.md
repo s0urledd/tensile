@@ -139,7 +139,7 @@ needs a full VACUUM, which is why an existing DB has to be deleted). The
 collector owns the schema; the API opens `query_only` and refuses a database
 older *or* newer than the binary expects.
 
-**Schema version 20.** Base tables from `schema.sql`: `schema_migrations`,
+**Schema version 27.** Base tables from `schema.sql`: `schema_migrations`,
 `observer_runs`, `ingest_cursors`, `params_history`, `publications`,
 `assignments`, `endpoints`, `probes`, `meta`, `reachability`. Migrations add:
 
@@ -166,6 +166,27 @@ older *or* newer than the binary expects.
 | 19 | params uncertainty: `param_uncertainty`, `publication_corrections`, `probe_corrections`, the `retention_unverified` hold and the `*_at_scan` / `*_at_probe` originals, `obligation_daily.held_param_unverified`, and `publications.must_serve_until_ambiguous` (written to the record since it was added and read by nothing until now) |
 | 24 | `sampling_decisions` and its points: a sampled-out publication stored once; `probe_rows` derives its NOT_PROBED rows for every figure; the rows already stored for one are collapsed into it |
 | 26 | `publications_tx` and `publications_commitment`: a blob looked up by its settlement transaction or its commitment (`/v1/blobs?tx=`, `?commitment=`) is a seek, not a walk |
+| 27 | the slim record: `publications.original_rows` / `total_rows` (the two values queries read out of `raw_json`), `slim_entries`, `reading_rows` |
+
+**The slim record (migration 27, `store/slim.go`, `internal/slim`).** A row this
+build writes keeps in `raw_json` the slim form of its record: every field of the
+JSONL line but those computed again from the others, from which the line is
+written back byte for byte (`Store.Record`, `Store.ProbeRecord`). What is
+computed again: each validator's rows (fibre-assign over the validator set and
+the commitment), the copies a reading carries of its publication, and the
+totals of the assignment. A computed field is dropped only when the computation
+gives back exactly what the record holds; anything else is kept as it is. What
+every slim record shares (dictionary, object shapes, validator sets, host
+vectors) is in `slim_entries`, written in the same transaction as the record
+that first needed it. A row an earlier build wrote keeps its line (it starts
+with `{`; a slim record never does) and is read as it is. The copies the slim
+record replaces are marked, not stored: `probes.row_indices` and
+`assignments.rows_json` hold `=` where the list is the validator's own
+assignment in its order (`Store.RowIndices`, `Store.AssignedRows`), and
+`reading_rows.exact` keeps each reading's count of distinct verified rows, which
+the rollup used to count with `json_each` over the lists. A row's record in
+`raw_json` is therefore not JSON: read it through those functions, never with
+`json_extract`.
 
 The store is append-only **in its inserts** (`ON CONFLICT DO NOTHING`) but not
 in its verdicts: `ApplyAmendment` updates a row's classification in place when

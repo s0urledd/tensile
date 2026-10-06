@@ -409,4 +409,5 @@ func insertEndRow(t *testing.T, st *store.Store, hash, validator string, rows []
 		len(rows), len(rows), "["+strings.Join(idx, ",")+"]"); err != nil {
 		t.Fatal(err)
 	}
+	recordColumns(t, st.DB())
 }

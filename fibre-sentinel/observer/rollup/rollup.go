@@ -310,7 +310,7 @@ func NotServedSQL(alias string) string {
 // rows, the exact count, whether a request reached a server, and whether
 // the prober missed one.
 func neededSQL(h string) string {
-	return `(SELECT json_extract(pk.raw_json, '$.assignment.protocol_params.original_rows') FROM publications pk WHERE pk.promise_hash = ` + h + `)`
+	return `(SELECT pk.original_rows FROM publications pk WHERE pk.promise_hash = ` + h + `)`
 }
 
 func lowerSQL(h, t string) string {
@@ -325,9 +325,10 @@ func upperSQL(h, t string) string {
 			WHERE qu.promise_hash = ` + h + ` AND qu.scheduled_at = ` + t + ` AND qu.commitment_verified = 1)`
 }
 
+// exactSQL is the reading's distinct verified rows, which the store counts as each verified row arrives
+// (store.reading_rows): the lists a validator's own assignment gives are not stored to be counted here.
 func exactSQL(h, t string) string {
-	return `(SELECT COUNT(DISTINCT j.value) FROM probes qx, json_each(qx.row_indices) j
-			WHERE qx.promise_hash = ` + h + ` AND qx.scheduled_at = ` + t + ` AND qx.commitment_verified = 1)`
+	return `COALESCE((SELECT rr.exact FROM reading_rows rr WHERE rr.promise_hash = ` + h + ` AND rr.scheduled_at = ` + t + `), 0)`
 }
 
 func ranSQL(h, t string) string {

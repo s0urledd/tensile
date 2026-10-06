@@ -568,7 +568,7 @@ var simWitnesses = []struct {
 	{"a row start that is not a store timestamp", `SELECT COUNT(*) FROM probes WHERE length(started_at) <> 30`},
 	{"a row start of the right shape that is no time", `SELECT COUNT(*) FROM probes WHERE started_at GLOB '*:60.*'`},
 	{"a publication recorded after its deadline", `SELECT COUNT(*) FROM publications WHERE recorded_at > must_serve_until`},
-	{"original_rows not a power of two", `SELECT COUNT(*) FROM publications WHERE json_extract(raw_json, '$.assignment.protocol_params.original_rows') = 4000`},
+	{"original_rows not a power of two", `SELECT COUNT(*) FROM publications WHERE original_rows = 4000`},
 	// full readings: a later attempt moves how the validator's answers
 	// before it count, which are of the same promise
 	{"a full reading's later attempt", `SELECT COUNT(*) FROM probes WHERE schedule_label = 'full' AND dedupe_key GLOB '*|[12]'`},

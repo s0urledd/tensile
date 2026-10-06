@@ -42,7 +42,7 @@ type loadStats struct {
 // joins) and from the record itself otherwise. The memo only ever holds what
 // json_extract returned for the same record, so the two cannot differ.
 const rowBytesSQL = `(p.blob_size * 1.0 / NULLIF(CASE WHEN m.promise_hash IS NOT NULL THEN m.original_rows
-			ELSE json_extract(p.raw_json, '$.assignment.protocol_params.original_rows') END, 0))`
+			ELSE p.original_rows END, 0))`
 
 // loadPopulationSQL selects the publications loadSQL reads: settled, with an
 // assignment, and either in the window (?1, ?2) or held at ?3 (heldSQL).
