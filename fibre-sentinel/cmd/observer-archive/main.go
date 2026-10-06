@@ -26,6 +26,17 @@
 // back to the same digest (retire.go). Anything not proven is kept, and the
 // run says why.
 //
+// Both runs give the disk back while it is busy (internal/pace). The disk is
+// shared with a validator, and on NVMe with the "none" I/O scheduler the
+// unit's IOSchedulingClass=idle does not lower a run's reads or writes.
+// Before each file it archives, and with -retire before each export it
+// reads, every few thousand lines of a day it checks against the store and
+// before each record.Retire, a run reads /proc/pressure/io and waits while
+// "some avg10" is above -pace-some or "full avg10" above -pace-full, until
+// "some avg10" has stayed below -pace-calm for -pace-calm-for, and never
+// longer than -pace-max-wait at a time. It never waits inside record.Archive
+// or record.Retire, which hold locks others wait on.
+//
 //	observer-archive -data-dir /var/lib/fibre-observer/mocha            archive
 //	observer-archive -data-dir ... -dry-run                             say what would move
 //	observer-archive -data-dir ... -verify                              check every segment
@@ -35,6 +46,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -45,6 +57,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/pace"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
@@ -109,6 +122,32 @@ func filePath(dataDir, name string) string {
 // DefaultKeep is how much of each file stays live.
 const DefaultKeep = 7 * 24 * time.Hour
 
+// The pace's defaults are the rule the deploys pause their own heavy work
+// by: hold while "some avg10" is above 6 or "full avg10" above 4, and go on
+// once "some avg10" has stayed below 2 for 20 seconds. No single pause
+// lasts longer than half an hour: a run that waited for as long as the
+// validator kept the disk busy might not end at all, and the live files
+// would go on growing with nothing archived.
+const (
+	DefaultPaceSome    = 6.0
+	DefaultPaceFull    = 4.0
+	DefaultPaceCalm    = 2.0
+	DefaultPaceCalmFor = 20 * time.Second
+	DefaultPaceMaxWait = 30 * time.Minute
+)
+
+// pressure is where the pace reads the disk's I/O pressure, and pollEvery
+// how often a pause reads it again; the tests put a scripted source and a
+// short poll here, and keep the test runner's own load out of the others.
+var (
+	pressure  pace.Source = pace.Proc
+	pollEvery             = pace.DefaultPoll
+)
+
+// archiveFile archives one file. It is record.Archive; a test puts a
+// stand-in here to see that the pace is never read while it runs.
+var archiveFile = record.Archive
+
 // minMargin is added to the longest retention window the chain has had to
 // make the shortest -keep accepted: a publication's schedule runs from its
 // settlement to must_serve_until plus a few minutes, and the prober plans
@@ -135,8 +174,21 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		retire    = fs.Bool("retire", false, "archive nothing; remove each archived segment's file whose bytes are proven to be in the intact daily exports, reproduced by the store and on the remote backup, and say why each other one is kept")
 		dbPath    = fs.String("db", "", "with -retire: the observer's store (default <data-dir>/observer.db, as the collector's), opened read-only to check the days the exports' ledger ("+recordcheck.LedgerFile+") does not hold yet")
 		logical   = fs.String("logical-end", "", "print the logical end of this file (a path under -data-dir, e.g. vantages/de-1/reachability.jsonl) and exit: its live file's base plus its size, where a copier appending to it resumes")
+		paceSome  = fs.Float64("pace-some", DefaultPaceSome, `pause before each file archived, and with -retire before each export read, every few thousand lines checked against the store and before each segment retired, while "some avg10" in `+pace.ProcFile+" is above this (0: never pause)")
+		paceFull  = fs.Float64("pace-full", DefaultPaceFull, `pause as well while "full avg10" is above this (0: "some" alone)`)
+		paceCalm  = fs.Float64("pace-calm", DefaultPaceCalm, `a pause ends once "some avg10" has stayed below this for -pace-calm-for`)
+		calmFor   = fs.Duration("pace-calm-for", DefaultPaceCalmFor, `how long "some avg10" must stay below -pace-calm to end a pause`)
+		maxWait   = fs.Duration("pace-max-wait", DefaultPaceMaxWait, "the longest a single pause lasts: the run then goes on whatever the pressure, and says so")
 	)
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	// The pace logs each pause, with the pressure that started it and how it
+	// ended, among the run's own lines.
+	pacer := &pace.Pacer{Some: *paceSome, Full: *paceFull, Calm: *paceCalm, CalmFor: *calmFor, MaxWait: *maxWait,
+		Poll: pollEvery, Source: pressure, Log: func(s string) { fmt.Fprintf(stdout, "pace| %s\n", s) }}
+	if err := pacer.Check(); err != nil {
+		fmt.Fprintln(stderr, "observer-archive:", err)
 		return 2
 	}
 	modes := 0
@@ -176,9 +228,11 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		}
 		r := &retirer{
 			dataDir: *dataDir, expDir: *expDir, dbPath: *dbPath, dry: *dryRun, now: now.UTC(),
-			build: status.BuildRevision(), retire: retireSegment,
+			build: status.BuildRevision(), retire: retireSegment, pace: pacer,
 		}
-		return r.run(specs, stdout, stderr)
+		code := r.run(specs, stdout, stderr)
+		pauses(stdout, pacer)
+		return code
 	}
 	minKeep, err := MinKeep(filepath.Join(*dataDir, "state.json"))
 	if err != nil {
@@ -202,12 +256,22 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		verb = "would archive"
 	}
 	failed := false
+	ctx := context.Background()
 	for _, f := range specs {
 		limit := int64(-1)
 		if exported != nil {
 			limit = exported[f.Name] // 0 when the export has not read the file: nothing moves
 		}
-		res, err := record.Archive(filePath(*dataDir, f.Name), record.Options{
+		// Between files, never inside record.Archive: it holds archive/.lock
+		// throughout, which the nightly backup waits on, and at its swap the
+		// live file's exclusive flock, which every writer of the file waits
+		// on (the prober and the heartbeat among them).
+		if err := pacer.Wait(ctx, "archiving "+f.Name); err != nil {
+			fmt.Fprintf(stderr, "%s: FAILED: %v\n", f.Name, err)
+			failed = true
+			continue
+		}
+		res, err := archiveFile(filePath(*dataDir, f.Name), record.Options{
 			Cutoff: cutoff, TimeField: f.TimeField, Limit: limit, DryRun: *dryRun, Now: now,
 		})
 		if err != nil {
@@ -226,10 +290,18 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 		fmt.Fprintf(stdout, "%s: %s %d line(s), %s, dated before %s%s; live %s -> %s, base %d -> %d\n",
 			f.Name, verb, res.Lines, mb(res.Cut), cutoff.Format("2006-01-02"), gz, mb(res.Live), mb(res.LiveKept), res.Base, res.Base+res.Cut)
 	}
+	pauses(stdout, pacer)
 	if failed {
 		return 1
 	}
 	return 0
+}
+
+// pauses says how long the run waited for the disk in all, if it did.
+func pauses(stdout io.Writer, p *pace.Pacer) {
+	if n, d := p.Paused(); n > 0 {
+		fmt.Fprintf(stdout, "pace| paused %d time(s), %s in all, while the disk was busy\n", n, d.Round(time.Second))
+	}
 }
 
 // Cutoff is the start of the UTC day keep before now: every line dated on

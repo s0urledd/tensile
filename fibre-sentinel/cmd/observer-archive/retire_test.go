@@ -977,14 +977,14 @@ func TestRetireKeepsAnExportRebuiltWhileChecked(t *testing.T) {
 	}
 	rebuilt := ""
 	retireSegment = retire
-	checkDay = func(ctx context.Context, st *store.Store, dir string, e export.Entry) (recordcheck.DayReport, error) {
+	checkDay = func(ctx context.Context, st *store.Store, dir string, e export.Entry, pause recordcheck.Pause) (recordcheck.DayReport, error) {
 		if e.Name == d.exports[0] {
 			rebuilt = d.rebuildExport(t, 0)
 			e = d.entry(t, 0)
 		}
-		return recordcheck.CheckDay(ctx, st, dir, e)
+		return recordcheck.CheckDayPaced(ctx, st, dir, e, pause)
 	}
-	t.Cleanup(func() { retireSegment, checkDay = record.Retire, recordcheck.CheckDay })
+	t.Cleanup(func() { retireSegment, checkDay = record.Retire, recordcheck.CheckDayPaced })
 
 	first := d.retire(t, retireAt)
 	if first.code != 0 || first.rep.RetiredNow != 4 {

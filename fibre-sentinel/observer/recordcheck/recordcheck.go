@@ -161,6 +161,25 @@ type DayReport struct {
 // checked file's lines against the store as they go by. dir is the exports directory, e the day's index entry. A
 // problem with the export is in the report (ExportIntact, ExportErrors); the error is a failure to read the store.
 func CheckDay(ctx context.Context, st *store.Store, dir string, e export.Entry) (DayReport, error) {
+	return CheckDayPaced(ctx, st, dir, e, nil)
+}
+
+// Pause is called by CheckDayPaced where the check may stop for a while, and may hold it there: before each member of
+// the tarball (the first one comes after the tarball was read whole for its digest) and every pauseEvery lines of a
+// checked member. The check holds nothing there that another process waits on: each lookup is a statement of its
+// own, so no read transaction stays open between two; no lock is taken (the ledger is merged by the caller, after
+// the check); and the tarball is only open for reading. A tarball rebuilt while the check waits is found by the
+// stream's digest, as one rebuilt while it reads is. observer-archive passes its pace (internal/pace) here, so that a
+// day checked during the night's run gives the disk back to the validator it shares it with. An error from it ends
+// the check with that error.
+type Pause func(ctx context.Context) error
+
+// pauseEvery is how many lines of a checked member go by between two calls of a Pause: often enough that a check
+// stops soon after the disk gets busy, and the pressure read at each costs nothing beside the lookups.
+var pauseEvery int64 = 10000
+
+// CheckDayPaced is CheckDay, calling pause (nil: never) where the check may stop.
+func CheckDayPaced(ctx context.Context, st *store.Store, dir string, e export.Entry, pause Pause) (DayReport, error) {
 	r := DayReport{Day: e.Day, Export: e.Name, ExportIntact: true}
 	fail := func(f string, a ...any) {
 		r.ExportIntact = false
@@ -226,6 +245,11 @@ func CheckDay(ctx context.Context, st *store.Store, dir string, e export.Entry) 
 	tr := tar.NewReader(gz)
 	seen := map[string]bool{}
 	for {
+		if pause != nil {
+			if err := pause(ctx); err != nil {
+				return r, fmt.Errorf("%s: %w", e.Name, err)
+			}
+		}
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {
 			break
@@ -246,7 +270,7 @@ func CheckDay(ctx context.Context, st *store.Store, dir string, e export.Entry) 
 		body := io.TeeReader(tr, io.MultiWriter(digest, count))
 		var fr FileReport
 		if checked {
-			if fr, err = checkLines(ctx, st, name, k, body, 1); err != nil {
+			if fr, err = checkLines(ctx, st, name, k, body, 1, pause); err != nil {
 				return r, fmt.Errorf("%s %s: %w", e.Name, name, err)
 			}
 		}
@@ -330,10 +354,10 @@ func CheckLines(ctx context.Context, st *store.Store, name string, src io.Reader
 	if !ok {
 		return FileReport{Name: name}, fmt.Errorf("%s: the store does not keep this file line by line", name)
 	}
-	return checkLines(ctx, st, name, k, src, from)
+	return checkLines(ctx, st, name, k, src, from, nil)
 }
 
-func checkLines(ctx context.Context, st *store.Store, name string, k kind, src io.Reader, from int64) (FileReport, error) {
+func checkLines(ctx context.Context, st *store.Store, name string, k kind, src io.Reader, from int64, pause Pause) (FileReport, error) {
 	fr := FileReport{Name: name}
 	stmt, err := st.DB().PrepareContext(ctx, k.query())
 	if err != nil {
@@ -359,6 +383,11 @@ func checkLines(ctx context.Context, st *store.Store, name string, k kind, src i
 	var n int64
 	for sc.Scan() {
 		n++
+		if pause != nil && n%pauseEvery == 0 {
+			if err := pause(ctx); err != nil {
+				return fr, err
+			}
+		}
 		if n < from {
 			continue
 		}

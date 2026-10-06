@@ -31,6 +31,13 @@ package main
 //
 // The run needs no network, and the archive unit has none: what the remote
 // holds is what backup.sh, which runs earlier, read back and recorded.
+//
+// Its reads are paced (internal/pace): before each export it reads (its
+// digest, and the store check of a day the ledger does not hold), inside
+// that check where it holds nothing (recordcheck.Pause), and before each
+// segment's last reads and record.Retire, the run waits while the disk it
+// shares with the validator is busy. It never waits inside record.Retire,
+// whose read back holds archive/.lock.
 
 import (
 	"bytes"
@@ -45,6 +52,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/pace"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/export"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/recordcheck"
@@ -67,10 +75,10 @@ const ReportFile = "retire-report.json"
 // decides is tested there too.
 var retireSegment = record.Retire
 
-// checkDay checks a day's export against the store. It is
-// recordcheck.CheckDay; a test puts a stand-in here that rebuilds the
-// tarball while it is checked.
-var checkDay = recordcheck.CheckDay
+// checkDay checks a day's export against the store, pausing where pause
+// says. It is recordcheck.CheckDayPaced; a test puts a stand-in here that
+// rebuilds the tarball while it is checked.
+var checkDay = recordcheck.CheckDayPaced
 
 // Report is one -retire run, file by file, as printed and as written to
 // ReportFile.
@@ -131,6 +139,8 @@ type retirer struct {
 	build                   string
 	// retire removes a segment's file (retireSegment).
 	retire func(path, segment string, r record.Retired) error
+	// pace holds the run while the disk is busy (nil: never).
+	pace *pace.Pacer
 
 	ctx     context.Context
 	st      *store.Store
@@ -262,8 +272,10 @@ func (r *retirer) file(f FileSpec) FileReport {
 			// Retire saves the index before it removes the file, so a run
 			// that stopped in between left both. Finishing it reads the
 			// exports back again first; what else was proven was proven
-			// before the index was saved.
-			r.apply(&fr, path, sg, *sg.Retired, keep)
+			// before the index was saved. A dry run reads nothing here.
+			if r.dry || r.paced(&fr, f.Name, sg, keep) {
+				r.apply(&fr, path, sg, *sg.Retired, keep)
+			}
 		case !present:
 			why := "its file is missing and it was never retired: nothing proves its bytes are anywhere else"
 			fr.Errors = append(fr.Errors, sg.Name+": "+why)
@@ -278,7 +290,10 @@ func (r *retirer) file(f FileSpec) FileReport {
 				keep(sg, "not checked: "+err.Error())
 			case len(reasons) > 0:
 				keep(sg, strings.Join(reasons, "; "))
-			default:
+			case r.paced(&fr, f.Name, sg, keep):
+				// Paced before the tarballs are digested again, not between
+				// that and record.Retire, which unchanged needs as close
+				// together as they can be.
 				why, err := r.unchanged(ret.Exports)
 				switch {
 				case err != nil:
@@ -293,6 +308,22 @@ func (r *retirer) file(f FileSpec) FileReport {
 		}
 	}
 	return fr
+}
+
+// paced waits while the disk is busy before the reads that retiring sg ends
+// with: the exports' digests again and record.Retire's read back of the
+// segment from them. It waits here, and never inside record.Retire, which
+// reads the exports back holding archive/.lock: the nightly backup waits on
+// that lock, and a pause under it would hold the backup back too. It says
+// whether to go on; a wait ends early only when the run's context does, and
+// sg is then kept.
+func (r *retirer) paced(fr *FileReport, name string, sg record.Segment, keep func(record.Segment, string)) bool {
+	if err := r.pace.Wait(r.ctx, "retiring "+name+" "+sg.Name); err != nil {
+		fr.Errors = append(fr.Errors, sg.Name+": "+err.Error())
+		keep(sg, "not retired: "+err.Error())
+		return false
+	}
+	return true
 }
 
 // apply removes sg's file (record.Retire), or with -dry-run only counts it.
@@ -458,6 +489,12 @@ func (r *retirer) proof(e export.Entry) (*exportProof, error) {
 	if p, ok := r.proofs[e.Name]; ok {
 		return p, nil
 	}
+	// Between days: the tarball is read whole below and, when the ledger
+	// does not hold it, again against the store, which also stops where
+	// it holds nothing (recordcheck.Pause).
+	if err := r.pace.Wait(r.ctx, "reading the "+e.Day+" export"); err != nil {
+		return nil, err
+	}
 	p := &exportProof{e: e}
 	sum, n, err := recordcheck.DigestFile(filepath.Join(r.expDir, e.Name))
 	switch {
@@ -484,7 +521,9 @@ func (r *retirer) proof(e export.Entry) (*exportProof, error) {
 	if r.stErr != nil {
 		return nil, fmt.Errorf("%s is not in the ledger and the store could not be opened to check it: %w", e.Name, r.stErr)
 	}
-	rep, err := checkDay(r.ctx, r.st, r.expDir, e)
+	rep, err := checkDay(r.ctx, r.st, r.expDir, e, func(ctx context.Context) error {
+		return r.pace.Wait(ctx, "checking the "+e.Day+" export against the store")
+	})
 	if err != nil {
 		return nil, fmt.Errorf("checking %s against the store: %w", e.Name, err)
 	}

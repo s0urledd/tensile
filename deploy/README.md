@@ -886,6 +886,21 @@ longer names the file they hold, so no line is lost or written twice. A
 crash at any step leaves the record readable as before; the next run
 removes the leftovers. A second run the same day moves nothing.
 
+A run reads each live file up to its cut, writes the segment and copies
+the rest of the live file, on the disk the validator shares. `Nice=10` and
+`IOSchedulingClass=idle` in the unit do not slow that on an NVMe disk with
+the `none` scheduler, so the run paces itself: before each file it reads
+`/proc/pressure/io` and, while `some avg10` is above 6 or `full avg10`
+above 4, waits until `some avg10` has stayed below 2 for 20 seconds,
+reading it every 5 seconds and never waiting longer than 30 minutes at a
+time (`-pace-some`, `-pace-full`, `-pace-calm`, `-pace-calm-for`,
+`-pace-max-wait` in `ARCHIVE_ARGS`; `-pace-some 0` turns it off). It never
+waits inside a file's rotation, which holds `archive/.lock` (the backup
+waits on it) and, at the swap, the live file's exclusive `flock` (the
+writers wait on it). Each pause is a `pace|` line in the journal with the
+pressure that started it, and another when it ends; one cut off at the 30
+minutes says so, and the run goes on.
+
 `-keep` must exceed the longest retention window in `state.json` plus a day
 (the command refuses less): a restarted prober reads only the live files,
 and treats a publication whose rows may have been archived as finished
@@ -956,6 +971,19 @@ from the store`, `2026-10-07 not yet on the remote`), and the same in
 `archive/retire-report.json`. A kept segment is the normal answer for a
 recent day, not a failure; the unit fails only on an error.
 
+Its reads are the heavy part: each export holding a segment not yet
+retired is read whole for its digest, a day `exports/verified.json` does
+not hold is read again with every line looked up in the store, and each
+segment retired is read back from its exports. The retirement paces
+itself as the archive step does (above: the same flags, the same `pace|`
+lines): it waits before each export it reads, inside the store check
+before each member of the tarball and every 10,000 lines (no read
+transaction stays open between two lookups, and the ledger is written
+only after the check), and before each segment it retires. It never
+waits inside `record.Retire`, whose read back holds `archive/.lock`: a
+pause there would hold back with it any backup waiting on that lock
+(which gives up after two hours).
+
 Never retired:
 
 - the live files: their bytes move only by rotation, into a segment;
@@ -994,7 +1022,7 @@ The nightly order, all UTC:
 |---|---|---|
 | 03:00 | `fibre-collector@` (`-export-hour`) | the previous day's export |
 | 03:17, plus up to 20 min | `fibre-backup@` | the manifest's cut; the copy, segments first, then the live files and the exports; then the remote proof of each export not yet proven |
-| 04:40 | `fibre-archive@` | rotation, then retirement |
+| 04:40 | `fibre-archive@` | rotation, then retirement, each pausing while the disk is busy |
 
 The backup holds `archive/.lock` (and each `vantages/<name>/archive/.lock`)
 shared from the cut to its last check, and an archive run holds a file's

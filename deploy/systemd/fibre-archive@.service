@@ -22,6 +22,10 @@ ExecStart=/usr/local/bin/observer-archive -data-dir ${DATA_DIR} $ARCHIVE_ARGS
 # skips it.
 ExecStart=/usr/local/bin/observer-archive -data-dir ${DATA_DIR} -retire -db ${DATA_DIR}/observer.db $ARCHIVE_ARGS
 Nice=10
+# On an NVMe disk with the "none" scheduler the I/O class lowers nothing:
+# observer-archive paces itself instead, waiting between files, days and
+# segments while /proc/pressure/io shows the disk busy (-pace-* flags, in
+# ARCHIVE_ARGS to change them).
 IOSchedulingClass=idle
 NoNewPrivileges=true
 ProtectSystem=strict

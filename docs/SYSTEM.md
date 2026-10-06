@@ -182,6 +182,26 @@ store does not give back whole (a sampled-out publication's NOT_PROBED rows,
 which it keeps as one decision; a repeated key, of which it keeps the first
 line) keeps its segments until a later check finds the day reproducible.
 
+**Pacing.** Both steps of `fibre-archive@` read and write on the disk the
+validator shares, where the `none` I/O scheduler leaves the unit's
+`IOSchedulingClass=idle` without effect, so they pace themselves
+(`internal/pace`). At points where they hold nothing others wait on
+(before each file archived; before each export read, before each member
+and every 10,000 lines of a day checked against the store, and before
+each segment retired) a run reads `/proc/pressure/io` and waits while
+`some avg10` is above 6 or `full avg10` above 4, until `some avg10` has
+stayed below 2 for 20 s, reading it every 5 s and at most 30 min per pause,
+after which it goes on and says so (`-pace-some`, `-pace-full`,
+`-pace-calm`, `-pace-calm-for`, `-pace-max-wait`; `-pace-some 0` turns it
+off). It never waits inside `record.Archive`, which holds the archive lock
+and, at its swap, the live file's exclusive `flock` that every writer of
+the file waits on, nor inside `record.Retire`, whose read back from the
+exports holds the archive lock the backup waits on. The store check holds
+no read transaction between two lookups, so a pause there costs time, not
+consistency; a tarball rebuilt during it is caught by the check's digest of
+the stream. Each pause is logged (`pace|`) with the pressure that started
+it and how it ended.
+
 **Reading a retired range.** A segment whose file is there is read from the
 file, retired or not (a crash between saving the index and removing the
 file leaves both). One whose file is gone is read from the exports its
@@ -784,7 +804,9 @@ export (`-export-hour`). 03:17 plus up to 20 minutes (by about 03:36):
 `fibre-backup` takes the manifest's cut, copies segments, then the live
 files and the exports, then reads back from the remote each export not yet
 proven and appends the result to `exports/remote.jsonl`. 04:40:
-`fibre-archive` rotates, then retires what the three proofs of section 4 cover.
+`fibre-archive` rotates, then retires what the three proofs of section 4 cover,
+pausing between files, days and segments while the disk is busy (section 4,
+"Pacing").
 The backup holds every archive lock shared from its cut to its last check
 and a run holds a file's lock exclusively, so the two never overlap; an
 export proven a night late retires its segments a night late.
