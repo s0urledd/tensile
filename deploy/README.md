@@ -268,16 +268,22 @@ over 15% free, no scan gap is recorded, the chain has not upgraded past
 this build's pin and the day partials are sound (`day_partials`: no audit
 found them not what the store holds, and no day due has stayed unsealed for
 two days), and 503 with the failing checks otherwise. `/v1/meta`
-carries the same verdict and checks, and the header chip on the site
-reflects it: green, amber with the failing processes in its tooltip, red
-when nothing is alive.
+carries the same verdict and checks. The site shows none of them: it says
+something only when the API does not answer (a line above the page and a
+dot on the network chip). Every failing check reaches the operator from
+the health watch below instead.
 
 `fibre-healthwatch@<network>.timer` asks `/v1/health` every five minutes as
-the service user and posts to `ALERT_WEBHOOK` when the verdict changes,
-again every `ALERT_REPEAT_MIN` while it stays bad, and once on recovery. The
-webhook is any URL that accepts a JSON body with a `content` field (Discord,
-Slack incoming webhooks, a Matrix or Telegram bridge). With no webhook it
-only logs; an external uptime monitor pointed at
+the service user and posts when the verdict or the set of failing checks
+changes, again every `ALERT_REPEAT_MIN` while it stays bad, and once on
+recovery, with every failing check and its detail. It posts to
+`ALERT_WEBHOOK`, any URL that accepts a JSON body with a `content` field
+(Discord, Slack incoming webhooks, Matrix), and to Telegram when
+`TELEGRAM_BOT_TOKEN` (from @BotFather) and `TELEGRAM_CHAT_ID` (a chat the
+bot is in) are set in the env file, whichever are set. After setting them,
+`sudo bash -c 'set -a; . /etc/fibre-observer/mocha.env; fibre-healthwatch mocha --test'`
+sends one message and says whether each destination took it. With none
+set it only logs; an external uptime monitor pointed at
 `https://<site>/api/v1/health` is the same signal with somebody else's
 timer.
 

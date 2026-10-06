@@ -111,13 +111,13 @@ function NetworkChip({ meta, error }: { meta: Meta | null; error: string | null 
     document.addEventListener("keydown", key);
     return () => { document.removeEventListener("click", close); document.removeEventListener("keydown", key); };
   }, []);
-  const health = meta?.health;
-  // unknown while the API does not answer, whatever the last reading said
-  const dot = error || !meta ? "none" : health === "ok" ? "ok" : "hold";
+  // A dot only while the API does not answer: the observer's own checks go
+  // to its operator (deploy/healthwatch.sh), not to the site.
+  const dot = error || !meta ? "none" : "ok";
   const title = !meta
     ? (error ? `Observer API unreachable: ${error}` : "Connecting to the observer API…")
     : [
-      error ? `Observer API unreachable (${error})` : `Observer ${health === "ok" ? "healthy" : health}`,
+      error ? `Observer API unreachable (${error})` : "",
       meta.chain_height ? `chain tip #${int(Number(meta.chain_height))}` : "",
       meta.app_version ? (meta.fibre_active ? `Fibre live on app v${meta.app_version}` : `Fibre not live: app v${meta.app_version}`) : "",
     ].filter(Boolean).join(" · ");

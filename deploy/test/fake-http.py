@@ -5,7 +5,10 @@ double for the observer API in deploy/test/selftest.sh, and, with --record,
 for an alert webhook: every POST body is appended to the file as one line
 before the answer goes out, so a caller that got its answer can count them.
 
-  fake-http.py --port P --code 503 --body file.json [--record posts.log]
+  fake-http.py --port P --code 503 --body file.json [--record posts.log [--record-path]]
+
+--record-path puts each post's path before its body on the line (a bot API
+takes its token in the path).
 """
 import argparse
 import http.server
@@ -18,6 +21,7 @@ def main():
     ap.add_argument("--code", type=int, default=200)
     ap.add_argument("--body", default=None)
     ap.add_argument("--record", default=None)
+    ap.add_argument("--record-path", action="store_true")
     a = ap.parse_args()
     body = open(a.body, "rb").read() if a.body else b"{}"
 
@@ -37,7 +41,8 @@ def main():
             got = self.rfile.read(n) if n else b""
             if a.record:
                 with open(a.record, "ab") as f:
-                    f.write(got.replace(b"\n", b" ") + b"\n")
+                    path = (self.path + " ").encode() if a.record_path else b""
+                    f.write(path + got.replace(b"\n", b" ") + b"\n")
             self.answer()
 
         def log_message(self, *args):

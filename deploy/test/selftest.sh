@@ -304,6 +304,21 @@ check contains "$(lastpost)" recovered
 # empty, so the upgrade alone does not alert
 printf 'degraded\n%s\n' "$(date +%s)" > "$hwstate"
 hw "$p503"; check eq "$(posts)" 3
+# Telegram: the bot API's sendMessage with the chat and the text; a refused
+# post (an unknown token is a 404 there) is said, and the token never printed
+tgtest() { # tgtest <bot api port>: healthwatch --test against it
+  API_LISTEN="127.0.0.1:$p200" DATA_DIR="$T/hw2" NETWORK=t TELEGRAM_BOT_TOKEN=123:sekret TELEGRAM_CHAT_ID=-1001 \
+    TELEGRAM_API="http://127.0.0.1:$1" bash "$HW" t --test 2>&1
+}
+serve fake-http.py --code 200 --record "$T/tg.log" --record-path; tgok=$PORT
+serve fake-http.py --code 404 --record "$T/tg404.log"; tgbad=$PORT
+if out=$(tgtest "$tgok"); then check eq delivered delivered; else check eq "telegram test: $out" delivered; fi
+check contains "$(tail -n 1 "$T/tg.log")" "/bot123:sekret/sendMessage"
+check contains "$(tail -n 1 "$T/tg.log")" '"chat_id": "-1001"'
+check contains "$(tail -n 1 "$T/tg.log")" "alert delivery check"
+if out=$(tgtest "$tgbad"); then check eq "a refused post passed" refused; else check eq refused refused; fi
+check contains "$out" "telegram post failed (HTTP 404)"
+check not contains "$out" sekret
 
 echo
 echo "selftest: $ok passed, $bad failed"
