@@ -51,6 +51,9 @@ func TestMinKeepAndCutoff(t *testing.T) {
 }
 
 func TestRunArchivesVerifiesAndRefuses(t *testing.T) {
+	if !rotates(t) {
+		t.Skip("record.Archive needs flock, which this platform does not have; this runs on Linux (CI)")
+	}
 	dir := dataDir(t, 12)
 	if code, _, errs := runArgs(t, "-data-dir", dir, "-keep", "20h"); code != 2 || !strings.Contains(errs, "shorter than") {
 		t.Fatalf("a keep under the retention window was accepted: %d %s", code, errs)
@@ -97,7 +100,7 @@ func TestRunArchivesVerifiesAndRefuses(t *testing.T) {
 	if !bytes.Equal(got.Bytes(), before) {
 		t.Fatal("the record read through the archive is not the file as it was")
 	}
-	if code, _, errs := runArgs(t, "-data-dir", dir, "-files", "publications.jsonl"); code != 2 || !strings.Contains(errs, "not an archived file") {
+	if code, _, errs := runArgs(t, "-data-dir", dir, "-files", "registry.jsonl"); code != 2 || !strings.Contains(errs, "not an archived file") {
 		t.Fatalf("an unknown file was accepted: %d %s", code, errs)
 	}
 }
