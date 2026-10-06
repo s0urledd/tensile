@@ -333,7 +333,7 @@ func orNone(s string) string {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	h := s.health(r.Context(), time.Now())
+	h := s.health(r.Context(), s.now())
 	code := http.StatusOK
 	if h.Status != "ok" {
 		code = http.StatusServiceUnavailable

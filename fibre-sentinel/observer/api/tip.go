@@ -81,7 +81,7 @@ const tipTTL = 250 * time.Millisecond
 const tipRPCTimeout = 800 * time.Millisecond
 
 func (s *Server) handleTip(w http.ResponseWriter, r *http.Request) {
-	now := time.Now()
+	now := s.now()
 	s.tip.mu.Lock()
 	if now.Sub(s.tip.at) >= tipTTL {
 		s.tip.v = s.readTip(now)

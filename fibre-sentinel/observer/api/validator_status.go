@@ -88,7 +88,7 @@ func (s *Server) handleValidatorStatus(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "status is the current state only; as_of is not supported here")
 		return
 	}
-	win, err := parseWindow(r, time.Now())
+	win, err := parseWindow(r, s.now())
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return

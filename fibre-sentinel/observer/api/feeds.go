@@ -100,7 +100,7 @@ type feedBuilder func(ctx context.Context, authority string, now time.Time) (*fe
 func (s *Server) serveFeed(w http.ResponseWriter, r *http.Request, build feedBuilder) {
 	authority := feedAuthority(r)
 	key := fmt.Sprintf("%p|%s|%s", s, authority, r.URL.Path)
-	now := time.Now()
+	now := s.now()
 	feedCache.Lock()
 	c, ok := feedCache.m[key]
 	start := ok && now.Sub(c.at) > feedTTL && !feedCache.refreshing[key]
@@ -208,7 +208,7 @@ func (s *Server) refreshFeed(key string, build feedBuilder, authority string) {
 		defer func() { <-feedRebuilds }()
 		ctx, cancel := context.WithTimeout(context.Background(), feedBuildTimeout)
 		defer cancel()
-		c, status, err := rebuildFeed(ctx, build, authority, time.Now())
+		c, status, err := rebuildFeed(ctx, build, authority, s.now())
 		switch {
 		case err != nil:
 			if s.log != nil {
@@ -594,7 +594,7 @@ func (s *Server) bondedListEntries(ctx context.Context, bech, hexAddr, name stri
 		// Network-wide: the join key is per row, so it is done in Go below.
 		q = `SELECT validator_cons_address, host, first_seen_at, first_seen_height, closed_at, closed_height,
 			COALESCE(closed_reason, ''), '' FROM endpoints WHERE first_seen_at >= ? OR closed_at >= ?`
-		cut := store.TS(time.Now().Add(-feed.MaxAge))
+		cut := store.TS(s.now().Add(-feed.MaxAge))
 		args = []any{cut, cut}
 	}
 	rows, err := s.st.DB().QueryContext(ctx, q, args...)

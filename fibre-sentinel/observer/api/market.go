@@ -1058,7 +1058,7 @@ const (
 )
 
 func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
-	win, err := parseWindow(r, time.Now())
+	win, err := parseWindow(r, s.now())
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -1079,13 +1079,13 @@ func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer s.asOf.leave()
-		t0 := time.Now()
+		at := s.now()
 		resp, err := s.computeMarket(r.Context(), win)
 		if err != nil {
 			s.writeInternal(w, r.URL.Path, err)
 			return
 		}
-		resp.ComputedAt = t0.UTC().Format(time.RFC3339Nano)
+		resp.ComputedAt = at.UTC().Format(time.RFC3339Nano)
 		resp.AsOfNote = marketAsOfNote
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, 200, resp)
@@ -1103,7 +1103,7 @@ func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePublishers(w http.ResponseWriter, r *http.Request) {
-	win, err := parseWindow(r, time.Now())
+	win, err := parseWindow(r, s.now())
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -1161,7 +1161,7 @@ func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "publisher must be a celestia1... account address")
 		return
 	}
-	now := time.Now()
+	now := s.now()
 	ctx := r.Context()
 	win, err := parseWindow(r, now)
 	if err != nil {

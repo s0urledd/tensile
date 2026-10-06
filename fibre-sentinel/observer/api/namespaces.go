@@ -28,7 +28,7 @@ func (s *Server) handleNamespaces(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	since := store.TS(time.Now().UTC().Add(-24 * time.Hour))
+	since := store.TS(s.now().UTC().Add(-24 * time.Hour))
 	rows, err := s.st.DB().QueryContext(r.Context(), `SELECT pub.namespace, COUNT(*), COALESCE(SUM(pub.blob_size), 0),
 			COALESCE(SUM(CASE WHEN pub.settlement_time >= ? THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN pub.settlement_time >= ? THEN pub.blob_size ELSE 0 END), 0),

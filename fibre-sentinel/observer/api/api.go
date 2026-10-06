@@ -223,9 +223,9 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 		s.vals.persistTo(dir, s.logf())
 		s.market.persistTo(dir, s.logf())
 	}
-	s.net.warm(s.logf(), time.Now())
-	s.vals.warm(s.logf(), time.Now())
-	s.market.warm(s.logf(), time.Now())
+	s.net.warm(s.logf(), s.now())
+	s.vals.warm(s.logf(), s.now())
+	s.market.warm(s.logf(), s.now())
 	// Then keep every window inside its TTL whether or not anyone reads it,
 	// so a quiet night does not leave the first morning visitor a figure
 	// from the evening before.
@@ -387,6 +387,8 @@ func newServer(st *store.Store, info VantageInfo, log *scan.Logger, opts ...Opti
 	s.market = newSnapshotCache("market", s.computePublishing)
 	s.market.accept = marketSnapshotCurrent
 	s.vals = newSnapshotCache("validators", s.validatorsSnapshot)
+	// the figures are as of the server's clock, as every other answer is
+	s.net.now, s.market.now, s.vals.now = s.now, s.now, s.now
 	// Both of these publish faults beside named validators, and both are
 	// cached for up to fifteen minutes. A hold landing in the database moves
 	// nothing they hold, so without this the figure a hold withdrew stays
@@ -1065,7 +1067,7 @@ func (s *Server) recentVantages(ctx context.Context, now time.Time) []vantageSee
 
 func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	now := time.Now()
+	now := s.now()
 	counts, err := s.st.Count(ctx)
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)
@@ -1640,7 +1642,7 @@ func (s *Server) attestationWhere(ctx context.Context, where string, args ...any
 }
 
 func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
-	win, err := parseWindow(r, time.Now())
+	win, err := parseWindow(r, s.now())
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -1667,13 +1669,13 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer s.asOf.leave()
-		t0 := time.Now()
+		t0, at := time.Now(), s.now()
 		resp, err := s.networkSnapshot(r.Context(), win, ex, excluded)
 		if err != nil {
 			s.writeInternal(w, r.URL.Path, err)
 			return
 		}
-		resp.ComputedAt, resp.ComputeMs = t0.UTC().Format(time.RFC3339Nano), time.Since(t0).Milliseconds()
+		resp.ComputedAt, resp.ComputeMs = at.UTC().Format(time.RFC3339Nano), time.Since(t0).Milliseconds()
 		out := networkOutOf(resp)
 		if len(excluded) > 0 {
 			ops, err := s.operatorAddrs(r.Context())
@@ -3106,7 +3108,7 @@ type validatorSnapshot struct {
 }
 
 func (s *Server) handleValidators(w http.ResponseWriter, r *http.Request) {
-	win, err := parseWindow(r, time.Now())
+	win, err := parseWindow(r, s.now())
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -3123,7 +3125,7 @@ func (s *Server) handleValidators(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer s.asOf.leave()
-		t0 := time.Now()
+		at := s.now()
 		snap, err := s.validatorsSnapshot(r.Context(), win)
 		if err != nil {
 			s.writeInternal(w, r.URL.Path, err)
@@ -3133,7 +3135,7 @@ func (s *Server) handleValidators(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{
 			"window": win, "validators": listOfRows(snap.Rows), "as_of_note": AsOfNote,
 			"record_through": snap.RecordThrough,
-			"computed_at":    t0.UTC().Format(time.RFC3339Nano),
+			"computed_at":    at.UTC().Format(time.RFC3339Nano),
 		})
 		return
 	}
@@ -3162,7 +3164,7 @@ func (s *Server) handleValidator(w http.ResponseWriter, r *http.Request) {
 		s.writeAddrErr(w, r.URL.Path, err)
 		return
 	}
-	now := time.Now()
+	now := s.now()
 	ctx := r.Context()
 	// The embedded validator object is built over a window like every other
 	// response, and the window it was built over is echoed at the top level.
@@ -3572,7 +3574,7 @@ func (s *Server) blobRowsAt(ctx context.Context, where string, limit, offset int
 			return nil, err
 		}
 		out[i].Classes, out[i].ProbeCount = classes, total
-		rc, err := s.reconstructable(ctx, hash, asOfPin{now: time.Now()})
+		rc, err := s.reconstructable(ctx, hash, asOfPin{now: s.now()})
 		if err != nil {
 			return nil, err
 		}
@@ -4174,7 +4176,7 @@ func (s *Server) blobService(ctx context.Context, hash string, assigns []assignm
 	if err := s.st.DB().QueryRowContext(ctx, `SELECT settlement_time, must_serve_until FROM publications WHERE promise_hash = ?`, hash).Scan(&settled, &msu); err != nil {
 		return err
 	}
-	now := time.Now().UTC()
+	now := s.now().UTC()
 	args := []any{provisionalCutoff(now), store.TS(now), settled, settled, store.TS(now), rollup.RowLowerBound(settled)}
 	rows, err := s.st.DB().QueryContext(ctx, blobServiceSQL+rollup.ObligationBuckets+` AND pr.promise_hash = ?)
 			GROUP BY validator_address, promise_hash)`, append(args, hash)...)
@@ -4222,7 +4224,7 @@ func (s *Server) blobService(ctx context.Context, hash string, assigns []assignm
 // check this observer's sample against their own.
 func (s *Server) handleSampling(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	win, err := parseWindow(r, time.Now())
+	win, err := parseWindow(r, s.now())
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -4478,7 +4480,7 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 	}
 	defer rows.Close()
 	out := []probeRow{}
-	now := time.Now()
+	now := s.now()
 	for rows.Next() {
 		var p probeRow
 		var assigned, held int

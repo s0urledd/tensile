@@ -812,7 +812,7 @@ type signingEntry struct {
 const signingTTL = 60 * time.Second
 
 func (s *Server) handleSigning(w http.ResponseWriter, r *http.Request) {
-	win, err := parseWindow(r, time.Now())
+	win, err := parseWindow(r, s.now())
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -835,7 +835,7 @@ func (s *Server) handleSigning(w http.ResponseWriter, r *http.Request) {
 			s.writeInternal(w, r.URL.Path, err)
 			return
 		}
-		resp.ComputedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		resp.ComputedAt = s.now().UTC().Format(time.RFC3339Nano)
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, 200, resp)
 		return
@@ -851,7 +851,7 @@ func (s *Server) handleSigning(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		e = signingEntry{resp: resp, at: time.Now()}
-		resp.ComputedAt = e.at.UTC().Format(time.RFC3339Nano)
+		resp.ComputedAt = s.now().UTC().Format(time.RFC3339Nano)
 		c.mu.Lock()
 		if c.entries == nil {
 			c.entries = map[string]signingEntry{}
