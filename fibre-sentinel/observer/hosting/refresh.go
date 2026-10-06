@@ -81,6 +81,11 @@ type Refresher struct {
 	// addresses this observer never reached. Empty reads every row.
 	Vantage string
 	Logf    func(string, ...any)
+	// Record gives a reachability row's raw_json back as its record line
+	// (store.ReachRecord): the column keeps the slim form. Nil reads it as
+	// it is, and a slim row is then an error rather than an address read
+	// wrong.
+	Record func(ctx context.Context, raw []byte) ([]byte, error)
 
 	lastKey string
 	lastRun time.Time
@@ -347,12 +352,25 @@ func (r *Refresher) targets(ctx context.Context, since time.Time) ([]target, err
 		return nil, err
 	}
 	for rows.Next() {
-		var addr, host, at, raw string
+		var addr, host, at string
+		var raw []byte
 		if err := rows.Scan(&addr, &host, &at, &raw); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		addrs, connected := AddressesFromMeasurement([]byte(raw))
+		switch {
+		case r.Record != nil:
+			line, err := r.Record(ctx, raw)
+			if err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("heartbeat of %s: %w", addr, err)
+			}
+			raw = line
+		case len(raw) > 0 && raw[0] != '{':
+			rows.Close()
+			return nil, fmt.Errorf("heartbeat of %s: a slim record and no Record to read it", addr)
+		}
+		addrs, connected := AddressesFromMeasurement(raw)
 		if len(addrs) == 0 {
 			continue
 		}

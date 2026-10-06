@@ -51,7 +51,8 @@ func newHostingPass(st *store.Store, dataDir, vantage string, logf func(string, 
 	} else {
 		logf("hosting: asn db %s, country db %q, city db %q", cfg.ASNPath, cfg.CountryPath, cfg.CityPath)
 	}
-	r := &hosting.Refresher{DB: st.DB(), Cfg: cfg, Vantage: vantage, Logf: logf}
+	r := &hosting.Refresher{DB: st.DB(), Cfg: cfg, Vantage: vantage, Logf: logf,
+		Record: func(ctx context.Context, raw []byte) ([]byte, error) { return st.ReachRecord(ctx, st.DB(), raw) }}
 	return func(ctx context.Context, now time.Time) {
 		// The databases usually arrive after the collector has started
 		// (deploy/hosting-db.sh runs once the new binaries are up), and an

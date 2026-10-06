@@ -50,7 +50,7 @@ func TestHostingCity(t *testing.T) {
 	if err := os.WriteFile(city, []byte(testCity), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := &hosting.Refresher{DB: f.st.DB(), Cfg: hosting.Config{ASNPath: filepath.Join(f.dir, "ip2asn-combined.tsv.gz"), CityPath: city}}
+	r := &hosting.Refresher{DB: f.st.DB(), Cfg: hosting.Config{ASNPath: filepath.Join(f.dir, "ip2asn-combined.tsv.gz"), CityPath: city}, Record: reachRecord(f.st)}
 	if res, err := r.Run(context.Background(), time.Now()); err != nil || res.WithCity != 3 {
 		t.Fatalf("refresh with city: %+v %v", res, err)
 	}

@@ -217,3 +217,66 @@ func TestALineRowIsReadAsItIs(t *testing.T) {
 		t.Fatalf("probe back: %v", err)
 	}
 }
+
+// An endpoint check row keeps the slim form and reads back to its line byte for byte, in this process and another;
+// a row an earlier build wrote is read as it is; a line the slim form would not give back is kept as its line.
+func TestEndpointCheckRowsReadBackAsWritten(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "observer.db")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 5, 0, 2, 11, 0, time.UTC)
+	var lines [][]byte
+	var keys []string
+	for i := 0; i < 6; i++ {
+		m := probe.Measurement{SchemaVersion: 2, Vantage: "ut-1", ValidatorAddress: "ac2a961260b80fc88ddb9e52f1a957e2f5d60d64",
+			ValidatorHost: "173.201.36.182:7980", ScheduleLabel: "heartbeat", ScheduledAt: at.Add(time.Duration(i) * 5 * time.Minute),
+			StartedAt: at.Add(time.Duration(i)*5*time.Minute + 291025838), Phase: probe.PhasePost, Outcome: probe.OutcomeReachable,
+			Classification: probe.ClassNotProbed, TotalDurationMS: 71}
+		m.TCP = probe.StepResult{Attempted: true, OK: true, DurationMS: 35, Detail: "-> 173.201.36.182:7980"}
+		if i == 4 {
+			m.Outcome, m.RawError = probe.OutcomeTCPTimeout, "dial tcp 173.201.36.182:7980: i/o timeout"
+		}
+		l, _ := json.Marshal(m)
+		if i == 5 {
+			l = bytes.Replace(l, []byte(`"vantage":"ut-1"`), []byte(`"vantage": "ut-1"`), 1) // not as Go writes it
+		}
+		if ok, err := st.InsertReachability(m, l); err != nil || !ok {
+			t.Fatalf("row %d: %v %v", i, ok, err)
+		}
+		lines, keys = append(lines, l), append(keys, m.Vantage+"|"+m.ValidatorAddress+"|"+m.ScheduledAt.UTC().Format(time.RFC3339Nano))
+	}
+	// as an earlier build stored it
+	if _, err := st.DB().Exec(`UPDATE reachability SET raw_json = ? WHERE dedupe_key = ?`, string(lines[3]), keys[3]); err != nil {
+		t.Fatal(err)
+	}
+	check := func(st *store.Store, who string) {
+		for i, k := range keys {
+			var raw []byte
+			if err := st.DB().QueryRow(`SELECT raw_json FROM reachability WHERE dedupe_key = ?`, k).Scan(&raw); err != nil {
+				t.Fatal(err)
+			}
+			slimRow := raw[0] != '{'
+			if want := i != 3 && i != 5; slimRow != want {
+				t.Fatalf("%s: row %d kept slim %v, want %v", who, i, slimRow, want)
+			}
+			if slimRow && len(raw) > len(lines[i])/4 {
+				t.Errorf("%s: row %d keeps %d bytes of a %d-byte line", who, i, len(raw), len(lines[i]))
+			}
+			got, err := st.ReachRecord(ctx, st.DB(), raw)
+			if err != nil || !bytes.Equal(got, lines[i]) {
+				t.Fatalf("%s: row %d back: %v\n got %s\nwant %s", who, i, err, got, lines[i])
+			}
+		}
+	}
+	check(st, "writer")
+	ro, err := store.OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	check(ro, "another process")
+	st.Close()
+}

@@ -339,11 +339,12 @@ is one row each, not a copy of the data directory:
 The columns and indexes stay, unread, and the next upgrade runs the
 migration again over them.
 
-**Going back past schema 27.** Migration 27 is not additive: the rows a
+**Going back past schema 27 (or 28).** Migration 27 is not additive: the rows a
 schema-27 collector writes hold the slim record in `raw_json` and `=` in
 `probes.row_indices` and `assignments.rows_json`, which an older build
-would read as JSON and as lists and answer wrongly. Deleting the version
-row is therefore never the way back from 27. The store is derived, though,
+would read as JSON and as lists and answer wrongly; migration 28 does the same
+for `reachability.raw_json`. Deleting the version row is therefore never the
+way back from either, and the way back from 28 to 27 is the same as below. The store is derived, though,
 and every observation is in the record files (the JSONL files with their
 `archive/` segments), which the schema-27 build writes exactly as before. So
 an older build gets a schema-26 store back, and its collector reads every

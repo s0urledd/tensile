@@ -277,7 +277,7 @@ func TestRefresherEndToEnd(t *testing.T) {
 	_ = h2
 
 	var logs []string
-	r := &Refresher{DB: st.DB(), Logf: func(f string, a ...any) { logs = append(logs, f) }}
+	r := &Refresher{DB: st.DB(), Logf: func(f string, a ...any) { logs = append(logs, f) }, Record: recordOf(st)}
 
 	// off: no file configured
 	res, err := r.Run(ctx, now)
@@ -382,4 +382,9 @@ func TestResolveConfig(t *testing.T) {
 	if c := ResolveConfig("/flag/asn", "/flag/c", "/flag/city", dir); c.ASNPath != "/flag/asn" || c.CountryPath != "/flag/c" || c.CityPath != "/flag/city" {
 		t.Fatalf("flag: %+v", c)
 	}
+}
+
+// recordOf is the Record the collector gives a Refresher: the store's reading of a reachability row's raw_json.
+func recordOf(st *store.Store) func(ctx context.Context, raw []byte) ([]byte, error) {
+	return func(ctx context.Context, raw []byte) ([]byte, error) { return st.ReachRecord(ctx, st.DB(), raw) }
 }

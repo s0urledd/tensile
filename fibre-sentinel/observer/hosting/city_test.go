@@ -123,7 +123,7 @@ func TestRefresherCity(t *testing.T) {
 
 	asn := writeFile(t, dir, DefaultASNFile, asnTSV, true)
 	missing := filepath.Join(dir, "no-such-city.csv.gz")
-	r := &Refresher{DB: st.DB(), Cfg: Config{ASNPath: asn, CityPath: missing}}
+	r := &Refresher{DB: st.DB(), Cfg: Config{ASNPath: asn, CityPath: missing}, Record: recordOf(st)}
 
 	// a configured but absent city file: country only, no error, no city
 	if _, err := r.Run(ctx, now); err != nil {

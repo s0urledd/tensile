@@ -10,9 +10,9 @@
 //   - the export: the tarball's bytes and digest against index.json and its .sha256 sidecar, and each member's
 //     bytes, lines and digest against the manifest inside it;
 //   - each record file the store keeps one row per line of (publications, measurements, reachability, payments):
-//     every line is looked up by its key and written back from the store (store.Record and store.ProbeRecord for a
-//     slim row, the stored line otherwise). The lines written back, in the export's order, make the file again,
-//     and its digest is compared with the member's.
+//     every line is looked up by its key and written back from the store (store.Record, store.ProbeRecord and
+//     store.ReachRecord for a slim row, the stored line otherwise). The lines written back, in the export's order,
+//     make the file again, and its digest is compared with the member's.
 //
 // A line the store cannot give back is counted by why:
 //
@@ -445,9 +445,12 @@ func checkLines(ctx context.Context, st *store.Store, name string, k kind, src i
 		}
 		back, slim := raw, raw[0] != '{'
 		if slim {
-			if k.probes {
+			switch {
+			case k.probes:
 				back, err = st.ProbeRecord(ctx, st.DB(), hash, raw)
-			} else {
+			case k.table == "reachability":
+				back, err = st.ReachRecord(ctx, st.DB(), raw)
+			default:
 				back, err = st.Record(ctx, st.DB(), raw)
 			}
 			if err != nil {
