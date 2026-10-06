@@ -102,8 +102,8 @@ func TestArchiveKeepsEveryByteAtItsOffset(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if s.End() != int64(want.Len()) || s.Base() != int64(want.Len()-len(live)) {
-		t.Fatalf("base %d end %d, want %d %d", s.Base(), s.End(), want.Len()-len(live), want.Len())
+	if s.End() != int64(want.Len()) || s.Base() != int64(want.Len()-len(live)) || !s.Placed() {
+		t.Fatalf("base %d end %d placed %v, want %d %d placed", s.Base(), s.End(), s.Placed(), want.Len()-len(live), want.Len())
 	}
 	for _, off := range []int64{0, 1, 57, s.Base() - 1, s.Base(), s.Base() + 3, s.End()} {
 		r, err := s.ReaderFrom(off)
@@ -333,7 +333,8 @@ func TestArchiveCrashBetweenSteps(t *testing.T) {
 }
 
 // A live file replaced outside the archiver is not cut, and reads as a file
-// of its own (base 0) rather than at an offset that is not its own.
+// of its own (base 0, not placed) rather than at an offset that is not its
+// own.
 func TestReplacedLiveFileIsRefused(t *testing.T) {
 	skipUnsupported(t)
 	path := filepath.Join(t.TempDir(), "measurements.jsonl")
@@ -350,8 +351,8 @@ func TestReplacedLiveFileIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if s.Base() != 0 {
-		t.Fatalf("base %d", s.Base())
+	if s.Base() != 0 || s.Placed() {
+		t.Fatalf("base %d placed %v", s.Base(), s.Placed())
 	}
 	if _, err := Verify(path); err == nil {
 		t.Fatal("verify passed a live file the index does not describe")
