@@ -116,7 +116,7 @@ func (s *Server) handleHosting(w http.ResponseWriter, r *http.Request) {
 	}
 	out := hostingResponse{
 		Sources: hostingSourcesOf(src), ProviderASNs: hosting.ProviderASNs(),
-		ComputedAt: time.Now().UTC().Format(time.RFC3339),
+		ComputedAt: s.now().UTC().Format(time.RFC3339),
 	}
 	if src.Enabled {
 		// The validator list's own snapshot supplies the population and the
@@ -124,7 +124,7 @@ func (s *Server) handleHosting(w http.ResponseWriter, r *http.Request) {
 		// shows; hosting.Current supplies the placements, fresh.
 		// The 24h list: the window only moves the rates, never who has an
 		// endpoint or how much stake it holds.
-		now := time.Now()
+		now := s.now()
 		win := Window{Name: "24h", Span: windows["24h"], Start: now.Add(-windows["24h"]), End: now}
 		snap, _, _, err := s.vals.get(ctx, s.logf(), win)
 		if err != nil {

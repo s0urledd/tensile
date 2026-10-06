@@ -208,6 +208,8 @@ type snapshotCache[T any] struct {
 	// refreshes), so Server.Close can wait for their files to land before
 	// the directory they write to goes away.
 	bg sync.WaitGroup
+	// now is the clock a window ends at and a snapshot is dated by (Server.now); nil is the wall clock.
+	now func() time.Time
 	// ttls overrides ttlFor for the windows it names. It is set before the
 	// cache is shared and only read after.
 	ttls map[string]time.Duration
@@ -310,6 +312,14 @@ func (c *snapshotCache[T]) persist(window string, s *snap[T]) error {
 	return os.Rename(tmp, c.file(window))
 }
 
+// clock is the cache's now: the server's clock when it has one.
+func (c *snapshotCache[T]) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
 func newSnapshotCache[T any](label string, compute func(context.Context, Window) (T, error)) *snapshotCache[T] {
 	return &snapshotCache[T]{
 		label: label, compute: compute,
@@ -363,7 +373,7 @@ func (c *snapshotCache[T]) current(log logf, win Window, rev string, startMissin
 		delete(c.entries, win.Name)
 		s = nil
 	}
-	due := s != nil && c.stale(s, win.Name, time.Now())
+	due := s != nil && c.stale(s, win.Name, c.clock())
 	if (due || (s == nil && startMissing)) && !c.refreshing[win.Name] {
 		c.refreshing[win.Name] = true
 		c.bg.Add(1)
@@ -503,7 +513,7 @@ func (c *snapshotCache[T]) computeOnce(ctx context.Context, win Window) (s *snap
 			s, err = nil, fmt.Errorf("panic: %v\n%s", p, debug.Stack())
 		}
 	}()
-	start := time.Now()
+	start, at := time.Now(), c.clock()
 	// The revision the figures were computed under is the one read before
 	// the queries ran. Read after, a hold landing mid-compute stamped a
 	// pre-hold figure with the post-hold revision, and get served it as
@@ -513,7 +523,7 @@ func (c *snapshotCache[T]) computeOnce(ctx context.Context, win Window) (s *snap
 	if err != nil {
 		return nil, err
 	}
-	return &snap[T]{v: v, rev: rev, at: start, ms: time.Since(start).Milliseconds()}, nil
+	return &snap[T]{v: v, rev: rev, at: at, ms: time.Since(start).Milliseconds()}, nil
 }
 
 func (c *snapshotCache[T]) fill(ctx context.Context, win Window) (*snap[T], error) {
@@ -550,7 +560,7 @@ func (c *snapshotCache[T]) precompute(ctx context.Context, dir string, log logf)
 	}
 	c.dir = dir
 	for _, name := range warmWindows {
-		s, err := c.computeOnce(ctx, windowFor(name, time.Now()))
+		s, err := c.computeOnce(ctx, windowFor(name, c.clock()))
 		if err != nil {
 			return fmt.Errorf("%s %s: %w", c.label, name, err)
 		}
@@ -591,7 +601,7 @@ func (c *snapshotCache[T]) warm(log logf, now time.Time) {
 			if busy {
 				continue // a reader got there first
 			}
-			c.background(log, windowFor(name, time.Now()))
+			c.background(log, windowFor(name, c.clock()))
 		}
 	}()
 }
@@ -663,7 +673,7 @@ func (c *snapshotCache[T]) refreshDue(log logf, now time.Time, only ...string) {
 	defer c.bg.Done()
 	for _, name := range due {
 		// each window ends when its own computation starts, not at the tick
-		c.background(log, windowFor(name, time.Now()))
+		c.background(log, windowFor(name, c.clock()))
 	}
 }
 
@@ -722,7 +732,7 @@ func (s *Server) keep(k keeper) {
 				// The clock, not the tick: a tick delivered late, behind a
 				// long refresh, would make every window look younger than
 				// it is.
-				j.cache.refreshDue(s.logf(), time.Now(), j.windows...)
+				j.cache.refreshDue(s.logf(), s.now(), j.windows...)
 			}
 		}
 	}
