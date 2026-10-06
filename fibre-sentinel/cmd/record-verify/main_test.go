@@ -1,265 +1,128 @@
 package main
 
 import (
-	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	assign "github.com/plsgiveup/fibre/fibre-assign"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
-	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/export"
+	"github.com/plsgiveup/fibre/fibre-sentinel/observer/recordcheck"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
-// fixture is a store holding one publication and a reading per assigned validator, written the way the collector
-// writes them (slim rows), and the record files' lines.
-type fixture struct {
-	st                   *store.Store
-	pubLine, other       []byte
-	readings, reachLines [][]byte
-}
-
-func newFixture(t *testing.T) fixture {
+// heartbeats is a store holding three of 2026-10-05's heartbeats and a data directory whose reachability.jsonl holds
+// their lines, as the collector and the heartbeat leave them.
+func heartbeats(t *testing.T) (*store.Store, string) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	f := fixture{st: st}
-	pub := publication(t, 0x21)
-	f.pubLine, _ = json.Marshal(pub)
-	if ok, err := st.UpsertPublication(pub, f.pubLine); err != nil || !ok {
-		t.Fatalf("publication: %v %v", ok, err)
-	}
-	f.other, _ = json.Marshal(publication(t, 0x22)) // never stored
-	for i, v := range pub.Assignment.Validators {
-		rows := v.Rows
-		if i == 1 { // part of its rows, in another order
-			rows = []int{rows[2], rows[0]}
-		}
-		m := reading(pub, v, rows)
+	at := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	var lines []byte
+	for i := 0; i < 3; i++ {
+		s := at.Add(time.Duration(i) * time.Minute)
+		m := probe.Measurement{SchemaVersion: 2, Vantage: "ut-1", ValidatorAddress: fmt.Sprintf("%040x", i+1), ValidatorHost: "10.0.0.1:7980",
+			ScheduledAt: s, StartedAt: s.Add(time.Second), FinishedAt: s.Add(2 * time.Second), Phase: probe.PhaseInWindow,
+			Outcome: probe.OutcomeServedOK, Classification: probe.ClassHealthy, TotalDurationMS: 1000}
 		l, _ := json.Marshal(m)
-		if ok, err := st.InsertProbe(m, l); err != nil || !ok {
-			t.Fatalf("reading %d: %v %v", i, ok, err)
-		}
-		f.readings = append(f.readings, l)
-		m.Download = probe.DownloadResult{}
-		m.PromiseHash, m.Commitment, m.Assigned = "", "", false
-		l, _ = json.Marshal(m)
 		if ok, err := st.InsertReachability(m, l); err != nil || !ok {
-			t.Fatalf("reachability %d: %v %v", i, ok, err)
+			t.Fatalf("heartbeat %d: %v %v", i, ok, err)
 		}
-		f.reachLines = append(f.reachLines, l)
+		lines = append(append(lines, l...), '\n')
 	}
-	return f
-}
-
-func publication(t *testing.T, b byte) scan.Publication {
-	t.Helper()
-	var vals []assign.Validator
-	for i := 0; i < 4; i++ {
-		var a assign.Address
-		a[0], a[19] = byte(i+1), b
-		vals = append(vals, assign.Validator{Address: a, VotingPower: int64(1000 * (4 - i))})
-	}
-	var c [32]byte
-	for i := range c {
-		c[i] = byte(i*7) ^ b
-	}
-	sm, err := assign.Assign(c, vals, assign.ParamsV10BlobV0)
-	if err != nil {
+	data := t.TempDir()
+	if err := os.WriteFile(filepath.Join(data, "reachability.jsonl"), lines, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	at := time.Date(2026, 10, 5, 12, 0, 0, 123456789, time.UTC)
-	pp := assign.ParamsV10BlobV0
-	p := scan.Publication{SchemaVersion: 3, PromiseHash: hex.EncodeToString(bytes.Repeat([]byte{b}, 32)), SettlementHeight: 1000 + int64(b),
-		SettlementTime: at.Add(9 * time.Second), Signer: "celestia1xyz",
-		Promise:             scan.PromiseFields{ChainID: "test-1", Height: 999, BlobSize: 1 << 20, Commitment: hex.EncodeToString(c[:]), CreationTimestamp: at},
-		ParamsAtPublication: scan.ParamsSnapshot{ShardRetention: "4h0m0s", ShardRetentionSeconds: 14400},
-		MustServeUntil:      at.Add(4 * time.Hour), MustServeUntilBasis: "shard_retention", RecordedAt: at.Add(10 * time.Second)}
-	p.Assignment.ProtocolParams = scan.ProtocolParamsSnapshot{OriginalRows: pp.OriginalRows, TotalRows: pp.TotalRows, MinRowsPerValidator: pp.MinRowsPerValidator,
-		LivenessThresholdNum: pp.LivenessThreshold.Numerator, LivenessThresholdDen: pp.LivenessThreshold.Denominator, Fingerprint: pp.Fingerprint(), PinnedCelestiaApp: assign.PinnedCelestiaAppCommit}
-	p.Assignment.ValidatorSetHeight = 999
-	for _, v := range vals {
-		rows := sm[v.Address]
-		p.Assignment.Validators = append(p.Assignment.Validators, scan.ValidatorAssignment{Address: v.Address.String(), VotingPower: v.VotingPower,
-			RowCount: len(rows), Rows: rows, Attested: true, Host: "10.0.0.1:7980", HostSource: scan.HostFromEvent})
-		p.Assignment.TotalVotingPower += v.VotingPower
-		p.Assignment.Sigma += len(rows)
+	return st, data
+}
+
+// exportAt builds 2026-10-05's export from data as the collector does, at now, and returns the exports dir and the
+// day's index entry.
+func exportAt(t *testing.T, data string, now time.Time) (string, export.Entry) {
+	t.Helper()
+	dir := filepath.Join(data, "exports")
+	b := &export.Builder{DataDir: data, Dir: dir, Vantage: "ut-1", Build: "t", Hour: 3}
+	if built, err := b.Run(now); err != nil || len(built) != 1 {
+		t.Fatalf("built %v err %v", built, err)
 	}
-	return p
-}
-
-func reading(p scan.Publication, v scan.ValidatorAssignment, rows []int) probe.Measurement {
-	at := p.MustServeUntil.Add(-10 * time.Minute)
-	idx := make([]uint32, len(rows))
-	for i, r := range rows {
-		idx[i] = uint32(r)
+	idx, err := export.ReadIndex(dir)
+	if err != nil || len(idx) != 1 {
+		t.Fatalf("index %+v err %v", idx, err)
 	}
-	m := probe.Measurement{SchemaVersion: 2, Vantage: "ut-1", PromiseHash: p.PromiseHash, Commitment: p.Promise.Commitment, MustServeUntil: p.MustServeUntil,
-		ValidatorSetHeight: 999, ValidatorAddress: v.Address, ValidatorHost: v.Host, Assigned: true, Attested: true, AssignedRowCount: v.RowCount,
-		ScheduleLabel: "full", ScheduledAt: at, StartedAt: at.Add(time.Second), FinishedAt: at.Add(2 * time.Second), Phase: probe.PhaseInWindow,
-		Outcome: probe.OutcomeServedOK, Classification: probe.ClassHealthy, TotalDurationMS: 1000}
-	m.Download = probe.DownloadResult{Attempted: true, OK: true, RowsReturned: len(rows), RowsExpected: v.RowCount, RowIndices: idx,
-		CommitmentVerified: true, AssignmentVerified: true}
-	return m
+	return dir, idx[0]
 }
 
-func file(lines ...[]byte) []byte {
-	var b []byte
-	for _, l := range lines {
-		b = append(append(b, l...), '\n')
-	}
-	return b
-}
-
-func digest(b []byte) string {
-	s := sha256.Sum256(b)
-	return hex.EncodeToString(s[:])
-}
-
-// Every line the store holds comes back byte for byte, and the file rebuilt from them has the file's digest.
-func TestLinesComeBackByteForByte(t *testing.T) {
-	f := newFixture(t)
+// With -ledger, a day is checked and recorded once; a later run lists it from the ledger without checking it, unless
+// it is named with -day or its tarball was rebuilt since; and a day the ledger holds as not reproducible fails the run
+// as one checked would.
+func TestLedgerRunsCheckOnlyWhatTheLedgerDoesNotHold(t *testing.T) {
+	st, data := heartbeats(t)
+	dir, e := exportAt(t, data, time.Date(2026, 10, 6, 4, 0, 0, 0, time.UTC))
+	ledger := filepath.Join(dir, recordcheck.LedgerFile)
 	ctx := context.Background()
-	var raw []byte
-	if err := f.st.DB().QueryRow(`SELECT raw_json FROM probes LIMIT 1`).Scan(&raw); err != nil || raw[0] == '{' {
-		t.Fatalf("the fixture's readings are not slim rows: %v", err)
-	}
-	for name, lines := range map[string][][]byte{
-		"publications.jsonl": {f.pubLine},
-		"measurements.jsonl": f.readings,
-		"reachability.jsonl": f.reachLines,
-	} {
-		src := file(lines...)
-		r, err := checkLines(ctx, f.st, name, kinds[name], bytes.NewReader(src), 1)
+	run := func(days ...string) ([]recordcheck.DayReport, int, string) {
+		t.Helper()
+		var out bytes.Buffer
+		reports, code, err := verifyDays(ctx, st, dir, days, ledger, "", "2026-10-06", &out)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !r.Reproducible || r.Identical != int64(len(lines)) || r.RebuiltSHA != digest(src) {
-			t.Fatalf("%s: %+v", name, r)
-		}
-		if name != "reachability.jsonl" && r.SlimRows != r.Identical {
-			t.Fatalf("%s: %d of %d lines came from slim rows", name, r.SlimRows, r.Identical)
-		}
+		return reports, code, out.String()
 	}
-}
+	held := func() recordcheck.LedgerDay {
+		t.Helper()
+		l, err := recordcheck.ReadLedger(ledger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l[e.Name]
+	}
 
-// A line the store does not give back is counted by why, never as identical, and the rebuilt file is not the file.
-func TestLinesNotBackAreCountedByWhy(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	changed := bytes.Replace(f.readings[1], []byte(`"full"`), []byte(`"fuII"`), 1)
-	src := file(f.readings[0], changed, f.readings[0], f.readings[2], []byte(`{"vantage":`))
-	r, err := checkLines(ctx, f.st, "measurements.jsonl", kinds["measurements.jsonl"], bytes.NewReader(src), 1)
-	if err != nil {
+	reports, code, out := run()
+	if len(reports) != 1 || !reports[0].Reproducible || code != 0 {
+		t.Fatalf("the first run: %+v exit %d\n%s", reports, code, out)
+	}
+	first := held()
+	if first.SHA256 != e.SHA256 || !first.Reproducible() {
+		t.Fatalf("the first run did not record the day: %+v", first)
+	}
+
+	if reports, code, out = run(); len(reports) != 0 || code != 0 || !strings.Contains(out, "day| 2026-10-05 "+e.Name+": unchanged since checked at ") {
+		t.Fatalf("a day the ledger holds was checked again: %+v exit %d\n%s", reports, code, out)
+	}
+	if reports, _, out = run("2026-10-05"); len(reports) != 1 || held().CheckedAt.Equal(first.CheckedAt) {
+		t.Fatalf("a day named with -day was not checked and recorded: %+v\n%s", reports, out)
+	}
+
+	// The day rebuilt (the export's state lost, the same lines exported at another hour) is another tarball.
+	if err := os.Remove(filepath.Join(dir, "state.json")); err != nil {
 		t.Fatal(err)
 	}
-	if r.Identical != 2 || r.Different != 1 || r.Repeated != 1 || r.Unreadable != 1 || r.Reproducible {
-		t.Fatalf("%+v", r)
+	_, e2 := exportAt(t, data, time.Date(2026, 10, 6, 7, 0, 0, 0, time.UTC))
+	if e2.SHA256 == e.SHA256 {
+		t.Fatal("the rebuilt tarball has the old digest")
 	}
-	// the changed line's key is the one listed
-	var m probe.Measurement
-	_ = json.Unmarshal(f.readings[1], &m)
-	if !strings.Contains(strings.Join(r.Examples, "\n"), "different: "+m.DedupeKey()) {
-		t.Fatalf("examples: %v", r.Examples)
+	if reports, code, out = run(); len(reports) != 1 || code != 0 || held().SHA256 != e2.SHA256 {
+		t.Fatalf("the rebuilt day was not checked again and recorded: %+v exit %d, ledger %s\n%s", reports, code, held().SHA256, out)
 	}
 
-	r, err = checkLines(ctx, f.st, "publications.jsonl", kinds["publications.jsonl"], bytes.NewReader(file(f.pubLine, f.other)), 1)
-	if err != nil {
+	// The ledger says the day's heartbeats are not all in the store: the run lists it, says why and fails.
+	not := held()
+	not.Files = map[string]recordcheck.LedgerMember{"reachability.jsonl": {Lines: 3, Identical: 2, Why: "1 lines missing"}}
+	if err := recordcheck.MergeLedger(ledger, map[string]recordcheck.LedgerDay{e.Name: not}); err != nil {
 		t.Fatal(err)
 	}
-	if r.Identical != 1 || r.Missing != 1 || r.Reproducible {
-		t.Fatalf("%+v", r)
-	}
-
-	// -from-line skips the lines before it
-	r, err = checkLines(ctx, f.st, "publications.jsonl", kinds["publications.jsonl"], bytes.NewReader(file(f.other, f.pubLine)), 2)
-	if err != nil || r.Lines != 1 || !r.Reproducible {
-		t.Fatalf("%+v %v", r, err)
-	}
-}
-
-// A day's export is checked as a whole: the tarball against the index and the sidecar, the members against the
-// manifest, and the checked files against the store.
-func TestDay(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	members := map[string][]byte{
-		"publications.jsonl": file(f.pubLine),
-		"measurements.jsonl": file(f.readings...),
-		"reachability.jsonl": file(f.reachLines...),
-		"registry.jsonl":     file([]byte(`{"x":1}`)),
-	}
-	order := []string{"publications.jsonl", "measurements.jsonl", "reachability.jsonl", "registry.jsonl"}
-	build := func(dir string, tamper func(map[string][]byte)) export.Entry {
-		man := export.Manifest{Vantage: "ut-1", Day: "2026-10-05"}
-		for _, n := range order {
-			b := members[n]
-			man.Files = append(man.Files, export.Member{Name: n, Lines: int64(bytes.Count(b, []byte{'\n'})), Bytes: int64(len(b)), SHA256: digest(b)})
-		}
-		in := map[string][]byte{}
-		for n, b := range members {
-			in[n] = b
-		}
-		if tamper != nil {
-			tamper(in)
-		}
-		mj, _ := json.Marshal(man)
-		var buf bytes.Buffer
-		gz := gzip.NewWriter(&buf)
-		tw := tar.NewWriter(gz)
-		for _, n := range append([]string{"manifest.json"}, order...) {
-			b := mj
-			if n != "manifest.json" {
-				b = in[n]
-			}
-			_ = tw.WriteHeader(&tar.Header{Name: n, Mode: 0o644, Size: int64(len(b))})
-			_, _ = tw.Write(b)
-		}
-		_ = tw.Close()
-		_ = gz.Close()
-		name := "tensile-ut-1-2026-10-05.tar.gz"
-		_ = os.WriteFile(filepath.Join(dir, name), buf.Bytes(), 0o644)
-		_ = os.WriteFile(filepath.Join(dir, name+".sha256"), []byte(digest(buf.Bytes())+"  "+name+"\n"), 0o644)
-		return export.Entry{Name: name, Bytes: int64(buf.Len()), SHA256: digest(buf.Bytes()), Manifest: man}
-	}
-
-	dir := t.TempDir()
-	r, err := checkDay(ctx, f.st, dir, build(dir, nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !r.ExportIntact || !r.Reproducible || len(r.Files) != 3 || len(r.NotChecked) != 1 {
-		t.Fatalf("%+v", r)
-	}
-
-	// a member that is not what the manifest says: the export is not intact
-	dir = t.TempDir()
-	r, err = checkDay(ctx, f.st, dir, build(dir, func(m map[string][]byte) { m["registry.jsonl"] = file([]byte(`{"x":2}`)) }))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r.ExportIntact || r.Reproducible || !strings.Contains(strings.Join(r.ExportErrors, "\n"), "registry.jsonl") {
-		t.Fatalf("%+v", r)
-	}
-
-	// a tarball that is not the one the index names
-	dir = t.TempDir()
-	e := build(dir, nil)
-	e.SHA256 = digest(nil)
-	if r, err = checkDay(ctx, f.st, dir, e); err != nil || r.ExportIntact || r.Reproducible {
-		t.Fatalf("%+v %v", r, err)
+	if reports, code, out = run(); len(reports) != 0 || code != 1 || !strings.Contains(out, "NOT reproducible") || !strings.Contains(out, "file| reachability.jsonl: 1 lines missing") {
+		t.Fatalf("a day held as not reproducible: %+v exit %d\n%s", reports, code, out)
 	}
 }

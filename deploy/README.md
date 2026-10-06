@@ -388,9 +388,10 @@ Once a day's JSONL may leave the disk (after `record-verify` reports it
 reproducible), its export is the copy of its lines: each member is a
 contiguous byte range of the source file, so the exports, kept and backed
 up, give the record back for a rebuild or a rollback that reaches past
-the live files. They carry every file this observer writes; a second
-vantage's files (`vantages/`) are not in them and stay on that vantage
-and in the nightly copy.
+the live files. They carry every file this observer writes, and each
+second vantage's heartbeats as a member named by its path,
+`vantages/<name>/reachability.jsonl`; the first export after that member
+was added starts the file at its first byte, its older lines counted late.
 
 Never let an older collector read rows a newer
 prober wrote: it keys a row on the reading, not the attempt, so it keeps a

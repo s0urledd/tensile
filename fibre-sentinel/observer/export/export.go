@@ -12,6 +12,9 @@
 // before the day that turn up in that range (a late probe row, a straggler
 // after a restart) are included and counted as late, so every line lands
 // in exactly one export and the manifest says which ones came late.
+//
+// The heartbeats pulled in from the other vantages are exported the same
+// way, one member per vantage after the observer's own files (VantageFiles).
 package export
 
 import (
@@ -65,6 +68,33 @@ var Files = []FileSpec{
 	// and cannot see why.
 	{"param_uncertainty.jsonl", "detected_at"},
 	{"corrections.jsonl", "judged_at"},
+}
+
+// VantagesDir, under the data dir, holds the heartbeats of the other
+// vantages, pulled in by deploy/vantage-pull.sh: <name>/reachability.jsonl
+// each (ingest.VantagesDir).
+const VantagesDir = "vantages"
+
+// VantageFiles is one FileSpec per other vantage's reachability.jsonl under
+// dataDir, sorted by name, each named by its path relative to dataDir with
+// forward slashes ("vantages/de-1/reachability.jsonl"). That name is the
+// member's name in the tarball and its key in the export's state, so a
+// vantage whose directory appears later starts its file at offset 0 in the
+// next export, every line it holds counted late. They are dated like the
+// observer's own heartbeats. A data dir without other vantages has none.
+func VantageFiles(dataDir string) ([]FileSpec, error) {
+	// Glob only fails on a malformed pattern and returns its matches sorted,
+	// which is the order the members go into every export.
+	paths, err := filepath.Glob(filepath.Join(filepath.Clean(dataDir), VantagesDir, "*", "reachability.jsonl"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]FileSpec, 0, len(paths))
+	for _, p := range paths {
+		name := filepath.Base(filepath.Dir(p))
+		out = append(out, FileSpec{Name: VantagesDir + "/" + name + "/reachability.jsonl", TimeField: "started_at"})
+	}
+	return out, nil
 }
 
 // StateFile is the scanner's state, carried in every export as a snapshot
@@ -249,12 +279,19 @@ func (b *Builder) build(day string, st *state, now time.Time) error {
 	if stateErr != nil && !errors.Is(stateErr, fs.ErrNotExist) {
 		return stateErr
 	}
+	// The other vantages' heartbeats follow the observer's own files, so the
+	// members every export had before keep their places.
+	vantages, err := VantageFiles(b.DataDir)
+	if err != nil {
+		return err
+	}
+	specs := append(append([]FileSpec(nil), Files...), vantages...)
 	var tarBuf bytes.Buffer
 	gz := gzip.NewWriter(&tarBuf)
 	tw := tar.NewWriter(gz)
-	for _, f := range Files {
+	for _, f := range specs {
 		from := st.Offsets[f.Name]
-		m, data, to, err := collect(filepath.Join(b.DataDir, f.Name), f, day, from)
+		m, data, to, err := collect(filepath.Join(b.DataDir, filepath.FromSlash(f.Name)), f, day, from)
 		if err != nil {
 			return err
 		}
