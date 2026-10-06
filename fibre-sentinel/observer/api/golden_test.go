@@ -33,6 +33,8 @@ import (
 // TENSILE_GOLDEN_OUT the directory to write to; TENSILE_GOLDEN_NOW (RFC 3339) is the clock, the end of the last day
 // by default. With TENSILE_GOLDEN_RECOMPUTE (a sentinel-recompute binary) it also runs that against the API, over the
 // same record, for three windows, and writes what it says; with TENSILE_GOLDEN_KEEP_DB the store is copied out too.
+// TENSILE_GOLDEN_DB starts from a store another build wrote from the same records (the upgrade path: this build
+// opens it, migrates it, and the collector passes over it as it would on its first start).
 func TestGoldenAnswers(t *testing.T) {
 	dirs, out := os.Getenv("TENSILE_GOLDEN_EXPORTS"), os.Getenv("TENSILE_GOLDEN_OUT")
 	if dirs == "" || out == "" {
@@ -49,6 +51,15 @@ func TestGoldenAnswers(t *testing.T) {
 	data := t.TempDir()
 	gatherDays(t, days, data)
 
+	if from := os.Getenv("TENSILE_GOLDEN_DB"); from != "" {
+		b, err := os.ReadFile(from)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(data, "observer.db"), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	st, err := store.Open(filepath.Join(data, "observer.db"))
 	if err != nil {
 		t.Fatal(err)
