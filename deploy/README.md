@@ -331,7 +331,61 @@ is one row each, not a copy of the data directory:
 6. install the older collector and API, and start them.
 
 The columns and indexes stay, unread, and the next upgrade runs the
-migration again over them. Never let an older collector read rows a newer
+migration again over them.
+
+**Going back past schema 27.** Migration 27 is not additive: the rows a
+schema-27 collector writes hold the slim record in `raw_json` and `=` in
+`probes.row_indices` and `assignments.rows_json`, which an older build
+would read as JSON and as lists and answer wrongly. Deleting the version
+row is therefore never the way back from 27. The store is derived, though,
+and every observation is in the record files (the JSONL files with their
+`archive/` segments), which the schema-27 build writes exactly as before. So
+an older build gets a schema-26 store back, and its collector reads every
+line written since that store was cut from its own cursors
+(`ingest_cursors`, logical offsets, the archive segments included). No
+observation made after the copy is lost:
+
+1. **Before the upgrade**, with the collector and the API stopped, take a
+   copy of the store that keeps every page as it is:
+   `sqlite3 observer.db ".backup '/root/fibre-v/.deployment/observer-v26.db'"`
+   (never `VACUUM INTO`, which can renumber rowids). Keep it, and the
+   previous binaries, until the new build has run a week.
+2. **To go back:** stop the API and the collector, move `observer.db*`
+   aside (keep it), put the copy in its place, owned by `fibre-observer`,
+   and install the previous collector and API. Remove any drop-in that
+   passes a flag the older build does not know.
+3. **Start the collector.** It opens the copy at 26 and reads on from its
+   cursors: every publication, reading, heartbeat, payment and late
+   verdict written since the copy goes in the same way it would have the
+   first time. Once its `measurements.jsonl` cursor equals the file's
+   logical end, start the API: it finds the snapshots and day partials
+   belong to another store and builds them again, once.
+4. **Without a copy**, the same steps with no store: the older collector
+   rebuilds it from the whole record ("Rebuild from the record" below).
+   Slower, the same result.
+
+What comes back from neither (it has no record line) is what a rebuild
+never brings back: escrow balances, validator identities and pictures,
+and the chain-side `meta` keys, all polled again within the hour.
+
+This was tested on the golden records of 2–5 October. A schema-26 copy
+was taken at the end of the 4th. The schema-27 build opened it, migrated it
+and took in the 5th. The older build was then started from the copy and
+its collector read the 5th from its cursors. All 340 API answers were byte
+for byte those of a store the older build wrote from the four days at once.
+Before going back, `record-verify` found every line of the four days in the
+schema-27 store, byte for byte. The older build refuses the schema-27 store
+at start ("database schema version 27 is newer than this binary's 26").
+
+Once a day's JSONL may leave the disk (after `record-verify` reports it
+reproducible), its export is the copy of its lines: each member is a
+contiguous byte range of the source file, so the exports, kept and backed
+up, give the record back for a rebuild or a rollback that reaches past
+the live files. They carry every file this observer writes; a second
+vantage's files (`vantages/`) are not in them and stay on that vantage
+and in the nightly copy.
+
+Never let an older collector read rows a newer
 prober wrote: it keys a row on the reading, not the attempt, so it keeps a
 validator's first answer and drops the later ones. So do the two counters
 the day partials follow in `meta`, `held_flags_rev` and
