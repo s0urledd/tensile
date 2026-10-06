@@ -17,7 +17,11 @@
 #     points past it; verify puts the cut's own state.json (carried whole
 #     in the manifest) in its place, so the scanner resumes from the
 #     checkpoint these records were cut with. Missing, truncated, altered
-#     or unparseable fails.
+#     or unparseable fails. A segment retired on the host (its lines
+#     proven in the exports, the store and the remote, its file removed)
+#     is checked by its file when the remote has one, and otherwise read
+#     back from the copy's exports/, every digest held, as the rebuild
+#     below then reads it.
 #   - rebuilds the database from the verified cut and requires it to hold
 #     exactly the cut's records;
 #   - starts a second observer-api on a spare port against it and reads

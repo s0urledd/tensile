@@ -130,6 +130,81 @@ attempt of a full reading adds its number), a params range by its id
 (`chain:kind:from-to`) plus its resolution, a correction by
 `(target, range id)`.
 
+**Where a line is.** Every byte of a record file keeps one logical offset
+for good (`internal/record`), and a line is held in up to five places:
+
+| copy | where | written by | removed |
+|---|---|---|---|
+| live file | `<DATA_DIR>/<file>`; another vantage's heartbeats at `vantages/<name>/reachability.jsonl` | its writer, appending under a shared `flock` (`vantage-pull` for the other vantages) | never; rotation moves its older lines into a segment |
+| archive segment | `archive/<file>/<seq>-<day>.jsonl.gz`, listed in `archive/<file>/index.json` (another vantage's under `vantages/<name>/archive/`) | `observer-archive`, daily | only by retirement, below |
+| daily export | `exports/<tensile-…-day>.tar.gz`, its `.sha256`, its entry in `exports/index.json` | the collector, once a UTC day | never |
+| store | `observer.db`: a row per publication, reading, endpoint check and payment, from which the line is written back byte for byte (the slim record, section 5) | the collector | never (section 12) |
+| remote backup | `BACKUP_REMOTE/<network>/`: live files, segments, exports | `fibre-backup`, nightly `rclone copy` | never: copy does not delete |
+
+The segments hold logical bytes `[0, base)` in order and the live file
+`[base, …)`; a file's member in consecutive exports holds consecutive
+ranges `[source_from, source_to)` of it. observer-archive rotates the
+files the store keeps line by line (measurements, reachability and the
+other vantages' heartbeats, publications, payments) and sampling
+decisions, which it does not.
+
+**Retiring a local copy.** `observer-archive -retire -db observer.db`, the
+second step of `fibre-archive@`, removes an archived segment's gzip file,
+and nothing else, when every byte of it is proven in three other places:
+
+1. in daily exports intact on this disk: each export whose member of the
+   file overlaps the segment's range, tarball and member against
+   `exports/index.json`;
+2. in the store: `observer/recordcheck` writes every line of each of those
+   members back from the store and gets the member byte for byte. The
+   answer is kept per tarball digest in `exports/verified.json`
+   (`record-verify -ledger`); a day not in it is checked first, against the
+   store opened read-only;
+3. on the remote backup: `exports/remote.jsonl` holds an `"ok": true` line
+   for the tarball's current digest, which `fibre-backup` writes after
+   reading the remote copy back whole and hashing it (the archive unit has
+   no network; the newest line per tarball counts).
+
+`record.Retire` then, under the file's archive lock, reads the segment back
+from those exports once more and requires its length, lines and SHA-256,
+saves the index with the segment's `retired` record (the exports, the
+member name, the exports directory relative to the archive directory, the
+proof in words), and only then removes the file and syncs the directory.
+Anything not proven is kept, with the reason in the run's output and in
+`archive/retire-report.json`.
+
+Never retired: the live files; the files the store does not keep line by
+line (`registry`, `runs`, `sampling-secrets`, `sampling_decisions`,
+`amendments`, `host_history`, `param_uncertainty`, `corrections`), whose
+export no second copy can be checked against; the exports, `state.json` and
+the store, since a retired range is read back from the exports. A day the
+store does not give back whole (a sampled-out publication's NOT_PROBED rows,
+which it keeps as one decision; a repeated key, of which it keeps the first
+line) keeps its segments until a later check finds the day reproducible.
+
+**Reading a retired range.** A segment whose file is there is read from the
+file, retired or not (a crash between saving the index and removing the
+file leaves both). One whose file is gone is read from the exports its
+`retired` record names, relative to its own archive directory, so a
+restored copy of the data directory reads its own `exports/`. The read is
+two passes: the first checks every tarball and member against
+`exports/index.json` and the range against the segment (length, lines,
+SHA-256) and hands out nothing; the second hands out each 1 MiB block once
+its digest is the first pass's. A reader gets the exact bytes or an error,
+never fewer or other lines. Every reader of the whole record goes through
+it unchanged: a rebuild from zero (the collector's ingest from offset 0),
+`sentinel-recompute -data-dir <DATA_DIR>` and `sentinel-measure-check`
+(`record.OpenAll`), the restore drill and `fibre-backup-manifest`
+(`verify`, `cat`, `snapshot`, which carries the exports a retired segment
+names), and the schema rollback's collector reading on from its cursors. A
+build from before retirement does not know the `retired` record and stops
+at the missing file; going back to one needs the segment files back from
+the remote backup first, unless its cursors are past every retired range
+(`deploy/README.md`, "Going back past schema 27"). The export builder reads
+only bytes not yet exported, which are never retired, and the scanner and
+the prober read nothing retired at start: the live files, and the whole of
+`sampling_decisions.jsonl`, which is never retired.
+
 ---
 
 ## 5. The store
@@ -696,9 +771,29 @@ Systemd templates, instance = network (`fibre-scan@mocha`). All
 path a unit can write**, which is why the sampling secret lives there.
 
 Units: `fibre-scan@`, `fibre-probe@`, `fibre-heartbeat@`, `fibre-collector@`,
-`fibre-api@`, plus timers for `fibre-backup@` (rclone **copy**, never sync)
-and `fibre-healthwatch@` (polls `/v1/health`, posts to a webhook), and
-optional `fibre-litestream@`.
+`fibre-api@`, plus timers for `fibre-backup@` (rclone **copy**, never sync,
+then the remote proof of the exports), `fibre-archive@` (rotation, then
+retirement; `PrivateNetwork=true`), `fibre-vantage-pull@` (each other
+vantage's heartbeats, every minute) and `fibre-healthwatch@` (polls
+`/v1/health`, posts to a webhook), and optional `fibre-litestream@`.
+
+**The nightly order** (UTC). 03:00: the collector builds the previous day's
+export (`-export-hour`). 03:17 plus up to 20 minutes (by about 03:36):
+`fibre-backup` takes the manifest's cut, copies segments, then the live
+files and the exports, then reads back from the remote each export not yet
+proven and appends the result to `exports/remote.jsonl`. 04:40:
+`fibre-archive` rotates, then retires what the three proofs of section 4 cover.
+The backup holds every archive lock shared from its cut to its last check
+and a run holds a file's lock exclusively, so the two never overlap; an
+export proven a night late retires its segments a night late.
+
+**A copy of the store** for a schema rollback (`sqlite3 .backup`, which
+keeps every page and rowid; never `VACUUM INTO`) reads and writes the
+whole store on the disk the validator shares. It runs at idle I/O priority
+(`ionice -c3`) and is paused (`SIGSTOP`, then `SIGCONT`) while the disk's
+I/O pressure (`some avg10` in `/proc/pressure/io`) is high: on NVMe with the
+`none` scheduler the priority class alone does not hold it back
+(`deploy/README.md`, "Going back past schema 27", has the loop).
 
 **Upgrade order matters**: install binaries → **stop the API** → restart the
 collector (it owns migrations) → start the API. `store.OpenReadOnly` refuses a
@@ -733,7 +828,8 @@ never set and nothing is labelled.
 - **daily exports**: one tarball per UTC day, every record file plus
   `state.json`, with a manifest of line counts and SHA-256 digests. Records
   are assigned to a day by their own timestamp; late arrivals are included
-  and *counted as late*
+  and *counted as late*. They are also the copy on this disk of every
+  retired range (section 4), so they are never removed
 - **`sentinel-recompute`**: re-derives every row's phase and classification,
   each blob's reading, the obligation buckets, and (with
   `-sampling`) the earlier admission draws of every revealed day — from an export alone. With `-api` it compares
@@ -898,4 +994,6 @@ Stated here because they are properties of the machine, not of any validator.
 | the prober records nothing | the prober's status `reads` block (queued, in progress, started late and missed in the last hour; `/v1/health` components), `BackfillMissed` horizon |
 | a validator is often counted neither way | the status `reads` block: `requests_not_started_last_hour`, `admit_wait_p95_ms` and the reading-rate ceiling's part of it (`rate_wait_p95_ms`), the `retries_*` counts and `retries_not_made_by_validator_last_hour`; `observer_load` on its rows |
 | the build says `-dirty` | an untracked file in the working tree at build time |
+| a segment is not retired | its reason in `archive/retire-report.json`; the day in `exports/verified.json` (the store's answer) and in `exports/remote.jsonl` (the remote's) |
+| a read of the whole record stops at a segment | its file is gone and `index.json` names no exports for it: it was moved by hand, not retired; put it back (the remote backup keeps every segment it was sent) |
 | the API refuses to start | schema older or newer than the binary; run the collector once |

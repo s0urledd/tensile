@@ -26,6 +26,9 @@ port, behind one Caddy with a site per network (see "Two networks").
 ## 1. Prerequisites
 
 - A Linux VM with Go 1.23+ (the celestia-app pin needs 1.26.6; `GOTOOLCHAIN=auto` downloads it), Node 22, Caddy 2.
+- `rclone` 1.60 or later, `python3` and util-linux's `flock`: the nightly
+  backup, its manifest and its remote proof of the exports, and the second
+  vantage's pull use them.
 - A CometBFT RPC endpoint for the chain you observe. Use your own full node
   (default pruning is fine; no archive node is needed) with
   `storage.discard_abci_responses = false` in `config.toml`: the scanner
@@ -305,7 +308,8 @@ sudo systemctl restart fibre-scan@mocha fibre-probe@mocha fibre-heartbeat@mocha 
 The pull script is installed with the binaries because it changes with
 them: one installed from before this change also fetches each vantage's
 `measurements.jsonl` and pushes requests to it (`VANTAGE_PUSH`), neither of
-which anything uses any more.
+which anything uses any more, and the current one resumes from the logical
+end that `observer-archive -logical-end` of the same build reports.
 
 The API also refuses a database **newer** than itself, so an API left on an
 old build after the collector moved on says so rather than serving columns
@@ -356,7 +360,30 @@ observation made after the copy is lost:
    copy of the store that keeps every page as it is:
    `sqlite3 observer.db ".backup '/root/fibre-v/.deployment/observer-v26.db'"`
    (never `VACUUM INTO`, which can renumber rowids). Keep it, and the
-   previous binaries, until the new build has run a week.
+   previous binaries, until the new build has run a week. The copy reads
+   and writes the whole store on a disk it shares with the validator, so
+   run it at idle I/O priority and pause it while the disk's I/O pressure
+   is high. On an NVMe disk with the `none` scheduler the priority alone
+   changes nothing (see `Nice=10` below); the pause is what holds:
+
+   ```sh
+   cd /var/lib/fibre-observer/mocha
+   ionice -c3 nice -n10 sqlite3 observer.db ".backup '/root/fibre-v/.deployment/observer-v26.db'" &
+   copy=$!
+   trap 'kill -CONT "$copy" 2>/dev/null' EXIT
+   # "some avg10" in /proc/pressure/io is the share of the last ten seconds
+   # in which a task waited on I/O; at 10% or more the copy is stopped
+   # until it falls back
+   while kill -0 "$copy" 2>/dev/null; do
+     p=$(awk '/^some/ { split($2, a, "="); print int(a[2]) }' /proc/pressure/io)
+     if [ "$p" -ge 10 ]; then kill -STOP "$copy" 2>/dev/null; else kill -CONT "$copy" 2>/dev/null; fi
+     sleep 5
+   done
+   wait "$copy" && echo "copy complete"
+   ```
+
+   A stopped copy holds only a read transaction on a store nothing else
+   writes, so a pause costs time, not consistency.
 2. **To go back:** stop the API and the collector, move `observer.db*`
    aside (keep it), put the copy in its place, owned by `fibre-observer`,
    and install the previous collector and API. Remove any drop-in that
@@ -384,11 +411,31 @@ Before going back, `record-verify` found every line of the four days in the
 schema-27 store, byte for byte. The older build refuses the schema-27 store
 at start ("database schema version 27 is newer than this binary's 26").
 
-Once a day's JSONL may leave the disk (after `record-verify` reports it
-reproducible), its export is the copy of its lines: each member is a
-contiguous byte range of the source file, so the exports, kept and backed
-up, give the record back for a rebuild or a rollback that reaches past
-the live files. They carry every file this observer writes, and each
+A collector that reads a retired range ("Retiring local copies" below)
+reads it from the exports; one from before retirement does not know the
+`retired` record, opens the segment's file and stops when it is gone.
+From a copy taken at the upgrade its cursors lie past every retired range
+as long as the copy is younger than `-keep` (a segment holds only lines
+older than that); compare its `ingest_cursors` with the segments' `to` in
+each `archive/<file>/index.json` to be sure. A rebuild from zero by such a
+build, or a cursor behind a retired segment, needs the segments' files
+back first. The remote backup keeps every segment it was sent, so as the
+service user, with the collector stopped:
+
+```sh
+sudo -u fibre-observer env RCLONE_CONFIG=/etc/fibre-observer/rclone.conf \
+  rclone copy '<BACKUP_REMOTE>/mocha/archive' /var/lib/fibre-observer/mocha/archive --include '*.jsonl.gz'   # BACKUP_REMOTE as in mocha.env
+```
+
+(and the same for each `vantages/<name>/archive`). A segment retired before
+the backup first copied it is not on the remote; its lines are in the
+exports alone, and only a build that knows retirement reads them.
+
+Once a segment is retired, the exports are the copy of its lines on this
+disk: each member is a contiguous byte range of the source file, so the
+exports, kept and backed up, give the record back for a rebuild or a
+rollback that reaches past the live files, byte for byte and at the same
+offsets. They carry every file this observer writes, and each
 second vantage's heartbeats as a member named by its path,
 `vantages/<name>/reachability.jsonl`; the first export after that member
 was added starts the file at its first byte, its older lines counted late.
@@ -623,15 +670,19 @@ Budget for disk: one measurement is about 1.5 KB in `measurements.jsonl`
 (about 3 KB when it carries the verified row indices) and about twice that
 again in the database, one per validator a reading asks. At mocha's rate on
 28 September (about 20 blobs a minute, 12 to 20 validators asked each) that
-is about 1.2 to 1.8 GB a day of JSONL plus the database. The JSONL files are the record; the three biggest are kept bounded
+is about 1.2 to 1.8 GB a day of JSONL plus the database. The JSONL files are the record; the biggest are kept bounded
 by moving their older lines into compressed segments under `archive/`
-(below), never by deleting a line. `/v1/health` fails the `disk` check
+(below), never by deleting a line, and a segment's file leaves the disk
+only once every line of it is proven to be in three other places
+("Retiring local copies" below). `/v1/health` fails the `disk` check
 under 15% free, so the alert arrives while there is still room to act; the
 disk may be shared with other services, and nothing is deleted to make room. When a disk fills,
-move the oldest archive segments or the small record files off the box
-(append-only or immutable; a copy is complete the moment it is taken) and
-rebuild the database from the rest if you want it smaller. Nothing here
-deletes a row.
+retirement ("Retiring local copies" below) is how a segment's file leaves
+the disk with its lines still readable. Anything moved off the box by hand
+(append-only or immutable; a copy is complete the moment it is taken) has
+to come back before the database is rebuilt: a segment whose index entry
+names no exports stops every reader of the whole record (a rebuild,
+recompute, the manifest tool's `cat`). Nothing here deletes a row.
 
 **Retention (decided 2026-10-04):** every row is kept for good. Probe and
 heartbeat rows and their `raw_json` are never deleted or stripped, so an
@@ -679,7 +730,14 @@ copy back to the cut, checks every hash, parses every line, and puts the
 cut's own `state.json` in place of the copy's, which was read later and
 points past the records the cut holds. A copy that came back missing,
 short, altered or unparseable is a failed restore, not a surprise. The
-master key is never in it.
+master key is never in it. A segment retired on the host is listed in the
+cut with its `retired` record; `verify` checks it by its file when the
+copy has one (the remote keeps every segment it was sent) and otherwise
+reads it back from the copy's `exports/`, every tarball and member against
+`exports/index.json` and the range against the segment's SHA-256. Each
+other vantage's heartbeats (`vantages/<name>/reachability.jsonl`, with
+their own `archive/` beside them) are cut and checked like the observer's
+own files.
 
 
 - **litestream** for the database: copy `deploy/litestream.yml` to
@@ -689,21 +747,34 @@ master key is never in it.
   `fibre-litestream@mocha`. It replicates the **derived** database only,
   continuously, with 72 h of history.
 - **fibre-backup** for the record: `fibre-backup@mocha.timer` runs
-  `rclone sync` of every `.jsonl` (the record, `registry.jsonl`,
-  `runs.jsonl`, `sampling_decisions.jsonl`, `sampling-secrets.jsonl`, `amendments.jsonl`), the archived
-  segments under `archive/` (first, see "Archive" below), `state.json`, the status files
+  `rclone copy` of every `.jsonl` (the record, `registry.jsonl`,
+  `runs.jsonl`, `sampling_decisions.jsonl`, `sampling-secrets.jsonl`, `amendments.jsonl`,
+  each `vantages/<name>/reachability.jsonl`), the archived
+  segments under `archive/` and `vantages/<name>/archive/` (first, see "Archive" below), `state.json`, the status files
   and the daily exports to `BACKUP_REMOTE/<network>` nightly (`deploy/backup.sh`),
   with the rclone remote configured once in `/etc/fibre-observer/rclone.conf`.
-  It copies rather than mirrors, so moving old files off a full disk can
-  never delete them from the remote.
+  It copies rather than mirrors, so moving old files off a full disk, or
+  retiring a segment, can never delete them from the remote.
   It never copies `sampling-master.key`, which must not leave the host, nor
-  the database, which litestream covers. With `BACKUP_REMOTE` empty the
+  the database, which litestream covers. After the copy it reads each
+  export not yet proven back from the remote (`rclone cat`), hashes it, and
+  appends one line to `exports/remote.jsonl`:
+  `{"name", "sha256", "checked_at", "ok"}`, `sha256` being the local
+  `.sha256` it was checked against. The newest line for a name counts; a
+  tarball rebuilt under a new digest, or one whose check failed, is read
+  again the next night. A failed check is `"ok": false` and does not fail
+  the unit, whose status is the copy's; it only keeps the segments that
+  export holds on the disk a night longer. The first run reads every
+  export back once. The remote is never printed (a remote given whole on
+  the command line carries its credentials). With `BACKUP_REMOTE` empty the
   timer runs and does nothing, so enable it everywhere and arm it with one
   variable.
 
 **Rebuild from the record.** Stop the instance's collector and API, move
 `observer.db*` aside, start the collector: it recreates the schema, replays
-`registry.jsonl` (endpoint history), then tails the JSONL files from zero.
+`registry.jsonl` (endpoint history), then tails the JSONL files from zero:
+each file's archived segments first (a retired one read back from the
+daily exports, below), then the live file.
 Every record has a natural key and every insert is `ON CONFLICT DO
 NOTHING`, so a replay never duplicates. The run record (`observer_runs`) comes
 back from `runs.jsonl`, which every component appends its starts, stops
@@ -762,8 +833,9 @@ mocha host on 29 September, and how to remove it once the owner approves:
 
 `measurements.jsonl` grows about 100 MB a day. `observer-archive`, run daily
 by `fibre-archive@<network>.timer` at 04:40 UTC (after the export and the
-backup), keeps it and the other two biggest files bounded without taking a
-line out of the record:
+backup), keeps it bounded without taking a line out of the record, and with
+it the sampling decisions, the heartbeats, the publications, the payments
+and each other vantage's heartbeats:
 
 ```
 <DATA_DIR>/measurements.jsonl                         the live file: lines dated in the last -keep (default 7 days)
@@ -772,7 +844,11 @@ line out of the record:
 <DATA_DIR>/archive/measurements.jsonl/000002-2026-10-03.jsonl.gz   one per run: the lines dated before that day
 <DATA_DIR>/archive/reachability.jsonl/...
 <DATA_DIR>/archive/sampling_decisions.jsonl/...
+<DATA_DIR>/archive/publications.jsonl/...
+<DATA_DIR>/archive/payments.jsonl/...
 <DATA_DIR>/archive/.lock                              held by a run (exclusive) and the backup (shared)
+<DATA_DIR>/archive/retire-report.json                 the last retirement: what went, what was kept and why
+<DATA_DIR>/vantages/de-1/archive/reachability.jsonl/...   another vantage's heartbeats, under vantages/de-1/archive/.lock
 ```
 
 Every byte keeps its offset. Segment 1 holds bytes `[0, a)` of the file as
@@ -786,17 +862,18 @@ is byte for byte what it would have been. `sentinel-recompute`,
 
 A run, per file: cut before the first line dated at or after the cutoff
 (the start of the UTC day `-keep` ago; `scheduled_at` for measurements and
-heartbeats, `decided_at` for sampling decisions), never past what the daily
-export has read, always leaving the last line; write the segment, fsync it,
-read it back and match its digest; copy the rest to a temp file; then,
-holding the file's exclusive `flock`, copy what was appended since, write
-the index and rename the copy over the live file. The writers
-(`sentinel-probe`, `observer-heartbeat`, and `sentinel-scan` for
-publications and payments) append under a shared `flock` and reopen the
-path when it no longer names the file they hold, so no line is lost or
-written twice. A crash at any step leaves the record readable as
-before; the next run removes the leftovers. A second run the same day moves
-nothing.
+heartbeats, the other vantages' included, `decided_at` for sampling
+decisions, `settlement_time` for publications, `time` for payments), never
+past what the daily export has read, always leaving the last line; write
+the segment, fsync it, read it back and match its digest; copy the rest to
+a temp file; then, holding the file's exclusive `flock`, copy what was
+appended since, write the index and rename the copy over the live file. The
+writers (`sentinel-probe`, `observer-heartbeat`, `sentinel-scan` for
+publications and payments, and `vantage-pull` for the other vantages'
+heartbeats) append under a shared `flock` and reopen the path when it no
+longer names the file they hold, so no line is lost or written twice. A
+crash at any step leaves the record readable as before; the next run
+removes the leftovers. A second run the same day moves nothing.
 
 `-keep` must exceed the longest retention window in `state.json` plus a day
 (the command refuses less): a restarted prober reads only the live files,
@@ -814,19 +891,111 @@ fibre-backup-manifest cat /var/lib/fibre-observer/mocha measurements.jsonl | wc 
 ```
 
 `-keep 336h` in `ARCHIVE_ARGS` in the env file keeps two weeks live. The
-backup copies `archive/` before the live files, and its manifest names every
-segment and the live base; `restore.sh` and `verify` check each segment. The
-small record files (host history, the collector's own logs, runs) are not
-archived: their writers hold them open without the lock. Publications and
-payments are not archived either, though `sentinel-scan` writes them under
-the lock and the prober's tail of publications follows a rotation. Neither
-are the files under `vantages/`, which `vantage-pull` resumes
-by size; do not run `observer-archive` on a second vantage, whose files the
-observer pulls that way.
+backup copies `archive/` and each `vantages/<name>/archive/` before the live
+files, and its manifest names every segment and the live base; `restore.sh`
+and `verify` check each segment. The small record files (host history, the
+collector's own logs, runs) are not archived: their writers hold them open
+without the lock. `vantage-pull` resumes each vantage's file from its
+logical end (`observer-archive -logical-end vantages/<name>/reachability.jsonl`,
+the live file's base plus its size), not from its size, so a rotated file
+goes on where the record ends. Do not run `observer-archive` on the second
+vantage's own host: the file there is what the pull reads its offsets from,
+and a file shorter than the local record stops the pull ("Second vantage"
+below).
 
-Upgrade order: install binaries, restart `fibre-probe`, `fibre-heartbeat`
-and `fibre-scan` (the writers must hold the lock before any rotation) and
-`fibre-collector`, then enable the timer.
+Upgrade order: install binaries and the deploy scripts (`fibre-backup`,
+`fibre-backup-manifest`, `fibre-vantage-pull`: an older pull resumes by
+size and would fetch a rotated vantage file's older bytes again, and an
+older backup copies no vantage archive), restart `fibre-probe`,
+`fibre-heartbeat` and `fibre-scan` (the writers must hold the lock before
+any rotation) and `fibre-collector`, then enable the timer.
+
+### Retiring local copies
+
+A segment's gzip file is one of three copies of its lines on this disk:
+they are also in the daily exports, and the store writes each
+publication, reading, endpoint check and payment back to its line byte for
+byte (`docs/SYSTEM.md`, "The slim record"). The second step of
+`fibre-archive@<network>`,
+`observer-archive -retire -db <DATA_DIR>/observer.db`, removes a segment's
+file, and nothing else, once every byte of it is
+
+1. in daily exports intact on this disk: each export whose member of the
+   file overlaps the segment (`exports/index.json`), tarball and member
+   matching their digests;
+2. given back by the store, line by line, byte for byte, for each of those
+   members: `record-verify`'s check, kept per tarball digest in
+   `exports/verified.json`; a day not in it yet is checked first, against
+   the store opened read-only;
+3. on the remote backup with the same SHA-256: an `"ok": true` line for
+   the tarball's current digest in `exports/remote.jsonl`, written by
+   `fibre-backup` after its copy (the archive unit has no network).
+
+`record.Retire` then, under the file's archive lock, reads the segment
+back from those exports once more (every tarball and member digest, the
+range's length, lines and SHA-256 against the segment), saves `index.json`
+with the segment's `retired` record (the exports, the member name, the
+exports directory relative to the archive directory, the proof in words),
+and only then removes the file. A crash in between leaves the file, which
+readers go on reading and the next run removes. A segment that misses any
+of the three is kept, and the run says why: one line per file (retired
+now, retired before, kept, bytes freed), one per kept segment
+(`2026-09-25 measurements.jsonl: 22560 lines sampled out, not reproducible
+from the store`, `2026-10-07 not yet on the remote`), and the same in
+`archive/retire-report.json`. A kept segment is the normal answer for a
+recent day, not a failure; the unit fails only on an error.
+
+Never retired:
+
+- the live files: their bytes move only by rotation, into a segment;
+- `registry.jsonl`, `runs.jsonl`, `sampling-secrets.jsonl`,
+  `sampling_decisions.jsonl`, `amendments.jsonl`, `host_history.jsonl`,
+  `param_uncertainty.jsonl` and `corrections.jsonl`: the store does not
+  keep them line by line, so nothing shows their exported lines to be the
+  record a second way (sampling decisions are archived; their segments
+  stay);
+- the exports, `state.json` and the store: a retired segment is read back
+  from the exports, which the backup copies and never deletes.
+
+A segment whose day the store does not give back whole (the NOT_PROBED
+rows of a publication it keeps as one sampling decision, a line it dropped
+as a repeat) stays as long as that holds; once the store has caught up,
+`record-verify -db <DATA_DIR>/observer.db -exports <DATA_DIR>/exports -day <day> -ledger <DATA_DIR>/exports/verified.json`
+checks the day again and replaces its entry.
+
+Every reader of the whole record reads a retired range from the exports
+(`internal/record`), held to the same digests, in two passes: the first
+proves every tarball, member and the range and hands out nothing, the
+second hands out each block once it matches the first, so a reader gets
+the exact bytes or an error, never fewer or other lines. That covers a
+rebuild from zero, `sentinel-recompute -data-dir <DATA_DIR>`,
+`sentinel-measure-check`, `restore.sh` and `persistence.sh` (a restored
+copy reads its own `exports/`, which the backup carries;
+`fibre-backup-manifest snapshot` carries the exports its retired segments
+name) and `fibre-backup-manifest cat`. The export builder reads only bytes
+it has not exported yet, which are never retired, and the scanner and the
+prober read nothing retired at start. The schema rollback is in
+"Going back past schema 27" above.
+
+The nightly order, all UTC:
+
+| when | unit | what |
+|---|---|---|
+| 03:00 | `fibre-collector@` (`-export-hour`) | the previous day's export |
+| 03:17, plus up to 20 min | `fibre-backup@` | the manifest's cut; the copy, segments first, then the live files and the exports; then the remote proof of each export not yet proven |
+| 04:40 | `fibre-archive@` | rotation, then retirement |
+
+The backup holds `archive/.lock` (and each `vantages/<name>/archive/.lock`)
+shared from the cut to its last check, and an archive run holds a file's
+lock exclusively, so the two never overlap: a backup still running at 04:40
+delays the archive run, and an export proven a night late retires its
+segments a night late.
+
+```sh
+sudo systemctl start fibre-archive@mocha                                     # rotation and retirement now
+jq . /var/lib/fibre-observer/mocha/archive/retire-report.json               # what went, what stayed and why
+tail -n 3 /var/lib/fibre-observer/mocha/exports/remote.jsonl                # the newest remote proofs
+```
 
 ### Runbook
 
@@ -1047,7 +1216,21 @@ the same account.
 On the observer, `fibre-vantage-pull@<net>.timer` fetches each vantage's
 record once a minute over the backup account's sftp-only key, appending only
 new bytes, into `<data-dir>/vantages/<name>/reachability.jsonl`; the collector
-ingests every file there. Configure it in the network's env file:
+ingests every file there, and the daily export, the archive and the
+retirement treat it as they treat the observer's own heartbeats. The pull
+is `rclone` (1.60 or later) with the sftp remote given whole on its command
+line, so it needs no rclone config: it asks for the file's size
+(`rclone lsf`), then appends what lies past the local file's logical end
+(`rclone cat --offset`, the end from `observer-archive -logical-end`),
+holding the local file's shared `flock` as the observer's own writers do.
+A remote file shorter than that end was replaced or cut on the vantage:
+the pull fetches nothing, says so and fails until someone has looked; the
+local record is never cut to match. rclone checks the host key against
+`VANTAGE_PULL_KNOWN` and may settle on another key type than OpenSSH did,
+so that file should hold every key the host offers (`ssh-keyscan <host>`,
+all types). Check it once as the service user:
+`sudo -u fibre-observer rclone lsf --format s ':sftp,host=<host>,user=tensile-backup,key_file=/etc/fibre-observer/backup_ed25519,known_hosts_file=/etc/fibre-observer/backup_known_hosts:vantage/de-1/reachability.jsonl'`
+prints the remote file's size. Configure it in the network's env file:
 
 ```
 VANTAGE_PULL_HOST=tensile-backup@85.10.211.222
@@ -1066,7 +1249,10 @@ second vantage to read it again. Earlier builds pushed confirmation requests
 to `vantage/<name>/inbox/`; nothing writes or reads that inbox now, and
 `VANTAGE_PUSH` in the env file is ignored.
 
-`deploy/test/vantage-sync.sh` checks the pull against a fake sftp.
+`deploy/test/vantage-sync.sh` checks the pull against the fake rclone
+(`deploy/test/fake-rclone.sh`) and a fake `observer-archive`: the first
+pull, an append, a rotated local file resumed from its logical end, a
+remote shorter than the local record, and a failed or missing fetch.
 
 ## 8. Checks after deploy
 
@@ -1147,10 +1333,11 @@ deploy/test/resource-watch.sh summarize /var/log/fibre-resource-watch-mocha.csv
 
 The scripts have regression tests of their own: `deploy/test/selftest.sh`
 (also `make test-deploy`, and CI) runs them against fake API and RPC servers
-on loopback — a closed port, healthy and degraded answers, env values with
-spaces and quotes, a backup that grew, was truncated, altered or lost a
-file, and app version 9/10 against the x/fibre query — with no root, no
-systemd and no rclone.
+on loopback and a fake rclone over a local directory — a closed port,
+healthy and degraded answers, env values with spaces and quotes, a backup
+that grew, was truncated, altered or lost a file, a retired segment read
+back from its exports, the remote proof of the exports, and app version
+9/10 against the x/fibre query — with no root, no systemd and no rclone.
 
 `rpc-check` is the one to run before anything else, and against any public
 endpoint you consider: a node started with `storage.discard_abci_responses =
