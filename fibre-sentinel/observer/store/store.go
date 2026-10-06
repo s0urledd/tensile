@@ -38,7 +38,7 @@ var schemaSQL string
 // an upgraded one — baseline, then every migration — so the two end up
 // identical in shape and the migration code is exercised by every test run
 // rather than only on upgrade day.
-const SchemaVersion = 27
+const SchemaVersion = 28
 
 // migration is one numbered step above the baseline. The statements run in a
 // single transaction: SQLite supports transactional DDL, so a failed step
@@ -781,6 +781,18 @@ var migrations = []migration{
 			 SELECT qx.promise_hash, qx.scheduled_at, COUNT(DISTINCT j.value) FROM probes qx, json_each(qx.row_indices) j
 			 WHERE qx.commitment_verified = 1 AND qx.row_indices IS NOT NULL AND json_valid(qx.row_indices)
 			 GROUP BY qx.promise_hash, qx.scheduled_at`,
+		},
+	},
+	{
+		version: 28,
+		note:    "the slim endpoint check record: reachability.raw_json keeps it for new rows (store/slim.go, ReachRecord)",
+		// No table changes. The version is what keeps an older build, which reads raw_json as JSON, off a store that
+		// holds the slim form: it refuses a newer schema rather than read those rows wrongly. The one statement notes
+		// where the slim rows begin on a store that has rows, for whoever reads the table by hand; nothing reads it.
+		stmts: []string{
+			`INSERT INTO meta (key, value, updated_at)
+			 SELECT 'reachability_slim_after_rowid', MAX(rowid), strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM reachability WHERE 1 HAVING COUNT(*) > 0
+			 ON CONFLICT(key) DO NOTHING`,
 		},
 	},
 }
@@ -2212,10 +2224,39 @@ func (s *Store) growingCounts(ctx context.Context) ([len(countedTables)]int64, e
 // ---- reachability ----
 
 // InsertReachability stores one heartbeat measurement. Idempotent on
-// (vantage, validator, scheduled_at).
+// (vantage, validator, scheduled_at). raw_json keeps the record in its slim
+// form (slim.EncodeReachability) when it reads back to the line byte for
+// byte, the line itself otherwise; the table entries the slim form adds are
+// kept in the same transaction.
 func (s *Store) InsertReachability(m probe.Measurement, raw []byte) (inserted bool, err error) {
 	key := m.Vantage + "|" + m.ValidatorAddress + "|" + m.ScheduledAt.UTC().Format(time.RFC3339Nano)
-	res, err := s.db.Exec(`INSERT INTO reachability
+	ctx := context.Background()
+	t, err := s.tables(ctx, s.db, false)
+	if err != nil {
+		return false, err
+	}
+	kept := t.Stored()
+	var body any = string(raw)
+	if b, err := t.EncodeReachability(raw); err == nil {
+		body = b
+	} else {
+		t.Rollback(kept) // kept as its line: whatever the attempt added is not needed
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			t.Rollback(kept)
+		}
+	}()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if err := keepEntries(tx, t.Pending()); err != nil {
+		return false, err
+	}
+	res, err := tx.Exec(`INSERT INTO reachability
 		(dedupe_key, vantage, validator_address, validator_host, height, scheduled_at, started_at,
 		 dns_ok, tcp_ok, tcp_ms, tls_ok, tls_ms, peer_cert_sha256, identity_ok, identity_reason,
 		 outcome, raw_error, total_duration_ms, raw_json)
@@ -2223,11 +2264,15 @@ func (s *Store) InsertReachability(m probe.Measurement, raw []byte) (inserted bo
 		ON CONFLICT(dedupe_key) DO NOTHING`,
 		key, m.Vantage, m.ValidatorAddress, m.ValidatorHost, m.ValidatorSetHeight, ts(m.ScheduledAt), ts(m.StartedAt),
 		b2i(m.DNS.OK), b2i(m.TCP.OK), m.TCP.DurationMS, b2i(m.TLS.OK), m.TLS.DurationMS, m.TLS.PeerCertSHA256,
-		b2i(m.Identity.OK), m.Identity.Reason, string(m.Outcome), m.RawError, m.TotalDurationMS, string(raw))
+		b2i(m.Identity.OK), m.Identity.Reason, string(m.Outcome), m.RawError, m.TotalDurationMS, body)
 	if err != nil {
 		return false, fmt.Errorf("reachability %s: %w", key, err)
 	}
 	n, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("reachability %s: %w", key, err)
+	}
+	committed = true
 	return n > 0, nil
 }
 

@@ -13,11 +13,12 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/slim"
 )
 
-// The record in its slim form (internal/slim, migration 27).
+// The record in its slim form (internal/slim, migrations 27 and 28).
 //
 // publications.raw_json and probes.raw_json hold the slim record of each row this build writes: every field of the
 // JSONL line but those computed again from the others, from which the line is written back byte for byte (Record,
-// ProbeRecord). A row an earlier build wrote keeps its line, which always starts with '{' and a slim record never
+// ProbeRecord). reachability.raw_json holds an endpoint check the same way with nothing derived, only where it reads
+// back to its line byte for byte (ReachRecord). A row an earlier build wrote keeps its line, which always starts with '{' and a slim record never
 // does, so both are read the same way and nothing has to be rewritten.
 //
 // The copies the slim record replaces are marked, not stored: probes.row_indices and assignments.rows_json hold
@@ -220,6 +221,20 @@ func (s *Store) ProbeRecord(ctx context.Context, q Querier, promiseHash string, 
 	err = s.decodeRetry(ctx, q, func(t *slim.Tables) error {
 		var e error
 		line, e = t.DecodeMeasurement(raw, p, s.lookup(ctx, q))
+		return e
+	})
+	return line, err
+}
+
+// ReachRecord is an endpoint check's record line, whatever form its reachability row keeps it in. q as Record.
+func (s *Store) ReachRecord(ctx context.Context, q Querier, raw []byte) ([]byte, error) {
+	if asIs(raw) {
+		return raw, nil
+	}
+	var line []byte
+	err := s.decodeRetry(ctx, q, func(t *slim.Tables) error {
+		var e error
+		line, e = t.DecodeReachability(raw)
 		return e
 	})
 	return line, err

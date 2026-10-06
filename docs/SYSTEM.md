@@ -139,7 +139,7 @@ needs a full VACUUM, which is why an existing DB has to be deleted). The
 collector owns the schema; the API opens `query_only` and refuses a database
 older *or* newer than the binary expects.
 
-**Schema version 27.** Base tables from `schema.sql`: `schema_migrations`,
+**Schema version 28.** Base tables from `schema.sql`: `schema_migrations`,
 `observer_runs`, `ingest_cursors`, `params_history`, `publications`,
 `assignments`, `endpoints`, `probes`, `meta`, `reachability`. Migrations add:
 
@@ -167,6 +167,7 @@ older *or* newer than the binary expects.
 | 24 | `sampling_decisions` and its points: a sampled-out publication stored once; `probe_rows` derives its NOT_PROBED rows for every figure; the rows already stored for one are collapsed into it |
 | 26 | `publications_tx` and `publications_commitment`: a blob looked up by its settlement transaction or its commitment (`/v1/blobs?tx=`, `?commitment=`) is a seek, not a walk |
 | 27 | the slim record: `publications.original_rows` / `total_rows` (the two values queries read out of `raw_json`), `slim_entries`, `reading_rows` |
+| 28 | the slim endpoint check record in `reachability.raw_json`; no table change (the version keeps an older build, which would read the column as JSON, off the store) |
 
 **The slim record (migration 27, `store/slim.go`, `internal/slim`).** A row this
 build writes keeps in `raw_json` the slim form of its record: every field of the
@@ -187,6 +188,13 @@ assignment in its order (`Store.RowIndices`, `Store.AssignedRows`), and
 the rollup used to count with `json_each` over the lists. A row's record in
 `raw_json` is therefore not JSON: read it through those functions, never with
 `json_extract`.
+
+An endpoint check row (`reachability`, migration 28) keeps its record the same
+way, with nothing computed again: each value by the format's tags against the
+same shared tables (`Store.ReachRecord`), and only when it reads back to the
+line byte for byte; otherwise the line itself. 155 bytes of a 1,362-byte line on
+the golden records, 760 bytes a row with its columns and indexes where it took
+2,311.
 
 The store is append-only **in its inserts** (`ON CONFLICT DO NOTHING`) but not
 in its verdicts: `ApplyAmendment` updates a row's classification in place when
