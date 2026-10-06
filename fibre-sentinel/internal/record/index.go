@@ -26,6 +26,11 @@
 // line. A reader finds its base by the first line of the file it actually
 // opened, so a reader holding the file from before a rotation and one
 // holding the file after it each read the right bytes.
+//
+// A segment whose bytes are proven to be in the daily exports can later be
+// retired (Retire): its gzip file is removed, the index names the exports
+// that hold it, and a reader gets the same bytes back from those tarballs,
+// held to their digests (exports.go).
 package record
 
 import (
@@ -65,6 +70,29 @@ type Segment struct {
 	// comes before the first line of the file dated at or after it.
 	Cutoff     time.Time `json:"cutoff"`
 	ArchivedAt time.Time `json:"archived_at"`
+	// Retired is set once the segment's file was removed (Retire): its
+	// bytes are read back from the daily exports.
+	Retired *Retired `json:"retired,omitempty"`
+}
+
+// Retired says where a removed segment's bytes are and what was proven
+// before its file went.
+type Retired struct {
+	At time.Time `json:"at"`
+	// Exports are the export tarballs, oldest first, whose members of this
+	// file together hold [From, To).
+	Exports []string `json:"exports"`
+	// Member is the file's member name inside them ("publications.jsonl",
+	// "vantages/de-1/reachability.jsonl").
+	Member string `json:"member"`
+	// ExportsDir is the exports directory relative to ArchiveDir(path), so
+	// a restored copy of the data directory reads its own exports
+	// ("../../exports" for a top-level file, "../../../../exports" for
+	// vantages/<n>/<file>).
+	ExportsDir string `json:"exports_dir"`
+	// Proof is what was checked before the file was removed, in words (for
+	// whoever reads the index).
+	Proof string `json:"proof"`
 }
 
 // Generation is one live file: the logical offset its first byte stands
