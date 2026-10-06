@@ -77,8 +77,19 @@ rclone copy "$data/archive" "$dest/archive" \
   --include '*.jsonl.gz' --include 'index.json' \
   --transfers 4 --checkers 8 --stats-one-line --stats 0 --log-level NOTICE
 rclone copy "$data" "$dest" \
-  --include '*.jsonl' --include 'state.json' --include 'backup-manifest.json' --include 'status/**' --include 'exports/**' \
+  --include '*.jsonl' --include 'state.json' --include 'backup-manifest.json' --include 'exports/**' \
   --exclude 'sampling-master.key' --exclude 'observer.db*' --exclude 'snapshots/**' \
   --local-no-check-updated \
   --transfers 4 --checkers 8 --stats-one-line --stats 0 --log-level NOTICE
+# The status files are replaced (written beside, renamed over) every few
+# seconds, so one can be another file by the time rclone opens the name it
+# listed, and rclone calls the size it then reads a corrupted transfer and
+# fails the night. They are not the record: they go from a copy taken first,
+# each file whole as one of its versions.
+snap="$(mktemp -d)"
+trap 'rm -rf "$snap"' EXIT
+if [ -d "$data/status" ]; then
+  cp -p "$data"/status/* "$snap/" 2>/dev/null || true
+  rclone copy "$snap" "$dest/status" --transfers 4 --stats-one-line --stats 0 --log-level NOTICE
+fi
 echo "fibre-backup[$instance]: done"
