@@ -2,6 +2,7 @@ package record
 
 import (
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,10 @@ type Stream struct {
 	size    int64
 	idx     *Index
 	closers []io.Closer
+	// exports holds the exports indexes read for retired segments, by
+	// directory: a reader over the whole record may open dozens of
+	// retired segments, whose exports share one index.
+	exports map[string]exportsIndex
 }
 
 // Open opens path for reading. The live file is opened first and its base
@@ -57,6 +62,32 @@ func (s *Stream) Base() int64 { return s.base }
 
 // End is the logical offset of the live file's end when it was opened.
 func (s *Stream) End() int64 { return s.base + s.size }
+
+// LogicalEnd is the logical offset just past path's last byte: the live
+// file's base, found by its first line as Open finds it, plus its size. It
+// is where a copier that appends another host's copy of the file resumes
+// (deploy/vantage-pull.sh). Open reads a live file that matches no
+// generation of a non-empty index as base 0; here that is an error: an
+// end counted from 0 falls short of the true one, and a copier resuming
+// there would append again bytes the record already holds. A missing live
+// file is os.ErrNotExist.
+func LogicalEnd(path string) (int64, error) {
+	s, err := Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer s.Close()
+	if len(s.idx.Generations) > 0 {
+		head, err := headOf(s.live, 0)
+		if err != nil {
+			return 0, err
+		}
+		if _, ok := s.idx.base(head); !ok {
+			return 0, fmt.Errorf("%s: the live file's first line matches no generation in %s", path, filepath.Join(ArchiveDir(path), IndexFile))
+		}
+	}
+	return s.End(), nil
+}
 
 // Index is the file's archive index (empty when it was never archived).
 func (s *Stream) Index() *Index { return s.idx }
@@ -108,8 +139,15 @@ func (s *Stream) ReaderFrom(off int64) (io.Reader, error) {
 	return io.MultiReader(rs...), nil
 }
 
+// openSegment reads a segment from its gzip file while the file is there,
+// retired or not (a Retire that stopped between saving the index and
+// removing the file leaves both), and from the daily exports once a
+// retired segment's file is gone.
 func (s *Stream) openSegment(sg Segment) (io.Reader, error) {
 	f, err := os.Open(filepath.Join(ArchiveDir(s.path), sg.Name))
+	if errors.Is(err, os.ErrNotExist) {
+		return s.openRetired(sg, err)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -120,6 +158,52 @@ func (s *Stream) openSegment(sg Segment) (io.Reader, error) {
 	}
 	s.closers = append(s.closers, z)
 	return z, nil
+}
+
+// retiredNow is sg as path's index lists it now. Retire saves the index
+// before it removes the file, so a reader that loaded the index before a
+// Retire and then finds the segment's file gone finds the segment retired
+// in the index as it is now. It is sg unchanged when sg is already
+// retired, or when the index cannot be read or no longer lists it.
+func retiredNow(path string, sg Segment) Segment {
+	if sg.Retired != nil {
+		return sg
+	}
+	idx, err := LoadIndex(path)
+	if err != nil {
+		return sg
+	}
+	for _, now := range idx.Segments {
+		if now.Name == sg.Name && now.From == sg.From && now.To == sg.To && now.SHA256 == sg.SHA256 {
+			return now
+		}
+	}
+	return sg
+}
+
+// openRetired reads a segment whose file is gone from the exports its
+// index entry names, as the index is now (retiredNow); a segment that is
+// gone without being retired is an error naming the file. That error does
+// not wrap os.ErrNotExist: callers take it from a read of the whole record
+// to mean the file does not exist at all, which is no error to them.
+func (s *Stream) openRetired(sg Segment, missing error) (io.Reader, error) {
+	sg = retiredNow(s.path, sg)
+	if sg.Retired == nil {
+		return nil, fmt.Errorf("%s: segment %s is gone and was never retired: %v", s.path, sg.Name, missing)
+	}
+	label := exportsLabel(s.path, sg.Name)
+	if err := sg.Retired.check(); err != nil {
+		return nil, fmt.Errorf("%s: %v", label, err)
+	}
+	if s.exports == nil {
+		s.exports = map[string]exportsIndex{}
+	}
+	r, err := openFromExports(label, exportsDirOf(s.path, sg.Retired), sg, s.exports)
+	if err != nil {
+		return nil, err
+	}
+	s.closers = append(s.closers, r)
+	return r, nil
 }
 
 // Close closes the live file and every segment opened.

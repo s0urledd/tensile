@@ -531,14 +531,24 @@ func (l *lineCounter) Write(b []byte) (int, error) {
 }
 
 // Verify checks every segment of path's archive against its index and that
-// they run without a gap up to the live file's base. It returns the number
-// of segments checked.
+// they run without a gap up to the live file's base. A retired segment
+// whose file is gone is checked by reading it back from the exports. It
+// returns the number of segments checked.
 func Verify(path string) (int, error) {
 	s, err := Open(path)
 	if err != nil {
 		return 0, err
 	}
 	defer s.Close()
+	return s.verify()
+}
+
+// verify is Verify over the index s was opened with. A Retire that runs
+// meanwhile removes a segment's file after it saves the index, so a file
+// found gone is looked up in the index as it is now (retiredNow) before the
+// segment is called lost.
+func (s *Stream) verify() (int, error) {
+	path := s.path
 	idx := s.Index()
 	if len(idx.Generations) > 0 {
 		head, err := headOf(s.live, 0)
@@ -557,7 +567,16 @@ func Verify(path string) (int, error) {
 		if sg.From != at {
 			return n, fmt.Errorf("%s: gap in the archive at logical byte %d", path, at)
 		}
-		if err := VerifySegment(filepath.Join(ArchiveDir(path), sg.Name), sg); err != nil {
+		err := VerifySegment(filepath.Join(ArchiveDir(path), sg.Name), sg)
+		if errors.Is(err, os.ErrNotExist) {
+			if sg = retiredNow(path, sg); sg.Retired == nil {
+				// Not wrapped: to a caller, os.ErrNotExist from Verify
+				// means the live file is missing, which is no failure.
+				return n, fmt.Errorf("%s: segment %s is gone and was never retired: %v", path, sg.Name, err)
+			}
+			err = checkFromExports(path, sg)
+		}
+		if err != nil {
 			return n, err
 		}
 		at = sg.To
