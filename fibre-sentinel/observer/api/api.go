@@ -3599,8 +3599,8 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 	var needed, total sql.NullInt64
 	var msu, assignErr string
 	var sigma, distinct int
-	err := db.QueryRowContext(ctx, `SELECT json_extract(raw_json, '$.assignment.protocol_params.original_rows'),
-			json_extract(raw_json, '$.assignment.protocol_params.total_rows'), must_serve_until, assignment_error, sigma_rows, distinct_rows
+	err := db.QueryRowContext(ctx, `SELECT original_rows,
+			total_rows, must_serve_until, assignment_error, sigma_rows, distinct_rows
 		FROM publications WHERE promise_hash = ?`, hash).Scan(&needed, &total, &msu, &assignErr, &sigma, &distinct)
 	if errors.Is(err, sql.ErrNoRows) {
 		return &reconstruct{Status: "unknown"}, nil
@@ -3684,7 +3684,11 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 			}
 			rc.PointAt = rr.at
 			if rr.row.CommitmentVerified && rr.idx != "" {
-				if err := json.Unmarshal([]byte(rr.idx), &rr.row.RowIndices); err != nil {
+				idx, err := s.st.RowIndices(ctx, db, hash, rr.row.Validator, rr.idx)
+				if err != nil {
+					return nil, err
+				}
+				if err := json.Unmarshal([]byte(idx), &rr.row.RowIndices); err != nil {
 					rr.row.RowIndices = nil
 				}
 			}
@@ -3725,26 +3729,37 @@ func (s *Server) servedRowsFromAssignments(ctx context.Context, hash string, poi
 		}
 	}
 	if len(missing) > 0 {
-		rows, err := s.q(ctx).QueryContext(ctx, `SELECT rows_json FROM assignments WHERE promise_hash = ? AND rows_json IS NOT NULL
+		q := s.q(ctx)
+		rows, err := q.QueryContext(ctx, `SELECT validator_address, rows_json FROM assignments WHERE promise_hash = ? AND rows_json IS NOT NULL
 			AND validator_address IN (?`+strings.Repeat(", ?", len(missing)-1)+`)`, append([]any{hash}, missing...)...)
 		if err != nil {
 			return 0, err
 		}
-		defer rows.Close()
+		type arow struct{ v, rj string }
+		var got []arow
 		for rows.Next() {
-			var rj string
-			if err := rows.Scan(&rj); err != nil {
+			var a arow
+			if err := rows.Scan(&a.v, &a.rj); err != nil {
+				rows.Close()
+				return 0, err
+			}
+			got = append(got, a)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return 0, err
+		}
+		for _, a := range got {
+			rj, err := s.st.AssignedRows(ctx, q, hash, a.v, sql.NullString{String: a.rj, Valid: true})
+			if err != nil {
 				return 0, err
 			}
 			var idx []uint32
-			if json.Unmarshal([]byte(rj), &idx) == nil {
+			if json.Unmarshal([]byte(rj.String), &idx) == nil {
 				for _, i := range idx {
 					seen[i] = struct{}{}
 				}
 			}
-		}
-		if err := rows.Err(); err != nil {
-			return 0, err
 		}
 	}
 	return len(seen), nil
@@ -4474,12 +4489,15 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 	// than left to guess whether 100 rows is all of them. The extra row is
 	// trimmed by the caller that reports truncation.
 	q += " ORDER BY started_at DESC LIMIT " + strconv.Itoa(limit+1)
-	rows, err := s.q(ctx).QueryContext(ctx, q, args...)
+	db := s.q(ctx)
+	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []probeRow{}
+	// the rows whose list marks the validator's own assignment, given it once the rows are read
+	assignedAt := map[int]bool{}
 	now := s.now()
 	for rows.Next() {
 		var p probeRow
@@ -4517,7 +4535,9 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 			b := served.Int64 == 1
 			p.SettlementHostServed = &b
 		}
-		if idxJSON != "" {
+		if idxJSON == store.RowsAssigned {
+			assignedAt[len(out)] = true
+		} else if idxJSON != "" {
 			_ = json.Unmarshal([]byte(idxJSON), &p.RowIndices)
 		}
 		p.Assigned = assigned == 1
@@ -4531,6 +4551,13 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 		return nil, err
 	}
 	rows.Close()
+	for i := range assignedAt {
+		idx, err := s.st.RowIndices(ctx, db, out[i].PromiseHash, out[i].ValidatorAddress, store.RowsAssigned)
+		if err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(idx), &out[i].RowIndices)
+	}
 	for i := range out {
 		out[i].Reason = serviceReason(out[i])
 	}

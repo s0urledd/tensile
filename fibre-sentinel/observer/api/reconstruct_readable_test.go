@@ -118,6 +118,7 @@ func TestReconstructableCoversPublicationsThatCanHaveAVerdict(t *testing.T) {
 	for i := 0; i < waiting; i++ {
 		pub(100+i, now.Add(-time.Duration(waiting-i)*time.Second), now.Add(3*time.Hour))
 	}
+	recordColumns(t, tx)
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}

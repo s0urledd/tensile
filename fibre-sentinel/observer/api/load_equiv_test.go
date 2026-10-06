@@ -167,6 +167,7 @@ func fxInsert(t *testing.T, db *sql.DB, pubs []fxPub, asgs []fxAsg) {
 			t.Fatal(err)
 		}
 	}
+	recordColumns(t, tx)
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}

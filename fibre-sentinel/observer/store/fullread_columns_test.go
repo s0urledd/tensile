@@ -33,6 +33,7 @@ func TestTheFullReadingColumnsAreStoredAndBackfilled(t *testing.T) {
 		return m
 	}
 	ms := []probe.Measurement{row("v-after", after), row("v-before", probe.FullReadSince.Add(-time.Hour))}
+	lines := map[string][]byte{}
 	for _, m := range ms {
 		raw, err := json.Marshal(m)
 		if err != nil {
@@ -41,6 +42,7 @@ func TestTheFullReadingColumnsAreStoredAndBackfilled(t *testing.T) {
 		if _, err := st.InsertProbe(m, raw); err != nil {
 			t.Fatal(err)
 		}
+		lines[m.ValidatorAddress] = raw
 	}
 	read := func(v string) (int, sql.NullString) {
 		t.Helper()
@@ -58,10 +60,15 @@ func TestTheFullReadingColumnsAreStoredAndBackfilled(t *testing.T) {
 		}
 	}
 
-	// As a store from before migration 25 holds them: then the migration's
-	// backfill.
+	// As a store from before migration 25 holds them (the record as its line, the columns not yet there): then the
+	// migration's backfill.
 	if _, err := st.db.Exec(`UPDATE probes SET rows_subset_of_assignment = 0, next_attempt_due = NULL`); err != nil {
 		t.Fatal(err)
+	}
+	for v, l := range lines {
+		if _, err := st.db.Exec(`UPDATE probes SET raw_json = ? WHERE validator_address = ?`, string(l), v); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var m25 migration
 	for _, m := range migrations {

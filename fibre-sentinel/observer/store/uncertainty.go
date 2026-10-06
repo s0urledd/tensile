@@ -474,7 +474,19 @@ func (s *Store) StaleDeadlineRows(ctx context.Context, limit int) ([]StaleRow, e
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	// each row's record as its line, whatever form the row keeps it in
+	for i := range out {
+		line, err := s.ProbeRecord(ctx, s.db, out[i].PromiseHash, []byte(out[i].RawJSON))
+		if err != nil {
+			return nil, fmt.Errorf("probe %s: %w", out[i].DedupeKey, err)
+		}
+		out[i].RawJSON = string(line)
+	}
+	return out, nil
 }
 
 // HeldCounts is how much is currently withheld, for the disclosure.
@@ -598,7 +610,18 @@ func (s *Store) ProbeRowsOf(ctx context.Context, promiseHash, uncertaintyID stri
 		r.MustServeUntil, _ = time.Parse(TimeLayout, msu)
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for i := range out {
+		line, err := s.ProbeRecord(ctx, s.db, promiseHash, []byte(out[i].RawJSON))
+		if err != nil {
+			return nil, fmt.Errorf("probe %s: %w", out[i].DedupeKey, err)
+		}
+		out[i].RawJSON = string(line)
+	}
+	return out, nil
 }
 
 // ApplyPublicationCorrection moves one publication's deadline to the one a

@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"path/filepath"
@@ -19,41 +20,63 @@ import (
 func rowsFromStore(t *testing.T, st *store.Store) ([]verdict.Row, map[string]time.Time, verdict.Blobs) {
 	t.Helper()
 	var rows []verdict.Row
-	prs, err := st.DB().Query(`SELECT raw_json FROM probes`)
+	ctx := context.Background()
+	// every row's record as its line (store.ProbeRecord), read once the rows are: decoding reads the store too
+	prs, err := st.DB().Query(`SELECT promise_hash, raw_json FROM probes`)
 	if err != nil {
 		t.Fatal(err)
 	}
+	type rec struct {
+		hash string
+		raw  []byte
+	}
+	var recs []rec
 	for prs.Next() {
-		var raw string
-		if err := prs.Scan(&raw); err != nil {
+		var r rec
+		if err := prs.Scan(&r.hash, &r.raw); err != nil {
+			t.Fatal(err)
+		}
+		recs = append(recs, r)
+	}
+	prs.Close()
+	for _, r := range recs {
+		line, err := st.ProbeRecord(ctx, st.DB(), r.hash, r.raw)
+		if err != nil {
 			t.Fatal(err)
 		}
 		var m probe.Measurement
-		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		if err := json.Unmarshal(line, &m); err != nil {
 			t.Fatal(err)
 		}
 		rows = append(rows, verdict.FromMeasurement(m))
 	}
-	prs.Close()
 	settled := map[string]time.Time{}
 	blobs := verdict.Blobs{}
 	pbs, err := st.DB().Query(`SELECT raw_json FROM publications`)
 	if err != nil {
 		t.Fatal(err)
 	}
+	var praws [][]byte
 	for pbs.Next() {
-		var raw string
+		var raw []byte
 		if err := pbs.Scan(&raw); err != nil {
 			t.Fatal(err)
 		}
+		praws = append(praws, raw)
+	}
+	pbs.Close()
+	for _, raw := range praws {
+		line, err := st.Record(ctx, st.DB(), raw)
+		if err != nil {
+			t.Fatal(err)
+		}
 		var p scan.Publication
-		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		if err := json.Unmarshal(line, &p); err != nil {
 			t.Fatal(err)
 		}
 		settled[p.PromiseHash] = p.SettlementTime
 		blobs[p.PromiseHash] = verdict.FactsOf(p)
 	}
-	pbs.Close()
 	return rows, settled, blobs
 }
 

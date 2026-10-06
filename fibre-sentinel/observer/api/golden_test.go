@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -29,7 +31,8 @@ import (
 //
 // It runs only when asked: TENSILE_GOLDEN_EXPORTS names export day directories (comma-separated, in order) and
 // TENSILE_GOLDEN_OUT the directory to write to; TENSILE_GOLDEN_NOW (RFC 3339) is the clock, the end of the last day
-// by default.
+// by default. With TENSILE_GOLDEN_RECOMPUTE (a sentinel-recompute binary) it also runs that against the API, over the
+// same record, for three windows, and writes what it says; with TENSILE_GOLDEN_KEEP_DB the store is copied out too.
 func TestGoldenAnswers(t *testing.T) {
 	dirs, out := os.Getenv("TENSILE_GOLDEN_EXPORTS"), os.Getenv("TENSILE_GOLDEN_OUT")
 	if dirs == "" || out == "" {
@@ -115,6 +118,35 @@ func TestGoldenAnswers(t *testing.T) {
 		fmt.Fprintf(tim, "%s\t%d\t%d\t%.2f\t%.2f\n", r, status, len(body), ms(first), ms(warm[len(warm)/2]))
 	}
 	t.Logf("%d answers written to %s", len(reqs), out)
+
+	if bin := os.Getenv("TENSILE_GOLDEN_RECOMPUTE"); bin != "" {
+		ts := httptest.NewServer(srv)
+		defer ts.Close()
+		for _, w := range []string{"24h", "7d", "all"} {
+			time.Sleep(2100 * time.Millisecond) // the API answers one pinned window every two seconds
+			cmd := exec.Command(bin, "-data-dir", data, "-window", w, "-as-of", now.Format(time.RFC3339), "-api", ts.URL)
+			b, err := cmd.CombinedOutput()
+			code := 0
+			var ee *exec.ExitError
+			if errors.As(err, &ee) {
+				code = ee.ExitCode()
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(out, "recompute-"+w+".txt"), append([]byte(fmt.Sprintf("exit %d\n", code)), b...), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("recompute %s: exit %d", w, code)
+		}
+	}
+	if os.Getenv("TENSILE_GOLDEN_KEEP_DB") != "" {
+		if _, err := st.DB().Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.DB().Exec("VACUUM INTO ?", filepath.Join(out, "observer.db")); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // withClock fixes the server's clock from the start, keepers included.

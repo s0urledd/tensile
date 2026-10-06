@@ -203,6 +203,7 @@ func writeBlob(t *testing.T, st *store.Store, idx int, c blobCase) string {
 			}
 		}
 	}
+	recordColumns(t, db)
 	return hash
 }
 

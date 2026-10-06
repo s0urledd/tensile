@@ -66,9 +66,16 @@ var writeCensus = map[string]writeMechanism{
 	// Stored by the pass, or between passes by the fast tick
 	// (cmd/observer-collector, fast.go), which tails state.json, the
 	// publications and the payments only: either way past the mark.
-	"INSERT publications":                          {"publications past the mark, by the pass or the fast tick: the ledger, the settlement day's span from its rows, its points' row days", "a publication recorded after its deadline"},
-	"INSERT assignments":                           {"written with its publication in one transaction: folded with it", "a publication recorded after its deadline"},
-	"UPDATE publications SET retention_unverified": {"the holds' counter, moved in the same transaction: the held publications read again and diffed (one stored held is past the publications mark)", "a held publication"},
+	"INSERT publications": {"publications past the mark, by the pass or the fast tick: the ledger, the settlement day's span from its rows, its points' row days", "a publication recorded after its deadline"},
+	"INSERT assignments":  {"written with its publication in one transaction: folded with it", "a publication recorded after its deadline"},
+	// the slim record (store/slim.go): its shared tables are written with the record that first needed them, and only
+	// decoding reads them; the count of a reading's distinct verified rows is written with its probe, in one
+	// transaction, and read by the rollup alone
+	"INSERT slim_entries":                              {notRead + " (the slim record's shared tables: only decoding reads them)", ""},
+	"INSERT reading_rows":                              {notRead + " (the rollup, folded in raw by rolledFor); written with its probe in one transaction, or by a migration's backfill", ""},
+	"UPSERT reading_rows SET exact":                    {"the same", ""},
+	"UPDATE publications SET original_rows,total_rows": {"a migration's backfill: the count of migrations that rewrote rows, in the store's identity", ""},
+	"UPDATE publications SET retention_unverified":     {"the holds' counter, moved in the same transaction: the held publications read again and diffed (one stored held is past the publications mark)", "a held publication"},
 	"UPDATE publications SET corrected_at,must_serve_until,must_serve_until_at_scan,must_serve_until_basis,must_serve_until_basis_at_scan": {"publication_corrections past the mark: the day's latest deadline read again; applied again under its range, which adds no line: the corrected publications fingerprinted", "a publication correction applied again under its range"},
 	"INSERT publication_corrections": {"publication_corrections past the mark", "a publication deadline corrected"},
 	// the ranges: they move the holds and the fingerprints' reach

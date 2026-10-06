@@ -38,7 +38,7 @@ var schemaSQL string
 // an upgraded one — baseline, then every migration — so the two end up
 // identical in shape and the migration code is exercised by every test run
 // rather than only on upgrade day.
-const SchemaVersion = 26
+const SchemaVersion = 27
 
 // migration is one numbered step above the baseline. The statements run in a
 // single transaction: SQLite supports transactional DDL, so a failed step
@@ -748,11 +748,48 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS publications_commitment ON publications (commitment)`,
 		},
 	},
+	{
+		version: 27,
+		note:    "the slim record: raw_json keeps it for new rows (store/slim.go); original_rows and total_rows become columns, the shared tables and the per-reading count of distinct verified rows get tables of their own",
+		stmts: []string{
+			// The two values the API read out of a publication's raw_json in SQL. The slim record is not JSON, so they are
+			// columns, filled for the rows already here by the same json_extract the queries ran. No type: a column
+			// with one converts what it stores (an INTEGER column makes the text '4096' a number), and each value
+			// must stay what json_extract gave, a text or a real included, for the queries to read what they read.
+			`ALTER TABLE publications ADD COLUMN original_rows`,
+			`ALTER TABLE publications ADD COLUMN total_rows`,
+			`UPDATE publications SET original_rows = json_extract(raw_json, '$.assignment.protocol_params.original_rows'),
+				total_rows = json_extract(raw_json, '$.assignment.protocol_params.total_rows')
+			 WHERE json_valid(raw_json)`,
+			// What every slim record shares: the dictionary (kind 0), object shapes (1), validator sets (2) and host
+			// vectors (3), each entry under the next number of its kind.
+			`CREATE TABLE IF NOT EXISTS slim_entries (
+				kind INTEGER NOT NULL,
+				id   INTEGER NOT NULL,
+				body BLOB NOT NULL,
+				PRIMARY KEY (kind, id)
+			) WITHOUT ROWID`,
+			// The distinct verified rows of each reading (promise, scheduled point): what the rollup counted with
+			// json_each over probes.row_indices, which no longer holds the lists a validator's assignment gives.
+			`CREATE TABLE IF NOT EXISTS reading_rows (
+				promise_hash TEXT NOT NULL,
+				scheduled_at TEXT NOT NULL,
+				exact        INTEGER NOT NULL,
+				PRIMARY KEY (promise_hash, scheduled_at)
+			) WITHOUT ROWID`,
+			`INSERT OR REPLACE INTO reading_rows (promise_hash, scheduled_at, exact)
+			 SELECT qx.promise_hash, qx.scheduled_at, COUNT(DISTINCT j.value) FROM probes qx, json_each(qx.row_indices) j
+			 WHERE qx.commitment_verified = 1 AND qx.row_indices IS NOT NULL AND json_valid(qx.row_indices)
+			 GROUP BY qx.promise_hash, qx.scheduled_at`,
+		},
+	},
 }
 
 // Store wraps one SQLite database.
 type Store struct {
 	db *sql.DB
+	// slim is the slim record's shared tables and publication cache (slim.go)
+	slim slimState
 	// counts keeps Count's running totals: see Count.
 	counts rowCounts
 }
@@ -1352,11 +1389,31 @@ func (s *Store) UpsertParams(entries []scan.ParamEntry) error {
 // assignment's attested, host, row count or settlement columns, would need
 // both to learn about it.
 func (s *Store) UpsertPublication(p scan.Publication, raw []byte) (inserted bool, err error) {
+	ctx := context.Background()
+	t, err := s.tables(ctx, s.db, false)
+	if err != nil {
+		return false, err
+	}
+	// the record in its slim form; the table entries it adds are kept with it, or forgotten if it is not
+	kept := t.Stored()
+	body, pub, err := t.EncodePublication(raw)
+	if err != nil {
+		return false, fmt.Errorf("publication %s: slim: %w", p.PromiseHash, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			t.Rollback(kept)
+		}
+	}()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
+	if err := keepEntries(tx, t.Pending()); err != nil {
+		return false, err
+	}
 
 	a := p.Assignment
 	// A record written before AttestationSchemaVersion has no attestation
@@ -1376,9 +1433,11 @@ func (s *Store) UpsertPublication(p scan.Publication, raw []byte) (inserted bool
 		 validator_set_height, total_voting_power, sigma_rows, distinct_rows, wrap_overlaps, validators_with_rows,
 		 recorded_at, raw_json,
 		 attested_with_rows, attested_voting_power, signature_entries, signatures_verified,
-		 signatures_unmatched, signatures_out_of_position, retention_unverified)
+		 signatures_unmatched, signatures_out_of_position, original_rows, total_rows, retention_unverified)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 		        ?, ?, ?, ?, ?, ?,
+		-- the two values the queries used to read out of raw_json, read out of the line the same way
+		json_extract(?, '$.assignment.protocol_params.original_rows'), json_extract(?, '$.assignment.protocol_params.total_rows'),
 		-- Born withheld when a range that still withholds already covers
 		-- this publication's upload interval. Publications are ingested
 		-- before the ranges in a pass, so one settling into a range
@@ -1394,25 +1453,32 @@ func (s *Store) UpsertPublication(p scan.Publication, raw []byte) (inserted bool
 		p.ParamsAtPublication.ShardRetentionSeconds, p.ParamsAtPublication.PaymentPromiseTimeoutSeconds,
 		a.Error, a.ProtocolParams.Fingerprint, a.ProtocolParams.PinnedCelestiaApp,
 		a.ValidatorSetHeight, a.TotalVotingPower, a.Sigma, a.Distinct, a.WrapOverlaps, a.ValidatorsWithRows,
-		ts(p.RecordedAt), string(raw),
+		ts(p.RecordedAt), body,
 		att(int64(a.AttestedWithRows)), att(a.AttestedVotingPower), att(int64(a.SignatureEntries)),
 		att(int64(a.SignaturesVerified)), att(int64(a.SignaturesUnmatched)), att(int64(a.SignaturesOutOfPosition)),
+		string(raw), string(raw),
 		p.Promise.Height, p.SettlementHeight)
 	if err != nil {
 		return false, fmt.Errorf("publication %s: %w", p.PromiseHash, err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
+		committed = true
 		return false, tx.Commit()
 	}
 	for _, v := range a.Validators {
 		var rowsJSON any
 		if v.Rows != nil {
-			b, err := json.Marshal(v.Rows)
-			if err != nil {
-				return false, err
+			// the validator's own assignment is marked, not copied: the record's set and commitment give it again
+			if got := intsToU32(v.Rows); sameRows(pub, v.Address, got) {
+				rowsJSON = RowsAssigned
+			} else {
+				b, err := json.Marshal(v.Rows)
+				if err != nil {
+					return false, err
+				}
+				rowsJSON = string(b)
 			}
-			rowsJSON = string(b)
 		}
 		var attested any
 		if p.HasAttestation() {
@@ -1435,7 +1501,22 @@ func (s *Store) UpsertPublication(p scan.Publication, raw []byte) (inserted bool
 			return false, fmt.Errorf("assignment %s/%s: %w", p.PromiseHash, v.Address, err)
 		}
 	}
-	return true, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	committed = true
+	s.slim.mu.Lock()
+	s.slim.cache.put(p.PromiseHash, pub)
+	s.slim.mu.Unlock()
+	return true, nil
+}
+
+func intsToU32(xs []int) []uint32 {
+	out := make([]uint32, len(xs))
+	for i, x := range xs {
+		out[i] = uint32(x)
+	}
+	return out
 }
 
 // ---- probes ----
@@ -1449,7 +1530,41 @@ func (s *Store) InsertProbe(m probe.Measurement, raw []byte) (inserted bool, err
 	if decided, err := s.sampledOutDecided(m); err != nil || decided {
 		return false, err
 	}
-	res, err := s.db.Exec(`INSERT INTO probes
+	ctx := context.Background()
+	pub, err := s.pub(ctx, s.db, m.PromiseHash)
+	if err != nil {
+		return false, err
+	}
+	t, err := s.tables(ctx, s.db, false)
+	if err != nil {
+		return false, err
+	}
+	// the record in its slim form, against its publication; the table entries it adds are kept with it
+	kept := t.Stored()
+	body, err := t.EncodeMeasurement(raw, pub, s.lookup(ctx, s.db))
+	if err != nil {
+		return false, fmt.Errorf("probe %s: slim: %w", m.DedupeKey(), err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			t.Rollback(kept)
+		}
+	}()
+	// the validator's own assignment is marked, not copied
+	rowIdx := nullIfEmpty(rowIndicesJSON(m))
+	if sameRows(pub, m.ValidatorAddress, m.Download.RowIndices) {
+		rowIdx = RowsAssigned
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if err := keepEntries(tx, t.Pending()); err != nil {
+		return false, err
+	}
+	res, err := tx.Exec(`INSERT INTO probes
 		(dedupe_key, vantage, promise_hash, commitment, blob_version, must_serve_until, validator_set_height,
 		 validator_address, validator_host, assigned, assigned_row_count, schedule_label, scheduled_at, started_at,
 		 finished_at, lateness_ms, dns_ok, dns_ms, tcp_ok, tcp_ms, tls_ok, tls_ms, tls_version, peer_cert_sha256,
@@ -1476,9 +1591,9 @@ func (s *Store) InsertProbe(m probe.Measurement, raw []byte) (inserted bool, err
 		b2i(m.Download.OK), m.Download.DurationMS, m.Download.RowsReturned, m.Download.RowsExpected,
 		b2i(m.Download.CommitmentVerified), b2i(m.Download.AssignmentVerified),
 		string(m.Phase), string(m.Outcome), string(m.Classification), m.ClassificationReason, m.RawError,
-		m.TotalDurationMS, string(raw),
+		m.TotalDurationMS, body,
 		probeAttested(m), probeBytes(m),
-		nullIfEmpty(rowIndicesJSON(m)), nullIfEmpty(m.Download.RowsSHA256), nullIfEmpty(m.Download.RPCCode),
+		rowIdx, nullIfEmpty(m.Download.RowsSHA256), nullIfEmpty(m.Download.RPCCode),
 		nullIfEmpty(m.Download.ShadowedBy), nullIfEmpty(observerBuild(m)), observerAppVersion(m),
 		samplingP(m), samplingField(m, func(d *probe.SamplingDecision) string { return d.Binding }),
 		samplingField(m, func(d *probe.SamplingDecision) string { return d.DayCommitment }), retryFirstOutcome(m), m.ClockOffsetMS,
@@ -1489,6 +1604,15 @@ func (s *Store) InsertProbe(m probe.Measurement, raw []byte) (inserted bool, err
 		return false, fmt.Errorf("probe %s: %w", m.DedupeKey(), err)
 	}
 	n, _ := res.RowsAffected()
+	if n > 0 && m.Download.CommitmentVerified {
+		if err := s.updateReadingRows(ctx, tx, m.PromiseHash, ts(m.ScheduledAt)); err != nil {
+			return false, fmt.Errorf("probe %s: reading rows: %w", m.DedupeKey(), err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	committed = true
 	return n > 0, nil
 }
 
@@ -2219,7 +2343,11 @@ func (s *Store) LateShadowVerdicts(ctx context.Context, frontier, now time.Time,
 			continue // not every candidate is on record yet
 		}
 		var got []int
-		if p.indices == "" || json.Unmarshal([]byte(p.indices), &got) != nil {
+		indices, err := s.RowIndices(ctx, s.db, p.hash, p.addr, p.indices)
+		if err != nil {
+			return out, err
+		}
+		if indices == "" || json.Unmarshal([]byte(indices), &got) != nil {
 			a.To, a.Reason = string(probe.ClassProbeError), "no verdict: the returned row indices were not recorded on this row"
 			out = append(out, a)
 			continue
@@ -2232,12 +2360,29 @@ func (s *Store) LateShadowVerdicts(ctx context.Context, frontier, now time.Time,
 		if err != nil {
 			return out, err
 		}
-		match, unrecorded := "", false
+		// every candidate read first, then each one's rows (a list that marks its assignment is given by it)
+		type cand struct {
+			h  string
+			rj sql.NullString
+		}
+		var cs []cand
 		for cands.Next() {
-			var h string
-			var rj sql.NullString
-			if err := cands.Scan(&h, &rj); err != nil {
+			var c cand
+			if err := cands.Scan(&c.h, &c.rj); err != nil {
 				cands.Close()
+				return out, err
+			}
+			cs = append(cs, c)
+		}
+		cands.Close()
+		if err := cands.Err(); err != nil {
+			return out, err
+		}
+		match, unrecorded := "", false
+		for _, c := range cs {
+			h := c.h
+			rj, err := s.AssignedRows(ctx, s.db, h, p.addr, c.rj)
+			if err != nil {
 				return out, err
 			}
 			if !rj.Valid {
@@ -2254,7 +2399,6 @@ func (s *Store) LateShadowVerdicts(ctx context.Context, frontier, now time.Time,
 				break
 			}
 		}
-		cands.Close()
 		switch {
 		case match != "":
 			a.To, a.ShadowedBy = string(probe.ClassShadowedShard), match

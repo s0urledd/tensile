@@ -136,8 +136,8 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 	facts := map[string]blobFacts{}
 	rows, err := db.QueryContext(ctx, sel+`
 		SELECT p.promise_hash, p.sigma_rows, p.distinct_rows, p.must_serve_until, p.assignment_error,
-		       json_extract(p.raw_json,'$.assignment.protocol_params.original_rows'),
-		       json_extract(p.raw_json,'$.assignment.protocol_params.total_rows')
+		       p.original_rows,
+		       p.total_rows
 		FROM publications p JOIN sel ON sel.promise_hash = p.promise_hash`, args...)
 	if err != nil {
 		return nil, err
