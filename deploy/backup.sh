@@ -135,8 +135,26 @@ fi
 # status is the copy's, and a tarball not proven only keeps the segments it
 # holds on the disk until a later night proves it. rclone's own messages
 # are not printed here, because they name the remote.
+#
+# A last line that a crash or a full disk cut short has no newline. It
+# proves nothing, since observer-archive reads only complete lines, but
+# closed with a newline it would be a complete line that is not a check,
+# which observer-archive refuses rather than skip, and the retirement would
+# stop every night until someone edited the file. So those bytes are cut
+# off before anything is appended; no complete line is ever touched.
 prove_remote() {
-  local ledger="$data/exports/remote.jsonl" t name want got ok last line checked=0 proven=0
+  local ledger="$data/exports/remote.jsonl" t name want got ok last line torn checked=0 proven=0
+  if [ -s "$ledger" ] && [ -n "$(tail -c 1 "$ledger")" ]; then
+    # tail -n 1 prints the unterminated last line alone: its length is the
+    # torn bytes'.
+    torn=$(tail -n 1 "$ledger" | wc -c)
+    if truncate -s "$(( $(wc -c <"$ledger") - torn ))" "$ledger"; then
+      echo "fibre-backup[$instance]: remote proof: dropped a torn last line ($((torn)) bytes) from exports/remote.jsonl" >&2
+    else
+      echo "fibre-backup[$instance]: remote proof: cannot drop the torn last line of exports/remote.jsonl" >&2
+      return 1
+    fi
+  fi
   for t in "$data"/exports/*.tar.gz; do
     [ -f "$t" ] || continue
     name=${t##*/}
@@ -163,11 +181,8 @@ prove_remote() {
     ok=false
     [ "$got" = "$want" ] && ok=true
     line=$(printf '{"name":"%s","sha256":"%s","checked_at":"%s","ok":%s}' "$name" "$want" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ok")
-    # A last line torn by a crash is closed first, so that this one is a
-    # line of its own; it is still one write.
-    if [ -s "$ledger" ] && [ -n "$(tail -c 1 "$ledger")" ]; then
-      line=$'\n'"$line"
-    fi
+    # One write. One that fails part-way leaves a torn line, which the next
+    # run drops (above); this run stops here.
     printf '%s\n' "$line" >>"$ledger" || { echo "fibre-backup[$instance]: remote proof: cannot append to exports/remote.jsonl" >&2; return 1; }
     checked=$((checked + 1))
     if [ "$ok" = true ]; then

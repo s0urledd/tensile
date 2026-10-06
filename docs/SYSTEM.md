@@ -199,9 +199,11 @@ it unchanged: a rebuild from zero (the collector's ingest from offset 0),
 names), and the schema rollback's collector reading on from its cursors. A
 build from before retirement does not know the `retired` record and stops
 at the missing file; going back to one needs the segment files back from
-the remote backup first, unless its cursors are past every retired range
-(`deploy/README.md`, "Going back past schema 27"). The export builder reads
-only bytes not yet exported, which are never retired, and the scanner and
+the remote backup first, unless its cursors are past every retired range,
+and the `fibre-archive@` timer off for as long as the older build runs,
+since the retirement removes a retired segment's file again wherever it
+finds one (`deploy/README.md`, "Going back past schema 27"). The export
+builder reads only bytes not yet exported, which are never retired, and the scanner and
 the prober read nothing retired at start: the live files, and the whole of
 `sampling_decisions.jsonl`, which is never retired.
 
@@ -995,5 +997,6 @@ Stated here because they are properties of the machine, not of any validator.
 | a validator is often counted neither way | the status `reads` block: `requests_not_started_last_hour`, `admit_wait_p95_ms` and the reading-rate ceiling's part of it (`rate_wait_p95_ms`), the `retries_*` counts and `retries_not_made_by_validator_last_hour`; `observer_load` on its rows |
 | the build says `-dirty` | an untracked file in the working tree at build time |
 | a segment is not retired | its reason in `archive/retire-report.json`; the day in `exports/verified.json` (the store's answer) and in `exports/remote.jsonl` (the remote's) |
+| `fibre-archive@` fails with `remote.jsonl line N` | a complete line in `exports/remote.jsonl` that is not a check, which `fibre-backup` never writes (it drops a torn last line before appending): a hand edit. Delete that line; an export whose newest line is then not a proof is read back again the next night |
 | a read of the whole record stops at a segment | its file is gone and `index.json` names no exports for it: it was moved by hand, not retired; put it back (the remote backup keeps every segment it was sent) |
 | the API refuses to start | schema older or newer than the binary; run the collector once |

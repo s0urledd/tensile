@@ -14,6 +14,8 @@
 #             run, says so, and leaves the local file as it was
 #   source    VANTAGE_PULL_SOURCE reads a local directory in place of the
 #             account
+#   one pull  a pull that finds another pull of the vantage running fetches
+#             nothing and passes; two at once append the new bytes once
 #   failure   a vantage whose reachability.jsonl is missing, or a server
 #             that is down, fails the run and says so
 set -u
@@ -100,6 +102,28 @@ else
   fail "a pull from VANTAGE_PULL_SOURCE: exit $? ($(cat "$tmp/stderr"))"
 fi
 same "$src/vantage/de-1/reachability.jsonl" "$tmp/data2/vantages/de-1/reachability.jsonl" && pass "read from the local directory" || fail "not read from the local directory"
+
+# another pull of the vantage holds its .pull.lock: this one fetches
+# nothing, says so and passes, and the one holding it fetches
+echo '{"beat":4}' >>"$rreach"
+exec 7>>"$data/vantages/de-1/.pull.lock"
+flock -n 7 || fail "the test could not take .pull.lock"
+cp "$lreach" "$tmp/before"
+: >"$log"
+if FAKE_BASE=11 run >"$tmp/stdout"; then pass "a pull beside another passes"; else fail "a pull beside another: exit $? ($(cat "$tmp/stderr"))"; fi
+exec 7>&-
+grep -q "^cat " "$log" && fail "a pull beside another fetched: $(cat "$log")" || pass "a pull beside another fetches nothing"
+grep -q "another pull of it is running" "$tmp/stdout" && pass "and says so" || fail "stdout: $(cat "$tmp/stdout")"
+same "$tmp/before" "$lreach" && pass "the local file is left to the other pull" || fail "the local file changed"
+
+# two pulls at once over a slow link: one fetches and the other leaves the
+# vantage to it, so the new heartbeats are appended once, not twice (two
+# appends would put every later byte at the wrong offset)
+echo '{"beat":5}' >>"$rreach"
+FAKE_BASE=11 FAKE_RCLONE_SLOW=2 run >/dev/null & p1=$!
+FAKE_BASE=11 FAKE_RCLONE_SLOW=2 run >/dev/null & p2=$!
+wait "$p1" && wait "$p2" && pass "two pulls at once pass" || fail "two pulls at once: one failed"
+same <(tail -c +12 "$rreach") "$lreach" && pass "two pulls at once append the new bytes once" || fail "two pulls at once: the local file is not the remote's bytes past the base ($(cat "$lreach"))"
 
 # the server is down: the run fails and says so
 if FAKE_RCLONE_FAIL=lsf run; then fail "a failed fetch exited 0"; else pass "a failed fetch exits non-zero"; fi

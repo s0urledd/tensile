@@ -420,16 +420,24 @@ older than that); compare its `ingest_cursors` with the segments' `to` in
 each `archive/<file>/index.json` to be sure. A rebuild from zero by such a
 build, or a cursor behind a retired segment, needs the segments' files
 back first. The remote backup keeps every segment it was sent, so as the
-service user, with the collector stopped:
+service user, with the collector stopped, stop the nightly retirement
+first and then copy them back:
 
 ```sh
+sudo systemctl disable --now fibre-archive@mocha.timer
 sudo -u fibre-observer env RCLONE_CONFIG=/etc/fibre-observer/rclone.conf \
   rclone copy '<BACKUP_REMOTE>/mocha/archive' /var/lib/fibre-observer/mocha/archive --include '*.jsonl.gz'   # BACKUP_REMOTE as in mocha.env
 ```
 
-(and the same for each `vantages/<name>/archive`). A segment retired before
-the backup first copied it is not on the remote; its lines are in the
-exports alone, and only a build that knows retirement reads them.
+(and the same for each `vantages/<name>/archive`). The timer stays off for
+as long as the older build runs: `observer-archive -retire` takes a
+retired segment whose file is present for a retirement a crash cut short
+and removes the file again, and the older collector would then stop at it
+the next time it reads that range. Enable the timer again
+(`sudo systemctl enable --now fibre-archive@mocha.timer`) once the newer
+build is back. A segment retired before the backup first copied it is not
+on the remote; its lines are in the exports alone, and only a build that
+knows retirement reads them.
 
 Once a segment is retired, the exports are the copy of its lines on this
 disk: each member is a contiguous byte range of the source file, so the
@@ -765,7 +773,10 @@ own files.
   again the next night. A failed check is `"ok": false` and does not fail
   the unit, whose status is the copy's; it only keeps the segments that
   export holds on the disk a night longer. The first run reads every
-  export back once. The remote is never printed (a remote given whole on
+  export back once. A last line that a crash or a full disk cut short is
+  dropped before the next line is appended, since `observer-archive`
+  refuses a complete line that is not a check; no complete line is ever
+  changed. The remote is never printed (a remote given whole on
   the command line carries its credentials). With `BACKUP_REMOTE` empty the
   timer runs and does nothing, so enable it everywhere and arm it with one
   variable.
@@ -1223,7 +1234,10 @@ line, so it needs no rclone config: it asks for the file's size
 (`rclone lsf`), then appends what lies past the local file's logical end
 (`rclone cat --offset`, the end from `observer-archive -logical-end`),
 holding the local file's shared `flock` as the observer's own writers do.
-A remote file shorter than that end was replaced or cut on the vantage:
+One pull of a vantage runs at a time (`vantages/<name>/.pull.lock`, taken
+exclusively without waiting): two would read the same end and append the
+same bytes twice, so a pull run by hand beside the timer's leaves the
+vantage to the one already running. A remote file shorter than that end was replaced or cut on the vantage:
 the pull fetches nothing, says so and fails until someone has looked; the
 local record is never cut to match. rclone checks the host key against
 `VANTAGE_PULL_KNOWN` and may settle on another key type than OpenSSH did,
@@ -1252,7 +1266,8 @@ to `vantage/<name>/inbox/`; nothing writes or reads that inbox now, and
 `deploy/test/vantage-sync.sh` checks the pull against the fake rclone
 (`deploy/test/fake-rclone.sh`) and a fake `observer-archive`: the first
 pull, an append, a rotated local file resumed from its logical end, a
-remote shorter than the local record, and a failed or missing fetch.
+remote shorter than the local record, two pulls at once, and a failed or
+missing fetch.
 
 ## 8. Checks after deploy
 

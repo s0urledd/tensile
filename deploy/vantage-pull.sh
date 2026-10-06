@@ -21,6 +21,13 @@
 # exclusive lock, so the end cannot move under a pull, and a pull that finds
 # the path renamed over the file it locked opens the new one.
 #
+# That lock is shared, so it does not keep two pulls of one vantage apart
+# (a run by hand beside the timer's): both would read the same end and both
+# append the bytes from it, and every offset after would be off. Each pull
+# therefore first takes vantages/<name>/.pull.lock exclusively, without
+# waiting; a pull that finds it held leaves the vantage to the one holding
+# it, which fetches the same bytes.
+#
 # Both files are append-only. A remote file shorter than the local logical
 # end was replaced or cut on the vantage: the pull says so and fetches
 # nothing, since appending from a lower offset would put other bytes at
@@ -73,9 +80,24 @@ if [ -z "$source_dir" ]; then
 	remote=":sftp,host=$h,user=$user,key_file=$key,known_hosts_file=$known:"
 fi
 
-# pull <name>: one vantage, under the shared lock of its local file. Every
-# step is checked here: the caller's `if` turns errexit off inside.
+# pull <name>: one vantage, by one pull at a time (fd 8 holds its
+# .pull.lock). Every step is checked here and in fetch: the caller's `if`
+# turns errexit off inside.
 pull() {
+	mkdir -p "$data/vantages/$1" || return 1
+	exec 8>>"$data/vantages/$1/.pull.lock"
+	if ! flock -n 8; then
+		echo "vantage-pull[$net]: $1: another pull of it is running; left to that one"
+		exec 8>&-
+		return 0
+	fi
+	if fetch "$1"; then st=0; else st=1; fi
+	exec 8>&-
+	return $st
+}
+
+# fetch <name>: the pull itself, under the shared lock of the local file.
+fetch() {
 	n=$1
 	rel="vantages/$n/reachability.jsonl"
 	file="$data/$rel"
@@ -84,7 +106,6 @@ pull() {
 	else
 		src="${remote}vantage/$n/reachability.jsonl"
 	fi
-	mkdir -p "$data/vantages/$n" || return 1
 	tries=0
 	while :; do
 		exec 9>>"$file"

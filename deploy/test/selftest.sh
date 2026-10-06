@@ -22,7 +22,10 @@
 #                   mid-line; a cut that ends inside a line fails verify; a
 #                   line that is not a JSON record is refused at the cut
 #   manifest over   the cut names the archived segments and the live base
-#   an archive      and counts both; cat reads the whole record in order;
+#   an archive      and counts both, and restore.sh expects a rebuild to
+#                   hold both, publications as measurements (the drill once
+#                   counted the live publications alone);
+#                   cat reads the whole record in order;
 #                   a snapshot carries the segments and verifies; a missing
 #                   or altered segment fails; an index that places the live
 #                   file elsewhere fails; a live file no generation
@@ -36,15 +39,20 @@
 #                   leave part of the range out fail; cat over a bad export
 #                   fails and hands out no byte of the segment; another
 #                   vantage's rotated heartbeats are cut, read and verified
-#   remote proof    backup.sh with the fake rclone: each export is read
-#                   back once and recorded in exports/remote.jsonl; a
-#                   remote copy that differs or cannot be read is ok false
-#                   and the run passes, and is read again the next night;
-#                   a rebuilt tarball is read again; a failed copy fails
-#                   the run and proves nothing; the remote is never printed
+#   remote proof    backup.sh with the fake rclone: the observer's segments
+#                   and each other vantage's go before the live files, with
+#                   their indexes, and no lock or master key goes; each
+#                   export is read back once and recorded in
+#                   exports/remote.jsonl; a remote copy that differs or
+#                   cannot be read is ok false and the run passes, and is
+#                   read again the next night; a rebuilt tarball is read
+#                   again; a failed copy fails the run and proves nothing; a
+#                   torn last line is dropped, not closed into a line that
+#                   is not a check; the remote is never printed
 #   vantage pull    vantage-sync.sh: the pull resumes from the local file's
 #                   logical end, a rotated one included, and a remote file
-#                   shorter than the record fetches nothing and fails
+#                   shorter than the record fetches nothing and fails; two
+#                   pulls at once append the new bytes once
 #   rpc-check       app version 9 + fibre code 6 passes; 10 + 6 fails; 10 + 0
 #                   passes; no block_results fails; a second RPC that does
 #                   not answer fails; two nodes disagreeing on a hash fails;
@@ -253,6 +261,12 @@ open(os.path.join(d, "state.json"), "w").write('{"last_scanned_height":7}\n')
 PY
 check python3 "$MANIFEST" write "$A" "$T/am.json" >/dev/null
 check eq "$(python3 -c 'import json,sys; f=json.load(open(sys.argv[1]))["files"]["measurements.jsonl"]; print(f["records"], f["archived_records"], f["archive"]["base"], len(f["archive"]["segments"]))' "$T/am.json")" "2 3 $(gzip -dc "$A"/archive/measurements.jsonl/*.gz | wc -c | tr -d ' ') 1"
+# restore.sh expects a rebuild to read every line of a file, archived ones
+# included, for publications.jsonl (rotated too) as for measurements.jsonl
+check eq "$(manifest_records "$T/am.json" measurements.jsonl)" 5
+printf '{"files":{"publications.jsonl":{"bytes":1,"sha256":"","records":2,"archived_records":3}}}' > "$T/pm.json"
+check eq "$(manifest_records "$T/pm.json" publications.jsonl)" 5
+check eq "$(manifest_records "$T/pm.json" payments.jsonl)" 0
 # the whole record reads archived lines first, and its logical end is base + live
 check eq "$(python3 "$MANIFEST" cat "$A" measurements.jsonl | grep -o '"validator_address":"v[0-9]"' | tr -d '\n')" '"validator_address":"v0""validator_address":"v1""validator_address":"v2""validator_address":"v3""validator_address":"v4"'
 check eq "$(python3 "$MANIFEST" end "$A" measurements.jsonl)" "$(python3 "$MANIFEST" cat "$A" measurements.jsonl | wc -c | tr -d ' ')"
@@ -386,6 +400,13 @@ echo "== backup remote proof"
 B="$T/bdata"; BR="$T/bremote"; mkdir -p "$B/exports" "$B/vantages/de-1" "$BR"
 printf '{"promise_hash":"p1"}\n' > "$B/publications.jsonl"
 printf '{"vantage":"de-1"}\n' > "$B/vantages/de-1/reachability.jsonl"   # its archive lock is taken too
+printf 'secret' > "$B/sampling-master.key"
+# a segment of the observer's own and one of the other vantage's, each with
+# its index (the bytes are not read here, only copied)
+for a in "$B/archive/measurements.jsonl" "$B/vantages/de-1/archive/reachability.jsonl"; do
+  mkdir -p "$a"; printf 'segment' | gzip -c > "$a/000001-2026-09-30.jsonl.gz"; printf '{"version":1}\n' > "$a/index.json"
+done
+BRT="$BR/bucket/sekret-token/t"
 mkexport() { # mkexport <day> <bytes>: an export tarball and its .sha256 sidecar
   local n="tensile-t-$1.tar.gz"
   printf '%s' "$2" | gzip -c > "$B/exports/$n"
@@ -410,8 +431,22 @@ e1=tensile-t-2026-10-01.tar.gz; e2=tensile-t-2026-10-02.tar.gz; e3=tensile-t-202
 e4=tensile-t-2026-10-04.tar.gz; e5=tensile-t-2026-10-05.tar.gz
 # each export is copied, read back, hashed and recorded once
 mkexport 2026-10-01 one; mkexport 2026-10-02 two
+: > "$T/rclone.log"
 check backup
-check cmp -s "$B/exports/$e1" "$BR/bucket/sekret-token/t/exports/$e1"
+check cmp -s "$B/exports/$e1" "$BRT/exports/$e1"
+# the segments and their indexes, the other vantage's included, go first,
+# each archive in a pass of its own, so a rotated live file never reaches
+# the remote before the lines it no longer holds; the locks and the master
+# key do not go at all
+for a in archive/measurements.jsonl vantages/de-1/archive/reachability.jsonl; do
+  check cmp -s "$B/$a/000001-2026-09-30.jsonl.gz" "$BRT/$a/000001-2026-09-30.jsonl.gz"
+  check cmp -s "$B/$a/index.json" "$BRT/$a/index.json"
+done
+check cmp -s "$B/vantages/de-1/reachability.jsonl" "$BRT/vantages/de-1/reachability.jsonl"
+check eq "$(grep '^copy ' "$T/rclone.log" | cut -d' ' -f2 | tr '\n' ' ')" "$B/archive $B/vantages/de-1/archive $B "
+check test ! -e "$BRT/archive/.lock"
+check test ! -e "$BRT/vantages/de-1/archive/.lock"
+check test ! -e "$BRT/sampling-master.key"
 check eq "$(proofs $e1)" "$(sha_of "$B/exports/$e1") true"
 check eq "$(proofs $e2)" "$(sha_of "$B/exports/$e2") true"
 check not grep -q sekret "$T/backup.out"   # the remote is never printed
@@ -442,6 +477,14 @@ check not grep -q sekret "$T/backup.out"
 mkexport 2026-10-05 five
 check not backup FAKE_RCLONE_FAIL=copy
 check eq "$(proofs $e5)" ""
+# a last line a crash cut short (no newline) is dropped before the next one
+# goes on: closed with a newline it would be a line that is not a check,
+# which observer-archive refuses, and no segment would be retired again
+printf '{"name":"%s","sha256":"%s","checked_at":"2026-10-06T03:40:00Z","ok":fa' "$e5" "$(sha_of "$B/exports/$e5")" >> "$B/exports/remote.jsonl"
+check backup
+check python3 -c 'import json, sys; [json.loads(l) for l in open(sys.argv[1])]' "$B/exports/remote.jsonl"
+check eq "$(proofs $e5)" "$(sha_of "$B/exports/$e5") true"
+check eq "$(wc -l < "$B/exports/remote.jsonl" | tr -d ' ')" 8   # e4 and e5 proven, nothing of the torn line
 
 echo "== vantage pull"
 # deploy/vantage-pull.sh against the fake rclone, with util-linux's flock

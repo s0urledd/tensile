@@ -24,6 +24,10 @@
 #                lands, about half a minute on a store the live one's size;
 #                the restore drill read it once and called a good backup
 #                broken.
+#   manifest_records the restore drill compared the rebuilt publications
+#                with the live file's records alone, while the rebuild
+#                reads the archived lines as well: once observer-archive
+#                rotated publications.jsonl, a good backup failed the drill.
 
 : "${FAILED:=0}"
 pass() { echo "  ok   $*"; }
@@ -158,6 +162,17 @@ if b.get("computing") is True:
   if [ -n "$out" ]; then cp "$body" "$out"; fi
   rm -f "$body"
   printf '%s\n' "$code"
+}
+
+# manifest_records <manifest.json> <file>: the lines of <file> that a
+# rebuild from the manifest's cut reads. The collector reads a record file
+# from its first byte, so that is the live file's records and its archived
+# segments' (archived_records, retired segments included). 0 when the
+# manifest does not list the file.
+manifest_records() {
+  python3 -c 'import json, sys
+f = json.load(open(sys.argv[1]))["files"].get(sys.argv[2], {})
+print(f.get("records", 0) + f.get("archived_records", 0))' "$1" "$2"
 }
 
 # free_port: a TCP port nothing listens on right now.
