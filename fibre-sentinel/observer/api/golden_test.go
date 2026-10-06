@@ -34,22 +34,34 @@ import (
 // by default. With TENSILE_GOLDEN_RECOMPUTE (a sentinel-recompute binary) it also runs that against the API, over the
 // same record, for three windows, and writes what it says; with TENSILE_GOLDEN_KEEP_DB the store is copied out too.
 // TENSILE_GOLDEN_DB starts from a store another build wrote from the same records (the upgrade path: this build
-// opens it, migrates it, and the collector passes over it as it would on its first start).
+// opens it, migrates it, and the collector passes over it as it would on its first start). TENSILE_GOLDEN_DATA, in
+// place of the export days, is a data directory taken as it is, copied first: its record files, archive segments (a
+// retired one read back from its exports), exports and vantages, with TENSILE_GOLDEN_NOW the clock.
 func TestGoldenAnswers(t *testing.T) {
-	dirs, out := os.Getenv("TENSILE_GOLDEN_EXPORTS"), os.Getenv("TENSILE_GOLDEN_OUT")
-	if dirs == "" || out == "" {
-		t.Skip("TENSILE_GOLDEN_EXPORTS and TENSILE_GOLDEN_OUT not set")
+	dirs, out, from := os.Getenv("TENSILE_GOLDEN_EXPORTS"), os.Getenv("TENSILE_GOLDEN_OUT"), os.Getenv("TENSILE_GOLDEN_DATA")
+	if (dirs == "" && from == "") || out == "" {
+		t.Skip("TENSILE_GOLDEN_EXPORTS (or TENSILE_GOLDEN_DATA) and TENSILE_GOLDEN_OUT not set")
 	}
-	days := strings.Split(dirs, ",")
-	now := endOfDay(filepath.Base(days[len(days)-1]))
+	var now time.Time
+	if dirs != "" {
+		days := strings.Split(dirs, ",")
+		now = endOfDay(filepath.Base(days[len(days)-1]))
+	}
 	if v := os.Getenv("TENSILE_GOLDEN_NOW"); v != "" {
 		var err error
 		if now, err = time.Parse(time.RFC3339Nano, v); err != nil {
 			t.Fatal(err)
 		}
 	}
+	if now.IsZero() {
+		t.Fatal("TENSILE_GOLDEN_DATA needs TENSILE_GOLDEN_NOW")
+	}
 	data := t.TempDir()
-	gatherDays(t, days, data)
+	if from != "" {
+		copyData(t, from, data)
+	} else {
+		gatherDays(t, strings.Split(dirs, ","), data)
+	}
 
 	if from := os.Getenv("TENSILE_GOLDEN_DB"); from != "" {
 		b, err := os.ReadFile(from)
@@ -205,6 +217,44 @@ func endOfDay(day string) time.Time {
 
 // gatherDays writes each record file of the given export days into data, the days one after another, as the
 // observer's data directory holds them; state.json is the last day's.
+// copyData copies a data directory's tree into data, every file but a store and its WAL.
+func copyData(t *testing.T, from, data string) {
+	t.Helper()
+	err := filepath.WalkDir(from, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(from, p)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(data, rel)
+		if d.IsDir() {
+			return os.MkdirAll(dst, 0o755)
+		}
+		if strings.HasPrefix(d.Name(), "observer.db") {
+			return nil
+		}
+		src, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		defer src.Close()
+		w, err := os.Create(dst)
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(w, src); err != nil {
+			w.Close()
+			return err
+		}
+		return w.Close()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func gatherDays(t *testing.T, days []string, data string) {
 	files := map[string]*os.File{}
 	for _, d := range days {
