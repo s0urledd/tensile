@@ -139,7 +139,7 @@ for good (`internal/record`), and a line is held in up to five places:
 | archive segment | `archive/<file>/<seq>-<day>.jsonl.gz`, listed in `archive/<file>/index.json` (another vantage's under `vantages/<name>/archive/`) | `observer-archive`, daily | only by retirement, below |
 | daily export | `exports/<tensile-…-day>.tar.gz`, its `.sha256`, its entry in `exports/index.json` | the collector, once a UTC day | never |
 | store | `observer.db`: a row per publication, reading, endpoint check and payment, from which the line is written back byte for byte (the slim record, section 5) | the collector | never (section 12) |
-| remote backup | `BACKUP_REMOTE/<network>/`: live files, segments, exports; a segment's file only if a backup ran while it existed, which one archived and retired the same night never was | `fibre-backup`, nightly `rclone copy` | never: copy does not delete |
+| remote backup | `BACKUP_REMOTE/<network>/`: live files, segments, exports; every segment's file (a segment is retired only after a backup has copied it) | `fibre-backup`, nightly `rclone copy` | never: copy does not delete |
 
 The segments hold logical bytes `[0, base)` in order and the live file
 `[base, …)`; a file's member in consecutive exports holds consecutive
@@ -176,7 +176,12 @@ and nothing else, when every byte of it is proven in three other places:
    finished copy, recorded in `exports/remote-copy.json`, went to that
    remote within `-remote-max-age` (48 h): a tarball is proven once, so a
    remote lost or replaced since shows only as copies that stop finishing
-   or go elsewhere.
+   or go elsewhere;
+4. itself on the remote: the segment was archived before that last copy
+   finished, so the copy took its file (the backup copies the archive first,
+   under the archive lock). A segment archived since waits a night: every
+   retired segment's file is then on the remote, and a build from before
+   retirement can have it copied back.
 
 `record.Retire` then, under the file's archive lock, reads the segment back
 from those exports once more and requires its length, lines and SHA-256,
@@ -242,12 +247,10 @@ it unchanged: a rebuild from zero (the collector's ingest from offset 0),
 (`verify`, `cat`, `snapshot`, which carries the exports a retired segment
 names), and the schema rollback's collector reading on from its cursors. A
 build from before retirement does not know the `retired` record and stops
-at the missing file. Most retired segments' files never reached the
-remote either: the nightly run archives a segment and retires it minutes
-later, after that night's backup, so their lines are in the exports alone,
-on this disk and on the remote. Going back to such a build therefore
-reads on only from cursors past every retired range (a store copy younger
-than `-keep`); a rebuild from zero is this build's. Its `observer-archive`
+at the missing file. A segment is retired only once a nightly backup has
+copied its file to the remote, so going back to such a build starts by
+copying the retired segments' files back from the remote; it then reads
+every range from its files, from any cursor. Its `observer-archive`
 must not run while it is installed (`fibre-archive@` timer off): it would
 save `index.json` without the `retired` records, which this build then
 reads from `retired.json` and the older one's readers stop at

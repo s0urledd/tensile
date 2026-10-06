@@ -25,6 +25,11 @@ package main
 //     taken once per tarball, and a remote lost, emptied or replaced since
 //     shows as a backup that no longer finishes, or as one that copies to
 //     another remote;
+//  4. the segment was archived before that copy finished, so the copy took
+//     its file (the backup copies the archive first, under the archive
+//     lock): every retired segment's file is on the remote, and a build
+//     from before retirement can have it copied back. A segment archived
+//     since waits a night;
 //
 // and then, each tarball still listed in index.json with the digest all of
 // that was about, record.Retire reads the segment back from those exports
@@ -422,6 +427,20 @@ func (r *retirer) plan(member, path string, sg record.Segment) (record.Retired, 
 	}
 	if len(reasons) > 0 {
 		return record.Retired{}, reasons, nil
+	}
+	// The segment's own file must be on the remote first. The backup copies
+	// the archive before anything else and holds the archive lock shared
+	// while it does, so a segment archived before its last copy finished was
+	// in that copy. One archived since waits a night: then every retired
+	// segment's file is on the remote, and a build from before retirement,
+	// or a rollback to one, can have it copied back.
+	if c := r.copied; c == nil || !sg.ArchivedAt.Before(c.CopiedAt) {
+		at := "never"
+		if c != nil {
+			at = c.CopiedAt.UTC().Format(time.RFC3339)
+		}
+		return record.Retired{}, []string{fmt.Sprintf("archived at %s, after the backup's last finished copy (%s): the segment's file is not on the remote yet",
+			sg.ArchivedAt.UTC().Format(time.RFC3339), at)}, nil
 	}
 	var names, stored, remote []string
 	for _, e := range parts {

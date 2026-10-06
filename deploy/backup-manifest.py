@@ -55,10 +55,9 @@ otherwise reads its bytes back from the copy's exports by the rule
 internal/record reads them by: each named tarball and its member of the
 file against the exports' index.json (sizes and SHA-256 digests), the
 members covering the segment's range in order without a gap, and the
-range's length, lines and SHA-256 against the segment. The remote has a
-segment's file only when a backup ran while the file existed, and the
-nightly run archives and retires in one go, so most retired segments
-were never sent: their lines are on the remote in the exports alone.
+range's length, lines and SHA-256 against the segment. A segment is
+retired only after a backup has copied its file, so the remote has every
+retired segment's file as well.
 `cat` reads a retired segment the same way, and hands out no byte of it
 before all of it is proven; `snapshot` carries the exports it names,
 and retired.json.

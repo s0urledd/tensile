@@ -427,20 +427,22 @@ at start ("database schema version 27 is newer than this binary's 26").
 **Once anything is retired.** A collector that reads a retired range
 ("Retiring local copies" below) reads it from the exports; one from before
 retirement does not know the `retired` record, opens the segment's file
-and stops when it is gone. Most retired segments' files are nowhere else:
-the nightly run archives a segment and retires it minutes later, while the
-backup copies `archive/` only before that run, so the file never reaches
-the remote, and the next backup replaces the remote's live file with the
-shorter rotated one. Those lines are on this disk and on the remote in the
-daily exports alone, which this build reads and a build from before
-retirement cannot. So, going back to such a build:
+and stops when it is gone. A segment is retired only once a nightly backup
+has copied its file to the remote (it waits a night after it is archived),
+so every retired segment's file is on the remote. So, going back to such a
+build:
 
-- it can read on only from cursors past every retired range: from a store
-  copy taken at the upgrade, as long as the copy is younger than `-keep`
-  (a segment holds only lines older than that). Compare its
-  `ingest_cursors` with the `to` of the retired segments in each
-  `archive/<file>/index.json` to be sure. A rebuild from zero, or a
-  cursor behind a retired segment, is for this build or a later one;
+- copy the retired segments' files back from the remote first, as the
+  service user and with the collector stopped:
+
+  ```sh
+  sudo -u fibre-observer env RCLONE_CONFIG=/etc/fibre-observer/rclone.conf \
+    rclone copy '<BACKUP_REMOTE>/mocha/archive' /var/lib/fibre-observer/mocha/archive --include '*.jsonl.gz'   # BACKUP_REMOTE as in mocha.env
+  ```
+
+  and the same for each `vantages/<name>/archive`. The older build then
+  reads every range from its files again, from any cursor, a rebuild from
+  zero included;
 - its `observer-archive` must never run. It saves `index.json` without
   the `retired` records it does not know, after which this build finds
   them only in `archive/<file>/retired.json` (which the older build never
@@ -451,23 +453,6 @@ retirement cannot. So, going back to such a build:
   `sudo systemctl enable --now fibre-archive@mocha.timer` once this build
   is back. (This build's `-retire` would also remove a retired segment's
   file wherever it finds one, as a retirement a crash cut short.)
-
-A rollback window that must keep a rebuild from zero open to the older
-build keeps retirement off for that window and the rotation on: a drop-in
-that runs the unit's first `ExecStart` alone (`sudo systemctl edit
-fibre-archive@mocha`: an empty `ExecStart=`, then the first `ExecStart`
-line again). A segment archived in that window keeps its file, the next
-backup copies it to the remote, and it can be copied back, as the service
-user and with the collector stopped:
-
-```sh
-sudo -u fibre-observer env RCLONE_CONFIG=/etc/fibre-observer/rclone.conf \
-  rclone copy '<BACKUP_REMOTE>/mocha/archive' /var/lib/fibre-observer/mocha/archive --include '*.jsonl.gz'   # BACKUP_REMOTE as in mocha.env
-```
-
-(and the same for each `vantages/<name>/archive`). That brings back only
-the segments a backup copied, never one archived and retired the same
-night.
 
 Once a segment is retired, the exports are the copy of its lines on this
 disk: each member is a contiguous byte range of the source file, so the
@@ -770,9 +755,9 @@ points past the records the cut holds. A copy that came back missing,
 short, altered or unparseable is a failed restore, not a surprise. The
 master key is never in it. A segment retired on the host is listed in the
 cut with its `retired` record; `verify` checks it by its file when the
-copy has one (the remote has a segment's file only when a backup ran
-while the file existed, which a segment archived and retired the same
-night never was) and otherwise reads it back from the copy's `exports/`,
+copy has one (the remote has every retired segment's file: a segment is
+retired only after a backup has copied it) and otherwise reads it back
+from the copy's `exports/`,
 every tarball and member against `exports/index.json` and the range
 against the segment's SHA-256. Each
 other vantage's heartbeats (`vantages/<name>/reachability.jsonl`, with
@@ -794,9 +779,8 @@ own files.
   and the daily exports to `BACKUP_REMOTE/<network>` nightly (`deploy/backup.sh`),
   with the rclone remote configured once in `/etc/fibre-observer/rclone.conf`.
   It copies rather than mirrors, so moving old files off a full disk, or
-  retiring a segment, can never delete them from the remote; a segment
-  archived and retired the same night was never sent, and its lines are
-  on the remote in the exports alone.
+  retiring a segment, can never delete them from the remote, and a
+  segment is retired only after a backup has copied its file.
   It never copies `sampling-master.key`, which must not leave the host, nor
   the database, which litestream covers. A copy that finishes is recorded
   in `exports/remote-copy.json`: `{"copied_at", "remote"}`, `remote` being
@@ -1048,7 +1032,12 @@ file, and nothing else, once every byte of it is
    a backup that no longer finishes (one failed night is waited out, two
    are not), and a new `BACKUP_REMOTE` as a copy to another remote, whose
    proofs the backup then takes again. Until then every segment is kept,
-   with that reason.
+   with that reason;
+4. itself on the remote: archived before that last copy finished, which
+   took its file (the backup copies the archive first, holding the archive
+   lock shared). A segment archived since waits a night, so every retired
+   segment's file is on the remote too, and a build from before retirement
+   can have it copied back ("Going back past schema 27").
 
 `record.Retire` then, under the file's archive lock, reads the segment
 back from those exports once more (every tarball and member digest, the
@@ -1062,7 +1051,7 @@ reading and the next run removes. `retired.json` is the copy an
 `index.json` without the records it does not know, and every reader of
 this build takes a missing record from `retired.json` (and this build's
 next archive run writes it back into the index). A segment that misses
-any of the three is kept, and the run says why: one line per file
+any of the four is kept, and the run says why: one line per file
 (retired now, retired before, kept, bytes freed), one per kept segment
 (`2026-09-25 measurements.jsonl: 22560 lines sampled out, not
 reproducible from the store`, `2026-10-07 not yet proven on the remote`),

@@ -550,6 +550,8 @@ func testRetire(t *testing.T, archive func(d *retireData, cutoff time.Time)) {
 	for day := 1; day <= 3; day++ {
 		archive(d, day0.AddDate(0, 0, day))
 	}
+	// a backup copy finished after the last archive run, so every segment's file is on the remote
+	d.copied(t, "2026-10-05T04:45:00Z", remoteFP)
 	d.readsWhole(t)
 	at := day0.AddDate(0, 0, 4).Add(4*time.Hour + 50*time.Minute)
 
@@ -1186,8 +1188,8 @@ func TestRetireNeedsARecentCopyToTheSameRemote(t *testing.T) {
 	// An older copy passes with -remote-max-age 0.
 	d2, retire2 := archivedByHand(t)
 	retireSegment = retire2
-	d2.copied(t, "2026-09-01T03:36:00Z", remoteFP)
-	code, out, errs := runAt(t, retireAt, "-data-dir", d2.dir, "-retire", "-db", d2.db, "-remote-max-age", "0")
+	d2.copied(t, copiedAt, remoteFP)
+	code, out, errs := runAt(t, retireAt.Add(72*time.Hour), "-data-dir", d2.dir, "-retire", "-db", d2.db, "-remote-max-age", "0")
 	if code != 0 || !strings.Contains(out, "summary| 9 segment(s) retired now") {
 		t.Fatalf("-remote-max-age 0: %d\n%s%s", code, out, errs)
 	}
@@ -1256,6 +1258,56 @@ func TestRetireChecksAtMostCheckDays(t *testing.T) {
 	}
 	if code, _, errs := runAt(t, retireAt, "-data-dir", d.dir, "-retire", "-check-days", "-1"); code != 2 || !strings.Contains(errs, "cannot be negative") {
 		t.Fatalf("a negative -check-days: %d %s", code, errs)
+	}
+	d.readsWhole(t)
+}
+
+// A segment is retired only once a backup has copied its file: one archived after the backup's last finished copy is
+// kept a night with that reason, and retired by the run after the next copy.
+func TestRetireWaitsForTheSegmentsCopy(t *testing.T) {
+	d, retire := archivedByHand(t)
+	retireSegment = retire
+	t.Cleanup(func() { retireSegment = record.Retire })
+	// publications.jsonl's segments, archived this morning after the backup's copy at 03:36
+	pubs := filePath(d.dir, "publications.jsonl")
+	idx, err := record.LoadIndex(pubs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	late := time.Date(2026, 10, 5, 4, 40, 0, 0, time.UTC)
+	for i := range idx.Segments {
+		idx.Segments[i].ArchivedAt = late
+	}
+	raw, err := json.MarshalIndent(idx, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(record.ArchiveDir(pubs), record.IndexFile), append(raw, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	first := d.retire(t, retireAt)
+	if first.code != 0 {
+		t.Fatalf("%d\n%s%s", first.code, first.out, first.errs)
+	}
+	if f := first.file(t, "publications.jsonl"); f.RetiredNow != 0 || f.Kept != len(idx.Segments) {
+		t.Fatalf("publications archived after the copy: %+v", f)
+	}
+	want := "archived at 2026-10-05T04:40:00Z, after the backup's last finished copy (2026-10-05T03:36:00Z): the segment's file is not on the remote yet"
+	for seg, why := range first.kept() {
+		if strings.HasPrefix(seg, "publications.jsonl ") && strings.Contains(seg, "2026-10-02") && why != want {
+			t.Fatalf("%s kept for %q, want %q", seg, why, want)
+		}
+	}
+	if f := first.file(t, "measurements.jsonl"); f.RetiredNow == 0 {
+		t.Fatalf("segments archived before the copy were kept too: %+v\n%s", f, first.out)
+	}
+
+	// the next night's backup copies them; the run after it retires them
+	d.copied(t, "2026-10-06T03:36:00Z", remoteFP)
+	second := d.retire(t, retireAt.Add(24*time.Hour))
+	if f := second.file(t, "publications.jsonl"); second.code != 0 || f.RetiredNow == 0 {
+		t.Fatalf("after the next copy: %d %+v\n%s%s", second.code, f, second.out, second.errs)
 	}
 	d.readsWhole(t)
 }
