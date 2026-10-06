@@ -151,7 +151,8 @@ type DayReport struct {
 
 	// tarball is the SHA-256 of the tarball's bytes as they were checked, and checked the members its manifest names
 	// that the store keeps line by line: what the ledger records of the day (LedgerDay). Neither is in the report
-	// record-verify prints, which says the same through export_intact and its files.
+	// record-verify prints, which says the same through export_intact and its files. tarball is empty when what the
+	// check found is not about those bytes alone (CheckDay's unrecorded), so that nothing is recorded.
 	tarball string
 	checked []string
 }
@@ -165,21 +166,31 @@ func CheckDay(ctx context.Context, st *store.Store, dir string, e export.Entry) 
 		r.ExportIntact = false
 		r.ExportErrors = append(r.ExportErrors, fmt.Sprintf(f, a...))
 	}
+	// unrecorded is a failure that is not the tarball's bytes: the index entry or the sidecar disagreeing with them,
+	// or a file that could not be read. It can be gone by the next run (the builder writes the tarball, then its
+	// sidecar, then the index, so a check that read the index before a rebuild sees the new tarball against the old
+	// entry), and the ledger keeps an answer for as long as the tarball's digest stays. So the day is not recorded,
+	// and the next run checks it again.
+	unrecorded := func(f string, a ...any) {
+		fail(f, a...)
+		r.tarball = ""
+	}
 	path := filepath.Join(dir, e.Name)
 
 	sum, n, err := DigestFile(path)
 	if err != nil {
-		fail("%v", err)
+		unrecorded("%v", err)
 		return r, nil
 	}
 	r.tarball = sum
 	if n != e.Bytes || sum != e.SHA256 {
-		fail("tarball: %d bytes, sha256 %s; the index says %d bytes, %s", n, sum, e.Bytes, e.SHA256)
+		// The members are checked against this entry's manifest too, so nothing below is about these bytes alone.
+		unrecorded("tarball: %d bytes, sha256 %s; the index says %d bytes, %s", n, sum, e.Bytes, e.SHA256)
 	}
 	if side, err := os.ReadFile(path + ".sha256"); err != nil {
-		fail("sidecar: %v", err)
+		unrecorded("sidecar: %v", err)
 	} else if err := (&export.Archive{SHA256: sum}).CheckSidecar(side, e.Name); err != nil {
-		fail("sidecar: %v", err)
+		unrecorded("sidecar: %v", err)
 	}
 
 	want := map[string]export.Member{}
@@ -194,17 +205,22 @@ func CheckDay(ctx context.Context, st *store.Store, dir string, e export.Entry) 
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		fail("%v", err)
+		unrecorded("%v", err)
 		return r, nil
 	}
 	defer f.Close()
 	// The stream is hashed as it is read, so the digest the ledger records is the one of the bytes checked, not of a
-	// tarball rebuilt between the two reads.
+	// tarball rebuilt between the two reads. A failure to read the file is told apart from a gzip or tar stream that
+	// is broken in it: only the second is about the bytes.
+	src := &readFailure{r: f}
 	streamed := sha256.New()
-	raw := io.TeeReader(f, streamed)
+	raw := io.TeeReader(src, streamed)
 	gz, err := gzip.NewReader(raw)
 	if err != nil {
 		fail("gzip: %v", err)
+		if src.err != nil {
+			r.tarball = ""
+		}
 		return r, nil
 	}
 	tr := tar.NewReader(gz)
@@ -258,7 +274,9 @@ func CheckDay(ctx context.Context, st *store.Store, dir string, e export.Entry) 
 	if _, err := io.Copy(io.Discard, raw); err != nil {
 		fail("%v", err)
 	} else if s := hex.EncodeToString(streamed.Sum(nil)); s != sum {
-		fail("tarball: changed while it was checked (sha256 %s, then %s)", sum, s)
+		unrecorded("tarball: changed while it was checked (sha256 %s, then %s)", sum, s)
+	}
+	if src.err != nil {
 		r.tarball = ""
 	}
 	r.Reproducible = r.ExportIntact
@@ -266,6 +284,20 @@ func CheckDay(ctx context.Context, st *store.Store, dir string, e export.Entry) 
 		r.Reproducible = r.Reproducible && fr.Reproducible
 	}
 	return r, nil
+}
+
+// readFailure keeps the first error reading the file itself, the end of it aside.
+type readFailure struct {
+	r   io.Reader
+	err error
+}
+
+func (f *readFailure) Read(p []byte) (int, error) {
+	n, err := f.r.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) && f.err == nil {
+		f.err = err
+	}
+	return n, err
 }
 
 type lineCounter struct{ bytes, lines int64 }

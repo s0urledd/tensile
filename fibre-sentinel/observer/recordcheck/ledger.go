@@ -3,7 +3,14 @@ package recordcheck
 // The ledger is what the checks found, kept so that a day is checked once and not on every run: observer-archive
 // -retire removes an archived segment's file only when every export holding its bytes is in the ledger, under the
 // tarball's current digest, with the segment's file reproducible. A day whose tarball changed since (a rebuild) is
-// checked again, because the ledger's answer was about other bytes.
+// checked again, because the ledger's answer was about other bytes. A check whose answer is not about the tarball's
+// bytes alone (its index entry or sidecar disagreeing with it, a read error) is not recorded at all, so it cannot
+// stand for the tarball once that cause is gone.
+//
+// An answer about the store stands like one about the export: the lines a store did not give back are almost always
+// gone from it for good (sampled out, stripped, repeated), and checking every such day again on every run is what the
+// ledger is there to spare. A day the store has caught up on since is checked again by naming it (record-verify
+// -day), which replaces its entry.
 
 import (
 	"encoding/json"
@@ -73,10 +80,12 @@ func (l Ledger) Current(dir, name string) (d LedgerDay, ok bool, err error) {
 	return d, ok, nil
 }
 
-// LedgerDay is the ledger's entry for the day checked, by build at at. ok is false when the tarball could not be
-// read through, so there is no digest to tie an answer to and nothing to record. Every checked member the manifest
-// names is in it; on an export that is not intact none is reproducible, whatever its lines did, since the export is
-// what a removed segment would be read back from.
+// LedgerDay is the ledger's entry for the day checked, by build at at. ok is false when the answer is not about the
+// tarball's bytes alone: they changed while they were read, its index entry or sidecar disagreed with them, or a file
+// could not be read. Recorded under the digest, such an answer would outlive its cause for as long as the tarball
+// stays; unrecorded, the day is checked again on the next run. Every checked member the manifest names is in the
+// entry; on an export that is not intact none is reproducible, whatever its lines did, since the export is what a
+// removed segment would be read back from.
 func (r DayReport) LedgerDay(build string, at time.Time) (LedgerDay, bool) {
 	if r.tarball == "" {
 		return LedgerDay{}, false
@@ -152,9 +161,17 @@ func ReadLedger(path string) (Ledger, error) {
 }
 
 // MergeLedger sets the days given in the ledger at path and keeps every other entry. The ledger is read again here,
-// not taken from the caller, so a day another run recorded in the meantime is kept. It is written whole to a
-// temporary file, synced and renamed over the old one: a reader sees the old ledger or the new one, never a part.
+// not taken from the caller, so a day another run recorded in the meantime is kept, and under an exclusive lock held
+// until the new ledger is in place (lockLedger), so that two writers (record-verify -ledger by hand, observer-archive
+// -retire on its timer) never both merge into the same old ledger and the later rename drops what the other added. It
+// is written whole to a temporary file, synced and renamed over the old one, and the directory synced so the rename
+// survives a power loss: a reader sees the old ledger or the new one, never a part.
 func MergeLedger(path string, days map[string]LedgerDay) error {
+	unlock, err := lockLedger(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	l, err := ReadLedger(path)
 	if err != nil {
 		return err
@@ -184,5 +201,8 @@ func MergeLedger(path string, days map[string]LedgerDay) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(path))
 }

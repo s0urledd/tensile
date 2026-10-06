@@ -33,7 +33,9 @@
 // With -ledger, each day checked is merged into the ledger at that path (observer-archive -retire reads the exports
 // directory's verified.json): the tarball's digest, when and by which build it was checked, and each checked
 // member's answer. A day the ledger already holds under the tarball's current digest is listed from the ledger and
-// not checked again; one whose tarball changed since is checked again. A day named with -day is always checked.
+// not checked again; one whose tarball changed since is checked again. A day named with -day is always checked, and
+// its entry replaced. A check whose answer is not about the tarball's bytes alone (the index entry or the sidecar
+// disagreeing with them, a read error) is not recorded, so the day is checked again on the next run.
 //
 // With -file, one record file is checked line by line the same way, from line N on: how the first rows a build
 // writes are checked before their day is exported.
@@ -47,6 +49,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -95,22 +98,39 @@ func main() {
 		if err != nil {
 			fatal(err)
 		}
-		printFile("", r)
-		writeJSON(*jsonOut, r)
+		printFile(os.Stdout, "", r)
+		if err := writeJSON(*jsonOut, r); err != nil {
+			fatal(err)
+		}
 		if r.NotBack() > 0 {
 			os.Exit(1)
 		}
 		return
 	}
 
-	idx, err := export.ReadIndex(*dir)
+	_, code, err := verifyDays(ctx, st, *dir, days, *ledgerPath, *jsonOut, time.Now().UTC().Format("2006-01-02"), os.Stdout)
 	if err != nil {
 		fatal(err)
 	}
+	if code != 0 {
+		os.Exit(code)
+	}
+}
+
+// verifyDays checks each day of the exports directory dir's index before today, or only the days named when days
+// names any, and prints it to out. With a ledger, a day the ledger holds under the tarball's current digest is listed
+// from it instead, unless it was named, and each day checked is merged into the ledger. It writes the reports to
+// jsonOut when that is set, prints the summary and returns the reports of the days it checked and the exit status; the
+// error is a read error, which is exit status 2.
+func verifyDays(ctx context.Context, st *store.Store, dir string, days []string, ledgerPath, jsonOut, today string, out io.Writer) ([]recordcheck.DayReport, int, error) {
+	idx, err := export.ReadIndex(dir)
+	if err != nil {
+		return nil, 2, err
+	}
 	var ledger recordcheck.Ledger
-	if *ledgerPath != "" {
-		if ledger, err = recordcheck.ReadLedger(*ledgerPath); err != nil {
-			fatal(err)
+	if ledgerPath != "" {
+		if ledger, err = recordcheck.ReadLedger(ledgerPath); err != nil {
+			return nil, 2, err
 		}
 	}
 	sort.Slice(idx, func(i, j int) bool { return idx[i].Day < idx[j].Day })
@@ -118,7 +138,6 @@ func main() {
 	for _, d := range days {
 		want[d] = true
 	}
-	today := time.Now().UTC().Format("2006-01-02")
 	build := status.BuildRevision()
 	reports := []recordcheck.DayReport{}
 	held, heldNot := 0, 0
@@ -130,34 +149,36 @@ func main() {
 		if ledger != nil && len(days) == 0 {
 			// The ledger's answer stands for as long as the tarball is the one it was about. A tarball that cannot
 			// be read is left to the check, which says why.
-			if d, ok, err := ledger.Current(*dir, e.Name); err == nil && ok {
+			if d, ok, err := ledger.Current(dir, e.Name); err == nil && ok {
 				held++
 				if !d.Reproducible() {
 					heldNot++
 				}
-				printHeld(e, d)
+				printHeld(out, e, d)
 				continue
 			}
 		}
-		r, err := recordcheck.CheckDay(ctx, st, *dir, e)
+		r, err := recordcheck.CheckDay(ctx, st, dir, e)
 		if err != nil {
-			fatal(err)
+			return reports, 2, err
 		}
 		reports = append(reports, r)
-		printDay(r)
-		if *ledgerPath != "" {
+		printDay(out, r)
+		if ledgerPath != "" {
 			// Merged after each day, so a long run that stops keeps the days it finished.
 			if d, ok := r.LedgerDay(build, time.Now()); ok {
-				if err := recordcheck.MergeLedger(*ledgerPath, map[string]recordcheck.LedgerDay{e.Name: d}); err != nil {
-					fatal(err)
+				if err := recordcheck.MergeLedger(ledgerPath, map[string]recordcheck.LedgerDay{e.Name: d}); err != nil {
+					return reports, 2, err
 				}
 			}
 		}
 	}
 	for d := range want {
-		fmt.Printf("day| %s: no finished export in the index\n", d)
+		fmt.Fprintf(out, "day| %s: no finished export in the index\n", d)
 	}
-	writeJSON(*jsonOut, reports)
+	if err := writeJSON(jsonOut, reports); err != nil {
+		return reports, 2, err
+	}
 	ok := 0
 	for _, r := range reports {
 		if r.Reproducible {
@@ -165,14 +186,15 @@ func main() {
 		}
 	}
 	if held > 0 {
-		fmt.Printf("summary| %d day(s) checked: %d reproducible byte for byte, %d not; %d more unchanged since the ledger's check: %d reproducible, %d not. Nothing was deleted.\n",
+		fmt.Fprintf(out, "summary| %d day(s) checked: %d reproducible byte for byte, %d not; %d more unchanged since the ledger's check: %d reproducible, %d not. Nothing was deleted.\n",
 			len(reports), ok, len(reports)-ok, held, held-heldNot, heldNot)
 	} else {
-		fmt.Printf("summary| %d day(s) checked: %d reproducible byte for byte, %d not. Nothing was deleted.\n", len(reports), ok, len(reports)-ok)
+		fmt.Fprintf(out, "summary| %d day(s) checked: %d reproducible byte for byte, %d not. Nothing was deleted.\n", len(reports), ok, len(reports)-ok)
 	}
 	if ok < len(reports) || heldNot > 0 || len(want) > 0 {
-		os.Exit(1)
+		return reports, 1, nil
 	}
+	return reports, 0, nil
 }
 
 type multi []string
@@ -185,20 +207,18 @@ func fatal(err error) {
 	os.Exit(2)
 }
 
-func writeJSON(path string, v any) {
+func writeJSON(path string, v any) error {
 	if path == "" {
-		return
+		return nil
 	}
 	b, err := json.MarshalIndent(v, "", "  ")
-	if err == nil {
-		err = os.WriteFile(path, append(b, '\n'), 0o644)
-	}
 	if err != nil {
-		fatal(err)
+		return err
 	}
+	return os.WriteFile(path, append(b, '\n'), 0o644)
 }
 
-func printDay(r recordcheck.DayReport) {
+func printDay(w io.Writer, r recordcheck.DayReport) {
 	verdict := "reproducible byte for byte"
 	if !r.Reproducible {
 		verdict = "NOT reproducible"
@@ -207,26 +227,26 @@ func printDay(r recordcheck.DayReport) {
 	if !r.ExportIntact {
 		intact = "NOT intact"
 	}
-	fmt.Printf("day| %s %s: export %s; %s\n", r.Day, r.Export, intact, verdict)
+	fmt.Fprintf(w, "day| %s %s: export %s; %s\n", r.Day, r.Export, intact, verdict)
 	for _, e := range r.ExportErrors {
-		fmt.Printf("  export| %s\n", e)
+		fmt.Fprintf(w, "  export| %s\n", e)
 	}
 	for _, f := range r.Files {
-		printFile("  ", f)
+		printFile(w, "  ", f)
 	}
 	if len(r.NotChecked) > 0 {
-		fmt.Printf("  not checked| not stored line by line: %s\n", strings.Join(r.NotChecked, ", "))
+		fmt.Fprintf(w, "  not checked| not stored line by line: %s\n", strings.Join(r.NotChecked, ", "))
 	}
 }
 
 // printHeld prints a day the ledger answers for, the tarball being the one it checked: its verdict, and why each
 // member that is not reproducible is not.
-func printHeld(e export.Entry, d recordcheck.LedgerDay) {
+func printHeld(w io.Writer, e export.Entry, d recordcheck.LedgerDay) {
 	verdict := "reproducible byte for byte"
 	if !d.Reproducible() {
 		verdict = "NOT reproducible"
 	}
-	fmt.Printf("day| %s %s: unchanged since checked at %s by %s; %s\n", e.Day, e.Name, d.CheckedAt.UTC().Format(time.RFC3339), d.Build, verdict)
+	fmt.Fprintf(w, "day| %s %s: unchanged since checked at %s by %s; %s\n", e.Day, e.Name, d.CheckedAt.UTC().Format(time.RFC3339), d.Build, verdict)
 	names := make([]string, 0, len(d.Files))
 	for n := range d.Files {
 		names = append(names, n)
@@ -234,20 +254,20 @@ func printHeld(e export.Entry, d recordcheck.LedgerDay) {
 	sort.Strings(names)
 	for _, n := range names {
 		if m := d.Files[n]; !m.Reproducible {
-			fmt.Printf("  file| %s: %s\n", n, m.Why)
+			fmt.Fprintf(w, "  file| %s: %s\n", n, m.Why)
 		}
 	}
 }
 
-func printFile(indent string, f recordcheck.FileReport) {
-	fmt.Printf("%sfile| %-19s %8d lines: %d identical (%d slim); %d missing, %d stripped, %d sampled out, %d repeated, %d different, %d unreadable; rebuilt %s",
+func printFile(w io.Writer, indent string, f recordcheck.FileReport) {
+	fmt.Fprintf(w, "%sfile| %-19s %8d lines: %d identical (%d slim); %d missing, %d stripped, %d sampled out, %d repeated, %d different, %d unreadable; rebuilt %s",
 		indent, f.Name, f.Lines, f.Identical, f.SlimRows, f.Missing, f.Stripped, f.SampledOut, f.Repeated, f.Different, f.Unreadable, short(f.RebuiltSHA))
 	if f.SourceSHA256 != "" {
-		fmt.Printf(", source %s", short(f.SourceSHA256))
+		fmt.Fprintf(w, ", source %s", short(f.SourceSHA256))
 	}
-	fmt.Println()
+	fmt.Fprintln(w)
 	for _, x := range f.Examples {
-		fmt.Printf("%s  %s\n", indent, x)
+		fmt.Fprintf(w, "%s  %s\n", indent, x)
 	}
 }
 
