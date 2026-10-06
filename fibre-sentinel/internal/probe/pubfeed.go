@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
@@ -25,28 +25,51 @@ import (
 //
 // A trailing partial line (the scanner mid-write, or a torn tail after a
 // crash) is left unread until it is complete. A malformed complete line is
-// a hard error, as before: a corrupt record must not be silently dropped.
+// a hard error, as before: a corrupt record must not be silently dropped,
+// so the line is not consumed either, and every refresh stops at it again.
 //
 // observer-archive rotates the file: it moves the older lines into a
 // segment and puts a copy of the rest in the file's place, under the same
-// path. The feed tells by the file's identity, since the copy can be longer
-// than the offset read in the old file as easily as shorter (refresh).
+// path. The feed keeps a logical offset (internal/record), which names the
+// same byte whichever file holds it: every refresh opens the record as it
+// is now (record.Open places the live file by its first line in the
+// archive index) and reads on from that offset. Lines cut before the feed
+// read them come back from their segment, or from the daily exports once
+// it is retired, through the same reader, so no line is skipped or read
+// twice. The feed does not tell files apart by identity: a file a rotation
+// creates can be given the inode of one the feed read and closed before
+// (ext4 hands a freed inode to the next file at once), and then compares
+// equal to it while holding other bytes at every offset.
+//
+// The feed begins at the live file's first byte, not the record's. The
+// lines archived are dated before a cutoff at least the longest retention
+// window plus a day old (observer-archive refuses a shorter -keep), so
+// every publication whose schedule can still matter is in the live file,
+// and a prober that starts reads none of the archive.
 //
 // The prober's cycle loop refreshes and forgets while its readings, on
-// goroutines of their own, look up shadowing promises: mu guards every
-// field below it.
+// goroutines of their own, look up shadowing promises. mu guards the
+// publications and is held only to take in what a refresh has read, never
+// over the read itself, which can be long: the first load of a live file
+// of days of publications, or lines read back from the archive.
 type pubFeed struct {
 	path string
 
-	mu sync.RWMutex
-	// read is the file read last (nil before the first refresh), head the
-	// SHA-256 of its first line once read ("" until then), and offset and
-	// line how far into it the feed has read.
-	read   os.FileInfo
-	head   string
-	offset int64
-	line   int64
+	// reading is held for the whole of a refresh, so two never read the
+	// same lines, and guards the fields up to mu. offset is the logical
+	// offset of the first byte the feed has not read, and lines the number
+	// of lines before it in the whole record (-1 when the index does not
+	// say how many lines precede the byte the feed began at). last is the
+	// SHA-256 of the line that ends at offset, which starts at lastFrom: ""
+	// when nothing has been read, and the next refresh places the feed
+	// afresh.
+	reading  sync.Mutex
+	offset   int64
+	lines    int64
+	last     string
+	lastFrom int64
 
+	mu    sync.RWMutex
 	pubs  map[string]scan.Publication // by promise hash
 	order []string                    // hashes in file order
 	// byCommit indexes live publications by blob commitment: two promises
@@ -85,60 +108,120 @@ func (f *pubFeed) shadowersFor(hash, commitment, addr string) []ShadowCandidate 
 
 // refresh reads new complete records. It returns how many were added.
 //
-// When the path names another file than the one read last, the archiver
-// rotated it (rotated says how the feed goes on in the new one). When the
-// same file shrank, it was rewritten in place, and everything is reloaded
-// from the start.
+// A record that does not go on from what the feed has read (goesOn: the
+// file was rewritten in place, or put in the path's place outside the
+// archiver) is a record of its own: everything held is forgotten and it is
+// read from its live file's start.
 func (f *pubFeed) refresh() (int, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	fh, err := os.Open(f.path)
+	f.reading.Lock()
+	defer f.reading.Unlock()
+	s, err := record.Open(f.path)
 	if err != nil {
 		return 0, fmt.Errorf("open %s: %w", f.path, err)
 	}
-	defer fh.Close()
-	info, err := fh.Stat()
+	defer s.Close()
+	same, err := f.goesOn(s)
 	if err != nil {
 		return 0, err
 	}
-	switch {
-	case f.read != nil && !os.SameFile(f.read, info):
-		if err := f.rotated(fh, info.Size()); err != nil {
-			return 0, err
-		}
-	case info.Size() < f.offset:
-		f.reset()
+	at, lines := f.offset, f.lines
+	if !same || f.last == "" {
+		at, lines = s.Base(), linesBefore(s.Index(), s.Base())
 	}
-	f.read = info
-	if _, err := fh.Seek(f.offset, io.SeekStart); err != nil {
-		return 0, err
+	src, err := s.ReaderFrom(at)
+	if err != nil {
+		return 0, fmt.Errorf("%s from logical byte %d: %w", f.path, at, err)
 	}
-	r := bufio.NewReaderSize(fh, 1<<20)
-	added := 0
+	r := bufio.NewReaderSize(src, 1<<20)
+	var (
+		got      []scan.Publication
+		last     []byte
+		lastFrom int64
+		stop     error
+	)
 	for {
 		raw, err := r.ReadBytes('\n')
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break // partial trailing line: wait for the newline
+			if !errors.Is(err, io.EOF) {
+				stop = err
 			}
-			return added, err
+			break // a partial trailing line waits for its newline
 		}
-		if f.offset == 0 {
-			f.head = lineSHA256(raw)
+		if trimmed := bytes.TrimSpace(raw); len(trimmed) > 0 {
+			var p scan.Publication
+			if err := json.Unmarshal(trimmed, &p); err != nil {
+				stop = fmt.Errorf("%s: %w", f.lineName(s, at, lines), err)
+				break
+			}
+			if p.PromiseHash == "" {
+				stop = fmt.Errorf("%s: publication without promise_hash", f.lineName(s, at, lines))
+				break
+			}
+			got = append(got, p)
 		}
-		f.line++
-		f.offset += int64(len(raw))
-		trimmed := bytes.TrimSpace(raw)
-		if len(trimmed) == 0 {
-			continue
+		last, lastFrom = raw, at
+		at += int64(len(raw))
+		if lines >= 0 {
+			lines++
 		}
-		var p scan.Publication
-		if err := json.Unmarshal(trimmed, &p); err != nil {
-			return added, fmt.Errorf("%s line %d: %w", f.path, f.line, err)
-		}
-		if p.PromiseHash == "" {
-			return added, fmt.Errorf("%s line %d: publication without promise_hash", f.path, f.line)
-		}
+	}
+	added := f.take(got, !same)
+	f.offset, f.lines = at, lines
+	switch {
+	case last != nil:
+		f.last, f.lastFrom = lineSHA256(last), lastFrom
+	case !same:
+		f.last = ""
+	}
+	return added, stop
+}
+
+// goesOn reports whether the record s opens goes on from what the feed has
+// read, by the line read last: it must still end at the feed's offset.
+// While that line is in the live file it is read again and compared, which
+// is one line, not a file. Once a rotation has moved it to the archive, the
+// live file starts at or after its end: record.Open placed it there by its
+// own first line in the index (it gives a live file the index does not
+// place base 0, so such a file is always compared). A record shorter than
+// what was read does not go on, nor one whose live file starts inside the
+// line read last. With nothing read yet there is nothing to compare, and
+// the feed is placed afresh in any case.
+func (f *pubFeed) goesOn(s *record.Stream) (bool, error) {
+	base := s.Base()
+	switch {
+	case f.last == "":
+		return true, nil
+	case s.End() < f.offset:
+		return false, nil
+	case f.lastFrom < base:
+		return f.offset <= base, nil
+	}
+	r, err := s.ReaderFrom(f.lastFrom)
+	if err != nil {
+		return false, err
+	}
+	h := sha256.New()
+	if _, err := io.CopyN(h, r, f.offset-f.lastFrom); errors.Is(err, io.EOF) {
+		return false, nil // cut short since it was opened
+	} else if err != nil {
+		return false, err
+	}
+	return hex.EncodeToString(h.Sum(nil)) == f.last, nil
+}
+
+// take adds the publications a refresh read, in file order, after
+// forgetting everything held when the record is read from its start again.
+// It returns how many were not held yet.
+func (f *pubFeed) take(got []scan.Publication, reload bool) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if reload {
+		f.pubs = map[string]scan.Publication{}
+		f.order = nil
+		f.byCommit = map[string][]string{}
+	}
+	added := 0
+	for _, p := range got {
 		if _, dup := f.pubs[p.PromiseHash]; !dup {
 			f.order = append(f.order, p.PromiseHash)
 			f.byCommit[p.Promise.Commitment] = append(f.byCommit[p.Promise.Commitment], p.PromiseHash)
@@ -146,166 +229,62 @@ func (f *pubFeed) refresh() (int, error) {
 		}
 		f.pubs[p.PromiseHash] = p
 	}
-	return added, nil
+	return added
 }
 
-// rotated moves the feed onto fh, size bytes long, which has taken the
-// place of the file read last. The feed starts again at the new file's
-// first byte, and the lines of it that it had already read in the old file
-// are skipped rather than decoded again: the archive index places both
-// files in the one logical record, each by the digest of its first line
-// (as record.Open does), so the logical offset the feed had reached falls
-// at a known byte of the new file. A publication still held keeps its
-// place, and one already forgotten (its schedule done, its keys dropped
-// from the measurement store) is not brought back to be planned again,
-// which would write a NOT_PROBED row for a reading already on record.
-// Every line past that byte is new.
-//
-// Nothing whose schedule can still matter is lost. The feed keeps every
-// publication it holds, the archived ones too, until the cycle forgets it.
-// And the lines archived are dated before a cutoff at least the longest
-// retention window plus a day old (observer-archive refuses a shorter
-// -keep), so had the feed not read some of them yet, their schedules ended
-// a day ago: every publication that can still be read is in the live file.
-//
-// A file the index does not place (put there outside the archiver), or one
-// that does not hold what the feed had read, is a record of its own and is
-// reloaded from scratch, as a file rewritten in place is.
-func (f *pubFeed) rotated(fh *os.File, size int64) error {
-	if f.offset == 0 {
-		// nothing of the old file was read: every line of the new one is new
-		f.line, f.head = 0, ""
-		return nil
-	}
-	idx, err := record.LoadIndex(f.path)
-	if err != nil {
-		return err
-	}
-	head, err := firstLineSHA256(fh)
-	if err != nil {
-		return err
-	}
-	oldBase, okOld := generationBase(idx, f.head)
-	newBase, okNew := generationBase(idx, head)
-	if !okOld || !okNew || newBase < oldBase {
-		f.reset()
-		return nil
-	}
-	skip := oldBase + f.offset - newBase
-	if skip <= 0 {
-		// The rotation archived every line the feed had read, and any it
-		// had not read yet are older than the cutoff (above).
-		f.offset, f.line, f.head = 0, 0, ""
-		return nil
-	}
-	if skip > size {
-		// the new file does not reach what was read: not this record's tail
-		f.reset()
-		return nil
-	}
-	last := make([]byte, 1)
-	if _, err := fh.ReadAt(last, skip-1); err != nil {
-		return err
-	}
-	if last[0] != '\n' {
-		// not at a line's end: the new file is not a copy of the old one's tail
-		f.reset()
-		return nil
-	}
-	// f.line counts the lines of logical bytes [oldBase, oldBase+offset),
-	// and the segments cut since hold [oldBase, newBase) and say how many
-	// lines each has: the new file's lines before skip are the difference.
-	// Counting them by reading would hold mu, which the readings wait on,
-	// over most of a live file of days of publications on every rotation.
-	cut, ok := segmentLines(idx, oldBase, newBase)
-	lines := f.line - cut
-	if !ok || lines < 0 {
-		// segments the index does not list: count the lines themselves
-		if lines, err = countLines(fh, skip); err != nil {
-			return err
+// lineName names the line that starts at logical byte from, with before
+// lines ahead of it in the whole record (-1 when that is not known), for
+// an error. It is named by its line in the file that holds it, the live
+// file or a segment, counted from the lines the index says the segments
+// before that file hold; by its line in the whole record when the index
+// does not list those segments; by its byte when not even that is known.
+// Counting the lines by reading them again would hold up the refresh for a
+// nicety.
+func (f *pubFeed) lineName(s *record.Stream, from, before int64) string {
+	idx := s.Index()
+	file, start := f.path, s.Base()
+	if from < start {
+		for _, sg := range idx.Segments {
+			if sg.From <= from && from < sg.To {
+				file, start = filepath.Join(record.ArchiveDir(f.path), sg.Name), sg.From
+				break
+			}
 		}
 	}
-	f.offset, f.line, f.head = skip, lines, head
-	return nil
+	if before < 0 {
+		return fmt.Sprintf("%s logical byte %d", f.path, from)
+	}
+	if ahead := linesBefore(idx, start); ahead >= 0 {
+		return fmt.Sprintf("%s line %d", file, before-ahead+1)
+	}
+	return fmt.Sprintf("%s line %d of the whole record", f.path, before+1)
 }
 
-// segmentLines is the number of lines in logical bytes [from, to), read
-// from the segments of idx that hold them. False when the segments listed
-// do not hold exactly that range, one after another.
-func segmentLines(idx *record.Index, from, to int64) (int64, bool) {
-	var lines int64
-	at := from
+// linesBefore is the number of lines in logical bytes [0, at), from the
+// segments of idx that hold them; -1 when the segments listed do not hold
+// exactly that range, one after another.
+func linesBefore(idx *record.Index, at int64) int64 {
+	var lines, end int64
 	for _, sg := range idx.Segments {
-		if sg.To <= from || sg.From >= to {
-			continue
+		if sg.From >= at {
+			continue // after it, or written by a run that never swapped
 		}
-		if sg.From != at || sg.To > to {
-			return 0, false
+		if sg.From != end || sg.To > at {
+			return -1
 		}
 		lines += sg.Lines
-		at = sg.To
+		end = sg.To
 	}
-	return lines, at == to
+	if end != at {
+		return -1
+	}
+	return lines
 }
 
-// reset forgets everything read, to read the file again from its start.
-func (f *pubFeed) reset() {
-	f.offset, f.line, f.head = 0, 0, ""
-	f.pubs = map[string]scan.Publication{}
-	f.order = nil
-	f.byCommit = map[string][]string{}
-}
-
-// generationBase is the logical offset of the live file whose first line
-// has this digest: the base of the newest generation in idx with that
-// head. False when none has it.
-func generationBase(idx *record.Index, head string) (int64, bool) {
-	if head == "" {
-		return 0, false
-	}
-	for i := len(idx.Generations) - 1; i >= 0; i-- {
-		if idx.Generations[i].Head == head {
-			return idx.Generations[i].Base, true
-		}
-	}
-	return 0, false
-}
-
-// lineSHA256 is the digest a generation names its file's first line by
-// (newline included).
+// lineSHA256 is the digest of one line, newline included.
 func lineSHA256(line []byte) string {
 	sum := sha256.Sum256(line)
 	return hex.EncodeToString(sum[:])
-}
-
-// firstLineSHA256 is lineSHA256 of fh's first line, read without moving
-// fh's offset; "" when fh holds no complete line.
-func firstLineSHA256(fh *os.File) (string, error) {
-	r := bufio.NewReaderSize(io.NewSectionReader(fh, 0, 1<<62), 1<<16)
-	line, err := r.ReadBytes('\n')
-	if errors.Is(err, io.EOF) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return lineSHA256(line), nil
-}
-
-// countLines counts the newlines in r's first n bytes. Only an index that
-// does not list the segments a rotation cut needs it (rotated).
-func countLines(r io.ReaderAt, n int64) (int64, error) {
-	buf := make([]byte, 1<<20)
-	var lines int64
-	for off := int64(0); off < n; {
-		k, err := r.ReadAt(buf[:min(int64(len(buf)), n-off)], off)
-		lines += int64(bytes.Count(buf[:k], []byte{'\n'}))
-		off += int64(k)
-		if err != nil && off < n {
-			return 0, err
-		}
-	}
-	return lines, nil
 }
 
 // forget drops one publication from memory.
