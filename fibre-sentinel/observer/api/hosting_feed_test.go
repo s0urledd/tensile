@@ -115,7 +115,7 @@ func (f *hostingFixture) enable(t *testing.T) {
 	if err := os.WriteFile(p, b.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := &hosting.Refresher{DB: f.st.DB(), Cfg: hosting.Config{ASNPath: p}}
+	r := &hosting.Refresher{DB: f.st.DB(), Cfg: hosting.Config{ASNPath: p}, Record: reachRecord(f.st)}
 	if res, err := r.Run(context.Background(), time.Now()); err != nil || res.WithASN != 3 {
 		t.Fatalf("refresh: %+v %v", res, err)
 	}
@@ -360,4 +360,10 @@ func TestNetworkFeed(t *testing.T) {
 			t.Fatalf("self link %q", l.Href)
 		}
 	}
+}
+
+// reachRecord is the Record the collector gives a hosting Refresher: the store's reading of a reachability row's
+// raw_json, which keeps the slim form.
+func reachRecord(st *store.Store) func(ctx context.Context, raw []byte) ([]byte, error) {
+	return func(ctx context.Context, raw []byte) ([]byte, error) { return st.ReachRecord(ctx, st.DB(), raw) }
 }
