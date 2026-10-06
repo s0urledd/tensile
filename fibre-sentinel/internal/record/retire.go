@@ -20,15 +20,20 @@ import (
 //  2. read the segment back from the exports (every tarball and member
 //     digest against the exports index, the range's length, lines and
 //     SHA-256 against the segment) and refuse on any difference;
-//  3. save the index with Retired set (atomically, as Archive saves it);
+//  3. add the segment, retired, to RetiredFile, then save the index with
+//     Retired set (each atomically, as Archive saves the index);
 //  4. remove the file and fsync the directory.
 //
-// A crash between 3 and 4 leaves a retired segment whose file is still
-// there; readers read the file while it is, and a second Retire checks the
-// exports again and removes it. Retire is idempotent: a segment retired
-// and gone is left alone, and one already retired keeps the Retired it was
-// given first. A segment whose file is missing and that was never retired
-// is refused: nothing proved its bytes are anywhere else.
+// RetiredFile is the copy of the record that an older build, which
+// rewrites index.json without fields it does not know, never touches;
+// LoadIndex reads a retired record from it whenever the index lacks one. A
+// crash between 3 and 4, or between the two writes of 3, leaves a retired
+// segment whose file is still there; readers read the file while it is,
+// and a second Retire checks the exports again and removes it. Retire is
+// idempotent: a segment retired and gone is left alone, and one already
+// retired keeps the Retired it was given first. A segment whose file is
+// missing and that was never retired is refused: nothing proved its bytes
+// are anywhere else.
 func Retire(path, segment string, r Retired) error {
 	if !rotationSupported {
 		return ErrUnsupported
@@ -90,6 +95,9 @@ func Retire(path, segment string, r Retired) error {
 		return fmt.Errorf("%w; its file is kept", err)
 	}
 	if !saved {
+		if err := keepRetired(adir, filepath.Base(path), sg); err != nil {
+			return err
+		}
 		idx.Segments[i].Retired = sg.Retired
 		if err := idx.save(adir); err != nil {
 			return err

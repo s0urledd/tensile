@@ -23,19 +23,20 @@
 # the path in the message, as rclone prints it.
 #
 #   FAKE_RCLONE_LOG     one line per call: the subcommand and its arguments
-#   FAKE_RCLONE_FAIL    a subcommand that fails (exit 1) whatever it is asked
+#   FAKE_RCLONE_FAIL    a subcommand that fails (exit 1) whatever it is asked,
+#                       naming its last path as given, as rclone does for a
+#                       remote it cannot set up ("Failed to create file
+#                       system for ...")
 #   FAKE_RCLONE_GARBLE  a file name whose bytes cat serves altered (a remote
 #                       copy that is not the one uploaded)
 #   FAKE_RCLONE_SLOW    seconds cat waits before it serves anything (a slow
 #                       link, so that two callers overlap)
+#   FAKE_RCLONE_CUT     bytes cat serves before it fails (exit 1): a link
+#                       that breaks part-way
 set -u
 sub=${1:-}
 shift || true
 [ -n "${FAKE_RCLONE_LOG:-}" ] && printf '%s %s\n' "$sub" "$*" >>"$FAKE_RCLONE_LOG"
-if [ -n "${FAKE_RCLONE_FAIL:-}" ] && [ "$sub" = "$FAKE_RCLONE_FAIL" ]; then
-  echo "fake-rclone: $sub failed (FAKE_RCLONE_FAIL)" >&2
-  exit 1
-fi
 local_path() {
   case $1 in
     *:*) printf '%s/%s' "${FAKE_RCLONE_ROOT:?FAKE_RCLONE_ROOT not set}" "${1##*:}" ;;
@@ -60,6 +61,12 @@ while [ $# -gt 0 ]; do
     *) paths+=("$1"); shift ;;
   esac
 done
+if [ -n "${FAKE_RCLONE_FAIL:-}" ] && [ "$sub" = "$FAKE_RCLONE_FAIL" ]; then
+  last=""
+  [ ${#paths[@]} -gt 0 ] && last=${paths[${#paths[@]}-1]}
+  echo "fake-rclone: Failed to create file system for \"$last\": $sub failed (FAKE_RCLONE_FAIL)" >&2
+  exit 1
+fi
 missing() { echo "fake-rclone: error: $1: directory not found" >&2; exit 3; }
 # glob_re <pattern>: an rclone filter pattern as an extended regular
 # expression over a path relative to the copy's source.
@@ -107,7 +114,11 @@ case $sub in
     f=$(local_path "${paths[0]}")
     [ -f "$f" ] || missing "${paths[0]}"
     [ -n "${FAKE_RCLONE_SLOW:-}" ] && sleep "$FAKE_RCLONE_SLOW"
-    if [ -n "${FAKE_RCLONE_GARBLE:-}" ] && [ "${f##*/}" = "$FAKE_RCLONE_GARBLE" ]; then
+    if [ -n "${FAKE_RCLONE_CUT:-}" ]; then
+      tail -c +$((offset + 1)) "$f" | head -c "$FAKE_RCLONE_CUT"
+      echo "fake-rclone: cat: the link broke after $FAKE_RCLONE_CUT bytes (FAKE_RCLONE_CUT)" >&2
+      exit 1
+    elif [ -n "${FAKE_RCLONE_GARBLE:-}" ] && [ "${f##*/}" = "$FAKE_RCLONE_GARBLE" ]; then
       { tail -c +$((offset + 1)) "$f"; printf 'x'; }
     else
       tail -c +$((offset + 1)) "$f"

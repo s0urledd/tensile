@@ -40,6 +40,14 @@
 // With -file, one record file is checked line by line the same way, from line N on: how the first rows a build
 // writes are checked before their day is exported.
 //
+// The days are checked on the disk the observer shares with a validator, and on NVMe with the "none" I/O scheduler
+// neither nice nor ionice lowers the check's reads. So a day's check waits while /proc/pressure/io shows the disk
+// busy, as observer-archive -retire's does (internal/pace): before each member of the tarball and every 10,000 lines
+// of a checked member, where it holds nothing (each lookup is a statement of its own on the store opened read-only),
+// while "some avg10" is above -pace-some or "full avg10" above -pace-full, until "some avg10" has stayed below
+// -pace-calm for -pace-calm-for, at most -pace-max-wait at a time. Each pause is a "pace|" line. -pace-some 0 checks
+// without pausing.
+//
 // Exit status: 0 every day checked, or listed from the ledger, is reproducible; 1 one is not; 2 bad usage or a read
 // error.
 package main
@@ -56,6 +64,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/pace"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/export"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/recordcheck"
@@ -72,9 +81,20 @@ func main() {
 		" is the one observer-archive -retire reads); a day it holds under the tarball's current digest is not checked again unless named with -day")
 	var days multi
 	flag.Var(&days, "day", "a day to check, repeatable (default every finished day with an export)")
+	paceSome := flag.Float64("pace-some", pace.DefaultSome, `with -exports, pause a day's check, before each member and every 10,000 lines, while "some avg10" in `+pace.ProcFile+" is above this (0: never pause)")
+	paceFull := flag.Float64("pace-full", pace.DefaultFull, `pause as well while "full avg10" is above this (0: "some" alone)`)
+	paceCalm := flag.Float64("pace-calm", pace.DefaultCalm, `a pause ends once "some avg10" has stayed below this for -pace-calm-for`)
+	calmFor := flag.Duration("pace-calm-for", pace.DefaultCalmFor, `how long "some avg10" must stay below -pace-calm to end a pause`)
+	maxWait := flag.Duration("pace-max-wait", pace.DefaultMaxWait, "the longest a single pause lasts: the check then goes on whatever the pressure, and says so")
 	flag.Parse()
 	if *dbPath == "" || (*dir == "") == (*file == "") || (*ledgerPath != "" && *dir == "") {
 		fmt.Fprintln(os.Stderr, "usage: record-verify -db observer.db (-exports DIR [-day D ...] [-ledger FILE] | -file F [-from-line N]) [-json report.json]")
+		os.Exit(2)
+	}
+	pacer := &pace.Pacer{Some: *paceSome, Full: *paceFull, Calm: *paceCalm, CalmFor: *calmFor, MaxWait: *maxWait,
+		Log: func(s string) { fmt.Fprintf(os.Stdout, "pace| %s\n", s) }}
+	if err := pacer.Check(); err != nil {
+		fmt.Fprintln(os.Stderr, "record-verify:", err)
 		os.Exit(2)
 	}
 	st, err := store.OpenReadOnly(*dbPath)
@@ -108,7 +128,11 @@ func main() {
 		return
 	}
 
-	_, code, err := verifyDays(ctx, st, *dir, days, *ledgerPath, *jsonOut, time.Now().UTC().Format("2006-01-02"), os.Stdout)
+	pause := func(ctx context.Context) error { return pacer.Wait(ctx, "checking against the store") }
+	_, code, err := verifyDays(ctx, st, *dir, days, *ledgerPath, *jsonOut, time.Now().UTC().Format("2006-01-02"), os.Stdout, pause)
+	if n, d := pacer.Paused(); n > 0 {
+		fmt.Fprintf(os.Stdout, "pace| paused %d time(s), %s in all, while the disk was busy\n", n, d.Round(time.Second))
+	}
 	if err != nil {
 		fatal(err)
 	}
@@ -119,10 +143,11 @@ func main() {
 
 // verifyDays checks each day of the exports directory dir's index before today, or only the days named when days
 // names any, and prints it to out. With a ledger, a day the ledger holds under the tarball's current digest is listed
-// from it instead, unless it was named, and each day checked is merged into the ledger. It writes the reports to
-// jsonOut when that is set, prints the summary and returns the reports of the days it checked and the exit status; the
-// error is a read error, which is exit status 2.
-func verifyDays(ctx context.Context, st *store.Store, dir string, days []string, ledgerPath, jsonOut, today string, out io.Writer) ([]recordcheck.DayReport, int, error) {
+// from it instead, unless it was named, and each day checked is merged into the ledger. Each check calls pause (nil:
+// never) where it may wait (recordcheck.CheckDayPaced). It writes the reports to jsonOut when that is set, prints the
+// summary and returns the reports of the days it checked and the exit status; the error is a read error, or a pause
+// that ended with one, which is exit status 2.
+func verifyDays(ctx context.Context, st *store.Store, dir string, days []string, ledgerPath, jsonOut, today string, out io.Writer, pause recordcheck.Pause) ([]recordcheck.DayReport, int, error) {
 	idx, err := export.ReadIndex(dir)
 	if err != nil {
 		return nil, 2, err
@@ -158,7 +183,7 @@ func verifyDays(ctx context.Context, st *store.Store, dir string, days []string,
 				continue
 			}
 		}
-		r, err := recordcheck.CheckDay(ctx, st, dir, e)
+		r, err := recordcheck.CheckDayPaced(ctx, st, dir, e, pause)
 		if err != nil {
 			return reports, 2, err
 		}

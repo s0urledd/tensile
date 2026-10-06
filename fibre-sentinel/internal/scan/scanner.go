@@ -17,6 +17,19 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
 )
 
+// RunComponent is the scanner's component name in its status file and in
+// runs.jsonl.
+const RunComponent = "scanner"
+
+// FollowsRotation is the key, in the config of the scanner's run_started
+// line in runs.jsonl, that says this scanner writes publications.jsonl and
+// payments.jsonl through record.Appender and so follows their rotation
+// (true). observer-archive rotates the two files only once the newest
+// scanner start says so: a scanner of a build from before held them open
+// with plain appends, and one still running after an upgrade would write
+// on into the files a rotation replaced.
+const FollowsRotation = "follows_rotation"
+
 // Config controls a scan run. Zero values fall back to the defaults in Run.
 type Config struct {
 	// RunConfig is what this run was configured with, recorded in
@@ -153,7 +166,7 @@ func New(cfg Config, log *Logger) (*Scanner, error) {
 		return nil, err
 	}
 	return &Scanner{
-		status: status.New(cfg.DataDir, "scanner", "", status.BuildRevision()),
+		status: status.New(cfg.DataDir, RunComponent, "", status.BuildRevision()),
 		cfg:    cfg,
 		log:    log,
 		chain:  ch,
@@ -171,6 +184,18 @@ func New(cfg Config, log *Logger) (*Scanner, error) {
 	}, nil
 }
 
+// runConfig is the config the run's start records: the operator's, and
+// FollowsRotation, which this build's writers (Store, through
+// record.Appender) make true.
+func runConfig(cfg map[string]any) map[string]any {
+	out := make(map[string]any, len(cfg)+1)
+	for k, v := range cfg {
+		out[k] = v
+	}
+	out[FollowsRotation] = true
+	return out
+}
+
 // Run executes the scan. It returns nil on a clean finish (tip or MaxHeight
 // reached in non-follow mode). Any timeout or unrecoverable error calls
 // log.Fatalf, which dumps the log ring and exits the process.
@@ -182,7 +207,7 @@ func (s *Scanner) Run(parent context.Context) error {
 		defer cancel()
 	}
 	defer s.store.Close()
-	s.status.RecordRuns(s.cfg.RunConfig)
+	s.status.RecordRuns(runConfig(s.cfg.RunConfig))
 	s.status.Start()
 	defer s.status.Stop("exit")
 

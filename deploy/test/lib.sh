@@ -28,6 +28,10 @@
 #                with the live file's records alone, while the rebuild
 #                reads the archived lines as well: once observer-archive
 #                rotated publications.jsonl, a good backup failed the drill.
+#   record_promises the drill then compared the rebuilt publications with
+#                the lines, while the store keeps one row per promise: a
+#                publication appended again by a re-scan would have failed a
+#                good backup.
 
 : "${FAILED:=0}"
 pass() { echo "  ok   $*"; }
@@ -173,6 +177,32 @@ manifest_records() {
   python3 -c 'import json, sys
 f = json.load(open(sys.argv[1]))["files"].get(sys.argv[2], {})
 print(f.get("records", 0) + f.get("archived_records", 0))' "$1" "$2"
+}
+
+# record_promises <manifest-tool> <dir>: "<lines> <distinct promises>" of
+# publications.jsonl's whole record under dir (archived segments, a retired
+# one read back from the exports, then the live file), read with the
+# manifest tool's cat as a rebuild reads it. The store keeps one row per
+# promise (ON CONFLICT DO NOTHING): a publication appended again, which a
+# re-scan of heights older than the scanner's dedupe window (its live file)
+# can do, is a line and not a row.
+record_promises() {
+  python3 - "$1" "$2" <<'PY'
+import json, subprocess, sys
+cat = subprocess.Popen([sys.argv[1], "cat", sys.argv[2], "publications.jsonl"], stdout=subprocess.PIPE)
+n, seen = 0, set()
+for line in cat.stdout:
+    if not line.strip():
+        continue
+    n += 1
+    try:
+        seen.add(json.loads(line).get("promise_hash"))
+    except ValueError:
+        pass
+if cat.wait() != 0:
+    raise SystemExit("publications.jsonl: the manifest tool could not read the record")
+print(n, len(seen))
+PY
 }
 
 # free_port: a TCP port nothing listens on right now.

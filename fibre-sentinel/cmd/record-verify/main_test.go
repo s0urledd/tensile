@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -73,7 +74,7 @@ func TestLedgerRunsCheckOnlyWhatTheLedgerDoesNotHold(t *testing.T) {
 	run := func(days ...string) ([]recordcheck.DayReport, int, string) {
 		t.Helper()
 		var out bytes.Buffer
-		reports, code, err := verifyDays(ctx, st, dir, days, ledger, "", "2026-10-06", &out)
+		reports, code, err := verifyDays(ctx, st, dir, days, ledger, "", "2026-10-06", &out, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -124,5 +125,29 @@ func TestLedgerRunsCheckOnlyWhatTheLedgerDoesNotHold(t *testing.T) {
 	}
 	if reports, code, out = run(); len(reports) != 0 || code != 1 || !strings.Contains(out, "NOT reproducible") || !strings.Contains(out, "file| reachability.jsonl: 1 lines missing") {
 		t.Fatalf("a day held as not reproducible: %+v exit %d\n%s", reports, code, out)
+	}
+}
+
+// A day's check gives the disk back where it holds nothing, as observer-archive -retire's does: the pause is asked
+// before each member of the tarball, and one that ends with an error (the run stopped while it waited) ends the run
+// with it, exit status 2, before the day is recorded.
+func TestDaysCheckedPauseWhereTheyHoldNothing(t *testing.T) {
+	st, data := heartbeats(t)
+	dir, e := exportAt(t, data, time.Date(2026, 10, 6, 4, 0, 0, 0, time.UTC))
+	ctx := context.Background()
+	ledger := filepath.Join(dir, recordcheck.LedgerFile)
+	calls := 0
+	var out bytes.Buffer
+	reports, code, err := verifyDays(ctx, st, dir, nil, ledger, "", "2026-10-06", &out, func(context.Context) error { calls++; return nil })
+	if err != nil || code != 0 || len(reports) != 1 || calls < len(e.Files) {
+		t.Fatalf("%d pause(s) for %d members: %+v exit %d %v\n%s", calls, len(e.Files), reports, code, err, out.String())
+	}
+	stopped := errors.New("stopped while it waited")
+	other := filepath.Join(t.TempDir(), recordcheck.LedgerFile)
+	if _, code, err := verifyDays(ctx, st, dir, []string{e.Day}, other, "", "2026-10-06", &out, func(context.Context) error { return stopped }); !errors.Is(err, stopped) || code != 2 {
+		t.Fatalf("a pause that ended with an error: exit %d %v", code, err)
+	}
+	if _, err := os.Stat(other); !os.IsNotExist(err) {
+		t.Fatalf("a day whose check was stopped was recorded: %v", err)
 	}
 }

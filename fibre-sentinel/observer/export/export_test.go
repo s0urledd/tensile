@@ -277,3 +277,75 @@ func TestBuilder_CarriesTheScannerState(t *testing.T) {
 		t.Fatalf("the manifest does not attest the state: %+v", man.State)
 	}
 }
+
+// An exports directory whose index.json is gone while older tarballs are
+// there is not given a new index that lists only the next day: the build
+// stops, says why and writes nothing, and goes on once the index is back.
+// A first build that stopped before its index leaves only its own tarball,
+// which the next build of that day replaces.
+func TestBuilder_RefusesANewIndexOverOlderExports(t *testing.T) {
+	data := t.TempDir()
+	dir := filepath.Join(data, "exports")
+	meas := filepath.Join(data, "measurements.jsonl")
+	body := line("started_at", "2026-09-10T10:00:00Z", "a") + line("started_at", "2026-09-11T10:00:00Z", "b") +
+		line("started_at", "2026-09-12T10:00:00Z", "c")
+	if err := os.WriteFile(meas, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := &Builder{DataDir: data, Dir: dir, Vantage: "v", Build: "x", Hour: 3}
+	for _, now := range []time.Time{time.Date(2026, 9, 11, 4, 0, 0, 0, time.UTC), time.Date(2026, 9, 12, 4, 0, 0, 0, time.UTC)} {
+		if built, err := b.Run(now); err != nil || len(built) != 1 {
+			t.Fatalf("%s: built %v, %v", now, built, err)
+		}
+	}
+	index := filepath.Join(dir, "index.json")
+	saved, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, _ := os.ReadFile(filepath.Join(dir, "state.json"))
+	if err := os.Remove(index); err != nil {
+		t.Fatal(err)
+	}
+	day3 := time.Date(2026, 9, 13, 4, 0, 0, 0, time.UTC)
+	built, err := b.Run(day3)
+	if err == nil || len(built) != 0 || !strings.Contains(err.Error(), "no index.json but holds 2 export tarball(s)") {
+		t.Fatalf("a build over a lost index: built %v, %v", built, err)
+	}
+	if _, err := os.Stat(index); !os.IsNotExist(err) {
+		t.Fatalf("a new index.json was written: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, b.name("2026-09-12"))); !os.IsNotExist(err) {
+		t.Fatalf("the day's tarball was written: %v", err)
+	}
+	if now, _ := os.ReadFile(filepath.Join(dir, "state.json")); string(now) != string(state) {
+		t.Fatal("state.json moved on")
+	}
+	if err := os.WriteFile(index, saved, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if built, err := b.Run(day3); err != nil || len(built) != 1 {
+		t.Fatalf("with the index back: built %v, %v", built, err)
+	}
+	entries, err := ReadIndex(dir)
+	if err != nil || len(entries) != 3 {
+		t.Fatalf("index lists %d export(s), %v", len(entries), err)
+	}
+
+	// A first build that stopped before its index: only its own tarball.
+	data2 := t.TempDir()
+	dir2 := filepath.Join(data2, "exports")
+	if err := os.WriteFile(filepath.Join(data2, "measurements.jsonl"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b2 := &Builder{DataDir: data2, Dir: dir2, Vantage: "v", Build: "x", Hour: 3}
+	if err := os.MkdirAll(dir2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir2, b2.name("2026-09-10")), []byte("partial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if built, err := b2.Run(time.Date(2026, 9, 11, 4, 0, 0, 0, time.UTC)); err != nil || len(built) != 1 {
+		t.Fatalf("a first build over its own leftover: built %v, %v", built, err)
+	}
+}

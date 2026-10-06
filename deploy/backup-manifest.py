@@ -45,16 +45,22 @@ restored index places the live file at the cut's base.
 
 A segment observer-archive -retire has retired has no file on the host:
 its bytes are proven to be in the daily exports, and index.json names
-the exports that hold them ("retired"). The cut lists it with that
-record and reads nothing of it from the disk. `verify` checks it by its
-file when the copy has one (the remote keeps every segment it was ever
-sent), and otherwise reads its bytes back from the copy's exports by the
-rule internal/record reads them by: each named tarball and its member of
-the file against the exports' index.json (sizes and SHA-256 digests),
-the members covering the segment's range in order without a gap, and
-the range's length, lines and SHA-256 against the segment. `cat` reads
-it the same way, and hands out no byte of it before all of it is
-proven; `snapshot` carries the exports it names.
+the exports that hold them ("retired"). retired.json beside it keeps a
+second copy of each such record, which is read when index.json lacks
+one: an observer-archive from before retirement rewrites index.json
+without the records it does not know, and never touches retired.json.
+The cut lists a retired segment with its record and reads nothing of it
+from the disk. `verify` checks it by its file when the copy has one, and
+otherwise reads its bytes back from the copy's exports by the rule
+internal/record reads them by: each named tarball and its member of the
+file against the exports' index.json (sizes and SHA-256 digests), the
+members covering the segment's range in order without a gap, and the
+range's length, lines and SHA-256 against the segment. A segment is
+retired only after a backup has copied its file, so the remote has every
+retired segment's file as well.
+`cat` reads a retired segment the same way, and hands out no byte of it
+before all of it is proven; `snapshot` carries the exports it names,
+and retired.json.
 
 Each other vantage's heartbeats, vantages/<name>/reachability.jsonl,
 are cut like the observer's own files; their archive is
@@ -107,6 +113,8 @@ CHUNK = 1 << 20
 ARCHIVE = "archive"
 VANTAGES = "vantages"
 EXPORTS_INDEX = "index.json"
+# beside an archive's index.json: the second copy of its retired records
+RETIRED = "retired.json"
 
 
 class RecordError(Exception):
@@ -244,11 +252,29 @@ def index_label(name):
 
 
 def archive_index(data_dir, name):
+    """One file's index.json, None for a file never archived. A segment it
+    lists without a "retired" record gets the one retired.json keeps for
+    the same segment (name, range and digest), as internal/record.LoadIndex
+    gives it: an older observer-archive drops the records from index.json
+    whenever it saves it, and never touches retired.json."""
+    d = archive_dir(data_dir, name)
     try:
-        with open(os.path.join(archive_dir(data_dir, name), "index.json")) as f:
-            return json.load(f)
+        with open(os.path.join(d, "index.json")) as f:
+            idx = json.load(f)
     except FileNotFoundError:
         return None
+    try:
+        with open(os.path.join(d, RETIRED)) as f:
+            kept = json.load(f).get("segments") or []
+    except FileNotFoundError:
+        kept = []
+    for s in idx.get("segments") or []:
+        if s.get("retired"):
+            continue
+        for k in kept:
+            if k.get("retired") and all(k.get(x) == s.get(x) for x in ("name", "from", "to", "sha256")):
+                s["retired"] = k["retired"]
+    return idx
 
 
 def live_base(data_dir, name, idx=None):
@@ -724,6 +750,10 @@ def copy_cut(data_dir, dest, m):
                         continue
                 shutil.copyfile(os.path.join(sdir, s["name"]), os.path.join(ddir, s["name"]))
             shutil.copyfile(os.path.join(sdir, "index.json"), os.path.join(ddir, "index.json"))
+            # the second copy of the retired records goes along: a reader of
+            # the copy whose index.json an older build rewrote finds them there
+            if os.path.exists(os.path.join(sdir, RETIRED)):
+                shutil.copyfile(os.path.join(sdir, RETIRED), os.path.join(ddir, RETIRED))
         src = os.path.join(data_dir, name)
         dst = os.path.join(dest, name)
         os.makedirs(os.path.dirname(dst), exist_ok=True)

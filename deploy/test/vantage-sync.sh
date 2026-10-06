@@ -16,6 +16,9 @@
 #             account
 #   one pull  a pull that finds another pull of the vantage running fetches
 #             nothing and passes; two at once append the new bytes once
+#   whole     only whole lines are appended: a line the vantage is still
+#             writing waits for the next pull, and a fetch the link cuts
+#             short appends the whole lines that arrived and fails
 #   failure   a vantage whose reachability.jsonl is missing, or a server
 #             that is down, fails the run and says so
 set -u
@@ -124,6 +127,29 @@ FAKE_BASE=11 FAKE_RCLONE_SLOW=2 run >/dev/null & p1=$!
 FAKE_BASE=11 FAKE_RCLONE_SLOW=2 run >/dev/null & p2=$!
 wait "$p1" && wait "$p2" && pass "two pulls at once pass" || fail "two pulls at once: one failed"
 same <(tail -c +12 "$rreach") "$lreach" && pass "two pulls at once append the new bytes once" || fail "two pulls at once: the local file is not the remote's bytes past the base ($(cat "$lreach"))"
+
+# the vantage is writing a line as it is read: only the whole lines are
+# appended, so the record never ends inside a line (which nothing here
+# would complete, and which observer-archive leaves unrotated), and the
+# next pull fetches the rest of that line, from the local logical end
+past() { tail -c +12 "$rreach" | head -c $(( $(wc -c <"$rreach") - 11 - $1 )); } # the remote's bytes past the base, but its last $1
+printf '{"beat":6}\n{"be' >>"$rreach"
+FAKE_BASE=11 run || fail "a pull of a line being written: exit $? ($(cat "$tmp/stderr"))"
+same <(past 4) "$lreach" && pass "a line being written is not appended" || fail "a line being written: the local file holds $(cat "$lreach")"
+printf 'at":7}\n' >>"$rreach"
+: >"$log"
+FAKE_BASE=11 run || fail "the pull after it: exit $? ($(cat "$tmp/stderr"))"
+same <(tail -c +12 "$rreach") "$lreach" && pass "the next pull appends the whole line" || fail "the next pull: the local file holds $(cat "$lreach")"
+test ! -e "$data/vantages/de-1/.pull.part" && pass "no fetched bytes are left beside it" || fail ".pull.part left behind"
+
+# the link breaks part-way: the whole lines that arrived are appended and
+# the run fails and says so; the next pull fetches the rest
+printf '{"beat":8}\n{"beat":9}\n' >>"$rreach"
+if FAKE_BASE=11 FAKE_RCLONE_CUT=15 run; then fail "a fetch cut short passed"; else pass "a fetch cut short fails the run"; fi
+grep -q "fetch failed" "$tmp/stderr" && pass "and says so" || fail "stderr: $(cat "$tmp/stderr")"
+same <(past 11) "$lreach" && pass "the whole line that arrived is appended, the cut one is not" || fail "a fetch cut short: the local file holds $(cat "$lreach")"
+FAKE_BASE=11 run || fail "the pull after a fetch cut short: exit $? ($(cat "$tmp/stderr"))"
+same <(tail -c +12 "$rreach") "$lreach" && pass "the next pull appends the rest" || fail "after a fetch cut short: the local file holds $(cat "$lreach")"
 
 # the server is down: the run fails and says so
 if FAKE_RCLONE_FAIL=lsf run; then fail "a failed fetch exited 0"; else pass "a failed fetch exits non-zero"; fi

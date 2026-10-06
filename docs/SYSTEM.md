@@ -139,14 +139,21 @@ for good (`internal/record`), and a line is held in up to five places:
 | archive segment | `archive/<file>/<seq>-<day>.jsonl.gz`, listed in `archive/<file>/index.json` (another vantage's under `vantages/<name>/archive/`) | `observer-archive`, daily | only by retirement, below |
 | daily export | `exports/<tensile-…-day>.tar.gz`, its `.sha256`, its entry in `exports/index.json` | the collector, once a UTC day | never |
 | store | `observer.db`: a row per publication, reading, endpoint check and payment, from which the line is written back byte for byte (the slim record, section 5) | the collector | never (section 12) |
-| remote backup | `BACKUP_REMOTE/<network>/`: live files, segments, exports | `fibre-backup`, nightly `rclone copy` | never: copy does not delete |
+| remote backup | `BACKUP_REMOTE/<network>/`: live files, segments, exports; every segment's file (a segment is retired only after a backup has copied it) | `fibre-backup`, nightly `rclone copy` | never: copy does not delete |
 
 The segments hold logical bytes `[0, base)` in order and the live file
 `[base, …)`; a file's member in consecutive exports holds consecutive
 ranges `[source_from, source_to)` of it. observer-archive rotates the
 files the store keeps line by line (measurements, reachability and the
 other vantages' heartbeats, publications, payments) and sampling
-decisions, which it does not.
+decisions, which it does not. Publications and payments are rotated only
+once the newest scanner start in `runs.jsonl` says it follows a rotation
+(`follows_rotation`): a scanner of an older build, not restarted since an
+upgrade, would append into the file a rotation replaced. A live file that
+ends inside a line at the swap is left for the night, not a failure (its
+writer's restart, or `vantage-pull`'s next pull, which appends whole lines
+only, finishes or cuts the line), and a run that fails takes back its
+segment, which keeps a temp name until the index naming it is saved.
 
 **Retiring a local copy.** `observer-archive -retire -db observer.db`, the
 second step of `fibre-archive@`, removes an archived segment's gzip file,
@@ -163,15 +170,34 @@ and nothing else, when every byte of it is proven in three other places:
 3. on the remote backup: `exports/remote.jsonl` holds an `"ok": true` line
    for the tarball's current digest, which `fibre-backup` writes after
    reading the remote copy back whole and hashing it (the archive unit has
-   no network; the newest line per tarball counts).
+   no network; the newest line per tarball counts). The line names the
+   remote it read by a fingerprint (the first 16 hex digits of the SHA-256
+   of the destination), and it counts only while `fibre-backup`'s last
+   finished copy, recorded in `exports/remote-copy.json`, went to that
+   remote within `-remote-max-age` (48 h): a tarball is proven once, so a
+   remote lost or replaced since shows only as copies that stop finishing
+   or go elsewhere;
+4. itself on the remote: the segment was archived before that last copy
+   finished, so the copy took its file (the backup copies the archive first,
+   under the archive lock). A segment archived since waits a night: every
+   retired segment's file is then on the remote, and a build from before
+   retirement can have it copied back.
 
 `record.Retire` then, under the file's archive lock, reads the segment back
 from those exports once more and requires its length, lines and SHA-256,
-saves the index with the segment's `retired` record (the exports, the
-member name, the exports directory relative to the archive directory, the
-proof in words), and only then removes the file and syncs the directory.
+saves the segment's `retired` record (the exports, the member name, the
+exports directory relative to the archive directory, the proof in words)
+first in `archive/<file>/retired.json` and then in the index, and only then
+removes the file and syncs the directory. `retired.json` is the copy an
+older build never touches: one from before retirement rewrites the index
+without the field it does not know, and `record.LoadIndex` takes a missing
+record from `retired.json` (the next save puts it back in the index).
 Anything not proven is kept, with the reason in the run's output and in
-`archive/retire-report.json`.
+`archive/retire-report.json`. What keeps a segment is looked for first
+where nothing is read (the remote's lines, the ledger's answers, the last
+copy's age), so a segment that cannot go yet costs no tarball read; only
+one that would go has its exports digested and, for a day the ledger does
+not hold, checked against the store, at most `-check-days` (3) days a run.
 
 Never retired: the live files; the files the store does not keep line by
 line (`registry`, `runs`, `sampling-secrets`, `sampling_decisions`,
@@ -181,6 +207,29 @@ the store, since a retired range is read back from the exports. A day the
 store does not give back whole (a sampled-out publication's NOT_PROBED rows,
 which it keeps as one decision; a repeated key, of which it keeps the first
 line) keeps its segments until a later check finds the day reproducible.
+
+**Pacing.** Both steps of `fibre-archive@` read and write on the disk the
+validator shares, where the `none` I/O scheduler leaves the unit's
+`IOSchedulingClass=idle` without effect, so they pace themselves
+(`internal/pace`). At points where they hold nothing others wait on
+(before each file archived; before each export read, before each member
+and every 10,000 lines of a day checked against the store, and before
+each segment retired) a run reads `/proc/pressure/io` and waits while
+`some avg10` is above 6 or `full avg10` above 4, until `some avg10` has
+stayed below 2 for 20 s, reading it every 5 s and at most 30 min per pause,
+after which it goes on and says so (`-pace-some`, `-pace-full`,
+`-pace-calm`, `-pace-calm-for`, `-pace-max-wait`; `-pace-some 0` turns it
+off). It never waits inside `record.Archive`, which holds the archive lock
+and, at its swap, the live file's exclusive `flock` that every writer of
+the file waits on, nor inside `record.Retire`, whose read back from the
+exports holds the archive lock the backup waits on. The store check holds
+no read transaction between two lookups, so a pause there costs time, not
+consistency; a tarball rebuilt during it is caught by the check's digest of
+the stream. Each pause is logged (`pace|`) with the pressure that started
+it and how it ended. `record-verify` pauses its day checks the same way,
+so the ledger can be filled by hand on the live host. The timer is not
+`Persistent`: a run missed while the host was down waits for the next
+04:40 rather than start at boot, when the validator catches up.
 
 **Reading a retired range.** A segment whose file is there is read from the
 file, retired or not (a crash between saving the index and removing the
@@ -198,11 +247,14 @@ it unchanged: a rebuild from zero (the collector's ingest from offset 0),
 (`verify`, `cat`, `snapshot`, which carries the exports a retired segment
 names), and the schema rollback's collector reading on from its cursors. A
 build from before retirement does not know the `retired` record and stops
-at the missing file; going back to one needs the segment files back from
-the remote backup first, unless its cursors are past every retired range,
-and the `fibre-archive@` timer off for as long as the older build runs,
-since the retirement removes a retired segment's file again wherever it
-finds one (`deploy/README.md`, "Going back past schema 27"). The export
+at the missing file. A segment is retired only once a nightly backup has
+copied its file to the remote, so going back to such a build starts by
+copying the retired segments' files back from the remote; it then reads
+every range from its files, from any cursor. Its `observer-archive`
+must not run while it is installed (`fibre-archive@` timer off): it would
+save `index.json` without the `retired` records, which this build then
+reads from `retired.json` and the older one's readers stop at
+(`deploy/README.md`, "Going back past schema 27"). The export
 builder reads only bytes not yet exported, which are never retired, and the scanner and
 the prober read nothing retired at start: the live files, and the whole of
 `sampling_decisions.jsonl`, which is never retired.
@@ -782,9 +834,13 @@ vantage's heartbeats, every minute) and `fibre-healthwatch@` (polls
 **The nightly order** (UTC). 03:00: the collector builds the previous day's
 export (`-export-hour`). 03:17 plus up to 20 minutes (by about 03:36):
 `fibre-backup` takes the manifest's cut, copies segments, then the live
-files and the exports, then reads back from the remote each export not yet
-proven and appends the result to `exports/remote.jsonl`. 04:40:
-`fibre-archive` rotates, then retires what the three proofs of section 4 cover.
+files and the exports, records the finished copy in
+`exports/remote-copy.json`, then reads back from the remote each export not
+yet proven on it and appends the result to `exports/remote.jsonl`. 04:40:
+`fibre-archive` rotates, then retires what the three proofs of section 4 cover,
+pausing between files, days and segments while the disk is busy (section 4,
+"Pacing"). `fibre-healthwatch` reports either unit when its last run
+failed, which `/v1/health` cannot see.
 The backup holds every archive lock shared from its cut to its last check
 and a run holds a file's lock exclusively, so the two never overlap; an
 export proven a night late retires its segments a night late.
@@ -997,6 +1053,9 @@ Stated here because they are properties of the machine, not of any validator.
 | a validator is often counted neither way | the status `reads` block: `requests_not_started_last_hour`, `admit_wait_p95_ms` and the reading-rate ceiling's part of it (`rate_wait_p95_ms`), the `retries_*` counts and `retries_not_made_by_validator_last_hour`; `observer_load` on its rows |
 | the build says `-dirty` | an untracked file in the working tree at build time |
 | a segment is not retired | its reason in `archive/retire-report.json`; the day in `exports/verified.json` (the store's answer) and in `exports/remote.jsonl` (the remote's) |
-| `fibre-archive@` fails with `remote.jsonl line N` | a complete line in `exports/remote.jsonl` that is not a check, which `fibre-backup` never writes (it drops a torn last line before appending): a hand edit. Delete that line; an export whose newest line is then not a proof is read back again the next night |
-| a read of the whole record stops at a segment | its file is gone and `index.json` names no exports for it: it was moved by hand, not retired; put it back (the remote backup keeps every segment it was sent) |
+| nothing is retired, every segment kept for the backup's last copy | `exports/remote-copy.json` is missing, names another remote than the proofs, or is older than `-remote-max-age`: `fibre-backup@` has not finished a copy lately (`journalctl -u fibre-backup@<network>`; healthwatch reports the failed unit) |
+| `fibre-archive@` fails with `remote.jsonl line N` | a complete line in `exports/remote.jsonl` that is not a check, which `fibre-backup` never writes (it drops a torn last line, NUL bytes included, before appending): a hand edit. Delete that line; an export whose newest line is then not a proof is read back again the next night |
+| the archive run does not rotate a file | `ends inside a line`: its writer has not finished or cut the line yet (a writer that died mid-line and is still down; a pull a crash cut off, until the next pull); `left as it is: ... restart fibre-scan`: the newest scanner start in `runs.jsonl` is of a build that does not follow a rotation |
+| a read of the whole record stops at a segment | its file is gone and neither `index.json` nor `retired.json` beside it names exports for it. An older `observer-archive` rewrites `index.json` without the `retired` records, and this build reads them from `retired.json`; with neither, the file was moved by hand: put it back. The remote backup has a segment's file only if a backup ran while it existed |
+| the export stops with `has no index.json but holds N export tarball(s)` | `exports/index.json` was lost: put the last good one back from the remote (`deploy/README.md`, Runbook) rather than let a new one list a single day |
 | the API refuses to start | schema older or newer than the binary; run the collector once |

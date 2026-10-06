@@ -12,10 +12,11 @@
 # rclone supports. The files are append-only, so a nightly sync moves only
 # what was added since yesterday.
 #
-# After the copy, each daily export not yet proven on the remote is read
-# back from it and hashed (the remote proof, at the end): observer-archive
-# -retire removes a local segment only once the exports holding its bytes
-# are proven there.
+# A copy that finishes is recorded (exports/remote-copy.json), and each
+# daily export not yet proven on the remote is then read back from it and
+# hashed (the remote proof, at the end): observer-archive -retire removes a
+# local segment only once the exports holding its bytes are proven on the
+# remote the backup copies to, and only while its copies go on finishing.
 #
 # Never copied: the sampling master key. It is what makes the published
 # sample commitments checkable and unpredictable, and a copy that leaves the
@@ -43,8 +44,27 @@ command -v "$rclone" >/dev/null || { echo "fibre-backup: rclone is not installed
 dest="$remote/$instance"
 # The remote itself is never printed: one given whole on the command line
 # (":s3,access_key_id=...,secret_access_key=...:bucket") carries its
-# credentials in the string, and this output goes to the journal.
+# credentials in the string, and this output goes to the journal. This
+# script's own lines name it BACKUP_REMOTE, and rclone's messages from the
+# copies below, which can name it as given (a remote it cannot set up),
+# have it replaced with BACKUP_REMOTE (quiet_remote). rclone's command line
+# still holds it while rclone runs, for anyone on the host to read in the
+# process list: a named remote in rclone.conf (RCLONE_CONFIG) keeps
+# credentials out of both.
 echo "fibre-backup[$instance]: $data -> BACKUP_REMOTE/$instance"
+# The remote's fingerprint: the first 16 hex digits of the SHA-256 of the
+# destination, which names it in exports/remote.jsonl and
+# exports/remote-copy.json without its credentials. A proof read from
+# another remote is not a proof of this one.
+fp=$(printf '%s' "$dest" | sha256sum | cut -c1-16)
+
+# quiet_remote <command...>: the command, with its stderr passed on and
+# every occurrence of the remote in it replaced with BACKUP_REMOTE; stdout
+# untouched, and the command's exit status (pipefail) as its own.
+quiet_remote() {
+  { "$@" 2>&1 1>&3 3>&- | R="$remote" awk 'BEGIN { r = ENVIRON["R"]; n = length(r) }
+      { s = $0; out = ""; while (n > 0 && (i = index(s, r)) > 0) { out = out substr(s, 1, i - 1) "BACKUP_REMOTE"; s = substr(s, i + n) } print out s; fflush() }' >&2; } 3>&1
+}
 # observer-archive rotates the biggest files daily: their older lines move
 # into archive/<file>/*.jsonl.gz and the live file keeps the rest. It holds
 # archive/.lock exclusively while it does; the cut and the copy below hold
@@ -91,18 +111,22 @@ fi
 # observer's own): a rotated live file is shorter than the copy the remote
 # holds and replaces it there, so the segments holding its older lines must
 # be on the remote before it is. Segments never change once written; copy
-# uploads each once. A segment retired since (observer-archive -retire)
-# keeps its copy on the remote, since nothing here deletes.
-"$rclone" copy "$data/archive" "$dest/archive" \
-  --include '*.jsonl.gz' --include 'index.json' \
+# uploads each once, with index.json and retired.json (the second copy of
+# the retired records, which an older observer-archive drops from the
+# index). A segment retired since (observer-archive -retire) keeps its copy
+# on the remote if it was ever sent, since nothing here deletes; one
+# archived and retired in the same night never was, and its lines are on
+# the remote in the exports alone.
+quiet_remote "$rclone" copy "$data/archive" "$dest/archive" \
+  --include '*.jsonl.gz' --include 'index.json' --include 'retired.json' \
   --transfers 4 --checkers 8 --stats-one-line --stats 0 --log-level NOTICE
 for a in "$data"/vantages/*/archive; do
   [ -d "$a" ] || continue
-  "$rclone" copy "$a" "$dest/${a#"$data"/}" \
-    --include '*.jsonl.gz' --include 'index.json' \
+  quiet_remote "$rclone" copy "$a" "$dest/${a#"$data"/}" \
+    --include '*.jsonl.gz' --include 'index.json' --include 'retired.json' \
     --transfers 4 --checkers 8 --stats-one-line --stats 0 --log-level NOTICE
 done
-"$rclone" copy "$data" "$dest" \
+quiet_remote "$rclone" copy "$data" "$dest" \
   --include '*.jsonl' --include 'state.json' --include 'backup-manifest.json' --include 'exports/**' \
   --exclude 'sampling-master.key' --exclude 'observer.db*' --exclude 'snapshots/**' \
   --local-no-check-updated \
@@ -116,7 +140,20 @@ snap="$(mktemp -d)"
 trap 'rm -rf "$snap"' EXIT
 if [ -d "$data/status" ]; then
   cp -p "$data"/status/* "$snap/" 2>/dev/null || true
-  "$rclone" copy "$snap" "$dest/status" --transfers 4 --stats-one-line --stats 0 --log-level NOTICE
+  quiet_remote "$rclone" copy "$snap" "$dest/status" --transfers 4 --stats-one-line --stats 0 --log-level NOTICE
+fi
+
+# The copy finished: every export on this host is on the remote now, since
+# rclone copy uploads whatever the remote lacks (a run that failed above
+# stopped there, errexit). observer-archive -retire counts the remote
+# proofs below only while this record is recent and names the remote they
+# were read from: a proof is taken once per tarball, and a remote that died,
+# lost its credentials or was replaced since shows here as a copy that no
+# longer finishes, or one to another remote. Written beside and renamed
+# over, so it is always one whole record.
+if [ -d "$data/exports" ]; then
+  printf '{"copied_at":"%s","remote":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$fp" >"$data/exports/remote-copy.json.tmp"
+  mv -f "$data/exports/remote-copy.json.tmp" "$data/exports/remote-copy.json"
 fi
 
 # The remote proof. observer-archive -retire removes a local segment's file
@@ -126,10 +163,12 @@ fi
 # tarball not yet proven is read back from the remote whole (rclone cat),
 # hashed, and compared with its .sha256 sidecar. Each check is one JSON line
 # appended to exports/remote.jsonl in one write, never rewritten:
-# {"name", "sha256" (the local digest checked against), "checked_at", "ok"}.
-# The newest line for a name is the one that counts, so a tarball rebuilt
-# under a new digest, or one whose last check failed, is read again the
-# next night, and one proven is not read again.
+# {"name", "sha256" (the local digest checked against), "checked_at", "ok",
+# "remote" (the fingerprint of the remote read)}. The newest line for a
+# name is the one that counts, so a tarball rebuilt under a new digest, one
+# whose last check failed, or one last proven on another remote (a new
+# BACKUP_REMOTE) is read again the next night, and one proven on this
+# remote is not read again.
 #
 # A failed check is a line with "ok": false, not a failed run: the unit's
 # status is the copy's, and a tarball not proven only keeps the segments it
@@ -141,12 +180,15 @@ fi
 # closed with a newline it would be a complete line that is not a check,
 # which observer-archive refuses rather than skip, and the retirement would
 # stop every night until someone edited the file. So those bytes are cut
-# off before anything is appended; no complete line is ever touched.
+# off before anything is appended; no complete line is ever touched. The
+# last byte is read as a number: a crash can leave the end of an append as
+# NUL bytes (the size reached the disk, the data did not), and a NUL read
+# through $(...) is dropped, which would make that line look whole.
 prove_remote() {
   local ledger="$data/exports/remote.jsonl" t name want got ok last line torn checked=0 proven=0
-  if [ -s "$ledger" ] && [ -n "$(tail -c 1 "$ledger")" ]; then
-    # tail -n 1 prints the unterminated last line alone: its length is the
-    # torn bytes'.
+  if [ -s "$ledger" ] && [ "$(tail -c 1 "$ledger" | od -An -tx1 | tr -d ' \n')" != 0a ]; then
+    # tail -n 1 prints the unterminated last line alone, NUL bytes and
+    # all: its length is the torn bytes'.
     torn=$(tail -n 1 "$ledger" | wc -c)
     if truncate -s "$(( $(wc -c <"$ledger") - torn ))" "$ledger"; then
       echo "fibre-backup[$instance]: remote proof: dropped a torn last line ($((torn)) bytes) from exports/remote.jsonl" >&2
@@ -169,9 +211,11 @@ prove_remote() {
       ''|*[!0-9a-f]*) echo "fibre-backup[$instance]: remote proof: $name has no readable .sha256 beside it; not checked" >&2; continue ;;
     esac
     [ "${#want}" = 64 ] || { echo "fibre-backup[$instance]: remote proof: $name.sha256 holds no SHA-256; not checked" >&2; continue; }
-    last=$(grep -F "\"name\":\"$name\"" "$ledger" 2>/dev/null | tail -n 1 || true)
+    # -a: a line grep took for binary would come back as grep's own message,
+    # or as nothing, and the export would be read back every night.
+    last=$(grep -aF "\"name\":\"$name\"" "$ledger" 2>/dev/null | tail -n 1 || true)
     case $last in
-      *"\"sha256\":\"$want\""*'"ok":true'*) continue ;;
+      *"\"sha256\":\"$want\""*'"ok":true'*"\"remote\":\"$fp\""*) continue ;;
     esac
     if got=$("$rclone" cat "$dest/exports/$name" 2>/dev/null | sha256sum); then
       got=${got%% *}
@@ -180,7 +224,7 @@ prove_remote() {
     fi
     ok=false
     [ "$got" = "$want" ] && ok=true
-    line=$(printf '{"name":"%s","sha256":"%s","checked_at":"%s","ok":%s}' "$name" "$want" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ok")
+    line=$(printf '{"name":"%s","sha256":"%s","checked_at":"%s","ok":%s,"remote":"%s"}' "$name" "$want" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ok" "$fp")
     # One write. One that fails part-way leaves a torn line, which the next
     # run drops (above); this run stops here.
     printf '%s\n' "$line" >>"$ledger" || { echo "fibre-backup[$instance]: remote proof: cannot append to exports/remote.jsonl" >&2; return 1; }

@@ -19,18 +19,42 @@ package main
 //     first (recordcheck.CheckDay, against the store opened read-only) and
 //     recorded;
 //  3. exports/remote.jsonl, where deploy/backup.sh records each tarball it
-//     read back from the remote, says the remote copy has the same digest;
+//     read back from the remote, says the remote copy has the same digest,
+//     read back from the remote the backup copies to now, and the backup's
+//     last copy finished recently (exports/remote-copy.json): a proof is
+//     taken once per tarball, and a remote lost, emptied or replaced since
+//     shows as a backup that no longer finishes, or as one that copies to
+//     another remote;
+//  4. the segment was archived before that copy finished, so the copy took
+//     its file (the backup copies the archive first, under the archive
+//     lock): every retired segment's file is on the remote, and a build
+//     from before retirement can have it copied back. A segment archived
+//     since waits a night;
 //
-// and then, each tarball digested again just before and found to be still
-// the bytes all of that was about, record.Retire reads the segment back
-// from those exports and requires its exact bytes before the file goes.
-// Anything not proven is kept, and the run says why; a second run retires
-// nothing new and gives the same reasons. Files the store does not keep
-// line by line (of those archived, the sampling decisions) are never
-// retired.
+// and then, each tarball still listed in index.json with the digest all of
+// that was about, record.Retire reads the segment back from those exports
+// and requires its exact bytes before the file goes. Anything not proven
+// is kept, and the run says why; a second run retires nothing new and
+// gives the same reasons. Files the store does not keep line by line (of
+// those archived, the sampling decisions) are never retired.
+//
+// What keeps a segment is found before anything is read: a day the remote
+// has not proven, or one the ledger already says the store does not give
+// back, keeps it without a tarball read. Only a segment that would go has
+// its exports digested and, for a day the ledger does not hold yet,
+// checked against the store, and a run checks at most -check-days days,
+// so a backlog (the first run, which finds the ledger empty) is spread
+// over several nights.
 //
 // The run needs no network, and the archive unit has none: what the remote
 // holds is what backup.sh, which runs earlier, read back and recorded.
+//
+// Its reads are paced (internal/pace): before each export it reads (its
+// digest, and the store check of a day the ledger does not hold), inside
+// that check where it holds nothing (recordcheck.Pause), and before each
+// segment's record.Retire, the run waits while the disk it shares with the
+// validator is busy. It never waits inside record.Retire, whose read back
+// holds archive/.lock.
 
 import (
 	"bytes"
@@ -45,6 +69,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/pace"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/export"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/recordcheck"
@@ -53,10 +78,29 @@ import (
 
 // RemoteFile, in the exports directory, is where deploy/backup.sh records
 // each export tarball it read back from the remote backup: one JSON line
-// per check, {"name","sha256","checked_at","ok"}, appended. The newest line
-// for a name is the one that counts, so a later check that failed takes
-// back an earlier one that passed.
+// per check, {"name","sha256","checked_at","ok","remote"}, appended,
+// "remote" being the fingerprint of the destination it read from (as in
+// RemoteCopyFile). The newest line for a name is the one that counts, so a
+// later check that failed takes back an earlier one that passed.
 const RemoteFile = "remote.jsonl"
+
+// RemoteCopyFile, in the exports directory, is where deploy/backup.sh
+// records its last copy that finished: {"copied_at","remote"}, "remote"
+// the first 16 hex digits of the SHA-256 of the rclone destination it
+// copied to (never the destination, which can carry credentials). A copy
+// that finished left the remote holding every export the host has, since
+// rclone copy uploads whatever the remote lacks.
+const RemoteCopyFile = "remote-copy.json"
+
+// DefaultRemoteMaxAge is how long ago the backup's last copy may have
+// finished for its remote proofs to count: one night's failed backup is
+// waited out, two are not.
+const DefaultRemoteMaxAge = 48 * time.Hour
+
+// DefaultCheckDays is how many export days one run checks against the
+// store at most. A night needs one or two; the rest of a backlog waits for
+// the next nights rather than keep the disk busy for hours at once.
+const DefaultCheckDays = 3
 
 // ReportFile, under <data-dir>/archive/, is what the last -retire run did.
 const ReportFile = "retire-report.json"
@@ -67,10 +111,10 @@ const ReportFile = "retire-report.json"
 // decides is tested there too.
 var retireSegment = record.Retire
 
-// checkDay checks a day's export against the store. It is
-// recordcheck.CheckDay; a test puts a stand-in here that rebuilds the
-// tarball while it is checked.
-var checkDay = recordcheck.CheckDay
+// checkDay checks a day's export against the store, pausing where pause
+// says. It is recordcheck.CheckDayPaced; a test puts a stand-in here that
+// rebuilds the tarball while it is checked.
+var checkDay = recordcheck.CheckDayPaced
 
 // Report is one -retire run, file by file, as printed and as written to
 // ReportFile.
@@ -131,6 +175,13 @@ type retirer struct {
 	build                   string
 	// retire removes a segment's file (retireSegment).
 	retire func(path, segment string, r record.Retired) error
+	// pace holds the run while the disk is busy (nil: never).
+	pace *pace.Pacer
+	// remoteMaxAge is how old the backup's last finished copy may be (0:
+	// any age); checkMax how many days the run checks against the store at
+	// most (0: no limit).
+	remoteMaxAge time.Duration
+	checkMax     int
 
 	ctx     context.Context
 	st      *store.Store
@@ -138,8 +189,11 @@ type retirer struct {
 	index   []export.Entry
 	ledger  recordcheck.Ledger
 	remote  map[string]remoteCheck
+	copied  *remoteCopy
+	stale   string // why no remote proof counts this run; empty when they do
 	proofs  map[string]*exportProof
 	checked []string
+	checks  int
 }
 
 // run retires what is proven, prints what it did and, unless -dry-run,
@@ -166,10 +220,11 @@ func (r *retirer) run(specs []FileSpec, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// retireAll reads the exports' index, the ledger and the remote checks
-// once, then goes through specs. The error is one that leaves nothing to
-// decide on: an index or a ledger or remote.jsonl that cannot be read. An
-// error about one file is in its report, and the run goes on to the next.
+// retireAll reads the exports' index, the ledger, the remote checks and the
+// backup's last copy once, then goes through specs. The error is one that
+// leaves nothing to decide on: an index or a ledger or remote.jsonl or
+// remote-copy.json that cannot be read. An error about one file is in its
+// report, and the run goes on to the next.
 func (r *retirer) retireAll(specs []FileSpec) (*Report, error) {
 	if r.ctx == nil {
 		r.ctx = context.Background()
@@ -190,8 +245,12 @@ func (r *retirer) retireAll(specs []FileSpec) (*Report, error) {
 	if r.remote, err = readRemote(filepath.Join(r.expDir, RemoteFile)); err != nil {
 		return nil, err
 	}
+	if r.copied, err = readRemoteCopy(filepath.Join(r.expDir, RemoteCopyFile)); err != nil {
+		return nil, err
+	}
+	r.stale = r.remoteStale()
 	r.proofs = map[string]*exportProof{}
-	r.checked = nil
+	r.checked, r.checks = nil, 0
 	rep := &Report{At: r.now, DryRun: r.dry, ExportsDir: r.expDir, Files: []FileReport{}}
 	for _, f := range specs {
 		fr := r.file(f)
@@ -262,8 +321,10 @@ func (r *retirer) file(f FileSpec) FileReport {
 			// Retire saves the index before it removes the file, so a run
 			// that stopped in between left both. Finishing it reads the
 			// exports back again first; what else was proven was proven
-			// before the index was saved.
-			r.apply(&fr, path, sg, *sg.Retired, keep)
+			// before the index was saved. A dry run reads nothing here.
+			if r.dry || r.paced(&fr, f.Name, sg, keep) {
+				r.apply(&fr, path, sg, *sg.Retired, keep)
+			}
 		case !present:
 			why := "its file is missing and it was never retired: nothing proves its bytes are anywhere else"
 			fr.Errors = append(fr.Errors, sg.Name+": "+why)
@@ -278,7 +339,10 @@ func (r *retirer) file(f FileSpec) FileReport {
 				keep(sg, "not checked: "+err.Error())
 			case len(reasons) > 0:
 				keep(sg, strings.Join(reasons, "; "))
-			default:
+			case r.paced(&fr, f.Name, sg, keep):
+				// Paced before the index is read again, not between that and
+				// record.Retire, which unchanged needs as close together as
+				// they can be.
 				why, err := r.unchanged(ret.Exports)
 				switch {
 				case err != nil:
@@ -293,6 +357,21 @@ func (r *retirer) file(f FileSpec) FileReport {
 		}
 	}
 	return fr
+}
+
+// paced waits while the disk is busy before the read that retiring sg ends
+// with: record.Retire's read back of the segment from the exports. It
+// waits here, and never inside record.Retire, which reads the exports back
+// holding archive/.lock: the nightly backup waits on that lock, and a
+// pause under it would hold the backup back too. It says whether to go on;
+// a wait ends early only when the run's context does, and sg is then kept.
+func (r *retirer) paced(fr *FileReport, name string, sg record.Segment, keep func(record.Segment, string)) bool {
+	if err := r.pace.Wait(r.ctx, "retiring "+name+" "+sg.Name); err != nil {
+		fr.Errors = append(fr.Errors, sg.Name+": "+err.Error())
+		keep(sg, "not retired: "+err.Error())
+		return false
+	}
+	return true
 }
 
 // apply removes sg's file (record.Retire), or with -dry-run only counts it.
@@ -317,12 +396,53 @@ func (r *retirer) apply(fr *FileReport, path string, sg record.Segment, ret reco
 // returns the Retired to give sg. The error is one that stopped the
 // proving itself: the store could not be opened or read, a tarball could
 // not be read.
+//
+// What keeps sg is looked for first in what the run already holds: the
+// remote's checks of the bytes index.json lists, and the ledger's answers
+// about them. A keep needs no proof about the bytes, only a removal does,
+// so a segment that cannot go yet (a day not on the remote, one the store
+// does not give back, a backup that has not finished lately) costs no
+// tarball read on any of the nights it stays. Only then are its tarballs
+// digested and, for a day the ledger does not hold, checked against the
+// store.
 func (r *retirer) plan(member, path string, sg record.Segment) (record.Retired, []string, error) {
 	parts, why := cover(r.index, member, sg.From, sg.To)
 	if why != "" {
 		return record.Retired{}, []string{why}, nil
 	}
-	var reasons, names, stored, remote []string
+	if r.stale != "" {
+		return record.Retired{}, []string{r.stale}, nil
+	}
+	var reasons []string
+	for _, e := range parts {
+		if why := r.onRemote(e, e.SHA256, "index.json lists"); why != "" {
+			reasons = append(reasons, why)
+			continue
+		}
+		if d, ok := r.ledger.Holds(e.Name, e.SHA256); ok {
+			if why := memberWhy(e, d, member); why != "" {
+				reasons = append(reasons, why)
+			}
+		}
+	}
+	if len(reasons) > 0 {
+		return record.Retired{}, reasons, nil
+	}
+	// The segment's own file must be on the remote first. The backup copies
+	// the archive before anything else and holds the archive lock shared
+	// while it does, so a segment archived before its last copy finished was
+	// in that copy. One archived since waits a night: then every retired
+	// segment's file is on the remote, and a build from before retirement,
+	// or a rollback to one, can have it copied back.
+	if c := r.copied; c == nil || !sg.ArchivedAt.Before(c.CopiedAt) {
+		at := "never"
+		if c != nil {
+			at = c.CopiedAt.UTC().Format(time.RFC3339)
+		}
+		return record.Retired{}, []string{fmt.Sprintf("archived at %s, after the backup's last finished copy (%s): the segment's file is not on the remote yet",
+			sg.ArchivedAt.UTC().Format(time.RFC3339), at)}, nil
+	}
+	var names, stored, remote []string
 	for _, e := range parts {
 		names = append(names, e.Name)
 		p, err := r.proof(e)
@@ -333,7 +453,7 @@ func (r *retirer) plan(member, path string, sg record.Segment) (record.Retired, 
 			reasons = append(reasons, why)
 			continue
 		}
-		if why := r.onRemote(p); why != "" {
+		if why := r.onRemote(p.e, p.sum, "the tarball now is"); why != "" {
 			reasons = append(reasons, why)
 			continue
 		}
@@ -439,12 +559,18 @@ func (p *exportProof) member(name string) string {
 	if p.why != "" {
 		return p.why
 	}
-	m, ok := p.day.Files[name]
+	return memberWhy(p.e, *p.day, name)
+}
+
+// memberWhy is why the store check d of export e does not show its member
+// name reproducible; empty when it does.
+func memberWhy(e export.Entry, d recordcheck.LedgerDay, name string) string {
+	m, ok := d.Files[name]
 	switch {
 	case !ok:
-		return fmt.Sprintf("%s %s: the store check of the export does not name it", p.e.Day, name)
+		return fmt.Sprintf("%s %s: the store check of the export does not name it", e.Day, name)
 	case !m.Reproducible:
-		return fmt.Sprintf("%s %s: %s, not reproducible from the store", p.e.Day, name, m.Why)
+		return fmt.Sprintf("%s %s: %s, not reproducible from the store", e.Day, name, m.Why)
 	}
 	return ""
 }
@@ -459,6 +585,19 @@ func (r *retirer) proof(e export.Entry) (*exportProof, error) {
 		return p, nil
 	}
 	p := &exportProof{e: e}
+	if _, held := r.ledger.Holds(e.Name, e.SHA256); !held && r.spent() {
+		// The day would be checked against the store below, and this run
+		// has checked as many as it may: not even its digest is read.
+		p.why = r.notChecked(e)
+		r.proofs[e.Name] = p
+		return p, nil
+	}
+	// Between days: the tarball is read whole below and, when the ledger
+	// does not hold it, again against the store, which also stops where
+	// it holds nothing (recordcheck.Pause).
+	if err := r.pace.Wait(r.ctx, "reading the "+e.Day+" export"); err != nil {
+		return nil, err
+	}
 	sum, n, err := recordcheck.DigestFile(filepath.Join(r.expDir, e.Name))
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -478,13 +617,21 @@ func (r *retirer) proof(e export.Entry) (*exportProof, error) {
 		r.proofs[e.Name] = p
 		return p, nil
 	}
+	if r.spent() {
+		p.why = r.notChecked(e)
+		r.proofs[e.Name] = p
+		return p, nil
+	}
 	if r.st == nil && r.stErr == nil {
 		r.st, r.stErr = store.OpenReadOnly(r.dbPath)
 	}
 	if r.stErr != nil {
 		return nil, fmt.Errorf("%s is not in the ledger and the store could not be opened to check it: %w", e.Name, r.stErr)
 	}
-	rep, err := checkDay(r.ctx, r.st, r.expDir, e)
+	r.checks++
+	rep, err := checkDay(r.ctx, r.st, r.expDir, e, func(ctx context.Context) error {
+		return r.pace.Wait(ctx, "checking the "+e.Day+" export against the store")
+	})
 	if err != nil {
 		return nil, fmt.Errorf("checking %s against the store: %w", e.Name, err)
 	}
@@ -539,27 +686,49 @@ func (r *retirer) proof(e export.Entry) (*exportProof, error) {
 	return p, nil
 }
 
-// unchanged is why the tarballs named are no longer the bytes this run
-// proved them as (exportProof.sum); empty when each still is. A proof is
-// taken once per run, and a run that checks days against the store can
-// take hours: a tarball rebuilt in that time, with its sidecar and index
-// entry, which is all record.Retire reads it back by, would otherwise have
-// a segment removed on bytes that neither the ledger nor the remote check
-// was about. Each is digested again here, just before record.Retire, which
-// leaves only the moments between the two; record.Retire takes no digest
-// to hold the tarball to, which is what closing those would need. A
-// tarball found changed proves nothing for the rest of the run.
+// spent reports whether the run has checked as many days against the
+// store as -check-days allows.
+func (r *retirer) spent() bool { return r.checkMax > 0 && r.checks >= r.checkMax }
+
+// notChecked is why export e proves nothing this run: its day is not in
+// the ledger, and the run has used its checks.
+func (r *retirer) notChecked(e export.Entry) string {
+	return fmt.Sprintf("%s not checked against the store yet: this run checked the %d day(s) -check-days allows, and a later run checks it", e.Day, r.checkMax)
+}
+
+// unchanged is why the tarballs named are no longer the ones this run
+// proved (exportProof.sum); empty when each still is. A proof is taken once
+// per run, and a run that checks days against the store can take hours: a
+// tarball rebuilt in that time (the builder writes the tarball, its sidecar
+// and its entry in index.json) would otherwise have a segment removed on
+// bytes that neither the ledger nor the remote check was about. index.json
+// is read again here, just before record.Retire, which reads every tarball
+// back against its entry there, under the archive lock: an entry that
+// still lists the digest proven lets through only the bytes proven, and a
+// tarball changed without its entry fails that read. So nothing is read
+// whole here, which leaves the moments between the two reads of the index.
+// A tarball found changed proves nothing for the rest of the run.
 func (r *retirer) unchanged(names []string) (string, error) {
+	index, err := export.ReadIndex(r.expDir)
+	if err != nil {
+		return "", err
+	}
+	listed := map[string][]export.Entry{}
+	for _, e := range index {
+		listed[e.Name] = append(listed[e.Name], e)
+	}
 	for _, name := range names {
 		p := r.proofs[name]
-		sum, _, err := recordcheck.DigestFile(filepath.Join(r.expDir, name))
-		switch {
+		_, err := os.Stat(filepath.Join(r.expDir, name))
+		switch es := listed[name]; {
 		case errors.Is(err, os.ErrNotExist):
 			p.why = fmt.Sprintf("%s export %s left the exports directory during this run", p.e.Day, name)
 		case err != nil:
 			return "", fmt.Errorf("export %s: %w", name, err)
-		case sum != p.sum:
-			p.why = fmt.Sprintf("%s export tarball changed during this run (sha256 %s when it was proven, %s now)", p.e.Day, short(p.sum), short(sum))
+		case len(es) != 1:
+			p.why = fmt.Sprintf("%s export %s is listed %d time(s) in index.json now", p.e.Day, name, len(es))
+		case es[0].SHA256 != p.sum:
+			p.why = fmt.Sprintf("%s export tarball changed during this run (sha256 %s when it was proven, index.json lists %s now)", p.e.Day, short(p.sum), short(es[0].SHA256))
 		default:
 			continue
 		}
@@ -575,6 +744,53 @@ type remoteCheck struct {
 	SHA256    string `json:"sha256"`
 	CheckedAt string `json:"checked_at"`
 	OK        bool   `json:"ok"`
+	// Remote is the fingerprint of the remote it was read back from; empty
+	// on a line written before the lines named it, which proves nothing.
+	Remote string `json:"remote"`
+}
+
+// remoteCopy is RemoteCopyFile: the backup's last copy that finished.
+type remoteCopy struct {
+	CopiedAt time.Time `json:"copied_at"`
+	Remote   string    `json:"remote"`
+}
+
+// readRemoteCopy reads RemoteCopyFile at path; nil when there is none
+// (no backup finished a copy since it was first written). One that does not
+// read is an error: backup.sh writes it whole and renames it into place.
+func readRemoteCopy(path string) (*remoteCopy, error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	c := &remoteCopy{}
+	if err := json.Unmarshal(raw, c); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return c, nil
+}
+
+// remoteStale is why no remote proof counts this run, empty when they do:
+// a remote proof is taken once per tarball, so it stands for the remote's
+// copy now only while the backup goes on finishing its copy to that same
+// remote. A remote that died, lost its credentials or was replaced shows
+// as a copy that stopped finishing; a new BACKUP_REMOTE as a copy to
+// another remote, whose proofs the backup then takes again.
+func (r *retirer) remoteStale() string {
+	c := r.copied
+	switch {
+	case c == nil:
+		return "no finished backup copy is recorded (exports/" + RemoteCopyFile + "): nothing shows the remote holds the exports"
+	case c.Remote == "" || c.CopiedAt.IsZero():
+		return "exports/" + RemoteCopyFile + " names no remote or no time"
+	case r.remoteMaxAge > 0 && r.now.Sub(c.CopiedAt) > r.remoteMaxAge:
+		return fmt.Sprintf("the backup last finished a copy at %s, %s before this run, longer ago than -remote-max-age %s: nothing shows the remote still holds the exports",
+			c.CopiedAt.UTC().Format(time.RFC3339), r.now.Sub(c.CopiedAt).Round(time.Minute), r.remoteMaxAge)
+	}
+	return ""
 }
 
 // readRemote reads RemoteFile at path: the newest check of each tarball,
@@ -608,17 +824,25 @@ func readRemote(path string) (map[string]remoteCheck, error) {
 	return out, nil
 }
 
-// onRemote is why the remote backup is not shown to hold the export's
-// tarball as it is now; empty when it is.
-func (r *retirer) onRemote(p *exportProof) string {
-	c, ok := r.remote[p.e.Name]
+// onRemote is why the remote backup the host copies to now is not shown to
+// hold export e's tarball with the digest sum; empty when it is. what says
+// where sum comes from ("index.json lists", "the tarball now is").
+func (r *retirer) onRemote(e export.Entry, sum, what string) string {
+	if r.stale != "" {
+		return r.stale
+	}
+	c, ok := r.remote[e.Name]
 	switch {
 	case !ok:
-		return fmt.Sprintf("%s not yet proven on the remote", p.e.Day)
+		return fmt.Sprintf("%s not yet proven on the remote", e.Day)
+	case c.Remote == "":
+		return fmt.Sprintf("%s not proven on the remote: its last check (%s) does not say which remote it read", e.Day, c.CheckedAt)
+	case c.Remote != r.copied.Remote:
+		return fmt.Sprintf("%s not proven on the remote the backup copies to now: its last check (%s) read another one", e.Day, c.CheckedAt)
 	case !c.OK:
-		return fmt.Sprintf("%s not proven on the remote: its last check (%s) did not read the tarball back", p.e.Day, c.CheckedAt)
-	case !strings.EqualFold(c.SHA256, p.sum):
-		return fmt.Sprintf("%s not proven on the remote: its last check (%s) read back sha256 %s, the tarball now is %s", p.e.Day, c.CheckedAt, short(c.SHA256), short(p.sum))
+		return fmt.Sprintf("%s not proven on the remote: its last check (%s) did not read the tarball back", e.Day, c.CheckedAt)
+	case !strings.EqualFold(c.SHA256, sum):
+		return fmt.Sprintf("%s not proven on the remote: its last check (%s) read back sha256 %s, %s %s", e.Day, c.CheckedAt, short(c.SHA256), what, short(sum))
 	}
 	return ""
 }
