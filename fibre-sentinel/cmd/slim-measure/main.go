@@ -201,6 +201,7 @@ func main() {
 	// 3. on disk
 	if *dbDir != "" {
 		onDisk(r, ep, em, tables, *dbDir)
+		servingSizes(r, ep, em, tables, *dbDir)
 	}
 }
 
