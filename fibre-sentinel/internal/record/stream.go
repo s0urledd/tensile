@@ -160,23 +160,34 @@ func (s *Stream) openSegment(sg Segment) (io.Reader, error) {
 	return z, nil
 }
 
-// openRetired reads a segment whose file is gone from the exports its
-// index entry names. Retire saves the index before it removes the file, so
-// a Stream whose index was loaded before a Retire finds the segment
-// retired in the index as it is now; a segment that is gone without being
-// retired is an error naming the file. That error does not wrap
-// os.ErrNotExist: callers take it from a read of the whole record to mean
-// the file does not exist at all, which is no error to them.
-func (s *Stream) openRetired(sg Segment, missing error) (io.Reader, error) {
-	if sg.Retired == nil {
-		if idx, err := LoadIndex(s.path); err == nil {
-			for _, now := range idx.Segments {
-				if now.Name == sg.Name && now.From == sg.From && now.To == sg.To && now.SHA256 == sg.SHA256 {
-					sg = now
-				}
-			}
+// retiredNow is sg as path's index lists it now. Retire saves the index
+// before it removes the file, so a reader that loaded the index before a
+// Retire and then finds the segment's file gone finds the segment retired
+// in the index as it is now. It is sg unchanged when sg is already
+// retired, or when the index cannot be read or no longer lists it.
+func retiredNow(path string, sg Segment) Segment {
+	if sg.Retired != nil {
+		return sg
+	}
+	idx, err := LoadIndex(path)
+	if err != nil {
+		return sg
+	}
+	for _, now := range idx.Segments {
+		if now.Name == sg.Name && now.From == sg.From && now.To == sg.To && now.SHA256 == sg.SHA256 {
+			return now
 		}
 	}
+	return sg
+}
+
+// openRetired reads a segment whose file is gone from the exports its
+// index entry names, as the index is now (retiredNow); a segment that is
+// gone without being retired is an error naming the file. That error does
+// not wrap os.ErrNotExist: callers take it from a read of the whole record
+// to mean the file does not exist at all, which is no error to them.
+func (s *Stream) openRetired(sg Segment, missing error) (io.Reader, error) {
+	sg = retiredNow(s.path, sg)
 	if sg.Retired == nil {
 		return nil, fmt.Errorf("%s: segment %s is gone and was never retired: %v", s.path, sg.Name, missing)
 	}

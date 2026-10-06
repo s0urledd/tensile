@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // exportsIndexFile lists the exports in the exports directory.
@@ -106,7 +107,10 @@ type exportPart struct {
 // sg.To) in order and without a gap, that each adds to it, and that each
 // member is a byte-for-byte copy of its source range (the builder drops a
 // blank line's bytes from a member, and such a member cannot stand in for
-// the file).
+// the file). An empty member that starts where the exports before it end
+// adds nothing and is not read: a quiet day leaves a file's member empty,
+// and the exports whose member overlaps [From, To) include it whenever it
+// sits inside the range.
 func planExports(dir string, idx exportsIndex, sg Segment) ([]exportPart, error) {
 	r := sg.Retired
 	var parts []exportPart
@@ -139,6 +143,10 @@ func planExports(dir string, idx exportsIndex, sg Segment) ([]exportPart, error)
 			return nil, fmt.Errorf("export %s has no member %s", name, r.Member)
 		case m.To-m.From != m.Bytes:
 			return nil, fmt.Errorf("export %s: member %s holds %d bytes for source bytes [%d, %d), so it is not a copy of them", name, r.Member, m.Bytes, m.From, m.To)
+		case m.Bytes == 0 && m.From == at:
+			// Nothing of the range depends on this tarball, so a reader
+			// does not either.
+			continue
 		case at >= sg.To:
 			return nil, fmt.Errorf("export %s is past the segment's end: the exports before it hold all of [%d, %d)", name, sg.From, sg.To)
 		case m.From > at:
@@ -165,23 +173,12 @@ func exportsLabel(path, name string) string {
 	return fmt.Sprintf("%s: segment %s from the exports", path, name)
 }
 
-// openFromExports reads logical bytes [sg.From, sg.To) of the file back
-// from the exports that sg.Retired names. Their index is read from dir
-// once per cache (nil: every call). Every error, returned or ending the
-// reader, starts with label and wraps nothing: a missing tarball's
+// planFromExports reads the exports index from dir, once per cache (nil:
+// every call), and plans reading sg back from the exports it names. Every
+// error starts with label and wraps nothing: a missing tarball's
 // os.ErrNotExist would tell a caller reading the whole record that the
 // record file does not exist, which callers take as no error.
-//
-// The bytes are streamed, a day at a time being too large to hold, so
-// what the reader returns before its end is not yet proven; its end is.
-// Every byte of every tarball read is hashed against the index, every
-// member used is read whole and hashed against it, and what is emitted
-// must be exactly To-From bytes and sg.Lines lines with sg.SHA256. Should
-// any of that fail, the reader ends with the error instead of io.EOF, and
-// the last byte of the range is held back until all of it has passed: a
-// caller that reads exactly To-From bytes (Stream.ReaderFrom does) never
-// has the whole range unless it is the segment's.
-func openFromExports(label, dir string, sg Segment, cache map[string]exportsIndex) (io.ReadCloser, error) {
+func planFromExports(label, dir string, sg Segment, cache map[string]exportsIndex) ([]exportPart, error) {
 	parts, err := func() ([]exportPart, error) {
 		if sg.Retired == nil {
 			return nil, errors.New("not retired")
@@ -204,27 +201,59 @@ func openFromExports(label, dir string, sg Segment, cache map[string]exportsInde
 	if err != nil {
 		return nil, fmt.Errorf("%s: %v", label, err)
 	}
+	return parts, nil
+}
+
+// openFromExports reads logical bytes [sg.From, sg.To) of the file back
+// from the exports that sg.Retired names, with planFromExports's errors.
+//
+// No byte comes out before all of them are proven: a reader that takes the
+// bytes a line at a time (the ingest's tail stores each line and moves its
+// cursor past it) must never be handed a wrong line ahead of the error. A
+// day is too large to hold, so the exports are read twice. The first pass
+// hands out nothing: every byte of every tarball is hashed against the
+// index, every member used is read whole and hashed against it, and the
+// range must be exactly To-From bytes and sg.Lines lines with sg.SHA256;
+// it keeps the SHA-256 of each proofBlock of the range. The second pass
+// reads the exports again and hands out each block only once its digest is
+// the first pass's, so a tarball changed between the passes ends the read
+// with an error before the first block that differs. Any failure ends the
+// reader with the error instead of io.EOF. The second decompression is
+// paid only by readers of the record from before the live file (a rebuild
+// from zero, recompute), the only ones that reach a retired segment.
+func openFromExports(label, dir string, sg Segment, cache map[string]exportsIndex) (io.ReadCloser, error) {
+	parts, err := planFromExports(label, dir, sg, cache)
+	if err != nil {
+		return nil, err
+	}
 	pr, pw := io.Pipe()
 	return &exportsReader{label: label, pr: pr, pw: pw, sg: sg, parts: parts}, nil
 }
 
 // exportsReader runs the copy in a goroutine that starts on the first Read:
 // a reader over the whole record opens every segment before it reads one,
-// and a goroutine per retired segment, each holding a tarball open, would
-// wait for no reason. Close stops the copy at its next write.
+// and a goroutine per retired segment, each reading its exports, would
+// work for no reason. Close stops the copy at its next block.
 type exportsReader struct {
-	once  sync.Once
-	label string
-	pr    *io.PipeReader
-	pw    *io.PipeWriter
-	sg    Segment
-	parts []exportPart
+	once   sync.Once
+	closed atomic.Bool
+	label  string
+	pr     *io.PipeReader
+	pw     *io.PipeWriter
+	sg     Segment
+	parts  []exportPart
 }
 
 func (e *exportsReader) Read(b []byte) (int, error) {
 	e.once.Do(func() {
 		go func() {
-			err := copyFromExports(e.pw, e.sg, e.parts)
+			err := func() error {
+				sums, err := proveFromExports(e.sg, e.parts, &e.closed)
+				if err != nil {
+					return err
+				}
+				return emitFromExports(e.pw, e.sg, e.parts, sums)
+			}()
 			if err != nil {
 				err = fmt.Errorf("%s: %v", e.label, err)
 			}
@@ -234,44 +263,128 @@ func (e *exportsReader) Read(b []byte) (int, error) {
 	return e.pr.Read(b)
 }
 
-func (e *exportsReader) Close() error { return e.pr.Close() }
+func (e *exportsReader) Close() error {
+	e.closed.Store(true)
+	return e.pr.Close()
+}
 
-// copyFromExports writes [sg.From, sg.To) to w from parts, the last byte
-// only once every check has passed.
-func copyFromExports(w io.Writer, sg Segment, parts []exportPart) error {
-	total := sg.To - sg.From
+// proofBlock is how much of a retired range the second pass holds before
+// it hands the bytes out: each block goes only once its digest matches the
+// first pass's. A mainnet day of a few hundred MB keeps a few hundred
+// digests.
+const proofBlock = 1 << 20
+
+// blocker cuts what is written to it into proofBlock-sized blocks, the
+// last one shorter, and passes each whole block to fn: both passes cut the
+// range at the same offsets, so their blocks pair up.
+type blocker struct {
+	buf []byte
+	fn  func([]byte) error
+}
+
+func newBlocker(fn func([]byte) error) *blocker {
+	return &blocker{buf: make([]byte, 0, proofBlock), fn: fn}
+}
+
+func (b *blocker) write(p []byte) error {
+	for len(p) > 0 {
+		n := copy(b.buf[len(b.buf):cap(b.buf)], p)
+		b.buf, p = b.buf[:len(b.buf)+n], p[n:]
+		if len(b.buf) == cap(b.buf) {
+			if err := b.flush(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (b *blocker) flush() error {
+	if len(b.buf) == 0 {
+		return nil
+	}
+	err := b.fn(b.buf)
+	b.buf = b.buf[:0]
+	return err
+}
+
+// errReaderClosed stops a first pass whose reader was closed: nobody will
+// read what it proves.
+var errReaderClosed = errors.New("the reader was closed")
+
+// proveFromExports is the first pass: it reads [sg.From, sg.To) from parts
+// without handing out a byte, checks it whole against the segment, and
+// returns the SHA-256 of each proofBlock of it. A closed (nil: never set)
+// stops it early.
+func proveFromExports(sg Segment, parts []exportPart, closed *atomic.Bool) ([][sha256.Size]byte, error) {
 	h := sha256.New()
 	var got, lines int64
-	var held []byte
-	emit := func(b []byte) error {
+	var sums [][sha256.Size]byte
+	bl := newBlocker(func(b []byte) error {
+		if closed != nil && closed.Load() {
+			return errReaderClosed
+		}
 		h.Write(b)
 		lines += int64(bytes.Count(b, []byte{'\n'}))
 		got += int64(len(b))
-		if got == total {
-			held = []byte{b[len(b)-1]}
-			b = b[:len(b)-1]
+		sums = append(sums, sha256.Sum256(b))
+		return nil
+	})
+	at, err := readParts(sg, parts, bl.write)
+	if err != nil {
+		return nil, err
+	}
+	if err := bl.flush(); err != nil {
+		return nil, err
+	}
+	switch total := sg.To - sg.From; {
+	case at != sg.To || got != total:
+		return nil, fmt.Errorf("the exports gave %d of the segment's %d bytes", got, total)
+	case hex.EncodeToString(h.Sum(nil)) != sg.SHA256:
+		return nil, errors.New("the bytes differ from the segment's sha256")
+	case lines != sg.Lines:
+		return nil, fmt.Errorf("%d lines, the index says %d", lines, sg.Lines)
+	}
+	return sums, nil
+}
+
+// emitFromExports is the second pass: it reads [sg.From, sg.To) from parts
+// again and writes it to w a block at a time, each block only once its
+// SHA-256 is the one the first pass proved for it.
+func emitFromExports(w io.Writer, sg Segment, parts []exportPart, sums [][sha256.Size]byte) error {
+	k := 0
+	bl := newBlocker(func(b []byte) error {
+		if k >= len(sums) || sha256.Sum256(b) != sums[k] {
+			return fmt.Errorf("the exports changed while they were read: logical bytes from %d differ from the first pass", sg.From+int64(k)*proofBlock)
 		}
+		k++
 		_, err := w.Write(b)
 		return err
+	})
+	if _, err := readParts(sg, parts, bl.write); err != nil {
+		return err
 	}
+	if err := bl.flush(); err != nil {
+		return err
+	}
+	if k != len(sums) {
+		return fmt.Errorf("the exports changed while they were read: %d of the range's %d blocks came back", k, len(sums))
+	}
+	return nil
+}
+
+// readParts passes emit the bytes of [sg.From, sg.To) that parts hold, in
+// order, and returns the logical offset they reach.
+func readParts(sg Segment, parts []exportPart, emit func([]byte) error) (int64, error) {
 	at := sg.From
 	for _, p := range parts {
 		next, err := copyMember(p, at, sg.To, emit)
 		if err != nil {
-			return fmt.Errorf("export %s: %w", p.entry.Name, err)
+			return at, fmt.Errorf("export %s: %w", p.entry.Name, err)
 		}
 		at = next
 	}
-	switch {
-	case at != sg.To || got != total:
-		return fmt.Errorf("the exports gave %d of the segment's %d bytes", got, total)
-	case hex.EncodeToString(h.Sum(nil)) != sg.SHA256:
-		return errors.New("the bytes differ from the segment's sha256")
-	case lines != sg.Lines:
-		return fmt.Errorf("%d lines, the index says %d", lines, sg.Lines)
-	}
-	_, err := w.Write(held)
-	return err
+	return at, nil
 }
 
 // copyMember reads p's tarball whole and passes emit the part of the
@@ -368,28 +481,20 @@ func copyMember(p exportPart, at, to int64, emit func([]byte) error) (int64, err
 }
 
 // checkFromExports reads sg back from the exports, whole, and requires its
-// length and digest: what Retire proves before it removes a segment's
-// file, and what Verify checks once the file is gone.
+// length, lines and digest: what Retire proves before it removes a
+// segment's file, and what Verify checks once the file is gone. It is the
+// reader's first pass alone; nothing needs the bytes.
 func checkFromExports(path string, sg Segment) error {
 	label := exportsLabel(path, sg.Name)
 	if sg.Retired == nil {
 		return fmt.Errorf("%s: not retired", label)
 	}
-	r, err := openFromExports(label, exportsDirOf(path, sg.Retired), sg, nil)
+	parts, err := planFromExports(label, exportsDirOf(path, sg.Retired), sg, nil)
 	if err != nil {
 		return err
 	}
-	defer r.Close()
-	h := sha256.New()
-	n, err := io.Copy(h, r)
-	if err != nil {
-		return err
-	}
-	if n != sg.To-sg.From {
-		return fmt.Errorf("%s: %d bytes, the index says %d", label, n, sg.To-sg.From)
-	}
-	if hex.EncodeToString(h.Sum(nil)) != sg.SHA256 {
-		return fmt.Errorf("%s: the bytes differ from the segment's sha256", label)
+	if _, err := proveFromExports(sg, parts, nil); err != nil {
+		return fmt.Errorf("%s: %v", label, err)
 	}
 	return nil
 }

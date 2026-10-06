@@ -2,6 +2,7 @@ package record
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
@@ -173,6 +174,21 @@ func (f *retireFixture) editIndex(t *testing.T, edit func(entries []map[string]a
 	f.writeIndex(t, entries)
 }
 
+// rewriteDay writes day d's tarball with data as the file's member and
+// gives it an index entry that agrees with it, the member's source range
+// kept: exports consistent in themselves that hold other bytes.
+func (f *retireFixture) rewriteDay(t *testing.T, d int, data []byte) {
+	t.Helper()
+	fresh := f.writeTarball(t, d, data, t0.AddDate(0, 0, d+2))
+	f.editIndex(t, func(es []map[string]any) {
+		for i, x := range es {
+			if x["name"] == f.exports[d] {
+				es[i] = fresh
+			}
+		}
+	})
+}
+
 // entry is the index entry of the tarball called name.
 func entry(entries []map[string]any, name string) map[string]any {
 	for _, e := range entries {
@@ -241,14 +257,14 @@ func (f *retireFixture) checkReads(t *testing.T) {
 	}
 }
 
-// A retired segment reads back from the exports byte for byte: the whole
-// record and every offset before, inside, across and after the retired
-// ranges, with one segment retired and with both, for a top-level file and
-// a vantage's nested one (whose member name has a directory and whose
-// exports directory is two levels further up). The gzip files are gone,
-// the index says where the bytes are, and Verify passes.
+// A retired segment, of a top-level file or of a vantage's nested one,
+// reads back from the exports byte for byte, as the whole record and from
+// every offset before, inside, across and after the retired ranges, with
+// its file gone, the index naming where its bytes are, and Verify passing.
 func TestRetiredSegmentsReadFromExports(t *testing.T) {
 	skipUnsupported(t)
+	// The vantage's member name has a directory, and its exports directory
+	// is two levels further up.
 	for _, tc := range []struct{ name, file, rel string }{
 		{"top-level", "measurements.jsonl", "../../exports"},
 		{"vantage", "vantages/de-1/reachability.jsonl", "../../../../exports"},
@@ -283,27 +299,39 @@ func TestRetiredSegmentsReadFromExports(t *testing.T) {
 	}
 }
 
-// A retired segment whose exports do not give its exact bytes back fails
-// the read with an error, never with wrong bytes that end cleanly: a
-// tarball rebuilt around the same member (only its digest tells), a
-// member altered outside the range the segment needs (only its digest
-// tells, so the member must be read whole), a missing tarball, exports
-// that leave a gap, and member ranges shifted so that every digest holds
-// but the bytes land at the wrong offsets (only the segment's digest
-// tells). Whatever was read before the error stops short of the segment's
-// end, no error passes for a missing record file (os.ErrNotExist), and
-// Verify fails too.
+// A retired segment whose exports do not give its exact bytes back ends
+// the read with an error that is not os.ErrNotExist before a single byte
+// of the segment comes out, so a reader that takes each line as it comes
+// (the ingest's tail) never stores a wrong one, and Verify fails too.
 func TestRetiredSegmentReadFailsOnBadExports(t *testing.T) {
 	skipUnsupported(t)
+	// line9 is where the digit after "2" in line 9's year is in day 2's
+	// member (lines 8 to 11, all inside the retired segment).
+	line9 := func(f *retireFixture) int {
+		return int(f.off[9]-f.days[2].from) + len(`{"scheduled_at":"2`)
+	}
 	for _, tc := range []struct {
-		name  string
-		spoil func(t *testing.T, f *retireFixture)
+		name string
+		// atOpen: the plan refuses the exports, so the record does not
+		// even open.
+		atOpen bool
+		spoil  func(t *testing.T, f *retireFixture)
 	}{
-		{"tarball rewritten", func(t *testing.T, f *retireFixture) {
+		// Only the tarball's digest tells.
+		{"tarball rewritten", false, func(t *testing.T, f *retireFixture) {
 			e := f.days[2]
 			f.writeTarball(t, 2, f.want[e.from:e.to], t0.AddDate(0, 0, 9))
 		}},
-		{"member altered outside the range", func(t *testing.T, f *retireFixture) {
+		// Bit rot or a replaced tarball, the index as it was: the member's
+		// digest tells, only once the member has been read whole.
+		{"member altered inside the range", false, func(t *testing.T, f *retireFixture) {
+			e := f.days[2]
+			data := append([]byte(nil), f.want[e.from:e.to]...)
+			data[line9(f)] = '9'
+			f.writeTarball(t, 2, data, t0.AddDate(0, 0, 3))
+		}},
+		// Only the member's digest tells, so the member must be read whole.
+		{"member altered outside the range", false, func(t *testing.T, f *retireFixture) {
 			e := f.days[1]
 			data := append([]byte(nil), f.want[e.from:e.to]...)
 			data[len(`{"scheduled_at":"2`)] = '9' // line 4, before the segment's first line 6
@@ -313,22 +341,17 @@ func TestRetiredSegmentReadFailsOnBadExports(t *testing.T) {
 				old["bytes"], old["sha256"] = fresh["bytes"], fresh["sha256"]
 			})
 		}},
-		{"export missing", func(t *testing.T, f *retireFixture) {
-			if err := os.Remove(filepath.Join(f.expDir, f.exports[3])); err != nil {
-				t.Fatal(err)
-			}
+		// Tarball and index agree with each other: only the segment's own
+		// digest tells.
+		{"member and index altered inside the range", false, func(t *testing.T, f *retireFixture) {
+			e := f.days[2]
+			data := append([]byte(nil), f.want[e.from:e.to]...)
+			data[line9(f)] = '9'
+			f.rewriteDay(t, 2, data)
 		}},
-		{"gap", func(t *testing.T, f *retireFixture) {
-			idx, err := LoadIndex(f.path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			idx.Segments[1].Retired.Exports = []string{f.exports[1], f.exports[3]}
-			if err := idx.save(ArchiveDir(f.path)); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{"range shifted", func(t *testing.T, f *retireFixture) {
+		// Every digest holds but the bytes land at the wrong offsets: only
+		// the segment's digest tells.
+		{"range shifted", false, func(t *testing.T, f *retireFixture) {
 			f.editIndex(t, func(es []map[string]any) {
 				for _, d := range []int{2, 3} {
 					for _, m := range entry(es, f.exports[d])["files"].([]any) {
@@ -341,6 +364,28 @@ func TestRetiredSegmentReadFailsOnBadExports(t *testing.T) {
 				}
 			})
 		}},
+		// A member with a byte dropped from its source range (as the
+		// builder drops a blank line's), its digests consistent.
+		{"member short of its source range", true, func(t *testing.T, f *retireFixture) {
+			e := f.days[2]
+			data := append([]byte(nil), f.want[e.from:e.to]...)
+			f.rewriteDay(t, 2, append(data[:line9(f)], data[line9(f)+1:]...))
+		}},
+		{"export missing", true, func(t *testing.T, f *retireFixture) {
+			if err := os.Remove(filepath.Join(f.expDir, f.exports[3])); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"gap", true, func(t *testing.T, f *retireFixture) {
+			idx, err := LoadIndex(f.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			idx.Segments[1].Retired.Exports = []string{f.exports[1], f.exports[3]}
+			if err := idx.save(ArchiveDir(f.path)); err != nil {
+				t.Fatal(err)
+			}
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newRetireFixture(t, "measurements.jsonl")
@@ -348,22 +393,28 @@ func TestRetiredSegmentReadFailsOnBadExports(t *testing.T) {
 			f.checkReads(t)
 			tc.spoil(t, f)
 			r, err := OpenAll(f.path)
+			if tc.atOpen && err == nil {
+				r.Close()
+				t.Fatal("the record opened; the exports should be refused before anything is read")
+			}
 			var got []byte
 			if err == nil {
-				got, err = io.ReadAll(r)
+				br := bufio.NewReader(r)
+				for err == nil {
+					var line []byte
+					line, err = br.ReadBytes('\n')
+					got = append(got, line...)
+				}
 				r.Close()
 			}
-			if err == nil {
+			if errors.Is(err, io.EOF) {
 				t.Fatalf("the record read without an error (%d bytes)", len(got))
 			}
 			if errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("the error says the record file does not exist: %v", err)
 			}
-			if int64(len(got)) >= f.segs[1].To {
-				t.Fatalf("%d bytes were read before the error; the retired segment ends at %d", len(got), f.segs[1].To)
-			}
-			if n := min(int64(len(got)), f.segs[1].From); !bytes.Equal(got[:n], f.want[:n]) {
-				t.Fatalf("bytes before the retired segment read wrong: %q", got[:n])
+			if int64(len(got)) > f.segs[1].From || !bytes.Equal(got, f.want[:len(got)]) {
+				t.Fatalf("%d bytes came out before the error, the retired segment starts at %d; the first that differ: %q", len(got), f.segs[1].From, firstDiff(got, f.want))
 			}
 			if _, err := Verify(f.path); err == nil {
 				t.Fatal("verify passed")
@@ -373,12 +424,63 @@ func TestRetiredSegmentReadFailsOnBadExports(t *testing.T) {
 	}
 }
 
-// Retire proves the bytes before it removes anything: exports that leave a
-// gap, or that are consistent in themselves but hold other bytes for the
-// segment's range, are refused and the file and index are left as they
-// were. A segment whose file is gone without being retired is refused, and
-// a read over it fails naming it (not as a missing record file); one the
-// index does not list is refused too.
+// firstDiff is the line of got where it first differs from want.
+func firstDiff(got, want []byte) []byte {
+	i := 0
+	for i < len(got) && i < len(want) && got[i] == want[i] {
+		i++
+	}
+	start := bytes.LastIndexByte(got[:i], '\n') + 1
+	end := len(got)
+	if j := bytes.IndexByte(got[i:], '\n'); j >= 0 {
+		end = i + j + 1
+	}
+	return got[start:end]
+}
+
+// The second pass of a read from the exports hands out only blocks the
+// first pass proved, so exports changed between the passes, even in
+// agreement with their index, end the read before a changed byte comes out.
+func TestExportsChangedBetweenPasses(t *testing.T) {
+	skipUnsupported(t)
+	f := newRetireFixture(t, "measurements.jsonl")
+	f.retire(t, 1)
+	idx, err := LoadIndex(f.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sg := idx.Segments[1]
+	dir := exportsDirOf(f.path, sg.Retired)
+	parts, err := planFromExports("before", dir, sg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sums, err := proveFromExports(sg, parts, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := f.days[2]
+	data := append([]byte(nil), f.want[e.from:e.to]...)
+	data[int(f.off[9]-e.from)+len(`{"scheduled_at":"2`)] = '9'
+	f.rewriteDay(t, 2, data)
+	if parts, err = planFromExports("after", dir, sg, nil); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := emitFromExports(&out, sg, parts, sums); err == nil {
+		t.Fatal("the second pass handed out bytes the first did not prove")
+	} else {
+		t.Logf("second pass: %v", err)
+	}
+	if got := out.Bytes(); !bytes.Equal(got, f.want[sg.From:sg.From+int64(len(got))]) {
+		t.Fatalf("the second pass handed out %q", got)
+	}
+}
+
+// Retire removes nothing the exports do not prove, leaving the file and
+// the index as they were, and refuses a segment whose file is gone without
+// being retired, which a read and Verify then fail on by name (not as a
+// missing record file), as well as one the index does not list.
 func TestRetireRefusesWhatTheExportsDoNotProve(t *testing.T) {
 	skipUnsupported(t)
 	f := newRetireFixture(t, "measurements.jsonl")
@@ -392,14 +494,7 @@ func TestRetireRefusesWhatTheExportsDoNotProve(t *testing.T) {
 	e := f.days[2]
 	data := append([]byte(nil), f.want[e.from:e.to]...)
 	data[len(`{"scheduled_at":"2`)] = '9'
-	fresh := f.writeTarball(t, 2, data, t0.AddDate(0, 0, 3))
-	f.editIndex(t, func(es []map[string]any) {
-		for i, x := range es {
-			if x["name"] == f.exports[2] {
-				es[i] = fresh
-			}
-		}
-	})
+	f.rewriteDay(t, 2, data)
 	err := Retire(f.path, f.segs[1].Name, f.retired(t, 1))
 	if err == nil {
 		t.Fatal("retired a segment the exports hold other bytes for")
@@ -426,19 +521,25 @@ func TestRetireRefusesWhatTheExportsDoNotProve(t *testing.T) {
 	if _, err := OpenAll(f.path); err == nil || !strings.Contains(err.Error(), f.segs[0].Name) || errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a read over a lost segment: %v", err)
 	}
+	// observer-archive -verify takes os.ErrNotExist to mean the record
+	// file is missing, which it passes.
+	if _, err := Verify(f.path); err == nil || !strings.Contains(err.Error(), f.segs[0].Name) || errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("verify over a lost segment: %v", err)
+	}
 	if err := Retire(f.path, "000009-2026-09-09.jsonl.gz", f.retired(t, 0)); err == nil {
 		t.Fatal("retired a segment the index does not list")
 	}
 }
 
 // A Retire that stopped after saving the index and before removing the
-// file leaves a record that still reads, from the file (the exports can be
-// away); a Retire then checks the exports again, refusing while they are
-// away, and removes the file once they are back. The Retired given first
-// stands, and a further Retire changes nothing.
+// file leaves a record that still reads from the file, and a second Retire
+// checks the exports again, removes the file only once they are there, and
+// keeps the Retired given first.
 func TestRetireAfterACrashBeforeTheFileWent(t *testing.T) {
 	skipUnsupported(t)
 	f := newRetireFixture(t, "measurements.jsonl")
+	// The index as the stopped Retire saved it; the exports are away, so
+	// the record can only read from the file.
 	want := f.retired(t, 1)
 	want.At = t0
 	idx, err := LoadIndex(f.path)
@@ -481,9 +582,10 @@ func TestRetireAfterACrashBeforeTheFileWent(t *testing.T) {
 	}
 }
 
-// A Stream opened before a Retire reads the retired segment from the
-// exports: Retire saves the index before it removes the file, and a reader
-// that finds the file gone looks at the index again.
+// A Stream opened before a Retire reads and verifies the retired segment
+// from the exports rather than calling it lost, since Retire saves the
+// index before it removes the file and a reader that finds the file gone
+// looks at the index again.
 func TestStreamOpenedBeforeRetire(t *testing.T) {
 	skipUnsupported(t)
 	f := newRetireFixture(t, "measurements.jsonl")
@@ -500,6 +602,54 @@ func TestStreamOpenedBeforeRetire(t *testing.T) {
 	got, err := io.ReadAll(r)
 	if err != nil || !bytes.Equal(got, f.want) {
 		t.Fatalf("read %d bytes, %v", len(got), err)
+	}
+	// observer-archive -verify run while -retire runs
+	if n, err := s.verify(); err != nil || n != 2 {
+		t.Fatalf("verify over the index from before the Retire: %d %v", n, err)
+	}
+}
+
+// An export whose member of the file is empty where the exports before it
+// end, as a quiet day leaves it, may be named among them: Retire proves
+// the segment, and the segment reads back without that tarball, which none
+// of its bytes come from.
+func TestRetireOverAnEmptyMember(t *testing.T) {
+	skipUnsupported(t)
+	f := newRetireFixture(t, "measurements.jsonl")
+	// The exports whose member overlaps [From, To) include an empty one
+	// strictly inside it.
+	at := f.off[12]
+	f.days = append(f.days, testExport{day: "2026-09-03-quiet", from: at, to: at})
+	f.exports = append(f.exports, "tensile-v-quiet.tar.gz")
+	quiet := f.writeTarball(t, len(f.days)-1, nil, t0.AddDate(0, 0, 4))
+	raw, err := os.ReadFile(filepath.Join(f.expDir, "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var es []map[string]any
+	if err := json.Unmarshal(raw, &es); err != nil {
+		t.Fatal(err)
+	}
+	f.writeIndex(t, append(es, quiet))
+	r := f.retired(t, 1)
+	r.Exports = []string{f.exports[1], f.exports[2], f.exports[6], f.exports[3]}
+	if err := Retire(f.path, f.segs[1].Name, r); err != nil {
+		t.Fatal(err)
+	}
+	f.checkReads(t)
+	if err := os.Remove(filepath.Join(f.expDir, f.exports[6])); err != nil {
+		t.Fatal(err)
+	}
+	f.checkReads(t)
+	if n, err := Verify(f.path); err != nil || n != 2 {
+		t.Fatalf("verify: %d %v", n, err)
+	}
+	// An empty member anywhere but where the exports have reached is still
+	// out of order and refused.
+	r = f.retired(t, 0)
+	r.Exports = []string{f.exports[0], f.exports[6], f.exports[1]}
+	if err := Retire(f.path, f.segs[0].Name, r); err == nil {
+		t.Fatal("retired over an empty member out of order")
 	}
 }
 
@@ -543,13 +693,13 @@ func TestLogicalEnd(t *testing.T) {
 }
 
 // Bytes of reachability.jsonl read back from two consecutive days' real
-// export tarballs, over a range that starts inside the first day's member
-// and ends inside the second's, are byte for byte the two members joined;
-// a range across a day the exports lack is a gap and fails. Opt-in:
-// TENSILE_RECORD_EXPORTS names a directory of real exports (index.json and
-// the tarballs) and TENSILE_RECORD_MEMBERS one holding each day's member as
-// extracted, <day>/reachability.jsonl.
+// export tarballs, from inside the first day's member to inside the
+// second's, are byte for byte the two members joined, and a range across a
+// day the exports lack fails as a gap.
 func TestRealExportsReadBack(t *testing.T) {
+	// Opt-in: TENSILE_RECORD_EXPORTS names a directory of real exports
+	// (index.json and the tarballs) and TENSILE_RECORD_MEMBERS one holding
+	// each day's member as extracted, <day>/reachability.jsonl.
 	dir, members := os.Getenv("TENSILE_RECORD_EXPORTS"), os.Getenv("TENSILE_RECORD_MEMBERS")
 	if dir == "" || members == "" {
 		t.Skip("set TENSILE_RECORD_EXPORTS and TENSILE_RECORD_MEMBERS to read real exports")

@@ -540,6 +540,15 @@ func Verify(path string) (int, error) {
 		return 0, err
 	}
 	defer s.Close()
+	return s.verify()
+}
+
+// verify is Verify over the index s was opened with. A Retire that runs
+// meanwhile removes a segment's file after it saves the index, so a file
+// found gone is looked up in the index as it is now (retiredNow) before the
+// segment is called lost.
+func (s *Stream) verify() (int, error) {
+	path := s.path
 	idx := s.Index()
 	if len(idx.Generations) > 0 {
 		head, err := headOf(s.live, 0)
@@ -560,7 +569,7 @@ func Verify(path string) (int, error) {
 		}
 		err := VerifySegment(filepath.Join(ArchiveDir(path), sg.Name), sg)
 		if errors.Is(err, os.ErrNotExist) {
-			if sg.Retired == nil {
+			if sg = retiredNow(path, sg); sg.Retired == nil {
 				// Not wrapped: to a caller, os.ErrNotExist from Verify
 				// means the live file is missing, which is no failure.
 				return n, fmt.Errorf("%s: segment %s is gone and was never retired: %v", path, sg.Name, err)
