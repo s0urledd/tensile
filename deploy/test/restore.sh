@@ -17,7 +17,11 @@
 #     points past it; verify puts the cut's own state.json (carried whole
 #     in the manifest) in its place, so the scanner resumes from the
 #     checkpoint these records were cut with. Missing, truncated, altered
-#     or unparseable fails.
+#     or unparseable fails. A segment retired on the host (its lines
+#     proven in the exports, the store and the remote, its file removed)
+#     is checked by its file when the remote has one, and otherwise read
+#     back from the copy's exports/, every digest held, as the rebuild
+#     below then reads it.
 #   - rebuilds the database from the verified cut and requires it to hold
 #     exactly the cut's records;
 #   - starts a second observer-api on a spare port against it and reads
@@ -90,9 +94,12 @@ if [ -n "$newest" ]; then
   age=$(( $(date +%s) - newest ))
   echo "  the copy's newest record file is $((age / 3600))h $(( (age % 3600) / 60 ))m old; manifest taken $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["taken_at"])' "$TMP/backup-manifest.json")"
 fi
-want_pub=$(python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); print(m["files"].get("publications.jsonl",{}).get("records",0))' "$TMP/backup-manifest.json")
-# the live lines and the archived ones: the rebuild reads both (archive/)
-want_probe=$(python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); f=m["files"].get("measurements.jsonl",{}); print(f.get("records",0) + f.get("archived_records",0))' "$TMP/backup-manifest.json")
+# the live lines and the archived ones, retired included: the rebuild reads
+# every file from its first byte (archive/, and the exports for a retired
+# range), and observer-archive rotates publications.jsonl as it does
+# measurements.jsonl
+want_pub=$(manifest_records "$TMP/backup-manifest.json" publications.jsonl)
+want_probe=$(manifest_records "$TMP/backup-manifest.json" measurements.jsonl)
 
 echo "== 3. rebuild the database from the verified cut"
 if timeout 1200 /usr/local/bin/observer-collector -rpc "$RPC" -data-dir "$TMP" -vantage "$VANTAGE" -once \

@@ -43,6 +43,23 @@ shared, so no rotation happens under them; segments never change once
 written. `verify` checks every segment the cut names, whole, and that the
 restored index places the live file at the cut's base.
 
+A segment observer-archive -retire has retired has no file on the host:
+its bytes are proven to be in the daily exports, and index.json names
+the exports that hold them ("retired"). The cut lists it with that
+record and reads nothing of it from the disk. `verify` checks it by its
+file when the copy has one (the remote keeps every segment it was ever
+sent), and otherwise reads its bytes back from the copy's exports by the
+rule internal/record reads them by: each named tarball and its member of
+the file against the exports' index.json (sizes and SHA-256 digests),
+the members covering the segment's range in order without a gap, and
+the range's length, lines and SHA-256 against the segment. `cat` reads
+it the same way, and hands out no byte of it before all of it is
+proven; `snapshot` carries the exports it names.
+
+Each other vantage's heartbeats, vantages/<name>/reachability.jsonl,
+are cut like the observer's own files; their archive is
+vantages/<name>/archive/, under its own lock.
+
   write    <data-dir> <manifest.json>      cut + manifest, files untouched
   snapshot <data-dir> <dest-dir>           cut + manifest + trimmed copies
   verify   <restored-dir> [manifest.json]  trim, hash, parse, count, state;
@@ -59,7 +76,9 @@ import json
 import os
 import shutil
 import sys
+import tarfile
 import time
+import zlib
 
 # Dependents first: a line in measurements.jsonl names a promise that
 # publications.jsonl must already hold once both cuts are taken.
@@ -82,9 +101,12 @@ RECORD_FILES = [
 STATE = "state.json"
 FORBIDDEN = ["sampling-master.key"]
 MANIFEST = "manifest.json"
-VERSION = 3
+# 4: a segment may carry "retired", and other vantages' heartbeats are cut
+VERSION = 4
 CHUNK = 1 << 20
 ARCHIVE = "archive"
+VANTAGES = "vantages"
+EXPORTS_INDEX = "index.json"
 
 
 class RecordError(Exception):
@@ -184,9 +206,46 @@ def head_sha(path):
         return ""
 
 
+def vantage_files(data_dir):
+    """Each other vantage's heartbeats, vantages/<name>/reachability.jsonl,
+    by name: vantage-pull appends to them, and observer-archive rotates and
+    retires them as it does the observer's own files."""
+    d = os.path.join(data_dir, VANTAGES)
+    try:
+        names = sorted(os.listdir(d))
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    return [f"{VANTAGES}/{n}/reachability.jsonl" for n in names
+            if os.path.isfile(os.path.join(d, n, "reachability.jsonl"))]
+
+
+def record_files(data_dir):
+    """RECORD_FILES in their order, with each other vantage's heartbeats
+    right after the observer's own: a heartbeat names nothing that another
+    file must already hold."""
+    out = []
+    for name in RECORD_FILES:
+        out.append(name)
+        if name == "reachability.jsonl":
+            out.extend(vantage_files(data_dir))
+    return out
+
+
+def archive_dir(data_dir, name):
+    """Where one file's segments and index.json are: archive/<file>/ in the
+    file's own directory, as internal/record.ArchiveDir has it, so
+    vantages/<n>/archive/reachability.jsonl/ for another vantage's file."""
+    return os.path.join(data_dir, os.path.dirname(name), ARCHIVE, os.path.basename(name))
+
+
+def index_label(name):
+    """index.json of one file, relative to the data dir, for messages."""
+    return os.path.join(os.path.dirname(name), ARCHIVE, os.path.basename(name), "index.json")
+
+
 def archive_index(data_dir, name):
     try:
-        with open(os.path.join(data_dir, ARCHIVE, name, "index.json")) as f:
+        with open(os.path.join(archive_dir(data_dir, name), "index.json")) as f:
             return json.load(f)
     except FileNotFoundError:
         return None
@@ -210,13 +269,14 @@ def live_base(data_dir, name, idx=None):
 def archive_cut(data_dir, name):
     """The archived part of one file at the cut: the live file's base and
     every segment below it, in order, without a gap. None for a file never
-    archived."""
+    archived. A retired segment carries its "retired" record: its file may
+    be gone, and the record says which exports hold its bytes."""
     idx = archive_index(data_dir, name)
     if idx is None or not idx.get("generations"):
         return None
     base = live_base(data_dir, name, idx)
     if base is None:
-        raise RecordError(f"{name}: the live file's first line matches no generation in {ARCHIVE}/{name}/index.json")
+        raise RecordError(f"{name}: the live file's first line matches no generation in {index_label(name)}")
     segs, at = [], 0
     for s in sorted(idx.get("segments") or [], key=lambda s: s["from"]):
         if s["to"] > base:
@@ -224,23 +284,34 @@ def archive_cut(data_dir, name):
         if s["from"] != at:
             raise RecordError(f"{name}: archive segments leave a gap at logical byte {at}")
         at = s["to"]
-        segs.append({k: s[k] for k in ("name", "from", "to", "lines", "sha256", "gz_sha256", "gz_bytes")})
+        seg = {k: s[k] for k in ("name", "from", "to", "lines", "sha256", "gz_sha256", "gz_bytes")}
+        if s.get("retired"):
+            seg["retired"] = s["retired"]
+        segs.append(seg)
     if at != base:
         raise RecordError(f"{name}: archive segments end at {at}, the live file starts at {base}")
     return {"base": base, "segments": segs, "records": sum(s["lines"] for s in segs)}
 
 
 class ArchiveLock:
-    """archive/.lock held shared: observer-archive holds it exclusively for
-    a run, so no rotation happens under a cut or a copy. The directory is
-    made (owned like the data dir) when missing, so a first rotation cannot
-    begin under a cut either."""
+    """archive/.lock held shared, and each other vantage's
+    vantages/<name>/archive/.lock: observer-archive holds a file's lock
+    exclusively for a run, rotating and retiring, so neither happens under
+    a cut or a copy. A missing archive directory is made (owned like the
+    data dir), so a first rotation cannot begin under a cut either."""
 
     def __init__(self, data_dir):
-        self.data_dir, self.f = data_dir, None
+        self.data_dir, self.fs = data_dir, []
 
     def __enter__(self):
-        d = os.path.join(self.data_dir, ARCHIVE)
+        dirs = [self.data_dir] + [os.path.join(self.data_dir, os.path.dirname(v)) for v in vantage_files(self.data_dir)]
+        for d in dirs:
+            f = self._lock(os.path.join(d, ARCHIVE))
+            if f:
+                self.fs.append(f)
+        return self
+
+    def _lock(self, d):
         if not os.path.isdir(d):
             try:
                 os.makedirs(d, exist_ok=True)
@@ -248,31 +319,257 @@ class ArchiveLock:
                 if os.geteuid() == 0:
                     os.chown(d, st.st_uid, st.st_gid)
             except OSError:
-                return self  # a read-only copy: nothing rotates it
+                return None  # a read-only copy: nothing rotates it
         p = os.path.join(d, ".lock")
         try:
             new = not os.path.exists(p)
-            self.f = open(p, "a")
+            f = open(p, "a")
             if new and os.geteuid() == 0:
                 st = os.stat(self.data_dir)
                 os.chown(p, st.st_uid, st.st_gid)
-            fcntl.flock(self.f, fcntl.LOCK_SH)
+            fcntl.flock(f, fcntl.LOCK_SH)
         except OSError:
-            self.f = None
-        return self
+            return None
+        return f
 
     def __exit__(self, *exc):
-        if self.f:
-            self.f.close()
+        for f in self.fs:
+            f.close()
+
+
+# Reading a retired segment back from the daily exports, by the rule
+# internal/record reads it by (exports.go). The export reads each file
+# from where the previous one stopped, so the member of a file in
+# consecutive exports holds consecutive logical bytes of it,
+# [source_from, source_to) in exports/index.json; a retired segment's
+# bytes are the parts of the members its "retired" record names that fall
+# inside [from, to). Every tarball is read to its last byte and every
+# member used whole, each against its size and digest in the index, and
+# the range must come to the segment's length, lines and SHA-256.
+
+
+def exports_dir_of(data_dir, name, r):
+    """The exports directory a retired segment names, relative to its
+    archive directory, so a restored copy reads its own exports."""
+    ed = r.get("exports_dir") or ""
+    if not ed or os.path.isabs(ed) or ed.startswith("/"):
+        raise RecordError(f"{name}: exports_dir {ed!r} is not a path relative to the archive directory")
+    return os.path.normpath(os.path.join(archive_dir(data_dir, name), ed))
+
+
+def plan_retired(label, data_dir, name, s, cache):
+    """The exports s's bytes are read from, each with its index entry and
+    its member of the file, checked before a byte is read: the members cover
+    [from, to) in order without a gap, each adds to it, and each is a copy
+    of its source range byte for byte. An empty member that starts where
+    the ones before it end adds nothing and is not read. cache holds the
+    exports index already read, by directory."""
+    r = s.get("retired") or {}
+    if not r.get("exports"):
+        raise RecordError(f"{label}: names no exports")
+    if not r.get("member"):
+        raise RecordError(f"{label}: names no member")
+    edir = exports_dir_of(data_dir, name, r)
+    ip = os.path.join(edir, EXPORTS_INDEX)
+    if edir not in cache:
+        try:
+            with open(ip) as f:
+                cache[edir] = json.load(f)
+        except (OSError, ValueError) as e:
+            raise RecordError(f"{label}: {e}")
+    index = cache[edir]
+    parts, at, to = [], s["from"], s["to"]
+    try:
+        for x in r["exports"]:
+            if not x or x in (".", "..") or os.path.basename(x) != x or "/" in x or "\\" in x:
+                raise RecordError(f"{label}: export {x!r} is not a file name")
+            es = [e for e in index if e.get("name") == x]
+            if not es:
+                raise RecordError(f"{label}: export {x} is not in {ip}")
+            if len(es) > 1:
+                raise RecordError(f"{label}: export {x} is listed {len(es)} times in {ip}")
+            e = es[0]
+            ms = [m for m in e.get("files") or [] if m.get("name") == r["member"]]
+            if not ms:
+                raise RecordError(f"{label}: export {x} has no member {r['member']}")
+            if len(ms) > 1:
+                raise RecordError(f"{label}: export {x} lists member {r['member']} twice")
+            m = ms[0]
+            mf, mt, mb = int(m["source_from"]), int(m["source_to"]), int(m["bytes"])
+            if mt - mf != mb:
+                raise RecordError(f"{label}: export {x}: member {r['member']} holds {mb} bytes for source bytes [{mf}, {mt}), so it is not a copy of them")
+            if mb == 0 and mf == at:
+                continue  # nothing of the range depends on this tarball
+            if at >= to:
+                raise RecordError(f"{label}: export {x} is past the segment's end: the exports before it hold all of [{s['from']}, {to})")
+            if mf > at:
+                raise RecordError(f"{label}: the exports leave logical bytes [{at}, {min(mf, to)}) out: {x}'s member {r['member']} starts at {mf}")
+            if mt <= at:
+                raise RecordError(f"{label}: export {x} holds nothing of [{at}, {to}): its member {r['member']} ends at {mt}")
+            p = os.path.join(edir, x)
+            if not os.path.isfile(p):
+                raise RecordError(f"{label}: export {x} is not in {edir}")
+            parts.append((p, e, m))
+            at = min(mt, to)
+    except (KeyError, TypeError, ValueError, AttributeError) as e:
+        raise RecordError(f"{label}: {ip} is not an exports index: {e!r}")
+    if at < to:
+        raise RecordError(f"{label}: the exports end at logical byte {at}, the segment at {to}")
+    return parts
+
+
+class _Tee:
+    """A file read through it is hashed and counted, so the tarball's
+    digest covers every byte whoever reads them (tarfile reads ahead)."""
+
+    def __init__(self, f):
+        self.f, self.h, self.n = f, hashlib.sha256(), 0
+
+    def read(self, size=-1):
+        b = self.f.read(size)
+        self.h.update(b)
+        self.n += len(b)
+        return b
+
+
+def read_parts(parts, s):
+    """The bytes of s's range that parts hold, in order. A difference from
+    the exports index raises RecordError once the member or tarball it is
+    in has been read, which may be after some of its bytes were yielded:
+    callers hand nothing out before a first pass came through whole."""
+    at, to = s["from"], s["to"]
+    for p, e, m in parts:
+        x, member, mf, mb = e["name"], m["name"], int(m["source_from"]), int(m["bytes"])
+        found = False
+        try:
+            f = open(p, "rb")
+        except OSError as ex:
+            raise RecordError(f"export {x}: {ex}")
+        with f:
+            tee = _Tee(f)
+            try:
+                with tarfile.open(fileobj=tee, mode="r|gz") as tf:
+                    for ti in tf:
+                        if ti.name != member:
+                            continue
+                        if found:
+                            # a tool that extracts the tarball and this reader could read different bytes
+                            raise RecordError(f"export {x}: member {member} appears twice")
+                        found = True
+                        if not ti.isreg():
+                            raise RecordError(f"export {x}: member {member} is not a regular file")
+                        if ti.size != mb:
+                            raise RecordError(f"export {x}: member {member} is {ti.size} bytes, the index says {mb}")
+                        mh, pos = hashlib.sha256(), mf
+                        src = tf.extractfile(ti)
+                        for b in iter(lambda: src.read(CHUNK), b""):
+                            mh.update(b)
+                            lo, hi = max(at, pos), min(to, pos + len(b))
+                            if lo < hi:
+                                yield b[lo - pos:hi - pos]
+                                at = hi
+                            pos += len(b)
+                        if pos - mf != mb:
+                            raise RecordError(f"export {x}: member {member}: read {pos - mf} bytes, the index says {mb}")
+                        if mh.hexdigest() != m["sha256"]:
+                            raise RecordError(f"export {x}: member {member}: sha256 {mh.hexdigest()}, the index says {m['sha256']}")
+                # the rest of the file after the archive's end, so the
+                # tarball's digest covers every byte of it
+                for _ in iter(lambda: tee.read(CHUNK), b""):
+                    pass
+            except (tarfile.TarError, OSError, EOFError, zlib.error) as ex:
+                raise RecordError(f"export {x}: {ex}")
+        if not found:
+            raise RecordError(f"export {x}: no member {member} in the tarball")
+        if tee.n != int(e["bytes"]):
+            raise RecordError(f"export {x}: tarball is {tee.n} bytes, the index says {e['bytes']}")
+        if tee.h.hexdigest() != e["sha256"]:
+            raise RecordError(f"export {x}: tarball sha256 {tee.h.hexdigest()}, the index says {e['sha256']}")
+
+
+def blocks(chunks):
+    """chunks cut into CHUNK-sized blocks, the last one shorter: two reads
+    of the same range cut it at the same offsets, so their blocks pair up."""
+    buf = bytearray()
+    for b in chunks:
+        buf += b
+        while len(buf) >= CHUNK:
+            yield bytes(buf[:CHUNK])
+            del buf[:CHUNK]
+    if buf:
+        yield bytes(buf)
+
+
+def prove_retired(label, parts, s):
+    """The first pass: s's range read from parts without handing out a
+    byte, checked whole against the segment (length, lines, SHA-256). It
+    returns the SHA-256 of each block, for the second pass to match."""
+    h, n, lines, sums = hashlib.sha256(), 0, 0, []
+    try:
+        for b in blocks(read_parts(parts, s)):
+            h.update(b)
+            n += len(b)
+            lines += b.count(b"\n")
+            sums.append(hashlib.sha256(b).digest())
+    except RecordError as e:
+        raise RecordError(f"{label}: {e}")
+    total = s["to"] - s["from"]
+    if n != total:
+        raise RecordError(f"{label}: the exports gave {n} of the segment's {total} bytes")
+    if h.hexdigest() != s["sha256"]:
+        raise RecordError(f"{label}: the bytes differ from the segment's sha256")
+    if lines != s["lines"]:
+        raise RecordError(f"{label}: {lines} lines, the index says {s['lines']}")
+    return sums
+
+
+def retired_label(name, s):
+    return f"{name}: archive segment {s['name']} from the exports"
+
+
+def check_retired(data_dir, name, s, cache):
+    """Read s back from the exports whole and require its length, lines and
+    digest: the first pass alone, since nothing needs the bytes."""
+    label = retired_label(name, s)
+    prove_retired(label, plan_retired(label, data_dir, name, s, cache), s)
+
+
+def iter_retired(data_dir, name, s, cache):
+    """s's bytes from the exports. No byte comes out before all of them are
+    proven (a reader may act on each line as it comes), so the exports are
+    read twice: the first pass proves the range and keeps each block's
+    digest, the second hands each block out once its digest is the first
+    pass's, and ends with an error at the first that is not."""
+    label = retired_label(name, s)
+    parts = plan_retired(label, data_dir, name, s, cache)
+    sums = prove_retired(label, parts, s)
+    k = 0
+    try:
+        for b in blocks(read_parts(parts, s)):
+            if k >= len(sums) or hashlib.sha256(b).digest() != sums[k]:
+                raise RecordError(f"the exports changed while they were read: logical bytes from {s['from'] + k * CHUNK} differ from the first pass")
+            k += 1
+            yield b
+    except RecordError as e:
+        raise RecordError(f"{label}: {e}")
+    if k != len(sums):
+        raise RecordError(f"{label}: the exports changed while they were read: {k} of the range's {len(sums)} blocks came back")
 
 
 def iter_record(data_dir, name, live_length=None):
     """The bytes of one file's whole record: its archived segments up to the
-    live file's base, then the live file (its first live_length bytes when
-    given)."""
+    live file's base (a retired one's from the exports once its file is
+    gone), then the live file (its first live_length bytes when given)."""
     a = archive_cut(data_dir, name)
+    cache = {}
     for s in (a or {}).get("segments", []):
-        with gzip.open(os.path.join(data_dir, ARCHIVE, name, s["name"]), "rb") as z:
+        p = os.path.join(archive_dir(data_dir, name), s["name"])
+        if not os.path.exists(p):
+            if not s.get("retired"):
+                raise RecordError(f"{name}: archive segment {s['name']} is gone and was never retired")
+            yield from iter_retired(data_dir, name, s, cache)
+            continue
+        with gzip.open(p, "rb") as z:
             while True:
                 b = z.read(CHUNK)
                 if not b:
@@ -295,14 +592,24 @@ def iter_record(data_dir, name, live_length=None):
 def verify_archive(restored, name, info):
     """Every segment the cut names is in the copy, whole: the gzip file's
     digest and size, and what it decompresses to (digest, length, lines);
-    and the copy's index places the live file at the cut's base."""
+    and the copy's index places the live file at the cut's base. A segment
+    the cut lists as retired is checked by its file when the copy has one,
+    and otherwise read back from the copy's exports, whole, as the record
+    reads it (check_retired)."""
     a = info.get("archive")
     if not a:
         return []
     problems = []
+    cache = {}
     for s in a["segments"]:
-        p = os.path.join(restored, ARCHIVE, name, s["name"])
+        p = os.path.join(archive_dir(restored, name), s["name"])
         if not os.path.exists(p):
+            if s.get("retired"):
+                try:
+                    check_retired(restored, name, s, cache)
+                except RecordError as e:
+                    problems.append(str(e))
+                continue
             problems.append(f"{name}: archive segment {s['name']} missing")
             continue
         gh = hashlib.sha256()
@@ -329,7 +636,7 @@ def verify_archive(restored, name, info):
     try:
         base = live_base(restored, name)
     except (OSError, ValueError) as e:
-        return [f"{name}: {ARCHIVE}/{name}/index.json: {e}"]
+        return [f"{name}: {index_label(name)}: {e}"]
     if base != a["base"]:
         problems.append(f"{name}: the copy's index places the live file at {base}, the cut at {a['base']}")
     return problems
@@ -345,7 +652,7 @@ def cut(data_dir):
 def cut_locked(data_dir):
     state_raw = read_state(os.path.join(data_dir, STATE))
     lengths = []
-    for name in RECORD_FILES:
+    for name in record_files(data_dir):
         p = os.path.join(data_dir, name)
         if os.path.exists(p):
             lengths.append((name, complete_length(p)))
@@ -400,17 +707,26 @@ def snapshot(data_dir, dest):
 
 
 def copy_cut(data_dir, dest, m):
+    done = set()
     for name, info in m["files"].items():
         a = info.get("archive")
         if a:
             # segments never change once written: copied whole, with the
             # index that places the live file at the cut's base
-            os.makedirs(os.path.join(dest, ARCHIVE, name), exist_ok=True)
+            sdir, ddir = archive_dir(data_dir, name), archive_dir(dest, name)
+            os.makedirs(ddir, exist_ok=True)
             for s in a["segments"]:
-                shutil.copyfile(os.path.join(data_dir, ARCHIVE, name, s["name"]), os.path.join(dest, ARCHIVE, name, s["name"]))
-            shutil.copyfile(os.path.join(data_dir, ARCHIVE, name, "index.json"), os.path.join(dest, ARCHIVE, name, "index.json"))
+                if s.get("retired"):
+                    # its bytes are in the exports it names, which go
+                    # along; its file too while the host still has it
+                    copy_exports(data_dir, dest, name, s["retired"], done)
+                    if not os.path.exists(os.path.join(sdir, s["name"])):
+                        continue
+                shutil.copyfile(os.path.join(sdir, s["name"]), os.path.join(ddir, s["name"]))
+            shutil.copyfile(os.path.join(sdir, "index.json"), os.path.join(ddir, "index.json"))
         src = os.path.join(data_dir, name)
         dst = os.path.join(dest, name)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
         with open(src, "rb") as i, open(dst, "wb") as o:
             left = info["bytes"]
             while left > 0:
@@ -423,6 +739,29 @@ def copy_cut(data_dir, dest, m):
         # the state as it was at the cut, not as it is now
         with open(os.path.join(dest, STATE), "w") as f:
             f.write(m["state_raw"])
+
+
+def copy_exports(data_dir, dest, name, r, done):
+    """The exports a retired segment is read from, and their index, to the
+    same place under dest, so the copy reads the segment as the host does.
+    done holds what this copy has copied already: the segments of several
+    files name the same day's tarball."""
+    src = exports_dir_of(data_dir, name, r)
+    dst = exports_dir_of(dest, name, r)
+    root = os.path.abspath(dest)
+    if os.path.commonpath([os.path.abspath(dst), root]) != root:
+        raise RecordError(f"{name}: exports_dir {r.get('exports_dir')!r} leads out of the data directory")
+    os.makedirs(dst, exist_ok=True)
+    for x in [EXPORTS_INDEX] + list(r.get("exports") or []):
+        if not x or os.path.basename(x) != x or x in (".", ".."):
+            raise RecordError(f"{name}: export {x!r} is not a file name")
+        if os.path.join(dst, x) in done:
+            continue
+        try:
+            shutil.copyfile(os.path.join(src, x), os.path.join(dst, x))
+        except OSError as e:
+            raise RecordError(f"{name}: a retired segment's export: {e}")
+        done.add(os.path.join(dst, x))
 
 
 def verify(restored, manifest_path=None):
@@ -507,7 +846,9 @@ def show(m):
         archived = ""
         if info.get("archive"):
             a = info["archive"]
-            archived = f" + {a['records']} archived in {len(a['segments'])} segment(s) (base {a['base']})"
+            retired = sum(1 for s in a["segments"] if s.get("retired"))
+            retired = f", {retired} retired to the exports" if retired else ""
+            archived = f" + {a['records']} archived in {len(a['segments'])} segment(s){retired} (base {a['base']})"
         print(f"  {name:<24} {info['bytes']:>12} bytes {info['records']:>9} records {info['sha256'][:16]}{archived}")
 
 
@@ -539,11 +880,17 @@ def main(argv):
         elif cmd == "show":
             show(json.load(open(argv[2])))
         elif cmd == "cat" and len(argv) > 3:
-            with ArchiveLock(argv[2]):
-                p = os.path.join(argv[2], argv[3])
-                length = complete_length(p) if os.path.exists(p) else None
-                for b in iter_record(argv[2], argv[3], length):
-                    sys.stdout.buffer.write(b)
+            try:
+                with ArchiveLock(argv[2]):
+                    p = os.path.join(argv[2], argv[3])
+                    length = complete_length(p) if os.path.exists(p) else None
+                    for b in iter_record(argv[2], argv[3], length):
+                        sys.stdout.buffer.write(b)
+            except RecordError as e:
+                # stdout is the record: the reason goes to stderr, and the
+                # exit status says the record did not come out whole
+                print(f"cat: {e}", file=sys.stderr)
+                return 1
         elif cmd == "end" and len(argv) > 3:
             p = os.path.join(argv[2], argv[3])
             base = live_base(argv[2], argv[3])
