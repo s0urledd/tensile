@@ -161,9 +161,60 @@ func (s *Server) signingByValidator(ctx context.Context, win Window, only string
 // recentSigning adds LastEndorsedAt and Recent to every validator in out
 // (and to any validator with an endorsement that out lacks): the newest
 // record, not the window. The figures come from the endorsement ledger,
-// brought up to date first.
+// brought up to date first. Within a comparison of the two ways a figure is
+// computed, both get one reading of it (ledgerOnce).
 func (s *Server) recentSigning(ctx context.Context, only string, out map[string]signingStats) error {
+	if once, ok := ctx.Value(ledgerOnceKey{}).(*ledgerOnce); ok {
+		return once.fill(ctx, s, only, out)
+	}
 	return s.recent.fill(ctx, s.st.DB(), only, out)
+}
+
+// ledgerOnce keeps what the endorsement ledger answered through one
+// comparison of the partials with the shipped statements (comparePaths).
+// The ledger is a cache of the whole record, read outside the comparison's
+// read transaction (readtx.go), and the same code both ways. Read once per
+// way, a publication stored between the two computations moved the
+// second one's newest endorsements alone, and the audit took that for
+// partials that are not what the store holds (mocha, 2026-10-06 15:09: a
+// blob settled at 15:09:02 was stored at 15:09:09.110, between the shipped
+// computation and the partials'; every validator that endorsed it differed).
+// Both ways now get the first reading, per validator asked for.
+type ledgerOnce struct {
+	mu  sync.Mutex
+	got map[string]map[string]signingStats // by only: Recent and LastEndorsedAt, as the ledger set them
+}
+
+type ledgerOnceKey struct{}
+
+// withLedgerOnce makes the computations under ctx share one reading of the
+// ledger.
+func withLedgerOnce(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ledgerOnceKey{}, &ledgerOnce{got: map[string]map[string]signingStats{}})
+}
+
+// fill is endorsementLedger.fill, the ledger read the first time only.
+func (o *ledgerOnce) fill(ctx context.Context, s *Server, only string, out map[string]signingStats) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	got, ok := o.got[only]
+	if !ok {
+		got = map[string]signingStats{}
+		if err := s.recent.fill(ctx, s.st.DB(), only, got); err != nil {
+			return err
+		}
+		o.got[only] = got
+	}
+	for addr, g := range got {
+		st := out[addr]
+		st.Recent = g.Recent
+		if g.LastEndorsedAt != nil {
+			v := *g.LastEndorsedAt
+			st.LastEndorsedAt = &v
+		}
+		out[addr] = st
+	}
+	return nil
 }
 
 // recentPopulationSQL is the assignments recentSigning describes: a settled

@@ -2,12 +2,16 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"math/rand/v2"
 	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
+	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
 // auditSim is a record of five days sealed as far as it is due.
@@ -268,4 +272,84 @@ func sealedSettle(e *epoch) int {
 		}
 	}
 	return n
+}
+
+// TestAPublicationStoredMidAuditIsNotADifference: the endorsement ledger is a
+// cache of the whole record, read outside the comparison's transaction. On
+// mocha (2026-10-06 15:09) a blob was stored between the shipped computation
+// of the audit's validator list and the partials', so the second one alone
+// had it as every endorser's newest endorsement, and the audit put the
+// process on raw reads for partials that were what the store holds. Both ways
+// now get one reading of the ledger: the same publication stored at the same
+// moment is no difference, while the ledger outside the comparison has it.
+func TestAPublicationStoredMidAuditIsNotADifference(t *testing.T) {
+	skipUnderRace(t)
+	t.Parallel()
+	s, srv := auditSim(t, 37)
+	ctx := context.Background()
+	srv.parts.mu.Lock()
+	win, ok := srv.parts.cur.auditWindowOf()
+	srv.parts.mu.Unlock()
+	if !ok {
+		t.Fatal("nothing sealed to audit")
+	}
+
+	// a publication every validator endorsed, newer than every one stored
+	var newest string
+	if err := s.st.DB().QueryRowContext(ctx, `SELECT MAX(settlement_time) FROM publications`).Scan(&newest); err != nil {
+		t.Fatal(err)
+	}
+	at, err := time.Parse(time.RFC3339Nano, newest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p scan.Publication
+	for _, sp := range s.pubs {
+		if sp.emitAt.After(s.now) || sp.pub.Assignment.Error != "" || len(sp.pub.Assignment.Validators) == 0 {
+			continue
+		}
+		p = sp.pub
+	}
+	p.PromiseHash, p.SettlementTxHash = s.hash("mid-audit", 0), s.hash("mid-audit-tx", 0)[:40]
+	p.SettlementHeight, p.SettlementTime, p.SettlementTxCode = s.height+1000, at.Add(time.Millisecond), 0
+	p.Assignment.Validators = append([]scan.ValidatorAssignment(nil), p.Assignment.Validators...)
+	for i := range p.Assignment.Validators {
+		p.Assignment.Validators[i].Attested = true
+	}
+	raw, _ := json.Marshal(p)
+
+	c := validatorsCase(srv, win, "")
+	calls := 0
+	mid := pathCase{c.name, func(ctx context.Context) (any, error) {
+		out, err := c.run(ctx)
+		if calls++; calls == 1 { // the shipped way is done; the partials' is next
+			if ok, err := s.st.UpsertPublication(p, raw); err != nil || !ok {
+				t.Fatalf("storing the publication: %v %v", ok, err)
+			}
+		}
+		return out, err
+	}}
+	n, diffs, err := srv.comparePaths(ctx, []pathCase{mid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || len(diffs) > 0 {
+		t.Fatalf("a publication stored between the two ways is a difference (%d compared):\n%s", n, strings.Join(diffs, "\n"))
+	}
+
+	// the ledger outside the comparison has it: the race was run, not missed
+	rows, err := srv.validatorRows(ctx, win, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, moved := store.TS(p.SettlementTime), 0
+	for _, r := range rows {
+		if r.Signing.LastEndorsedAt != nil && *r.Signing.LastEndorsedAt == want {
+			moved++
+		}
+	}
+	if moved == 0 {
+		t.Fatalf("no validator's newest endorsement is the publication stored mid-comparison (%s)", want)
+	}
+	t.Logf("%d validators endorsed the publication stored mid-comparison; the comparison saw one ledger", moved)
 }
