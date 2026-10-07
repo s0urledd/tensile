@@ -795,7 +795,8 @@ func (s *Scanner) retryRPCAt(ctx context.Context, what string, height int64, fn 
 		// below the tip the height is as unavailable as a pruned one, a
 		// gap after the grace; retried as transient, it held the scan on
 		// that height for good, with no gap and a warning every five
-		// minutes. Asked once per height: the tip only moves away.
+		// minutes. /status is asked at each such failure until it puts the
+		// height below the tip, and not after: the tip only moves away.
 		tipRace := IsHeightInFuture(err)
 		if missing := height > 0 && IsResultsMissing(err); missing && !resultsGone {
 			switch below, known := s.belowTip(ctx, height); {
