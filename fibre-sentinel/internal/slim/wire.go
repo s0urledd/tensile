@@ -82,8 +82,14 @@ func (r *reader) s() int64 {
 	return x
 }
 
+// tag, like every read, keeps the first error a record meets: an unknown entry met inside an object must stay the
+// error the decode returns, not become "ends early" when the reads after it run off the misaligned bytes, since only
+// an unknown entry makes a store load the entries added since.
 func (r *reader) tag() byte {
-	if r.err != nil || r.i >= len(r.b) {
+	if r.err != nil {
+		return 0
+	}
+	if r.i >= len(r.b) {
 		r.err = errShort
 		return 0
 	}
@@ -94,7 +100,10 @@ func (r *reader) tag() byte {
 
 func (r *reader) raw() []byte {
 	n := int(r.u())
-	if r.err != nil || n < 0 || r.i+n > len(r.b) {
+	if r.err != nil {
+		return nil
+	}
+	if n < 0 || r.i+n > len(r.b) {
 		r.err = errShort
 		return nil
 	}

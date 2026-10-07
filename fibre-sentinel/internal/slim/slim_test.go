@@ -244,6 +244,51 @@ func TestAnEntryNotLoadedYetIsAskedFor(t *testing.T) {
 	}
 }
 
+// A reader that knows every string and shape but not the validator set a new publication brings (the set changed
+// since it loaded) says the entry is unknown, not that the record ends early: an unknown entry is what makes a store
+// load the entries added since, and anything else leaves the publication unreadable until a restart (mocha,
+// 2026-10-07: the first publication over a new 85-validator set failed /v1/blobs for hours).
+func TestANewValidatorSetNotLoadedYetIsAskedFor(t *testing.T) {
+	w := NewTables()
+	r := NewTables()
+	first, _, err := w.EncodePublication(line(t, testPublication(t, 0x55, testValidators(5))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range w.Pending() {
+		if err := r.Add(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := r.DecodePublication(first); err != nil {
+		t.Fatal(err)
+	}
+	// the same validators, one more: no string or shape is new, only the set and its hosts
+	body, _, err := w.EncodePublication(line(t, testPublication(t, 0x56, testValidators(6))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := w.Pending()
+	kinds := map[int]bool{}
+	for _, e := range pending {
+		kinds[e.Kind] = true
+	}
+	if !kinds[KindSet] {
+		t.Fatalf("the second publication adds no set entry (%v): the test needs one", kinds)
+	}
+	if _, _, err := r.DecodePublication(body); !errors.Is(err, ErrUnknownEntry) {
+		t.Fatalf("decoding before loading the new set: %v, want ErrUnknownEntry", err)
+	}
+	for _, e := range pending {
+		if err := r.Add(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := r.DecodePublication(body); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Entries handed out for a record that was never kept are forgotten, so the next record adds them again under the
 // same numbers.
 func TestRollbackForgetsWhatWasNotKept(t *testing.T) {
