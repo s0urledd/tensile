@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	assign "github.com/plsgiveup/fibre/fibre-assign"
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 )
 
 // a celestia-app pin no build of fibre-assign was ever made from
@@ -68,6 +69,9 @@ func TestAForeignPinIsNotDerived(t *testing.T) {
 	if err != nil || !bytes.Equal(got, l) {
 		t.Fatalf("publication: %v", err)
 	}
+	if _, ok := rPub.Rows(v.Address); ok || !errors.Is(rPub.PinErr(), ErrAssignmentPin) {
+		t.Fatalf("the decoded publication gives rows or no pin error (PinErr %v)", rPub.PinErr())
+	}
 	if got, err := r.DecodeMeasurement(mb, rPub, nil); err != nil || !bytes.Equal(got, line(t, m)) {
 		t.Fatalf("reading: %v", err)
 	}
@@ -125,5 +129,31 @@ func TestADerivedTableUnderAForeignPinIsRefused(t *testing.T) {
 	// with the pin it was written under, both read back
 	if got, _, err := w.DecodePublication(body); err != nil || !bytes.Equal(got, l) {
 		t.Fatalf("publication under its own pin: %v", err)
+	}
+}
+
+// A publication whose assignment failed (no pin, no validator list) has no rows to reproduce: whatever form it is read
+// in, it is not reported as another pin's.
+func TestAFailedAssignmentIsNotAPinError(t *testing.T) {
+	pub := testPublication(t, 0x64, testValidators(3))
+	pub.Assignment = scan.AssignmentTable{Error: "no pinned protocol params for blob version 9", ValidatorSetHeight: 999}
+	l := line(t, pub)
+	w := NewTables()
+	body, info, err := w.EncodePublication(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, decoded, err := w.DecodePublication(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromLine, err := PubFromLine(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, p := range map[string]*Pub{"encoded": info, "decoded": decoded, "line": fromLine} {
+		if p.PinErr() != nil {
+			t.Errorf("%s: PinErr = %v for a failed assignment", name, p.PinErr())
+		}
 	}
 }

@@ -119,6 +119,15 @@ func pinOf(pub *Value) error {
 	return fmt.Errorf("%w (record pin %q, built with %s)", ErrAssignmentPin, pin, assign.PinnedCelestiaAppCommit)
 }
 
+// pinErrOf is a Pub's pinErr: pinOf when the publication has an assignment to reproduce (set, its validator list, read
+// off it, and no assignment error), else nil, so a record whose assignment failed is not reported as another pin's.
+func pinErrOf(pub *Value, set *valSet) error {
+	if set == nil || pub.Path("assignment", "error") != nil {
+		return nil
+	}
+	return pinOf(pub)
+}
+
 // pubTree keeps of a publication record only what its readings take from it: the promise's commitment and blob
 // version, the deadline, the validator set height, and each validator's attestation and host. A store caches Pubs, and
 // the whole record (its row lists above all) would make each one megabytes.
@@ -158,10 +167,11 @@ func PubFromLine(line []byte) (*Pub, error) {
 	if err != nil {
 		return nil, err
 	}
-	info := &Pub{tree: pubTree(orig), pinErr: pinOf(orig)}
+	info := &Pub{tree: pubTree(orig)}
 	info.Hash, _ = strField(orig, "promise_hash")
 	a := orig.Get("assignment")
 	set := setFrom(a.Get("validators"))
+	info.pinErr = pinErrOf(orig, set)
 	c, okc := commitmentOf(orig)
 	pp, okp := protocolParams(orig)
 	if set != nil && okc && okp && a.Get("error") == nil && info.pinErr == nil {
@@ -173,7 +183,8 @@ func PubFromLine(line []byte) (*Pub, error) {
 }
 
 // PinErr is ErrAssignmentPin, naming the record's pin, when the publication's assignment is from a celestia-app this
-// build does not reproduce (Rows then gives no rows); nil otherwise.
+// build does not reproduce (Rows then gives no rows); nil otherwise, and nil for a record whose assignment failed.
+// The line form, the encoder and the decoder give the same.
 func (p *Pub) PinErr() error {
 	if p == nil {
 		return nil
@@ -428,7 +439,7 @@ func (t *Tables) EncodePublication(line []byte) ([]byte, *Pub, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	v := clone(orig)
-	info := &Pub{tree: pubTree(orig), pinErr: pinOf(orig)}
+	info := &Pub{tree: pubTree(orig)}
 	info.Hash, _ = strField(orig, "promise_hash")
 
 	// the namespace's version and id are its first byte and the rest
@@ -449,6 +460,7 @@ func (t *Tables) EncodePublication(line []byte) ([]byte, *Pub, error) {
 	a := v.Get("assignment")
 	vs := a.Get("validators")
 	set := setFrom(vs)
+	info.pinErr = pinErrOf(orig, set)
 	c, okc := commitmentOf(orig)
 	pp, okp := protocolParams(orig)
 	if set != nil && okc && okp && a.Get("error") == nil && info.pinErr == nil {
@@ -555,6 +567,10 @@ func (t *Tables) DecodePublication(b []byte) ([]byte, *Pub, error) {
 	info := &Pub{}
 	if err := t.fillPublication(v, info); err != nil {
 		return nil, nil, err
+	}
+	if info.set == nil {
+		// a list kept whole: its pin says the same as the line form's and the encoder's (a derived one passed it)
+		info.pinErr = pinErrOf(v, setFrom(v.Path("assignment", "validators")))
 	}
 	info.tree = pubTree(v)
 	info.Hash, _ = strField(v, "promise_hash")
