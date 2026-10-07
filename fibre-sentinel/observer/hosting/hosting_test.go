@@ -388,3 +388,44 @@ func TestResolveConfig(t *testing.T) {
 func recordOf(st *store.Store) func(ctx context.Context, raw []byte) ([]byte, error) {
 	return func(ctx context.Context, raw []byte) ([]byte, error) { return st.ReachRecord(ctx, st.DB(), raw) }
 }
+
+// A collector that has just started has not loaded the slim tables yet. The store has one connection, and reading a
+// slim heartbeat loads them with a query of its own: the refresher must not hold that connection with its rows while
+// it reads them, or it waits on itself for good (mocha, 2026-10-07: the collector stopped ingesting after its first
+// pass, from a restart until it was restarted again).
+func TestRefresherOnAStoreJustOpenedDoesNotWaitOnItself(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "observer.db")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureSchema(st.DB()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+	b1, h1 := consBech(t, 0x11)
+	if _, _, err := st.ObserveEndpoints(ctx, []scan.FibreProvider{{ConsAddressBech32: b1, Host: "fibre.one.example:7980"}}, 100, now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	beat(t, st, h1, "fibre.one.example:7980", now.Add(-10*time.Minute), "5.9.1.1", "-> 5.9.1.1:7980")
+	st.Close()
+
+	// the store as a restarted collector opens it: no slim table loaded yet
+	st, err = store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	r := &Refresher{DB: st.DB(), Logf: t.Logf, Record: recordOf(st), Cfg: Config{ASNPath: writeFile(t, dir, DefaultASNFile, asnTSV, true)}}
+	tctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	res, err := r.Run(tctx, now)
+	if err != nil {
+		t.Fatalf("run on a store just opened: %v", err)
+	}
+	if res.Resolved != 1 {
+		t.Fatalf("run: %+v", res)
+	}
+}
