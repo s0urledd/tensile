@@ -44,8 +44,9 @@ least three minutes) fails health however fresh its file is: the file is
 rewritten by a goroutine of its own, so a stuck loop kept it fresh (on 7
 October 2026 the collector waited on its own store connection and read
 "alive"). The checks that are about the record (`ingest`, `chain_polls`,
-`vantages`) read the store; `deploy/README.md`, "Health and alerting",
-lists every check.
+`vantages`) read the store, and those about the API's own answers
+(`api_errors`, `snapshots`, `records`) what the API process saw;
+`deploy/README.md`, "Health and alerting", lists every check.
 
 Every process also appends a `RunEvent` to `runs.jsonl` on start and stop,
 carrying its flags and `status.BuildRevision()`. That is how a published row
@@ -333,7 +334,12 @@ string carrying a byte that is not UTF-8 (a remote server's error text) is the
 case: the line holds the escape of U+FFFD, and the slim form would give back
 the character instead, the same JSON value in other bytes. A stored record
 that does not read back (`store.ErrUndecodable`) is that row's error: a read
-over many rows logs it once, leaves that row aside and goes on.
+over many rows logs it once, leaves that row aside and goes on. The API
+publishes such a row with the part that needed its record marked (a blob's
+`reconstructable` status `unknown`, a reading's `row_indices` left out),
+neither caches the status it computed from it nor counts it in the reading
+totals, so the row is computed again once it decodes, and it fails
+`/v1/health`'s `records` check for 15 minutes after the last one it met.
 
 *Under which pin.* The rows are computed again with the fibre-assign compiled
 in, so a record derives them only when the celestia-app pin it names
@@ -1106,6 +1112,7 @@ Stated here because they are properties of the machine, not of any validator.
 |---|---|
 | a figure is stale | `computed_at` on the response; the `snapshots` check in `/v1/health`; `snapshots/` on disk; the warm-up log |
 | the site's figures stop moving while every process is alive | the `ingest` check and each process's `no completed cycle` in `/v1/health`: a stuck loop. `systemctl kill -s QUIT fibre-<name>@<network>` writes every goroutine's stack to the journal before the unit restarts |
+| a blob with readings reads `unknown`, or a reading has no `row_indices` | the `records` check in `/v1/health`: a stored row this build cannot decode. The API's journal names each one once (`a row that does not decode is published without it`) |
 | the 7d, 30d or all windows are slow, or the disk busy | `day_partials` in `/v1/health` (state, oldest day not sealed, last audit); the API's `day partials:` log lines (one per sealer burst and per audit, a unit's failure and its recovery) |
 | a validator reads 0 obligations | `attested` NULL vs 0; `assignment_error` on the publication |
 | the service rate moved with no new readings | an amendment settled a deferred verdict (`probe_amendments`) |

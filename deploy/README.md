@@ -281,14 +281,15 @@ failing checks otherwise.
 | check | fails when |
 |---|---|
 | `scanner`, `prober`, `heartbeat`, `collector` | the process is missing or dead; it keeps failing (`alive but failing: <stage>`); or its loop has completed no cycle for three of its cadences, and at least three minutes (`no completed cycle for <d>`). The last one is a stuck loop: its status file keeps being refreshed, so nothing else shows it. A scanner waiting at the tip of a chain that makes no block is not stuck; `chain_liveness` says why. The prober also fails when its readings failed in the last 15 minutes and none was made. |
-| `work` | one of the collector's stages has failed for over ten minutes: `state`, `checkpoint`, `late verdicts`, `corrections`, `holds`, `retention`, `registry`, `export`, `heartbeat`, `hosting` or `avatars` (storing a picture). The chain poll's success no longer hides it. |
-| `ingest` | lines have waited in a record file for ten minutes with the collector's cursor unmoved (`collector has ingested nothing for <d>`): its loop is stuck, and the site's figures stop moving. |
-| `chain_polls` | a chain-side poll has not succeeded in time: the chain status for 15 minutes, the endpoints or escrow for 15 minutes once Fibre is active, the validator identities for 26 hours. A poll never recorded fails once the collector has run longer than that. The last value stays served meanwhile, so this is the only sign. |
+| `work` | one of the collector's stages has failed for over ten minutes: `state`, `checkpoint`, `late verdicts`, `corrections`, `holds`, `retention`, `registry`, `export`, `heartbeat`, `hosting` or `avatars` (the store's side of the pictures: listing the identities due, storing one; a Keybase lookup that fails is not a stage's failure). The chain poll's success no longer hides it. |
+| `ingest` | lines have waited in a record file for ten minutes with the collector's cursor unmoved (`collector has ingested nothing for <d>`): its loop is stuck, and the site's figures stop moving. Where the API cannot read the record files, it fails once no cursor has moved for 15 minutes. |
+| `chain_polls` | a chain-side poll has not succeeded in time: the chain status and the endpoints for 15 minutes, the escrow for 15 minutes once Fibre is active, the validator identities for 26 hours. A poll never recorded fails once the collector has run longer than that. The last value stays served meanwhile, so this is the only sign. |
 | `scanner_lag` | the scanner is more than 200 blocks behind the chain. |
 | `chain_liveness` | the newest block the observer knows of, from the collector's poll or the scanner's own reading, is over ten minutes old: the chain or the node is halted. A stuck collector alone no longer reads as a halted chain. |
 | `vantages` | another vantage seen in the last seven days has sent no endpoint check for 20 minutes: its heartbeat died or the pull fails. |
-| `api_errors` | a route answered a 5xx in the last ten minutes. A 503 is not counted: the API answers it on purpose while a window is still being computed, which `snapshots` covers. The error is in the API's journal. |
+| `api_errors` | a route answered a 5xx, or its handler panicked, in the last ten minutes. A 503 is not counted: the API answers it on purpose, while a window is still being computed (which `snapshots` covers) and as `/v1/health`'s own verdict. The error is in the API's journal. |
 | `snapshots` | a window's figures have not refreshed for twice their interval (at least 15 minutes), or three refreshes in a row failed. The site keeps showing the older figures. |
+| `records` | the API met a stored row it cannot decode in the last 15 minutes. The row is published with that part marked (a blob's `reconstructable` status `unknown`, a reading's `row_indices` left out) and the rest of the answer stands; the API's journal names each row once. |
 | `disk` | the data disk has under 15% free. |
 | `scan_gaps` | a scan gap is recorded (see the Runbook). |
 | `pin` | the chain upgraded past this build's pin (see the Runbook). |
@@ -301,7 +302,9 @@ looks like. A check's detail names the stage that failed and for how long,
 never an error's text, a path or the disk's size. Each component shows
 only `component`, `present`, `alive`, `ok`, `age_s` and `started_at`. The
 full errors are in the units' journals, and the status files on the host
-keep the rest (the last error, the disk, the build). `/v1/meta` no longer
+keep the rest (the last error, the disk, the build). `scan_gaps` keeps
+each range, its reason and its times, and no longer the node's error for
+it, which names the node. `/v1/meta` no longer
 carries the verdict or the checks. The site shows none of them: it says
 something only when the API does not answer (a line above the page and a
 dot on the network chip). Every failing check reaches the operator from
@@ -1349,13 +1352,17 @@ cat /var/lib/fibre-observer/mocha/exports/remote-copy.json                  # th
   arriving: its heartbeat died on its host, or the pull fails
   (`journalctl -u fibre-vantage-pull@<network> -n 50`). Until it is back,
   an endpoint is no longer checked from the second location.
-- **`api_errors` or `snapshots` fails.** A route answered 500, or a
-  window's figures stopped refreshing; the detail names the route or the
-  window. `journalctl -u fibre-api@<network> -n 200` has the error. A
-  record that does not decode no longer takes a page down: its row is
-  published with that part marked (a blob's `reconstructable` status
-  `unknown`, a reading's `row_indices` left out), and the API logs the
-  record once and counts it.
+- **`api_errors` or `snapshots` fails.** A route answered a 5xx other
+  than 503, or a window's figures stopped refreshing; the detail names the
+  route or the window. `journalctl -u fibre-api@<network> -n 200` has the
+  error.
+- **`records` fails.** The API met a stored row it cannot decode. It no
+  longer takes a page down: the row is published with that part marked (a
+  blob's `reconstructable` status `unknown`, a reading's `row_indices` left
+  out). `journalctl -u fibre-api@<network> | grep 'does not decode'` names
+  each row once; keep those lines and report them. The stored row is not
+  changed, so a build that reads it again clears the check 15 minutes after
+  the last one met.
 - **The collector says `has no index.json but holds N export tarball(s)`.**
   `exports/index.json` is gone while the tarballs are there. The export
   builder stops rather than start a new index listing one day: the API
