@@ -2883,8 +2883,15 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 		// reachable null, as for an endpoint not checked yet. (A validator
 		// the registry has no row of at all keeps its newest check's word,
 		// as before the registry was read.)
+		//
+		// The registry is read as it is now, also in a pinned window
+		// (AsOfNote: the current host is as of now), while the check is the
+		// newest by as_of: the host is compared only when both are now. A
+		// pinned answer leaves out only a check that had no host to ask, so
+		// a validator that moved host or closed its endpoint since keeps the
+		// state its endpoint had at the moment asked about.
 		inRegistry := v.Host != "" || v.EndpointClosedAt != nil
-		if st.host == "" || (inRegistry && st.host != v.Host) {
+		if st.host == "" || (!win.AsOf && inRegistry && st.host != v.Host) {
 			continue
 		}
 		r := st.up()

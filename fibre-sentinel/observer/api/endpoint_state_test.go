@@ -113,4 +113,21 @@ func TestAValidatorWithNoOpenEndpointHasNoEndpointState(t *testing.T) {
 	if seen != 3 {
 		t.Errorf("the list has %d of the three validators", seen)
 	}
+
+	// Pinned to a moment before the endpoint closed, the registry is still
+	// read as it is now (the as_of note says so), so the closure says
+	// nothing about that moment: the endpoint keeps the state its check gave
+	// it then, as a pinned answer always did. A check with no host to ask is
+	// no endpoint's state at any moment.
+	list.Validators = nil
+	pin := now.Add(-2 * time.Minute).Format(time.RFC3339)
+	if code := get(t, ts, "/v1/validators?window=24h&as_of="+pin, &list); code != 200 {
+		t.Fatalf("pinned validators: %d", code)
+	}
+	pinned := map[string]string{hostless: "", closed: "reachable", open: "reachable"}
+	for _, v := range list.Validators {
+		if w, ok := pinned[v.Address]; ok && v.EndpointState != w {
+			t.Errorf("pinned, %s: endpoint_state %q, want %q", v.Address, v.EndpointState, w)
+		}
+	}
 }
