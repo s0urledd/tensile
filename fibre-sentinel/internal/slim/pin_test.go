@@ -12,10 +12,11 @@ import (
 // a celestia-app pin no build of fibre-assign was ever made from
 const foreignPin = "00000000000000000000000000000000000000aa"
 
-// Every pin a record on a network was written with, newest last. A re-pin that drops one from assignPins (by
-// replacing PinnedCelestiaAppCommit and not listing the pin it leaves) makes every slim record written under it
-// undecodable, so it must fail here first: list the old pin when reftest is bit-identical across the two, and when the
-// assignment changed, settle how the records written under it stay readable before the build ships.
+// Every pin a record on a network was written with, newest last. A re-pin of fibre-assign lists none of the earlier
+// pins (they are listed under the compiled pin they were checked against), which makes every slim record written under
+// them undecodable, so it must fail here first: list each old pin under the new one when reftest is bit-identical
+// across the two, and when the assignment changed, settle how the records written under it stay readable before the
+// build ships.
 var pinsOnRecord = []string{
 	"3b77dc2f5b00e1a646a2e9dd98b5c024a0d9ad8a", // v10.2.0-mocha: mocha, 2026-09-21 to 2026-10-06
 	"5187d2fb5eb8bc4b534c74724882943c54253ae9", // v10.4.0-mocha: mocha, from 2026-10-06
@@ -29,6 +30,26 @@ func TestEveryPinOnRecordIsReproduced(t *testing.T) {
 	}
 	if !assignPins[assign.PinnedCelestiaAppCommit] {
 		t.Error("the compiled pin is not listed")
+	}
+}
+
+// An earlier pin is reproduced only under the compiled pin it was checked against: a build of fibre-assign pinned
+// anywhere else (a re-pin whose assignment may have changed) reproduces its own pin and none of the earlier ones, so
+// the records written under them are refused with ErrAssignmentPin until they are checked and listed again.
+func TestARepinReproducesNoEarlierPin(t *testing.T) {
+	pins := pinsReproducedBy(foreignPin)
+	if len(pins) != 1 || !pins[foreignPin] {
+		t.Fatalf("a build pinned to %s reproduces %v, want only its own pin", foreignPin, pins)
+	}
+	for compiled, earlier := range reproducedUnder {
+		for _, p := range earlier {
+			if p == compiled {
+				t.Errorf("%s is listed as an earlier pin of itself", p)
+			}
+			if pins[p] {
+				t.Errorf("%s, checked against %s, is reproduced by a build pinned to %s", p, compiled, foreignPin)
+			}
+		}
 	}
 }
 

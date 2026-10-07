@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	assign "github.com/plsgiveup/fibre/fibre-assign"
 )
 
 var updateCorpus = flag.Bool("update-corpus", false, "write testdata/corpus-slim.json.gz again from the corpus lines")
@@ -73,6 +75,32 @@ func promiseHashOf(t *testing.T, line []byte) string {
 	return x.PromiseHash
 }
 
+// sameRowsAsRecord fails unless the compiled fibre-assign gives every validator of corpus publication i the rows the
+// scanner wrote into the record. It reads only the corpus lines, never the frozen form, so -update-corpus cannot
+// write a changed assignment into the frozen form: under one, the encoder would keep each validator's rows as an
+// exception, the new frozen form would read back, and the slim records every store holds would still decode to rows
+// the record never had.
+func sameRowsAsRecord(t *testing.T, i int, line []byte, p *Pub) {
+	t.Helper()
+	v, err := Parse(line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vs := v.Path("assignment", "validators")
+	if vs == nil || len(vs.Vals) != len(p.rows) {
+		t.Fatalf("publication %d (%s): %d assigned validators, the record lists another number", i, p.Hash, len(p.rows))
+	}
+	for j, x := range vs.Vals {
+		rows := x.Get("rows")
+		if rows == nil {
+			t.Fatalf("publication %d (%s): validator %d has no rows in the record, so the corpus would not test them", i, p.Hash, j)
+		}
+		if !Same(rows, rowList(p.rows[j])) {
+			t.Errorf("publication %d (%s): fibre-assign under %s gives validator %d other rows than the record's", i, p.Hash, assign.PinnedCelestiaAppCommit, j)
+		}
+	}
+}
+
 // encodeCorpus writes the corpus slim into fresh tables, as a store that ingests it in its order does.
 func encodeCorpus(t *testing.T, pubs, meas [][]byte) corpusForm {
 	t.Helper()
@@ -87,6 +115,7 @@ func encodeCorpus(t *testing.T, pubs, meas [][]byte) corpusForm {
 		if p.set == nil {
 			t.Fatalf("publication %d (%s): its rows are not derived (%v), so the corpus would not test the assignment", i, p.Hash, p.PinErr())
 		}
+		sameRowsAsRecord(t, i, l, p)
 		byHash[p.Hash] = p
 		out.Publications = append(out.Publications, b)
 	}
@@ -154,6 +183,9 @@ func TestTheFrozenCorpusReadsBackUnchanged(t *testing.T) {
 	pubs, meas := gunzipLines(t, corpusPubs), gunzipLines(t, corpusMeas)
 	got := encodeCorpus(t, pubs, meas)
 	if *updateCorpus {
+		if t.Failed() {
+			t.Fatalf("not writing %s: the corpus does not encode as its records say", corpusSlim)
+		}
 		writeCorpusForm(t, got)
 		t.Logf("wrote %s: %d entries, %d publications, %d readings", corpusSlim, len(got.Entries), len(got.Publications), len(got.Measurements))
 	}

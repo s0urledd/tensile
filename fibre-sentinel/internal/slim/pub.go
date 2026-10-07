@@ -96,17 +96,30 @@ func (p *Pub) assigned(set *valSet, rows [][]int) {
 // record's, so it is refused instead; the record's own bytes are untouched.
 var ErrAssignmentPin = errors.New("slim: the record's assignment is from a celestia-app pin this build does not reproduce")
 
+// reproducedUnder lists, for a pin fibre-assign was compiled with, the earlier pins whose shard assignment that build
+// was checked to compute exactly: the assignment code did not change between them and reftest is bit-identical across
+// the two. An earlier pin is listed under the compiled pin it was checked against, never on its own, so a re-pin of
+// fibre-assign lists none of them until they are checked against the new pin and listed under it.
+var reproducedUnder = map[string][]string{
+	// v10.4.0-mocha reproduces v10.2.0-mocha, the pin until 2026-10-06: it changes none of fibre/protocol_params.go,
+	// fibre/blob.go, fibre/validator or x/fibre (fibre-assign/params.go)
+	"5187d2fb5eb8bc4b534c74724882943c54253ae9": {"3b77dc2f5b00e1a646a2e9dd98b5c024a0d9ad8a"},
+}
+
 // assignPins are the celestia-app commits whose shard assignment the compiled fibre-assign computes exactly: its own
-// pin, and each earlier pin whose assignment code did not change when the pin moved on. A record names the pin its
-// scanner assigned with (assignment.protocol_params.pinned_celestia_app_commit), and its rows are derived on encoding,
-// and computed again on decoding, only when that pin is one of these. When fibre-assign is re-pinned and reftest is
-// bit-identical across the two, the pin it leaves is added here; when the assignment changed, it is not, and the
-// records derived under it are refused (ErrAssignmentPin) rather than rebuilt with the new algorithm.
-var assignPins = map[string]bool{
-	assign.PinnedCelestiaAppCommit: true,
-	// v10.2.0-mocha, the pin until 2026-10-06: v10.4.0-mocha changes none of fibre/protocol_params.go, fibre/blob.go,
-	// fibre/validator or x/fibre, and reftest is bit-identical across the two (fibre-assign/params.go)
-	"3b77dc2f5b00e1a646a2e9dd98b5c024a0d9ad8a": true,
+// pin, and the earlier pins listed under it. A record names the pin its scanner assigned with
+// (assignment.protocol_params.pinned_celestia_app_commit), and its rows are derived on encoding, and computed again on
+// decoding, only when that pin is one of these. A pin not among them (one whose assignment changed, or one not yet
+// checked against a new compiled pin) is refused (ErrAssignmentPin) rather than rebuilt with another algorithm.
+var assignPins = pinsReproducedBy(assign.PinnedCelestiaAppCommit)
+
+// pinsReproducedBy is the set of pins a build of fibre-assign compiled with pin computes exactly.
+func pinsReproducedBy(pin string) map[string]bool {
+	pins := map[string]bool{pin: true}
+	for _, p := range reproducedUnder[pin] {
+		pins[p] = true
+	}
+	return pins
 }
 
 // pinOf is nil when this build reproduces the assignment of the celestia-app pin a publication names, else
