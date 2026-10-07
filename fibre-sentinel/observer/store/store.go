@@ -10,6 +10,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -806,6 +807,10 @@ type Store struct {
 	counts rowCounts
 }
 
+// busyTimeoutMS is how long a statement waits out another connection's lock
+// before it fails with busy (CheckpointWAL alone sets none).
+const busyTimeoutMS = 5000
+
 // Open opens or creates the SQLite database at path, applies the pragmas the
 // observer relies on (WAL, busy timeout) and the schema. ":memory:" is
 // accepted for tests.
@@ -822,7 +827,7 @@ func Open(path string) (*Store, error) {
 		// blocking VACUUM of a multi-gigabyte database is not something to
 		// run behind a live API; the collector releases pages after a prune
 		// (Store.ReclaimSpace).
-		dsn = "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=auto_vacuum(incremental)"
+		dsn = "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(" + strconv.Itoa(busyTimeoutMS) + ")&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=auto_vacuum(incremental)"
 	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -866,7 +871,7 @@ func OpenReadOnly(path string) (*Store, error) {
 	// mmap_size lets reads come from the page cache without a copy into
 	// SQLite's own. 1 GiB is a ceiling, not a reservation: only pages actually
 	// touched are mapped.
-	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=query_only(1)" +
+	dsn := "file:" + path + "?_pragma=busy_timeout(" + strconv.Itoa(busyTimeoutMS) + ")&_pragma=query_only(1)" +
 		"&_pragma=cache_size(-49152)&_pragma=mmap_size(1073741824)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -2075,7 +2080,7 @@ func (s *Store) ReclaimSpace(ctx context.Context, maxPages int) (freed int64, er
 }
 
 // CheckpointWAL copies the write-ahead log back into the database and, when
-// no reader is holding a snapshot, truncates it.
+// no reader is holding an older snapshot, truncates it.
 //
 // SQLite's own auto-checkpoint copies pages back but never resets the file,
 // and it cannot reset one while any reader has a snapshot open. The API holds
@@ -2086,12 +2091,37 @@ func (s *Store) ReclaimSpace(ctx context.Context, maxPages int) (freed int64, er
 // probe rows, on the same volume as the database and counted by the health
 // check's disk threshold.
 //
-// Called once per collector pass. It returns busy without doing anything when
-// a reader is in the way, which is not an error: the next pass tries again.
+// Called once per collector pass. When a reader is in the way it copies what
+// the readers allow and returns busy at once, which is not an error: the next
+// pass tries again. It does not wait for the reader. SQLite's TRUNCATE waits
+// in the connection's busy handler for every reader on an older snapshot to
+// leave before it gives up, up to the busy timeout (5 s), and the collector
+// has one goroutine: the fast tick, which is meant to bring a new blob to the
+// API within a second, waited with it. So the checkpoint runs with no busy
+// timeout, on a connection of its own for the length of the call, and the
+// timeout is put back on it after (a connection that cannot take it back is
+// closed, not handed to the next statement). The collector is the store's one
+// writer, so the writer lock it also takes is never held by anyone else.
 // The counts are the SQLite pragma's own: log frames and frames checkpointed.
 func (s *Store) CheckpointWAL(ctx context.Context) (busy bool, inLog, checkpointed int64, err error) {
+	c, err := s.db.Conn(ctx)
+	if err != nil {
+		return false, 0, 0, err
+	}
+	defer c.Close()
+	if _, err := c.ExecContext(ctx, `PRAGMA busy_timeout = 0`); err != nil {
+		return false, 0, 0, err
+	}
+	defer func() {
+		if _, rerr := c.ExecContext(context.Background(), `PRAGMA busy_timeout = `+strconv.Itoa(busyTimeoutMS)); rerr != nil {
+			_ = c.Raw(func(any) error { return driver.ErrBadConn })
+			if err == nil {
+				err = fmt.Errorf("restore busy timeout: %w", rerr)
+			}
+		}
+	}()
 	var b int64
-	err = s.db.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&b, &inLog, &checkpointed)
+	err = c.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&b, &inLog, &checkpointed)
 	return b == 1, inLog, checkpointed, err
 }
 
