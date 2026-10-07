@@ -233,6 +233,13 @@ func (s *Scanner) Run(parent context.Context) error {
 
 	next, err := s.resume(ctx, tip)
 	if err != nil {
+		// a stop while a fresh scan waits for the node's history: nothing
+		// was saved yet, and nothing failed
+		if errors.Is(err, context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
+			s.log.Printf("stopped (signal) before the scan started")
+			s.status.Stop("signal")
+			return nil
+		}
 		s.log.Fatalf("resume: %v", err)
 	}
 
@@ -345,7 +352,7 @@ func (s *Scanner) resume(ctx context.Context, tip int64) (int64, error) {
 	if start < 1 {
 		start = 1
 	}
-	seed, err := s.seedParamsFor(ctx, start)
+	start, seed, err := s.freshStart(ctx, start)
 	switch {
 	case err == nil:
 		s.params = NewParamHistory(start, seed)
@@ -357,7 +364,7 @@ func (s *Scanner) resume(ctx context.Context, tip int64) (int64, error) {
 		s.log.Printf("fresh scan: start=%d, x/fibre is not active on this chain yet (%v); following blocks without params and retrying every %d heights",
 			start, err, inactiveRetryEvery)
 	default:
-		return 0, fmt.Errorf("seed params at height %d: %w", start, err)
+		return 0, err
 	}
 	s.startHeight = start
 	s.store.SetSettledCoverFrom(start)
@@ -381,6 +388,107 @@ func (s *Scanner) resume(ctx context.Context, tip int64) (int64, error) {
 		return 0, err
 	}
 	return start, nil
+}
+
+// historyWaitEvery is how often a fresh scan from the tip asks again
+// whether the node holds the history it needs (freshStart).
+var historyWaitEvery = time.Minute
+
+// freshStart seeds the params of a fresh scan at start once the node is
+// known to hold the history the scan reads from there: the state after
+// block start-1, which the seed reads, and the validator set of every
+// promise a settlement from start on may name, up to
+// PaymentPromiseHeightWindow blocks back. A node restored from a
+// state-sync snapshot, or pruned to a retention floor, has neither below
+// its oldest block (/status earliest_block_height). Started below it, the
+// seed failed for the ten minutes of the unavailable grace and the
+// scanner exited before any state was saved, at every restart; started
+// within a promise window of it, every settlement naming an older promise
+// became a scan gap for good.
+//
+// A START_HEIGHT the node cannot serve is refused, with the lowest one it
+// can. A scan from the tip (START_HEIGHT 0) on a node that does not hold a
+// promise window of blocks yet waits for it instead: it asks again every
+// historyWaitEvery, its status fails with the reason meanwhile, and it
+// starts at the tip it then finds. A node that holds the chain from its
+// first block is never in the way. Returns the start, the seed and the
+// seed's error, IsModuleInactive among them, as resume reads it.
+func (s *Scanner) freshStart(ctx context.Context, start int64) (int64, fibretypes.Params, error) {
+	fromTip := s.cfg.StartHeight <= 0
+	waited := false
+	var said time.Time
+	for {
+		var base, tip int64
+		if err := s.retryRPC(ctx, "node history", func() error {
+			var err error
+			base, tip, err = s.chain.History(ctx)
+			return err
+		}); err != nil {
+			return 0, fibretypes.Params{}, fmt.Errorf("node history: %w", err)
+		}
+		if waited {
+			start = tip
+		}
+		need, err := s.historyNeed(ctx, base)
+		if err != nil {
+			return 0, fibretypes.Params{}, err
+		}
+		if start >= need {
+			seed, err := s.seedParamsFor(ctx, start)
+			if err != nil && !IsModuleInactive(err) {
+				err = fmt.Errorf("seed params at height %d: %w", start, err)
+			}
+			return start, seed, err
+		}
+		back := fmt.Sprintf("%d blocks", need-base)
+		if need-base == 1 {
+			back = "1 block"
+		}
+		why := fmt.Sprintf("this node's history starts at block %d, and a scan reads up to %s below its start "+
+			"(the state its params are seeded from, and the validator set of every promise a settlement may name, "+
+			"up to the promise window back)", base, back)
+		if !fromTip {
+			return 0, fibretypes.Params{}, fmt.Errorf("START_HEIGHT %d: %s; set START_HEIGHT to %d or later, or point the scanner at a node that holds that history", start, why, need)
+		}
+		msg := fmt.Sprintf("fresh scan from the tip is waiting: %s; it starts once the tip reaches %d", why, need)
+		if said.IsZero() || time.Since(said) >= rpcWarnEvery {
+			s.log.Printf("WARNING: %s (asked again every %s)", msg, historyWaitEvery)
+			said = time.Now()
+		}
+		s.status.Error(msg)
+		select {
+		case <-ctx.Done():
+			return 0, fibretypes.Params{}, ctx.Err()
+		case <-time.After(historyWaitEvery):
+		}
+		waited = true
+	}
+}
+
+// historyNeed is the lowest height a fresh scan can start at on a node
+// whose oldest block is base: base plus the promise window in force now,
+// or base+1 while x/fibre is not active (no promise to name; the seed
+// still reads the state before the start). 0 for a node that holds the
+// chain from its first block.
+func (s *Scanner) historyNeed(ctx context.Context, base int64) (int64, error) {
+	if base <= 1 {
+		return 0, nil
+	}
+	var p fibretypes.Params
+	err := s.retryRPC(ctx, "params at the tip", func() error {
+		var err error
+		p, err = s.chain.FibreParamsAt(ctx, 0)
+		return err
+	})
+	var window int64
+	switch {
+	case err == nil:
+		window = int64(p.PaymentPromiseHeightWindow)
+	case IsModuleInactive(err):
+	default:
+		return 0, fmt.Errorf("params at the tip: %w", err)
+	}
+	return base + max(window, 1), nil
 }
 
 // stopClean persists progress and returns nil — used when the operator stops
@@ -651,10 +759,13 @@ func (s *Scanner) retryRPC(ctx context.Context, what string, fn func() error) er
 func (s *Scanner) retryRPCAt(ctx context.Context, what string, height int64, fn func() error) error {
 	start := time.Now()
 	nextWarn := start.Add(rpcWarnEvery)
+	// told is set once a failure was logged, so its recovery is logged too;
+	// resultsGone once /status put a missing block_results below the tip.
+	told, resultsGone := false, false
 	for attempt := 0; ; attempt++ {
 		err := fn()
 		if err == nil {
-			if attempt > 0 {
+			if told {
 				s.log.Printf("%s: recovered after %d attempts, %s", what, attempt+1, time.Since(start).Round(time.Second))
 			}
 			// The run of unavailable heights, if there was one, is over: the
@@ -678,7 +789,23 @@ func (s *Scanner) retryRPCAt(ctx context.Context, what string, height int64, fn 
 		if panicked && attempt+1 >= appPanicTries {
 			return err
 		}
-		unavailable := IsHeightUnavailable(err)
+		// "could not find results" names two things (IsResultsMissing): the
+		// tip race, which clears in a second, and results the node never
+		// kept, which never come. /status says which. More than a block
+		// below the tip the height is as unavailable as a pruned one, a
+		// gap after the grace; retried as transient, it held the scan on
+		// that height for good, with no gap and a warning every five
+		// minutes. Asked once per height: the tip only moves away.
+		tipRace := IsHeightInFuture(err)
+		if missing := height > 0 && IsResultsMissing(err); missing && !resultsGone {
+			switch below, known := s.belowTip(ctx, height); {
+			case below:
+				resultsGone = true
+			case known:
+				tipRace = true
+			}
+		}
+		unavailable := IsHeightUnavailable(err) || (resultsGone && IsResultsMissing(err))
 		if unavailable {
 			grace := unavailableGrace
 			if s.unavailableRun > 0 {
@@ -696,7 +823,7 @@ func (s *Scanner) retryRPCAt(ctx context.Context, what string, height int64, fn 
 		if panicked {
 			wait = appPanicWait
 		}
-		if attempt < 3 || time.Now().After(nextWarn) {
+		if !quietTipRace(attempt, tipRace) && (attempt < 3 || time.Now().After(nextWarn)) {
 			level := ""
 			if attempt >= 3 {
 				level = "WARNING: "
@@ -704,6 +831,7 @@ func (s *Scanner) retryRPCAt(ctx context.Context, what string, height int64, fn 
 			}
 			s.log.Printf("%s%s: %v (attempt %d, failing for %s, retry in %s)", level, what, err, attempt+1, time.Since(start).Round(time.Second), wait)
 			s.status.Error(fmt.Sprintf("%s: %v", what, err))
+			told = true
 		}
 		select {
 		case <-ctx.Done():
@@ -711,6 +839,34 @@ func (s *Scanner) retryRPCAt(ctx context.Context, what string, height int64, fn 
 		case <-time.After(wait):
 		}
 	}
+}
+
+// tipRaceQuiet is how many failed attempts of a tip race go unlogged. The
+// follow loop's safety poll can read a height in the second between the
+// node storing its block and committing it, and on Mocha in a week of
+// September 2026 that was 729 block_results and one params read, every one
+// answered on the second or third attempt: a log line and a status error
+// for each said nothing. A race that lasts longer is logged as any failure
+// is, from its third attempt.
+const tipRaceQuiet = 2
+
+func quietTipRace(attempt int, tipRace bool) bool { return tipRace && attempt < tipRaceQuiet }
+
+// belowTip asks /status whether height is more than one block below the
+// node's tip, and says whether /status answered. The block after height
+// is only stored once height is committed, results and all, so a height
+// below the tip whose results are missing will never have them; one more
+// block of margin keeps an RPC address that spreads requests over several
+// nodes from being judged on its slowest one.
+func (s *Scanner) belowTip(ctx context.Context, height int64) (below, known bool) {
+	if s.chain == nil {
+		return false, false
+	}
+	_, tip, err := s.chain.Status(ctx)
+	if err != nil {
+		return false, false
+	}
+	return tip > height+1, true
 }
 
 // processBlock scans one height: first apply any fibre-param updates, then
@@ -1524,11 +1680,17 @@ func (s *Scanner) seedHosts(ctx context.Context, startHeight int64) {
 // an assignment with nothing on record: the bonded seed misses a validator
 // that was jailed or unbonding when the scan started, and its registration
 // (which outlives bonding) needs no new event to stay in force. The state
-// at the settlement height is asked for; every change since the seed
-// height would be an event on record, so the answer holds from the seed
-// height on. When that state is pruned the current one is read and
-// recorded at the tip, which covers this settlement only if the scan is at
-// the tip. A query error leaves the validator unknown this time.
+// after block h-1 is asked for, the last one committed when block h is
+// read: every change since the seed height would be an event on record,
+// block h's own included (they are read before its publications, and
+// this validator has none), so the answer holds from the seed height on.
+// The state at h itself is not asked for: in follow mode h is the tip,
+// and until the app commits it the node answers "cannot query with height
+// in the future", which made a newcomer's host unknown for good on that
+// publication. When the state at h-1 is pruned, the state before the
+// tip's block is read and recorded at the tip, which covers this
+// settlement only if the scan is at the tip. A query error leaves the
+// validator unknown this time.
 func (s *Scanner) lazySeed(ctx context.Context, consAddrHex string, h int64) {
 	seeded, seedAt := s.hosts.Seeded()
 	if !seeded {
@@ -1538,11 +1700,12 @@ func (s *Scanner) lazySeed(ctx context.Context, consAddrHex string, h int64) {
 	if err != nil {
 		return
 	}
-	host, _, err := s.chain.FibreProviderInfoAt(ctx, bech, h)
+	read := h - 1
+	host, _, err := s.chain.FibreProviderInfoAt(ctx, bech, read)
 	if err == nil {
 		e := s.hosts.SeedOne(consAddrHex, host, HostFromSeedLazy, seedAt)
 		s.appendHost(e)
-		s.log.Printf("host registration read for %s at h=%d: %q (in force since the seed at h=%d)", consAddrHex, h, host, seedAt)
+		s.log.Printf("host registration read for %s at h=%d: %q (in force since the seed at h=%d)", consAddrHex, read, host, seedAt)
 		return
 	}
 	_, tip, terr := s.chain.Status(ctx)
@@ -1550,14 +1713,14 @@ func (s *Scanner) lazySeed(ctx context.Context, consAddrHex string, h int64) {
 		s.log.Printf("WARNING: registration of %s could not be read (%v; %v); host_at_settlement unknown for now", consAddrHex, err, terr)
 		return
 	}
-	host, _, err = s.chain.FibreProviderInfoAt(ctx, bech, tip)
+	host, _, err = s.chain.FibreProviderInfoAt(ctx, bech, tip-1)
 	if err != nil {
 		s.log.Printf("WARNING: registration of %s could not be read (%v); host_at_settlement unknown for now", consAddrHex, err)
 		return
 	}
 	e := s.hosts.SeedOne(consAddrHex, host, HostFromSeedCurrent, tip)
 	s.appendHost(e)
-	s.log.Printf("host registration of %s read at the tip h=%d (state at h=%d pruned): %q, in force from h=%d", consAddrHex, tip, h, host, tip)
+	s.log.Printf("host registration of %s read at h=%d, before the tip h=%d (state at h=%d pruned): %q, in force from h=%d", consAddrHex, tip-1, tip, read, host, tip)
 }
 
 // maybeReseedHosts runs reseedHosts when an event-losing gap ends below h

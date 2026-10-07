@@ -5,6 +5,7 @@ import (
 	cryptoed25519 "crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -80,6 +81,21 @@ func (c *Chain) Status(parent context.Context) (string, int64, error) {
 	return id, h, err
 }
 
+// History is the span of blocks the node holds: its oldest block
+// (/status earliest_block_height) and its newest. A node restored from a
+// state-sync snapshot or pruned to a retention floor starts well above 1,
+// and nothing below base can be read from it: not a block, not a validator
+// set, not the state.
+func (c *Chain) History(parent context.Context) (base, tip int64, err error) {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	s, err := c.rpc.Status(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("status: %w", err)
+	}
+	return s.SyncInfo.EarliestBlockHeight, s.SyncInfo.LatestBlockHeight, nil
+}
+
 // StatusAt is Status with the tip's block time, which is the only thing that
 // says whether the chain is still moving. A halted chain, a node stuck
 // mid-sync and a public endpoint that fell behind all keep answering /status
@@ -134,6 +150,14 @@ func (c *Chain) Block(parent context.Context, height int64) (*Block, error) {
 	res, err := c.rpc.Block(ctx, &height)
 	if err != nil {
 		return nil, fmt.Errorf("block %d: %w", height, err)
+	}
+	// CometBFT answers with no block and no error when the block's parts
+	// went missing after its meta was read: a pruning node removing the
+	// block at its base in that moment. An error here goes through the
+	// retry like any other read; reading the empty answer killed the
+	// process on a nil pointer, with no dump and no skip hint.
+	if res == nil || res.Block == nil {
+		return nil, fmt.Errorf("block %d: empty response", height)
 	}
 	return &Block{
 		Height:     res.Block.Height,
@@ -656,9 +680,41 @@ func IsResultsNotPersisted(err error) bool {
 	return strings.Contains(s, "not persisting") || strings.Contains(s, "not persisted") || strings.Contains(s, "discard_abci_responses")
 }
 
+// IsResultsMissing reports CometBFT's answer to block_results for a height
+// whose FinalizeBlock response is not in its state store ("could not find
+// results for height #N"). At the tip it is a race and clears in a second:
+// the node stores the block, and /status names it, before it stores the
+// block's results. Below the tip it never clears: the node ran with
+// storage.discard_abci_responses = true when it produced that height, or
+// was restored from a snapshot made that way. The phrase alone cannot tell
+// the two apart; retryRPCAt asks /status which one it is.
+func IsResultsMissing(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "could not find results for height")
+}
+
+// sdkInvalidHeight is cosmos-sdk's ErrInvalidHeight: "cannot query with
+// height in the future". A node answers a query at the height /status just
+// named with it until the app has committed that block.
+const sdkInvalidHeight = 26
+
+// IsHeightInFuture reports a query at a height the app has not committed
+// yet: the same race as IsResultsMissing at the tip, one step later.
+func IsHeightInFuture(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ae *ABCIError
+	if errors.As(err, &ae) && ae.Code == sdkInvalidHeight && (ae.Codespace == "sdk" || ae.Codespace == "") {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "cannot query with height in the future")
+}
+
 // IsHeightUnavailable reports an error that means the node does not have
 // this height: pruned ("lowest height is N"), discarded ABCI responses, or a
 // height it has not reached. The last one clears itself; the others do not.
+// A block_results "could not find results" is not on the list: whether it
+// clears depends on where the height is (IsResultsMissing).
 func IsHeightUnavailable(err error) bool {
 	if err == nil {
 		return false
