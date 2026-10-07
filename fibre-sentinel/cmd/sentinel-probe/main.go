@@ -26,6 +26,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"os"
 	"os/signal"
@@ -86,7 +87,7 @@ func main() {
 		dlTO     = flag.Duration("download-timeout", probe.ClientRPCTimeout, "one request's whole time, connect, TLS and DownloadShard: the Fibre client's RPCTimeout")
 		logLines = flag.Int("log-ring", 400, "log lines kept in memory for the crash dump")
 
-		policyPath  = flag.String("policy", "", "policy YAML (observer/policy): only its sampling master secret is read, to reveal the day secrets of earlier draws; \"default\" puts the secret at <data-dir>/sampling-master.key; empty = no reveals")
+		policyPath  = flag.String("policy", "", "policy YAML (observer/policy): only its sampling master secret is read, to reveal the day secrets of earlier draws; \"default\" reads the secret at <data-dir>/sampling-master.key; a missing secret is never created; empty (the default) = no reveals")
 		revealAfter = flag.Duration("reveal-after", policy.DefaultRevealAfter, "publish each day's sampling secret this long after the day ends, to <data-dir>/sampling-secrets.jsonl (0 = never)")
 	)
 	flag.Parse()
@@ -132,26 +133,12 @@ func main() {
 		sched.Since = t
 	}
 
-	var revealer *policy.Policy
-	if *policyPath != "" {
-		path := *policyPath
-		if path == "default" {
-			path = ""
-		}
-		cfg, err := policy.Load(path)
-		if err != nil {
-			log.Fatalf("policy: %v", err)
-		}
-		// The secret lives in the data directory unless the policy names
-		// somewhere else: the only path the unit can write.
-		if cfg.Sampling.MasterSecretFile == "" && *dataDir != "" {
-			cfg.Sampling.MasterSecretFile = filepath.Join(*dataDir, "sampling-master.key")
-		}
-		p, err := policy.New(cfg)
-		if err != nil {
-			log.Fatalf("policy: %v", err)
-		}
-		revealer = p
+	revealer, why, err := revealerFor(*policyPath, *dataDir)
+	if err != nil {
+		log.Fatalf("policy: %v", err)
+	}
+	if why != "" {
+		log.Printf("%s", why)
 	}
 
 	pr, err := probe.New(probe.Config{
@@ -193,4 +180,44 @@ func main() {
 	if err := pr.Run(ctx); err != nil {
 		log.Fatalf("run: %v", err)
 	}
+}
+
+// revealerFor is the policy whose master secret reveals the day secrets of
+// the draws made while publications were sampled, or nil, with why when
+// there is something to say, when nothing is to be revealed.
+//
+// Nothing is sampled any more, so the secret is only ever read: one that is
+// missing is not created, as policy.New would create it. A new secret
+// would publish a day secret for every day after, with no draw behind any
+// of them, and leave a key on a host that has no use for it. A deployment
+// whose last draw is revealed drops -policy (the default) and deletes the
+// key (deploy/README.md).
+func revealerFor(policyPath, dataDir string) (*policy.Policy, string, error) {
+	if policyPath == "" {
+		return nil, "", nil
+	}
+	path := policyPath
+	if path == "default" {
+		path = ""
+	}
+	cfg, err := policy.Load(path)
+	if err != nil {
+		return nil, "", err
+	}
+	// The secret lives in the data directory unless the policy names
+	// somewhere else.
+	if cfg.Sampling.MasterSecretFile == "" && dataDir != "" {
+		cfg.Sampling.MasterSecretFile = filepath.Join(dataDir, "sampling-master.key")
+	}
+	if cfg.Sampling.MasterSecretFile == "" {
+		return nil, "", errors.New("sampling: master_secret_file is not set and there is no -data-dir to find it in")
+	}
+	if _, err := os.Stat(cfg.Sampling.MasterSecretFile); errors.Is(err, os.ErrNotExist) {
+		return nil, "policy: no sampling master secret at " + cfg.Sampling.MasterSecretFile + "; nothing to reveal, and none is created", nil
+	}
+	p, err := policy.New(cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	return p, "", nil
 }
