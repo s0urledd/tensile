@@ -19,6 +19,7 @@ import (
 // longer on record) is dropped by its rebuild, not served on.
 func TestAStaleFeedIsServedAtOnceAndRebuiltBehindIt(t *testing.T) {
 	s := &Server{}
+	ownFeeds(t, s)
 	var builds atomic.Int32
 	release := make(chan struct{})
 	status := atomic.Int32{}
@@ -68,6 +69,33 @@ func TestAStaleFeedIsServedAtOnceAndRebuiltBehindIt(t *testing.T) {
 	}
 }
 
+// ownFeeds gives a test a feed cache with nothing cached for s, before and
+// after it runs. The cache is the package's and keyed by the server's address:
+// a server another test made, once the garbage collector frees it, can leave
+// its feeds under the address a new one is given.
+func ownFeeds(t *testing.T, s *Server) {
+	forget := func() {
+		prefix := fmt.Sprintf("%p|", s)
+		feedCache.Lock()
+		defer feedCache.Unlock()
+		for k := range feedCache.m {
+			if strings.HasPrefix(k, prefix) {
+				delete(feedCache.m, k)
+			}
+		}
+		for k := range feedCache.refreshing {
+			if strings.HasPrefix(k, prefix) {
+				delete(feedCache.refreshing, k)
+			}
+		}
+	}
+	forget()
+	// no wait for s.bg here: a test that failed early can leave a rebuild
+	// blocked for good; while it runs it holds s, so no other server is given
+	// the address
+	t.Cleanup(forget)
+}
+
 // ageFeeds makes every feed s has cached older than the TTL.
 func ageFeeds(s *Server) {
 	prefix := fmt.Sprintf("%p|", s)
@@ -87,6 +115,7 @@ func ageFeeds(s *Server) {
 // as it stands, and the next reader past the TTL starts another rebuild.
 func TestAPanickingFeedRebuildKeepsTheFeedAndTheProcess(t *testing.T) {
 	s := &Server{}
+	ownFeeds(t, s)
 	var builds atomic.Int32
 	build := func(ctx context.Context, authority string, now time.Time) (*feed.Feed, int, error) {
 		n := builds.Add(1)
