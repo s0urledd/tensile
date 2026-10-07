@@ -79,9 +79,11 @@ func (t *Tables) EncodeMeasurement(line []byte, pub *Pub, lookup Lookup) ([]byte
 			pub = nil // another publication's reading: nothing of this one applies
 		}
 	}
+	// the validator's place in the publication's set, and with it everything the set and its rows give, only when the
+	// publication's rows were derived (its pin is one this build reproduces)
 	if pub != nil && pub.set != nil {
 		if a, ok := strField(orig, "validator_address"); ok {
-			if i, ok := pub.idx[a]; ok {
+			if i, ok := pub.index(a); ok {
 				vidx = i
 			}
 		}
@@ -103,7 +105,7 @@ func (t *Tables) EncodeMeasurement(line []byte, pub *Pub, lookup Lookup) ([]byte
 		if vidx >= 0 {
 			pv := pub.validator(vidx)
 			rows := pub.rows[vidx]
-			derive(v, "validator_address", str(pub.set.hexes[vidx]))
+			derive(v, "validator_address", str(pub.set.hex(vidx)))
 			derive(v, "assigned", boolean(len(rows) > 0))
 			derive(v, "assigned_row_count", num(int64(len(rows))))
 			derive(v, "attested", pv.Get("attested"))
@@ -138,7 +140,7 @@ func rowsSlim(dl *Value, pub *Pub, vidx int, shadowPub *Pub) {
 		own := pub.rows[vidx]
 		if Same(dl.Vals[i], rowList(own)) {
 			dl.Vals[i] = &Value{Kind: derived}
-		} else if sb, ok := strField(dl, "shadowed_by"); ok && shadowPub != nil && shadowPub.Hash == sb && shadowMatches(shadowPub, pub.set.hexes[vidx], got) {
+		} else if sb, ok := strField(dl, "shadowed_by"); ok && shadowPub != nil && shadowPub.Hash == sb && shadowMatches(shadowPub, pub.set.hex(vidx), got) {
 			dl.Vals[i] = &Value{Kind: derived, rowsBy: rowsShadow, shadow: sb}
 		} else if pos, ok := positions(own, got); ok {
 			dl.Vals[i] = &Value{Kind: derived, rowsBy: rowsOwnPositions, pos: pos}
@@ -155,7 +157,7 @@ func shadowMatches(o *Pub, addr string, got []int) bool {
 	if o == nil || o.set == nil {
 		return false
 	}
-	j, ok := o.idx[addr]
+	j, ok := o.index(addr)
 	if !ok {
 		return false
 	}
@@ -223,6 +225,10 @@ func (t *Tables) readMeasurement(b []byte, pub *Pub) (*Value, *Pub, int, error) 
 	if !withPub {
 		pub = nil
 	}
+	if vidx >= 0 && pub.PinErr() != nil {
+		// encoded against the publication's rows by a build that reproduced its pin; this one does not
+		return nil, nil, 0, pub.PinErr()
+	}
 	if vidx >= 0 && (pub == nil || pub.set == nil || vidx >= len(pub.set.addr)) {
 		return nil, nil, 0, errors.New("slim: a reading's validator past its publication's set")
 	}
@@ -260,7 +266,7 @@ func fillMeasurement(v *Value, pub *Pub, vidx int, lookup Lookup) ([]byte, error
 		case "commitment", "blob_version", "must_serve_until", "validator_set_height":
 			v.Vals[i] = clone(pub.tree.Path(fromPublication[k]...))
 		case "validator_address":
-			v.Vals[i] = str(pub.set.hexes[vidx])
+			v.Vals[i] = str(pub.set.hex(vidx))
 		case "assigned":
 			v.Vals[i] = boolean(len(pub.rows[vidx]) > 0)
 		case "assigned_row_count":
@@ -303,7 +309,10 @@ func fillMeasurement(v *Value, pub *Pub, vidx int, lookup Lookup) ([]byte, error
 				if lookup != nil {
 					o = lookup(x.shadow)
 				}
-				r, ok := o.Rows(pub.set.hexes[vidx])
+				if err := o.PinErr(); err != nil {
+					return nil, fmt.Errorf("slim: the shadowing promise %s: %w", x.shadow, err)
+				}
+				r, ok := o.Rows(pub.set.hex(vidx))
 				if !ok {
 					return nil, fmt.Errorf("slim: the shadowing promise %s is not on record", x.shadow)
 				}

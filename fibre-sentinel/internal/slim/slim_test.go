@@ -344,3 +344,23 @@ func TestPubFromLineMatchesTheEncodedOne(t *testing.T) {
 		t.Fatalf("a reading encoded against the line form and decoded against the slim one: %v", err)
 	}
 }
+
+// A publication record without an assignment is written and read back, not left to panic its decoder.
+func TestAPublicationWithoutAnAssignmentReadsBack(t *testing.T) {
+	pub := testPublication(t, 0x63, testValidators(3))
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(line(t, pub), &m); err != nil {
+		t.Fatal(err)
+	}
+	delete(m, "assignment")
+	l := line(t, m)
+	w := NewTables()
+	body, _, err := w.EncodePublication(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := w.DecodePublication(body)
+	if err != nil || !bytes.Equal(got, l) {
+		t.Fatalf("%v\n got %.200s\nwant %.200s", err, got, l)
+	}
+}

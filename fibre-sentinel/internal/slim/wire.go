@@ -123,7 +123,7 @@ type Tables struct {
 	shapes  [][]string
 	shapeID map[string]int
 	sets    []*valSet
-	setID   map[string]int
+	setID   map[[32]byte]int
 	hosts   [][]hostEntry
 	hostID  map[string]int
 	// how many of each kind the store holds: entries past these are pending (Pending)
@@ -146,7 +146,7 @@ type Entry struct {
 }
 
 func NewTables() *Tables {
-	return &Tables{strID: map[string]int{}, shapeID: map[string]int{}, setID: map[string]int{}, hostID: map[string]int{}}
+	return &Tables{strID: map[string]int{}, shapeID: map[string]int{}, setID: map[[32]byte]int{}, hostID: map[string]int{}}
 }
 
 func (t *Tables) str(s string) int {
@@ -281,8 +281,12 @@ func (t *Tables) Add(e Entry) error {
 		if e.ID != len(t.sets) {
 			return errors.New("slim: set entries out of order")
 		}
+		// each validator is its address and at least one byte of power
 		n := int(r.u())
-		s := &valSet{}
+		if r.err == nil && (n < 0 || n > (len(r.b)-r.i)/21) {
+			return errShort
+		}
+		s := &valSet{addr: make([][20]byte, 0, n), power: make([]int64, 0, n)}
 		for i := 0; i < n && r.err == nil; i++ {
 			if r.i+20 > len(r.b) {
 				return errShort
@@ -292,7 +296,6 @@ func (t *Tables) Add(e Entry) error {
 			r.i += 20
 			s.addr = append(s.addr, a)
 			s.power = append(s.power, r.s())
-			s.hexes = append(s.hexes, hex.EncodeToString(a[:]))
 		}
 		t.sets = append(t.sets, s)
 		t.setID[s.key()] = e.ID
