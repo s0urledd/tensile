@@ -66,6 +66,9 @@ type Pub struct {
 	set  *valSet
 	idx  map[[20]byte]int // validator address → its place in set
 	rows [][]int          // each validator's assigned rows, as fibre-assign computes them
+	// pinErr is ErrAssignmentPin when the record's assignment is from a celestia-app this build does not reproduce:
+	// then set is nil, and a reading that takes its validator from the publication cannot be decoded.
+	pinErr error
 }
 
 // index is the place in the publication's set of the validator at addr (its consensus address in lowercase hex).
@@ -86,6 +89,34 @@ func (p *Pub) assigned(set *valSet, rows [][]int) {
 	for i, a := range set.addr {
 		p.idx[a] = i
 	}
+}
+
+// ErrAssignmentPin is a record whose rows were derived under a celestia-app pin this build's fibre-assign is not
+// known to reproduce. Decoding it would compute the rows with another algorithm and show a past that is not the
+// record's, so it is refused instead; the record's own bytes are untouched.
+var ErrAssignmentPin = errors.New("slim: the record's assignment is from a celestia-app pin this build does not reproduce")
+
+// assignPins are the celestia-app commits whose shard assignment the compiled fibre-assign computes exactly: its own
+// pin, and each earlier pin whose assignment code did not change when the pin moved on. A record names the pin its
+// scanner assigned with (assignment.protocol_params.pinned_celestia_app_commit), and its rows are derived on encoding,
+// and computed again on decoding, only when that pin is one of these. When fibre-assign is re-pinned and reftest is
+// bit-identical across the two, the pin it leaves is added here; when the assignment changed, it is not, and the
+// records derived under it are refused (ErrAssignmentPin) rather than rebuilt with the new algorithm.
+var assignPins = map[string]bool{
+	assign.PinnedCelestiaAppCommit: true,
+	// v10.2.0-mocha, the pin until 2026-10-06: v10.4.0-mocha changes none of fibre/protocol_params.go, fibre/blob.go,
+	// fibre/validator or x/fibre, and reftest is bit-identical across the two (fibre-assign/params.go)
+	"3b77dc2f5b00e1a646a2e9dd98b5c024a0d9ad8a": true,
+}
+
+// pinOf is nil when this build reproduces the assignment of the celestia-app pin a publication names, else
+// ErrAssignmentPin naming that pin.
+func pinOf(pub *Value) error {
+	pin, _ := strField(pub.Path("assignment", "protocol_params"), "pinned_celestia_app_commit")
+	if assignPins[pin] {
+		return nil
+	}
+	return fmt.Errorf("%w (record pin %q, built with %s)", ErrAssignmentPin, pin, assign.PinnedCelestiaAppCommit)
 }
 
 // pubTree keeps of a publication record only what its readings take from it: the promise's commitment and blob
@@ -121,24 +152,33 @@ func pubTree(full *Value) *Value {
 }
 
 // PubFromLine is what a publication record in its JSONL form gives its readings (a row an earlier build stored): no
-// table is touched.
+// table is touched. Its rows are computed only under a pin this build reproduces, as EncodePublication derives them.
 func PubFromLine(line []byte) (*Pub, error) {
 	orig, err := Parse(line)
 	if err != nil {
 		return nil, err
 	}
-	info := &Pub{tree: pubTree(orig)}
+	info := &Pub{tree: pubTree(orig), pinErr: pinOf(orig)}
 	info.Hash, _ = strField(orig, "promise_hash")
 	a := orig.Get("assignment")
 	set := setFrom(a.Get("validators"))
 	c, okc := commitmentOf(orig)
 	pp, okp := protocolParams(orig)
-	if set != nil && okc && okp && a.Get("error") == nil {
+	if set != nil && okc && okp && a.Get("error") == nil && info.pinErr == nil {
 		if rows, ok := assignRows(set, c, pp); ok {
 			info.assigned(set, rows)
 		}
 	}
 	return info, nil
+}
+
+// PinErr is ErrAssignmentPin, naming the record's pin, when the publication's assignment is from a celestia-app this
+// build does not reproduce (Rows then gives no rows); nil otherwise.
+func (p *Pub) PinErr() error {
+	if p == nil {
+		return nil
+	}
+	return p.pinErr
 }
 
 func (p *Pub) validator(i int) *Value {
@@ -388,7 +428,7 @@ func (t *Tables) EncodePublication(line []byte) ([]byte, *Pub, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	v := clone(orig)
-	info := &Pub{tree: pubTree(orig)}
+	info := &Pub{tree: pubTree(orig), pinErr: pinOf(orig)}
 	info.Hash, _ = strField(orig, "promise_hash")
 
 	// the namespace's version and id are its first byte and the rest
@@ -404,13 +444,14 @@ func (t *Tables) EncodePublication(line []byte) ([]byte, *Pub, error) {
 		derive(v, "must_serve_until", str(msu))
 	}
 
-	// the validator list: the set, the hosts, one bit each for attested, and only the entries that differ in full
+	// the validator list: the set, the hosts, one bit each for attested, and only the entries that differ in full;
+	// only under a pin this build reproduces, since decoding computes the rows again (else the list is kept whole)
 	a := v.Get("assignment")
 	vs := a.Get("validators")
 	set := setFrom(vs)
 	c, okc := commitmentOf(orig)
 	pp, okp := protocolParams(orig)
-	if set != nil && okc && okp && a.Get("error") == nil {
+	if set != nil && okc && okp && a.Get("error") == nil && info.pinErr == nil {
 		if rows, ok := assignRows(set, c, pp); ok {
 			info.assigned(set, rows)
 			vt := &valTable{set: t.setEntry(set), attested: make([]byte, (len(set.addr)+7)/8), exceptions: map[int]*Value{}}
@@ -540,6 +581,9 @@ func (t *Tables) fillPublication(v *Value, info *Pub) error {
 		}
 	}
 	a := v.Get("assignment")
+	if a == nil || a.Kind != Obj {
+		return fillTop(v)
+	}
 	var set *valSet
 	var rows [][]int
 	var att []bool
@@ -547,6 +591,10 @@ func (t *Tables) fillPublication(v *Value, info *Pub) error {
 		x := a.Vals[i]
 		if k != "validators" || x.Kind != derived || x.vt == nil {
 			continue
+		}
+		// the rows were derived by the build that wrote the record: computed again only by one that assigns the same
+		if err := pinOf(v); err != nil {
+			return err
 		}
 		vt := x.vt
 		set = t.sets[vt.set]
@@ -588,6 +636,11 @@ func (t *Tables) fillPublication(v *Value, info *Pub) error {
 			}
 		}
 	}
+	return fillTop(v)
+}
+
+// fillTop computes a decoded publication's derived top-level fields.
+func fillTop(v *Value) error {
 	for i, k := range v.Keys {
 		if v.Vals[i].Kind != derived {
 			continue

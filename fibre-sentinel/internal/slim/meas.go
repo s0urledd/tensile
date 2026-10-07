@@ -79,6 +79,8 @@ func (t *Tables) EncodeMeasurement(line []byte, pub *Pub, lookup Lookup) ([]byte
 			pub = nil // another publication's reading: nothing of this one applies
 		}
 	}
+	// the validator's place in the publication's set, and with it everything the set and its rows give, only when the
+	// publication's rows were derived (its pin is one this build reproduces)
 	if pub != nil && pub.set != nil {
 		if a, ok := strField(orig, "validator_address"); ok {
 			if i, ok := pub.index(a); ok {
@@ -223,6 +225,10 @@ func (t *Tables) readMeasurement(b []byte, pub *Pub) (*Value, *Pub, int, error) 
 	if !withPub {
 		pub = nil
 	}
+	if vidx >= 0 && pub.PinErr() != nil {
+		// encoded against the publication's rows by a build that reproduced its pin; this one does not
+		return nil, nil, 0, pub.PinErr()
+	}
 	if vidx >= 0 && (pub == nil || pub.set == nil || vidx >= len(pub.set.addr)) {
 		return nil, nil, 0, errors.New("slim: a reading's validator past its publication's set")
 	}
@@ -302,6 +308,9 @@ func fillMeasurement(v *Value, pub *Pub, vidx int, lookup Lookup) ([]byte, error
 				var o *Pub
 				if lookup != nil {
 					o = lookup(x.shadow)
+				}
+				if err := o.PinErr(); err != nil {
+					return nil, fmt.Errorf("slim: the shadowing promise %s: %w", x.shadow, err)
 				}
 				r, ok := o.Rows(pub.set.hex(vidx))
 				if !ok {
