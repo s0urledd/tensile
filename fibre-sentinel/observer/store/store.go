@@ -1528,8 +1528,12 @@ func (s *Store) UpsertPublication(p scan.Publication, raw []byte) (inserted bool
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
+		// stored already: what the line added to the tables is kept only once this commit succeeds
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
 		committed = true
-		return false, tx.Commit()
+		return false, nil
 	}
 	for _, v := range a.Validators {
 		var rowsJSON any
@@ -1591,6 +1595,12 @@ func intsToU32(xs []int) []uint32 {
 // publication is already stored as a decision is not stored: the decision
 // stands for it (see sampledout.go), and it was deleted when the decision
 // was made from it.
+//
+// A reading whose publication is stored but does not decode (ErrUndecodable)
+// is stored as its line, its rows as a list, and the publication is named
+// once in the log: a slim reading is read back through its publication, and
+// refusing the reading would stop its file's ingest at this line for good,
+// every later reading waiting behind it.
 func (s *Store) InsertProbe(m probe.Measurement, raw []byte) (inserted bool, err error) {
 	if decided, err := s.sampledOutDecided(m); err != nil || decided {
 		return false, err
@@ -1599,6 +1609,11 @@ func (s *Store) InsertProbe(m probe.Measurement, raw []byte) (inserted bool, err
 	s.slim.enc.Lock()
 	defer s.slim.enc.Unlock()
 	pub, err := s.pub(ctx, s.db, m.PromiseHash)
+	asLine := errors.Is(err, ErrUndecodable)
+	if asLine {
+		s.sayOnce("readings of "+m.PromiseHash, "store: the readings of %s are stored as their lines: %v", m.PromiseHash, err)
+		pub, err = nil, nil
+	}
 	if err != nil {
 		return false, err
 	}
@@ -1606,12 +1621,14 @@ func (s *Store) InsertProbe(m probe.Measurement, raw []byte) (inserted bool, err
 	if err != nil {
 		return false, err
 	}
-	// the record in its slim form against its publication (or its line, where that does not read back); the table
-	// entries it adds are kept with it
+	// the record in its slim form against its publication (or its line, where that does not read back, or where the
+	// publication does not decode); the table entries it adds are kept with it
 	kept := t.Stored()
-	body, err := measurementBody(t, raw, pub, s.lookup(ctx, s.db), kept)
-	if err != nil {
-		return false, fmt.Errorf("probe %s: slim: %w", m.DedupeKey(), err)
+	var body any = string(raw)
+	if !asLine {
+		if body, err = measurementBody(t, raw, pub, s.lookup(ctx, s.db), kept); err != nil {
+			return false, fmt.Errorf("probe %s: slim: %w", m.DedupeKey(), err)
+		}
 	}
 	committed := false
 	defer func() {

@@ -20,9 +20,9 @@ import (
 // publications.raw_json and probes.raw_json hold the slim record of each row this build writes: every field of the
 // JSONL line but those computed again from the others, from which the line is written back byte for byte (Record,
 // ProbeRecord). reachability.raw_json holds an endpoint check the same way with nothing derived (ReachRecord). Each
-// is kept slim only where it reads back to its line byte for byte, and as its line otherwise (publicationBody). A row an
-// earlier build wrote keeps its line, which always starts with '{' and a slim record never does, so both are read the
-// same way and nothing has to be rewritten.
+// is kept slim only where it reads back to its line byte for byte, and as its line otherwise (publicationBody), as is a
+// reading whose publication does not decode (InsertProbe). A row an earlier build wrote keeps its line, which always
+// starts with '{' and a slim record never does, so both are read the same way and nothing has to be rewritten.
 //
 // The copies the slim record replaces are marked, not stored: probes.row_indices and assignments.rows_json hold
 // RowsAssigned ("=") where the list is the validator's own assignment in its order, which the publication's
@@ -70,8 +70,13 @@ func (e undecodable) Is(target error) bool { return target == ErrUndecodable }
 // leftAside says, once per process for each row, that a read went on past a row whose record does not decode: the
 // row keeps what it is (withheld, or deferred) until a build that reads it, and the log names it and why.
 func (s *Store) leftAside(row string, err error) {
-	if _, said := s.said.LoadOrStore(row, true); !said {
-		log.Printf("store: %s left aside, its record does not decode: %v", row, err)
+	s.sayOnce(row, "store: %s left aside, its record does not decode: %v", row, err)
+}
+
+// sayOnce logs the line once per process for what key names.
+func (s *Store) sayOnce(key, format string, args ...any) {
+	if _, said := s.said.LoadOrStore(key, true); !said {
+		log.Printf(format, args...)
 	}
 }
 
@@ -184,8 +189,8 @@ func (s *Store) decodeRetry(ctx context.Context, q Querier, f func(*slim.Tables)
 	return nil
 }
 
-// guarded runs a decoding. A decoder that panics has met a record of a shape it does not expect (a slim publication
-// without an assignment, today), which is that record failing to decode: the row's error, not the process's end.
+// guarded runs a decoding. A decoder that panics has met a record of a shape it does not expect, which is that record
+// failing to decode: the row's error, not the process's end.
 // The tables are as they were: a decoding only reads them, and releases their lock as it unwinds.
 func guarded(f func() error) (err error) {
 	defer func() {
@@ -379,6 +384,11 @@ func keepEntries(tx *sql.Tx, es []slim.Entry) error {
 
 // updateReadingRows recomputes the count of distinct verified rows of the reading of promiseHash at scheduledAt,
 // in tx: what exactSQL in the rollup counts.
+//
+// A row marked as its validator's assignment was counted when it arrived, its publication decoding then. Where the
+// publication no longer decodes (ErrUndecodable) the row's list cannot be read, so the rows read now are counted and
+// the count kept is raised to that, never lowered: each is at most the reading's distinct rows. The publication is
+// named once in the log, and the reading is stored as before.
 func (s *Store) updateReadingRows(ctx context.Context, tx *sql.Tx, promiseHash, scheduledAt string) error {
 	rows, err := tx.QueryContext(ctx, `SELECT validator_address, row_indices FROM probes
 		WHERE promise_hash = ? AND scheduled_at = ? AND commitment_verified = 1 AND row_indices IS NOT NULL`, promiseHash, scheduledAt)
@@ -400,10 +410,14 @@ func (s *Store) updateReadingRows(ctx context.Context, tx *sql.Tx, promiseHash, 
 		return err
 	}
 	seen := map[int64]struct{}{}
+	var unread error
 	for _, x := range all {
 		j := x.idx
 		if j == RowsAssigned {
-			if j, err = s.assignedJSON(ctx, tx, promiseHash, x.v); err != nil {
+			if j, err = s.assignedJSON(ctx, tx, promiseHash, x.v); errors.Is(err, ErrUndecodable) {
+				unread = err
+				continue
+			} else if err != nil {
 				return err
 			}
 		}
@@ -419,7 +433,13 @@ func (s *Store) updateReadingRows(ctx context.Context, tx *sql.Tx, promiseHash, 
 			}
 		}
 	}
+	set := `excluded.exact`
+	if unread != nil {
+		s.sayOnce("reading rows of "+promiseHash,
+			"store: the readings of %s: a row marked as its assignment is not read, and their count is only raised: %v", promiseHash, unread)
+		set = `MAX(exact, excluded.exact)`
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO reading_rows (promise_hash, scheduled_at, exact) VALUES (?, ?, ?)
-		ON CONFLICT(promise_hash, scheduled_at) DO UPDATE SET exact = excluded.exact`, promiseHash, scheduledAt, len(seen))
+		ON CONFLICT(promise_hash, scheduled_at) DO UPDATE SET exact = `+set, promiseHash, scheduledAt, len(seen))
 	return err
 }

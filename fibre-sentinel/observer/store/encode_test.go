@@ -95,3 +95,61 @@ func TestEncodersOnSeveralGoroutinesKeepEveryEntryTheirRecordsName(t *testing.T)
 		t.Fatalf("%d of %d stored readings do not read back", bad, len(kept))
 	}
 }
+
+// A publication stored already, whose line adds table entries (a record written again with a string no record carried
+// before), keeps them only if its transaction commits. One whose commit fails forgets them, so the next record that
+// names them writes them, and a process that loads the tables from the store reads that record back.
+func TestAFailedCommitOfAStoredPublicationKeepsNoEntry(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "observer.db")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	pub := slimPublication(t, 0x63, 5)
+	line, _ := json.Marshal(pub)
+	if ok, err := st.UpsertPublication(pub, line); err != nil || !ok {
+		t.Fatalf("publication: %v %v", ok, err)
+	}
+	// a commit that fails: a constraint checked only at commit, broken by every entry written
+	for _, q := range []string{
+		`CREATE TABLE fail_parent (id INTEGER PRIMARY KEY)`,
+		`CREATE TABLE fail_child (id INTEGER REFERENCES fail_parent (id) DEFERRABLE INITIALLY DEFERRED)`,
+		`CREATE TRIGGER fail_commit AFTER INSERT ON slim_entries BEGIN INSERT INTO fail_child VALUES (1); END`,
+	} {
+		if _, err := st.DB().Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const signer = "celestia1asignernorecordcarriedbefore"
+	again := pub
+	again.Signer = signer
+	againLine, _ := json.Marshal(again)
+	if ok, err := st.UpsertPublication(again, againLine); err == nil || ok {
+		t.Fatalf("the commit was to fail: %v %v", ok, err)
+	}
+	if _, err := st.DB().Exec(`DROP TRIGGER fail_commit`); err != nil {
+		t.Fatal(err)
+	}
+
+	next := slimPublication(t, 0x64, 5)
+	next.Signer = signer
+	nextLine, _ := json.Marshal(next)
+	if ok, err := st.UpsertPublication(next, nextLine); err != nil || !ok {
+		t.Fatalf("the next publication: %v %v", ok, err)
+	}
+	st.Close()
+	ro, err := store.OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	var raw []byte
+	if err := ro.DB().QueryRow(`SELECT raw_json FROM publications WHERE promise_hash = ?`, next.PromiseHash).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ro.Record(ctx, ro.DB(), raw); err != nil || !bytes.Equal(got, nextLine) {
+		t.Fatalf("the next publication in another process: %v\n got %.200s\nwant %.200s", err, got, nextLine)
+	}
+}

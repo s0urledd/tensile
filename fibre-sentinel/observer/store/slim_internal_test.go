@@ -5,13 +5,15 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/slim"
 )
 
-// A decoder that panics on a record (today: a slim publication without an
-// assignment) is that record not decoding, not the process ending: a read
-// gets ErrUndecodable for it, and a record that would be stored in that form
-// keeps its line instead.
-func TestARecordTheDecoderPanicsOnIsUndecodable(t *testing.T) {
+// A record that does not decode is that record's error, whatever the reason: a read gets ErrUndecodable for it. A
+// slim body cut short, or one that starts with a tag the format does not have, never decodes; a decoding that panics
+// (a record of a shape the decoder does not expect) is the same, not the process ending. A record that would be
+// stored in a form that does not read back keeps its line: TestARecordTheSlimFormWouldNotGiveBackKeepsItsLine.
+func TestARecordThatDoesNotDecodeIsUndecodable(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
@@ -22,7 +24,7 @@ func TestARecordTheDecoderPanicsOnIsUndecodable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	line := []byte(`{"promise_hash":"ab","note":"no assignment"}`)
+	line := []byte(`{"promise_hash":"ab","note":"a record"}`)
 	body, _, err := tb.EncodePublication(line)
 	if err != nil {
 		t.Fatal(err)
@@ -37,10 +39,23 @@ func TestARecordTheDecoderPanicsOnIsUndecodable(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.Record(ctx, st.db, body); !errors.Is(err, ErrUndecodable) {
-		t.Fatalf("a body the decoder panics on: %v", err)
+	for _, c := range []struct {
+		name string
+		body []byte
+	}{
+		{"a body cut short", body[:len(body)-1]},
+		{"a body with a tag the format does not have", append([]byte{0xff}, body[1:]...)},
+	} {
+		// the decoder itself refuses the bytes, with no panic to recover
+		if _, _, err := tb.DecodePublication(c.body); err == nil {
+			t.Errorf("%s decodes", c.name)
+		}
+		if _, err := st.Record(ctx, st.db, c.body); !errors.Is(err, ErrUndecodable) {
+			t.Errorf("%s: %v", c.name, err)
+		}
 	}
-	if got, _, err := publicationBody(tb, line, tb.Stored()); err != nil || got != string(line) {
-		t.Fatalf("stored as %v (%v), want its line", got, err)
+	err = st.decodeRetry(ctx, st.db, func(*slim.Tables) error { panic("a record of a shape the decoder does not expect") })
+	if !errors.Is(err, ErrUndecodable) {
+		t.Fatalf("a decoding that panics: %v", err)
 	}
 }
