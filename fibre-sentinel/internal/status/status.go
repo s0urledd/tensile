@@ -19,7 +19,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -30,6 +29,38 @@ const Interval = 15 * time.Second
 
 // StaleAfter is the age past which a status file means "not running".
 const StaleAfter = 2 * time.Minute
+
+// CadenceKey is the Detail entry in which a long-running component states,
+// once at its start, the longest its work loop should go between two
+// completed cycles, in whole seconds. The file itself is rewritten every
+// Interval by a goroutine of its own whatever the loop is doing, so a fresh
+// file says the process is alive, not that it is working: a loop blocked
+// for an hour keeps its file fresh and its last OK an hour old. With the
+// cadence a reader can tell the two apart (/v1/health fails a component
+// whose last OK is older than a few cadences) without hard-coding each
+// component's pace.
+const CadenceKey = "cadence_s"
+
+// defaults are the Detail entries every Writer this process makes from now
+// on starts with (SetDefault).
+var defaults struct {
+	mu sync.Mutex
+	m  map[string]any
+}
+
+// SetDefault records a Detail entry that every Writer this process creates
+// after it starts with. It is for what a component's main knows and the
+// library that keeps its status file does not: the scanner's writer is made
+// inside internal/scan, and its main states the scanner's cadence through
+// this before building it.
+func SetDefault(key string, v any) {
+	defaults.mu.Lock()
+	defer defaults.mu.Unlock()
+	if defaults.m == nil {
+		defaults.m = map[string]any{}
+	}
+	defaults.m[key] = v
+}
 
 // Report is the file's content.
 type Report struct {
@@ -94,6 +125,11 @@ func New(dataDir, component, vantage, version string) *Writer {
 	now := time.Now().UTC()
 	w.r = Report{Component: component, Vantage: vantage, Version: version, PID: os.Getpid(), Hostname: host,
 		StartedAt: now, UpdatedAt: now, OK: true, Detail: map[string]any{}}
+	defaults.mu.Lock()
+	for k, v := range defaults.m {
+		w.r.Detail[k] = v
+	}
+	defaults.mu.Unlock()
 	if dataDir != "" {
 		w.path = filepath.Join(dataDir, "status", component+".json")
 	}
@@ -237,17 +273,6 @@ func (w *Writer) flush(force bool) {
 	w.dirty = false
 }
 
-func diskOf(dir string) *Disk {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil || st.Blocks == 0 {
-		return nil
-	}
-	bs := uint64(st.Bsize)
-	d := &Disk{FreeBytes: st.Bavail * bs, TotalBytes: st.Blocks * bs}
-	d.FreeShare = float64(d.FreeBytes) / float64(d.TotalBytes)
-	return d
-}
-
 // ReadAll returns every component's report under dataDir, sorted by name.
 // A missing directory is an empty list, not an error.
 func ReadAll(dataDir string) ([]Report, error) {
@@ -282,6 +307,25 @@ func ReadAll(dataDir string) ([]Report, error) {
 // refreshed within StaleAfter of now.
 func (r Report) Alive(now time.Time) bool {
 	return r.StoppedAt == nil && now.Sub(r.UpdatedAt) < StaleAfter
+}
+
+// Cadence is the cadence the component stated at its start (CadenceKey),
+// false when it stated none: an older build, or a component without a
+// work loop of its own.
+func (r Report) Cadence() (time.Duration, bool) {
+	var secs float64
+	switch v := r.Detail[CadenceKey].(type) {
+	case float64: // read back from the file
+		secs = v
+	case int: // set in this process
+		secs = float64(v)
+	default:
+		return 0, false
+	}
+	if secs <= 0 {
+		return 0, false
+	}
+	return time.Duration(secs * float64(time.Second)), true
 }
 
 // ReadOne reads one component's report from a status directory, false when

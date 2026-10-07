@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
 )
 
 func main() {
@@ -62,6 +63,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("-skip-heights: %v", err)
 	}
+
+	// The scanner completes a cycle per block, seconds apart, and so states
+	// a minute as its cadence; /v1/health fails it once its last completed
+	// block is a few of these old while the chain has newer ones.
+	status.SetDefault(status.CadenceKey, 60)
 
 	runCfg := map[string]any{}
 	flag.VisitAll(func(f *flag.Flag) { runCfg[f.Name] = f.Value.String() })
