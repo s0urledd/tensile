@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -189,8 +190,11 @@ func goldenAsk(srv *Server, r string) (status int, body []byte, ctype string, fi
 			first = time.Since(t0)
 		}
 		b, _ := io.ReadAll(rec.Result().Body)
-		// 503: a snapshot the server builds on first demand; 429: the ration of pinned and excluding windows
-		busy := rec.Code == http.StatusServiceUnavailable || rec.Code == http.StatusTooManyRequests
+		// 503: a snapshot the server builds on first demand; 429: the ration of pinned and excluding windows;
+		// publishers whose reading counts the readings memo has not computed yet (null until it has, as on a
+		// live API just restarted): asked again, so two runs never differ by how fast the memo was
+		busy := rec.Code == http.StatusServiceUnavailable || rec.Code == http.StatusTooManyRequests ||
+			(rec.Code == http.StatusOK && strings.HasPrefix(r, "/v1/publishers") && bytes.Contains(b, []byte(`"readings":null`)))
 		if !busy || time.Now().After(deadline) {
 			return rec.Code, b, rec.Header().Get("Content-Type"), first
 		}
