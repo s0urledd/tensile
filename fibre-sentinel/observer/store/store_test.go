@@ -366,10 +366,74 @@ func TestCheckpointWALTruncatesTheLog(t *testing.T) {
 	}
 
 	// A reader in the way makes it a no-op rather than an error, which the
-	// caller treats as "try again next pass". That path is not exercised
-	// here: the readers it guards against are in the API process, and
-	// holding one open on this pool would only deadlock the test against
-	// itself.
+	// caller treats as "try again next pass": TestCheckpointWALDoesNotWaitForAReader.
+}
+
+// TestCheckpointWALDoesNotWaitForAReader: a reader holding a snapshot older
+// than the last commit (the API, through a snapshot refresh) keeps the log
+// from being reset. The checkpoint copies what it can and says busy at
+// once; it must not wait out the busy timeout, because the collector's one
+// goroutine (the fast tick included) waits with it. Once the reader is gone
+// the log is reset, and the connection keeps its busy timeout for every
+// other statement.
+func TestCheckpointWALDoesNotWaitForAReader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "observer.db")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	write := func(from, n int) {
+		t.Helper()
+		for i := from; i < from+n; i++ {
+			if err := st.SetMeta("k"+strconv.Itoa(i), strings.Repeat("x", 200), time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	write(0, 200)
+
+	ro, err := store.OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	tx, err := ro.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM meta`).Scan(&n); err != nil { // the snapshot is taken here
+		t.Fatal(err)
+	}
+	write(200, 200) // committed past the reader's snapshot
+
+	start := time.Now()
+	busy, _, _, err := st.CheckpointWAL(ctx)
+	took := time.Since(start)
+	if err != nil {
+		t.Fatalf("checkpoint with a reader in the way: %v", err)
+	}
+	if !busy {
+		t.Error("checkpoint reported done with a reader holding an older snapshot")
+	}
+	if took > 2*time.Second {
+		t.Errorf("checkpoint waited %v for the reader", took)
+	}
+	var timeout int
+	if err := st.DB().QueryRowContext(ctx, `PRAGMA busy_timeout`).Scan(&timeout); err != nil || timeout != 5000 {
+		t.Errorf("busy timeout after the checkpoint: %d, %v", timeout, err)
+	}
+
+	tx.Rollback()
+	busy, _, _, err = st.CheckpointWAL(ctx)
+	if err != nil || busy {
+		t.Fatalf("checkpoint with the reader gone: busy %v, %v", busy, err)
+	}
+	if fi, err := os.Stat(path + "-wal"); err == nil && fi.Size() != 0 {
+		t.Errorf("the log is %d bytes after a checkpoint with no reader", fi.Size())
+	}
 }
 
 // The retention pass deletes rows; SQLite moves those pages to its free list

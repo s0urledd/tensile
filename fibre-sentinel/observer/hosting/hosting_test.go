@@ -5,9 +5,11 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -427,5 +429,74 @@ func TestRefresherOnAStoreJustOpenedDoesNotWaitOnItself(t *testing.T) {
 	}
 	if res.Resolved != 1 {
 		t.Fatalf("run: %+v", res)
+	}
+}
+
+// A heartbeat whose record does not decode is that heartbeat's alone: the other endpoints are resolved and the table
+// is written, its endpoint goes without addresses until a newer heartbeat, and the log names it once, not every pass.
+func TestRefresherSkipsAHeartbeatThatDoesNotDecode(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := EnsureSchema(st.DB()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+	b1, h1 := consBech(t, 0x11)
+	b2, h2 := consBech(t, 0x22)
+	provs := []scan.FibreProvider{{ConsAddressBech32: b1, Host: "fibre.one.example:7980"}, {ConsAddressBech32: b2, Host: "fibre.two.example:7980"}}
+	if _, _, err := st.ObserveEndpoints(ctx, provs, 100, now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	beat(t, st, h1, "fibre.one.example:7980", now.Add(-10*time.Minute), "5.9.1.1", "-> 5.9.1.1:7980")
+	beat(t, st, h2, "fibre.two.example:7980", now.Add(-10*time.Minute), "51.68.1.1", "-> 51.68.1.1:7980")
+	// the second heartbeat's slim record, cut short
+	var raw []byte
+	if err := st.DB().QueryRow(`SELECT raw_json FROM reachability WHERE validator_address = ?`, h2).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) < 2 || raw[0] == '{' {
+		t.Fatalf("the heartbeat is kept as %.40q, not in its slim form", raw)
+	}
+	if _, err := st.DB().Exec(`UPDATE reachability SET raw_json = ? WHERE validator_address = ?`, raw[:len(raw)-1], h2); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs []string
+	r := &Refresher{DB: st.DB(), Logf: func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }, Record: recordOf(st),
+		Cfg: Config{ASNPath: writeFile(t, dir, DefaultASNFile, asnTSV, true)}}
+	res, err := r.Run(ctx, now)
+	if err != nil {
+		t.Fatalf("one heartbeat that does not decode failed the run: %v", err)
+	}
+	if res.Hosts != 2 || res.Resolved != 1 {
+		t.Fatalf("run: %+v", res)
+	}
+	cur, err := Current(ctx, st.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in := cur[h1]; in.Status != "ok" || in.IP != "5.9.1.1" {
+		t.Fatalf("the endpoint whose heartbeat decodes: %+v", in)
+	}
+	if in := cur[h2]; in.Status != "unresolved" || in.IP != "" {
+		t.Fatalf("the endpoint whose heartbeat does not decode: %+v", in)
+	}
+	// the next pass reads the heartbeats again (nothing changed, so it writes nothing) and says nothing more
+	if res, err := r.Run(ctx, now.Add(time.Minute)); err != nil || !res.Skipped {
+		t.Fatalf("second pass: %+v %v", res, err)
+	}
+	said := 0
+	for _, l := range logs {
+		if strings.Contains(l, h2) {
+			said++
+		}
+	}
+	if said != 1 {
+		t.Fatalf("the heartbeat was named %d times: %q", said, logs)
 	}
 }

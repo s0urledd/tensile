@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -480,11 +481,9 @@ func (s *Store) StaleDeadlineRows(ctx context.Context, limit int) ([]StaleRow, e
 	rows.Close()
 	// each row's record as its line, whatever form the row keeps it in
 	for i := range out {
-		line, err := s.ProbeRecord(ctx, s.db, out[i].PromiseHash, []byte(out[i].RawJSON))
-		if err != nil {
-			return nil, fmt.Errorf("probe %s: %w", out[i].DedupeKey, err)
+		if err := s.recordOf(ctx, &out[i].ProbeRowForCorrection, out[i].PromiseHash); err != nil {
+			return nil, err
 		}
-		out[i].RawJSON = string(line)
 	}
 	return out, nil
 }
@@ -585,6 +584,29 @@ type ProbeRowForCorrection struct {
 	Classification   string
 	MustServeUntil   time.Time
 	RawJSON          string
+	// RecordErr is why RawJSON is empty for a row whose record is there but
+	// does not decode (ErrUndecodable): the row cannot be re-graded, as one
+	// whose record was stripped cannot, and the other rows go on without it.
+	RecordErr error
+}
+
+// recordOf replaces r's raw_json with its record line; promiseHash is the
+// row's. A row whose record does not decode is left with none and the reason
+// (RecordErr) rather than made the whole read's error: the corrector counts
+// it unreached, which keeps it withheld and its range open, and re-grades
+// every other row.
+func (s *Store) recordOf(ctx context.Context, r *ProbeRowForCorrection, promiseHash string) error {
+	line, err := s.ProbeRecord(ctx, s.db, promiseHash, []byte(r.RawJSON))
+	if errors.Is(err, ErrUndecodable) {
+		r.RawJSON, r.RecordErr = "", fmt.Errorf("probe %s: %w", r.DedupeKey, err)
+		s.leftAside("probe "+r.DedupeKey+" (params correction)", err)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("probe %s: %w", r.DedupeKey, err)
+	}
+	r.RawJSON = string(line)
+	return nil
 }
 
 // ProbeRowsOf returns the probe rows of one publication that have not been
@@ -615,11 +637,9 @@ func (s *Store) ProbeRowsOf(ctx context.Context, promiseHash, uncertaintyID stri
 	}
 	rows.Close()
 	for i := range out {
-		line, err := s.ProbeRecord(ctx, s.db, promiseHash, []byte(out[i].RawJSON))
-		if err != nil {
-			return nil, fmt.Errorf("probe %s: %w", out[i].DedupeKey, err)
+		if err := s.recordOf(ctx, &out[i], promiseHash); err != nil {
+			return nil, err
 		}
-		out[i].RawJSON = string(line)
 	}
 	return out, nil
 }

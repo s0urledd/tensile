@@ -209,7 +209,7 @@ func (s *sim) pruneThrough(d string) {
 	db := s.st.DB()
 	for _, q := range []string{
 		`DELETE FROM probes WHERE started_at <= ?`, `DELETE FROM reachability WHERE started_at <= ?`,
-		`DELETE FROM probe_confirmations WHERE started_at <= ?`, `DELETE FROM sampling_decisions WHERE decided_at <= ?`,
+		`DELETE FROM sampling_decisions WHERE decided_at <= ?`,
 	} {
 		if _, err := db.Exec(q, dayHi(d)); err != nil {
 			s.t.Fatal(err)
