@@ -38,9 +38,10 @@ type avatarSource interface {
 	Fetch(ctx context.Context, pictureURL string) (contentType string, data []byte, err error)
 }
 
-// Bounds of one batch. A full batch is followed by the next a minute later,
-// so a first install with a few hundred identities fills in minutes, not
-// days; anything left over waits for the next run.
+// Bounds of one batch. A full batch that Keybase mostly answered is followed
+// by the next a minute later (next), so a first install with a few hundred
+// identities fills in minutes, not days; anything left over waits for the
+// next run.
 const (
 	avatarBatch   = 40
 	avatarBudget  = 2 * time.Minute
@@ -88,12 +89,7 @@ type avatarRun struct {
 func (r *avatarResolver) loop(ctx context.Context, every time.Duration, done chan<- struct{}) {
 	defer close(done)
 	for {
-		res := r.run(ctx)
-		wait := every
-		if !res.Cut && res.Failed == 0 && res.StoreErr == nil && res.Due >= r.batch {
-			wait = avatarCatchUp
-		}
-		t := time.NewTimer(wait)
+		t := time.NewTimer(r.next(r.run(ctx), every))
 		select {
 		case <-ctx.Done():
 			t.Stop()
@@ -101,6 +97,19 @@ func (r *avatarResolver) loop(ctx context.Context, every time.Duration, done cha
 		case <-t.C:
 		}
 	}
+}
+
+// next is how long to wait after a batch that did res: avatarCatchUp after a
+// full batch that ran to its end with Keybase answering more lookups than
+// it failed, else every. A Keybase that is down or refusing most requests
+// is asked again an hour on, not each minute; one identity whose picture
+// keeps failing does not slow a first fill of a few hundred to a batch an
+// hour.
+func (r *avatarResolver) next(res avatarRun, every time.Duration) time.Duration {
+	if !res.Cut && res.StoreErr == nil && res.Due >= r.batch && res.Pictures+res.None > res.Failed {
+		return avatarCatchUp
+	}
+	return every
 }
 
 // run is one batch.

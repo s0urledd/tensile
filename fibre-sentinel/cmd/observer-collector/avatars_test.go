@@ -229,3 +229,27 @@ func TestTheAvatarBatchIsBounded(t *testing.T) {
 		t.Fatalf("last batch: %+v", res)
 	}
 }
+
+// A full batch Keybase mostly answered is followed by the next a minute
+// later, even with an identity that failed in it; a batch that was cut, not
+// full, or mostly failed waits for the next run.
+func TestTheNextAvatarBatchComesSoonOnlyWhileKeybaseAnswers(t *testing.T) {
+	r := &avatarResolver{batch: 40}
+	for _, c := range []struct {
+		name string
+		res  avatarRun
+		want time.Duration
+	}{
+		{"full, all answered", avatarRun{Due: 40, Checked: 40, Pictures: 38, None: 2}, avatarCatchUp},
+		{"full, one picture failing", avatarRun{Due: 40, Checked: 40, Pictures: 39, Failed: 1}, avatarCatchUp},
+		{"full, Keybase down", avatarRun{Due: 40, Checked: 40, Failed: 40}, time.Hour},
+		{"full, mostly refused", avatarRun{Due: 40, Checked: 40, Pictures: 15, Failed: 25}, time.Hour},
+		{"cut by the budget", avatarRun{Due: 40, Checked: 12, Pictures: 12, Cut: true}, time.Hour},
+		{"not full", avatarRun{Due: 7, Checked: 7, Pictures: 7}, time.Hour},
+		{"store failing", avatarRun{Due: 40, Checked: 40, Pictures: 40, StoreErr: errors.New("disk I/O error")}, time.Hour},
+	} {
+		if got := r.next(c.res, time.Hour); got != c.want {
+			t.Errorf("%s: next in %s, want %s", c.name, got, c.want)
+		}
+	}
+}
