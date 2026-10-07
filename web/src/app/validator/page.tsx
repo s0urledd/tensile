@@ -386,9 +386,12 @@ function Page() {
   for (const r of held) { const w = resultOf(r.p, r.g).word; heldBy.set(w, (heldBy.get(w) ?? 0) + 1); }
   const heldWhy = [...heldBy].map(([w, n]) => `${w} (${int(n)})`).join(", ");
   const heldFull = held.filter((r) => r.full).length;
+  // the readings judged by the earlier rule: on Mocha, those before full readings began; on a network observed only
+  // since then (mainnet), the readings that stopped at enough rows, as the date would name a time before its record
+  const earlier = meta?.chain_id?.startsWith("mocha") ? `before ${FULL_READ_SINCE_WORDS}` : "at a reading that stopped at enough rows";
   const heldText = heldFull === held.length ? "Tensile’s side had a gap, or rows came back that are not the validator’s own."
     : heldFull === 0 ? "The blob was available from other validators."
-    : `Tensile’s side had a gap, rows came back that are not the validator’s own, or, before ${FULL_READ_SINCE_WORDS}, the blob was available from others.`;
+    : `Tensile’s side had a gap, rows came back that are not the validator’s own, or, ${earlier}, the blob was available from others.`;
   const tone = o && decided > 0 ? rateTone(o.served, decided) : undefined;
   const now = Date.now();
   const per = periodName(data.window.name ?? win);

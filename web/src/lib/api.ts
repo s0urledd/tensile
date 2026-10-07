@@ -802,16 +802,23 @@ export function apiFailing(f: { error: string | null; status?: number }): boolea
 export function throttled(f: { error: string | null; status?: number }): boolean {
   return !!f.error && f.status === 429;
 }
+/** a failed request in the words the site's notices use: "The observer API is busy (too many requests)" on a 429, else "… is not answering (…)" */
+export function failedWords(f: { error: string | null; status?: number }): string {
+  return `${throttled(f) ? "The observer API is busy" : "The observer API is not answering"} (${f.error ?? "no answer"})`;
+}
 
 // One in-flight request and one timer per (path, interval), however many
 // components ask for it: the header, the banner, the footer and the page all
 // want /v1/meta, which was four requests per interval per viewer.
-// retry is the one early re-ask a stream has pending while its figure is
-// being computed. load asks now; busy counts the requests out, and again asks
-// once more when the last of them is back (askAgain).
+// timer is the stream's one next ask: its interval after an answer, sooner
+// while its figure is being computed, after a failure the back-off
+// (failRetryMs). It asks nothing while the page is hidden: a stream that
+// falls due then is due, and asks as soon as the page is shown again. load
+// asks now; busy counts the requests out, and again asks once more when the
+// last of them is back (askAgain). fails counts the failures in a row.
 type Sub = {
-  subs: Set<(f: Fetch<unknown>) => void>; timer: ReturnType<typeof setInterval> | null; retry: ReturnType<typeof setTimeout> | null; last: Fetch<unknown>;
-  load: () => void; busy: number; again: boolean;
+  subs: Set<(f: Fetch<unknown>) => void>; timer: ReturnType<typeof setTimeout> | null; last: Fetch<unknown>;
+  load: () => void; busy: number; again: boolean; fails: number; due: boolean;
 };
 const streams = new Map<string, Sub>();
 
@@ -819,6 +826,44 @@ const streams = new Map<string, Sub>();
 function computingRetryMs(seconds: unknown): number {
   const s = typeof seconds === "number" && isFinite(seconds) ? seconds : 5;
   return Math.min(Math.max(s, 2), 30) * 1000;
+}
+
+/**
+ * How soon a stream asks again after its n-th failure in a row (n from 1): 2 s, doubling. A restart of the API
+ * is then over on the page seconds after it is over, not at the stream's next interval, up to 5 minutes later.
+ * It doubles up to the stream's interval; one asked more often than every 30 s goes on doubling up to 8 of its
+ * intervals or 30 s, whichever is less, so a refusal (429) or an outage is not asked at the pace of the 1 s tip.
+ * A Retry-After the answer gave is waited out, up to 5 minutes. A stream with no interval goes on asking, at
+ * most every 5 minutes, until it is answered.
+ */
+export function failRetryMs(n: number, refreshMs: number, retryAfterMs = 0): number {
+  const cap = refreshMs > 0 ? Math.max(refreshMs, Math.min(8 * refreshMs, 30000)) : 300000;
+  const ms = Math.min(2000 * 2 ** Math.min(Math.max(n, 1) - 1, 20), cap);
+  return Math.min(Math.max(ms, retryAfterMs), 300000);
+}
+
+/** a Retry-After header in ms, seconds or an HTTP date; 0 when there is none (across origins it is not readable) */
+function retryAfterMs(h: string | null): number {
+  if (!h) return 0;
+  const s = Number(h);
+  if (Number.isFinite(s)) return Math.max(0, s * 1000);
+  const t = Date.parse(h);
+  return Number.isFinite(t) ? Math.max(0, t - Date.now()) : 0;
+}
+
+/**
+ * The page's own clock for the streams: none asks at its interval while the page is hidden (a background tab
+ * asking every second for a header nobody sees was most of what tripped the proxy's limit), and every stream
+ * that fell due meanwhile asks at once when it is shown again.
+ */
+let watching = false;
+function watchVisibility(): void {
+  if (watching || typeof document === "undefined") return;
+  watching = true;
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    streams.forEach((st) => { if (st.due) st.load(); });
+  });
 }
 
 async function fetchOnce(path: string): Promise<Fetch<unknown> & { retryMs?: number }> {
@@ -838,7 +883,8 @@ async function fetchOnce(path: string): Promise<Fetch<unknown> & { retryMs?: num
           // is not readable across origins, so the body says how long.
           return { data: null, error: null, loading: true, fetchedAt: null, status: r.status, computing: true, retryMs: computingRetryMs(body.retry_after_s) };
         }
-        return { data: null, error: msg, loading: false, fetchedAt: null, status: r.status };
+        // a refusal or an outage that says how long to wait (the site's proxy does, on a 429)
+        return { data: null, error: msg, loading: false, fetchedAt: null, status: r.status, retryMs: retryAfterMs(r.headers.get("retry-after")) };
       }
       return { data: await r.json(), error: null, loading: false, fetchedAt: new Date().toISOString() };
     } finally {
@@ -850,24 +896,37 @@ async function fetchOnce(path: string): Promise<Fetch<unknown> & { retryMs?: num
   }
 }
 
-function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<unknown>) => void): () => void {
+/** a stream of one path, asked at one interval (0: once), with every answer to fn; exported for its test */
+export function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<unknown>) => void): () => void {
   let st = streams.get(key);
   if (!st) {
-    const own: Sub = { subs: new Set(), timer: null, retry: null, last: { data: null, error: null, loading: true, fetchedAt: null }, load: () => {}, busy: 0, again: false };
+    const own: Sub = { subs: new Set(), timer: null, last: { data: null, error: null, loading: true, fetchedAt: null }, load: () => {}, busy: 0, again: false, fails: 0, due: false };
     st = own;
     streams.set(key, st);
+    watchVisibility();
+    // the next ask, ms from now: on a hidden page the stream is only due, and asks when the page is shown again
+    const later = (ms: number) => {
+      own.timer = setTimeout(() => {
+        own.timer = null;
+        if (typeof document !== "undefined" && document.hidden) own.due = true;
+        else load();
+      }, ms);
+    };
     const load = async () => {
+      if (own.timer) { clearTimeout(own.timer); own.timer = null; }
+      own.due = false;
       own.busy++;
       const { retryMs, ...next } = await fetchOnce(path);
       own.busy--;
-      const cur = streams.get(key);
-      if (!cur) return;
+      if (streams.get(key) !== own) return;
+      let wait = refreshMs;
       if (next.computing) {
         // Being computed: what is on screen stays, without an error, and the
-        // stream asks again in a few seconds, once, whatever its interval
-        // (a stream with no interval asks again too).
-        cur.last = cur.last.data !== null ? { ...cur.last, error: null, loading: false, status: next.status, computing: true } : next;
-        if (!cur.retry) cur.retry = setTimeout(() => { cur.retry = null; load(); }, retryMs ?? 5000);
+        // stream asks again in a few seconds, whatever its interval (a stream
+        // with no interval asks again too).
+        own.last = own.last.data !== null ? { ...own.last, error: null, loading: false, status: next.status, computing: true } : next;
+        own.fails = 0;
+        wait = refreshMs > 0 ? Math.min(retryMs ?? 5000, refreshMs) : retryMs ?? 5000;
       } else {
         // A refresh that fails does not erase the answer already on screen. It
         // used to: fetchOnce returns {data: null, error} on any failure, so one
@@ -876,20 +935,28 @@ function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<u
         // The error is carried beside the last good payload instead, for the
         // page to show, and the figures keep their own computed_at so nobody
         // reads stale numbers as fresh ones.
-        cur.last = next.error && cur.last.data !== null
-          ? { data: cur.last.data, error: next.error, loading: false, fetchedAt: cur.last.fetchedAt, status: next.status }
+        own.last = next.error && own.last.data !== null
+          ? { data: own.last.data, error: next.error, loading: false, fetchedAt: own.last.fetchedAt, status: next.status }
           : next;
+        // A failure of the API is asked again with a back-off of its own, not
+        // at the interval: a stream asked every 5 minutes kept "not answering"
+        // on screen for minutes after a restart of a few seconds, and one asked
+        // every second went on asking a proxy that refused it. A 404 or a 400
+        // says something about the record, not the API, and waits its interval.
+        if (apiFailing(next)) wait = failRetryMs(++own.fails, refreshMs, retryMs);
+        else own.fails = 0;
       }
-      const out = cur.last;
-      cur.subs.forEach((s) => s(out));
+      const out = own.last;
+      own.subs.forEach((s) => s(out));
       if (own.again && own.busy === 0) {
         own.again = false;
         load();
+        return;
       }
+      if (own.busy === 0 && wait > 0) later(wait);
     };
     own.load = load;
     load();
-    if (refreshMs > 0) st.timer = setInterval(load, refreshMs);
   } else if (!st.last.loading || st.last.computing) {
     // A later subscriber gets the current value at once. So does one that
     // arrives while the figure is being computed with nothing to show yet:
@@ -903,8 +970,7 @@ function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<u
     if (!cur) return;
     cur.subs.delete(fn);
     if (cur.subs.size === 0) {
-      if (cur.timer) clearInterval(cur.timer);
-      if (cur.retry) clearTimeout(cur.retry);
+      if (cur.timer) clearTimeout(cur.timer);
       streams.delete(key);
     }
   };

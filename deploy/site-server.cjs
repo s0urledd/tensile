@@ -64,12 +64,19 @@ const SECURITY = {
 // the API is capped: a figure pinned to an arbitrary as_of bypasses the API's
 // caches and costs a second or more of database work, so a loop of them from
 // one address must not starve everyone else. A page load makes about ten
-// data requests at once and then polls one every few seconds, well inside
-// these limits. Avatars are exempt: the overview asks for one per validator
-// in a burst, and the API serves them from its own cache.
+// data requests at once and then, while it is shown, one every few seconds,
+// well inside RATE. The newest block (/v1/tip) is counted apart: every page
+// that is shown asks for it once a second (TIP_MS in web/src/lib/api.ts), so
+// in the one bucket the tips of about nine pages behind one address (an
+// office, a demo's Wi-Fi, a carrier's NAT) spent RATE and their data requests
+// were refused; and the API answers it from a quarter-second cache however
+// many ask. TIP_RATE is about thirty shown pages' worth. Avatars are exempt:
+// the overview asks for one per validator in a burst, and the API serves them
+// from its own cache.
 const RATE = { burst: 120, perSec: 10 };        // token bucket per client address
+const TIP_RATE = { burst: 60, perSec: 30 };     // the same, for /v1/tip alone
 const INFLIGHT_PER_CLIENT = 16, INFLIGHT_TOTAL = 48;
-const buckets = new Map();                      // address -> { tokens, at, inflight }
+const buckets = new Map();                      // address -> { tokens, tips, at, inflight }
 let inflight = 0;
 setInterval(() => {
   const now = Date.now();
@@ -85,18 +92,22 @@ function clientOf(req) {
   return xff || peer;
 }
 
-function admit(req, res) {
+// tip: the request is for /v1/tip, and spends TIP_RATE's tokens instead of RATE's.
+function admit(req, res, tip) {
   const who = clientOf(req), now = Date.now();
   let b = buckets.get(who);
-  if (!b) buckets.set(who, b = { tokens: RATE.burst, at: now, inflight: 0 });
-  b.tokens = Math.min(RATE.burst, b.tokens + ((now - b.at) / 1000) * RATE.perSec);
+  if (!b) buckets.set(who, b = { tokens: RATE.burst, tips: TIP_RATE.burst, at: now, inflight: 0 });
+  const s = (now - b.at) / 1000;
+  b.tokens = Math.min(RATE.burst, b.tokens + s * RATE.perSec);
+  b.tips = Math.min(TIP_RATE.burst, b.tips + s * TIP_RATE.perSec);
   b.at = now;
-  if (b.tokens < 1 || b.inflight >= INFLIGHT_PER_CLIENT || inflight >= INFLIGHT_TOTAL) {
+  const spend = tip ? "tips" : "tokens";
+  if (b[spend] < 1 || b.inflight >= INFLIGHT_PER_CLIENT || inflight >= INFLIGHT_TOTAL) {
     res.writeHead(429, { ...SECURITY, "content-type": "application/json", "retry-after": "5" });
     res.end('{"error":"too many requests"}');
     return null;
   }
-  b.tokens -= 1;
+  b[spend] -= 1;
   b.inflight++; inflight++;
   let done = false;
   const release = () => { if (!done) { done = true; b.inflight--; inflight--; } };
@@ -212,7 +223,7 @@ function proxy(req, res, u) {
     res.writeHead(405, { ...SECURITY, allow: "GET, HEAD" });
     return res.end();
   }
-  if (!u.pathname.startsWith("/api/v1/avatars/") && !admit(req, res)) return;
+  if (!u.pathname.startsWith("/api/v1/avatars/") && !admit(req, res, u.pathname === "/api/v1/tip")) return;
   // A page waiting on the API is the thing to catch before a visitor does:
   // every answer slower than SLOW_MS goes to the journal with its time.
   const t0 = Date.now();

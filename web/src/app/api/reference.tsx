@@ -1,16 +1,18 @@
 "use client";
-import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Copy from "@/components/Copy";
-import { API_BASE } from "@/lib/api";
+import { API_BASE, useApi, type Meta } from "@/lib/api";
+import { apiDown } from "@/lib/apidown";
 import { API_URL, API_URL_FIXED } from "@/lib/site";
 import { GROUPS, type Endpoint, type Param } from "./endpoints";
 
 /**
  * The parts of the API page that run in the browser: the base URL and the
- * health dot, which depend on the site serving the page, and the reference,
- * which opens, filters and sends. One static export serves every network's
- * site, each with its own API on its own /api, so the base URL is read from
- * the page's origin unless NEXT_PUBLIC_API_URL fixed one at build time.
+ * notice that the API does not answer, which depend on the site serving the
+ * page, and the reference, which opens, filters and sends. One static export
+ * serves every network's site, each with its own API on its own /api, so the
+ * base URL is read from the page's origin unless NEXT_PUBLIC_API_URL fixed
+ * one at build time.
  */
 
 const DEFAULT_BASE = API_URL.replace(/\/v1$/, "");
@@ -35,26 +37,44 @@ export function BaseUrl() {
   );
 }
 
-/** A dot for /v1/health: its status word, or unreachable. */
+/**
+ * A pill in the title row, only while the API does not answer (or the site refuses this reader as too many requests,
+ * which reads busy). The observer's own checks are not shown: the site says nothing about the observer while the API
+ * answers, and /v1/health is listed below for anyone who asks. Asked every minute, not while the tab is hidden.
+ */
 export function Health() {
-  const [status, setStatus] = useState<string | null>(null);
+  const [down, setDown] = useState<{ word: string; why: string } | null>(null);
   useEffect(() => {
-    let live = true;
+    let live = true, last = 0;
     const check = async () => {
+      if (document.hidden) return;
+      last = Date.now();
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 20000);
+      let next: { word: string; why: string } | null;
       try {
-        const r = await fetch(`${API_BASE}/v1/health`, { cache: "no-store" });
-        const body = await r.json() as { status?: string };
-        if (live) setStatus(body.status ?? "unreachable");
-      } catch { if (live) setStatus("unreachable"); }
+        const r = await fetch(`${API_BASE}/v1/health`, { cache: "no-store", signal: ctl.signal });
+        let body: unknown = null;
+        try { body = await r.json(); } catch { /* not JSON: not the API's answer */ }
+        next = apiDown(r.status, body);
+      } catch (e) {
+        next = { word: "Not answering", why: e instanceof DOMException && e.name === "AbortError" ? "no answer within 20 s" : e instanceof Error ? e.message : String(e) };
+      } finally {
+        clearTimeout(t);
+      }
+      if (live) setDown(next);
     };
     check();
     const t = setInterval(check, 60_000);
-    return () => { live = false; clearInterval(t); };
+    const onVis = () => { if (!document.hidden && Date.now() - last >= 60_000) check(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { live = false; clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
   }, []);
+  if (!down) return null;
   return (
-    <span className="api-health" role="status" title="GET /v1/health">
-      <i className={`dot ${status === "ok" ? "ok" : status ? "hold" : "none"}`} aria-hidden="true" />
-      {status ? `Health: ${status}` : "Health: checking"}
+    <span className="api-health" role="status" title={`GET /v1/health: ${down.why}`}>
+      <i className="dot hold" aria-hidden="true" />
+      {down.word}
     </span>
   );
 }
@@ -144,6 +164,75 @@ type Answer =
 /** Parameters that take an address, a hash or a namespace get a row of their own. */
 const WIDE = new Set(["validator", "blob", "namespace", "commitment", "tx", "publisher", "exclude"]);
 
+/**
+ * The chain endpoints.ts's examples were taken on. Its Try it values name records of that chain: a validator, a blob,
+ * its namespace and publisher, an export. On another network's site (one export serves every network) they would ask
+ * for records its API does not hold, so there the newest the API itself names stand in for them.
+ */
+const EXAMPLE_CHAIN = "mocha-5";
+
+type Named = "validator" | "blob" | "namespace" | "publisher" | "export";
+type Live = Partial<Record<Named, string>>;
+const NONE_YET: Live = {};
+
+/** which record a parameter's Try it value names, if any */
+function recordOf(ep: Endpoint, p: Param): Named | null {
+  if (!p.example) return null;
+  if (p.name === "validator" || (p.name === "addr" && p.example.startsWith("celestiavaloper1"))) return "validator";
+  if (p.name === "addr" && p.example.startsWith("celestia1")) return "publisher";
+  if (p.name === "hash" && ep.path.startsWith("/v1/blobs/")) return "blob";
+  if (p.name === "namespace") return "namespace";
+  if (p.name === "name" && ep.path.startsWith("/v1/exports/")) return "export";
+  return null;
+}
+
+/**
+ * The records this site's API names, for the parameters of ep that name one: null on the examples' own chain (and
+ * until the site has said which chain it is on), empty while they are read. The newest blob gives a blob, its
+ * namespace and its publisher; the newest reading a validator (before the first one, the validator with the most
+ * voting power); the newest export its digest's name. Asked only when the endpoint is opened.
+ */
+function useLive(ep: Endpoint): Live | null {
+  const { data: meta } = useApi<Meta>("/v1/meta"); // the header's stream: no request of its own
+  const other = !!meta?.chain_id && meta.chain_id !== EXAMPLE_CHAIN;
+  const wanted = useMemo(() => new Set(ep.params.map((p) => recordOf(ep, p)).filter((r): r is Named => !!r)), [ep]);
+  const [live, setLive] = useState<Live | null>(null);
+  useEffect(() => {
+    if (!other || wanted.size === 0) return;
+    let on = true;
+    const get = async (path: string) => {
+      try {
+        const r = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
+        return r.ok ? await r.json() : null;
+      } catch { return null; }
+    };
+    (async () => {
+      const out: Live = {};
+      if (wanted.has("blob") || wanted.has("namespace") || wanted.has("publisher")) {
+        const b = (await get("/v1/blobs?limit=1"))?.blobs?.[0];
+        if (b) { out.blob = b.promise_hash; out.namespace = b.namespace; out.publisher = b.publisher; }
+      }
+      if (wanted.has("validator")) {
+        const p = (await get("/v1/probes?limit=1"))?.probes?.[0];
+        out.validator = p?.operator_address || p?.validator_address || undefined;
+        if (!out.validator) {
+          const vs: { operator_address?: string; address: string; voting_power: number }[] = (await get("/v1/validators?window=24h"))?.validators ?? [];
+          const top = vs.reduce<(typeof vs)[number] | null>((m, v) => (!m || v.voting_power > m.voting_power ? v : m), null);
+          out.validator = top ? top.operator_address || top.address : undefined;
+        }
+      }
+      if (wanted.has("export")) {
+        const ex: { name: string; day?: string }[] = (await get("/v1/exports?limit=1"))?.exports ?? [];
+        const newest = ex.reduce<(typeof ex)[number] | null>((m, e) => (!m || (e.day ?? e.name) > (m.day ?? m.name) ? e : m), null);
+        if (newest) out.export = `${newest.name}.sha256`;
+      }
+      if (on) setLive(out);
+    })();
+    return () => { on = false; };
+  }, [other, wanted]);
+  return other && wanted.size > 0 ? live ?? NONE_YET : null;
+}
+
 /** The request the inputs make:the path with its placeholders filled, and the query. */
 function request(ep: Endpoint, vals: Record<string, string>): { url: string; missing: string[] } {
   let path = ep.path;
@@ -165,6 +254,26 @@ function request(ep: Endpoint, vals: Record<string, string>): { url: string; mis
 function TryIt({ ep }: { ep: Endpoint }) {
   const base = useBase();
   const [vals, setVals] = useState<Record<string, string>>(() => Object.fromEntries(ep.params.map((p) => [p.name, p.example ?? ""])));
+  // On another network than the examples', a value that names a record is this API's own (useLive), empty until it is
+  // read; a value the reader typed stays.
+  const live = useLive(ep);
+  const auto = useRef<Record<string, string>>({});
+  useEffect(() => {
+    if (!live) return;
+    setVals((v) => {
+      let changed = false;
+      const next = { ...v };
+      for (const p of ep.params) {
+        const r = recordOf(ep, p);
+        if (!r) continue;
+        const want = live[r] ?? "";
+        const untouched = v[p.name] === (p.example ?? "") || v[p.name] === auto.current[p.name];
+        if (untouched && v[p.name] !== want) { next[p.name] = want; changed = true; }
+        auto.current[p.name] = untouched ? want : auto.current[p.name];
+      }
+      return changed ? next : v;
+    });
+  }, [live, ep]);
   const [answer, setAnswer] = useState<Answer | null>(null);
   const [busy, setBusy] = useState(false);
   const req = request(ep, vals);

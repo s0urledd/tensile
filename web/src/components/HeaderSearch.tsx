@@ -54,12 +54,14 @@ function whole(v: string, pasted: boolean): boolean {
 }
 
 /**
- * One record from the API, asked once for this path: null until its own answer is in, so a record asked earlier never
- * stands for the one asked now. missing: the API has no such record (404, 410); invalid: it refused the address (400).
+ * One record from the API, asked once for this path, and again each time `again` changes: null until its own answer
+ * is in, so a record asked earlier never stands for the one asked now. missing: the API has no such record (404, 410);
+ * invalid: it refused the address (400).
  */
 type Got<T> = { data: T | null; missing: boolean; invalid: boolean; error: string | null };
-function useRecord<T>(path: string | null): Got<T> | null {
-  const [st, setSt] = useState<{ path: string; got: Got<T> } | null>(null);
+function useRecord<T>(path: string | null, again: number): Got<T> | null {
+  const [st, setSt] = useState<{ ask: string; got: Got<T> } | null>(null);
+  const ask = path ? `${again}|${path}` : null;
   useEffect(() => {
     if (!path) return;
     let live = true;
@@ -72,11 +74,11 @@ function useRecord<T>(path: string | null): Got<T> | null {
       } catch (e) {
         got = { data: null, missing: false, invalid: false, error: e instanceof Error ? e.message : String(e) };
       }
-      if (live) setSt({ path, got });
+      if (live) setSt({ ask: `${again}|${path}`, got });
     })();
     return () => { live = false; };
-  }, [path]);
-  return path && st && st.path === path ? st.got : null;
+  }, [path, again]);
+  return ask && st && st.ask === ask ? st.got : null;
 }
 
 /**
@@ -142,11 +144,19 @@ export default function HeaderSearch() {
 
   // the lookups: each asks only for its own kind, once, and stands until the identifier changes; a blob identifier
   // that found nothing asks again as the tip names a newer blob, while the panel is open (RETRY_FOR)
+  // again: Enter or a paste of the same identifier after a lookup that failed asks it once more ("Try again in a
+  // moment" said so; the same identifier used to ask nothing until the field was cleared)
+  const [again, setAgain] = useState(0);
   const newest = useNewestBlob(); // the header's tip stream: no request of its own
   const blob = asked?.kind === "blob" ? blobKey(asked.id) : null;
-  const hit = useFind(blob, { limit: SHOWN, retryOn: on ? newest : null, retryForMs: RETRY_FOR });
-  const val = useRecord<{ validator: Validator }>(asked?.kind === "validator" ? `/v1/validators/${asked.id}?window=24h` : null);
-  const pub = useRecord<{ publisher: Publisher }>(asked?.kind === "publisher" ? `/v1/publishers/${asked.id}?window=all` : null);
+  const hit = useFind(blob, { limit: SHOWN, retryOn: on ? newest : null, retryForMs: RETRY_FOR, again });
+  const val = useRecord<{ validator: Validator }>(asked?.kind === "validator" ? `/v1/validators/${asked.id}?window=24h` : null, again);
+  const pub = useRecord<{ publisher: Publisher }>(asked?.kind === "publisher" ? `/v1/publishers/${asked.id}?window=all` : null, again);
+  // the lookup shown ended with the observer not answering
+  const failed = asked?.kind === "blob" ? !!hit?.error && hit.rows.length === 0
+    : asked?.kind === "validator" ? !!val?.error && !val.missing && !val.invalid
+    : asked?.kind === "publisher" ? !!pub?.error && !pub.missing && !pub.invalid
+    : false;
 
   let items: Item[] = [];
   let note: ReactNode = null;
@@ -203,7 +213,7 @@ export default function HeaderSearch() {
   const enter = () => {
     if (asked && pick >= 0 && pick < items.length) return open(items[pick].href);
     const t = siteTarget(q, blobKey);
-    if (t) { if (t.id !== asked?.id) ask(t); setBad(false); } else setBad(!!q.trim());
+    if (t) { if (t.id !== asked?.id) ask(t); else if (failed) setAgain((n) => n + 1); setBad(false); } else setBad(!!q.trim());
   };
 
   return (
@@ -218,7 +228,13 @@ export default function HeaderSearch() {
             aria-controls="hs-list" aria-expanded={on && items.length > 0} aria-activedescendant={on && pick >= 0 ? `hs-i${pick}` : undefined}
             role="combobox" aria-autocomplete="list"
             spellCheck={false} autoComplete="off" enterKeyHint="search"
-            onPaste={() => { pasted.current = true; }}
+            onPaste={(e) => {
+              pasted.current = true;
+              // the same identifier pasted over itself changes nothing in the field, so no change follows: a lookup
+              // that failed is asked again here
+              const t = failed ? siteTarget(e.clipboardData.getData("text"), blobKey) : null;
+              if (t && t.id === asked?.id) setAgain((n) => n + 1);
+            }}
             onChange={(e) => {
               const v = e.target.value;
               setQ(v);

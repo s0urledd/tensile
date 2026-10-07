@@ -14,10 +14,12 @@ const short = (f: Found) => !!(f.error || f.partial || f.rows.length === 0);
  * retryOn asks again, while the answer is still short of that, each time it changes: the tip's newest blob
  * (/v1/tip's latest_blob), so a blob is found as soon as Tensile records one rather than at the next refreshMs.
  * retryForMs stops that so long after the identifier was first asked (the timer of refreshMs goes on).
+ * again, changed, asks the same identifier again from the start: a reader who was told the lookup failed and asks
+ * once more.
  */
-export function useFind(key: BlobKey | null, opts: { as?: MatchBy[]; limit?: number; refreshMs?: number; retryOn?: string | null; retryForMs?: number } = {}): Found | null {
+export function useFind(key: BlobKey | null, opts: { as?: MatchBy[]; limit?: number; refreshMs?: number; retryOn?: string | null; retryForMs?: number; again?: number } = {}): Found | null {
   const as = opts.as ?? ALL;
-  const sig = key ? `${key.kind}:${key.hex}:${as.join(",")}:${opts.limit ?? 25}` : "";
+  const sig = key ? `${key.kind}:${key.hex}:${as.join(",")}:${opts.limit ?? 25}:${opts.again ?? 0}` : "";
   const [st, setSt] = useState<{ sig: string; found: Found } | null>(null);
   // the lookup of this identifier, for retryOn to reach: ask runs it again now, or once more after the one out
   const live = useRef<{ sig: string; since: number; ask: () => void } | null>(null);
