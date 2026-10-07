@@ -1,6 +1,11 @@
 # Probe policy: only the sampling master secret is left (see policy.go).
 # Keys of earlier policies (caps, capacity_model, budget_state, the rest of
 # sampling) are ignored.
+#
+# A network that never sampled needs no policy: the prober's unit passes no
+# -policy, and the prober reveals nothing. A policy with a master key makes
+# it append a day secret for every past day, with or without a draw, to the
+# record for good (deploy/README.md, 3).
 sampling:
   # Unset: <data-dir>/sampling-master.key.
   # master_secret_file: ""

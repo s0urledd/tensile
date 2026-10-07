@@ -1,8 +1,11 @@
 # Sampling master secret for mocha-5. Nothing is sampled any more: every
 # blob is read the way celestia-app's Fibre client reads it. The secret
-# stays only so the day secrets of the draws made while publications were
-# sampled can still be revealed (sampling-secrets.jsonl) and audited; once
-# the last such day is revealed, it can be deleted.
+# stayed only so the day secrets of the draws made while publications were
+# sampled could be revealed (sampling-secrets.jsonl) and audited. The last
+# day with a draw (2026-09-26) was revealed on 2026-10-04, so the prober's
+# unit passes no -policy any more and the key is removed (deploy/README.md,
+# "Stored data the reading no longer needs"); the revealed secrets stay in
+# the record.
 sampling:
   # master_secret_file: left unset, so sentinel-probe puts it at
   # <data-dir>/sampling-master.key, the only path the unit can write

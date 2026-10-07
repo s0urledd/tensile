@@ -1,5 +1,7 @@
-# Copy to /etc/fibre-observer/litestream-<network>.yml (one per instance,
-# with the path below pointing at that instance's data directory) and enable
+# Copy to /etc/fibre-observer/litestream-<network>.yml (one per instance)
+# and change BOTH lines marked <network> below to that network: the database
+# it replicates and its path in the bucket. Changing only the first sends
+# mainnet's database to mocha/observer.db. Then enable
 # fibre-litestream@<network>, which runs
 # `litestream replicate -config /etc/fibre-observer/litestream-<network>.yml`.
 #
@@ -9,11 +11,11 @@
 # disk costs the raw evidence. Restoring: stop fibre-collector AND fibre-api
 # (both hold the WAL) before `litestream restore`.
 dbs:
-  - path: /var/lib/fibre-observer/mocha/observer.db
+  - path: /var/lib/fibre-observer/mocha/observer.db   # <network>
     replicas:
       - type: s3
         bucket: fibre-observer-backup
-        path: mocha/observer.db
+        path: mocha/observer.db                        # <network>
         endpoint: https://<account>.r2.cloudflarestorage.com
         region: auto
         # access keys via LITESTREAM_ACCESS_KEY_ID / LITESTREAM_SECRET_ACCESS_KEY
