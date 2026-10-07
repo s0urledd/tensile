@@ -9,12 +9,15 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
@@ -331,7 +334,12 @@ func VantageFiles(dir string) ([]string, error) {
 // published figure is counted over own's rows, and a second heartbeat
 // configured with the same name would otherwise be counted as this one, its
 // rows merged into the same keys.
+//
+// Every row must also be from this observer's chain (chainGuard). A file
+// pulled from another network stops at its first row, as a line the store
+// refuses does: nothing of it reaches the record.
 func VantageReachability(st *store.Store, path, own string, now time.Time) (Result, error) {
+	g := newChainGuard(st.DB(), own)
 	return tail(st, path, func(raw []byte) (bool, error) {
 		var m probe.Measurement
 		if err := json.Unmarshal(raw, &m); err != nil {
@@ -343,8 +351,134 @@ func VantageReachability(st *store.Store, path, own string, now time.Time) (Resu
 		if m.Vantage == "" || m.Vantage == own {
 			return false, fmt.Errorf("%w: reachability from another vantage's file carries vantage %q", ErrBadRecord, m.Vantage)
 		}
+		if err := g.check(m); err != nil {
+			return false, err
+		}
 		return st.InsertReachability(m, raw)
 	}, now)
+}
+
+// chainGuard decides whether a row copied in from another vantage was taken
+// on this observer's chain.
+//
+// The vantage files are pulled by name (vantage-pull.sh), and the name says
+// nothing about the network: a mainnet observer set up from the one
+// documented second-vantage example pulls the Mocha heartbeat, and every row
+// of it would go into the mainnet record, its archive and its signed
+// exports, which nothing is ever deleted from. A heartbeat row does not
+// carry its chain id, so two things it does carry stand in for it:
+//
+//   - its validator, which must be one this chain knows: in the staking set
+//     the collector polls (validator_identities), or among the validators
+//     this observer's own heartbeat has reached. Another network's
+//     validators sign with other keys.
+//   - its height (validator_set_height, the tip when the round began), which
+//     must be one this chain could have been at when the row was taken,
+//     against the newest tip on record (the collector's chain poll, else
+//     the scanner's frontier). The window is wide on purpose: it allows a
+//     block a second however far the row is from that tip, plus maxLag
+//     blocks for a vantage whose node lagged, so a row of this chain is
+//     never refused by it, while a height from a chain millions of blocks
+//     away is.
+//
+// A row that fails either is an error, not a bad record: the file stops
+// before it, the pass names it on every pass, and the collector is not OK
+// until the operator removes the file. Stepping over it would quietly drop
+// a whole vantage, and a validator that registered a moment ago is known to
+// this chain by the next pass, when its row goes in.
+type chainGuard struct {
+	db    *sql.DB
+	own   string
+	known map[string]bool
+
+	refLoaded bool
+	refHeight int64
+	refTime   time.Time
+}
+
+// minBlockInterval and maxLag set the height window (see chainGuard).
+// Celestia's blocks are about six seconds apart on both networks.
+const (
+	minBlockInterval = time.Second
+	maxLag           = 100_000
+)
+
+func newChainGuard(db *sql.DB, own string) *chainGuard {
+	return &chainGuard{db: db, own: own, known: map[string]bool{}}
+}
+
+func (g *chainGuard) check(m probe.Measurement) error {
+	addr := strings.ToLower(m.ValidatorAddress)
+	if !g.known[addr] {
+		var ok bool
+		// One short query per validator per file per pass, read whole
+		// before anything else uses the store's one connection.
+		if err := g.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM validator_identities WHERE cons_address = ?)
+			OR EXISTS (SELECT 1 FROM reachability WHERE validator_address = ? AND vantage = ?)`, addr, addr, g.own).Scan(&ok); err != nil {
+			return fmt.Errorf("chain check: %w", err)
+		}
+		if !ok {
+			return fmt.Errorf("vantage %s: validator %s is not one this observer's chain knows (not in its staking set, never reached by its own heartbeat); is the file from another network?", m.Vantage, m.ValidatorAddress)
+		}
+		g.known[addr] = true
+	}
+	if m.ValidatorSetHeight <= 0 {
+		return nil // no height to place: the validator test alone
+	}
+	if !g.refLoaded {
+		if err := g.loadRef(); err != nil {
+			return fmt.Errorf("chain check: %w", err)
+		}
+	}
+	if g.refHeight <= 0 {
+		return nil // no tip on record yet
+	}
+	at := m.ScheduledAt
+	if at.IsZero() {
+		at = m.StartedAt
+	}
+	dt := at.Sub(g.refTime)
+	if dt < 0 {
+		dt = -dt
+	}
+	window := int64(dt/minBlockInterval) + maxLag
+	if d := m.ValidatorSetHeight - g.refHeight; d > window || -d > window {
+		return fmt.Errorf("vantage %s: row at height %d taken %s, but this observer's chain was at %d at %s; is the file from another network?",
+			m.Vantage, m.ValidatorSetHeight, at.UTC().Format(time.RFC3339), g.refHeight, g.refTime.UTC().Format(time.RFC3339))
+	}
+	return nil
+}
+
+// loadRef reads the newest tip on record: the collector's last chain poll,
+// else the scanner's frontier.
+func (g *chainGuard) loadRef() error {
+	meta := map[string]string{}
+	rows, err := g.db.Query(`SELECT key, value FROM meta WHERE key IN ('chain_height', 'chain_tip_time', 'last_scanned_height', 'last_scanned_time')`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			rows.Close()
+			return err
+		}
+		meta[k] = v
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	g.refLoaded = true
+	for _, k := range [][2]string{{"chain_height", "chain_tip_time"}, {"last_scanned_height", "last_scanned_time"}} {
+		h, _ := strconv.ParseInt(meta[k[0]], 10, 64)
+		t, err := time.Parse(store.TimeLayout, meta[k[1]])
+		if h > 0 && err == nil {
+			g.refHeight, g.refTime = h, t
+			return nil
+		}
+	}
+	return nil
 }
 
 // Payments ingests payments.jsonl written by sentinel-scan.

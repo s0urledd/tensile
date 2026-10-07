@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/ingest"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
@@ -130,5 +132,72 @@ func TestVantageFilesAreTailedBesideTheOwnFile(t *testing.T) {
 	}
 	if r, err := ingest.Reachability(st, own, time.Now()); err != nil || r.Read != 0 {
 		t.Errorf("own file re-read after the vantage passes: %+v %v", r, err)
+	}
+}
+
+// beatAt is a heartbeat record with the tip height its round began at.
+func beatAt(vantage, addr string, minute int, height int64) string {
+	at := time.Date(2026, 9, 25, 10, minute, 0, 0, time.UTC).Format(time.RFC3339)
+	return fmt.Sprintf(`{"vantage":%q,"validator_address":%q,"validator_host":"h:7980","validator_set_height":%d,"scheduled_at":%q,"started_at":%q,"tcp":{"ok":true},"tls":{"ok":true},"outcome":"REACHABLE"}`,
+		vantage, addr, height, at, at)
+}
+
+// A file copied in from another network's heartbeat stops at its first row,
+// whose validator this chain does not know or whose height this chain was
+// nowhere near; nothing of it is stored, the pass keeps saying so, and the
+// file goes on once the row is one of this chain's (a validator that had
+// just joined is in the staking set by the next poll).
+func TestAVantageFileFromAnotherChainStopsBeforeItsFirstRow(t *testing.T) {
+	st := openStore(t)
+	data := t.TempDir()
+	own := filepath.Join(data, "reachability.jsonl")
+	vdir := filepath.Join(data, ingest.VantagesDir)
+	now := time.Date(2026, 9, 25, 11, 0, 0, 0, time.UTC)
+
+	// This observer's chain: its own heartbeat reached "aa", and the tip
+	// the collector last polled.
+	os.WriteFile(own, []byte(beatAt("ut-1", "aa", 0, 1_400_000)+"\n"), 0o644)
+	if r, err := ingest.Reachability(st, own, now); err != nil || r.Inserted != 1 {
+		t.Fatalf("own file: %+v %v", r, err)
+	}
+	st.SetMeta("chain_height", "1400600", now)
+	st.SetMeta("chain_tip_time", store.TS(now), now)
+
+	de := filepath.Join(vdir, "de-1", "reachability.jsonl")
+	os.MkdirAll(filepath.Dir(de), 0o755)
+	lines := beatAt("de-1", "aa", 5, 1_400_050) + "\n" + // this chain
+		beatAt("de-1", "bb", 5, 1_400_050) + "\n" + // a validator this chain does not know (yet)
+		beatAt("de-1", "aa", 10, 1_400_100) + "\n"
+	os.WriteFile(de, []byte(lines), 0o644)
+	for pass := 0; pass < 2; pass++ {
+		r, err := ingest.VantageReachability(st, de, "ut-1", now)
+		if err == nil || !strings.Contains(err.Error(), "another network") {
+			t.Fatalf("pass %d: an unknown validator was not refused: %+v %v", pass, r, err)
+		}
+		if n := countRows(t, st, "de-1"); n != 1 {
+			t.Fatalf("pass %d: de-1 rows = %d, want only the one before the refused row", pass, n)
+		}
+	}
+	// "bb" is in the staking set by the next poll: the file goes on.
+	if _, err := st.UpsertValidatorIdentities([]scan.ValidatorIdentity{{ConsAddressHex: "bb"}}, now); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := ingest.VantageReachability(st, de, "ut-1", now); err != nil || r.Inserted != 2 {
+		t.Fatalf("after the validator joined: %+v %v", r, err)
+	}
+
+	// A row of a validator this chain knows, at a height another network
+	// was at: refused, and nothing after it is read.
+	mocha := filepath.Join(vdir, "mo-1", "reachability.jsonl")
+	os.MkdirAll(filepath.Dir(mocha), 0o755)
+	os.WriteFile(mocha, []byte(beatAt("mo-1", "aa", 5, 9_200_000)+"\n"+beatAt("mo-1", "aa", 10, 1_400_100)+"\n"), 0o644)
+	if r, err := ingest.VantageReachability(st, mocha, "ut-1", now); err == nil || !strings.Contains(err.Error(), "another network") || r.Inserted != 0 {
+		t.Fatalf("a height millions of blocks away was not refused: %+v %v", r, err)
+	}
+	if n := countRows(t, st, "mo-1"); n != 0 {
+		t.Fatalf("mo-1 rows = %d, want none", n)
+	}
+	if off, _, _ := st.Cursor(mocha); off != 0 {
+		t.Fatalf("the cursor moved past the refused row: %d", off)
 	}
 }
