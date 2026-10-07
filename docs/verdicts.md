@@ -819,11 +819,11 @@ pieces needed to re-run that function are published:
   (`sampling_decisions.jsonl`), standing for a `NOT_PROBED` row per
   assigned validator per point. Nothing is sampled now. The draws already
   made stay checkable: every row of that time carries `sampling.p`,
-  `sampling.binding` and `sampling.day_commitment`, the prober still
-  publishes each day's secret seven days after the day ends
-  (`sampling-secrets.jsonl`, served beside its commitment at
-  `/v1/sampling`), and `sentinel-recompute -sampling` recomputes the draws
-  and exits 1 on a mismatch.
+  `sampling.binding` and `sampling.day_commitment`, the secret of every
+  day that had a draw is revealed in `sampling-secrets.jsonl` (the last,
+  for 2026-09-26, on 2026-10-04), which every export carries, and
+  `sentinel-recompute -sampling` recomputes the draws and exits 1 on a
+  mismatch.
 - **The tool.** `sentinel-recompute -data-dir <record or untarred export>`
   re-derives every row's phase and classification from the row's own
   fields and the run's recorded tolerance (`Measurement.Recompute`), each

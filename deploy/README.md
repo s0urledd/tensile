@@ -90,27 +90,32 @@ Everything is per network. The examples below set up `mocha`; repeat with
 ```bash
 sudo install -d -m 0755 /etc/fibre-observer
 sudo cp deploy/observer.env.example /etc/fibre-observer/mocha.env
-sudo cp fibre-sentinel/observer/policy/policy.mocha.yaml /etc/fibre-observer/policy-mocha.yaml   # policy.example.yaml for mainnet
 sudo cp deploy/publishers.yaml.example /etc/fibre-observer/publishers-mocha.yaml                  # publisher labels; optional, the API runs without it
 ```
 
 Edit `mocha.env`: set `NETWORK`, `RPC`, `VANTAGE`, `DATA_DIR`
-(`/var/lib/fibre-observer/mocha`), `POLICY`
-(`/etc/fibre-observer/policy-mocha.yaml`), `API_LISTEN` (a port of its
+(`/var/lib/fibre-observer/mocha`), `API_LISTEN` (a port of its
 own), and, when you have them, `ALERT_WEBHOOK` and `BACKUP_REMOTE`.
+Leave `POLICY` empty.
 
-The prober reads every blob; nothing is sampled or budgeted. The policy file
-is read only for the earlier sampling's master secret
-(`<DATA_DIR>/sampling-master.key` unless the policy names another file),
-so the prober can keep publishing each day's secret seven days after the day
-ends (`-reveal-after`, to `<DATA_DIR>/sampling-secrets.jsonl`, served at
-`/v1/sampling`) and the draws made before 27 September 2026 stay
-auditable. A new vantage, which never sampled, can run without `-policy`.
-Only the day secrets are ever revealed, never the master: keep it off
-anything the publishers can read and out of any backup that leaves the host.
-Once the last day that had a draw is revealed, the key can be deleted and
-`-policy` dropped; the old `probe-budget.json` can go as soon as this
-prober runs (see "Stored data the reading no longer needs").
+The prober reads every blob; nothing is sampled or budgeted. `POLICY` is
+left over from the earlier sampling, and the prober's unit no longer
+passes it (`-policy`): the prober reveals no day secret. With a policy
+and the master key it names, the prober reveals a secret for every past
+day, draw or not, into the record for good; a new network never sampled
+and never gets either. Mocha's draws (before 27 September 2026) are
+revealed in `sampling-secrets.jsonl`, which stays in the record and the
+exports; how its host drops the key is in "Stored data the reading no
+longer needs".
+
+`START_HEIGHT` is where a fresh scan starts (0, the default, is the tip).
+The node must hold the blocks a scan reads: the state before the start and
+the validator sets a promise window (1000 blocks) below it. A
+`START_HEIGHT` closer than that to the node's oldest block is refused at
+start, with the lowest height the node can serve. A scan from the tip on a
+node that does not hold a promise window of blocks yet, one state-synced
+a moment ago, waits until it does. The `scanner` health check fails
+meanwhile, and its journal says which height the tip has to reach.
 
 `host_at_settlement` on every assignment comes from the chain's
 `set_fibre_provider_info` events, read in the same `block_results` pass
@@ -230,8 +235,7 @@ The units are templates: the part after `@` is the network, and it selects
 and `publishers-<network>.yaml`. They are hardened (`ProtectSystem=strict`,
 `ProtectHome`, `PrivateTmp`, an empty `CapabilityBoundingSet`,
 `SystemCallFilter=@system-service`) and can write only their own data
-directory. The sampling secret must therefore sit under the data directory,
-not under `/etc`.
+directory.
 
 Each unit runs one binary with the flags from its env file. The prober
 also takes any extra flags from `PROBE_ARGS` in it (for example
@@ -248,8 +252,13 @@ of failing; the collector and heartbeat log the failure and try again next
 round. A height the node cannot serve at all (pruned, or ABCI responses
 discarded) is retried for ten minutes and then recorded as a gap in
 `state.json`, shown on the dashboard and reported by `/v1/health`, and the
-scan moves on. A chain halt is warned about every five minutes and waited
-out; `Restart=always` in the units is for crashes, not for outages. The
+scan moves on. That includes `block_results` answering "could not find
+results for height" more than a block below the tip: the node never kept
+those results. At the tip the same answer is the second between the node
+storing a block and committing it; it is retried quietly and logged only
+if it lasts past the third attempt. A chain halt is warned about every
+five minutes and waited out; `Restart=always` in the units is for
+crashes, not for outages. The
 scanner's block subscription is no exception: when it drops (a node
 restart) or the node cancels it, the scanner polls the tip every second and
 subscribes again with backoff, and the journal says `block subscription
@@ -263,15 +272,37 @@ lost, the collector reads them every second on its timer and says so once.
 
 Every process rewrites `<DATA_DIR>/status/<component>.json` on each unit of
 work and at least every fifteen seconds: whether the last cycle succeeded,
-the last error and when, its progress height, and the free space of the
-data disk. `/v1/health` reads those files straight from disk and answers
-200 when every one of scanner, prober, heartbeat and collector is alive and
-succeeding, the scanner is within 200 blocks of the chain, the disk has
-over 15% free, no scan gap is recorded, the chain has not upgraded past
-this build's pin and the day partials are sound (`day_partials`: no audit
-found them not what the store holds, and no day due has stayed unsealed for
-two days), and 503 with the failing checks otherwise. `/v1/meta`
-carries the same verdict and checks. The site shows none of them: it says
+the last error and when, its progress height, how often its loop completes a
+cycle (`cadence_s`) and the free space of the data disk. `/v1/health` reads
+those files straight from disk, adds what it reads from the store and from
+the API itself, and answers 200 when every check passes and 503 with the
+failing checks otherwise.
+
+| check | fails when |
+|---|---|
+| `scanner`, `prober`, `heartbeat`, `collector` | the process is missing or dead; it keeps failing (`alive but failing: <stage>`); or its loop has completed no cycle for three of its cadences, and at least three minutes (`no completed cycle for <d>`). The last one is a stuck loop: its status file keeps being refreshed, so nothing else shows it. The prober also fails when its readings failed in the last 15 minutes and none was made. |
+| `work` | one of the collector's stages (export, registry, corrections, holds, retention, heartbeat, hosting) has failed for over ten minutes. The chain poll's success no longer hides it. |
+| `ingest` | lines have waited in a record file for ten minutes with the collector's cursor unmoved (`collector has ingested nothing for <d>`): its loop is stuck, and the site's figures stop moving. |
+| `chain_polls` | a chain-side poll has not succeeded in time: the chain status, endpoints or escrow for 15 minutes, the validator identities for 26 hours. The last value stays served meanwhile, so this is the only sign. |
+| `scanner_lag` | the scanner is more than 200 blocks behind the chain. |
+| `chain_liveness` | the chain's newest block is over ten minutes old: the chain or the node is halted. |
+| `vantages` | another vantage seen in the last seven days has sent no endpoint check for 20 minutes: its heartbeat died or the pull fails. |
+| `api_errors` | a route answered a 5xx in the last ten minutes. The error is in the API's journal. |
+| `snapshots` | a window's figures have not refreshed for twice their interval (at least 15 minutes), or three refreshes in a row failed. The site keeps showing the older figures. |
+| `disk` | the data disk has under 15% free. |
+| `scan_gaps` | a scan gap is recorded (see the Runbook). |
+| `pin` | the chain upgraded past this build's pin (see the Runbook). |
+| `unassignable_publications` | a publication settled in the last 24 hours could not be assigned. |
+| `day_partials` | an audit found the day partials not what the store holds, or a day due stayed unsealed for two days. |
+| `hosting_db` | with the hosting lookup on, the IP-to-ASN file is over 45 days old (7b). |
+
+`/v1/health` is public, so it says what is wrong and not what the host
+looks like. A check's detail names the stage that failed and for how long,
+never an error's text, a path or the disk's size. Each component shows
+only `component`, `present`, `alive`, `ok`, `age_s` and `started_at`. The
+full errors are in the units' journals, and the status files on the host
+keep the rest (the last error, the disk, the build). `/v1/meta` no longer
+carries the verdict or the checks. The site shows none of them: it says
 something only when the API does not answer (a line above the page and a
 dot on the network chip). Every failing check reaches the operator from
 the health watch below instead.
@@ -279,13 +310,30 @@ the health watch below instead.
 `fibre-healthwatch@<network>.timer` asks `/v1/health` every five minutes as
 the service user and posts when the verdict or the set of failing checks
 changes, again every `ALERT_REPEAT_MIN` while it stays bad, and once on
-recovery, with every failing check and its detail. The nightly
-`fibre-backup@<network>` and `fibre-archive@<network>` units are checks
-of their own, which `/v1/health` cannot see: one whose last run failed
-(`systemctl is-failed`) joins the failing checks under its unit's name
-until its next run succeeds. A backup that stops finishing stops the
-retirement of local copies after its second failed night ("Retiring
-local copies" below), so it is heard of the first night. It posts to
+recovery, with every failing check and its detail. It posts first and
+records what it sent only once a destination took it, so a post that was
+refused is sent again on the next run, and a full disk does not silence
+the alerts after it. It also checks the jobs `/v1/health` cannot see, by
+what they left behind and not only by their unit's state (a timer never
+enabled leaves a unit that never failed). Each one that is wrong joins the
+failing checks under its own name until it holds again:
+
+- `fibre-backup@<network>` or `fibre-archive@<network>` whose last run
+  failed (`systemctl is-failed`);
+- `backup-copy`: with `BACKUP_REMOTE` set, no backup copy has finished
+  for 26 hours (`exports/remote-copy.json`), or none ever while exports
+  have been there that long;
+- `export`: after 04:00 UTC, no daily export for yesterday;
+- `vantage-pull`: with `VANTAGE_PULL_NAMES` set, nothing new from a
+  vantage for 30 minutes, or its pull unit failed and nothing came for 10.
+
+A backup that stops finishing stops the retirement of local copies after
+its second failed night ("Retiring local copies" below), so it is heard of
+the first night. The watcher's exit status is its own: 0 for a run that
+did its job, whatever the observer's state (that is in the alert and the
+log line), and 1 when an alert was refused or its state could not be
+written. A failed `fibre-healthwatch@<network>` unit therefore means the
+watcher itself is in trouble. It posts to
 `ALERT_WEBHOOK`, any URL that accepts a JSON body with a `content` field
 (Discord, Slack incoming webhooks, Matrix), and to Telegram when
 `TELEGRAM_BOT_TOKEN` (from @BotFather) and `TELEGRAM_CHAT_ID` (a chat the
@@ -424,6 +472,43 @@ Before going back, `record-verify` found every line of the four days in the
 schema-27 store, byte for byte. The older build refuses the schema-27 store
 at start ("database schema version 27 is newer than this binary's 26").
 
+**Going back past schema 29.** Migration 29 removes what only the earlier
+sampling and the second vantage's confirmations used: the index
+`probes_sampling_started`, the index `probes_cleared`, and the table
+`probe_confirmations` with its indexes. Each is an index or an empty
+table, so no row is rewritten and none is lost. The table has always been
+empty; the migration refuses to run, and the collector stops with the
+reason, if it ever holds a row. The columns `probes.cleared_by` and
+`probes.confirmed_by` stay, unread: dropping a column rewrites the whole
+table. Migration 29 also sets `publications.must_serve_until_ambiguous`
+where the record says so, which migration 19 did once and nothing did
+since, and the collector writes it on every insert from then on. An older
+build refuses the schema-29 store at start ("database schema version 29 is
+newer than this binary's 28"), and deleting the version row is not the way
+back: the older build reads the table and the index that are gone. The way
+back is the one above. Take a `sqlite3 .backup` copy of the store before
+the upgrade, with the collector and the API stopped (the loop above), and
+keep it with the previous binaries until the new build has run a week. To
+go back, stop the API and the collector, move `observer.db*` aside, put the
+copy in its place, owned by `fibre-observer`, install the previous
+binaries and start the collector: it reads on from its cursors. Without a
+copy, the older collector rebuilds the store from the record. Migration 29
+changes no record file.
+
+The upgrade to schema 29, in order:
+
+1. stop the API and the collector, take the copy above (`observer-v28.db`),
+   and keep it;
+2. install the binaries, `deploy/healthwatch.sh` as
+   `/usr/local/bin/fibre-healthwatch`, and the units
+   (`sudo cp deploy/systemd/*.service deploy/systemd/*.timer /etc/systemd/system/ && sudo systemctl daemon-reload`);
+3. empty `POLICY` in the env file (the new prober unit no longer reads it);
+4. start the collector, which applies migration 29, then the API;
+5. restart the scanner and the heartbeat, then the prober, last and once;
+6. `sudo rm /var/lib/fibre-observer/mocha/sampling-master.key`;
+7. with the hosting lookup on, `sudo systemctl enable --now fibre-hosting-db@mocha.timer` (7b);
+8. build the site for the network and copy it in place (section 5).
+
 **Once anything is retired.** A collector that reads a retired range
 ("Retiring local copies" below) reads it from the exports; one from before
 retirement does not know the `retired` record, opens the segment's file
@@ -487,16 +572,17 @@ last computed copy of each under `<DATA_DIR>/snapshots/` (`-snapshot-dir`
 moves it). A restarted API serves those copies at once, with their real age
 shown on the page, while the warm-up recomputes them behind; the first
 minute or two after a restart is busier than the steady state, but nobody
-waits for it. The same directory keeps `original-rows.json` and
-`endorsement-ledger.json`, two things the figures derive from the whole
-record, so a restart does not rebuild them; the API checks that each belongs
-to this database as it now stands, at its schema version, and was computed
-the way this build computes it, and rebuilds it when it does not (once after
-a migration), and an older build ignores both. An API still serving when the
-collector migrates does not write what it read before the migration under
-the new schema: it drops both and builds them again from the migrated
-database. `-warm-only` writes them too, and the copy below
-carries them over with the snapshots.
+waits for it. The same directory keeps `endorsement-ledger.json`, which the
+figures derive from the whole record, so a restart does not rebuild it; the
+API checks that it belongs to this database as it now stands, at its schema
+version, and was computed the way this build computes it, and rebuilds it
+when it does not (once after a migration), and an older build ignores it.
+An API still serving when the collector migrates does not write what it
+read before the migration under the new schema: it drops the ledger and
+builds it again from the migrated database. `-warm-only` writes it too, and
+the copy below carries it over with the snapshots. Earlier builds also kept
+`original-rows.json` there; this one reads each publication's
+`original_rows` column (migration 27) instead.
 
 The same directory also keeps the day partials the 7d, 30d and "all"
 windows are summed from: `day-partials.json`, the index, and
@@ -567,7 +653,7 @@ vantage is not loaded. `systemd-run` gives it both, from the unit's env
 file, expanding `${…}` the way the unit's `ExecStart` does.
 
 Seed `snapshots.next` with a copy of the whole live directory first: the
-warm-up then begins from the live API's partials, its memo and its ledger,
+warm-up then begins from the live API's partials and its ledger,
 and seals only the days the live API had not. A partial from a build that
 folds days another way is refused as it is loaded (its definition holds the
 Go that folds them), so a seed is never a stale figure, at worst a cold
@@ -640,27 +726,73 @@ drops something the old API reads, stop `fibre-api@mocha` before restarting
 the collector; the warm-up still spares the new build a cold start, but the
 API is down for those minutes.
 
-## 5. Caddy
+## 5. The site
 
-Install the site: `sudo mkdir -p /var/www/fibre-observer && sudo cp -r web/out/. /var/www/fibre-observer/`.
-Then `deploy/Caddyfile` with your domains in place of `observer.example.org`
-and `mocha.observer.example.org`:
+The site is a static export of `web/`, and each network gets its own build.
+Two settings are fixed when it is built, and a build made for one network
+is wrong on the other:
+
+- `NEXT_PUBLIC_API_URL`, that site's public API
+  (`https://mocha.observer.example.org/api/v1`). The methodology page's
+  links to the exports and the signing key, and the recompute command it
+  prints, use it. Unset, it is Mocha's live API.
+- `NEXT_PUBLIC_SELF_VALIDATOR`, the consensus address
+  (`celestiavalcons1…`) of the validator the operator runs on that
+  network, which the site marks "runs Tensile". `web/.env.production`
+  holds Mocha's; a value given on the command line wins over it. Each
+  network has its own validator key, so each build needs its own value.
+
+`NEXT_PUBLIC_NETWORKS` lists every network's site for the header's switch
+(the current one is marked by origin) and is the same in every build.
+Build one network at a time, since each build replaces `web/out`:
+
+```bash
+cd web && npm ci
+NEXT_PUBLIC_API_URL=https://mocha.observer.example.org/api/v1 \
+NEXT_PUBLIC_SELF_VALIDATOR=celestiavalcons1... \
+NEXT_PUBLIC_NETWORKS="mainnet=https://observer.example.org,mocha=https://mocha.observer.example.org" \
+  npm run build
+sudo install -d /var/www/fibre-observer/mocha && sudo cp -r out/. /var/www/fibre-observer/mocha/
+```
+
+`make build` builds the site with none of them set, which is a Mocha build.
+
+### Caddy
+
+Put `deploy/Caddyfile` in place with your domains instead of
+`observer.example.org` and `mocha.observer.example.org`:
 
 ```bash
 sudo cp deploy/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
 ```
 
-Caddy serves the same static export on every site (its `/api/` page
-documents the API), proxies each site's `/api/v1/*` to that network's
-`observer-api` port, and gets TLS certificates
-from Let's Encrypt. Delete the second site block if you run one network.
+Each site block names its network's `observer-api` port and its build's
+directory (`/var/www/fibre-observer/<network>`). Caddy serves the build
+(its `/api/` page documents the API), proxies the site's `/api/v1/*` to
+that port, and gets TLS certificates from Let's Encrypt. Delete the second
+site block if you run one network.
 
-, and the header shows
-a switch between them (the current one is marked by origin):
+### site-server, behind a shared proxy
+
+Where the front proxy is shared with other projects and cannot be given a
+file server for this site (the live Mocha host is one),
+`fibre-site@<network>` serves the build and passes `/api/v1/*` to the API
+itself (`deploy/site-server.cjs`, Node's standard library only, run by a
+throwaway user):
 
 ```bash
-cd web && NEXT_PUBLIC_NETWORKS="mainnet=https://observer.example.org,mocha=https://mocha.observer.example.org" npm run build
+sudo install -d -m 0755 /usr/local/lib/fibre-observer
+sudo install -m 0644 deploy/site-server.cjs /usr/local/lib/fibre-observer/site-server.cjs
+sudo install -d -m 0755 /srv/fibre-site/mocha && sudo cp -r web/out/. /srv/fibre-site/mocha/   # this network's build
+sudo systemctl enable --now fibre-site@mocha
 ```
+
+The unit reads `SITE_LISTEN` (a port of its own per network, for example
+`127.0.0.1:3112` for mocha and `127.0.0.1:3113` for mainnet) and
+`API_LISTEN` from the network's env file, and the site from
+`/srv/fibre-site/<network>`. Point the front proxy's site for that network
+at `SITE_LISTEN`. A new build is copied over the directory; the server
+picks up the changed files without a restart.
 
 ### Two networks
 
@@ -670,17 +802,21 @@ Mocha and mainnet are two instances of everything, side by side:
 |---|---|---|
 | env | `/etc/fibre-observer/mocha.env` | `/etc/fibre-observer/mainnet.env` |
 | data | `/var/lib/fibre-observer/mocha` | `/var/lib/fibre-observer/mainnet` |
-| policy | `policy-mocha.yaml` (from `policy.mocha.yaml`) | `policy-mainnet.yaml` (from `policy.example.yaml`) |
+| `POLICY` | empty: the prober's unit passes no `-policy` | empty |
 | API | `127.0.0.1:8081` | `127.0.0.1:8080` |
 | units | `fibre-*@mocha`, `fibre-*@mocha.timer` | `fibre-*@mainnet`, `fibre-*@mainnet.timer` |
+| site build | `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_SELF_VALIDATOR` of mocha | the same, of mainnet |
+| site files | `/var/www/fibre-observer/mocha` or `/srv/fibre-site/mocha` | `/var/www/fibre-observer/mainnet` or `/srv/fibre-site/mainnet` |
 | site | `mocha.observer.example.org` | `observer.example.org` |
+| litestream | `litestream-mocha.yml`, bucket path `mocha/observer.db` | `litestream-mainnet.yml`, bucket path `mainnet/observer.db` |
 
 Each instance needs its own RPC node with `discard_abci_responses = false`.
-Nothing is shared between them but the binaries and the static export; a
-data directory belongs to one chain and the scanner refuses to resume it
-against another. Disk: a mocha instance grows by a few GB a month, a
-mainnet instance by what its publication rate makes it (see "Backups"). Two
-instances double the reading traffic.
+Nothing is shared between them but the binaries; a data directory belongs
+to one chain and the scanner refuses to resume it against another. Disk: a
+mocha instance grows by a few GB a month, a mainnet instance by what its
+publication rate makes it (see "Backups"). Two instances double the
+reading traffic. Setting up mainnet from nothing is "7d. Mainnet: a fresh
+install".
 
 ## 6. docker compose (alternative)
 
@@ -692,6 +828,9 @@ docker compose -f deploy/docker-compose.yml up -d --build
 Same five processes plus Caddy, one image built from `deploy/Dockerfile`.
 Data lives in the `observer-data` volume. Compose is one network per
 project (it binds 80 and 443); for two networks on one host use systemd.
+The image builds the site with the defaults, which are Mocha's (section
+5): on another network, serve a build made for it in place of the image's
+copy.
 
 ## 7. Backups, retention, rebuild
 
@@ -772,8 +911,11 @@ own files.
 
 
 - **litestream** for the database: copy `deploy/litestream.yml` to
-  `/etc/fibre-observer/litestream-mocha.yml` (fix the `path` to the
-  instance's data directory), put the bucket keys in
+  `/etc/fibre-observer/litestream-mocha.yml` and set both lines marked
+  `<network>` in it: the database's `path` (the instance's data directory)
+  and the replica's `path` in the bucket (`mocha/observer.db`; on mainnet
+  `mainnet/observer.db`, or mainnet's database replicates over Mocha's),
+  put the bucket keys in
   `/etc/fibre-observer/litestream-mocha.env` (mode 0600), and enable
   `fibre-litestream@mocha`. It replicates the **derived** database only,
   continuously, with 72 h of history.
@@ -862,15 +1004,17 @@ mocha host on 29 September, and how to remove it once the owner approves:
 | data | size | still read by | how to remove |
 |---|---|---|---|
 | `probe-budget.json` | 1.3 MB | the prober before this change; the new prober never reads or writes it | after the new prober is running: `rm <DATA_DIR>/probe-budget.json` |
-| `sampling-master.key` | 32 B | the prober's reveal of the earlier draws' day secrets (`-policy`) | after the last draw day (2026-09-26) is revealed, on 2026-10-04 with `-reveal-after 7d`: `rm <DATA_DIR>/sampling-master.key` and drop `-policy` from the unit |
-| `sampling-secrets.jsonl` | 5.8 KB | `/v1/sampling`, the daily export, `sentinel-recompute -sampling` | kept: the earlier draws' audit is part of what old blobs show |
+| `sampling-master.key` | 32 B | the prober only while its unit passes `-policy`: it reveals a secret a day, for days with no draw since 2026-09-26, the last day with one (revealed 2026-10-04) | install this build's units (the prober's passes no `-policy`), empty `POLICY` in `mocha.env`, restart the prober with the upgrade (its time down is readings not made), then `rm <DATA_DIR>/sampling-master.key`. The secrets revealed stay in `sampling-secrets.jsonl` |
+| `sampling-secrets.jsonl` | 5.8 KB | the collector (`sampling_secrets` table), the daily export, `sentinel-recompute -sampling` | kept: the earlier draws' audit is part of what old blobs show. Without `-policy` nothing is appended to it |
 | `sampling_decisions.jsonl` | 8.3 KB | the collector (`sampling_decisions` table), the daily export | kept, as above |
-| table `sampling_decisions` (53 rows) and `sampling_decision_points` (318 rows, with its key index) | 0.2 MB | `/v1/sampling`, the obligation rows of sampled-out publications (`obligation_rows`) | kept: removing them would change those blobs' obligations |
-| index `probes_sampling_started` | 68 MB | `/v1/sampling` only | kept for now; a smaller index only if `/v1/sampling` stays identical and as fast. Never `VACUUM` the store: it can renumber rowids that some figures read in order |
+| table `sampling_decisions` (53 rows) and `sampling_decision_points` (318 rows, with its key index) | 0.2 MB | the obligation rows of sampled-out publications (`obligation_rows`) | kept: removing them would change those blobs' obligations |
+| index `probes_sampling_started` | 68 MB | nothing: `/v1/sampling`, its only reader, is removed | dropped by migration 29 (an index, no row goes). Never `VACUUM` the store: it can renumber rowids that some figures read in order |
 | columns `probe_daily.faults`, `attested`, `unattested`, `unknown_att` | none yet (no day rolled) | nothing: written as 0 | a migration that bumps the schema, whenever the table is next changed |
 | columns `obligation_daily.end_unobserved`, `unobserved_reachable`, `unobserved_unreachable`, `unobserved_not_probed` | none yet | summed into `not_counted` | the same; one `not_counted` column would do |
 | `snapshots/` | 1.0 MB, 12 files | the API, which rewrites every file on start and on each refresh | nothing to do: none is left from an earlier model |
-| table `probe_confirmations`, columns `probes.cleared_by` and `probes.confirmed_by`, index `probes_cleared` | empty (0 rows; every value NULL) | nothing: the second location's confirmation of failed readings is gone | a migration that bumps the schema, whenever `probes` is next changed |
+| table `probe_confirmations` and its indexes, index `probes_cleared` | empty (0 rows) | nothing: the second location's confirmation of failed readings is gone | dropped by migration 29, which refuses if the table holds a row |
+| columns `probes.cleared_by` and `probes.confirmed_by` | every value NULL | nothing | kept: dropping a column rewrites `probes`, most of a 6 GB store on a disk the validator shares |
+| rows stored before the slim record (migration 27, 2026-10-06): full lines in `publications.raw_json` and `probes.raw_json`, full lists in `assignments.rows_json` and `probes.row_indices`, the same row lists several times over | an estimate: about 0.75 GB in `assignments.rows_json` and as much again in `publications.raw_json` | the blob page, `/v1/probes`, the late verdicts, the corrector, the retirement's record check | kept as they are for now. A later change writes them in the slim form, which gives every line back byte for byte; it changes no record file |
 | `vantages/de-1/measurements.jsonl` | 0 B | the pull script installed before this change, which still fetches it every minute | install the new one first (`sudo install -m 0755 deploy/vantage-pull.sh /usr/local/bin/fibre-vantage-pull`, as in "Upgrading a running observer"), then `rm` it |
 
 ### Archive: bounded live files
@@ -1166,13 +1310,44 @@ cat /var/lib/fibre-observer/mocha/exports/remote-copy.json                  # th
 ### Runbook
 
 - **Health is 503.** Read the `checks` list: it names the process or
-  condition. A dead process: `journalctl -u fibre-<name>@<network> -n 100`.
-  A `scanner_lag`: the RPC node is behind or slow; the scanner catches up
-  on its own. A `scan_gaps`: the node could not serve those heights, or the
+  condition. The details are short on purpose; the errors themselves are
+  in the journals. A dead process:
+  `journalctl -u fibre-<name>@<network> -n 100`. A `scanner_lag`: the
+  RPC node is behind or slow; the scanner catches up on its own. A
+  `scan_gaps`: the node could not serve those heights (pruned, or results
+  it never kept), or the
   operator skipped them (each range's `reason` says which, see below); point
   the scanner at a node that keeps them and delete `gaps` from `state.json`
   after re-scanning from the lowest gap height with `-start-height`, or
   accept the gap (the dashboard says which blocks). A `pin`: see below.
+- **A process has `no completed cycle`, or `ingest` fails.** Its loop is
+  stuck while the process lives: on 7 October 2026 the collector waited on
+  its own store connection and stopped ingesting. Keep the evidence, then
+  let it restart: `sudo systemctl kill -s QUIT fibre-<name>@<network>`
+  writes every goroutine's stack to the journal and ends the process, and
+  `Restart=always` starts it again. Save
+  `journalctl -u fibre-<name>@<network> -n 2000 --no-pager` and report it.
+  The collector reads on from its cursors; nothing is lost.
+- **`work` fails.** One collector stage has failed for over ten minutes;
+  the detail names it (`export`, `registry`, `corrections`, `holds`,
+  `retention`, `heartbeat`, `hosting`). `journalctl -u
+  fibre-collector@<network> | grep <stage>` shows the error. An `export`
+  that keeps failing holds the nightly backup's proof and the retirement
+  back, so it is the one to look at first.
+- **`chain_polls` fails.** The collector's polls of the node fail, and the
+  site keeps serving the last values. The detail names the stale polls.
+  Check the node (`deploy/test/rpc-check.sh`) and the collector's journal.
+- **`vantages` fails.** Another vantage's endpoint checks stopped
+  arriving: its heartbeat died on its host, or the pull fails
+  (`journalctl -u fibre-vantage-pull@<network> -n 50`). Until it is back,
+  an endpoint is no longer checked from the second location.
+- **`api_errors` or `snapshots` fails.** A route answered 500, or a
+  window's figures stopped refreshing; the detail names the route or the
+  window. `journalctl -u fibre-api@<network> -n 200` has the error. A
+  record that does not decode no longer takes a page down: its row is
+  published with that part marked (a blob's `reconstructable` status
+  `unknown`, a reading's `row_indices` left out), and the API logs the
+  record once and counts it.
 - **The collector says `has no index.json but holds N export tarball(s)`.**
   `exports/index.json` is gone while the tarballs are there. The export
   builder stops rather than start a new index listing one day: the API
@@ -1195,6 +1370,21 @@ cat /var/lib/fibre-observer/mocha/exports/remote-copy.json                  # th
   tag, update `PinnedCelestiaAppCommit`, `PinnedCelestiaAppVersion` and the
   `celestia-app` line plus the copied `replace` block in
   `fibre-sentinel/go.mod`, re-run `fibre-assign/reftest`, rebuild, deploy.
+  The bump also adds the pin it leaves to `assignPins` in
+  `internal/slim` when reftest is bit-identical across the two: the slim
+  record computes a validator's rows again only under a pin listed there,
+  and refuses a record derived under any other rather than compute other
+  rows (`docs/SYSTEM.md`, "The slim record").
+  `pin_status` compares only the major version: a new release of the same
+  major (v10.x) reads `matches` whatever it changed. So the same diff is
+  done by hand for every release a network moves to, and before mainnet
+  starts ("7d. Mainnet: a fresh install", step 1).
+- **The scanner refuses `START_HEIGHT`, or waits for the node's history.**
+  A fresh scan needs the node to hold the promise window (1000 blocks)
+  below its start. A refused `START_HEIGHT` names the lowest height the
+  node can serve: set that, or 0, or use a node with more history. A scan
+  from the tip waiting on a freshly synced node starts by itself once the
+  tip reaches the height its journal names.
 - **A publication with no assignment** (`unassignable_publications` > 0;
   `/v1/health` fails while one settled in the last 24h, then lists it passing):
   a blob version this build does not know. Same bump; the scanner does not
@@ -1278,7 +1468,10 @@ estimate of when the chain reaches it, once there is one, and the validator
 table marks each bonded validator `signalled` or `not signalled`
 (`upgrade_signal.{upgrade_height, eta_seconds}` on `/v1/meta`,
 `signaled_upgrade` on each row; both disappear once the chain is on that
-version).
+version). The height and the estimate are published only when the upgrade
+x/signal scheduled is to app version 10, the one that brings Fibre (the
+collector stores the scheduled version as `signal_upgrade_app_version`);
+an upgrade to another version shows no Fibre countdown.
 
 `registered_endpoints` moving off zero is the first sign the registry is being
 read. `reachability` follows within a heartbeat interval, and
@@ -1338,8 +1531,17 @@ the files elsewhere, set `HOSTING_ASN_DB=` and `HOSTING_COUNTRY_DB=` in the
 network's env file (or pass `-hosting-asn-db` / `-hosting-country-db`), then
 restart the collector.
 
-Refresh monthly (DB-IP publishes monthly; iptoasn hourly) by re-running the
-same command, e.g. from cron. The collector re-runs the lookup when a file's
+Refresh it monthly (DB-IP publishes monthly; iptoasn hourly) with the
+timer that runs the same script as the service user:
+
+```
+sudo systemctl enable --now fibre-hosting-db@mocha.timer
+```
+
+It is `Persistent`, so a month missed while the host was down is made up
+after boot. `/v1/hosting` says when each file was last changed, and the
+`hosting_db` health check fails once the IP-to-ASN file is over 45 days
+old: the refresh has stopped. The collector re-runs the lookup when a file's
 size or mtime changes. Removing `ip2asn-combined.tsv.gz` turns the feature
 off again, and the next pass clears the stored lookups so the API never
 serves one that can no longer be reproduced.
@@ -1425,6 +1627,22 @@ cp deploy/systemd/fibre-vantage-pull@.{service,timer} /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now fibre-vantage-pull@mocha.timer
 ```
 
+The `vantages` health check fails when a vantage seen in the last seven
+days has sent no endpoint check for 20 minutes, whether its heartbeat died
+or the pull fails.
+
+Each network needs its own second vantage: another heartbeat instance on
+the same host, against that network's RPC, under its own vantage name and
+directory (for mainnet, for example, `de-1-mainnet` in
+`/srv/tensile-vantage/de-1-mainnet`, with a unit of its own), and
+`VANTAGE_PULL_NAMES` in that network's env file. A heartbeat row does not
+name its chain, so the collector checks two things it does carry: its
+validator must be one this chain knows, and its height one this chain
+could have been at. A file pulled from the other network stops at its
+first row: nothing of it reaches the record, and the collector names the
+file and reports failing on every pass until the file is moved out of
+`vantages/`.
+
 The second vantage runs the heartbeat and nothing else. A blob's reading is
 this observer's own, as one client's download is, and nothing asks the
 second vantage to read it again. Earlier builds pushed confirmation requests
@@ -1436,6 +1654,72 @@ to `vantage/<name>/inbox/`; nothing writes or reads that inbox now, and
 pull, an append, a rotated local file resumed from its logical end, a
 remote shorter than the local record, two pulls at once, and a failed or
 missing fetch.
+
+## 7d. Mainnet: a fresh install
+
+Mainnet runs on a server of its own, with a node of its own. Everything
+above holds for it with `mainnet` as the instance; these are the steps that
+differ from Mocha's, in order.
+
+1. **Check the celestia-app release.** The row assignment is pinned to the
+   commit Mocha runs (`PinnedCelestiaAppCommit` in `fibre-assign/params.go`,
+   `v10.4.0-mocha`). `pin_status` compares only the major version, so any
+   v10 release reads `matches`, whatever it changed. Before mainnet starts,
+   diff the release tag mainnet runs against the pinned commit, in a
+   celestia-app checkout:
+
+   ```bash
+   git diff 5187d2fb5eb8bc4b534c74724882943c54253ae9 <mainnet tag> -- fibre x/fibre x/valaddr proto specs
+   ```
+
+   Then run the reference test against that tag: in
+   `fibre-assign/reftest/go.mod`, require the tag and copy the `replace`
+   block from celestia-app's `go.mod` at that tag (its README says how),
+   and `cd fibre-assign/reftest && go test ./...` must pass. If the diff
+   touches `fibre/protocol_params.go`, `fibre/blob.go`, the shard download
+   or the `MsgPayForFibre` proto, bump the pin before anything else (Runbook,
+   "The chain upgraded past the pin"). Do the same again for every release
+   mainnet moves to.
+2. **The node.** A full node with `storage.discard_abci_responses = false`.
+   A node restored from a state-sync snapshot holds nothing below it: let
+   it build history until
+   `sudo RPC_CHAIN_ID=celestia deploy/test/rpc-check.sh "$RPC"` passes
+   (6000 blocks behind the tip). The scanner refuses a `START_HEIGHT` the
+   node cannot serve, and a scan from the tip waits for the 1000 blocks it
+   needs (section 3).
+3. **The env file.** `/etc/fibre-observer/mainnet.env` from
+   `deploy/observer.env.example`: `NETWORK=mainnet`, `RPC` (the mainnet
+   node), a `VANTAGE` name of its own,
+   `DATA_DIR=/var/lib/fibre-observer/mainnet`, `POLICY=` empty,
+   `API_LISTEN=127.0.0.1:8080`, `SITE_LISTEN` (with site-server, a port of
+   its own), `START_HEIGHT=0` or a height the node holds,
+   `END_READ_SINCE=` empty, `VANTAGE_LOCATION`, `VANTAGE_PROVIDER`, the
+   alert settings and `BACKUP_REMOTE`. `publishers-mainnet.yaml` only if
+   you label publishers.
+4. **The units.** Section 4 with `mainnet`: the data directory
+   `/var/lib/fibre-observer/mainnet`, then
+   `sudo deploy/test/smoke.sh "$RPC" mainnet`, then
+   `fibre-scan@mainnet fibre-probe@mainnet fibre-heartbeat@mainnet fibre-collector@mainnet fibre-api@mainnet`
+   and the timers `fibre-healthwatch@mainnet.timer
+   fibre-backup@mainnet.timer fibre-archive@mainnet.timer` (and
+   `fibre-hosting-db@mainnet.timer` with the hosting lookup, 7b).
+5. **The site.** A build of its own (section 5):
+   `NEXT_PUBLIC_API_URL=https://<mainnet site>/api/v1`,
+   `NEXT_PUBLIC_SELF_VALIDATOR=<the operator's mainnet celestiavalcons1…>`
+   and the same `NEXT_PUBLIC_NETWORKS` as Mocha's build. Serve it with
+   Caddy from `/var/www/fibre-observer/mainnet`, or with site-server:
+   `site-server.cjs` in `/usr/local/lib/fibre-observer/`, the build in
+   `/srv/fibre-site/mainnet`, `fibre-site@mainnet` enabled, the front
+   proxy pointed at `SITE_LISTEN`. When `NEXT_PUBLIC_NETWORKS` changes,
+   build and copy Mocha's site again too, so its switch links to mainnet.
+6. **Backups.** `litestream-mainnet.yml` with both `<network>` lines set to
+   `mainnet`, and `fibre-litestream@mainnet`. The nightly copy writes under
+   `BACKUP_REMOTE/mainnet` by itself.
+7. **The second vantage.** A heartbeat instance of its own against a
+   mainnet RPC, and `VANTAGE_PULL_NAMES` in `mainnet.env` (7c).
+8. **The checks.** Section 8 with `mainnet`, and
+   `sudo bash -c 'set -a; . /etc/fibre-observer/mainnet.env; fibre-healthwatch mainnet --test'`
+   to prove the alerts arrive.
 
 ## 8. Checks after deploy
 
@@ -1496,8 +1780,8 @@ minutes and touch the running services, the last one takes a day.
 
 | script | question | touches | time |
 |---|---|---|---|
-| `rpc-check.sh <rpc> [rpc2]` | is the RPC node on `mocha-5`, in sync, and keeping `block_results`, the validator set and historical state as far back as the observer reads (6000 blocks)? With a second node, do the two agree on a block hash? | nothing | seconds |
-| `exposure.sh` | is only ssh/http/https reachable from outside, is every unit enabled for a reboot, does HTTPS reach the API through Caddy, does a test alert actually arrive, is the master key `600`? | posts one test message | seconds |
+| `rpc-check.sh <rpc> [rpc2]` | is the RPC node on the expected chain (`RPC_CHAIN_ID`, default `mocha-5`; `celestia` on mainnet), in sync, and keeping `block_results`, the validator set and historical state as far back as the observer reads (6000 blocks)? With a second node, do the two agree on a block hash? | nothing | seconds |
+| `exposure.sh` | is only ssh/http/https reachable from outside, is every unit enabled for a reboot, does HTTPS reach the API through Caddy, does a test alert actually arrive, is a sampling master key, if one is left, `600`? | posts one test message | seconds |
 | `persistence.sh` | live: do the checkpoints survive a restart, is the database sound? On one consistent cut of the record: no duplicate line, a rebuild from the cut alone holds exactly its records, and `sentinel-recompute` agrees with a second API serving that same cut, both as of the cut's timestamp | restarts collector + scanner; rebuilds into a temp dir; a throwaway API on `:18082` | minutes |
 | `restore.sh` | does the nightly copy verify against its manifest (every file present, at least the cut, hash and record count equal, every line a JSON record, the cut's own `state.json` put in place of the copy's, no master key), rebuild to exactly the cut's records, and serve them from a second API on a spare port? | starts a throwaway API on `:18081` | minutes |
 | `outage.sh` | when the chain source is cut, does the site say so within twelve minutes and keep serving its last figures; when it returns, does the scanner catch up with no gap, no lost row and no duplicate; when every process is stopped and started, is nothing lost? | edits the env file (restored on every exit path), restarts and stops units | ~30 min |
@@ -1505,6 +1789,7 @@ minutes and touch the running services, the last one takes a day.
 
 ```bash
 sudo deploy/test/rpc-check.sh "$RPC" https://rpc.celestia-mocha.com
+# on mainnet: sudo RPC_CHAIN_ID=celestia deploy/test/rpc-check.sh "$RPC" <a second mainnet RPC>
 sudo deploy/test/exposure.sh mocha
 sudo deploy/test/persistence.sh mocha
 sudo deploy/test/restore.sh mocha
