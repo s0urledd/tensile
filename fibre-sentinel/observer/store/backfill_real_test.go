@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -229,5 +230,30 @@ func TestSlimBackfillOfARealStore(t *testing.T) {
 	t.Logf("%s", js)
 	if sum.Mismatches > 0 {
 		t.Fatalf("%d of %d converted values do not read back to what they replaced; the first:\n%s", sum.Mismatches, sum.Checked, strings.Join(sum.FirstMismatches, "\n"))
+	}
+}
+
+// The run over the real record, on a small store of the earlier forms: what the integration run does with the
+// pre-slim store (.github/workflows/integration.yml), checked on every push, summary and all.
+func TestTheRealStoreRunOnASmallStore(t *testing.T) {
+	path, _, _, _ := earlierStore(t)
+	out := filepath.Join(t.TempDir(), "backfill.json")
+	t.Setenv("TENSILE_BACKFILL_DB", path)
+	t.Setenv("TENSILE_BACKFILL_OUT", out)
+	TestSlimBackfillOfARealStore(t)
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sum backfillSummary
+	if err := json.Unmarshal(raw, &sum); err != nil {
+		t.Fatal(err)
+	}
+	// every converted value read back: 2 + 17 + 14 + 14 + 4 (TestTheBackfillWritesWhatAnInsertWrites)
+	if sum.Checked != 51 || sum.Mismatches != 0 || len(sum.Tables) != 4 || sum.SizeBefore == 0 || sum.SizeAfter == 0 {
+		t.Fatalf("summary %s", raw)
+	}
+	if c := sum.Tables[2].Columns["row_indices"]; sum.Tables[2].Table != "probes" || c.Converted != 14 || c.KeptAsIs != 3 || len(c.Examples) != 3 {
+		t.Fatalf("probes in the summary: %+v", sum.Tables[2])
 	}
 }

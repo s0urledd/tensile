@@ -56,6 +56,16 @@ var backfillColumns = [len(BackfillTables)][]string{{"raw_json"}, {"rows_json"},
 var backfillKeys = [len(BackfillTables)]string{"promise_hash, ''", "promise_hash, validator_address",
 	"promise_hash, validator_address", "'', validator_address"}
 
+// backfillUpdates write each table's converted columns back: the new values (or the old, for a value that stays),
+// then the rowid and the values read, which the row must still hold (a compare and swap). Spelled out, so the API's
+// census of the collector's writes reads them (observer/api, dayparts_census_test.go).
+var backfillUpdates = [len(BackfillTables)]string{
+	`UPDATE publications SET raw_json = ? WHERE rowid = ? AND raw_json IS ?`,
+	`UPDATE assignments SET rows_json = ? WHERE rowid = ? AND rows_json IS ?`,
+	`UPDATE probes SET raw_json = ?, row_indices = ? WHERE rowid = ? AND raw_json IS ? AND row_indices IS ?`,
+	`UPDATE reachability SET raw_json = ? WHERE rowid = ? AND raw_json IS ?`,
+}
+
 // MetaBackfillPrefix followed by a table's name is the meta key of the last rowid of that table the backfill has done.
 const MetaBackfillPrefix = "slim_backfill_"
 
@@ -345,11 +355,7 @@ func (b *Backfill) batch(ctx context.Context) (converted, keptAsIs int64, err er
 	}
 
 	// each row written back where it still holds what was read, its unchanged values as they were
-	sets, conds := make([]string, len(cols)), make([]string, len(cols))
-	for j, c := range cols {
-		sets[j], conds[j] = c+" = ?", c+" IS ?"
-	}
-	upd, err := tx.PrepareContext(ctx, `UPDATE `+tb.Table+` SET `+strings.Join(sets, ", ")+` WHERE rowid = ? AND `+strings.Join(conds, " AND "))
+	upd, err := tx.PrepareContext(ctx, backfillUpdates[i])
 	if err != nil {
 		return 0, 0, err
 	}

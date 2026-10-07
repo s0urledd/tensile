@@ -106,6 +106,14 @@ var writeCensus = map[string]writeMechanism{
 	"UPDATE probes SET shadow_gap":                       {"a migration's backfill: the count of migrations that rewrote rows, in the store's identity", ""},
 	"UPDATE probes SET rows_subset_of_assignment":        {"a migration's backfill: the count of migrations that rewrote rows, in the store's identity", ""},
 	"UPDATE publications SET must_serve_until_ambiguous": {"a migration's backfill: the count of migrations that rewrote rows, in the store's identity", ""},
+
+	// the slim backfill (store/backfill.go): a row an earlier build stored, its record and row lists written in the
+	// forms a new row gets, each only where it reads back to the value it replaces byte for byte; no partial reads
+	// these columns, and every reader decodes from them what it decoded before
+	"UPDATE publications SET raw_json":       {notRead + " (the slim backfill: the same record in its slim form)", ""},
+	"UPDATE assignments SET rows_json":       {notRead + " (the slim backfill: the same list, marked as the validator's assignment)", ""},
+	"UPDATE probes SET raw_json,row_indices": {notRead + " (the slim backfill: the same record and list in their slim forms)", ""},
+	"UPDATE reachability SET raw_json":       {notRead + " (the slim backfill: the same record in its slim form)", ""},
 }
 
 // notReadTables are tables no partial reads at all: every write to them is
