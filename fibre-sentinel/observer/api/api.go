@@ -110,9 +110,6 @@ type Server struct {
 	details detailCache
 	// signing caches /v1/signing (see signing.go).
 	signing signingCache
-	// origRows remembers each publication's original_rows for the load
-	// figures (see origrows.go).
-	origRows originalRowsMemo
 	// recent keeps each validator's newest endorsements (see signing.go).
 	recent endorsementLedger
 	// readings keeps each publication's reading status for the publisher
@@ -337,12 +334,11 @@ func WarmSnapshots(ctx context.Context, st *store.Store, info VantageInfo, log *
 			return err
 		}
 	}
-	// And the memo and the ledger as the computations left them, so the
-	// API that takes these files over does not build them again. Without
-	// them it builds them as it always did, so a failed write is logged, not
-	// fatal.
+	// And the ledger as the computations left it, so the API that takes
+	// these files over does not build it again. Without it it builds it as
+	// it always did, so a failed write is logged, not fatal.
 	if err := s.keepDerived(ctx); err != nil && log != nil {
-		log.Printf("warm-only: keeping the memo and the ledger: %v", err)
+		log.Printf("warm-only: keeping the ledger: %v", err)
 	}
 	return nil
 }
@@ -412,11 +408,10 @@ func newServer(st *store.Store, info VantageInfo, log *scan.Logger, opts ...Opti
 	// A snapshot file says which vantage it was computed for, and one for
 	// another vantage is not loaded (snapshotCache.vantage).
 	s.net.vantage, s.vals.vantage, s.market.vantage = s.vantage, s.vantage, s.vantage
-	// The memo and the ledger are kept beside the snapshots (derived.go).
+	// The ledger is kept beside the snapshots (derived.go).
 	if dir := s.snapshotsIn(); dir != "" {
-		s.origRows.file = filepath.Join(dir, originalRowsFile)
 		s.recent.file = filepath.Join(dir, endorsementLedgerFile)
-		s.origRows.log, s.recent.log = s.logf(), s.logf()
+		s.recent.log = s.logf()
 	}
 	if !s.noParts {
 		if s.histCacheMB < 0 {
@@ -433,17 +428,15 @@ func newServer(st *store.Store, info VantageInfo, log *scan.Logger, opts ...Opti
 	return s
 }
 
-// KeepDerived writes the day partials, the memo and the ledger now, as they
-// stand: for observer-api as it stops, so that the next start begins from
-// them and not from their last periodic write.
+// KeepDerived writes the day partials and the ledger now, as they stand: for
+// observer-api as it stops, so that the next start begins from them and not
+// from their last periodic write.
 func (s *Server) KeepDerived(ctx context.Context) error { return s.keepDerived(ctx) }
 
-// keepDerived writes the memo and the ledger out now if they have grown,
-// whatever their pace: for a process about to end. A write of the memo's
-// already running in the background ends first.
+// keepDerived writes the day partials and the ledger out now if they have
+// grown, whatever their pace: for a process about to end.
 func (s *Server) keepDerived(ctx context.Context) error {
-	s.origRows.wait()
-	err := s.origRows.save(ctx, s.st.DB(), true)
+	var err error
 	if s.parts != nil {
 		err = errors.Join(err, s.parts.saveNow(ctx, s))
 	}

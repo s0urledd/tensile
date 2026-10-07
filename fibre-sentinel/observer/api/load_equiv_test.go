@@ -16,7 +16,8 @@ import (
 
 // The load, signing and recent-endorsement figures were rewritten for speed:
 // one pass over the selected publications instead of two walks of every
-// assignment, a memo of original_rows, a ledger for the newest endorsements.
+// assignment, original_rows read from its column (migration 27) rather than
+// out of each record, a ledger for the newest endorsements.
 // None of that may move a figure. The oracles below are the statements as
 // they shipped, kept verbatim, and every case compares them with the new code
 // on the same store at the same moment.
@@ -80,11 +81,11 @@ func oldLoad(ctx context.Context, db *sql.DB, win Window, only string, now time.
 	return out, rows.Err()
 }
 
-// newLoadDoc runs loadSQL with the memo document given, bypassing the memo.
-func newLoadDoc(ctx context.Context, db *sql.DB, win Window, only string, now time.Time, doc string) (map[string]loadStats, error) {
-	filter, args := "", []any{win.startArg(), win.endArg(), store.TS(now.UTC()), doc}
+// newLoad runs loadSQL as it is.
+func newLoad(ctx context.Context, db *sql.DB, win Window, only string, now time.Time) (map[string]loadStats, error) {
+	filter, args := "", []any{win.startArg(), win.endArg(), store.TS(now.UTC())}
 	if only != "" {
-		filter = ` AND a.validator_address = ?5`
+		filter = ` AND a.validator_address = ?4`
 		args = append(args, only)
 	}
 	rows, err := db.QueryContext(ctx, loadSQL(filter), args...)
@@ -254,29 +255,6 @@ func TestLoadOnePassMatchesTheShippedStatements(t *testing.T) {
 		ctx := context.Background()
 		db := st.DB()
 		s := &Server{st: st}
-		full := map[string]any{}
-		part := map[string]any{}
-		for i, p := range pubs {
-			var v any
-			if err := db.QueryRow(`SELECT json_extract(raw_json, '$.assignment.protocol_params.original_rows') FROM publications WHERE promise_hash = ?`, p.hash).Scan(&v); err != nil {
-				t.Fatal(err)
-			}
-			switch v.(type) {
-			case nil, int64:
-				full[p.hash] = v
-				if i%3 == 0 {
-					part[p.hash] = v
-				}
-			}
-		}
-		docOf := func(m map[string]any) string {
-			b, err := json.Marshal(m)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return string(b)
-		}
-		docs := map[string]string{"empty": "{}", "partial": docOf(part), "full": docOf(full)}
 		compared := 0
 		for _, win := range fxWindows(now) {
 			for _, only := range append([]string{"", "nobody"}, fxVals...) {
@@ -284,18 +262,16 @@ func TestLoadOnePassMatchesTheShippedStatements(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				for name, doc := range docs {
-					got, err := newLoadDoc(ctx, db, win, only, now, doc)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if fmt.Sprint(got) != fmt.Sprint(want) {
-						t.Errorf("%s, %s window, only=%q, memo %s:\n got %v\nwant %v", state, win.Name, only, name, got, want)
-					}
-					compared++
+				got, err := newLoad(ctx, db, win, only, now)
+				if err != nil {
+					t.Fatal(err)
 				}
-				// and through the memo, as the API runs it (RowsPerBlob aside)
-				got, err := s.loadByValidatorAt(ctx, win, only, now)
+				if fmt.Sprint(got) != fmt.Sprint(want) {
+					t.Errorf("%s, %s window, only=%q:\n got %v\nwant %v", state, win.Name, only, got, want)
+				}
+				compared++
+				// and as the API runs it (RowsPerBlob aside)
+				got, err = s.loadByValidatorAt(ctx, win, only, now)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -308,29 +284,47 @@ func TestLoadOnePassMatchesTheShippedStatements(t *testing.T) {
 					got[a] = l
 				}
 				if fmt.Sprint(got) != fmt.Sprint(want) {
-					t.Errorf("%s, %s window, only=%q, through the memo:\n got %v\nwant %v", state, win.Name, only, got, want)
+					t.Errorf("%s, %s window, only=%q, as the API runs it:\n got %v\nwant %v", state, win.Name, only, got, want)
 				}
 			}
 		}
 		if compared == 0 {
 			t.Fatal("nothing compared")
 		}
-		// The comparison is not vacuous: a memo entry that disagreed with
-		// the record would move a figure.
-		wrong := map[string]any{}
-		for h, v := range full {
-			if v != nil && v.(int64) > 1 {
-				wrong[h] = v.(int64) - 1
-			}
-		}
+		// The comparison is not vacuous: the statement reads the column, and
+		// a column that disagreed with the record would move a figure.
 		win := windowFor("all", now)
-		want, _ := oldLoad(ctx, db, win, "", now)
-		got, err := newLoadDoc(ctx, db, win, "", now, docOf(wrong))
+		want, err := newLoad(ctx, db, win, "", now)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if fmt.Sprint(got) == fmt.Sprint(want) {
-			t.Errorf("%s: a wrong memo left every figure unchanged; the comparison cannot see the memo", state)
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		if _, err := tx.Exec(`UPDATE publications SET original_rows = original_rows - 1 WHERE typeof(original_rows) = 'integer' AND original_rows > 1`); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := tx.QueryContext(ctx, loadSQL(""), win.startArg(), win.endArg(), store.TS(now.UTC()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wrong := map[string]loadStats{}
+		for rows.Next() {
+			var addr string
+			var l loadStats
+			if err := rows.Scan(&addr, &l.Promises, &l.Rows, &l.Bytes, &l.StoredBytes); err != nil {
+				t.Fatal(err)
+			}
+			wrong[addr] = l
+		}
+		rows.Close()
+		if err := tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		if fmt.Sprint(wrong) == fmt.Sprint(want) {
+			t.Errorf("%s: a wrong original_rows column left every figure unchanged; the comparison cannot see the column", state)
 		}
 	}
 	check(st, "fresh store ("+fresh+")")
@@ -348,85 +342,6 @@ func TestLoadOnePassMatchesTheShippedStatements(t *testing.T) {
 	}
 	check(st, "reopened store ("+reopened+")")
 	PartsAfter(t, st, "test", now)
-}
-
-// The memo keeps integers and NULLs, nothing else, learns only what it did
-// not know, and hands a computation only the entries for its own
-// publications.
-func TestOriginalRowsMemo(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	db := st.DB()
-	ctx := context.Background()
-	now := time.Date(2026, 9, 28, 16, 0, 0, 0, time.UTC)
-	mk := func(i int, ago time.Duration, orig any) fxPub {
-		at := now.Add(-ago)
-		return fxPub{hash: fmt.Sprintf("%064x", i), height: int64(100 + i), txIndex: 0, at: at, msu: at.Add(time.Hour), size: 1024, orig: orig}
-	}
-	fxInsert(t, db, []fxPub{
-		mk(1, time.Hour, 4096), mk(2, 2*time.Hour, fxMissing), mk(3, 3*time.Hour, 4096.5),
-		mk(4, 4*time.Hour, "4096"), mk(5, 3*24*time.Hour, 3000),
-	}, nil)
-	var m originalRowsMemo
-	all := windowFor("all", now)
-	doc, err := m.doc(ctx, db, all.startArg(), all.endArg(), store.TS(now))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got map[string]any
-	if err := json.Unmarshal([]byte(doc), &got); err != nil {
-		t.Fatalf("doc %q: %v", doc, err)
-	}
-	h := func(i int) string { return fmt.Sprintf("%064x", i) }
-	if len(got) != 3 || got[h(1)] != float64(4096) || got[h(5)] != float64(3000) {
-		t.Fatalf("doc = %v, want 1 → 4096, 2 → null, 5 → 3000", got)
-	}
-	if v, ok := got[h(2)]; !ok || v != nil {
-		t.Fatalf("a record without original_rows is not remembered as null: %v", got)
-	}
-	if _, ok := got[h(3)]; ok {
-		t.Fatal("a real original_rows was remembered")
-	}
-	if _, ok := got[h(4)]; ok {
-		t.Fatal("a string original_rows was remembered")
-	}
-	if m.size() != 3 {
-		t.Fatalf("memo holds %d, want 3", m.size())
-	}
-
-	// A new record is learned, and only it: the others are not looked up
-	// again, so an entry altered behind the memo's back stays as it was.
-	fxInsert(t, db, []fxPub{mk(6, 30*time.Minute, 4097)}, nil)
-	m.mu.Lock()
-	m.vals[h(1)] = memoRows{n: 1}
-	m.mu.Unlock()
-	if _, err := m.doc(ctx, db, all.startArg(), all.endArg(), store.TS(now)); err != nil {
-		t.Fatal(err)
-	}
-	m.mu.Lock()
-	six, one := m.vals[h(6)], m.vals[h(1)]
-	m.mu.Unlock()
-	if six.n != 4097 || six.null || one.n != 1 {
-		t.Fatalf("after a new record: 6 → %+v, 1 → %+v; want 4097 learned and 1 left alone", six, one)
-	}
-
-	// A day's computation is handed the day's publications and those still
-	// held, not the whole memo.
-	day := windowFor("24h", now)
-	doc, err = m.doc(ctx, db, day.startArg(), day.endArg(), store.TS(now))
-	if err != nil {
-		t.Fatal(err)
-	}
-	got = nil
-	if err := json.Unmarshal([]byte(doc), &got); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := got[h(5)]; ok || len(got) != 3 {
-		t.Fatalf("24h doc = %v, want the three remembered publications of the day", got)
-	}
 }
 
 // oldRecent is recentSigning's statement as it shipped.

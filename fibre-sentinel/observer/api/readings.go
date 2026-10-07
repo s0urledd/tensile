@@ -71,7 +71,7 @@ import (
 // with nothing new costs well under a millisecond.
 //
 // The memo lives in memory only: a new process computes every publication
-// once. Kept across restarts as the original-rows memo is (derived.go), a
+// once. Kept across restarts as the endorsement ledger is (derived.go), a
 // restart would skip that; it is the next step before mainnet volumes.
 type readingMemo struct {
 	// upd orders updates: one at a time, and a reader that finds one
