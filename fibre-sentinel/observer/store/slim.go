@@ -1,12 +1,14 @@
 package store
 
 import (
+	"bytes"
 	"container/list"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -17,9 +19,10 @@ import (
 //
 // publications.raw_json and probes.raw_json hold the slim record of each row this build writes: every field of the
 // JSONL line but those computed again from the others, from which the line is written back byte for byte (Record,
-// ProbeRecord). reachability.raw_json holds an endpoint check the same way with nothing derived, only where it reads
-// back to its line byte for byte (ReachRecord). A row an earlier build wrote keeps its line, which always starts with '{' and a slim record never
-// does, so both are read the same way and nothing has to be rewritten.
+// ProbeRecord). reachability.raw_json holds an endpoint check the same way with nothing derived (ReachRecord). Each
+// is kept slim only where it reads back to its line byte for byte, and as its line otherwise (publicationBody). A row an
+// earlier build wrote keeps its line, which always starts with '{' and a slim record never does, so both are read the
+// same way and nothing has to be rewritten.
 //
 // The copies the slim record replaces are marked, not stored: probes.row_indices and assignments.rows_json hold
 // RowsAssigned ("=") where the list is the validator's own assignment in its order, which the publication's
@@ -44,6 +47,32 @@ type slimState struct {
 	t      *slim.Tables
 	loaded bool
 	cache  pubCache
+	// enc is the one encoding: held from the tables' Stored() before a record is encoded through the commit or
+	// rollback of the transaction that keeps what it added. Pending hands out every entry past the count,
+	// whoever added it, and Rollback forgets every one, so two encodings interleaved would have one transaction keep
+	// or forget the other's entries. The tables themselves are safe to decode from any number of goroutines.
+	enc sync.Mutex
+}
+
+// ErrUndecodable is what a stored record that does not read back to its line is (errors.Is): a slim body the tables
+// do not decode, or a row list marked as an assignment its publication does not give. It belongs to that row: a read
+// over many rows leaves the row aside, saying so, and goes on with the others. Any other error (the database's own)
+// is not one, and stays the read's.
+var ErrUndecodable = errors.New("record does not decode")
+
+// undecodable marks err as ErrUndecodable, its text unchanged.
+type undecodable struct{ err error }
+
+func (e undecodable) Error() string        { return e.err.Error() }
+func (e undecodable) Unwrap() error        { return e.err }
+func (e undecodable) Is(target error) bool { return target == ErrUndecodable }
+
+// leftAside says, once per process for each row, that a read went on past a row whose record does not decode: the
+// row keeps what it is (withheld, or deferred) until a build that reads it, and the log names it and why.
+func (s *Store) leftAside(row string, err error) {
+	if _, said := s.said.LoadOrStore(row, true); !said {
+		log.Printf("store: %s left aside, its record does not decode: %v", row, err)
+	}
 }
 
 // pubCache keeps the publications most recently used, by promise hash.
@@ -136,20 +165,35 @@ func (s *Store) tables(ctx context.Context, q Querier, refresh bool) (*slim.Tabl
 }
 
 // decodeRetry runs f with the tables, and once more after loading the entries added since when f meets one it does
-// not know yet.
+// not know yet. What f still refuses is ErrUndecodable; what loading the tables refuses is not.
 func (s *Store) decodeRetry(ctx context.Context, q Querier, f func(*slim.Tables) error) error {
 	t, err := s.tables(ctx, q, false)
 	if err != nil {
 		return err
 	}
-	err = f(t)
+	err = guarded(func() error { return f(t) })
 	if errors.Is(err, slim.ErrUnknownEntry) {
 		if t, err = s.tables(ctx, q, true); err != nil {
 			return err
 		}
-		err = f(t)
+		err = guarded(func() error { return f(t) })
 	}
-	return err
+	if err != nil {
+		return undecodable{err}
+	}
+	return nil
+}
+
+// guarded runs a decoding. A decoder that panics has met a record of a shape it does not expect (a slim publication
+// without an assignment, today), which is that record failing to decode: the row's error, not the process's end.
+// The tables are as they were: a decoding only reads them, and releases their lock as it unwinds.
+func guarded(f func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("slim: the decoder failed on this record: %v", r)
+		}
+	}()
+	return f()
 }
 
 // pub is the publication of a promise as its readings use it: nil when the store does not hold it.
@@ -169,7 +213,9 @@ func (s *Store) pub(ctx context.Context, q Querier, hash string) (*slim.Pub, err
 		return nil, err
 	}
 	if isLine(raw) {
-		p, err = slim.PubFromLine(raw)
+		if p, err = slim.PubFromLine(raw); err != nil {
+			err = undecodable{err}
+		}
 	} else {
 		err = s.decodeRetry(ctx, q, func(t *slim.Tables) error {
 			var e error
@@ -266,7 +312,7 @@ func (s *Store) assignedJSON(ctx context.Context, q Querier, promiseHash, valida
 	}
 	rows, ok := p.Rows(validator)
 	if !ok {
-		return "", fmt.Errorf("no assignment of %s on record for %s", validator, promiseHash)
+		return "", undecodable{fmt.Errorf("no assignment of %s on record for %s", validator, promiseHash)}
 	}
 	b, err := json.Marshal(rows)
 	return string(b), err
@@ -284,6 +330,41 @@ func sameRows(p *slim.Pub, validator string, got []uint32) bool {
 		}
 	}
 	return true
+}
+
+// A record is kept in its slim form only where that reads back to its line byte for byte, and as its line otherwise,
+// as an endpoint check is (slim.EncodeReachability). The case is a string carrying a byte that is not UTF-8 (a remote
+// server's error text, a host the chain never checked): encoding/json writes it as the escape of U+FFFD, the slim form
+// keeps the character and writes it back unescaped, so the line it gives is the same JSON value in other bytes, and
+// the export of its day would not reproduce. kept is the tables' count before the encoding: a line needs none of
+// what the attempt added, which is forgotten.
+
+// publicationBody is what publications.raw_json keeps of the line raw, and what its readings take from it.
+func publicationBody(t *slim.Tables, raw []byte, kept [4]int) (any, *slim.Pub, error) {
+	b, pub, err := t.EncodePublication(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	var back []byte
+	if guarded(func() (err error) { back, _, err = t.DecodePublication(b); return err }) == nil && bytes.Equal(back, raw) {
+		return b, pub, nil
+	}
+	t.Rollback(kept)
+	return string(raw), pub, nil
+}
+
+// measurementBody is what probes.raw_json keeps of the line raw, a reading of pub.
+func measurementBody(t *slim.Tables, raw []byte, pub *slim.Pub, lookup slim.Lookup, kept [4]int) (any, error) {
+	b, err := t.EncodeMeasurement(raw, pub, lookup)
+	if err != nil {
+		return nil, err
+	}
+	var back []byte
+	if guarded(func() (err error) { back, err = t.DecodeMeasurement(b, pub, lookup); return err }) == nil && bytes.Equal(back, raw) {
+		return b, nil
+	}
+	t.Rollback(kept)
+	return string(raw), nil
 }
 
 // keepEntries writes the table entries the last encoding added, in tx.

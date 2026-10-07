@@ -805,6 +805,8 @@ type Store struct {
 	slim slimState
 	// counts keeps Count's running totals: see Count.
 	counts rowCounts
+	// said is the rows leftAside has named, so each is logged once.
+	said sync.Map
 }
 
 // busyTimeoutMS is how long a statement waits out another connection's lock
@@ -1423,13 +1425,16 @@ func (s *Store) UpsertParams(entries []scan.ParamEntry) error {
 // both to learn about it.
 func (s *Store) UpsertPublication(p scan.Publication, raw []byte) (inserted bool, err error) {
 	ctx := context.Background()
+	s.slim.enc.Lock()
+	defer s.slim.enc.Unlock()
 	t, err := s.tables(ctx, s.db, false)
 	if err != nil {
 		return false, err
 	}
-	// the record in its slim form; the table entries it adds are kept with it, or forgotten if it is not
+	// the record in its slim form (or its line, where that does not read back); the table entries it adds are kept
+	// with it, or forgotten if it is not
 	kept := t.Stored()
-	body, pub, err := t.EncodePublication(raw)
+	body, pub, err := publicationBody(t, raw, kept)
 	if err != nil {
 		return false, fmt.Errorf("publication %s: slim: %w", p.PromiseHash, err)
 	}
@@ -1564,6 +1569,8 @@ func (s *Store) InsertProbe(m probe.Measurement, raw []byte) (inserted bool, err
 		return false, err
 	}
 	ctx := context.Background()
+	s.slim.enc.Lock()
+	defer s.slim.enc.Unlock()
 	pub, err := s.pub(ctx, s.db, m.PromiseHash)
 	if err != nil {
 		return false, err
@@ -1572,9 +1579,10 @@ func (s *Store) InsertProbe(m probe.Measurement, raw []byte) (inserted bool, err
 	if err != nil {
 		return false, err
 	}
-	// the record in its slim form, against its publication; the table entries it adds are kept with it
+	// the record in its slim form against its publication (or its line, where that does not read back); the table
+	// entries it adds are kept with it
 	kept := t.Stored()
-	body, err := t.EncodeMeasurement(raw, pub, s.lookup(ctx, s.db))
+	body, err := measurementBody(t, raw, pub, s.lookup(ctx, s.db), kept)
 	if err != nil {
 		return false, fmt.Errorf("probe %s: slim: %w", m.DedupeKey(), err)
 	}
@@ -2277,6 +2285,8 @@ func (s *Store) growingCounts(ctx context.Context) ([len(countedTables)]int64, e
 func (s *Store) InsertReachability(m probe.Measurement, raw []byte) (inserted bool, err error) {
 	key := m.Vantage + "|" + m.ValidatorAddress + "|" + m.ScheduledAt.UTC().Format(time.RFC3339Nano)
 	ctx := context.Background()
+	s.slim.enc.Lock()
+	defer s.slim.enc.Unlock()
 	t, err := s.tables(ctx, s.db, false)
 	if err != nil {
 		return false, err
@@ -2377,6 +2387,12 @@ var ErrNoSuchRow = errors.New("no probe row with this key")
 // is how long past must_serve_until a candidate's shard is still taken to
 // be on disk (the store's prune lag). Nothing is written: the caller applies
 // each amendment (ApplyAmendment) and records it.
+//
+// A row whose own rows, or a candidate's assignment, do not decode
+// (ErrUndecodable) is left deferred and said once in the log, and the other
+// rows are judged: a verdict is final once recorded, so none is drawn from a
+// record this build cannot read, and one such row no longer holds back every
+// other row's.
 func (s *Store) LateShadowVerdicts(ctx context.Context, frontier, now time.Time, tolerance time.Duration) ([]Amendment, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT pr.dedupe_key, pr.promise_hash, pr.commitment, pr.validator_address, pr.scheduled_at, pr.started_at,
 			COALESCE(pr.row_indices, ''), pr.shadow_gap, pr.classification, pb.payment_promise_timeout_s
@@ -2435,6 +2451,12 @@ func (s *Store) LateShadowVerdicts(ctx context.Context, frontier, now time.Time,
 		}
 		var got []int
 		indices, err := s.RowIndices(ctx, s.db, p.hash, p.addr, p.indices)
+		if errors.Is(err, ErrUndecodable) {
+			// The row's own records do not decode: it stays deferred, for a
+			// build that reads them, and the other rows are judged.
+			s.leftAside("probe "+p.key+" (late verdict)", err)
+			continue
+		}
 		if err != nil {
 			return out, err
 		}
@@ -2470,9 +2492,16 @@ func (s *Store) LateShadowVerdicts(ctx context.Context, frontier, now time.Time,
 			return out, err
 		}
 		match, unrecorded := "", false
+		var unread error
 		for _, c := range cs {
 			h := c.h
 			rj, err := s.AssignedRows(ctx, s.db, h, p.addr, c.rj)
+			if errors.Is(err, ErrUndecodable) {
+				// A candidate whose assignment does not decode may be the
+				// one that owns the rows: no verdict is drawn without it.
+				unread = fmt.Errorf("candidate %s: %w", h, err)
+				break
+			}
 			if err != nil {
 				return out, err
 			}
@@ -2489,6 +2518,10 @@ func (s *Store) LateShadowVerdicts(ctx context.Context, frontier, now time.Time,
 				match = h
 				break
 			}
+		}
+		if unread != nil {
+			s.leftAside("probe "+p.key+" (late verdict)", unread)
+			continue
 		}
 		switch {
 		case match != "":
