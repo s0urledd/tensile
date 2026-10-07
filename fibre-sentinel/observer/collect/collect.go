@@ -19,6 +19,7 @@ package collect
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -76,6 +77,9 @@ type Collector struct {
 	lastRetention time.Time
 	// registryReplayed: the last pass read registry.jsonl to its end.
 	registryReplayed bool
+	// otherChain: the vantage files the last pass stopped at a row from
+	// another chain (ingest.ErrOtherChain), by vantage directory name.
+	otherChain []string
 	// lastWaiting is the day the rollup last said it waits on.
 	lastWaiting string
 	// reclaimPending: the first pass gives back whatever the schema
@@ -122,6 +126,14 @@ func (c *Collector) liveSet(key string, v any) {
 // this step alone, not on every file of the pass: a stuck measurement line
 // says nothing about the endpoint history.
 func (c *Collector) RegistryReplayed() bool { return c.registryReplayed }
+
+// VantagesFromOtherChain names the vantage files the last Pass stopped at a
+// row that was not taken on this observer's chain (ingest.ErrOtherChain).
+//
+// The ingest keeps such a file out of the store, but the daily export copies
+// the vantage files whole, and an export, once built and signed, is never
+// taken back: the collector holds the export build while this is not empty.
+func (c *Collector) VantagesFromOtherChain() []string { return c.otherChain }
 
 // RetentionRetry is how soon a rollup pass that failed is tried again, when
 // that is sooner than RetentionEvery. A failure stays on the work list until
@@ -265,6 +277,7 @@ func (c *Collector) Pass(ctx context.Context, now time.Time) []string {
 	// reachabilityNow) and are counted in no published figure. Listed
 	// again every pass, so a vantage that starts sending is picked up
 	// without a restart.
+	c.otherChain = nil
 	if files, err := ingest.VantageFiles(c.Paths.VantagesDir); err != nil {
 		fail("vantages", err)
 	} else {
@@ -272,6 +285,9 @@ func (c *Collector) Pass(ctx context.Context, now time.Time) []string {
 			name := filepath.Base(filepath.Dir(f))
 			if r, err := ingest.VantageReachability(st, f, c.Vantage, now); err != nil {
 				fail("reachability from "+name, err)
+				if errors.Is(err, ingest.ErrOtherChain) {
+					c.otherChain = append(c.otherChain, name)
+				}
 			} else {
 				if r.Inserted > 0 {
 					c.logf("reachability from %s: +%d (read %d, line %d)", name, r.Inserted, r.Read, r.Line)

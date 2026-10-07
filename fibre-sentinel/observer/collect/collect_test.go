@@ -11,6 +11,7 @@ import (
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/collect"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/correct"
+	"github.com/plsgiveup/fibre/fibre-sentinel/observer/ingest"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
@@ -118,6 +119,34 @@ func TestThePassSaysWhetherTheRegistryWasReplayed(t *testing.T) {
 	}
 	if errs := c.Pass(ctx, now.Add(10*time.Second)); len(errs) == 0 || !c.RegistryReplayed() {
 		t.Fatalf("a refused payment: errs=%v replayed=%v", errs, c.RegistryReplayed())
+	}
+}
+
+// A vantage file stopped at a row from another chain is named after the
+// pass, so the collector can hold the exports, which copy the vantage files
+// whole; once the file is gone, nothing is named.
+func TestThePassNamesAVantageFileFromAnotherChain(t *testing.T) {
+	dir := t.TempDir()
+	c := newCollector(t, dir, &fakeStatus{})
+	ctx := context.Background()
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	vf := filepath.Join(dir, ingest.VantagesDir, "mo-1", "reachability.jsonl")
+	if err := os.MkdirAll(filepath.Dir(vf), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A validator this chain has no record of.
+	line := `{"vantage":"mo-1","validator_address":"aa","validator_host":"h:7980","scheduled_at":"2026-10-07T11:00:00Z","started_at":"2026-10-07T11:00:00Z","outcome":"REACHABLE"}`
+	if err := os.WriteFile(vf, []byte(line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if errs := c.Pass(ctx, now); len(errs) == 0 || len(c.VantagesFromOtherChain()) != 1 || c.VantagesFromOtherChain()[0] != "mo-1" {
+		t.Fatalf("errs=%v other chain=%v", errs, c.VantagesFromOtherChain())
+	}
+	if err := os.RemoveAll(filepath.Dir(vf)); err != nil {
+		t.Fatal(err)
+	}
+	if errs := c.Pass(ctx, now.Add(10*time.Second)); len(errs) != 0 || len(c.VantagesFromOtherChain()) != 0 {
+		t.Fatalf("after the file went: errs=%v other chain=%v", errs, c.VantagesFromOtherChain())
 	}
 }
 

@@ -254,16 +254,27 @@ func main() {
 		poll = &chainPoll{chain: chain, st: st, live: live, logf: log.Printf, appendRegistry: appendRegistry} // chainpoll.go
 	}
 	var lastEscrow time.Time
+	var exportHeld string // the hold last logged, so it is said once
 	pass := func(pollEndpoints bool) {
 		now := time.Now()
 		passErrs := coll.Pass(ctx, now)
 		if exporter != nil {
-			built, err := exporter.Run(now)
-			if err != nil {
+			built, held, err := exportStep(exporter.Run, coll.VantagesFromOtherChain(), now)
+			switch {
+			case held:
+				if err.Error() != exportHeld {
+					log.Printf("export: %v", err)
+					exportHeld = err.Error()
+				}
+			case err != nil:
 				log.Printf("export: %v", err)
 				live.Error(fmt.Sprintf("export: %v", err))
-			} else if len(built) > 0 {
+			case len(built) > 0:
 				live.Set("last_export", built[len(built)-1])
+			}
+			if !held && exportHeld != "" {
+				log.Printf("export: no longer held")
+				exportHeld = ""
 			}
 			work.Report("export", err, now)
 		}
@@ -385,13 +396,31 @@ func main() {
 		case <-wakeC:
 			fast.run(time.Now())
 		case <-tick.C:
-			poll := *epEvery > 0 && time.Since(lastEP) >= *epEvery
-			pass(poll)
-			if poll {
+			due := *epEvery > 0 && time.Since(lastEP) >= *epEvery
+			pass(due)
+			if due {
 				lastEP = time.Now()
 			}
 		}
 	}
+}
+
+// exportStep runs the daily export build (run), unless the pass just stopped
+// a vantage file at a row from another chain (otherChain, by vantage name):
+// then held is true and err says why, for the log and the work list.
+//
+// The ingest keeps such a file out of the store, but an export copies the
+// vantage files whole, and an export once built and signed is never taken
+// back. A day held is not lost: the builder builds every day from the last
+// one it built, so the exports catch up once the file is gone. A row of this
+// chain that the guard refused for a moment (a validator that registered
+// since the last chain poll) holds the build for a pass or two at most.
+func exportStep(run func(time.Time) ([]string, error), otherChain []string, now time.Time) (built []string, held bool, err error) {
+	if len(otherChain) > 0 {
+		return nil, true, fmt.Errorf("held: the heartbeat file of vantage %s holds rows from another chain, which an export would copy whole; built again once it is removed", strings.Join(otherChain, ", "))
+	}
+	built, err = run(now)
+	return built, false, err
 }
 
 // fibreActive is the fibre_active verdict: "yes" only once the chain is on

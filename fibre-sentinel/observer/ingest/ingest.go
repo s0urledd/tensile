@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/cosmos/cosmos-sdk/types/bech32"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
@@ -61,6 +64,12 @@ var ErrBadRecord = errors.New("bad record")
 var ErrRetryLater = errors.New("retry later")
 
 const retryPasses = 3
+
+// ErrOtherChain marks a row copied in from another vantage that was not
+// taken on this observer's chain (chainGuard). Like a store error it stops
+// the file before the row; the collector also holds the export build while
+// a file is stopped by it, since the exports copy the vantage files whole.
+var ErrOtherChain = errors.New("not from this observer's chain")
 
 // retries counts the passes on which a line has asked to be retried, by
 // file and line number.
@@ -369,9 +378,11 @@ func VantageReachability(st *store.Store, path, own string, now time.Time) (Resu
 // carry its chain id, so two things it does carry stand in for it:
 //
 //   - its validator, which must be one this chain knows: in the staking set
-//     the collector polls (validator_identities), or among the validators
-//     this observer's own heartbeat has reached. Another network's
-//     validators sign with other keys.
+//     the collector polls (validator_identities), in the endpoint history
+//     the collector keeps from the chain's Fibre registry (endpoints, every
+//     validator that ever had a bonded endpoint, the set a heartbeat
+//     reaches), or among the validators this observer's own heartbeat has
+//     reached. Another network's validators sign with other keys.
 //   - its height (validator_set_height, the tip when the round began), which
 //     must be one this chain could have been at when the row was taken,
 //     against the newest tip on record (the collector's chain poll, else
@@ -381,11 +392,11 @@ func VantageReachability(st *store.Store, path, own string, now time.Time) (Resu
 //     never refused by it, while a height from a chain millions of blocks
 //     away is.
 //
-// A row that fails either is an error, not a bad record: the file stops
-// before it, the pass names it on every pass, and the collector is not OK
-// until the operator removes the file. Stepping over it would quietly drop
-// a whole vantage, and a validator that registered a moment ago is known to
-// this chain by the next pass, when its row goes in.
+// A row that fails either is an error (ErrOtherChain), not a bad record:
+// the file stops before it, the pass names it on every pass, and the
+// collector is not OK until the operator removes the file. Stepping over it
+// would quietly drop a whole vantage, and a validator that registered a
+// moment ago is known to this chain by the next pass, when its row goes in.
 type chainGuard struct {
 	db    *sql.DB
 	own   string
@@ -410,15 +421,22 @@ func newChainGuard(db *sql.DB, own string) *chainGuard {
 func (g *chainGuard) check(m probe.Measurement) error {
 	addr := strings.ToLower(m.ValidatorAddress)
 	if !g.known[addr] {
+		// The endpoint history keys a validator by its bech32 consensus
+		// address; an address that is not hex matches nothing there.
+		var bech string
+		if raw, err := hex.DecodeString(addr); err == nil && len(raw) > 0 {
+			bech, _ = bech32.ConvertAndEncode("celestiavalcons", raw)
+		}
 		var ok bool
 		// One short query per validator per file per pass, read whole
 		// before anything else uses the store's one connection.
 		if err := g.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM validator_identities WHERE cons_address = ?)
-			OR EXISTS (SELECT 1 FROM reachability WHERE validator_address = ? AND vantage = ?)`, addr, addr, g.own).Scan(&ok); err != nil {
+			OR EXISTS (SELECT 1 FROM endpoints WHERE validator_cons_address = ?)
+			OR EXISTS (SELECT 1 FROM reachability WHERE validator_address = ? AND vantage = ?)`, addr, bech, addr, g.own).Scan(&ok); err != nil {
 			return fmt.Errorf("chain check: %w", err)
 		}
 		if !ok {
-			return fmt.Errorf("vantage %s: validator %s is not one this observer's chain knows (not in its staking set, never reached by its own heartbeat); is the file from another network?", m.Vantage, m.ValidatorAddress)
+			return fmt.Errorf("%w: vantage %s: validator %s is not one this observer's chain knows (not in its staking set or its endpoint history, never reached by its own heartbeat); is the file from another network?", ErrOtherChain, m.Vantage, m.ValidatorAddress)
 		}
 		g.known[addr] = true
 	}
@@ -443,8 +461,8 @@ func (g *chainGuard) check(m probe.Measurement) error {
 	}
 	window := int64(dt/minBlockInterval) + maxLag
 	if d := m.ValidatorSetHeight - g.refHeight; d > window || -d > window {
-		return fmt.Errorf("vantage %s: row at height %d taken %s, but this observer's chain was at %d at %s; is the file from another network?",
-			m.Vantage, m.ValidatorSetHeight, at.UTC().Format(time.RFC3339), g.refHeight, g.refTime.UTC().Format(time.RFC3339))
+		return fmt.Errorf("%w: vantage %s: row at height %d taken %s, but this observer's chain was at %d at %s; is the file from another network?",
+			ErrOtherChain, m.Vantage, m.ValidatorSetHeight, at.UTC().Format(time.RFC3339), g.refHeight, g.refTime.UTC().Format(time.RFC3339))
 	}
 	return nil
 }

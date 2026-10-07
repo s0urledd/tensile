@@ -1,12 +1,16 @@
 package ingest_test
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cosmos/cosmos-sdk/types/bech32"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/ingest"
@@ -171,7 +175,7 @@ func TestAVantageFileFromAnotherChainStopsBeforeItsFirstRow(t *testing.T) {
 	os.WriteFile(de, []byte(lines), 0o644)
 	for pass := 0; pass < 2; pass++ {
 		r, err := ingest.VantageReachability(st, de, "ut-1", now)
-		if err == nil || !strings.Contains(err.Error(), "another network") {
+		if !errors.Is(err, ingest.ErrOtherChain) || !strings.Contains(err.Error(), "another network") {
 			t.Fatalf("pass %d: an unknown validator was not refused: %+v %v", pass, r, err)
 		}
 		if n := countRows(t, st, "de-1"); n != 1 {
@@ -186,12 +190,30 @@ func TestAVantageFileFromAnotherChainStopsBeforeItsFirstRow(t *testing.T) {
 		t.Fatalf("after the validator joined: %+v %v", r, err)
 	}
 
+	// "cc" is in neither the staking set on record nor this heartbeat's
+	// rows (a rebuilt store reads the vantage files before its first
+	// chain poll, and this heartbeat may have been down while "cc" was
+	// bonded), but the endpoint history saw it registered: this chain's.
+	bech, err := bech32.ConvertAndEncode("celestiavalcons", []byte{0xcc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ObserveEndpointEvents(context.Background(), []scan.FibreProvider{{ConsAddressBech32: bech, Host: "c:7980"}}, 1_400_000, now); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := os.OpenFile(de, os.O_APPEND|os.O_WRONLY, 0o644)
+	f.WriteString(beatAt("de-1", "cc", 15, 1_400_150) + "\n")
+	f.Close()
+	if r, err := ingest.VantageReachability(st, de, "ut-1", now); err != nil || r.Inserted != 1 {
+		t.Fatalf("a validator from the endpoint history: %+v %v", r, err)
+	}
+
 	// A row of a validator this chain knows, at a height another network
 	// was at: refused, and nothing after it is read.
 	mocha := filepath.Join(vdir, "mo-1", "reachability.jsonl")
 	os.MkdirAll(filepath.Dir(mocha), 0o755)
 	os.WriteFile(mocha, []byte(beatAt("mo-1", "aa", 5, 9_200_000)+"\n"+beatAt("mo-1", "aa", 10, 1_400_100)+"\n"), 0o644)
-	if r, err := ingest.VantageReachability(st, mocha, "ut-1", now); err == nil || !strings.Contains(err.Error(), "another network") || r.Inserted != 0 {
+	if r, err := ingest.VantageReachability(st, mocha, "ut-1", now); !errors.Is(err, ingest.ErrOtherChain) || !strings.Contains(err.Error(), "another network") || r.Inserted != 0 {
 		t.Fatalf("a height millions of blocks away was not refused: %+v %v", r, err)
 	}
 	if n := countRows(t, st, "mo-1"); n != 0 {
