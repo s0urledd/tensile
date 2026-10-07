@@ -2,7 +2,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import PreLive from "@/components/PreLive";
-import { useApi, type Meta, type Market, type Blob, type NamespaceRow, type Publisher, type Tip, int, bytes, nsDisplay, nsName, shortMid, utcWord, TIP_MS } from "@/lib/api";
+import { useApi, type Meta, type Market, type Blob, type NamespaceRow, type Publisher, type Tip, int, bytes, failedWords, hhmm, nsDisplay, nsName, shortMid, utcWord, TIP_MS } from "@/lib/api";
 import Pager, { usePage } from "@/components/Pager";
 import { useWindow, WindowSwitch } from "@/lib/window";
 import BlobsDeck, { age, dayTime } from "@/components/BlobsDeck";
@@ -128,8 +128,8 @@ function matchedWords(key: BlobKey, value: string, f: Found): React.ReactNode {
 
 const PUB_ICON = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5.6" r="2.7" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M2.8 13.6c.8-2.4 2.8-3.7 5.2-3.7s4.4 1.3 5.2 3.7" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>;
 
-/** the namespaces on record, newest settlement first; a row shows its blobs */
-function Namespaces({ rows, truncated, onPick }: { rows: NamespaceRow[] | null; truncated: boolean; onPick: (ns: string) => void }) {
+/** the namespaces on record, newest settlement first; a row shows its blobs. failed: they could not be read, and none is on screen */
+function Namespaces({ rows, truncated, failed, onPick }: { rows: NamespaceRow[] | null; truncated: boolean; failed: { error: string | null; status?: number } | null; onPick: (ns: string) => void }) {
   const now = Date.now();
   return (
     <>
@@ -139,7 +139,7 @@ function Namespaces({ rows, truncated, onPick }: { rows: NamespaceRow[] | null; 
             <tr><th className="n-nm">Namespace</th><th className="n-pub num">Publishers</th><th className="n-n num">Settlements</th><th className="n-sz num">Blob size</th><th className="n-24 num">Last 24h</th><th className="n-first">First seen</th><th className="n-last">Last blob</th></tr>
           </thead>
           <tbody>
-            {!rows && <tr className="lg-empty"><td colSpan={7}>Loading…</td></tr>}
+            {!rows && <tr className="lg-empty"><td colSpan={7}>{failed ? `${failedWords(failed)}.` : "Loading…"}</td></tr>}
             {rows && rows.length === 0 && <tr className="lg-empty"><td colSpan={7}>No namespace on record.</td></tr>}
             {rows?.map((n) => {
               const hex = nsHex(n.namespace);
@@ -299,7 +299,8 @@ function Page() {
         <WindowSwitch value={win} onChange={setWin} />
       </div>
       <PreLive meta={meta} />
-      {m.error && <div className="note hold"><span className="label">Observer</span><p>Cannot reach the observer API: {m.error}. Nothing below is current.</p></div>}
+      {/* the deck's figures only: the list under them is read on its own, and says so in its own rows */}
+      {m.error && <div className="note hold"><span className="label">Observer</span><p>{failedWords(m)}: the period&rsquo;s figures could not be {m.data ? "refreshed" : "read"}.{m.data && m.fetchedAt ? ` They are the ones read at ${hhmm(m.fetchedAt)}.` : ""}</p></div>}
       <BlobsDeck win={win} onWin={setWin} market={m.data} newest={newest} skew={skew} />
 
       <section id="list" className="listing lg-list">
@@ -339,7 +340,7 @@ function Page() {
                   noun={q ? (total === 1 ? "settlement with this filter" : "settlements with this filter") : total === 1 ? "settlement on record" : "settlements on record"} />)}
               </Ledger>
             ))
-          : <Namespaces rows={nss.data?.namespaces ?? null} truncated={!!nss.data?.truncated} onPick={showNs} />}
+          : <Namespaces rows={nss.data?.namespaces ?? null} truncated={!!nss.data?.truncated} failed={!nss.data && nss.error ? nss : null} onPick={showNs} />}
       </section>
     </>
   );

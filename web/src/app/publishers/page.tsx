@@ -2,7 +2,7 @@
 import { Suspense, useCallback, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useApi, type Meta, type Tip, type Window, blobFee, bytes, fmtShare, int, nsDisplay, tia, utcWord, TIP_MS } from "@/lib/api";
+import { useApi, type Meta, type Tip, type Window, blobFee, bytes, failedWords, fmtShare, hhmm, int, nsDisplay, tia, utcWord, TIP_MS } from "@/lib/api";
 import type { MarketWithQueue, Params, PublisherWithQueue } from "@/lib/withdrawals";
 import { useWindow, WindowSwitch, periodName } from "@/lib/window";
 import { openRow } from "@/lib/row";
@@ -87,8 +87,10 @@ function Page() {
   const { data: meta } = useApi<Meta>("/v1/meta");
   // Before activation every market figure is a zero of a module that does not exist yet: one line says so, the figures show a dash.
   const pre = notLiveOf(meta);
-  const { data: m, error } = useApi<MarketWithQueue>(`/v1/market?window=${win}`);
-  const { data: list } = useApi<{ publishers: PublisherWithQueue[]; count: number; window?: Window }>(`/v1/publishers?window=${win}`);
+  const market = useApi<MarketWithQueue>(`/v1/market?window=${win}`);
+  const m = market.data;
+  const listed = useApi<{ publishers: PublisherWithQueue[]; count: number; window?: Window }>(`/v1/publishers?window=${win}`);
+  const list = listed.data;
   // every account on record: what each posts as a rule (its average blob over all of them), and the choices of Find
   const { data: all } = useApi<{ publishers: PublisherWithQueue[] }>("/v1/publishers?window=all");
   // the price of a blob, for the low-escrow warning: the parameters' own 5-minute stream (PublishersTop's too), asked
@@ -142,7 +144,8 @@ function Page() {
       </div>
       <PreLive meta={meta} />
 
-      {error && <div className="note hold"><span className="label">Observer</span><p>Cannot reach the observer API: {error}. Nothing below is current.</p></div>}
+      {/* the period's figures only: the list under them is a stream of its own, which says so in its own rows */}
+      {market.error && <div className="note hold"><span className="label">Observer</span><p>{failedWords(market)}: the period&rsquo;s figures could not be {m ? "refreshed" : "read"}.{m && market.fetchedAt ? ` They are the ones read at ${hhmm(market.fetchedAt)}.` : ""}</p></div>}
 
       {/* the period's figures as tabs over the publishers ranked by the one picked */}
       <PublishersTop m={pre ? null : m} win={win} list={list} all={all} now={now} pre={pre} onWin={setWin} />
@@ -174,7 +177,7 @@ function Page() {
               </tr>
             </thead>
             <tbody>
-              {!list && <tr className="lg-empty"><td colSpan={cols}>Loading…</td></tr>}
+              {!list && <tr className="lg-empty"><td colSpan={cols}>{listed.error ? `${failedWords(listed)}.` : "Loading…"}</td></tr>}
               {list && pubs.length === 0 && <tr className="lg-empty"><td colSpan={cols}>No publisher posted a blob or moved escrow in this period.</td></tr>}
               {shown.map((p) => {
                 const href = `/publisher/?addr=${p.publisher}`;

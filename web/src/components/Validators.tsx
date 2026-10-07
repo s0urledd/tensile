@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { type Validator, int, pctOf, bytes, ago, utcWord, shortMid } from "@/lib/api";
+import { type Validator, int, pctOf, bytes, ago, utcWord, shortMid, failedWords } from "@/lib/api";
 import { periodName } from "@/lib/window";
 import Avatar from "./Avatar";
 import Info from "./Info";
@@ -87,8 +87,12 @@ function sortValue(v: Validator, k: SortKey, notLive?: boolean): number | null {
   }
 }
 
-/** `periodSwitch`, the page's period control, sits beside the heading: the period it selects is the Shard data and Endorsements columns', named in their headings */
-export default function Validators({ rows, window: win, notLive, loading, periodSwitch }: { rows: Validator[]; window: string; notLive?: boolean; loading?: boolean; periodSwitch?: ReactNode }) {
+/**
+ * `periodSwitch`, the page's period control, sits beside the heading: the period it selects is the Shard data and
+ * Endorsements columns', named in their headings. `failed`: the list could not be read and nothing of it is on screen,
+ * which the empty table says rather than "no validators on record"
+ */
+export default function Validators({ rows, window: win, notLive, loading, failed, periodSwitch }: { rows: Validator[]; window: string; notLive?: boolean; loading?: boolean; failed?: { error: string | null; status?: number } | null; periodSwitch?: ReactNode }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "power", dir: -1 });
@@ -203,6 +207,7 @@ export default function Validators({ rows, window: win, notLive, loading, period
             {list.length === 0 && (
               <tr className="empty"><td colSpan={6 + (showHosting ? 1 : 0)}>
                 {loading && rows.length === 0 ? "Loading…"
+                  : rows.length === 0 && failed ? `${failedWords(failed)}.`
                   : rows.length === 0 ? "No validators on record yet."
                   : needle ? `Nothing matches “${q}”.`
                   : filter === "unreachable" ? "Every registered endpoint answered its newest check."

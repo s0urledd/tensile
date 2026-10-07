@@ -802,6 +802,10 @@ export function apiFailing(f: { error: string | null; status?: number }): boolea
 export function throttled(f: { error: string | null; status?: number }): boolean {
   return !!f.error && f.status === 429;
 }
+/** a failed request in the words the site's notices use: "The observer API is busy (too many requests)" on a 429, else "… is not answering (…)" */
+export function failedWords(f: { error: string | null; status?: number }): string {
+  return `${throttled(f) ? "The observer API is busy" : "The observer API is not answering"} (${f.error ?? "no answer"})`;
+}
 
 // One in-flight request and one timer per (path, interval), however many
 // components ask for it: the header, the banner, the footer and the page all
