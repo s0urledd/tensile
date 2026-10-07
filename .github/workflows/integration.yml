@@ -1,0 +1,228 @@
+name: Integration (real record)
+
+# Run by hand, never on push: an hour of ingest per build. The golden harness
+# (fibre-sentinel/observer/api/golden_test.go) over the real Mocha record, the
+# daily exports the observer publishes, for two builds side by side; every API
+# answer and the recompute output are compared request for request. With
+# backfill, a store written by a build from before the slim record is also
+# converted by head and answered again, which must give head's own answers.
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: the build to compare against (a ref)
+        default: main
+      head:
+        description: the build under test (a ref)
+        required: true
+      through:
+        description: the last export day taken in (YYYY-MM-DD)
+        default: "2026-10-05"
+      backfill:
+        description: also convert a pre-slim store with head (true or false)
+        default: "false"
+      pre:
+        description: the build that writes the pre-slim store (a ref)
+        default: bc1200d
+
+permissions:
+  contents: read
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+    steps:
+      - id: key
+        run: echo "key=mocha-record-through-${{ inputs.through }}-v1" >> "$GITHUB_OUTPUT"
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: record
+          key: ${{ steps.key.outputs.key }}
+      # Fetched once per day range and kept in the cache: the tarballs come off
+      # the disk the observer shares with a validator, so one at a time.
+      - name: Fetch the daily exports through the site
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          SITE: https://tensile.huginn.tech/api
+          THROUGH: ${{ inputs.through }}
+        run: |
+          set -euo pipefail
+          mkdir -p record/days
+          curl -fsS --retry 3 "$SITE/v1/exports?limit=1000" -o index.json
+          node -e '
+            const j = JSON.parse(require("fs").readFileSync("index.json", "utf8"));
+            for (const e of (j.exports || j)) if (e.day <= process.env.THROUGH) console.log(e.name, e.sha256, e.day);
+          ' > list.txt
+          test -s list.txt
+          while read -r name sum day; do
+            curl -fsS --retry 3 "$SITE/v1/exports/$name" -o "$name"
+            echo "$sum  $name" | sha256sum -c -
+            mkdir -p "record/days/$day"
+            tar -xzf "$name" -C "record/days/$day"
+            rm "$name"
+            sleep 2
+          done < list.txt
+          ls record/days | tr '\n' ' '; du -sh record
+
+  golden:
+    needs: record
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        side: [base, head]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.side == 'base' && inputs.base || inputs.head }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: fibre-sentinel/go.mod
+          cache-dependency-path: fibre-sentinel/go.sum
+      - uses: actions/cache/restore@v4
+        with:
+          path: record
+          key: ${{ needs.record.outputs.key }}
+          fail-on-cache-miss: true
+      - name: Work on the runner's larger disk
+        run: sudo mkdir -p /mnt/w/tmp && sudo chown -R "$USER" /mnt/w
+      # Answers only: the five timed repeats of every request are for speed
+      # comparisons, which two shared runners cannot make.
+      - name: Answers without the timed repeats
+        working-directory: fibre-sentinel
+        run: |
+          sed -i 's/for i := 0; i < 5; i++ {/for i := 0; i < 0; i++ {/' observer/api/golden_test.go
+          grep -q 'for i := 0; i < 0; i++ {' observer/api/golden_test.go
+      - name: Golden answers over the record
+        working-directory: fibre-sentinel
+        env:
+          TMPDIR: /mnt/w/tmp
+          TENSILE_GOLDEN_OUT: /mnt/w/out
+          TENSILE_GOLDEN_NOW: ${{ inputs.through }}T23:59:59Z
+        run: |
+          mkdir -p /mnt/w/out
+          go build -o /mnt/w/recompute ./cmd/sentinel-recompute
+          export TENSILE_GOLDEN_RECOMPUTE=/mnt/w/recompute
+          export TENSILE_GOLDEN_EXPORTS=$(ls -d "$GITHUB_WORKSPACE"/record/days/* | sort | paste -sd, -)
+          go test -count=1 -run TestGoldenAnswers -timeout 290m -v ./observer/api/ 2>&1 | tee /mnt/w/out/golden.log | grep -E "ingested|answers written|recompute|^(ok|FAIL|---)|panic"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: answers-${{ matrix.side }}
+          path: /mnt/w/out
+          retention-days: 14
+
+  compare:
+    needs: golden
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head }}
+          sparse-checkout: .github/scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: answers-base
+          path: base
+      - uses: actions/download-artifact@v4
+        with:
+          name: answers-head
+          path: head
+      - name: Compare the answers
+        run: node .github/scripts/golden-compare.mjs base head report.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: golden-report
+          path: report.json
+          retention-days: 14
+
+  backfill:
+    if: inputs.backfill == 'true'
+    needs: [record, golden]
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.pre }}
+          path: pre
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head }}
+          path: head
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: head/fibre-sentinel/go.mod
+          cache-dependency-path: head/fibre-sentinel/go.sum
+      - uses: actions/cache/restore@v4
+        with:
+          path: record
+          key: ${{ needs.record.outputs.key }}
+          fail-on-cache-miss: true
+      - name: Work on the runner's larger disk
+        run: sudo mkdir -p /mnt/w/tmp && sudo chown -R "$USER" /mnt/w
+      # The pre-slim build's harness keeps its store and stops after the
+      # ingest: its answers are not what is compared.
+      - name: A store written by the pre-slim build
+        working-directory: pre/fibre-sentinel
+        env:
+          TMPDIR: /mnt/w/tmp
+          GOTOOLCHAIN: auto
+          TENSILE_GOLDEN_OUT: /mnt/w/pre
+          TENSILE_GOLDEN_NOW: ${{ inputs.through }}T23:59:59Z
+          TENSILE_GOLDEN_KEEP_DB: "1"
+        run: |
+          node -e '
+            const fs = require("fs"), f = "observer/api/golden_test.go";
+            let s = fs.readFileSync(f, "utf8");
+            const a = "\tt.Logf(\"ingested in %s\", time.Since(start).Round(time.Millisecond))\n";
+            if (!s.includes(a)) throw new Error("no ingest line to stop after");
+            s = s.replace(a, a + "\tif _, err := st.DB().Exec(\"PRAGMA wal_checkpoint(TRUNCATE)\"); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tif _, err := st.DB().Exec(\"VACUUM INTO ?\", filepath.Join(out, \"observer.db\")); err != nil {\n\t\tt.Fatal(err)\n\t}\n\treturn\n");
+            fs.writeFileSync(f, s);
+          '
+          mkdir -p /mnt/w/pre
+          export TENSILE_GOLDEN_EXPORTS=$(ls -d "$GITHUB_WORKSPACE"/record/days/* | sort | paste -sd, -)
+          go test -count=1 -run TestGoldenAnswers -timeout 120m -v ./observer/api/ 2>&1 | grep -E "ingested|^(ok|FAIL|---)|panic"
+          ls -la /mnt/w/pre
+      - name: Convert it with head
+        working-directory: head/fibre-sentinel
+        env:
+          TMPDIR: /mnt/w/tmp
+          TENSILE_BACKFILL_DB: /mnt/w/pre/observer.db
+          TENSILE_BACKFILL_OUT: /mnt/w/backfill.json
+        run: |
+          go test -count=1 -run TestSlimBackfillOfARealStore -timeout 150m -v ./observer/store/ 2>&1 | tail -40
+          cat /mnt/w/backfill.json
+      - name: Head's answers over the converted store
+        working-directory: head/fibre-sentinel
+        env:
+          TMPDIR: /mnt/w/tmp
+          TENSILE_GOLDEN_OUT: /mnt/w/upgraded
+          TENSILE_GOLDEN_NOW: ${{ inputs.through }}T23:59:59Z
+          TENSILE_GOLDEN_DB: /mnt/w/pre/observer.db
+        run: |
+          sed -i 's/for i := 0; i < 5; i++ {/for i := 0; i < 0; i++ {/' observer/api/golden_test.go
+          go build -o /mnt/w/recompute ./cmd/sentinel-recompute
+          export TENSILE_GOLDEN_RECOMPUTE=/mnt/w/recompute
+          export TENSILE_GOLDEN_EXPORTS=$(ls -d "$GITHUB_WORKSPACE"/record/days/* | sort | paste -sd, -)
+          mkdir -p /mnt/w/upgraded
+          go test -count=1 -run TestGoldenAnswers -timeout 180m -v ./observer/api/ 2>&1 | grep -E "ingested|answers written|recompute|^(ok|FAIL|---)|panic"
+      - uses: actions/download-artifact@v4
+        with:
+          name: answers-head
+          path: /mnt/w/head
+      - name: Compare with head's answers from a fresh store
+        run: |
+          echo "## Converted pre-slim store vs a fresh store, both answered by head" >> "$GITHUB_STEP_SUMMARY"
+          node head/.github/scripts/golden-compare.mjs /mnt/w/head /mnt/w/upgraded /mnt/w/backfill-report.json | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"; cat /mnt/w/backfill.json >> "$GITHUB_STEP_SUMMARY"; echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backfill-report
+          path: |
+            /mnt/w/backfill.json
+            /mnt/w/backfill-report.json
+          retention-days: 14
