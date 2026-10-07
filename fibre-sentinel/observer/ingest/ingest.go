@@ -407,6 +407,18 @@ type chainGuard struct {
 	refTime   time.Time
 }
 
+// knownValidatorSQL is the guard's validator test: in the staking set, in
+// the endpoint history, or reached by this observer's own heartbeat. Each
+// EXISTS is one index seek, the last on reachability_validator_time: with a
+// bare "vantage = ?" the planner, with no statistics (the store never runs
+// ANALYZE), picks reachability_vantage instead and walks every own row for
+// a validator it does not find, which is the case the guard is for, and the
+// refused row is checked again on every pass until the file is removed.
+// The "+" keeps the vantage test off any index.
+const knownValidatorSQL = `SELECT EXISTS (SELECT 1 FROM validator_identities WHERE cons_address = ?)
+	OR EXISTS (SELECT 1 FROM endpoints WHERE validator_cons_address = ?)
+	OR EXISTS (SELECT 1 FROM reachability WHERE validator_address = ? AND +vantage = ?)`
+
 // minBlockInterval and maxLag set the height window (see chainGuard).
 // Celestia's blocks are about six seconds apart on both networks.
 const (
@@ -430,9 +442,7 @@ func (g *chainGuard) check(m probe.Measurement) error {
 		var ok bool
 		// One short query per validator per file per pass, read whole
 		// before anything else uses the store's one connection.
-		if err := g.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM validator_identities WHERE cons_address = ?)
-			OR EXISTS (SELECT 1 FROM endpoints WHERE validator_cons_address = ?)
-			OR EXISTS (SELECT 1 FROM reachability WHERE validator_address = ? AND vantage = ?)`, addr, bech, addr, g.own).Scan(&ok); err != nil {
+		if err := g.db.QueryRow(knownValidatorSQL, addr, bech, addr, g.own).Scan(&ok); err != nil {
 			return fmt.Errorf("chain check: %w", err)
 		}
 		if !ok {
