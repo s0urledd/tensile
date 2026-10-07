@@ -158,6 +158,9 @@ type Server struct {
 	// mergeDaysDefault.
 	histCacheMB int
 	mergeDays   int
+	// hs is what /v1/health remembers between calls: the API's own 5xx
+	// answers among it (health_checks.go, health_errors.go).
+	hs healthState
 }
 
 // withMergeDays has windows of more than n sealed days ranked in bounded
@@ -452,12 +455,16 @@ func (s *Server) keepDerived(ctx context.Context) error {
 	return errors.Join(err, s.recent.save(ctx, s.st.DB(), true))
 }
 
-// Close waits for the server's background work (snapshot warm-ups and
-// refreshes, the blob-page warm-up) to finish, so that nothing is still
-// writing under the data directory once the caller tears it down. It does
-// not stop the HTTP side; the caller's listener does that.
+// Close stops the server's background work (the keepers, the sealer, the
+// snapshot computations in flight, which it cancels) and waits for it to
+// end, so that nothing still queries the store or writes under the data
+// directory once the caller closes or removes them. It does not stop the
+// HTTP side: the caller shuts its listener down first.
 func (s *Server) Close() {
 	s.stopOnce.Do(func() { close(s.stop) })
+	s.net.stop()
+	s.vals.stop()
+	s.market.stop()
 	s.bg.Wait()
 	s.net.wait()
 	s.vals.wait()
@@ -498,7 +505,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = rc.SetWriteDeadline(time.Now().Add(writeDeadlineFor(r.URL.Path)))
 	}
 	rec := &statusWriter{ResponseWriter: w}
+	// A 5xx answer, or a panic (which net/http answers by dropping the
+	// connection), is counted for /v1/health's api_errors check
+	// (health_errors.go); the mux has set the route's pattern on r by then.
+	// One written after the reader went away (its request's context ended,
+	// so the query under it failed) reached nobody and is not the API's
+	// failure.
+	defer func() {
+		if p := recover(); p != nil {
+			if p != http.ErrAbortHandler {
+				s.hs.errs.note(routeOf(r), http.StatusInternalServerError, time.Now())
+			}
+			panic(p)
+		}
+	}()
 	s.mux.ServeHTTP(rec, r)
+	if countsAsError(rec.status) && r.Context().Err() == nil {
+		s.hs.errs.note(routeOf(r), rec.status, time.Now())
+	}
 }
 
 // statusWriter sets Cache-Control from the status code as the handler writes
@@ -507,6 +531,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type statusWriter struct {
 	http.ResponseWriter
 	wrote bool
+	// status is the code the handler answered with, 0 before it wrote.
+	status int
 	// swallow is set when this writer supplied the body itself (the JSON 404
 	// in place of ServeMux's text/plain one), so the handler's own bytes are
 	// dropped instead of being appended to it.
@@ -517,7 +543,7 @@ func (w *statusWriter) WriteHeader(status int) {
 	if w.wrote {
 		return
 	}
-	w.wrote = true
+	w.wrote, w.status = true, status
 	switch {
 	case status == http.StatusNotModified || status == http.StatusPartialContent:
 		// Neither is an error, and a 304's headers update the cache entry it
@@ -808,8 +834,8 @@ type metaResponse struct {
 	// hour, this observer's own and any other vantage's copied in beside it,
 	// each with its newest row, in name order. Only this observer's rows are
 	// counted in the figures; another's confirm or contradict a failed check.
-	// No health check covers a second vantage, so this is where its
-	// heartbeats are seen to arrive.
+	// /v1/health's vantages check fails when a second vantage's rows stop
+	// arriving; this is where they are seen to arrive.
 	Vantages []vantageSeen `json:"vantages"`
 
 	// AppVersion is the chain's current application version, and FibreActive
@@ -833,15 +859,9 @@ type metaResponse struct {
 	// signal of it; a quiet chain makes it old without anything being wrong.
 	LastProbeAt *string   `json:"last_probe_at"`
 	ServerTime  time.Time `json:"server_time"`
-	// Health is the verdict /v1/health returns: ok, degraded or down.
-	Health string `json:"health"`
-	// Checks is every row behind Health, the same list /v1/health serves.
-	// Health alone told the site that something was wrong, and nothing told
-	// it about a check that is not a process — a chain that stopped producing
-	// blocks, a scan gap, a stale pin — so the site announced "degraded" with
-	// nothing after the colon, on the one day (an upgrade halt) when everyone
-	// was looking.
-	Checks []healthCheck `json:"checks"`
+	// The observer's health verdict and its checks are /v1/health's alone.
+	// The site shows nothing of them unless the API does not answer, and a
+	// copy here ran every check on every page view.
 	// ScanGaps are height ranges the scanner could not read from its node,
 	// or that the operator told it to skip (-skip-heights; Reason says which).
 	// A publication in one of them is unknown to this observer.
@@ -1091,7 +1111,6 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	if err := s.st.DB().QueryRowContext(ctx, `SELECT MAX(started_at) FROM probes`).Scan(&lp); err == nil && lp.Valid {
 		lastProbe = &lp.String
 	}
-	h := s.health(ctx, now)
 	var ranges []paramUncertainty
 	if us, err := s.st.ParamRanges(ctx); err == nil {
 		for _, u := range us {
@@ -1107,7 +1126,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		Vantages:   s.recentVantages(ctx, now),
 		AppVersion: meta["app_version"], FibreAppVersion: meta["fibre_app_version"], FibreActive: meta["fibre_active"] == "yes",
 		ChainHeight: meta["chain_height"], Counts: counts, LastProbeAt: lastProbe, ServerTime: now.UTC(),
-		Health: h.Status, Checks: h.Checks, ScanGaps: h.ScanGaps, ParamUncertainty: ranges, PinStatus: h.PinStatus,
+		ScanGaps: s.scanGaps(ctx), ParamUncertainty: ranges, PinStatus: pinStatus(meta["app_version"]),
 		UpgradeSignal: signal,
 	})
 }
