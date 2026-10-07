@@ -1,6 +1,6 @@
 // recheck.ts (npm test; node --test): when the overview's recent blobs ask again for a status they hold, so a blob
-// Tensile read as available is never worded "not read" because the grid read it before its reading. The module is
-// TypeScript with type imports only, so the test compiles it with the project's own TypeScript.
+// Tensile read as available is not left worded "not read" because the grid read it before its reading was stored. The
+// module is TypeScript with type imports only, so the test compiles it with the project's own TypeScript.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -26,20 +26,35 @@ test("a pending status read hours before the window's end is asked again after t
   const again = END - 8 * MIN + 500;
   assert.equal(recheck(blob("pending"), again, END - 3 * MIN), false);
   assert.equal(recheck(blob("pending"), again, END - 2 * MIN), true, "2 minutes before the end, while the word is still 'retention window'");
-  // asked then too: nothing more, whatever the API answered
-  assert.equal(recheck(blob("pending"), END - 2 * MIN + 500, END + 60 * MIN), false);
 });
 
-test("a page that slept through both checks asks once when it looks again", () => {
+test("a reading the collector stores late is asked for after the window's end, pending or not_read", () => {
+  // the check 2 minutes before the end still found it pending: the collector is behind
+  const late = END - 2 * MIN + 500;
+  assert.equal(recheck(blob("pending"), late, END + 2 * MIN), false, "the window has just ended; the first check after it is at 3 minutes");
+  assert.equal(recheck(blob("pending"), late, END + 5 * MIN), true, "lane() words it 'not read' now: asked again");
+  // the API answered not_read 3 minutes after the end: the reading is not in yet
+  const after = END + 3 * MIN + 500;
+  assert.equal(recheck(blob("not_read"), after, END + 14 * MIN), false);
+  assert.equal(recheck(blob("not_read"), after, END + 15 * MIN), true, "15 minutes after the end, once more");
+  // asked then too: nothing more, whatever the API answered
+  assert.equal(recheck(blob("not_read"), END + 15 * MIN + 500, END + 6 * 60 * MIN), false);
+  assert.equal(recheck(blob("pending"), END + 15 * MIN + 500, END + 6 * 60 * MIN), false);
+});
+
+test("a page that slept through the checks asks once when it looks again", () => {
   assert.equal(recheck(blob("pending"), END - 3 * 60 * MIN, END + 2 * 60 * MIN), true);
   assert.equal(recheck(blob(null), END - 3 * 60 * MIN, END + 2 * 60 * MIN), true, "no status at all is no answer either");
 });
 
 test("a status the API answers for good is never asked again", () => {
-  for (const s of ["yes", "no", "not_read", "unknown"]) assert.equal(recheck(blob(s), END - 3 * 60 * MIN, END + MIN), false, s);
+  for (const s of ["yes", "no", "unknown"]) {
+    assert.equal(recheck(blob(s), END - 3 * 60 * MIN, END - 8 * MIN), false, s);
+    assert.equal(recheck(blob(s), END - 3 * 60 * MIN, END + 60 * MIN), false, s);
+  }
 });
 
 test("a blob read after the checks holds what the API said then", () => {
-  assert.equal(recheck(blob("pending"), END - MIN, END + 10 * MIN), false);
+  assert.equal(recheck(blob("not_read"), END + 16 * MIN, END + 60 * MIN), false);
   assert.equal(recheck({ must_serve_until: "", reconstructable: { status: "pending" } }, 0, END), false, "no window end, no check");
 });

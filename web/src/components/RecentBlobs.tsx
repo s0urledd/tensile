@@ -55,7 +55,9 @@ import { recheck } from "@/lib/recheck";
  * fills the gap. A square's status is its blob's as the read that brought it
  * found it; a blob still in its retention window then is asked for again,
  * with the whole grid, once its reading is in and once more before its window
- * ends (lib/recheck.ts), so a blob Tensile read is never worded "not read".
+ * ends, and twice after the end while the API has no result for it, for a
+ * reading the collector stores late (lib/recheck.ts), so a blob Tensile read
+ * is not left worded "not read".
  */
 
 const COLS = 10, ROWS = 5, CELLS = COLS * ROWS;
