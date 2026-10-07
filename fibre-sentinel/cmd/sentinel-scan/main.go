@@ -22,13 +22,14 @@ import (
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
 )
 
 func main() {
 	var (
 		rpc         = flag.String("rpc", "http://127.0.0.1:26657", "CometBFT RPC endpoint")
 		dataDir     = flag.String("data-dir", "./sentinel-data", "directory for state.json + publications.jsonl")
-		startHeight = flag.Int64("start-height", 0, "fresh-scan start height (0 = tip at startup); ignored on resume")
+		startHeight = flag.Int64("start-height", 0, "fresh-scan start height (0 = tip at startup); ignored on resume. It must lie a promise window (PaymentPromiseHeightWindow) above the node's oldest block: a lower one is refused, and a scan from the tip waits until the node holds that many blocks")
 		maxHeight   = flag.Int64("max-height", 0, "stop after this height (0 = run to tip)")
 		follow      = flag.Bool("follow", false, "keep scanning new blocks after reaching the tip")
 		followTO    = flag.Duration("follow-timeout", 0, "in follow mode, fail if no new block within this (0 = never; a halted chain is warned about every 5 minutes)")
@@ -62,6 +63,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("-skip-heights: %v", err)
 	}
+
+	// The scanner completes a cycle per block, seconds apart, and so states
+	// a minute as its cadence; /v1/health fails it once its last completed
+	// block is a few of these old while the chain has newer ones.
+	status.SetDefault(status.CadenceKey, 60)
 
 	runCfg := map[string]any{}
 	flag.VisitAll(func(f *flag.Flag) { runCfg[f.Name] = f.Value.String() })

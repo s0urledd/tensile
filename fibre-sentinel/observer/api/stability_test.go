@@ -190,16 +190,17 @@ type rateJSON struct {
 	Value *float64 `json:"value"`
 }
 
-// stabilityValidators reads every validator's reachability from the list,
-// and the rest from its row: the fixture's addresses are not ones the
-// validator page takes, and the list leaves out the attestation, the last
-// failed handshake, the reading tally and the certificate rate.
+// stabilityValidators reads every listed validator from its row: the
+// fixture's addresses are not ones the validator page takes, and the list
+// leaves out the attestation, the last failed handshake, the reading tally,
+// the certificate rate and the heartbeat rate, which only the validator
+// page shows.
 func stabilityValidators(t *testing.T, ts *httptest.Server, st *store.Store) map[string]stabilityValidator {
 	t.Helper()
 	var resp struct {
 		Validators []struct {
-			Address string   `json:"address"`
-			Uptime  rateJSON `json:"reachability_window"`
+			Address string    `json:"address"`
+			Uptime  *rateJSON `json:"reachability_window"`
 		} `json:"validators"`
 	}
 	if code := get(t, ts, "/v1/validators?window=all", &resp); code != 200 {
@@ -219,8 +220,8 @@ func stabilityValidators(t *testing.T, ts *httptest.Server, st *store.Store) map
 		if !ok {
 			t.Fatalf("%s is listed but has no row", l.Address)
 		}
-		if v.Uptime.Num != l.Uptime.Num || v.Uptime.Den != l.Uptime.Den {
-			t.Fatalf("%s: listed reachability %+v, row %+v", l.Address, l.Uptime, v.Uptime)
+		if l.Uptime != nil {
+			t.Fatalf("%s: the list carries the heartbeat rate %+v, which only the validator page shows", l.Address, *l.Uptime)
 		}
 		out[l.Address] = v
 	}

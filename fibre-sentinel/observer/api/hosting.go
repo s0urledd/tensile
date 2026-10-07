@@ -83,20 +83,24 @@ type hostingSources struct {
 }
 
 // hostingDBOut is one data file's provenance, without where it lies on the
-// collector's host.
+// collector's host. Modified is when the file was last written, as the
+// collector found it on its last lookup: the databases are refreshed
+// monthly (fibre-hosting-db@.timer), and an address that moved since the
+// file's date is attributed to where it was.
 type hostingDBOut struct {
 	Name        string `json:"name"`
 	URL         string `json:"url"`
 	License     string `json:"license"`
 	LicenseURL  string `json:"license_url"`
 	Attribution string `json:"attribution,omitempty"`
+	Modified    string `json:"modified,omitempty"`
 }
 
 func hostingDBOf(d *hosting.DBSource) *hostingDBOut {
 	if d == nil {
 		return nil
 	}
-	return &hostingDBOut{Name: d.Name, URL: d.URL, License: d.License, LicenseURL: d.LicenseURL, Attribution: d.Attribution}
+	return &hostingDBOut{Name: d.Name, URL: d.URL, License: d.License, LicenseURL: d.LicenseURL, Attribution: d.Attribution, Modified: d.Modified}
 }
 
 func hostingSourcesOf(s hosting.Sources) hostingSources {

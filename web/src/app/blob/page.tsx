@@ -458,7 +458,8 @@ function Page() {
         </div>
 
       </section>
-      <StatusLine meta={meta} metaError={metaErr} snap={null} client={{ error: d.error, fetchedAt: d.fetchedAt }} />
+      {/* the blob on screen is the last answer that came, whatever failed since: the notice says so, from when */}
+      <StatusLine meta={meta} metaError={metaErr} snap={{}} client={{ error: d.error, fetchedAt: d.fetchedAt, status: d.status }} />
 
       {/* who and where beside what it weighed and what Tensile found: two light frames of the same make and height */}
       <div className="bd-top">{facts}{figs}</div>

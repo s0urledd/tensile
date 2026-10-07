@@ -232,7 +232,7 @@ func (s *sim) pruneLikeBefore() {
 	for days := 0; days < 3 && !from.After(rolled) && from.Before(cut); days++ {
 		lo, hi := store.TS(from), store.TS(from.Add(24*time.Hour-time.Nanosecond))
 		day := from.Format(dayLayout)
-		for _, table := range []string{"probes", "reachability", "probe_confirmations"} {
+		for _, table := range []string{"probes", "reachability"} {
 			if _, err := db.Exec(`DELETE FROM `+table+` WHERE started_at >= ? AND started_at <= ?`, lo, hi); err != nil {
 				s.t.Fatal(err)
 			}

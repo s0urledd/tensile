@@ -49,18 +49,16 @@ var dayReadableSQL = `SELECT COUNT(*) FROM publications
 // hold whole, per validator and original_rows: the in-window half of
 // loadSQL's population over the span, narrowed by its height range, read as
 // the exact integers loadBytes forms the sum from. ?1 and ?2 are the span's
-// bounds, ?3 and ?4 its height range, ?5 the memo's JSON (loadSQL's ?4);
-// filter narrows it to one validator (?6).
+// bounds, ?3 and ?4 its height range; filter narrows it to one validator
+// (?5).
 //
 // The load bytes are split into row_count times the high and low twenty
 // bits of blob_size, so the integer sums cannot overflow however many
 // assignments a group holds.
 func loadSpanSQL(filter string) string {
-	return `WITH m AS MATERIALIZED (SELECT key AS promise_hash, value AS original_rows FROM json_each(?5)),
-		pb AS MATERIALIZED (
-			SELECT p.promise_hash, p.blob_size,
-				` + origSQL + ` AS orig
-			FROM publications p LEFT JOIN m ON m.promise_hash = p.promise_hash
+	return `WITH pb AS MATERIALIZED (
+			SELECT p.promise_hash, p.blob_size, p.original_rows AS orig
+			FROM publications p
 			WHERE p.settlement_time >= ?1 AND p.settlement_time <= ?2 AND p.settlement_height >= ?3 AND p.settlement_height <= ?4
 			  AND p.settlement_tx_code = 0 AND p.assignment_error = '')
 		SELECT a.validator_address, pb.orig, COUNT(*), COALESCE(SUM(a.row_count), 0),
@@ -71,22 +69,16 @@ func loadSpanSQL(filter string) string {
 		GROUP BY a.validator_address, pb.orig`
 }
 
-// origSQL is original_rows as rowBytesSQL reads it: the memo's entry (m)
-// when it has one, the record's own otherwise.
-const origSQL = `CASE WHEN m.promise_hash IS NOT NULL THEN m.original_rows
-					ELSE p.original_rows END`
-
 // loadHeldSQL is loadSQL's other half, what each validator holds at ?3, over
 // its own population: the held publications only (heldSQL), read through
 // publications_msu. The float sum is loadSQL's, over the same terms in the
 // same order (ORDER BY a.rowid; a term of a publication not held was NULL
-// there, and SUM skips a NULL), so the result is the same bits. ?4 is the
-// memo's JSON; filter narrows it to one validator (?5).
+// there, and SUM skips a NULL), so the result is the same bits. filter
+// narrows it to one validator (?4).
 func loadHeldSQL(filter string) string {
-	return `WITH m AS MATERIALIZED (SELECT key AS promise_hash, value AS original_rows FROM json_each(?4)),
-		pb AS MATERIALIZED (
+	return `WITH pb AS MATERIALIZED (
 			SELECT p.promise_hash, ` + rowBytesSQL + ` AS rb
-			FROM publications p LEFT JOIN m ON m.promise_hash = p.promise_hash
+			FROM publications p
 			WHERE p.settlement_tx_code = 0 AND p.assignment_error = '' AND ` + heldSQL + `)
 		SELECT a.validator_address,
 			COALESCE(CAST(SUM(a.row_count * pb.rb ORDER BY a.rowid) AS INTEGER), 0)
@@ -94,10 +86,6 @@ func loadHeldSQL(filter string) string {
 		WHERE a.row_count > 0 AND a.attested = 1` + filter + `
 		GROUP BY a.validator_address`
 }
-
-// loadHeldPopulationSQL selects the publications loadHeldSQL reads, for the
-// memo (originalRowsMemo.docWhere). Its argument is ?3 of heldSQL.
-const loadHeldPopulationSQL = `p.settlement_tx_code = 0 AND p.assignment_error = '' AND ` + heldSQL
 
 // ---- the ledger: publications folded in by rowid ----
 
@@ -118,13 +106,10 @@ const ledgerSigningSQL = `SELECT substr(p.settlement_time, 1, 10), a.validator_a
 	GROUP BY 1, 2`
 
 // ledgerLoadSQL is loadSpanSQL over the publications with a rowid in
-// (?1, ?2], per settlement day, validator and original_rows. ?3 is the
-// memo's JSON.
-const ledgerLoadSQL = `WITH m AS MATERIALIZED (SELECT key AS promise_hash, value AS original_rows FROM json_each(?3)),
-	pb AS MATERIALIZED (
-		SELECT p.promise_hash, p.blob_size, p.settlement_time,
-			` + origSQL + ` AS orig
-		FROM publications p LEFT JOIN m ON m.promise_hash = p.promise_hash
+// (?1, ?2], per settlement day, validator and original_rows.
+const ledgerLoadSQL = `WITH pb AS MATERIALIZED (
+		SELECT p.promise_hash, p.blob_size, p.settlement_time, p.original_rows AS orig
+		FROM publications p
 		WHERE p.rowid > ?1 AND p.rowid <= ?2 AND p.settlement_tx_code = 0 AND p.assignment_error = '')
 	SELECT substr(pb.settlement_time, 1, 10), a.validator_address, pb.orig, COUNT(*), COALESCE(SUM(a.row_count), 0),
 		COALESCE(SUM(a.row_count * (pb.blob_size >> 20)), 0), COALESCE(SUM(a.row_count * (pb.blob_size & 1048575)), 0),

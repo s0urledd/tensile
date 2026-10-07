@@ -109,8 +109,12 @@ func TestHealthReadsStatusFiles(t *testing.T) {
 	if ok, detail, found := check(h, "scanner_lag"); !found || ok {
 		t.Fatalf("scanner 900 blocks behind must fail scanner_lag: found=%v ok=%v %s", found, ok, detail)
 	}
-	if _, detail, found := check(h, "disk"); !found || detail == "" {
-		t.Fatal("disk check missing") // its verdict depends on the machine
+	// The disk check's verdict depends on the machine, and a platform
+	// without statfs measures no disk at all.
+	reports, _ := status.ReadAll(dir)
+	measured := len(reports) > 0 && reports[0].Disk != nil
+	if _, detail, found := check(h, "disk"); found != measured || (found && !strings.HasSuffix(detail, "% free")) {
+		t.Fatalf("disk check: found=%v with the disk measured=%v: %q", found, measured, detail)
 	}
 	if h.PinStatus != "matches" {
 		t.Fatalf("pin status with app_version 10: %s", h.PinStatus)
@@ -125,16 +129,16 @@ func TestHealthReadsStatusFiles(t *testing.T) {
 		t.Fatalf("components: %+v", h.Components)
 	}
 
-	// /v1/meta carries the same verdict.
+	// /v1/meta carries the pin status, and no copy of the verdict.
 	var meta struct {
-		Health    string `json:"health"`
-		PinStatus string `json:"pin_status"`
+		Health    *string `json:"health"`
+		PinStatus string  `json:"pin_status"`
 	}
 	if code := get(t, ts, "/v1/meta", &meta); code != 200 {
 		t.Fatalf("meta: %d", code)
 	}
-	if meta.Health != "degraded" || meta.PinStatus != "matches" {
-		t.Fatalf("meta: %+v", meta)
+	if meta.Health != nil || meta.PinStatus != "matches" {
+		t.Fatalf("meta: health %v, pin %s", meta.Health, meta.PinStatus)
 	}
 
 	// Chain ahead of the pin is a health failure with a named check.

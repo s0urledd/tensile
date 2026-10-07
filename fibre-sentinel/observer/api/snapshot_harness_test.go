@@ -108,26 +108,20 @@ func TestSnapshotHarness(t *testing.T) {
 	s.clock = func() time.Time { return now }
 	ctx := context.Background()
 	if state != "" {
-		// What a start costs before the first figure: the memo for every
-		// publication "all" reads, and the ledger for every assignment.
+		// What a start costs before the first figure: the ledger for every
+		// assignment.
 		t0 := time.Now()
-		all := windowFor("all", now)
-		if _, err := s.origRows.doc(ctx, st.DB(), all.startArg(), all.endArg(), store.TS(now)); err != nil {
-			t.Fatal(err)
-		}
 		if err := s.recent.fill(ctx, st.DB(), "", map[string]signingStats{}); err != nil {
 			t.Fatal(err)
 		}
-		t.Logf("memo and ledger up to date in %.3fs", time.Since(t0).Seconds())
-		t.Logf("memo: %s", s.origRows.origin)
+		t.Logf("ledger up to date in %.3fs", time.Since(t0).Seconds())
 		t.Logf("ledger: %s", s.recent.origin)
-		if want := os.Getenv("TENSILE_SNAPSHOT_EXPECT"); want != "" &&
-			(!strings.HasPrefix(s.origRows.origin, want) || !strings.HasPrefix(s.recent.origin, want)) {
-			t.Errorf("the memo and the ledger were to be %s", want)
+		if want := os.Getenv("TENSILE_SNAPSHOT_EXPECT"); want != "" && !strings.HasPrefix(s.recent.origin, want) {
+			t.Errorf("the ledger was to be %s", want)
 		}
 		defer func() {
 			if err := s.keepDerived(ctx); err != nil {
-				t.Errorf("keeping the memo and the ledger: %v", err)
+				t.Errorf("keeping the ledger: %v", err)
 			}
 		}()
 	}

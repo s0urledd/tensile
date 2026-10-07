@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -104,6 +105,12 @@ func TestGoldenAnswers(t *testing.T) {
 	// the server as observer-api builds it (its routes, its keepers), its clock fixed before anything starts
 	srv := NewWithVantage(st, VantageInfo{Name: "ut-1"}, nil, withClock(func() time.Time { return now }))
 	defer srv.Close()
+	// The readings memo is built a slice at a time across market refreshes and is nil until its first full
+	// computation lands, so whether an answer carries reading counts would depend on how fast the machine is (two
+	// runs of one build differed on GitHub's runners): built to the end before anything is asked.
+	if err := srv.readings.update(ctx, srv, 0); err != nil {
+		t.Fatalf("readings: %v", err)
+	}
 
 	reqs := goldenRequests(t, st, now)
 	if err := os.MkdirAll(filepath.Join(out, "answers"), 0o755); err != nil {
@@ -189,8 +196,11 @@ func goldenAsk(srv *Server, r string) (status int, body []byte, ctype string, fi
 			first = time.Since(t0)
 		}
 		b, _ := io.ReadAll(rec.Result().Body)
-		// 503: a snapshot the server builds on first demand; 429: the ration of pinned and excluding windows
-		busy := rec.Code == http.StatusServiceUnavailable || rec.Code == http.StatusTooManyRequests
+		// 503: a snapshot the server builds on first demand; 429: the ration of pinned and excluding windows;
+		// publishers whose reading counts the readings memo has not computed yet (null until it has, as on a
+		// live API just restarted): asked again, so two runs never differ by how fast the memo was
+		busy := rec.Code == http.StatusServiceUnavailable || rec.Code == http.StatusTooManyRequests ||
+			(rec.Code == http.StatusOK && strings.HasPrefix(r, "/v1/publishers") && bytes.Contains(b, []byte(`"readings":null`)))
 		if !busy || time.Now().After(deadline) {
 			return rec.Code, b, rec.Header().Get("Content-Type"), first
 		}

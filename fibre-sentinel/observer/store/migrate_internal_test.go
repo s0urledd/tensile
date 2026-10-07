@@ -235,7 +235,8 @@ func TestReadOnlyRefusesNewerSchema(t *testing.T) {
 // added tables, columns or indexes. So a migration whose statements wrote a
 // row moves MetaMigrationRewrites, in its own transaction, and no other
 // does: not one that only adds, nor a backfill with nothing to rewrite, as
-// over a new store.
+// over a new store, nor one that writes a note in meta (migration 28 did, and
+// the count it moved made every API rebuild its partials for nothing).
 func TestMigrationsThatRewriteRowsAreCounted(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "o.db"))
 	if err != nil {
@@ -262,6 +263,16 @@ func TestMigrationsThatRewriteRowsAreCounted(t *testing.T) {
 		{migration{version: 903, note: "rows", stmts: []string{`INSERT INTO t_added (x) VALUES (1), (2)`}}, "1"},
 		{migration{version: 904, note: "a backfill", stmts: []string{`ALTER TABLE t_added ADD COLUMN y INTEGER`, `UPDATE t_added SET y = x`}}, "2"},
 		{migration{version: 905, note: "a column", stmts: []string{`ALTER TABLE t_added ADD COLUMN z INTEGER`}}, "2"},
+		{migration{version: 906, note: "a meta note", stmts: []string{
+			`INSERT INTO meta (key, value, updated_at) SELECT 'note_906', MAX(x), '2026-10-07T00:00:00.000000000Z' FROM t_added WHERE 1
+			 ON CONFLICT(key) DO NOTHING`,
+			`INSERT OR REPLACE INTO meta (key, value, updated_at) VALUES ('note_906b', '1', '2026-10-07T00:00:00.000000000Z')`,
+			`UPDATE meta SET value = '2' WHERE key = 'note_906b'`,
+		}}, "2"},
+		{migration{version: 907, note: "a meta note beside a backfill", stmts: []string{
+			`INSERT INTO meta (key, value, updated_at) VALUES ('note_907', '1', '2026-10-07T00:00:00.000000000Z')`,
+			`UPDATE t_added SET z = x`,
+		}}, "3"},
 	} {
 		if err := st.applyMigration(c.m); err != nil {
 			t.Fatal(err)

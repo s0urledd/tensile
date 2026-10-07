@@ -23,7 +23,6 @@ export type ClassCounts = Record<string, number>;
 
 /** /v1/meta: the chain and observer state the header, banners and footer read */
 export type Meta = {
-  api_version: string;
   /** the rules every figure was computed under (a date); see the methodology page */
   methodology_version?: string;
   /**
@@ -254,6 +253,21 @@ export type Validator = {
    */
   confirmed_from?: string;
   also_failed_from?: string;
+  last_reachable_at: string | null;
+  /** one per (validator, blob) endorsed, judged on the validator's own answers at the blob's reading; the headline */
+  obligations: Obligations;
+  /** the part of obligations.broken whose faults are all still settling; absent when none (see ProvisionalFaults) */
+  provisional_faults?: ProvisionalFaults;
+  /** signing participation over the period: see lib/signing.ts. Descriptive, never a fault. */
+  signing?: Signing;
+  /** the shard data it stored and endorsed in the period (from the chain); what it holds now is on its page (DetailLoad) */
+  load?: Load;
+  /** network and country the open endpoint resolved into, from this vantage; absent when the lookup is off */
+  hosting?: import("./hosting").Hosting;
+};
+
+/** the validator object of /v1/validators/{addr}: the list's fields and what only its page shows */
+export type ValidatorDetail = Validator & {
   /**
    * How often this observer completed a TLS conversation with the endpoint
    * over the window, from the five-minute handshake. The one stability figure
@@ -262,21 +276,8 @@ export type Validator = {
    * still gets 288 samples a day.
    */
   reachability_window: Rate;
-  last_reachable_at: string | null;
-  /** one per (validator, blob) endorsed, judged on the validator's own answers at the blob's reading; the headline */
-  obligations: Obligations;
-  /** the part of obligations.broken whose faults are all still settling; absent when none (see ProvisionalFaults) */
-  provisional_faults?: ProvisionalFaults;
-  /** signing participation over the period: see lib/signing.ts. Descriptive, never a fault. */
-  signing?: Signing;
-  /** the shard data it stored and endorsed in the period and what it holds now (from the chain) */
-  load?: Load;
-  /** network and country the open endpoint resolved into, from this vantage; absent when the lookup is off */
-  hosting?: import("./hosting").Hosting;
-};
-
-/** the validator object of /v1/validators/{addr}: the list's fields and what only its page shows */
-export type ValidatorDetail = Validator & {
+  /** the list's load, with what it holds now and its rows per blob */
+  load?: DetailLoad;
   website?: string;
   endpoint_since: string | null;
   /** when it first appeared in x/valaddr's bonded Fibre provider list, whatever host it had then */
@@ -300,7 +301,10 @@ export type ValidatorDetail = Validator & {
   timeouts_enforced?: number;
 };
 
-/** one of a validator's newest readings, as its page lists them */
+/**
+ * one of a validator's newest readings, as its page lists them; the evidence the page does not show (the reason, the
+ * first attempt's outcome, the gRPC code, the shadowing promise, the host at settlement) is /v1/probes' (Probe)
+ */
 export type ValidatorReading = {
   vantage: string;
   promise_hash: string;
@@ -313,19 +317,12 @@ export type ValidatorReading = {
   phase: string;
   outcome: string;
   classification: string;
-  classification_reason: string;
   rows_returned: number;
   rows_expected: number;
   total_duration_ms: number;
   raw_error?: string;
-  retry_first_outcome?: string;
-  rpc_code?: string;
-  shadowed_by?: string;
-  /** where the upload went; host_changed when the host read differs (the validator re-registered during the window) */
-  host_at_settlement?: string;
   /** when the blob settled, which is when the validator endorsed it; absent from an API before it was named */
   settled_at?: string;
-  host_changed?: boolean;
   /**
    * what this request counts as for the validator: served; not_served (at a full reading, its last answer when none
    * served and none was Tensile's own gap or rows of the blob not its own; at an earlier one, rows that did not come
@@ -441,8 +438,6 @@ export type Reconstruct = {
   needed_rows: number;
   /** the blob's encoded row count (16384 for blob v0) */
   total_rows: number;
-  /** validators whose rows came back verified */
-  served_by_validators: number;
   /**
    * validators the reading asked (a request of Tensile's own that failed or could not be made asks no one): at a full
    * reading the endorsing validators, and only those; at a reading before FULL_READ_SINCE, endorsing or not, most of
@@ -474,7 +469,8 @@ export type Blob = {
   /** the promise's blob version, the first byte of the client's blob ID; absent from an API before it was published */
   blob_version?: number;
   settlement_time: string;
-  creation_timestamp: string;
+  /** the promise's creation time, which must_serve_until counts from: on /v1/blobs/{hash} only */
+  creation_timestamp?: string;
   must_serve_until: string;
   validators_with_rows: number;
   assignment_error?: string;
@@ -622,10 +618,8 @@ export function askedTimes(n: number): string {
  */
 export type Charge = {
   fee_utia: number;
-  gas_units: number;
   settled: boolean;
   timed_out: boolean;
-  processor?: string;
 };
 
 /** a count and a total in utia, the shape every money figure takes */
@@ -639,22 +633,7 @@ export function blobFee(f: PriceFormula, size: number): number {
   return (f.base_gas + f.gas_per_chunk * Math.ceil(size / f.chunk_bytes)) * f.utia_per_gas;
 }
 
-export type PublisherShare = {
-  publisher: string;
-  label?: string;
-  fees_utia: number;
-  fees_share: number | null;
-  bytes: number;
-  bytes_share: number | null;
-  settlements: number;
-  publishers?: number;
-};
-
 export type DayBucket = { day: string; fees_utia: number; bytes: number; settlements: number; timeouts: number; timed_out_utia: number };
-/** one publisher's share of one day; publisher is empty for the folded "other" */
-export type DayPublisher = { day: string; publisher: string; label?: string; fees_utia: number; bytes: number; settlements: number };
-/** one publisher's share of one UTC hour, split as DayPublisher splits a day */
-export type HourPublisher = { hour: string; publisher: string; label?: string; fees_utia: number; bytes: number; settlements: number };
 
 /**
  * The publisher side of Fibre over a window. Every figure is something the
@@ -675,8 +654,6 @@ export type Market = {
   timeouts: number;
   timed_out_utia: number;
   deposits: Sum;
-  withdrawals_requested: Sum;
-  withdrawals_executed: Sum;
   escrow_held_utia: number;
   escrow_accounts: number;
   /** x/fibre's module account: every escrow on the chain, read at escrow_total_at */
@@ -685,16 +662,18 @@ export type Market = {
   daily: DayBucket[];
   /** UTC hours, for a window of a day or less */
   hourly?: { hour: string; bytes: number; settlements: number; fees_utia: number }[];
-  /** hourly split by publisher as daily_by_publisher splits daily, set with it */
-  hourly_by_publisher?: HourPublisher[];
-  daily_by_publisher: DayPublisher[];
-  top_publishers: PublisherShare[];
-  other_publishers: PublisherShare | null;
-  largest_poster: PublisherShare | null;
   /** namespaces the window's settlements used, and any settlement on record */
   namespaces?: number;
   namespaces_total?: number;
+  /**
+   * every blob on record by Tensile's reading, network-wide and over the whole record whatever the window (the same on
+   * every window); null until the API has counted them after a start, absent from an API before it was published
+   */
+  readings?: ReadingTotals | null;
 };
+
+/** every blob on record by Tensile's reading: available, unavailable, and not read (its window closed with no reading) */
+export type ReadingTotals = { available: number; unavailable: number; not_read: number };
 
 export type Escrow = { found: boolean; balance_utia: number; available_utia: number; height: number; updated_at: string };
 
@@ -737,11 +716,7 @@ export type Payment = {
   height: number;
   time: string;
   tx_hash?: string;
-  publisher: string;
-  processor?: string;
   promise_hash?: string;
-  namespace?: string;
-  blob_size?: number;
   amount_utia: number;
   available_at?: string;
 };
@@ -802,16 +777,23 @@ export function apiFailing(f: { error: string | null; status?: number }): boolea
 export function throttled(f: { error: string | null; status?: number }): boolean {
   return !!f.error && f.status === 429;
 }
+/** a failed request in the words the site's notices use: "The observer API is busy (too many requests)" on a 429, else "… is not answering (…)" */
+export function failedWords(f: { error: string | null; status?: number }): string {
+  return `${throttled(f) ? "The observer API is busy" : "The observer API is not answering"} (${f.error ?? "no answer"})`;
+}
 
 // One in-flight request and one timer per (path, interval), however many
 // components ask for it: the header, the banner, the footer and the page all
 // want /v1/meta, which was four requests per interval per viewer.
-// retry is the one early re-ask a stream has pending while its figure is
-// being computed. load asks now; busy counts the requests out, and again asks
-// once more when the last of them is back (askAgain).
+// timer is the stream's one next ask: its interval after an answer, sooner
+// while its figure is being computed, after a failure the back-off
+// (failRetryMs). It asks nothing while the page is hidden: a stream that
+// falls due then is due, and asks as soon as the page is shown again. load
+// asks now; busy counts the requests out, and again asks once more when the
+// last of them is back (askAgain). fails counts the failures in a row.
 type Sub = {
-  subs: Set<(f: Fetch<unknown>) => void>; timer: ReturnType<typeof setInterval> | null; retry: ReturnType<typeof setTimeout> | null; last: Fetch<unknown>;
-  load: () => void; busy: number; again: boolean;
+  subs: Set<(f: Fetch<unknown>) => void>; timer: ReturnType<typeof setTimeout> | null; last: Fetch<unknown>;
+  load: () => void; busy: number; again: boolean; fails: number; due: boolean;
 };
 const streams = new Map<string, Sub>();
 
@@ -819,6 +801,44 @@ const streams = new Map<string, Sub>();
 function computingRetryMs(seconds: unknown): number {
   const s = typeof seconds === "number" && isFinite(seconds) ? seconds : 5;
   return Math.min(Math.max(s, 2), 30) * 1000;
+}
+
+/**
+ * How soon a stream asks again after its n-th failure in a row (n from 1): 2 s, doubling. A restart of the API
+ * is then over on the page seconds after it is over, not at the stream's next interval, up to 5 minutes later.
+ * It doubles up to the stream's interval; one asked more often than every 30 s goes on doubling up to 8 of its
+ * intervals or 30 s, whichever is less, so a refusal (429) or an outage is not asked at the pace of the 1 s tip.
+ * A Retry-After the answer gave is waited out, up to 5 minutes. A stream with no interval goes on asking, at
+ * most every 5 minutes, until it is answered.
+ */
+export function failRetryMs(n: number, refreshMs: number, retryAfterMs = 0): number {
+  const cap = refreshMs > 0 ? Math.max(refreshMs, Math.min(8 * refreshMs, 30000)) : 300000;
+  const ms = Math.min(2000 * 2 ** Math.min(Math.max(n, 1) - 1, 20), cap);
+  return Math.min(Math.max(ms, retryAfterMs), 300000);
+}
+
+/** a Retry-After header in ms, seconds or an HTTP date; 0 when there is none (across origins it is not readable) */
+function retryAfterMs(h: string | null): number {
+  if (!h) return 0;
+  const s = Number(h);
+  if (Number.isFinite(s)) return Math.max(0, s * 1000);
+  const t = Date.parse(h);
+  return Number.isFinite(t) ? Math.max(0, t - Date.now()) : 0;
+}
+
+/**
+ * The page's own clock for the streams: none asks at its interval while the page is hidden (a background tab
+ * asking every second for a header nobody sees was most of what tripped the proxy's limit), and every stream
+ * that fell due meanwhile asks at once when it is shown again.
+ */
+let watching = false;
+function watchVisibility(): void {
+  if (watching || typeof document === "undefined") return;
+  watching = true;
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    streams.forEach((st) => { if (st.due) st.load(); });
+  });
 }
 
 async function fetchOnce(path: string): Promise<Fetch<unknown> & { retryMs?: number }> {
@@ -838,7 +858,8 @@ async function fetchOnce(path: string): Promise<Fetch<unknown> & { retryMs?: num
           // is not readable across origins, so the body says how long.
           return { data: null, error: null, loading: true, fetchedAt: null, status: r.status, computing: true, retryMs: computingRetryMs(body.retry_after_s) };
         }
-        return { data: null, error: msg, loading: false, fetchedAt: null, status: r.status };
+        // a refusal or an outage that says how long to wait (the site's proxy does, on a 429)
+        return { data: null, error: msg, loading: false, fetchedAt: null, status: r.status, retryMs: retryAfterMs(r.headers.get("retry-after")) };
       }
       return { data: await r.json(), error: null, loading: false, fetchedAt: new Date().toISOString() };
     } finally {
@@ -850,24 +871,37 @@ async function fetchOnce(path: string): Promise<Fetch<unknown> & { retryMs?: num
   }
 }
 
-function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<unknown>) => void): () => void {
+/** a stream of one path, asked at one interval (0: once), with every answer to fn; exported for its test */
+export function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<unknown>) => void): () => void {
   let st = streams.get(key);
   if (!st) {
-    const own: Sub = { subs: new Set(), timer: null, retry: null, last: { data: null, error: null, loading: true, fetchedAt: null }, load: () => {}, busy: 0, again: false };
+    const own: Sub = { subs: new Set(), timer: null, last: { data: null, error: null, loading: true, fetchedAt: null }, load: () => {}, busy: 0, again: false, fails: 0, due: false };
     st = own;
     streams.set(key, st);
+    watchVisibility();
+    // the next ask, ms from now: on a hidden page the stream is only due, and asks when the page is shown again
+    const later = (ms: number) => {
+      own.timer = setTimeout(() => {
+        own.timer = null;
+        if (typeof document !== "undefined" && document.hidden) own.due = true;
+        else load();
+      }, ms);
+    };
     const load = async () => {
+      if (own.timer) { clearTimeout(own.timer); own.timer = null; }
+      own.due = false;
       own.busy++;
       const { retryMs, ...next } = await fetchOnce(path);
       own.busy--;
-      const cur = streams.get(key);
-      if (!cur) return;
+      if (streams.get(key) !== own) return;
+      let wait = refreshMs;
       if (next.computing) {
         // Being computed: what is on screen stays, without an error, and the
-        // stream asks again in a few seconds, once, whatever its interval
-        // (a stream with no interval asks again too).
-        cur.last = cur.last.data !== null ? { ...cur.last, error: null, loading: false, status: next.status, computing: true } : next;
-        if (!cur.retry) cur.retry = setTimeout(() => { cur.retry = null; load(); }, retryMs ?? 5000);
+        // stream asks again in a few seconds, whatever its interval (a stream
+        // with no interval asks again too).
+        own.last = own.last.data !== null ? { ...own.last, error: null, loading: false, status: next.status, computing: true } : next;
+        own.fails = 0;
+        wait = refreshMs > 0 ? Math.min(retryMs ?? 5000, refreshMs) : retryMs ?? 5000;
       } else {
         // A refresh that fails does not erase the answer already on screen. It
         // used to: fetchOnce returns {data: null, error} on any failure, so one
@@ -876,20 +910,28 @@ function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<u
         // The error is carried beside the last good payload instead, for the
         // page to show, and the figures keep their own computed_at so nobody
         // reads stale numbers as fresh ones.
-        cur.last = next.error && cur.last.data !== null
-          ? { data: cur.last.data, error: next.error, loading: false, fetchedAt: cur.last.fetchedAt, status: next.status }
+        own.last = next.error && own.last.data !== null
+          ? { data: own.last.data, error: next.error, loading: false, fetchedAt: own.last.fetchedAt, status: next.status }
           : next;
+        // A failure of the API is asked again with a back-off of its own, not
+        // at the interval: a stream asked every 5 minutes kept "not answering"
+        // on screen for minutes after a restart of a few seconds, and one asked
+        // every second went on asking a proxy that refused it. A 404 or a 400
+        // says something about the record, not the API, and waits its interval.
+        if (apiFailing(next)) wait = failRetryMs(++own.fails, refreshMs, retryMs);
+        else own.fails = 0;
       }
-      const out = cur.last;
-      cur.subs.forEach((s) => s(out));
+      const out = own.last;
+      own.subs.forEach((s) => s(out));
       if (own.again && own.busy === 0) {
         own.again = false;
         load();
+        return;
       }
+      if (own.busy === 0 && wait > 0) later(wait);
     };
     own.load = load;
     load();
-    if (refreshMs > 0) st.timer = setInterval(load, refreshMs);
   } else if (!st.last.loading || st.last.computing) {
     // A later subscriber gets the current value at once. So does one that
     // arrives while the figure is being computed with nothing to show yet:
@@ -903,8 +945,7 @@ function subscribe(key: string, path: string, refreshMs: number, fn: (f: Fetch<u
     if (!cur) return;
     cur.subs.delete(fn);
     if (cur.subs.size === 0) {
-      if (cur.timer) clearInterval(cur.timer);
-      if (cur.retry) clearTimeout(cur.retry);
+      if (cur.timer) clearTimeout(cur.timer);
       streams.delete(key);
     }
   };
@@ -1100,6 +1141,9 @@ export function shortBech(s: string): string {
 export type Load = {
   promises: number;
   bytes: number;
+};
+/** Load as the validator page has it: what the validator holds now, and its rows on the newest settled promise */
+export type DetailLoad = Load & {
   stored_bytes: number;
   rows_per_blob: number;
 };

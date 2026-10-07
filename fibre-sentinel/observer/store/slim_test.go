@@ -218,6 +218,76 @@ func TestALineRowIsReadAsItIs(t *testing.T) {
 	}
 }
 
+// A publication or a reading the slim form would not give back byte for byte is kept as its line, and read back as
+// written: a string carrying a byte that is not UTF-8 is written by encoding/json as the six-character escape of
+// U+FFFD, which the slim form keeps as the character itself and writes back unescaped. A reading of such a publication
+// that does read back keeps the slim form; one of the validator whose host carries the byte, or whose error does,
+// keeps its line.
+func TestARecordTheSlimFormWouldNotGiveBackKeepsItsLine(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "observer.db")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	pub := slimPublication(t, 0x33, 5)
+	pub.Assignment.Validators[1].Host = "10.0.0.2:79\xff80" // a chain string nothing checked
+	pubLine, _ := json.Marshal(pub)
+	if !bytes.Contains(pubLine, []byte("\\ufffd")) {
+		t.Fatalf("the line carries no escape: %.200s", pubLine)
+	}
+	if ok, err := st.UpsertPublication(pub, pubLine); err != nil || !ok {
+		t.Fatalf("publication: %v %v", ok, err)
+	}
+	var lines [][]byte
+	var keys []string
+	for i, v := range pub.Assignment.Validators[:3] {
+		m := slimReading(pub, v, u32(v.Rows))
+		if i == 2 {
+			m.Outcome, m.Classification = probe.OutcomeServerError, probe.ClassFault
+			m.RawError = "rpc error: code = Internal desc = shard \xfe\xff not found" // a remote server's message
+		}
+		l, _ := json.Marshal(m)
+		if ok, err := st.InsertProbe(m, l); err != nil || !ok {
+			t.Fatalf("probe %d: %v %v", i, ok, err)
+		}
+		lines, keys = append(lines, l), append(keys, m.DedupeKey())
+	}
+	check := func(st *store.Store, who string) {
+		var raw []byte
+		if err := st.DB().QueryRow(`SELECT raw_json FROM publications WHERE promise_hash = ?`, pub.PromiseHash).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		if raw[0] != '{' {
+			t.Errorf("%s: the publication is kept slim, though its slim form does not give its line back", who)
+		}
+		if got, err := st.Record(ctx, st.DB(), raw); err != nil || !bytes.Equal(got, pubLine) {
+			t.Fatalf("%s: publication back: %v\n got %.300s\nwant %.300s", who, err, got, pubLine)
+		}
+		for i, k := range keys {
+			var raw []byte
+			if err := st.DB().QueryRow(`SELECT raw_json FROM probes WHERE dedupe_key = ?`, k).Scan(&raw); err != nil {
+				t.Fatal(err)
+			}
+			if line := raw[0] == '{'; line != (i > 0) { // 1 carries its validator's host, 2 its error
+				t.Errorf("%s: reading %d kept as its line: %v", who, i, line)
+			}
+			if got, err := st.ProbeRecord(ctx, st.DB(), pub.PromiseHash, raw); err != nil || !bytes.Equal(got, lines[i]) {
+				t.Fatalf("%s: reading %d back: %v\n got %.300s\nwant %.300s", who, i, err, got, lines[i])
+			}
+		}
+	}
+	check(st, "the writer")
+	st.Close()
+	ro, err := store.OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	check(ro, "another process")
+}
+
 // An endpoint check row keeps the slim form and reads back to its line byte for byte, in this process and another;
 // a row an earlier build wrote is read as it is; a line the slim form would not give back is kept as its line.
 func TestEndpointCheckRowsReadBackAsWritten(t *testing.T) {

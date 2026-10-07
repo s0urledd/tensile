@@ -12,7 +12,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -22,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/pace"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
@@ -72,6 +72,7 @@ func main() {
 		retEvery  = flag.Duration("retention-every", time.Hour, "how often the rollup pass runs")
 		avEvery   = flag.Duration("avatars-every", time.Hour, "how often to look for validator Keybase pictures to fetch or refresh (0 = never)")
 		avMaxAge  = flag.Duration("avatar-max-age", 24*time.Hour, "re-resolve a validator's Keybase picture after this long")
+		bfBudget  = flag.Duration("slim-backfill-budget", 2*time.Second, "after each pass that ingested every file, spend up to this long converting the rows stored before the slim record (migration 27) to the slim forms a new row gets, a batch at a time, while no ingest is due and the disk is not busy (\"some avg10\" in "+pace.ProcFile+" above 6, or \"full avg10\" above 4); once every row is done it stops for good (0 = never)")
 	)
 	flag.Parse()
 
@@ -158,6 +159,15 @@ func main() {
 	live := status.New(*dataDir, "collector", *vantage, version)
 	live.Start()
 	defer live.Stop("exit")
+	// The bound /v1/health holds the status file's OK to: it is set by a
+	// clean poll pass, one every -endpoints-every. Without a chain poll
+	// nothing sets it, and no bound is published.
+	if *epEvery > 0 {
+		live.Set("cadence_s", int(epEvery.Round(time.Second)/time.Second))
+	}
+	// The work that can fail apart from the ingest, which the OK above
+	// must not hide (observer/collect/work.go).
+	work := collect.NewWorkErrors(live)
 
 	// The endpoint history has no source but the live polls, so every
 	// opening and closing is appended here as well as written to the
@@ -168,6 +178,10 @@ func main() {
 	}
 	defer regFile.Close()
 	appendRegistry := func(evs []store.EndpointEvent) {
+		if len(evs) == 0 {
+			return
+		}
+		var failed error
 		for _, e := range evs {
 			b, err := json.Marshal(e)
 			if err != nil {
@@ -176,12 +190,17 @@ func main() {
 			if _, err := regFile.Write(append(b, '\n')); err != nil {
 				log.Printf("registry: write: %v", err)
 				live.Error(fmt.Sprintf("registry write: %v", err))
-				return
+				failed = fmt.Errorf("write: %w", err)
+				break
 			}
 		}
-		if len(evs) > 0 {
-			_ = regFile.Sync()
+		if failed == nil {
+			if err := regFile.Sync(); err != nil {
+				log.Printf("registry: sync: %v", err)
+				failed = fmt.Errorf("sync: %w", err)
+			}
 		}
+		work.Report("registry", failed, time.Now())
 	}
 	var exporter *export.Builder
 	if *expHour >= 0 {
@@ -230,19 +249,38 @@ func main() {
 			ParamUncertainty: *uncPath, Corrections: *corrPath,
 		},
 		Vantage: *vantage, Logf: log.Printf, Live: live, AmendFile: amendFile, PruneTolerance: *pruneTol,
-		Corrector: corr, Retention: retention, RetentionEvery: *retEvery,
+		Corrector: corr, Retention: retention, RetentionEvery: *retEvery, Work: work,
 	})
+	var poll *chainPoll
+	if chain != nil {
+		poll = &chainPoll{chain: chain, st: st, live: live, logf: log.Printf, appendRegistry: appendRegistry} // chainpoll.go
+	}
 	var lastEscrow time.Time
-	pass := func(pollEndpoints bool) {
+	var escrowAt escrowRound // where the next escrow poll goes on from (withdrawals.go)
+	var exportHeld string    // the hold last logged, so it is said once
+	// pass is one pass; it reports whether the ingest read every file.
+	pass := func(pollEndpoints bool) bool {
 		now := time.Now()
 		passErrs := coll.Pass(ctx, now)
 		if exporter != nil {
-			if built, err := exporter.Run(now); err != nil {
+			built, held, err := exportStep(exporter.Run, coll.VantagesFromOtherChain(), now)
+			switch {
+			case held:
+				if err.Error() != exportHeld {
+					log.Printf("export: %v", err)
+					exportHeld = err.Error()
+				}
+			case err != nil:
 				log.Printf("export: %v", err)
 				live.Error(fmt.Sprintf("export: %v", err))
-			} else if len(built) > 0 {
+			case len(built) > 0:
 				live.Set("last_export", built[len(built)-1])
 			}
+			if !held && exportHeld != "" {
+				log.Printf("export: no longer held")
+				exportHeld = ""
+			}
+			work.Report("export", err, now)
 		}
 		if chain != nil && *escEvery > 0 && time.Since(lastEscrow) >= *escEvery {
 			// Escrow balances, one state query per publisher the payments
@@ -253,141 +291,35 @@ func main() {
 			// themselves arrive through the file, not this poll.
 			lastEscrow = now
 			// Balance and withdrawal queue of every known publisher, both
-			// read from one height (withdrawals.go), then the block time
-			// of every params change not yet dated.
-			pollEscrow(ctx, chain, st, now, log.Printf)
+			// read from one committed height (withdrawals.go), then the
+			// block time of every params change not yet dated; each within
+			// escrowBudget, since this runs in the loop the ingest runs in.
+			// A poll the budget cuts short leaves the rest of its round to
+			// the next one.
+			p := pollEscrow(ctx, chain, st, &escrowAt, now, log.Printf)
 			fillParamTimes(ctx, chain, st, log.Printf)
 			// The total, from the module account every escrow lives in: exact
 			// where the sum above is a floor, since it covers only accounts
 			// this observer has seen publish.
-			if bal, err := chain.ModuleBalance(ctx, scan.FibreModuleName, "utia"); err != nil {
+			bal, err := chain.ModuleBalance(ctx, scan.FibreModuleName, "utia")
+			if err != nil {
 				log.Printf("escrow: module balance: %v", err)
 			} else {
 				_ = st.SetMeta("escrow_module_utia", itoa(bal), now)
 				_ = st.SetMeta("escrow_module_polled_at", store.TS(now), now)
 			}
+			if p.OK && err == nil {
+				// The poll the finished round began in: every balance
+				// on record was read at or after it.
+				_ = st.SetMeta("escrow_polled_at", store.TS(p.Since), now)
+			}
 		}
-		if pollEndpoints && chain != nil {
-			// Whether Fibre exists on this chain at all, recorded rather than
-			// inferred. x/fibre and x/valaddr are introduced in app version
-			// 10, so below that every Fibre query fails for a reason that has
-			// nothing to do with any validator — and a site that cannot tell
-			// "the module is not there" from "the module is there and nobody
-			// registered" will show the second while the first is true. Both
-			// the version and the verdict are stored, so the page can say
-			// which chain it is watching and what state that chain is in.
-			if av, err := chain.AppVersion(ctx); err != nil {
-				log.Printf("app version: %v", err)
-			} else {
-				_ = st.SetMeta("app_version", itoa(int64(av)), now)
-				active, known := fibreActive(av, func() error {
-					_, err := chain.FibreParamsAt(ctx, 0)
-					return err
-				})
-				if known {
-					_ = st.SetMeta("fibre_active", active, now)
-				} else {
-					log.Printf("fibre_active: app v%d but x/fibre did not answer; left as it was", av)
-				}
-				_ = st.SetMeta("fibre_app_version", itoa(scan.FibreAppVersion), now)
-				// Until Fibre is live, the one Fibre-relevant fact the chain
-				// carries is who has signalled for the version that brings
-				// it. Read from x/signal on the same cadence as the rest;
-				// the site shows the tally, the scheduled height and, per
-				// validator, whether it has signalled. Dropped the moment
-				// the chain is on that version.
-				if av < scan.FibreAppVersion {
-					if sig, err := chain.UpgradeSignal(ctx, scan.FibreAppVersion); err != nil {
-						log.Printf("upgrade signal: %v", err)
-					} else {
-						if sig.Missing == nil {
-							sig.Missing = []string{} // nobody missing is a list, not null
-						}
-						missing, _ := json.Marshal(sig.Missing)
-						for k, v := range map[string]string{
-							"signal_version":            fmt.Sprint(sig.Version),
-							"signal_voting_power":       fmt.Sprint(sig.VotingPower),
-							"signal_threshold_power":    fmt.Sprint(sig.ThresholdPower),
-							"signal_total_voting_power": fmt.Sprint(sig.TotalVotingPower),
-							"signal_upgrade_height":     fmt.Sprint(sig.UpgradeHeight),
-							"signal_missing":            string(missing),
-							"signal_polled_at":          store.TS(now),
-						} {
-							_ = st.SetMeta(k, v, now)
-						}
-					}
-				}
-			}
-			chainID, height, tipTime, err := chain.StatusAt(ctx)
-			if err != nil {
-				log.Printf("endpoints: status: %v", err)
-				live.Error(fmt.Sprintf("chain status: %v", err))
-			} else if len(passErrs) == 0 {
-				live.OK()
-				live.Progress(height)
-				// The chain's own identity and tip, recorded here rather than
-				// only by the scanner: before Fibre activates there are no
-				// publications to carry them, and "which chain is this, and how
-				// far along is it" is the whole content of the site until then.
-				// Kept separate from last_scanned_height, which is how far the
-				// SCANNER has read; conflating the two would report the chain's
-				// progress as our own.
-				_ = st.SetMeta("chain_id", chainID, now)
-				_ = st.SetMeta("chain_height", itoa(height), now)
-				// The tip's own clock, so /v1/health can tell a chain that is
-				// running from one that stopped. Everything else here is
-				// drawn from the same node, and a node whose height stands
-				// still looks identical to a network at rest.
-				if !tipTime.IsZero() {
-					_ = st.SetMeta("chain_tip_time", store.TS(tipTime), now)
-					// And the anchors behind the chain's recent block time,
-					// which the site needs to say when a scheduled upgrade
-					// height is due (see store.NotePace).
-					if err := st.NotePace(height, tipTime, now); err != nil {
-						log.Printf("chain pace: %v", err)
-					}
-				}
-
-				if provs, err := chain.BondedFibreProviders(ctx); err != nil {
-					// Before v10 the module does not exist; that is a normal
-					// state, logged but not fatal. fibre_active above says
-					// which of the two this is.
-					log.Printf("endpoints: %v", err)
-				} else if evs, err := st.ObserveEndpointEvents(ctx, provs, height, now); err != nil {
-					log.Printf("endpoints: store: %v", err)
-				} else {
-					if len(evs) > 0 {
-						opened, closed := 0, 0
-						for _, e := range evs {
-							if e.Kind == store.EndpointOpened {
-								opened++
-							} else {
-								closed++
-							}
-						}
-						log.Printf("endpoints: h=%d registered=%d opened=%d closed=%d", height, len(provs), opened, closed)
-						appendRegistry(evs)
-					}
-					_ = st.SetMeta("endpoints_height", itoa(height), now)
-					_ = st.SetMeta("endpoints_registered", itoa(int64(len(provs))), now)
-				}
-			}
-			// Validator names, from the chain's own staking module rather
-			// than from an explorer's API. A reader recognises a validator by
-			// the name its operator chose, not by twenty hex characters, and
-			// taking that name from a third-party index would make this
-			// observer depend on somebody else's coverage and terms.
-			if ids, err := chain.ValidatorIdentities(ctx); err != nil {
-				log.Printf("validator identities: %v", err)
-			} else if n, err := st.UpsertValidatorIdentities(ids, now); err != nil {
-				log.Printf("validator identities: store: %v", err)
-			} else if n > 0 {
-				log.Printf("validator identities: %d of %d stored", n, len(ids))
-				_ = st.SetMeta("validator_identities", itoa(int64(n)), now)
-			}
+		if pollEndpoints && poll != nil {
+			poll.run(ctx, now, len(passErrs) == 0, coll.RegistryReplayed())
 		}
 		if pollEndpoints {
-			hostingPass(ctx, now) // provider/country of each open endpoint; local files only
+			// provider/country of each open endpoint; local files only
+			work.Report("hosting", hostingPass(ctx, now), now)
 		}
 		// A pass that failed to ingest says so on the status file, which is
 		// what /v1/health reads. Named last so it is not overwritten by the
@@ -395,14 +327,17 @@ func main() {
 		if len(passErrs) > 0 {
 			live.Error("ingest: " + strings.Join(passErrs, "; "))
 		}
-		if err := st.Heartbeat(runID, time.Now()); err != nil {
+		err := st.Heartbeat(runID, time.Now())
+		if err != nil {
 			log.Printf("heartbeat: %v", err)
 			live.Error(fmt.Sprintf("store heartbeat: %v", err))
 		}
+		work.Report("heartbeat", err, now)
 		if c, err := st.Count(ctx); err == nil {
 			live.Set("publications", c.Publications)
 			live.Set("probes", c.Probes)
 		}
+		return len(passErrs) == 0
 	}
 
 	pass(true)
@@ -413,55 +348,18 @@ func main() {
 		return
 	}
 
-	// Validator pictures: the identity field on chain is a Keybase key
-	// suffix, and the picture behind it is fetched here, once a day per
-	// identity, into the store, so the site can show it without a reader
-	// ever contacting Keybase. Sequential and spaced, because Keybase is
-	// somebody else's API and the whole set is a hundred lookups a day.
-	kb := keybase.New()
-	resolveAvatars := func(now time.Time) {
-		due, err := st.AvatarsDue(ctx, now, *avMaxAge, 200)
-		if err != nil {
-			log.Printf("avatars: %v", err)
-			return
-		}
-		got, none, failed := 0, 0, 0
-		for i, id := range due {
-			if ctx.Err() != nil {
-				return
-			}
-			if i > 0 {
-				time.Sleep(300 * time.Millisecond)
-			}
-			u, err := kb.Lookup(ctx, id)
-			switch {
-			case errors.Is(err, keybase.ErrNoPicture):
-				none++
-				_ = st.PutAvatar(id, "none", "", "", nil, time.Now())
-				continue
-			case err != nil:
-				failed++
-				_ = st.PutAvatar(id, "error", err.Error(), "", nil, time.Now())
-				continue
-			}
-			ct, data, err := kb.Fetch(ctx, u)
-			if err != nil {
-				failed++
-				_ = st.PutAvatar(id, "error", u+": "+err.Error(), "", nil, time.Now())
-				continue
-			}
-			if err := st.PutAvatar(id, "ok", u, ct, data, time.Now()); err != nil {
-				log.Printf("avatars: store %s: %v", id, err)
-				continue
-			}
-			got++
-		}
-		if len(due) > 0 {
-			log.Printf("avatars: %d identities checked: %d pictures, %d without one, %d failed", len(due), got, none, failed)
-		}
-	}
+	// Validator pictures, from Keybase, on a goroutine of their own
+	// (avatars.go): nothing here waits on Keybase. Stopped, and waited
+	// for, before the store is closed.
 	if *avEvery > 0 {
-		resolveAvatars(time.Now())
+		avCtx, stopAv := context.WithCancel(ctx)
+		avDone := make(chan struct{})
+		av := newAvatarResolver(st, keybase.New(), *avEvery, *avMaxAge, log.Printf, live, work)
+		go av.loop(avCtx, *avEvery, avDone)
+		defer func() {
+			stopAv()
+			<-avDone
+		}()
 	}
 
 	tick := time.NewTicker(*interval)
@@ -494,7 +392,17 @@ func main() {
 		}
 		log.Printf("fast tick: state.json, publications and payments every %s between passes%s", *fastEvery, watching)
 	}
-	lastEP, lastAV := time.Now(), time.Now()
+	// The slim backfill (backfill.go), after a pass that ingested every
+	// file, while no ingest is due: not the next pass, nor the fast tick for
+	// a change the file watch saw (without the watch, for its timer).
+	backfill := newSlimBackfill(st, *bfBudget, log.Printf, live, work)
+	ingestDue := func() bool {
+		if len(tick.C) > 0 || len(wakeC) > 0 {
+			return true
+		}
+		return wakeC == nil && len(fastC) > 0
+	}
+	lastEP := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
@@ -507,17 +415,42 @@ func main() {
 		case <-wakeC:
 			fast.run(time.Now())
 		case <-tick.C:
-			poll := *epEvery > 0 && time.Since(lastEP) >= *epEvery
-			pass(poll)
-			if poll {
+			due := *epEvery > 0 && time.Since(lastEP) >= *epEvery
+			ingested := pass(due)
+			if due {
 				lastEP = time.Now()
 			}
-			if *avEvery > 0 && time.Since(lastAV) >= *avEvery {
-				resolveAvatars(time.Now())
-				lastAV = time.Now()
+			if ingested && backfill != nil {
+				// what fell due while the pass ran is read first
+				select {
+				case <-wakeC:
+					fast.run(time.Now())
+				case <-fastC:
+					fast.run(time.Now())
+				default:
+				}
+				backfill.run(ctx, time.Now(), ingestDue)
 			}
 		}
 	}
+}
+
+// exportStep runs the daily export build (run), unless the pass just stopped
+// a vantage file at a row from another chain (otherChain, by vantage name):
+// then held is true and err says why, for the log and the work list.
+//
+// The ingest keeps such a file out of the store, but an export copies the
+// vantage files whole, and an export once built and signed is never taken
+// back. A day held is not lost: the builder builds every day from the last
+// one it built, so the exports catch up once the file is gone. A row of this
+// chain that the guard refused for a moment (a validator that registered
+// since the last chain poll) holds the build for a pass or two at most.
+func exportStep(run func(time.Time) ([]string, error), otherChain []string, now time.Time) (built []string, held bool, err error) {
+	if len(otherChain) > 0 {
+		return nil, true, fmt.Errorf("held: the heartbeat file of vantage %s holds rows from another chain, which an export would copy whole; built again once it is removed", strings.Join(otherChain, ", "))
+	}
+	built, err = run(now)
+	return built, false, err
 }
 
 // fibreActive is the fibre_active verdict: "yes" only once the chain is on

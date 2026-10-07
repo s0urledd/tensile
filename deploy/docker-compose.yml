@@ -2,8 +2,8 @@
 # Settings come from deploy/.env (copy observer.env.example). RPC must be
 # reachable from inside the containers: a node on the host is
 # http://host.docker.internal:26657 (add extra_hosts on Linux) or its LAN
-# address, never 127.0.0.1. POLICY picks the policy file baked into the
-# image: /etc/fibre-observer/policy.mocha.yaml or policy.example.yaml.
+# address, never 127.0.0.1. POLICY stays empty: the prober then reveals
+# no sampling day secret (deploy/README.md, 3).
 services:
   scan:
     build: { context: .., dockerfile: deploy/Dockerfile }
@@ -12,7 +12,7 @@ services:
     restart: unless-stopped
   probe:
     build: { context: .., dockerfile: deploy/Dockerfile }
-    command: ["sentinel-probe", "-rpc", "${RPC}", "-data-dir", "/data", "-vantage", "${VANTAGE}", "-policy", "${POLICY:-/etc/fibre-observer/policy.mocha.yaml}"]
+    command: ["sentinel-probe", "-rpc", "${RPC}", "-data-dir", "/data", "-vantage", "${VANTAGE}", "-policy", "${POLICY:-}"]
     volumes: ["observer-data:/data"]
     restart: unless-stopped
   heartbeat:

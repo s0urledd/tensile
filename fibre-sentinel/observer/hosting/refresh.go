@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -14,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
 // Config is where the collector finds the database files. An empty or
@@ -84,11 +87,29 @@ type Refresher struct {
 	// Record gives a reachability row's raw_json back as its record line
 	// (store.ReachRecord): the column keeps the slim form. Nil reads it as
 	// it is, and a slim row is then an error rather than an address read
-	// wrong.
+	// wrong. A row it says does not decode (store.ErrUndecodable) is that
+	// heartbeat's alone: it is skipped, and any other error is the run's.
 	Record func(ctx context.Context, raw []byte) ([]byte, error)
 
 	lastKey string
 	lastRun time.Time
+	// said is what sayOnce has logged.
+	said map[string]bool
+}
+
+// sayOnce logs the line once for what key names, for the life of the
+// Refresher.
+func (r *Refresher) sayOnce(key, format string, args ...any) {
+	if r.said[key] {
+		return
+	}
+	if r.said == nil {
+		r.said = map[string]bool{}
+	}
+	r.said[key] = true
+	if r.Logf != nil {
+		r.Logf(format, args...)
+	}
 }
 
 // Result summarises one Run.
@@ -377,6 +398,14 @@ func (r *Refresher) targets(ctx context.Context, since time.Time) ([]target, err
 		switch {
 		case r.Record != nil:
 			line, err := r.Record(ctx, raw)
+			if errors.Is(err, store.ErrUndecodable) {
+				// That heartbeat's record does not decode: its endpoint
+				// goes without its addresses until a newer heartbeat, and
+				// every other endpoint is resolved. Said once per heartbeat.
+				r.sayOnce(b.addr+"|"+b.host+"|"+b.at,
+					"hosting: heartbeat of %s (%s) at %s skipped: %v", b.addr, b.host, b.at, err)
+				continue
+			}
 			if err != nil {
 				return nil, fmt.Errorf("heartbeat of %s: %w", b.addr, err)
 			}

@@ -1,9 +1,10 @@
 # Fibre observer: static dashboard plus the API under /api.
 #
-# One site block per network. The static export is the same for both (it
-# talks to same-origin /api); only the upstream port differs, and it is the
-# port that network's fibre-api@<network> listens on. Add the second block
-# when the second network exists; delete it if only one is run.
+# One site block per network, each with two arguments: the port that
+# network's fibre-api@<network> listens on, and the directory of that
+# network's own build of the site (deploy/README.md, "5. The site": the API
+# address and the operator's validator are fixed when it is built). Add the
+# second block when the second network exists; delete it if only one is run.
 (observer) {
 	encode gzip
 
@@ -34,7 +35,7 @@
 	redir /developers* /api/ 301
 
 	handle {
-		root * /var/www/fibre-observer
+		root * {args[1]}
 		try_files {path} {path}/ {path}.html
 		file_server
 	}
@@ -47,10 +48,10 @@
 
 # mainnet
 observer.example.org {
-	import observer 127.0.0.1:8080
+	import observer 127.0.0.1:8080 /var/www/fibre-observer/mainnet
 }
 
 # mocha testnet
 mocha.observer.example.org {
-	import observer 127.0.0.1:8081
+	import observer 127.0.0.1:8081 /var/www/fibre-observer/mocha
 }

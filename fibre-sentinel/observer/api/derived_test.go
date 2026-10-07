@@ -57,16 +57,13 @@ func (f *derivedFixture) grow(n int) {
 func (f *derivedFixture) server(dir string) *Server {
 	s := &Server{st: f.st}
 	if dir != "" {
-		s.origRows.file = filepath.Join(dir, originalRowsFile)
 		s.recent.file = filepath.Join(dir, endorsementLedgerFile)
-		// No write of the memo's outlives the test and its directory.
-		f.t.Cleanup(s.origRows.wait)
 	}
 	return s
 }
 
-// figures is everything the memo and the ledger feed, for s, as JSON:
-// every window's load figures and the recent endorsements.
+// figures is the recent endorsements the ledger feeds, for s, as JSON, and
+// every window's load figures beside them.
 func (f *derivedFixture) figures(s *Server) string {
 	f.t.Helper()
 	ctx := context.Background()
@@ -86,10 +83,11 @@ func (f *derivedFixture) figures(s *Server) string {
 	return b.String()
 }
 
-// The memo and the ledger written by one process are read back by the next,
-// caught up with what the store gained meanwhile, and give every figure a
-// process with no files gives.
-func TestTheMemoAndTheLedgerAreKeptAcrossARestart(t *testing.T) {
+// The ledger written by one process is read back by the next, caught up with
+// what the store gained meanwhile, and gives every figure a process with no
+// file gives. The original_rows memo it was kept beside is gone: nothing
+// writes original-rows.json any more.
+func TestTheLedgerIsKeptAcrossARestart(t *testing.T) {
 	f := newDerivedFixture(t, 3)
 	ctx := context.Background()
 	first := f.server(f.dir)
@@ -100,27 +98,26 @@ func TestTheMemoAndTheLedgerAreKeptAcrossARestart(t *testing.T) {
 	if err := first.keepDerived(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{originalRowsFile, endorsementLedgerFile} {
-		if _, err := os.Stat(filepath.Join(f.dir, name)); err != nil {
-			t.Fatalf("%s not written: %v", name, err)
-		}
+	if _, err := os.Stat(filepath.Join(f.dir, endorsementLedgerFile)); err != nil {
+		t.Fatalf("%s not written: %v", endorsementLedgerFile, err)
 	}
-	if !strings.HasPrefix(first.origRows.origin, "built from the store: no ") || !strings.HasPrefix(first.recent.origin, "built from the store: no ") {
-		t.Errorf("a first start: memo %q, ledger %q", first.origRows.origin, first.recent.origin)
+	if _, err := os.Stat(filepath.Join(f.dir, "original-rows.json")); !os.IsNotExist(err) {
+		t.Errorf("original-rows.json written: %v", err)
+	}
+	if !strings.HasPrefix(first.recent.origin, "built from the store: no ") {
+		t.Errorf("a first start: ledger %q", first.recent.origin)
 	}
 
-	// A restart with nothing new: both are read back, and the memo looks
-	// nothing up.
+	// A restart with nothing new: it is read back.
 	again := f.server(f.dir)
 	if got := f.figures(again); got != want {
 		t.Fatalf("after a restart:\n got %s\nwant %s", got, want)
 	}
-	if !strings.HasPrefix(again.origRows.origin, "loaded ") || !strings.HasPrefix(again.recent.origin, "loaded ") {
-		t.Fatalf("after a restart: memo %q, ledger %q", again.origRows.origin, again.recent.origin)
+	if !strings.HasPrefix(again.recent.origin, "loaded ") {
+		t.Fatalf("after a restart: ledger %q", again.recent.origin)
 	}
-	if again.origRows.size() != first.origRows.size() || again.recent.upTo != first.recent.upTo {
-		t.Errorf("restart: memo %d entries (was %d), ledger through %d (was %d)",
-			again.origRows.size(), first.origRows.size(), again.recent.upTo, first.recent.upTo)
+	if again.recent.upTo != first.recent.upTo {
+		t.Errorf("restart: ledger through %d (was %d)", again.recent.upTo, first.recent.upTo)
 	}
 
 	// The store grows while nothing runs; the next start catches up.
@@ -130,8 +127,8 @@ func TestTheMemoAndTheLedgerAreKeptAcrossARestart(t *testing.T) {
 	if got := f.figures(later); got != want {
 		t.Fatalf("after the store grew:\n got %s\nwant %s", got, want)
 	}
-	if !strings.HasPrefix(later.origRows.origin, "loaded ") || !strings.HasPrefix(later.recent.origin, "loaded ") {
-		t.Fatalf("after the store grew: memo %q, ledger %q", later.origRows.origin, later.recent.origin)
+	if !strings.HasPrefix(later.recent.origin, "loaded ") {
+		t.Fatalf("after the store grew: ledger %q", later.recent.origin)
 	}
 	if later.recent.upTo <= first.recent.upTo {
 		t.Errorf("the ledger did not catch up: through %d, was %d", later.recent.upTo, first.recent.upTo)
@@ -147,18 +144,18 @@ func TestTheMemoAndTheLedgerAreKeptAcrossARestart(t *testing.T) {
 }
 
 // A file is used only for the store it was computed from while that store
-// holds everything it was computed from. Every other file is refused and
-// removed, and the memo and the ledger are built from the store, so every
-// figure is what a process with no files computes.
+// holds everything it was computed from. Every other file is refused, and
+// the ledger is built from the store, so every figure is what a process with
+// no file computes.
 func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 	ctx := context.Background()
 	type edit struct {
 		name string
 		// break the files in dir, or the store, before the next start
 		apply func(t *testing.T, f *derivedFixture, dir string)
-		// what each file must be refused for, as its origin says it; ""
-		// is a file that must be loaded
-		memo, ledger string
+		// what the file must be refused for, as its origin says it; "" is a
+		// file that must be loaded
+		ledger string
 	}
 	// rewrite changes a file and seals it again, as a writer that got it
 	// wrong would leave it: the digest is right, the content is not, and the
@@ -207,7 +204,6 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 	}
 	both := func(t *testing.T, dir string, change func(m map[string]any)) {
 		t.Helper()
-		rewrite(t, filepath.Join(dir, originalRowsFile), change)
 		rewrite(t, filepath.Join(dir, endorsementLedgerFile), change)
 	}
 	cases := []edit{
@@ -220,32 +216,28 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 			if err := s.keepDerived(ctx); err != nil {
 				t.Fatal(err)
 			}
-		}, "computed from another store", "computed from another store"},
+		}, "computed from another store"},
 		{"truncated", func(t *testing.T, f *derivedFixture, dir string) {
-			for _, name := range []string{originalRowsFile, endorsementLedgerFile} {
-				p := filepath.Join(dir, name)
-				b, err := os.ReadFile(p)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(p, b[:len(b)/2], 0o644); err != nil {
-					t.Fatal(err)
-				}
+			p := filepath.Join(dir, endorsementLedgerFile)
+			b, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}, "its digest is not its body's", "its digest is not its body's"},
+			if err := os.WriteFile(p, b[:len(b)/2], 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "its digest is not its body's"},
 		{"empty", func(t *testing.T, f *derivedFixture, dir string) {
-			for _, name := range []string{originalRowsFile, endorsementLedgerFile} {
-				if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
-					t.Fatal(err)
-				}
+			if err := os.WriteFile(filepath.Join(dir, endorsementLedgerFile), nil, 0o644); err != nil {
+				t.Fatal(err)
 			}
-		}, "no digest where the file opens", "no digest where the file opens"},
+		}, "no digest where the file opens"},
 		{"another definition", func(t *testing.T, f *derivedFixture, dir string) {
 			both(t, dir, func(m map[string]any) { m["definition"] = "0" })
-		}, "computed with another definition", "computed with another definition"},
+		}, "computed with another definition"},
 		{"another format", func(t *testing.T, f *derivedFixture, dir string) {
 			both(t, dir, func(m map[string]any) { m["format"] = 99 })
-		}, "another format", "another format"},
+		}, "another format"},
 		{"the store restored from before the files", func(t *testing.T, f *derivedFixture, dir string) {
 			// What a restore from an older backup leaves: the newest rows
 			// gone.
@@ -256,7 +248,7 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 			if _, err := db.Exec(`DELETE FROM publications WHERE rowid > (SELECT MAX(rowid) - 5 FROM publications)`); err != nil {
 				t.Fatal(err)
 			}
-		}, "older than the file", "older than the file"},
+		}, "older than the file"},
 		{"the newest rows replaced under the same rowids", func(t *testing.T, f *derivedFixture, dir string) {
 			db := f.st.DB()
 			if _, err := db.Exec(`DELETE FROM assignments WHERE rowid > (SELECT MAX(rowid) - 40 FROM assignments)`); err != nil {
@@ -266,40 +258,7 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.grow(10) // takes the freed rowids again, with other rows
-		}, "is another one now", "is another one now"},
-		{"a memo entry the record contradicts", func(t *testing.T, f *derivedFixture, dir string) {
-			// The newest publication the memo holds a number for gets
-			// another number.
-			rows, err := f.st.DB().Query(`SELECT promise_hash FROM publications ORDER BY rowid DESC LIMIT ?`, memoChecked)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var newest []any
-			for rows.Next() {
-				var h string
-				if err := rows.Scan(&h); err != nil {
-					t.Fatal(err)
-				}
-				newest = append(newest, h)
-			}
-			rows.Close()
-			rewrite(t, filepath.Join(dir, originalRowsFile), func(m map[string]any) {
-				vals := m["values"].(map[string]any)
-				for _, want := range newest {
-					for k, hs := range vals {
-						list := hs.([]any)
-						for i, h := range list {
-							if h == want {
-								vals[k] = append(list[:i:i], list[i+1:]...)
-								vals["123456789"] = []any{h}
-								return
-							}
-						}
-					}
-				}
-				t.Fatal("fixture: none of the newest publications has a number in the memo")
-			})
-		}, "not the file's", ""},
+		}, "is another one now"},
 		{"a ledger row the store contradicts", func(t *testing.T, f *derivedFixture, dir string) {
 			rewrite(t, filepath.Join(dir, endorsementLedgerFile), func(m map[string]any) {
 				for _, e := range m["validators"].(map[string]any) {
@@ -309,12 +268,12 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 					return
 				}
 			})
-		}, "", "is not what the file says"},
+		}, "is not what the file says"},
 		{"a ledger mark the store contradicts", func(t *testing.T, f *derivedFixture, dir string) {
 			rewrite(t, filepath.Join(dir, endorsementLedgerFile), func(m map[string]any) {
 				m["up_to_row"].(map[string]any)["validator_address"] = "nobody"
 			})
-		}, "", "is another one now"},
+		}, "is another one now"},
 		{"a migration since the files", func(t *testing.T, f *derivedFixture, dir string) {
 			// One may rewrite, for rows below the marks, a column the files
 			// were computed from; the load would never see it.
@@ -322,39 +281,7 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 				SELECT MAX(version) + 1, ? FROM schema_migrations`, store.TS(f.now)); err != nil {
 				t.Fatal(err)
 			}
-		}, "computed under schema version", "computed under schema version"},
-		{"a memo entry below the ones read again, edited", func(t *testing.T, f *derivedFixture, dir string) {
-			// Past the newest memoChecked publications, which the load reads
-			// again: only the digest can tell.
-			var older []string
-			rows, err := f.st.DB().Query(`SELECT promise_hash FROM publications ORDER BY rowid DESC LIMIT -1 OFFSET ?`, memoChecked)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for rows.Next() {
-				var h string
-				if err := rows.Scan(&h); err != nil {
-					t.Fatal(err)
-				}
-				older = append(older, h)
-			}
-			rows.Close()
-			var mf memoFile
-			tamper(t, filepath.Join(dir, originalRowsFile), &mf, func() {
-				for _, want := range older {
-					for k, hs := range mf.Values {
-						for i, h := range hs {
-							if h == want {
-								mf.Values[k] = append(hs[:i:i], hs[i+1:]...)
-								mf.Values["24"] = append(mf.Values["24"], h)
-								return
-							}
-						}
-					}
-				}
-				t.Fatal("fixture: none of the older publications has a number in the memo")
-			})
-		}, "its digest is not its body's", ""},
+		}, "computed under schema version"},
 		{"a validator dropped from the ledger", func(t *testing.T, f *derivedFixture, dir string) {
 			// Nothing of it is left to read again, and only the assignments
 			// past up_to would be folded in later.
@@ -365,7 +292,7 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 					return
 				}
 			})
-		}, "", "its digest is not its body's"},
+		}, "its digest is not its body's"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -394,9 +321,8 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 					t.Errorf("%s was refused after %s: %q", what, c.name, origin)
 				}
 			}
-			check("the memo", next.origRows.origin, originalRowsFile, c.memo)
 			check("the ledger", next.recent.origin, endorsementLedgerFile, c.ledger)
-			t.Logf("memo: %s; ledger: %s", next.origRows.origin, next.recent.origin)
+			t.Logf("ledger: %s", next.recent.origin)
 		})
 	}
 }
@@ -405,11 +331,12 @@ func TestADerivedFileFromAnotherStoreOrAnEarlierStateIsRefused(t *testing.T) {
 // it is when the file is written. A process that runs across a migration
 // holds rows it read before, and the migration may have rewritten rows below
 // both marks (here it backfills the endorsements recorded before signatures
-// were verified, and the original_rows of records that had none), which
-// neither the memo nor the ledger reads again. Such a process writes nothing
-// under the new schema: it drops both and builds them again, so its figures,
-// and those of every start after it, are a cold build's.
-func TestAMemoAndALedgerReadBeforeAMigrationAreNotWrittenUnderIt(t *testing.T) {
+// were verified), which the ledger does not read again. Such a process writes
+// nothing under the new schema: it drops the ledger and builds it again, so
+// its figures, and those of every start after it, are a cold build's. The
+// load figures read original_rows from its column, so a backfill of it moves
+// them at once.
+func TestALedgerReadBeforeAMigrationIsNotWrittenUnderIt(t *testing.T) {
 	f := newDerivedFixture(t, 11)
 	ctx := context.Background()
 	db := f.st.DB()
@@ -423,8 +350,7 @@ func TestAMemoAndALedgerReadBeforeAMigrationAreNotWrittenUnderIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The collector migrates while s runs, and each backfill moves what one
-	// of the two feeds. The records it fills in are older than the ones the
-	// memo's load reads again.
+	// of the figures reads.
 	split := func(fig string) (load, recent string) {
 		i := strings.Index(fig, "recent ")
 		return fig[:i], fig[i:]
@@ -444,31 +370,28 @@ func TestAMemoAndALedgerReadBeforeAMigrationAreNotWrittenUnderIt(t *testing.T) {
 	// the record and the column the API reads it from (migration 27), as a backfill would write them
 	if _, err := db.Exec(`UPDATE publications
 		SET raw_json = json_set(raw_json, '$.assignment.protocol_params.original_rows', 4096), original_rows = 4096
-		WHERE json_type(raw_json, '$.assignment.protocol_params.original_rows') IS NULL
-			AND rowid <= (SELECT MAX(rowid) FROM publications) - ?`, memoChecked); err != nil {
+		WHERE json_type(raw_json, '$.assignment.protocol_params.original_rows') IS NULL`); err != nil {
 		t.Fatal(err)
 	}
 	if load2, _ := split(f.figures(f.server(""))); load2 == load1 {
 		t.Fatal("fixture: the original_rows backfilled move no load figure")
 	}
 	// The store goes on growing, and s folds the new rows in over what it
-	// read before, so both have grown when it writes them.
+	// read before, so the ledger has grown when it writes it.
 	f.grow(30)
 	want := f.figures(f.server(""))
 	f.figures(s)
 	if err := s.keepDerived(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for what, origin := range map[string]string{"the memo": s.origRows.origin, "the ledger": s.recent.origin} {
-		if !strings.HasPrefix(origin, "built from the store again: the store moved from schema version") {
-			t.Errorf("%s after the migration: %q, want it dropped", what, origin)
-		}
+	if origin := s.recent.origin; !strings.HasPrefix(origin, "built from the store again: the store moved from schema version") {
+		t.Errorf("the ledger after the migration: %q, want it dropped", origin)
 	}
 
-	// Nothing was written under the new identity: the files are still the
-	// ones from before, and a start that reads them refuses them.
+	// Nothing was written under the new identity: the file is still the one
+	// from before, and a start that reads it refuses it.
 	moved := t.TempDir()
-	for _, name := range []string{originalRowsFile, endorsementLedgerFile} {
+	for _, name := range []string{endorsementLedgerFile} {
 		p := filepath.Join(f.dir, name)
 		var h derivedHeader
 		if ok, why := readDerived(p, &h); !ok {
@@ -486,10 +409,8 @@ func TestAMemoAndALedgerReadBeforeAMigrationAreNotWrittenUnderIt(t *testing.T) {
 	}
 	next := f.server(moved)
 	got := f.figures(next)
-	for what, origin := range map[string]string{"the memo": next.origRows.origin, "the ledger": next.recent.origin} {
-		if !strings.Contains(origin, " refused: computed under schema version") {
-			t.Errorf("%s at a start after the migration: %q, want it refused", what, origin)
-		}
+	if origin := next.recent.origin; !strings.Contains(origin, " refused: computed under schema version") {
+		t.Errorf("the ledger at a start after the migration: %q, want it refused", origin)
 	}
 	if got != want {
 		t.Fatalf("a start after the migration:\n got %s\nwant %s", got, want)
@@ -506,8 +427,8 @@ func TestAMemoAndALedgerReadBeforeAMigrationAreNotWrittenUnderIt(t *testing.T) {
 	if got := f.figures(again); got != want {
 		t.Fatalf("a start after it wrote again:\n got %s\nwant %s", got, want)
 	}
-	if !strings.HasPrefix(again.origRows.origin, "loaded ") || !strings.HasPrefix(again.recent.origin, "loaded ") {
-		t.Errorf("a start after it wrote again: memo %q, ledger %q", again.origRows.origin, again.recent.origin)
+	if !strings.HasPrefix(again.recent.origin, "loaded ") {
+		t.Errorf("a start after it wrote again: ledger %q", again.recent.origin)
 	}
 }
 
@@ -523,7 +444,7 @@ func TestConcurrentWritesOfADerivedFileLeaveItWhole(t *testing.T) {
 		Pad    string `json:"pad"`
 	}
 	dir := t.TempDir()
-	path := filepath.Join(dir, originalRowsFile)
+	path := filepath.Join(dir, endorsementLedgerFile)
 	const writers, writes = 8, 40
 	errs := make(chan error, writers*writes)
 	var wg sync.WaitGroup
@@ -577,7 +498,7 @@ func TestConcurrentWritesOfADerivedFileLeaveItWhole(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range names {
-		if e.Name() != originalRowsFile {
+		if e.Name() != endorsementLedgerFile {
 			t.Errorf("left beside the file: %s", e.Name())
 		}
 	}
@@ -596,7 +517,7 @@ func TestARefusedDerivedFileIsLeftForTheNextWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	theirs := map[string][]byte{}
-	for _, name := range []string{originalRowsFile, endorsementLedgerFile} {
+	for _, name := range []string{endorsementLedgerFile} {
 		b, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			t.Fatal(err)
@@ -607,19 +528,14 @@ func TestARefusedDerivedFileIsLeftForTheNextWrite(t *testing.T) {
 	f := newDerivedFixture(t, 13)
 	db := f.st.DB()
 	s := f.server(dir)
-	if err := s.origRows.open(ctx, db); err != nil {
-		t.Fatal(err)
-	}
 	s.recent.mu.Lock()
 	err := s.recent.open(ctx, db)
 	s.recent.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for what, origin := range map[string]string{"the memo": s.origRows.origin, "the ledger": s.recent.origin} {
-		if !strings.Contains(origin, " refused: computed from another store") {
-			t.Errorf("%s over another store's file: %q, want it refused", what, origin)
-		}
+	if origin := s.recent.origin; !strings.Contains(origin, " refused: computed from another store") {
+		t.Errorf("the ledger over another store's file: %q, want it refused", origin)
 	}
 	for name, b := range theirs {
 		got, err := os.ReadFile(filepath.Join(dir, name))
@@ -640,8 +556,8 @@ func TestARefusedDerivedFileIsLeftForTheNextWrite(t *testing.T) {
 	if got := f.figures(next); got != want {
 		t.Fatalf("a start after it wrote:\n got %s\nwant %s", got, want)
 	}
-	if !strings.HasPrefix(next.origRows.origin, "loaded ") || !strings.HasPrefix(next.recent.origin, "loaded ") {
-		t.Errorf("a start after it wrote: memo %q, ledger %q", next.origRows.origin, next.recent.origin)
+	if !strings.HasPrefix(next.recent.origin, "loaded ") {
+		t.Errorf("a start after it wrote: ledger %q", next.recent.origin)
 	}
 }
 
@@ -655,7 +571,7 @@ func TestADerivedFileWithAnyByteChangedIsRefused(t *testing.T) {
 	if err := s.keepDerived(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{originalRowsFile, endorsementLedgerFile} {
+	for _, name := range []string{endorsementLedgerFile} {
 		p := filepath.Join(dir, name)
 		var v map[string]any
 		if ok, why := readDerived(p, &v); !ok {
@@ -714,79 +630,17 @@ func TestTheLedgerFoldIsTheOneItsVersionNames(t *testing.T) {
 	}
 }
 
-// No computation waits for the memo's file. With a write holding it for as
-// long as it likes, a computation still reads the file's state, learns what
-// the memo lacks and answers, and the write it asks for is made once the
-// file is free, in the background.
-func TestAComputationDoesNotWaitForTheMemosFile(t *testing.T) {
-	f := newDerivedFixture(t, 9)
-	ctx := context.Background()
-	s := f.server(f.dir)
-	f.figures(s)
-	s.origRows.wait()
-
-	f.grow(40)
-	want := f.figures(f.server(""))
-	s.origRows.mu.Lock()
-	s.origRows.savedAt = time.Time{} // as if memoSaveEvery had passed
-	s.origRows.mu.Unlock()
-	s.origRows.fileMu.Lock() // a write that takes its time
-	held := true
-	release := func() {
-		if held {
-			held = false
-			s.origRows.fileMu.Unlock()
-		}
-	}
-	defer release()
-	done := make(chan error, 1)
-	go func() {
-		for _, win := range fxWindows(f.now) {
-			if _, err := s.loadByValidatorAt(ctx, win, "", f.now); err != nil {
-				done <- err
-				return
-			}
-		}
-		done <- nil
-	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("a computation waited for a write of the memo's file")
-	}
-	release()
-	if got := f.figures(s); got != want {
-		t.Fatalf("with the file held:\n got %s\nwant %s", got, want)
-	}
-
-	s.origRows.wait()
-	var mf memoFile
-	if ok, why := readDerived(filepath.Join(f.dir, originalRowsFile), &mf); !ok {
-		t.Fatalf("the memo's file: %s", why)
-	}
-	n := len(mf.Nulls)
-	for _, hs := range mf.Values {
-		n += len(hs)
-	}
-	if n != s.origRows.size() {
-		t.Errorf("the file holds %d entries, the memo %d: the write asked for while the file was held was not made", n, s.origRows.size())
-	}
-}
-
 // A write stopped before its rename leaves a temporary file of its own that
 // no later write replaces; the next open removes the ones old enough that no
 // write can still be making them, and leaves a fresh one, which may be
 // another process's write in flight.
 func TestAnOldTemporaryFileOfADerivedWriteIsSwept(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "original-rows.json")
+	path := filepath.Join(dir, "endorsement-ledger.json")
 	now := time.Now()
-	old := filepath.Join(dir, "original-rows.json.111.tmp")
-	fresh := filepath.Join(dir, "original-rows.json.222.tmp")
-	other := filepath.Join(dir, "endorsement-ledger.json.333.tmp")
+	old := filepath.Join(dir, "endorsement-ledger.json.111.tmp")
+	fresh := filepath.Join(dir, "endorsement-ledger.json.222.tmp")
+	other := filepath.Join(dir, "day-partials.json.333.tmp")
 	for _, p := range []string{old, fresh, other} {
 		if err := os.WriteFile(p, []byte("{"), 0o644); err != nil {
 			t.Fatal(err)

@@ -10,6 +10,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -38,7 +39,7 @@ var schemaSQL string
 // an upgraded one — baseline, then every migration — so the two end up
 // identical in shape and the migration code is exercised by every test run
 // rather than only on upgrade day.
-const SchemaVersion = 28
+const SchemaVersion = 29
 
 // migration is one numbered step above the baseline. The statements run in a
 // single transaction: SQLite supports transactional DDL, so a failed step
@@ -47,6 +48,13 @@ type migration struct {
 	version int
 	note    string
 	stmts   []string
+	// check, when set, runs first in the migration's transaction; an error
+	// refuses the migration, which leaves the store as it was.
+	check func(tx *sql.Tx) error
+	// backfill, when set, runs last in the migration's transaction, for rows
+	// no statement can read (a record in its slim form). It returns the rows
+	// it wrote, counted as a statement's are.
+	backfill func(s *Store, tx *sql.Tx) (int64, error)
 }
 
 // migrations must stay append-only and in ascending order. Never edit a
@@ -562,7 +570,9 @@ var migrations = []migration{
 			// uncertainty axis while the first stays invisible would be
 			// worse than having one. Backfilled from raw_json, which the
 			// retention pass strips after 30 days; older rows keep 0, which
-			// understates rather than invents.
+			// understates rather than invents. (Nothing wrote it on insert
+			// until migration 29, which fills the rows stored meanwhile:
+			// leftovers.go.)
 			// The ninth obligation bucket. Rolled days from before this
 			// migration keep 0, which is honest: nothing was held then.
 			`ALTER TABLE obligation_daily ADD COLUMN held_param_unverified INTEGER NOT NULL DEFAULT 0`,
@@ -795,6 +805,10 @@ var migrations = []migration{
 			 ON CONFLICT(key) DO NOTHING`,
 		},
 	},
+	// leftovers.go (leftoversMigration): what the sampling and the second
+	// vantage's confirmations left goes, and must_serve_until_ambiguous is
+	// written.
+	leftoversMigration,
 }
 
 // Store wraps one SQLite database.
@@ -804,7 +818,13 @@ type Store struct {
 	slim slimState
 	// counts keeps Count's running totals: see Count.
 	counts rowCounts
+	// said is the rows leftAside has named, so each is logged once.
+	said sync.Map
 }
+
+// busyTimeoutMS is how long a statement waits out another connection's lock
+// before it fails with busy (CheckpointWAL alone sets none).
+const busyTimeoutMS = 5000
 
 // Open opens or creates the SQLite database at path, applies the pragmas the
 // observer relies on (WAL, busy timeout) and the schema. ":memory:" is
@@ -822,7 +842,7 @@ func Open(path string) (*Store, error) {
 		// blocking VACUUM of a multi-gigabyte database is not something to
 		// run behind a live API; the collector releases pages after a prune
 		// (Store.ReclaimSpace).
-		dsn = "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=auto_vacuum(incremental)"
+		dsn = "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(" + strconv.Itoa(busyTimeoutMS) + ")&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=auto_vacuum(incremental)"
 	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -866,7 +886,7 @@ func OpenReadOnly(path string) (*Store, error) {
 	// mmap_size lets reads come from the page cache without a copy into
 	// SQLite's own. 1 GiB is a ceiling, not a reservation: only pages actually
 	// touched are mapped.
-	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=query_only(1)" +
+	dsn := "file:" + path + "?_pragma=busy_timeout(" + strconv.Itoa(busyTimeoutMS) + ")&_pragma=query_only(1)" +
 		"&_pragma=cache_size(-49152)&_pragma=mmap_size(1073741824)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -1009,6 +1029,11 @@ func (s *Store) applyMigration(m migration) error {
 		return err
 	}
 	defer tx.Rollback()
+	if m.check != nil {
+		if err := m.check(tx); err != nil {
+			return fmt.Errorf("migration %d (%s) refused: %w", m.version, m.note, err)
+		}
+	}
 	var rewritten int64
 	for _, stmt := range m.stmts {
 		res, err := tx.Exec(stmt)
@@ -1022,10 +1047,17 @@ func (s *Store) applyMigration(m migration) error {
 			}
 			return fmt.Errorf("migration %d (%s): %w\n%s", m.version, m.note, err, stmt)
 		}
-		if reRewrite.MatchString(stmt) {
+		if reRewrite.MatchString(stmt) && !writesMeta(stmt) {
 			n, _ := res.RowsAffected()
 			rewritten += n
 		}
+	}
+	if m.backfill != nil {
+		n, err := m.backfill(s, tx)
+		if err != nil {
+			return fmt.Errorf("migration %d (%s): backfill: %w", m.version, m.note, err)
+		}
+		rewritten += n
 	}
 	if rewritten > 0 {
 		if _, err := tx.Exec(`INSERT INTO meta (key, value, updated_at) VALUES (?, '1', ?)
@@ -1047,7 +1079,7 @@ func (s *Store) applyMigration(m migration) error {
 // that wrote a row: a backfill over rows already stored), advanced in the
 // migration's own transaction. A migration that only adds tables, columns
 // or indexes leaves it alone, and so does a backfill over a new store,
-// which has no rows to rewrite.
+// which has no rows to rewrite, and so does a note in meta (writesMeta).
 //
 // What is derived from the store and kept across restarts (the API's day
 // partials) is begun again when a migration rewrote rows it was computed
@@ -1059,6 +1091,22 @@ const MetaMigrationRewrites = "migration_rewrites"
 
 // reRewrite is a statement that writes rows rather than the schema.
 var reRewrite = regexp.MustCompile(`(?is)^\s*(INSERT|UPDATE|DELETE|REPLACE|WITH)\b`)
+
+// reWrites is the table a statement that starts by naming it writes.
+var reWrites = regexp.MustCompile(`(?is)^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+(\w+)`)
+
+// writesMeta reports a statement that writes meta, which no migration counts
+// as a rewrite: a migration's write there is a note for whoever reads the
+// store by hand (migration 28's slim boundary) or this count itself, and the
+// keys derived data does read (raw_from, the holds' revision) are read again
+// at every look, whoever moved them. Counting migration 28's note made every
+// API discard and rebuild its day partials, a heavy read on the disk the
+// store shares, with nothing they read changed. A statement whose target the
+// pattern cannot name (one led by WITH) is counted.
+func writesMeta(stmt string) bool {
+	m := reWrites.FindStringSubmatch(stmt)
+	return m != nil && strings.EqualFold(m[1], "meta")
+}
 
 // addsColumn reports an ALTER TABLE ... ADD COLUMN statement.
 func addsColumn(stmt string) bool {
@@ -1402,13 +1450,16 @@ func (s *Store) UpsertParams(entries []scan.ParamEntry) error {
 // both to learn about it.
 func (s *Store) UpsertPublication(p scan.Publication, raw []byte) (inserted bool, err error) {
 	ctx := context.Background()
+	s.slim.enc.Lock()
+	defer s.slim.enc.Unlock()
 	t, err := s.tables(ctx, s.db, false)
 	if err != nil {
 		return false, err
 	}
-	// the record in its slim form; the table entries it adds are kept with it, or forgotten if it is not
+	// the record in its slim form (or its line, where that does not read back); the table entries it adds are kept
+	// with it, or forgotten if it is not
 	kept := t.Stored()
-	body, pub, err := t.EncodePublication(raw)
+	body, pub, err := publicationBody(t, raw, kept)
 	if err != nil {
 		return false, fmt.Errorf("publication %s: slim: %w", p.PromiseHash, err)
 	}
@@ -1445,9 +1496,10 @@ func (s *Store) UpsertPublication(p scan.Publication, raw []byte) (inserted bool
 		 validator_set_height, total_voting_power, sigma_rows, distinct_rows, wrap_overlaps, validators_with_rows,
 		 recorded_at, raw_json,
 		 attested_with_rows, attested_voting_power, signature_entries, signatures_verified,
-		 signatures_unmatched, signatures_out_of_position, original_rows, total_rows, retention_unverified)
+		 signatures_unmatched, signatures_out_of_position, must_serve_until_ambiguous, original_rows, total_rows,
+		 retention_unverified)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-		        ?, ?, ?, ?, ?, ?,
+		        ?, ?, ?, ?, ?, ?, ?,
 		-- the two values the queries used to read out of raw_json, read out of the line the same way
 		json_extract(?, '$.assignment.protocol_params.original_rows'), json_extract(?, '$.assignment.protocol_params.total_rows'),
 		-- Born withheld when a range that still withholds already covers
@@ -1468,6 +1520,7 @@ func (s *Store) UpsertPublication(p scan.Publication, raw []byte) (inserted bool
 		ts(p.RecordedAt), body,
 		att(int64(a.AttestedWithRows)), att(a.AttestedVotingPower), att(int64(a.SignatureEntries)),
 		att(int64(a.SignaturesVerified)), att(int64(a.SignaturesUnmatched)), att(int64(a.SignaturesOutOfPosition)),
+		b2i(p.MustServeUntilAmbiguous),
 		string(raw), string(raw),
 		p.Promise.Height, p.SettlementHeight)
 	if err != nil {
@@ -1475,22 +1528,18 @@ func (s *Store) UpsertPublication(p scan.Publication, raw []byte) (inserted bool
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
+		// stored already: what the line added to the tables is kept only once this commit succeeds
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
 		committed = true
-		return false, tx.Commit()
+		return false, nil
 	}
 	for _, v := range a.Validators {
-		var rowsJSON any
-		if v.Rows != nil {
-			// the validator's own assignment is marked, not copied: the record's set and commitment give it again
-			if got := intsToU32(v.Rows); sameRows(pub, v.Address, got) {
-				rowsJSON = RowsAssigned
-			} else {
-				b, err := json.Marshal(v.Rows)
-				if err != nil {
-					return false, err
-				}
-				rowsJSON = string(b)
-			}
+		// the validator's own assignment is marked, not copied: the record's set and commitment give it again
+		rowsJSON, err := assignmentRows(pub, v.Address, v.Rows)
+		if err != nil {
+			return false, err
 		}
 		var attested any
 		if p.HasAttestation() {
@@ -1538,12 +1587,25 @@ func intsToU32(xs []int) []uint32 {
 // publication is already stored as a decision is not stored: the decision
 // stands for it (see sampledout.go), and it was deleted when the decision
 // was made from it.
+//
+// A reading whose publication is stored but does not decode (ErrUndecodable)
+// is stored as its line, its rows as a list, and the publication is named
+// once in the log: a slim reading is read back through its publication, and
+// refusing the reading would stop its file's ingest at this line for good,
+// every later reading waiting behind it.
 func (s *Store) InsertProbe(m probe.Measurement, raw []byte) (inserted bool, err error) {
 	if decided, err := s.sampledOutDecided(m); err != nil || decided {
 		return false, err
 	}
 	ctx := context.Background()
+	s.slim.enc.Lock()
+	defer s.slim.enc.Unlock()
 	pub, err := s.pub(ctx, s.db, m.PromiseHash)
+	asLine := errors.Is(err, ErrUndecodable)
+	if asLine {
+		s.sayOnce("readings of "+m.PromiseHash, "store: the readings of %s are stored as their lines: %v", m.PromiseHash, err)
+		pub, err = nil, nil
+	}
 	if err != nil {
 		return false, err
 	}
@@ -1551,11 +1613,14 @@ func (s *Store) InsertProbe(m probe.Measurement, raw []byte) (inserted bool, err
 	if err != nil {
 		return false, err
 	}
-	// the record in its slim form, against its publication; the table entries it adds are kept with it
+	// the record in its slim form against its publication (or its line, where that does not read back, or where the
+	// publication does not decode); the table entries it adds are kept with it
 	kept := t.Stored()
-	body, err := t.EncodeMeasurement(raw, pub, s.lookup(ctx, s.db))
-	if err != nil {
-		return false, fmt.Errorf("probe %s: slim: %w", m.DedupeKey(), err)
+	var body any = string(raw)
+	if !asLine {
+		if body, err = measurementBody(t, raw, pub, s.lookup(ctx, s.db), kept); err != nil {
+			return false, fmt.Errorf("probe %s: slim: %w", m.DedupeKey(), err)
+		}
 	}
 	committed := false
 	defer func() {
@@ -1564,10 +1629,7 @@ func (s *Store) InsertProbe(m probe.Measurement, raw []byte) (inserted bool, err
 		}
 	}()
 	// the validator's own assignment is marked, not copied
-	rowIdx := nullIfEmpty(rowIndicesJSON(m))
-	if sameRows(pub, m.ValidatorAddress, m.Download.RowIndices) {
-		rowIdx = RowsAssigned
-	}
+	rowIdx := readingRows(pub, m.ValidatorAddress, m.Download.RowIndices)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return false, err
@@ -1680,12 +1742,12 @@ func nullIfEmpty(s string) any {
 	return s
 }
 
-// rowIndicesJSON is the returned row indices as a JSON array, "" when none.
-func rowIndicesJSON(m probe.Measurement) string {
-	if len(m.Download.RowIndices) == 0 {
+// rowIndicesJSON is a reading's returned row indices as a JSON array, "" when none.
+func rowIndicesJSON(rows []uint32) string {
+	if len(rows) == 0 {
 		return ""
 	}
-	b, err := json.Marshal(m.Download.RowIndices)
+	b, err := json.Marshal(rows)
 	if err != nil {
 		return ""
 	}
@@ -2075,7 +2137,7 @@ func (s *Store) ReclaimSpace(ctx context.Context, maxPages int) (freed int64, er
 }
 
 // CheckpointWAL copies the write-ahead log back into the database and, when
-// no reader is holding a snapshot, truncates it.
+// no reader is holding an older snapshot, truncates it.
 //
 // SQLite's own auto-checkpoint copies pages back but never resets the file,
 // and it cannot reset one while any reader has a snapshot open. The API holds
@@ -2086,12 +2148,37 @@ func (s *Store) ReclaimSpace(ctx context.Context, maxPages int) (freed int64, er
 // probe rows, on the same volume as the database and counted by the health
 // check's disk threshold.
 //
-// Called once per collector pass. It returns busy without doing anything when
-// a reader is in the way, which is not an error: the next pass tries again.
+// Called once per collector pass. When a reader is in the way it copies what
+// the readers allow and returns busy at once, which is not an error: the next
+// pass tries again. It does not wait for the reader. SQLite's TRUNCATE waits
+// in the connection's busy handler for every reader on an older snapshot to
+// leave before it gives up, up to the busy timeout (5 s), and the collector
+// has one goroutine: the fast tick, which is meant to bring a new blob to the
+// API within a second, waited with it. So the checkpoint runs with no busy
+// timeout, on a connection of its own for the length of the call, and the
+// timeout is put back on it after (a connection that cannot take it back is
+// closed, not handed to the next statement). The collector is the store's one
+// writer, so the writer lock it also takes is never held by anyone else.
 // The counts are the SQLite pragma's own: log frames and frames checkpointed.
 func (s *Store) CheckpointWAL(ctx context.Context) (busy bool, inLog, checkpointed int64, err error) {
+	c, err := s.db.Conn(ctx)
+	if err != nil {
+		return false, 0, 0, err
+	}
+	defer c.Close()
+	if _, err := c.ExecContext(ctx, `PRAGMA busy_timeout = 0`); err != nil {
+		return false, 0, 0, err
+	}
+	defer func() {
+		if _, rerr := c.ExecContext(context.Background(), `PRAGMA busy_timeout = `+strconv.Itoa(busyTimeoutMS)); rerr != nil {
+			_ = c.Raw(func(any) error { return driver.ErrBadConn })
+			if err == nil {
+				err = fmt.Errorf("restore busy timeout: %w", rerr)
+			}
+		}
+	}()
 	var b int64
-	err = s.db.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&b, &inLog, &checkpointed)
+	err = c.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&b, &inLog, &checkpointed)
 	return b == 1, inLog, checkpointed, err
 }
 
@@ -2231,17 +2318,14 @@ func (s *Store) growingCounts(ctx context.Context) ([len(countedTables)]int64, e
 func (s *Store) InsertReachability(m probe.Measurement, raw []byte) (inserted bool, err error) {
 	key := m.Vantage + "|" + m.ValidatorAddress + "|" + m.ScheduledAt.UTC().Format(time.RFC3339Nano)
 	ctx := context.Background()
+	s.slim.enc.Lock()
+	defer s.slim.enc.Unlock()
 	t, err := s.tables(ctx, s.db, false)
 	if err != nil {
 		return false, err
 	}
 	kept := t.Stored()
-	var body any = string(raw)
-	if b, err := t.EncodeReachability(raw); err == nil {
-		body = b
-	} else {
-		t.Rollback(kept) // kept as its line: whatever the attempt added is not needed
-	}
+	body, _ := reachabilityBody(t, raw, kept)
 	committed := false
 	defer func() {
 		if !committed {
@@ -2331,6 +2415,12 @@ var ErrNoSuchRow = errors.New("no probe row with this key")
 // is how long past must_serve_until a candidate's shard is still taken to
 // be on disk (the store's prune lag). Nothing is written: the caller applies
 // each amendment (ApplyAmendment) and records it.
+//
+// A row whose own rows, or a candidate's assignment, do not decode
+// (ErrUndecodable) is left deferred and said once in the log, and the other
+// rows are judged: a verdict is final once recorded, so none is drawn from a
+// record this build cannot read, and one such row no longer holds back every
+// other row's.
 func (s *Store) LateShadowVerdicts(ctx context.Context, frontier, now time.Time, tolerance time.Duration) ([]Amendment, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT pr.dedupe_key, pr.promise_hash, pr.commitment, pr.validator_address, pr.scheduled_at, pr.started_at,
 			COALESCE(pr.row_indices, ''), pr.shadow_gap, pr.classification, pb.payment_promise_timeout_s
@@ -2389,6 +2479,12 @@ func (s *Store) LateShadowVerdicts(ctx context.Context, frontier, now time.Time,
 		}
 		var got []int
 		indices, err := s.RowIndices(ctx, s.db, p.hash, p.addr, p.indices)
+		if errors.Is(err, ErrUndecodable) {
+			// The row's own records do not decode: it stays deferred, for a
+			// build that reads them, and the other rows are judged.
+			s.leftAside("probe "+p.key+" (late verdict)", err)
+			continue
+		}
 		if err != nil {
 			return out, err
 		}
@@ -2424,9 +2520,16 @@ func (s *Store) LateShadowVerdicts(ctx context.Context, frontier, now time.Time,
 			return out, err
 		}
 		match, unrecorded := "", false
+		var unread error
 		for _, c := range cs {
 			h := c.h
 			rj, err := s.AssignedRows(ctx, s.db, h, p.addr, c.rj)
+			if errors.Is(err, ErrUndecodable) {
+				// A candidate whose assignment does not decode may be the
+				// one that owns the rows: no verdict is drawn without it.
+				unread = fmt.Errorf("candidate %s: %w", h, err)
+				break
+			}
 			if err != nil {
 				return out, err
 			}
@@ -2443,6 +2546,10 @@ func (s *Store) LateShadowVerdicts(ctx context.Context, frontier, now time.Time,
 				match = h
 				break
 			}
+		}
+		if unread != nil {
+			s.leftAside("probe "+p.key+" (late verdict)", unread)
+			continue
 		}
 		switch {
 		case match != "":

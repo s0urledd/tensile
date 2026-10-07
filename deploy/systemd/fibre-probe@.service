@@ -9,7 +9,12 @@ EnvironmentFile=/etc/fibre-observer/%i.env
 # PROBE_ARGS (optional, in the env file): extra flags for the prober, for
 # example -max-read-mbps 600 -link-mbps 900. Unbraced so an empty value adds
 # no argument, and each flag is its own argument.
-ExecStart=/usr/local/bin/sentinel-probe -rpc ${RPC} -data-dir ${DATA_DIR} -vantage ${VANTAGE} -policy ${POLICY} -end-read -end-read-since ${END_READ_SINCE} $PROBE_ARGS
+#
+# No -policy: nothing is sampled any more, and the day secrets of the last
+# draws (September 2026) were revealed by 2026-10-04. Without it the prober
+# reveals nothing and holds no sampling key; with it, it would only read a
+# key already there, never create one.
+ExecStart=/usr/local/bin/sentinel-probe -rpc ${RPC} -data-dir ${DATA_DIR} -vantage ${VANTAGE} -end-read -end-read-since ${END_READ_SINCE} $PROBE_ARGS
 Restart=always
 RestartSec=5
 NoNewPrivileges=true

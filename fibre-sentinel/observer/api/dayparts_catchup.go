@@ -842,11 +842,7 @@ func (s *Server) readLedger(ctx context.Context, q store.Querier, from, hi int64
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	doc, err := s.origRows.docWhere(ctx, s.st.DB(), `p.rowid > ? AND p.rowid <= ? AND p.settlement_tx_code = 0 AND p.assignment_error = ''`, from, hi)
-	if err != nil {
-		return nil, err
-	}
-	rows, err = q.QueryContext(ctx, ledgerLoadSQL, from, hi, doc)
+	rows, err = q.QueryContext(ctx, ledgerLoadSQL, from, hi)
 	if err != nil {
 		return nil, err
 	}

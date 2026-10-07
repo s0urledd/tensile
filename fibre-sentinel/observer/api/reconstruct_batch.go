@@ -320,8 +320,9 @@ func (s *Server) reconstructBatch(ctx context.Context, where string, limit int, 
 			// Within the overlaps of the threshold (duplicated verified rows
 			// put the distinct count anywhere between the bounds): only the
 			// exact count can answer. Rare enough to pay for one blob at a
-			// time.
-			ref, err := s.reconstructable(ctx, hash, pin)
+			// time. A blob whose record does not decode is "unknown" here,
+			// marked faulted, and the batch goes on (rowfault.go).
+			ref, err := s.readStatus(ctx, hash, pin)
 			if err != nil {
 				return nil, fmt.Errorf("reconstructable %s: %w", hash, err)
 			}

@@ -69,7 +69,21 @@
 #                   the state stays degraded; recovery alerts; a two-line
 #                   state file from the older build does not alert by
 #                   itself; a failed nightly backup or archive unit is a
-#                   failing check of its own
+#                   failing check of its own; a run exits 0 whatever the
+#                   observer's state; an alert every destination refused is
+#                   not recorded, fails the run and is sent again by the
+#                   next; a state that cannot be written fails the run
+#                   after the alert went out, and the next alerts again; a
+#                   backup copy older than 26 h (with BACKUP_REMOTE set),
+#                   none at all beside two-day-old exports, yesterday's
+#                   export missing after 04:00 UTC, a second vantage with
+#                   nothing new for 30 min (its live file emptied by a
+#                   rotation too), and a failed pull unit with nothing new
+#                   for 10 min each fail a check of their own; so does
+#                   yesterday's export whose newest line in
+#                   exports/remote.jsonl is ok false, or that has none,
+#                   from 06:00 UTC with BACKUP_REMOTE set; a new host
+#                   with no exports directory yet completes its run
 #   snapshot_code   a 503 with "computing": true is asked again until the
 #                   deadline; a 503 without it and a 200 are final at once
 #
@@ -634,6 +648,148 @@ check eq "$(sed -n 3p "$hwstate")" chain_liveness,fibre-archive@t,fibre-backup@t
 : > "$T/failed-units"
 hw "$p200"; check eq "$(posts)" 6
 check contains "$(lastpost)" recovered
+# hwx <api port> [VAR=value...]: one run with the environment given on top
+# of hw's; prints its exit status
+hwx() {
+  local port=$1 st=0
+  shift
+  env API_LISTEN="127.0.0.1:$port" DATA_DIR="$T/hw" NETWORK=t ALERT_REPEAT_MIN=60 \
+    SYSTEMCTL="$T/systemctl" FAKE_FAILED_UNITS="$T/failed-units" \
+    ALERT_WEBHOOK="http://127.0.0.1:$hook/" "$@" bash "$HW" t >> "$T/check.log" 2>&1 || st=$?
+  echo "$st"
+}
+hwreset() { printf 'ok\n%s\n\n' "${1:-$(date +%s)}" > "$hwstate"; } # a state with nothing failing
+# the observer's state is the alert's, not the watcher's: a run that
+# alerted about a degraded observer exits 0
+hwreset
+check eq "$(hwx "$p503")" 0
+check eq "$(sed -n 1p "$hwstate")" degraded
+check eq "$(hwx "$p200")" 0
+# an alert every destination refused is not recorded, fails the run, and
+# is sent again by the next one
+serve fake-http.py --code 500 --record "$T/hook500.log"; hook500=$PORT
+hwreset
+check eq "$(hwx "$p503" ALERT_WEBHOOK="http://127.0.0.1:$hook500/")" 1
+check eq "$(sed -n 1p "$hwstate")" ok
+n=$(posts)
+check eq "$(hwx "$p503")" 0
+check eq "$(posts)" $((n + 1))
+check eq "$(sed -n 1p "$hwstate")" degraded
+# a state that cannot be written (a full disk; here a file where its
+# directory goes) fails the run after the alert went out, and the next run
+# alerts again rather than staying silent
+mkdir -p "$T/hw3"; : > "$T/hw3/status"
+n=$(posts)
+check eq "$(hwx "$p503" DATA_DIR="$T/hw3")" 1
+check eq "$(posts)" $((n + 1))
+check eq "$(hwx "$p503" DATA_DIR="$T/hw3")" 1
+check eq "$(posts)" $((n + 2))
+# Outcomes, at a fixed clock: noon UTC on 2026-10-07, with yesterday's
+# export in place and proven on the remote.
+noon=$(date -u -d 2026-10-07T12:00:00Z +%s)
+mkdir -p "$T/hw/exports"
+touch "$T/hw/exports/tensile-t-2026-10-06.tar.gz"
+proof() { # proof <export> <true|false>: one line of the backup's remote proof
+  printf '{"name":"%s","sha256":"%064d","checked_at":"2026-10-07T03:40:00Z","ok":%s,"remote":"0123456789abcdef"}\n' "$1" 0 "$2" >> "$T/hw/exports/remote.jsonl"
+}
+proof tensile-t-2026-10-06.tar.gz true
+# the backup's last finished copy: 32 hours old fails with BACKUP_REMOTE
+# set, and says nothing without it; a fresh one recovers
+printf '{"copied_at":"2026-10-06T03:20:00Z","remote":"0123456789abcdef"}\n' > "$T/hw/exports/remote-copy.json"
+hwreset "$noon"
+check eq "$(hwx "$p200" HEALTHWATCH_NOW="$noon")" 0
+check eq "$(sed -n 1p "$hwstate")" ok
+check eq "$(hwx "$p200" HEALTHWATCH_NOW="$noon" BACKUP_REMOTE=r:bucket)" 0
+check eq "$(sed -n 3p "$hwstate")" backup-copy
+check contains "$(lastpost)" "no backup copy has finished for 32h"
+printf '{"copied_at":"2026-10-07T03:20:00Z","remote":"0123456789abcdef"}\n' > "$T/hw/exports/remote-copy.json"
+hwx "$p200" HEALTHWATCH_NOW="$noon" BACKUP_REMOTE=r:bucket >/dev/null
+check contains "$(lastpost)" recovered
+# no copy ever recorded, with exports there for two days, fails too
+rm -f "$T/hw/exports/remote-copy.json"
+touch -d 2026-10-05T03:05:00Z "$T/hw/exports/tensile-t-2026-10-04.tar.gz"
+hwx "$p200" HEALTHWATCH_NOW="$noon" BACKUP_REMOTE=r:bucket >/dev/null
+check eq "$(sed -n 3p "$hwstate")" backup-copy
+check contains "$(lastpost)" "no backup copy has ever finished"
+rm -f "$T/hw/exports/tensile-t-2026-10-04.tar.gz"
+# yesterday's export not proven on the remote, with BACKUP_REMOTE set and
+# the copies finishing: its newest line there ok false (a remote that takes
+# copies and cannot give them back), or none at all, fails from 06:00 UTC;
+# a proof recovers
+printf '{"copied_at":"2026-10-07T03:20:00Z","remote":"0123456789abcdef"}\n' > "$T/hw/exports/remote-copy.json"
+proof tensile-t-2026-10-06.tar.gz false
+hwreset "$noon"
+hwx "$p200" HEALTHWATCH_NOW="$(date -u -d 2026-10-07T05:30:00Z +%s)" BACKUP_REMOTE=r:bucket >/dev/null
+check eq "$(sed -n 1p "$hwstate")" ok
+hwx "$p200" HEALTHWATCH_NOW="$noon" >/dev/null
+check eq "$(sed -n 1p "$hwstate")" ok
+check eq "$(hwx "$p200" HEALTHWATCH_NOW="$noon" BACKUP_REMOTE=r:bucket)" 0
+check eq "$(sed -n 3p "$hwstate")" backup-proof
+check contains "$(lastpost)" "tensile-t-2026-10-06.tar.gz not proven on the remote"
+proof tensile-t-2026-10-06.tar.gz true
+hwx "$p200" HEALTHWATCH_NOW="$noon" BACKUP_REMOTE=r:bucket >/dev/null
+check contains "$(lastpost)" recovered
+: > "$T/hw/exports/remote.jsonl"
+proof tensile-t-2026-10-05.tar.gz true
+hwx "$p200" HEALTHWATCH_NOW="$noon" BACKUP_REMOTE=r:bucket >/dev/null
+check eq "$(sed -n 3p "$hwstate")" backup-proof
+check contains "$(lastpost)" "tensile-t-2026-10-06.tar.gz not proven on the remote"
+proof tensile-t-2026-10-06.tar.gz true
+hwx "$p200" HEALTHWATCH_NOW="$noon" BACKUP_REMOTE=r:bucket >/dev/null
+check contains "$(lastpost)" recovered
+# yesterday's export missing: not yet at 03:30 UTC, a failing check from
+# 04:00 on, recovered once it is there
+rm -f "$T/hw/exports/tensile-t-2026-10-06.tar.gz"
+hwreset "$noon"
+hwx "$p200" HEALTHWATCH_NOW="$(date -u -d 2026-10-07T03:30:00Z +%s)" >/dev/null
+check eq "$(sed -n 1p "$hwstate")" ok
+hwx "$p200" HEALTHWATCH_NOW="$noon" >/dev/null
+check eq "$(sed -n 3p "$hwstate")" export
+check contains "$(lastpost)" "no daily export for 2026-10-06 after 04:00 UTC"
+touch "$T/hw/exports/tensile-t-2026-10-06.tar.gz"
+hwx "$p200" HEALTHWATCH_NOW="$noon" >/dev/null
+check contains "$(lastpost)" recovered
+# a second vantage: nothing new for 40 minutes fails; a failed pull unit
+# fails once nothing came for 15 minutes, and is noise after 2; a vantage
+# that never sent anything is not judged
+mkdir -p "$T/hw/vantages/de-1" "$T/hw/vantages/de-2"
+echo '{}' > "$T/hw/vantages/de-1/reachability.jsonl"
+: > "$T/hw/vantages/de-2/reachability.jsonl"
+touch -d "@$((noon - 40 * 60))" "$T/hw/vantages/de-1/reachability.jsonl" "$T/hw/vantages/de-2/reachability.jsonl"
+hwreset "$noon"
+hwx "$p200" HEALTHWATCH_NOW="$noon" VANTAGE_PULL_NAMES="de-1 de-2" >/dev/null
+check eq "$(sed -n 3p "$hwstate")" vantage-pull
+check contains "$(lastpost)" "nothing new from vantage de-1 for 40m"
+check not contains "$(lastpost)" de-2
+touch -d "@$((noon - 15 * 60))" "$T/hw/vantages/de-1/reachability.jsonl"
+hwreset "$noon"
+hwx "$p200" HEALTHWATCH_NOW="$noon" VANTAGE_PULL_NAMES="de-1 de-2" >/dev/null
+check eq "$(sed -n 1p "$hwstate")" ok
+echo "fibre-vantage-pull@t.service" > "$T/failed-units"
+hwx "$p200" HEALTHWATCH_NOW="$noon" VANTAGE_PULL_NAMES="de-1 de-2" >/dev/null
+check eq "$(sed -n 3p "$hwstate")" fibre-vantage-pull@t
+touch -d "@$((noon - 2 * 60))" "$T/hw/vantages/de-1/reachability.jsonl"
+hwx "$p200" HEALTHWATCH_NOW="$noon" VANTAGE_PULL_NAMES="de-1 de-2" >/dev/null
+check contains "$(lastpost)" recovered
+: > "$T/failed-units"
+# a vantage whose lines the nightly rotation moved to the archive, live file
+# left empty, is still judged: it went quiet, it did not stop being expected
+mkdir -p "$T/hw/vantages/de-2/archive/reachability.jsonl"
+echo '{}' > "$T/hw/vantages/de-2/archive/reachability.jsonl/index.json"
+touch -d "@$((noon - 40 * 60))" "$T/hw/vantages/de-2/reachability.jsonl"
+hwx "$p200" HEALTHWATCH_NOW="$noon" VANTAGE_PULL_NAMES="de-1 de-2" >/dev/null
+check eq "$(sed -n 3p "$hwstate")" vantage-pull
+check contains "$(lastpost)" "nothing new from vantage de-2 for 40m"
+rm -rf "$T/hw/vantages/de-2/archive"
+hwx "$p200" HEALTHWATCH_NOW="$noon" VANTAGE_PULL_NAMES="de-1 de-2" >/dev/null
+check contains "$(lastpost)" recovered
+# a new host: BACKUP_REMOTE set, no copy and no exports directory yet; the
+# run completes (a find over the missing directory used to end it under
+# pipefail, before any alert or state) and finds nothing wrong
+check eq "$(hwx "$p200" HEALTHWATCH_NOW="$noon" BACKUP_REMOTE=r:bucket DATA_DIR="$T/hw4")" 0
+check eq "$(sed -n 1p "$T/hw4/status/healthwatch.state")" ok
+check eq "$(hwx "$p503" HEALTHWATCH_NOW="$noon" BACKUP_REMOTE=r:bucket DATA_DIR="$T/hw4")" 0
+check eq "$(sed -n 1p "$T/hw4/status/healthwatch.state")" degraded
 # Telegram: the bot API's sendMessage with the chat and the text; a refused
 # post (an unknown token is a 404 there) is said, and the token never printed
 tgtest() { # tgtest <bot api port>: healthwatch --test against it

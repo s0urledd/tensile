@@ -190,13 +190,8 @@ func (s *Server) checkLedgerDay(ctx context.Context, q store.Querier, d string, 
 		b, _ := json.Marshal(signing)
 		diffs = append(diffs, "signing:\n"+jsonDiff(b, a, 6))
 	}
-	where := `p.settlement_time >= ? AND p.settlement_time <= ? AND p.settlement_height >= ? AND p.settlement_height <= ? AND p.settlement_tx_code = 0 AND p.assignment_error = ''`
-	doc, err := s.origRows.docWhere(ctx, s.st.DB(), where, dayLo(d), dayHi(d), sd.HLo, sd.HHi)
-	if err != nil {
-		return "", err
-	}
 	load := map[string]*loadPart{}
-	rows, err = q.QueryContext(ctx, loadSpanSQL(""), dayLo(d), dayHi(d), sd.HLo, sd.HHi, doc)
+	rows, err = q.QueryContext(ctx, loadSpanSQL(""), dayLo(d), dayHi(d), sd.HLo, sd.HHi)
 	if err != nil {
 		return "", err
 	}

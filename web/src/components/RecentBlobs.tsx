@@ -2,10 +2,11 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { API_BASE, useApi, type Blob, type Publisher, type Tip, int, pctOf, bytes, whenUTC, utcWord, TIP_MS } from "@/lib/api";
+import { API_BASE, useApi, type Blob, type Tip, int, pctOf, bytes, whenUTC, utcWord, TIP_MS } from "@/lib/api";
 import RollNumber, { reducedMotion } from "@/components/RollNumber";
 import Info from "@/components/Info";
 import { lane } from "@/lib/status";
+import { recheck } from "@/lib/recheck";
 
 /**
  * The overview's recent blobs: the newest settlements as a grid of squares,
@@ -27,8 +28,10 @@ import { lane } from "@/lib/status";
  *
  * Under the grid, beside the settlements on record, the share of the blobs
  * Tensile has read that were available: every blob over the whole record,
- * summed from each publisher's readings. A blob Tensile did not read counts
- * neither way, as everywhere else.
+ * from the network's reading totals on /v1/market (the same in every period;
+ * it used to add up every publisher's readings from the whole /v1/publishers
+ * list, which grows with every account that ever posted). A blob Tensile did
+ * not read counts neither way, as everywhere else.
  *
  * Settled blobs share one tone; the newest and the arrivals are lit with the
  * accent, as is the square under the pointer or focus. While the pointer or
@@ -49,15 +52,23 @@ import { lane } from "@/lib/status";
  * chain that stops; and never while the tab is hidden. Each read asks for
  * about as many rows as the last one brought, and the API's total says
  * whether more arrived than the page returned, in which case one more read
- * fills the gap.
+ * fills the gap. A square's status is its blob's as the read that brought it
+ * found it; a blob still in its retention window then is asked for again,
+ * with the whole grid, once its reading is in and once more before its window
+ * ends, and twice after the end while the API has no result for it, for a
+ * reading the collector stores late (lib/recheck.ts), so a blob Tensile read
+ * is not left worded "not read".
  */
 
 const COLS = 10, ROWS = 5, CELLS = COLS * ROWS;
 /** the read that needs no word from the tip */
 const FALLBACK_MS = 30000;
+/** the least time between two reads of the whole grid for its statuses (recheck), so one that fails is not asked every 5 s */
+const RECHECK_MS = 30000;
 const SLIDE_MS = 420;
 
-type Cell = { b: Blob; seq: number };
+/** at: when the read that brought the blob's record was made */
+type Cell = { b: Blob; seq: number; at: number };
 type Feed = {
   /** newest arrival first, at most CELLS; seq counts arrivals on this page, the newest highest */
   cells: Cell[];
@@ -85,22 +96,22 @@ async function readPage(limit: number): Promise<Page> {
 }
 
 /**
- * a page of the newest blobs into the feed: new ones on top, in the API's order; known ones take any
- * newer reading. extra: arrivals the page had no room for (the API's total says how many), counted
- * so that "N new" and the move stay true, though only the newest CELLS can be shown.
+ * a page of the newest blobs, read at `at`, into the feed: new ones on top, in the API's order; known ones
+ * take any newer reading. extra: arrivals the page had no room for (the API's total says how many),
+ * counted so that "N new" and the move stay true, though only the newest CELLS can be shown.
  */
-function merge(s: Feed, p: Page, extra = 0): { feed: Feed; fresh: number } {
+function merge(s: Feed, p: Page, at: number, extra = 0): { feed: Feed; fresh: number } {
   const byHash = new Map(p.blobs.map((b) => [b.promise_hash, b]));
   const known = new Set(s.cells.map((c) => c.b.promise_hash));
   const kept = s.cells.map((c) => {
     const nb = byHash.get(c.b.promise_hash);
-    return nb ? { ...c, b: nb } : c;
+    return nb ? { ...c, b: nb, at } : c;
   });
   const fresh = p.blobs.filter((b) => !known.has(b.promise_hash)).slice(0, CELLS);
   const total = Number.isFinite(p.total) ? p.total : s.total;
   // the oldest of the new takes the lowest seq, the newest the highest
   const n = fresh.length + (fresh.length ? Math.max(0, extra) : 0);
-  const add: Cell[] = fresh.map((b, i) => ({ b, seq: s.next + n - 1 - i }));
+  const add: Cell[] = fresh.map((b, i) => ({ b, seq: s.next + n - 1 - i, at }));
   return {
     feed: { cells: [...add, ...kept].slice(0, CELLS), next: s.next + n, total, loaded: true, error: null },
     fresh: fresh.length,
@@ -110,6 +121,11 @@ function merge(s: Feed, p: Page, extra = 0): { feed: Feed; fresh: number } {
 /** whether the feed holds the blob with this promise hash */
 function holds(f: Feed, hash: string): boolean {
   return f.cells.some((c) => c.b.promise_hash === hash);
+}
+
+/** whether a square's status may have moved on since the read that brought it (recheck) */
+function stale(f: Feed, now: number): boolean {
+  return f.cells.some((c) => recheck(c.b, c.at, now));
 }
 
 /**
@@ -125,6 +141,9 @@ function useBlobFeed(mark: string | undefined) {
   // a read was asked for while one was out
   const again = useRef(false);
   const last = useRef(0);
+  // the next read asks for the whole grid, for its statuses (stale); and when the last such read was made
+  const whole = useRef(false);
+  const lastWhole = useRef(0);
   const markRef = useRef(mark);
 
   const apply = useCallback((f: Feed) => { cur.current = f; setFeed(f); }, []);
@@ -138,20 +157,24 @@ function useBlobFeed(mark: string | undefined) {
     try {
       do {
         again.current = false;
-        last.current = Date.now();
+        const at = Date.now();
+        last.current = at;
+        const lim = whole.current ? CELLS : limit.current;
+        if (whole.current) lastWhole.current = at;
+        whole.current = false;
         try {
           const before = cur.current;
           // how many settled since the last read, by the API's total
           const known = new Set(before.cells.map((c) => c.b.promise_hash));
           const allNew = (pg: Page) => pg.blobs.length > 0 && pg.blobs.every((b) => !known.has(b.promise_hash));
-          let page = await readPage(limit.current);
+          let page = await readPage(lim);
           const delta = before.loaded && before.total != null && Number.isFinite(page.total) ? page.total - before.total : 0;
           // More arrived than the page returned, all of it new: one more read fills the squares. The second
           // page, newest first, holds the first, so it replaces it.
           if (before.loaded && allNew(page) && delta > page.blobs.length && page.blobs.length < CELLS) page = await readPage(Math.min(CELLS, delta));
           // what even that page had no room for is counted, not shown
           const extra = before.loaded && allNew(page) ? Math.max(0, delta - page.blobs.length) : 0;
-          const { feed: f, fresh } = merge(before, page, extra);
+          const { feed: f, fresh } = merge(before, page, at, extra);
           apply(f);
           // ask next time for about as many as this time brought
           const came = before.loaded ? Math.max(fresh, delta) : 0;
@@ -175,13 +198,18 @@ function useBlobFeed(mark: string | undefined) {
     if (mark !== undefined && !holds(cur.current, mark)) read();
   }, [mark, read]);
   // the slow read, and one when the page comes back into view if a blob came while it was hidden or the slow
-  // read fell due
+  // read fell due; and a read of the whole grid when a square's status may have moved on since its read (stale)
   useEffect(() => {
-    const t = window.setInterval(() => { if (!document.hidden && Date.now() - last.current >= FALLBACK_MS) read(); }, 5000);
+    const due = () => {
+      const now = Date.now();
+      if (now - lastWhole.current >= RECHECK_MS && stale(cur.current, now)) whole.current = true;
+      return whole.current || now - last.current >= FALLBACK_MS;
+    };
+    const t = window.setInterval(() => { if (!document.hidden && due()) read(); }, 5000);
     const onVis = () => {
       if (document.hidden) return;
       const m = markRef.current;
-      if ((m !== undefined && !holds(cur.current, m)) || Date.now() - last.current >= FALLBACK_MS) read();
+      if (due() || (m !== undefined && !holds(cur.current, m))) read();
     };
     document.addEventListener("visibilitychange", onVis);
     return () => { window.clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
@@ -369,14 +397,20 @@ export default function RecentBlobs() {
   const blob = selAt >= 0 ? cells[selAt].b : latest;
   const isLatest = !!blob && blob.promise_hash === latest?.promise_hash;
   // the endorsed voting power over the set's total at the promise height: the figure and its bar
-  // the blob's state as the Blobs list words it: in its retention window, then what Tensile's reading found
-  const st = blob ? lane(blob) : null;
+  // the blob's state as the Blobs list words it: in its retention window, then what Tensile's reading found. From the
+  // feed's own record of it: while the grid holds still under the pointer, reads go on, and a status read since counts
+  const st = blob ? lane(feed.cells.find((c) => c.b.promise_hash === blob.promise_hash)?.b ?? blob) : null;
   const vp = blob?.attested_voting_power != null && blob.total_voting_power ? { n: blob.attested_voting_power, of: blob.total_voting_power } : null;
+  // no blob on record at all (a network before its first blob): the readout says so rather than wait for one
+  const none = feed.loaded && feed.cells.length === 0;
 
-  // every blob Tensile has read over the whole record, by what its reading found: summed from each publisher's readings
-  const pubs = useApi<{ publishers: Publisher[] }>("/v1/publishers?window=all", 60000);
-  const reads = pubs.data?.publishers.reduce((t, p) => p.readings
-    ? { ok: t.ok + p.readings.available, bad: t.bad + p.readings.unavailable, none: t.none + p.readings.not_read } : t, { ok: 0, bad: 0, none: 0 }) ?? null;
+  // every blob Tensile has read over the whole record, by what its reading found: the network's totals, which /v1/market
+  // answers in every period from its cached snapshot. An answer without them (an API from before them) shows a dash, as
+  // does a stream that failed with nothing on screen, rather than a figure that seems to be loading.
+  const market = useApi<{ readings?: { available: number; unavailable: number; not_read: number } }>("/v1/market?window=all", 60000);
+  const tot = market.data?.readings;
+  const reads = tot ? { ok: tot.available, bad: tot.unavailable, none: tot.not_read } : null;
+  const readsOver = !!market.data || !!market.error;
   const read = reads ? reads.ok + reads.bad : 0;
   const avCount = reads && read > 0
     ? <p><b>{int(reads.ok)}</b> of {int(read)} blobs{reads.bad ? <>, {int(reads.bad)} unavailable</> : null}.</p>
@@ -432,7 +466,7 @@ export default function RecentBlobs() {
           </p>
           <i className="rb-div" aria-hidden="true" />
           <p className="rb-fig">
-            {read > 0 ? <span className={`rb-total${reads!.bad === 0 ? " ok" : ""}`}>{pctOf(reads!.ok, read)}</span> : <span className={`rb-total${reads ? "" : " wait"}`}>{reads ? "—" : "000%"}</span>}
+            {read > 0 ? <span className={`rb-total${reads!.bad === 0 ? " ok" : ""}`}>{pctOf(reads!.ok, read)}</span> : <span className={`rb-total${readsOver ? "" : " wait"}`}>{readsOver ? "—" : "000%"}</span>}
             <span className="rb-avl">available<span className="rb-i"><Info label="Available" solid><p>Of the blobs whose retention window has ended, the share Tensile downloaded in full when it read them, 10 minutes before the window closed.</p>{avCount}</Info></span></span>
           </p>
         </div>
@@ -447,7 +481,7 @@ export default function RecentBlobs() {
         {/* the height as the figure, "Height · time · size" under it; the endorsed share before its bar, the ⅔ a blob
             needs as a bare needle on it (the providers' strip beside it says what the needle is), "Endorsed voting
             power · 48 of 82 validators" under them. The names the lines do not show stay for screen readers */}
-        <dl className="rb-spec" aria-busy={!blob || undefined}>
+        {none ? <p className="rb-none">No blob on record yet.</p> : <dl className="rb-spec" aria-busy={!blob || undefined}>
           <div className="rb-h"><dt>Height</dt><dd><span className={`ov-fig${blob ? "" : " wait"}`}>{blob ? (isLatest ? <RollNumber value={blob.settlement_height} format={int} /> : int(blob.settlement_height)) : "0,000,000"}</span></dd></div>
           <div className="rb-t"><dt className="sr-only">Time</dt><dd>{blob ? whenUTC(blob.settlement_time) : <span className="wait">Sep 00 00:00</span>}</dd></div>
           <div className="rb-size"><dt className="sr-only">Blob size</dt><dd>{blob ? bytes(blob.blob_size) : <span className="wait">00.0 MiB</span>}</dd></div>
@@ -462,9 +496,9 @@ export default function RecentBlobs() {
             </dd>
           </div>
           <div className="rb-e"><dt className="sr-only">Endorsements</dt><dd>{blob?.attested_with_rows != null ? <>{int(blob.attested_with_rows)} <span className="ov-of">of {int(blob.validators_with_rows)} validators</span></> : blob ? "—" : <span className="wait">00 of 00</span>}</dd></div>
-        </dl>
+        </dl>}
         <p className="ov-links">
-          {blob ? <Link href={`/blob/?hash=${blob.promise_hash}`}>Blob details <span aria-hidden="true">→</span></Link> : <span className="wait" aria-hidden="true">Blob details →</span>}
+          {blob ? <Link href={`/blob/?hash=${blob.promise_hash}`}>Blob details <span aria-hidden="true">→</span></Link> : <span className={none ? "rb-nolink" : "wait"} aria-hidden="true">Blob details →</span>}
           <Link href="/blobs/">All blobs <span aria-hidden="true">→</span></Link>
         </p>
       </div>

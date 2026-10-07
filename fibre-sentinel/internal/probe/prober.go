@@ -341,6 +341,9 @@ func (p *Prober) Run(parent context.Context) error {
 	st.Start()
 	defer st.Stop("exit")
 	p.status = st
+	// The planning loop below completes a cycle at least every MaxSleep and
+	// its work; /v1/health fails it once its last OK is a few of these old.
+	st.Set(status.CadenceKey, int((cadenceSleeps*p.cfg.MaxSleep+time.Second-1)/time.Second))
 
 	// The chain is asked once at startup for its id; an RPC that is down at
 	// boot is waited for rather than fatal.
@@ -439,12 +442,27 @@ func (p *Prober) Run(parent context.Context) error {
 		for _, j := range due {
 			p.sched.push(j)
 		}
+		// The readings run on the dispatcher's goroutine, beside this loop:
+		// a dispatcher whose every slot is held by readings that never end
+		// leaves the due ones queued, this loop skipping them as queued,
+		// and nothing written, not even the readings' gaps. A reading past
+		// its last start is normally popped at once and written as not
+		// read; one still queued long after is a dispatcher that is stuck.
+		if n, oldest := p.sched.overdue(now); n > 0 && now.Sub(oldest) > dispatchStallAfter {
+			p.fail(fmt.Sprintf("readings stalled: %d reading(s) still queued past their last start, the oldest by %s", n, now.Sub(oldest).Round(time.Second)))
+		}
 		if p.cycleErrs.Load() == 0 {
 			st.OK()
 		}
 		st.Set("publications_live", p.feed.size())
 		st.Set("clock_offset_ms", p.clockOffsetMS())
 		st.Set("reads", p.readStatus())
+		// What /v1/health judges the readings by: a cycle of this loop
+		// succeeds whatever the readings do, so a reading error was
+		// overwritten by the next cycle's OK within half a minute, and every
+		// reading could fail with the check green.
+		st.Set("reading_errors_15m", p.counters.failed.within(now, readingErrorsWindow))
+		st.Set("readings_15m", p.counters.made.within(now, readingErrorsWindow))
 
 		if (p.cfg.Once || p.cfg.ReadNow) && p.sched.quiet(time.Now()) && p.retries.idle() {
 			p.log.Printf("done: %d readings this run", p.counters.done.Load())
@@ -464,6 +482,20 @@ func (p *Prober) Run(parent context.Context) error {
 		}
 	}
 }
+
+// cadenceSleeps is the cadence the prober states (status.CadenceKey), in
+// MaxSleeps: a cycle sleeps at most one, and its work takes a little more.
+const cadenceSleeps = 3
+
+// readingErrorsWindow is the span of the status file's reading counts.
+const readingErrorsWindow = 15 * time.Minute
+
+// dispatchStallAfter is how long a reading may stay queued past its last
+// start before the prober reports its dispatcher stuck. A reading holds its
+// slot at most until its blob's deadline, ten minutes after its start, so
+// with every slot held a reading past its last start waits at most about
+// that long for one.
+const dispatchStallAfter = 15 * time.Minute
 
 // clockSkewWarn is the offset from chain time past which every verdict this
 // vantage produces is suspect: the phase boundaries are only seconds wide.
@@ -870,7 +902,14 @@ func (p *Prober) readBlob(ctx context.Context, j *readJob, release func()) {
 	b, err := p.newBlobReading(ctx, j.pub, j.point)
 	if err != nil {
 		p.log.Printf("reading %s: %v (retry next cycle)", short(j.pub.PromiseHash), err)
-		p.fail(fmt.Sprintf("reading: %v", err))
+		// Counted, and dated on the status file, but not against the
+		// planning loop's cycle: one blob that cannot be read would
+		// otherwise hold every cycle short of OK until its window closed.
+		// /v1/health judges the readings by their own counts.
+		p.counters.failed.add(time.Now())
+		if p.status != nil {
+			p.status.Error(fmt.Sprintf("reading: %v", err))
+		}
 		p.sched.done(j.pub.PromiseHash)
 		return
 	}
@@ -910,6 +949,7 @@ func (p *Prober) finish(b *blobReading) {
 		p.retryAfterReading(b, ms)
 	}
 	p.counters.done.Add(1)
+	p.counters.made.add(time.Now())
 	what := result
 	if clientErr != "" {
 		what += " (" + clientErr + ")"
@@ -1375,6 +1415,23 @@ func (q *readQueue) len() int {
 	return len(q.h)
 }
 
+// overdue is how many queued readings are past their last start at now,
+// and the earliest of those last starts.
+func (q *readQueue) overdue(now time.Time) (n int, oldest time.Time) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for _, j := range q.h {
+		if !j.latest.Before(now) {
+			continue
+		}
+		n++
+		if oldest.IsZero() || j.latest.Before(oldest) {
+			oldest = j.latest
+		}
+	}
+	return n, oldest
+}
+
 // running is how many readings are under way.
 func (q *readQueue) running() int {
 	q.mu.Lock()
@@ -1440,6 +1497,9 @@ type readCounters struct {
 	// answered by another attempt's request to the same endpoint (shared),
 	// and owed but not made (NOT_PROBED rows), in all and by validator.
 	retriesMade, retriesShared, retriesNotMade recentEvents
+	// readings written (made) and readings that could not be begun
+	// (failed: newBlobReading's error), for /v1/health
+	made, failed recentEvents
 
 	mu         sync.Mutex
 	notMadeBy  map[string]*recentEvents
@@ -1557,6 +1617,19 @@ func (r *recentEvents) lastHour(now time.Time) int {
 	defer r.mu.Unlock()
 	r.trim(now)
 	return len(r.at)
+}
+
+// within counts the events of the last d, at most an hour.
+func (r *recentEvents) within(now time.Time, d time.Duration) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.trim(now)
+	cut := now.Add(-d)
+	n := 0
+	for i := len(r.at) - 1; i >= 0 && r.at[i].After(cut); i-- {
+		n++
+	}
+	return n
 }
 
 // readStatus is the status file's reads block: what is queued and under

@@ -73,10 +73,16 @@ type dayPartsHealth struct {
 	// start, the first build included.
 	Rebuilds int `json:"rebuilds"`
 	// The last write of the files that failed, while the next has not
-	// succeeded.
+	// succeeded: when, and a fixed phrase in place of its error, which
+	// names the files' path under the data directory (the API's journal
+	// has it: "day partials: writing ...").
 	LastSaveError   string     `json:"last_save_error,omitempty"`
 	LastSaveErrorAt *time.Time `json:"last_save_error_at,omitempty"`
 }
+
+// partsSaveFailed is what /v1/health says of a write of the files that
+// failed (dayPartsHealth.LastSaveError).
+const partsSaveFailed = "writing the partials failed; the error is in the API's journal"
 
 // health is the partials' state at now, and the check /v1/health runs on
 // it: failing on a difference an audit found, and on a day due and not
@@ -138,7 +144,7 @@ func (dp *dayParts) health(now time.Time) (dayPartsHealth, healthCheck) {
 	}
 	if dp.saveErr != "" {
 		at := dp.saveErrAt
-		h.LastSaveError, h.LastSaveErrorAt = dp.saveErr, &at
+		h.LastSaveError, h.LastSaveErrorAt = partsSaveFailed, &at
 	}
 	c := healthCheck{Name: "day_partials", OK: true}
 	var bad []string

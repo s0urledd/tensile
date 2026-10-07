@@ -155,6 +155,12 @@ sentinel-scan -rpc http://127.0.0.1:26657 -data-dir ./data -start-height 1      
 sentinel-scan -rpc http://127.0.0.1:26657 -data-dir ./data -follow                # then keep following
 ```
 
+The node must hold the blocks a fresh scan reads: the state before its start
+and the validator sets a promise window (1000 blocks) below it. A
+`-start-height` closer than that to the node's oldest block is refused with
+the lowest one it can serve, and a scan from the tip waits until the node
+holds that much (`deploy/README.md`, section 3).
+
 Output: `<data-dir>/state.json` (cursor + full param history + protocol-params
 fingerprint), `<data-dir>/publications.jsonl` (one record per line,
 append-only) and `<data-dir>/payments.jsonl` (one escrow movement per line:

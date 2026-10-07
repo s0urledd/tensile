@@ -8,7 +8,9 @@
 // after pass under a clock of its own, and compares what the API publishes
 // after each one. What the collector does besides (the chain polls, the
 // escrow and endpoint history, the exports, the hosting lookups, the run
-// heartbeat) needs a node or the network and stays in main.go, after Pass.
+// heartbeat, the Keybase pictures) needs a node or the network and stays in
+// cmd/observer-collector, after Pass; it reports its failures to the same
+// work list (work.go).
 // So does the fast tick between passes (fast.go, watch.go), which tails
 // state.json, the publications and the payments only, in the same select
 // loop as Pass, so it never writes beside one.
@@ -17,6 +19,7 @@ package collect
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -67,8 +70,16 @@ type Collector struct {
 	// deletes nothing), run every RetentionEvery (0 never).
 	Retention      rollup.Config
 	RetentionEvery time.Duration
+	// Work is the collector's list of failing work (work.go), which may be
+	// nil: the stages after the ingest report to it.
+	Work *WorkErrors
 
 	lastRetention time.Time
+	// registryReplayed: the last pass read registry.jsonl to its end.
+	registryReplayed bool
+	// otherChain: the vantage files the last pass stopped at a row from
+	// another chain (ingest.ErrOtherChain), by vantage directory name.
+	otherChain []string
 	// lastWaiting is the day the rollup last said it waits on.
 	lastWaiting string
 	// reclaimPending: the first pass gives back whatever the schema
@@ -104,6 +115,32 @@ func (c *Collector) liveSet(key string, v any) {
 	}
 }
 
+// RegistryReplayed reports whether the last Pass read registry.jsonl, the
+// collector's own log of endpoint openings and closings, to its end.
+//
+// The endpoint poll diffs the chain's registry against the open endpoint
+// rows, and those rows are what this log replays: a poll that ran ahead of
+// the replay (a rebuilt store, or a line the store refused) would open a row
+// for every endpoint at the poll and close none of the ones the log has
+// already closed, and append all of that to the log. So the poll waits on
+// this step alone, not on every file of the pass: a stuck measurement line
+// says nothing about the endpoint history.
+func (c *Collector) RegistryReplayed() bool { return c.registryReplayed }
+
+// VantagesFromOtherChain names the vantage files the last Pass stopped at a
+// row that was not taken on this observer's chain (ingest.ErrOtherChain).
+//
+// The ingest keeps such a file out of the store, but the daily export copies
+// the vantage files whole, and an export, once built and signed, is never
+// taken back: the collector holds the export build while this is not empty.
+func (c *Collector) VantagesFromOtherChain() []string { return c.otherChain }
+
+// RetentionRetry is how soon a rollup pass that failed is tried again, when
+// that is sooner than RetentionEvery. A failure stays on the work list until
+// the stage next succeeds, and a single failed hourly pass would otherwise
+// stand there for the whole hour.
+const RetentionRetry = 5 * time.Minute
+
 // DefaultPaths are the files under dataDir, as observer-collector names
 // them by default.
 func DefaultPaths(dataDir string) Paths {
@@ -130,12 +167,15 @@ func DefaultPaths(dataDir string) Paths {
 // shadow verdicts judged, the verified params ranges corrected, the holds
 // synced, and the rollup pass run when it is due. It returns what failed
 // to ingest; the collector names that on its status file last, after the
-// chain polls, so that a chain-status OK does not overwrite it.
+// chain polls, so that a chain-status OK does not overwrite it. What fails
+// after the ingest goes to the work list (Work).
 func (c *Collector) Pass(ctx context.Context, now time.Time) []string {
 	st := c.St
-	if err := ingest.State(st, c.Paths.State, now); err != nil {
+	err := ingest.State(st, c.Paths.State, now)
+	if err != nil {
 		c.logf("state: %v", err)
 	}
+	c.Work.Report("state", err, now)
 	// Every ingest failure used to be a log line and nothing else, while
 	// the collector's OK flag was set by the unrelated chain-status poll
 	// — so a collector that could read the tip and could not read a
@@ -237,6 +277,7 @@ func (c *Collector) Pass(ctx context.Context, now time.Time) []string {
 	// reachabilityNow) and are counted in no published figure. Listed
 	// again every pass, so a vantage that starts sending is picked up
 	// without a restart.
+	c.otherChain = nil
 	if files, err := ingest.VantageFiles(c.Paths.VantagesDir); err != nil {
 		fail("vantages", err)
 	} else {
@@ -244,6 +285,9 @@ func (c *Collector) Pass(ctx context.Context, now time.Time) []string {
 			name := filepath.Base(filepath.Dir(f))
 			if r, err := ingest.VantageReachability(st, f, c.Vantage, now); err != nil {
 				fail("reachability from "+name, err)
+				if errors.Is(err, ingest.ErrOtherChain) {
+					c.otherChain = append(c.otherChain, name)
+				}
 			} else {
 				if r.Inserted > 0 {
 					c.logf("reachability from %s: +%d (read %d, line %d)", name, r.Inserted, r.Read, r.Line)
@@ -254,10 +298,14 @@ func (c *Collector) Pass(ctx context.Context, now time.Time) []string {
 			}
 		}
 	}
+	c.registryReplayed = false
 	if r, err := ingest.Registry(st, c.Paths.Registry, now); err != nil {
 		fail("registry", err)
-	} else if r.Inserted > 0 {
-		c.logf("registry: +%d endpoint event(s) replayed (read %d, line %d)", r.Inserted, r.Read, r.Line)
+	} else {
+		c.registryReplayed = true
+		if r.Inserted > 0 {
+			c.logf("registry: +%d endpoint event(s) replayed (read %d, line %d)", r.Inserted, r.Read, r.Line)
+		}
 	}
 	if r, err := ingest.Payments(st, c.Paths.Payments, now); err != nil {
 		fail("payments", err)
@@ -293,12 +341,14 @@ func (c *Collector) Pass(ctx context.Context, now time.Time) []string {
 	// reading. A pass that ingested a backlog can leave hundreds of
 	// megabytes of WAL behind otherwise, and SQLite will not reset it on
 	// its own while the API holds a snapshot.
-	if busy, inLog, done, err := st.CheckpointWAL(ctx); err != nil {
+	busy, inLog, done, err := st.CheckpointWAL(ctx)
+	if err != nil {
 		c.logf("wal checkpoint: %v", err)
 	} else if !busy && done > 0 && inLog > 2000 {
 		c.logf("wal checkpoint: %d of %d frame(s) written back and the log truncated", done, inLog)
 	}
-	c.judgeLate(ctx, now)
+	c.Work.Report("checkpoint", err, now)
+	c.Work.Report("late verdicts", c.judgeLate(ctx, now), now)
 	// Corrections first, then the hold sync. A verified range only
 	// stops holding once every deadline it covers has actually been
 	// re-derived, so the flag can never be cleared on a row the
@@ -306,25 +356,34 @@ func (c *Collector) Pass(ctx context.Context, now time.Time) []string {
 	// overlapping ranges keeps its hold until the second one closes
 	// too, because SyncParamHolds recomputes the flag from the ranges
 	// rather than clearing it per range.
-	if n, err := c.Corrector.Run(ctx, now); err != nil {
+	n, err := c.Corrector.Run(ctx, now)
+	if err != nil {
 		c.logf("corrections: %v", err)
 		c.liveError(fmt.Sprintf("corrections: %v", err))
 	} else if n > 0 {
 		c.liveSet("param_corrections", n)
 		bumpHoldsRevision(st, now)
 	}
-	if changed, err := st.SyncParamHolds(ctx); err != nil {
+	c.Work.Report("corrections", err, now)
+	changed, err := st.SyncParamHolds(ctx)
+	if err != nil {
 		c.logf("param holds: %v", err)
 		c.liveError(fmt.Sprintf("param holds: %v", err))
 	} else if changed > 0 {
 		c.logf("param holds: %d row(s) changed", changed)
 		bumpHoldsRevision(st, now)
 	}
+	c.Work.Report("holds", err, now)
 	if c.RetentionEvery > 0 && now.Sub(c.lastRetention) >= c.RetentionEvery {
 		c.lastRetention = now
-		if rep, err := rollup.Run(ctx, st, now, c.Retention); err != nil {
+		rep, err := rollup.Run(ctx, st, now, c.Retention)
+		c.Work.Report("retention", err, now)
+		if err != nil {
 			c.logf("retention: %v", err)
 			c.liveError(fmt.Sprintf("retention: %v", err))
+			if RetentionRetry < c.RetentionEvery {
+				c.lastRetention = now.Add(RetentionRetry - c.RetentionEvery)
+			}
 		} else {
 			if len(rep.RolledDays) > 0 {
 				c.logf("retention: rolled up %d day(s) through %s (%d obligations still pending at roll)", len(rep.RolledDays), rep.RolledDays[len(rep.RolledDays)-1], rep.PendingAtRoll)
@@ -348,28 +407,35 @@ func (c *Collector) Pass(ctx context.Context, now time.Time) []string {
 }
 
 // judgeLate draws the deferred shadow verdicts the scanner's frontier now
-// allows, and records each in amendments.jsonl before the store.
-func (c *Collector) judgeLate(ctx context.Context, now time.Time) {
+// allows, and records each in amendments.jsonl before the store. It returns
+// the first failure of its own work for the work list; a frontier not on
+// record yet is waiting, not failing.
+func (c *Collector) judgeLate(ctx context.Context, now time.Time) error {
 	st := c.St
 	v, err := st.Meta("last_scanned_time")
-	if err != nil || v == "" {
+	if err != nil {
+		c.logf("late verdicts: %v", err)
+		return err
+	}
+	if v == "" {
 		if !c.frontierMissing {
 			c.logf("late verdicts: the scanner's frontier time is not on record yet (state.json last_scanned_time); deferred shadow verdicts wait")
 			c.frontierMissing = true
 		}
-		return
+		return nil
 	}
 	frontier, err := time.Parse(store.TimeLayout, v)
 	if err != nil {
 		c.logf("late verdicts: bad last_scanned_time %q", v)
-		return
+		return fmt.Errorf("bad last_scanned_time %q", v)
 	}
 	ams, err := st.LateShadowVerdicts(ctx, frontier, now, c.PruneTolerance)
 	if err != nil {
 		c.logf("late verdicts: %v", err)
 		c.liveError(fmt.Sprintf("late verdicts: %v", err))
-		return
+		return err
 	}
+	var failed error
 	applied := 0
 	for _, a := range ams {
 		// The line is appended and fsynced BEFORE the amendment is
@@ -391,11 +457,17 @@ func (c *Collector) judgeLate(ctx context.Context, now time.Time) {
 		if _, err := c.AmendFile.Write(append(b, '\n')); err != nil {
 			c.logf("amendments: write: %v", err)
 			c.liveError(fmt.Sprintf("amendments write: %v", err))
+			if failed == nil {
+				failed = fmt.Errorf("amendments write: %w", err)
+			}
 			continue
 		}
 		if err := c.AmendFile.Sync(); err != nil {
 			c.logf("amendments: sync: %v", err)
 			c.liveError(fmt.Sprintf("amendments sync: %v", err))
+			if failed == nil {
+				failed = fmt.Errorf("amendments sync: %w", err)
+			}
 			continue
 		}
 		ok, err := st.ApplyAmendment(a)
@@ -412,6 +484,7 @@ func (c *Collector) judgeLate(ctx context.Context, now time.Time) {
 	if applied > 0 {
 		c.liveSet("late_verdicts", applied)
 	}
+	return failed
 }
 
 // bumpHoldsRevision tells the API that a hold was raised or lifted, or a

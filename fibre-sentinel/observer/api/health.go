@@ -25,6 +25,12 @@ import (
 // disk has room, 503 with the reasons otherwise. Point any uptime monitor at
 // it and the operator hears about a dead prober from the monitor, not from a
 // reader.
+//
+// It is also public, so it says what is wrong and not what the host looks
+// like: a check's detail names the stage that failed and how long ago,
+// never the error text (which can carry local paths, RPC addresses and SQL),
+// the disk's size, or a build hash. The full errors are in each component's
+// journal, which is where the operator the alert reaches looks next.
 
 // expectedComponents is every process a deployment runs. A missing file is
 // reported, not ignored: a prober that never started looks exactly like one
@@ -70,7 +76,8 @@ const minBlockSeconds = 1
 // the alarm comes while a sixth of it is still free.
 const diskFloor = 0.15
 
-// componentStatus is one process as /v1/health shows it.
+// componentStatus is one process as the checks read it: its whole status
+// file. /v1/health publishes only componentOut of it.
 type componentStatus struct {
 	Component string    `json:"component"`
 	Present   bool      `json:"present"`
@@ -93,18 +100,46 @@ type componentStatus struct {
 	Version     string         `json:"version,omitempty"`
 }
 
-// chainTipTime is the block time of the chain's newest block, as the
-// collector last saw it. Absent before the collector's first status poll.
-func (s *Server) chainTipTime(ctx context.Context) (time.Time, bool) {
+// componentOut is one process as /v1/health publishes it: whether it runs
+// and works, and since when. The rest of its status file (counters, the
+// disk, the build, the raw last error) stays on the host.
+type componentOut struct {
+	Component string    `json:"component"`
+	Present   bool      `json:"present"`
+	Alive     bool      `json:"alive"`
+	OK        bool      `json:"ok"`
+	StartedAt time.Time `json:"started_at,omitempty"`
+	// Age is how long ago the file was refreshed, so a reader does not have
+	// to compare clocks.
+	AgeS int64 `json:"age_s"`
+}
+
+// chainTipTime is the block time of the chain's newest block the observer
+// knows of: the newer of the collector's last chain poll (meta
+// chain_tip_time) and the scanner's own (its status file's tip_block_time,
+// written while it waits at the tip). Either alone could blame the chain
+// for a stall of its own process: a collector whose loop is blocked stops
+// moving chain_tip_time while the scanner goes on reading blocks. Absent
+// before either has seen a block.
+func (s *Server) chainTipTime(ctx context.Context, comps []componentStatus) (time.Time, bool) {
+	var tip time.Time
 	var v string
-	if err := s.st.DB().QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'chain_tip_time'`).Scan(&v); err != nil || v == "" {
-		return time.Time{}, false
+	if err := s.st.DB().QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'chain_tip_time'`).Scan(&v); err == nil && v != "" {
+		if t, err := time.Parse(store.TimeLayout, v); err == nil {
+			tip = t
+		}
 	}
-	t, err := time.Parse(store.TimeLayout, v)
-	if err != nil {
-		return time.Time{}, false
+	for _, c := range comps {
+		if c.Component != "scanner" || !c.Present {
+			continue
+		}
+		if raw, ok := c.Detail["tip_block_time"].(string); ok {
+			if t, err := time.Parse(time.RFC3339Nano, raw); err == nil && t.After(tip) {
+				tip = t
+			}
+		}
 	}
-	return t, true
+	return tip, !tip.IsZero()
 }
 
 // healthCheck is one row of /v1/health.
@@ -117,12 +152,12 @@ type healthCheck struct {
 type healthResponse struct {
 	// Status is "ok", "degraded" (something is wrong but data still flows)
 	// or "down" (no component is alive). Machines look at the HTTP code.
-	Status     string            `json:"status"`
-	Checks     []healthCheck     `json:"checks"`
-	Components []componentStatus `json:"components"`
-	ScanGaps   []scan.ScanGap    `json:"scan_gaps,omitempty"`
-	PinStatus  string            `json:"pin_status"`
-	ServerTime time.Time         `json:"server_time"`
+	Status     string         `json:"status"`
+	Checks     []healthCheck  `json:"checks"`
+	Components []componentOut `json:"components"`
+	ScanGaps   []scan.ScanGap `json:"scan_gaps,omitempty"`
+	PinStatus  string         `json:"pin_status"`
+	ServerTime time.Time      `json:"server_time"`
 	// DayPartials is the state of the day partials the longer windows are
 	// summed from (dayparts_health.go).
 	DayPartials *dayPartsHealth `json:"day_partials,omitempty"`
@@ -182,6 +217,18 @@ func (s *Server) scanGaps(ctx context.Context) []scan.ScanGap {
 	return gaps
 }
 
+// publicGaps is gaps as /v1/health and /v1/meta publish them. A gap's last
+// error is the scanner's RPC error as it came, the node's address in it;
+// the range, its reason and its times are the gap.
+func publicGaps(gaps []scan.ScanGap) []scan.ScanGap {
+	var out []scan.ScanGap
+	for _, g := range gaps {
+		g.LastError = ""
+		out = append(out, g)
+	}
+	return out
+}
+
 // pinStatus compares the chain's app version with the celestia-app major
 // this build's assignment constants are pinned to. "chain_ahead" means the
 // chain has upgraded past the pin and the row assignments this observer
@@ -213,11 +260,13 @@ func pinStatus(appVersion string) string {
 // evaluated is reported as failing with the reason.
 func (s *Server) health(ctx context.Context, now time.Time) healthResponse {
 	comps := s.components(now)
+	tip, tipKnown := s.chainTipTime(ctx, comps)
 	var checks []healthCheck
 	alive := 0
 	var scannerH, chainH int64
 	var disk *status.Disk
-	for _, c := range comps {
+	var collector *componentStatus
+	for i, c := range comps {
 		switch {
 		case !c.Present:
 			checks = append(checks, healthCheck{c.Component, false, "no status file: never started, or an older build"})
@@ -226,25 +275,27 @@ func (s *Server) health(ctx context.Context, now time.Time) healthResponse {
 			if c.StoppedAt != nil {
 				why = fmt.Sprintf("stopped %s ago (%s)", now.Sub(*c.StoppedAt).Round(time.Second), c.StopReason)
 			} else {
-				why = fmt.Sprintf("no update for %s; last error: %s", now.Sub(c.UpdatedAt).Round(time.Second), orNone(c.LastError))
+				why = fmt.Sprintf("no update for %s; last error: %s", now.Sub(c.UpdatedAt).Round(time.Second), errorStage(c.LastError))
 			}
 			checks = append(checks, healthCheck{c.Component, false, why})
-		case !c.OK && c.LastErrorAt != nil && now.Sub(*c.LastErrorAt) < failingAfter && (c.LastOKAt == nil || now.Sub(*c.LastOKAt) > failingAfter):
-			alive++
-			checks = append(checks, healthCheck{c.Component, false, "alive but failing: " + c.LastError})
 		default:
 			alive++
-			d := "alive"
-			if !c.OK {
-				d = "alive, last cycle failed: " + c.LastError
-			}
-			checks = append(checks, healthCheck{c.Component, true, d})
+			checks = append(checks, componentCheck(c, now, tip, tipKnown))
 		}
 		if c.Component == "scanner" {
 			scannerH = c.Height
+			// The scanner's own view of the tip, written while it waits
+			// there: with the collector stalled, its frozen height made
+			// the scanner look ahead of the chain and the lag pass.
+			if t, ok := c.Detail["chain_tip"].(float64); ok && int64(t) > chainH {
+				chainH = int64(t)
+			}
 		}
 		if c.Component == "collector" {
-			chainH = c.Height
+			chainH = max(chainH, c.Height)
+			if c.Present && c.Alive {
+				collector = &comps[i]
+			}
 		}
 		if c.Disk != nil && (disk == nil || c.Disk.FreeShare < disk.FreeShare) {
 			disk = c.Disk
@@ -255,14 +306,29 @@ func (s *Server) health(ctx context.Context, now time.Time) healthResponse {
 		checks = append(checks, healthCheck{"scanner_lag", lag <= scannerLagBlocks,
 			fmt.Sprintf("scanner at %d, chain at %d (%d blocks behind)", scannerH, chainH, lag)})
 	}
-	if tip, ok := s.chainTipTime(ctx); ok {
+	if tipKnown {
 		age := now.Sub(tip)
 		checks = append(checks, healthCheck{"chain_liveness", age <= chainStaleAfter,
 			fmt.Sprintf("newest block %s old (%s)", age.Round(time.Second), tip.UTC().Format(time.RFC3339))})
 	}
+	if collector != nil {
+		checks = append(checks, workCheck(*collector, now))
+	}
+	if c, ok := s.ingestCheck(ctx, now); ok {
+		checks = append(checks, c)
+	}
+	meta := s.healthMeta(ctx)
+	if c, ok := chainPollsCheck(meta, collector, now); ok {
+		checks = append(checks, c)
+	}
+	if c, ok := s.vantagesCheck(ctx, now); ok {
+		checks = append(checks, c)
+	}
 	if disk != nil {
+		// The share alone: the disk is shared with other services on the
+		// host, and its size and fill are nobody else's business.
 		checks = append(checks, healthCheck{"disk", disk.FreeShare >= diskFloor,
-			fmt.Sprintf("%.1f%% free (%.1f GiB of %.1f GiB)", disk.FreeShare*100, float64(disk.FreeBytes)/(1<<30), float64(disk.TotalBytes)/(1<<30))})
+			fmt.Sprintf("%.1f%% free", disk.FreeShare*100)})
 	}
 	gaps := s.scanGaps(ctx)
 	if n := len(gaps); n > 0 {
@@ -273,8 +339,7 @@ func (s *Server) health(ctx context.Context, now time.Time) healthResponse {
 		checks = append(checks, healthCheck{"scan_gaps", false,
 			fmt.Sprintf("%d height range(s), %d blocks not scanned (the RPC node could not serve them, or the operator skipped them with -skip-heights; each range gives its reason); publications in them are unknown to this observer", n, missing)})
 	}
-	var appVersion string
-	_ = s.st.DB().QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'app_version'`).Scan(&appVersion)
+	appVersion := meta["app_version"]
 	pin := pinStatus(appVersion)
 	if pin == "chain_ahead" {
 		checks = append(checks, healthCheck{"pin", false,
@@ -312,6 +377,10 @@ func (s *Server) health(ctx context.Context, now time.Time) healthResponse {
 	} else if s.noParts {
 		parts = &dayPartsHealth{State: "off"}
 	}
+	checks = append(checks, s.apiErrorsCheck(now), s.snapshotsCheck(now), s.recordsCheck(now))
+	if c, ok := hostingDBCheck(meta, now); ok {
+		checks = append(checks, c)
+	}
 
 	st := "ok"
 	for _, c := range checks {
@@ -322,14 +391,11 @@ func (s *Server) health(ctx context.Context, now time.Time) healthResponse {
 	if alive == 0 {
 		st = "down"
 	}
-	return healthResponse{Status: st, Checks: checks, Components: comps, ScanGaps: gaps, PinStatus: pin, ServerTime: now.UTC(), DayPartials: parts}
-}
-
-func orNone(s string) string {
-	if s == "" {
-		return "none"
+	out := make([]componentOut, len(comps))
+	for i, c := range comps {
+		out[i] = componentOut{Component: c.Component, Present: c.Present, Alive: c.Alive, OK: c.OK, StartedAt: c.StartedAt, AgeS: c.AgeS}
 	}
-	return s
+	return healthResponse{Status: st, Checks: checks, Components: out, ScanGaps: publicGaps(gaps), PinStatus: pin, ServerTime: now.UTC(), DayPartials: parts}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

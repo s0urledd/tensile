@@ -21,6 +21,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/hosting"
@@ -36,14 +37,14 @@ var (
 )
 
 // newHostingPass prepares the table and returns the function the collector
-// calls on every endpoint-poll pass. Errors are logged, never fatal: this
-// is an annotation on the record, not part of it. vantage is this
-// observer's own: addresses are read from its heartbeats only, since another
-// vantage may resolve a host differently.
-func newHostingPass(st *store.Store, dataDir, vantage string, logf func(string, ...any)) func(ctx context.Context, now time.Time) {
+// calls on every endpoint-poll pass. Errors are logged and returned for the
+// collector's work list, never fatal: this is an annotation on the record,
+// not part of it. vantage is this observer's own: addresses are read from
+// its heartbeats only, since another vantage may resolve a host differently.
+func newHostingPass(st *store.Store, dataDir, vantage string, logf func(string, ...any)) func(ctx context.Context, now time.Time) error {
 	if err := hosting.EnsureSchema(st.DB()); err != nil {
 		logf("hosting: create table: %v; lookups disabled", err)
-		return func(context.Context, time.Time) {}
+		return func(context.Context, time.Time) error { return fmt.Errorf("create table: %w; lookups disabled", err) }
 	}
 	cfg := hosting.ResolveConfig(*hostingASNFlag, *hostingCountryFlag, *hostingCityFlag, dataDir)
 	if cfg.ASNPath == "" {
@@ -53,7 +54,7 @@ func newHostingPass(st *store.Store, dataDir, vantage string, logf func(string, 
 	}
 	r := &hosting.Refresher{DB: st.DB(), Cfg: cfg, Vantage: vantage, Logf: logf,
 		Record: func(ctx context.Context, raw []byte) ([]byte, error) { return st.ReachRecord(ctx, st.DB(), raw) }}
-	return func(ctx context.Context, now time.Time) {
+	return func(ctx context.Context, now time.Time) error {
 		// The databases usually arrive after the collector has started
 		// (deploy/hosting-db.sh runs once the new binaries are up), and an
 		// optional one (the city file) can be added to a host that already
@@ -77,5 +78,6 @@ func newHostingPass(st *store.Store, dataDir, vantage string, logf func(string, 
 		case res.Enabled && !res.Skipped:
 			logf("hosting: %d open endpoint(s), %d resolved, %d with an origin AS, %d placed in a city", res.Hosts, res.Resolved, res.WithASN, res.WithCity)
 		}
+		return err
 	}
 }

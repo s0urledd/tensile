@@ -330,7 +330,6 @@ func pruneLikeBefore(t *testing.T, st *store.Store, now time.Time, keep, strip t
 		for _, q := range []string{
 			`DELETE FROM probes WHERE started_at >= ? AND started_at <= ?`,
 			`DELETE FROM reachability WHERE started_at >= ? AND started_at <= ?`,
-			`DELETE FROM probe_confirmations WHERE started_at >= ? AND started_at <= ?`,
 			`DELETE FROM sampling_decisions WHERE decided_at >= ? AND decided_at <= ?`,
 		} {
 			res, err := db.Exec(q, lo, hi)
