@@ -79,6 +79,9 @@ func sameAs(t *testing.T, what string, got, row map[string]any, want []string) {
 
 // The list and the validator page publish the row's own values under the
 // row's own names: a projection leaves fields out and never changes one.
+// The list leaves out what only the validator page shows (the heartbeat
+// rate over the window, what is held now and the rows per blob), and
+// neither publishes signing.no_host, which nothing shows.
 func TestValidatorProjectionsCopyTheRow(t *testing.T) {
 	row := fullRow()
 	whole := jsonMap(t, row)
@@ -86,7 +89,7 @@ func TestValidatorProjectionsCopyTheRow(t *testing.T) {
 	// checked below
 	flat := []string{"address", "cons_address", "moniker", "operator_address", "avatar_url", "jailed", "bond_status",
 		"signaled_upgrade", "host", "last_host", "endpoint_closed_at", "voting_power", "last_seen_at", "last_served_at", "reachable", "endpoint_state",
-		"identity_status", "identity_reason", "confirmed_from", "also_failed_from", "reachability_window", "last_reachable_at",
+		"identity_status", "identity_reason", "confirmed_from", "also_failed_from", "last_reachable_at",
 		"obligations", "provisional_faults"}
 	split := func(m map[string]any) (signing, load, hosting map[string]any) {
 		signing, load, hosting = m["signing"].(map[string]any), m["load"].(map[string]any), m["hosting"].(map[string]any)
@@ -102,15 +105,14 @@ func TestValidatorProjectionsCopyTheRow(t *testing.T) {
 
 	detail := jsonMap(t, detailOf(row))
 	detailSigning, detailLoad, detailHosting := split(detail)
-	sameAs(t, "detail", detail, whole, append(flat, "website", "endpoint_since", "provider_since",
+	sameAs(t, "detail", detail, whole, append(flat, "reachability_window", "website", "endpoint_since", "provider_since",
 		"last_unreachable_at", "attestation", "serve_bytes_per_second", "serve_throughput_sample", "timeouts_enforced"))
 
 	signing, load, hostingRow := whole["signing"].(map[string]any), whole["load"].(map[string]any), whole["hosting"].(map[string]any)
-	sameAs(t, "list signing", listSigning, signing, []string{"assigned", "signed", "unknown", "no_host", "last_endorsed_at"})
-	sameAs(t, "detail signing", detailSigning, signing, []string{"assigned", "signed", "unknown", "no_host", "last_endorsed_at", "recent"})
-	for name, m := range map[string]map[string]any{"list": listLoad, "detail": detailLoad} {
-		sameAs(t, name+" load", m, load, []string{"promises", "bytes", "stored_bytes", "rows_per_blob"})
-	}
+	sameAs(t, "list signing", listSigning, signing, []string{"assigned", "signed", "unknown", "last_endorsed_at"})
+	sameAs(t, "detail signing", detailSigning, signing, []string{"assigned", "signed", "unknown", "last_endorsed_at", "recent"})
+	sameAs(t, "list load", listLoad, load, []string{"promises", "bytes"})
+	sameAs(t, "detail load", detailLoad, load, []string{"promises", "bytes", "stored_bytes", "rows_per_blob"})
 	hostingKeys := []string{"status", "host", "ip", "asn", "as_org", "country", "country_basis", "city", "lat", "lon", "provider"}
 	for name, m := range map[string]map[string]any{"list": listHosting, "detail": detailHosting} {
 		sameAs(t, name+" hosting", m, hostingRow, hostingKeys)
@@ -121,4 +123,50 @@ func TestValidatorProjectionsCopyTheRow(t *testing.T) {
 	row.Hosting.MixedNetworks = true
 	mixed := jsonMap(t, listOf(row))["hosting"].(map[string]any)
 	sameAs(t, "mixed hosting", mixed, jsonMap(t, row)["hosting"].(map[string]any), append(hostingKeys, "addresses", "mixed_networks"))
+}
+
+// A validator that left the set keeps its row in the snapshot (its page, its
+// status route and the feeds read it) but is listed only in a window that
+// holds something of it: the 24h list every overview viewer re-reads grows
+// with the set, not with every validator that ever held an endpoint. One
+// with an open endpoint or a bond is listed whatever the window, and each
+// figure alone lists a former one.
+func TestAFormerValidatorIsListedOnlyWhereItHasFigures(t *testing.T) {
+	closedAt := "2026-09-02T00:00:00Z"
+	former := validatorRow{Address: "ff", BondStatus: "BOND_STATUS_UNBONDED", LastHost: "old:7980", EndpointClosedAt: &closedAt}
+	rows := []validatorRow{
+		{Address: "aa", BondStatus: "BOND_STATUS_BONDED"},
+		{Address: "bb", Host: "h:7980"},
+		former,
+	}
+	listed := func(rows []validatorRow) []string {
+		var out []string
+		for _, v := range listedRows(rows) {
+			out = append(out, v.Address)
+		}
+		return out
+	}
+	if got := listed(rows); !reflect.DeepEqual(got, []string{"aa", "bb"}) {
+		t.Fatalf("listed %v, want the bonded and the open one", got)
+	}
+	figures := map[string]func(v *validatorRow){
+		"an obligation":            func(v *validatorRow) { v.Obligations.Total = 1 },
+		"a pending obligation":     func(v *validatorRow) { v.Obligations.Pending = 1 },
+		"an assignment":            func(v *validatorRow) { v.Signing.Assigned = 1 },
+		"one assigned, no host":    func(v *validatorRow) { v.Signing.NoHost = 1 },
+		"an endorsement on record": func(v *validatorRow) { v.Attestation.UnknownBlobs = 1 },
+		"row data":                 func(v *validatorRow) { v.Load.Promises = 1 },
+		"data held now":            func(v *validatorRow) { v.Load.StoredBytes = 1 },
+		"a reading":                func(v *validatorRow) { v.ProbeCount = 1 },
+		"an endpoint check":        func(v *validatorRow) { v.Reachability = rate(0, 1) },
+		"a settling fault":         func(v *validatorRow) { v.ProvisionalFaults = &provisionalFaults{Obligations: 1} },
+		"a timeout it enforced":    func(v *validatorRow) { v.TimeoutsEnforced = 1 },
+	}
+	for what, set := range figures {
+		v := former
+		set(&v)
+		if got := listed([]validatorRow{v}); len(got) != 1 {
+			t.Errorf("a former validator with %s in the window is not listed", what)
+		}
+	}
 }

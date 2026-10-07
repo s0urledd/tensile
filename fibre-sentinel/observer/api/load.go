@@ -37,16 +37,12 @@ type loadStats struct {
 }
 
 // rowBytesSQL is the row data one assigned row carries: blob_size over the
-// promise's original rows, as recorded with its assignment. The original rows
-// come from originalRowsMemo when the memo passed them (m, which loadSQL
-// joins) and from the record itself otherwise. The memo only ever holds what
-// json_extract returned for the same record, so the two cannot differ.
-const rowBytesSQL = `(p.blob_size * 1.0 / NULLIF(CASE WHEN m.promise_hash IS NOT NULL THEN m.original_rows
-			ELSE p.original_rows END, 0))`
+// promise's original rows, as recorded with its assignment (the
+// original_rows column, migration 27).
+const rowBytesSQL = `(p.blob_size * 1.0 / NULLIF(p.original_rows, 0))`
 
 // loadPopulationSQL selects the publications loadSQL reads: settled, with an
 // assignment, and either in the window (?1, ?2) or held at ?3 (heldSQL).
-// originalRowsMemo.doc selects the same set, to know which entries to pass.
 const loadPopulationSQL = `p.settlement_tx_code = 0 AND p.assignment_error = ''
 			AND ((p.settlement_time >= ?1 AND p.settlement_time <= ?2) OR ` + heldSQL + `)`
 
@@ -58,7 +54,7 @@ const loadPopulationSQL = `p.settlement_tx_code = 0 AND p.assignment_error = ''
 const heldSQL = `(p.must_serve_until > ?3 AND p.settlement_time <= ?3)`
 
 // loadSQL is every figure loadByValidator reads from assignments, in one
-// statement; filter narrows it to one validator (?5).
+// statement; filter narrows it to one validator (?4).
 //
 // It used to be two statements, the window's figures and what is held now.
 // Each walked every assignment ever stored and parsed its publication's
@@ -78,12 +74,11 @@ const heldSQL = `(p.must_serve_until > ?3 AND p.settlement_time <= ?3)`
 // with rows on only one side gets the zeros it had when the other statement
 // did not list it.
 func loadSQL(filter string) string {
-	return `WITH m AS MATERIALIZED (SELECT key AS promise_hash, value AS original_rows FROM json_each(?4)),
-		pb AS MATERIALIZED (
+	return `WITH pb AS MATERIALIZED (
 			SELECT p.promise_hash, ` + rowBytesSQL + ` AS rb,
 				(p.settlement_time >= ?1 AND p.settlement_time <= ?2) AS in_win,
 				` + heldSQL + ` AS held
-			FROM publications p LEFT JOIN m ON m.promise_hash = p.promise_hash
+			FROM publications p
 			WHERE ` + loadPopulationSQL + `)
 		SELECT a.validator_address,
 			COUNT(CASE WHEN pb.in_win THEN 1 END),
@@ -127,13 +122,9 @@ func (s *Server) loadByValidatorAt(ctx context.Context, win Window, only string,
 	// held now: settled by now and retention not over at now, whatever the
 	// window
 	nowArg := store.TS(now.UTC())
-	doc, err := s.origRows.doc(ctx, s.st.DB(), win.startArg(), win.endArg(), nowArg)
-	if err != nil {
-		return nil, err
-	}
-	filter, args := "", []any{win.startArg(), win.endArg(), nowArg, doc}
+	filter, args := "", []any{win.startArg(), win.endArg(), nowArg}
 	if only != "" {
-		filter = ` AND a.validator_address = ?5`
+		filter = ` AND a.validator_address = ?4`
 		args = append(args, only)
 	}
 	out := map[string]loadStats{}
@@ -189,13 +180,9 @@ func (s *Server) loadFromParts(ctx context.Context, e *epoch, win Window, only s
 		// A term the exact sum cannot vouch for: the bytes as the shipped
 		// statement sums them, over the whole window.
 		nowArg := store.TS(now.UTC())
-		doc, err := s.origRows.doc(ctx, s.st.DB(), win.startArg(), win.endArg(), nowArg)
-		if err != nil {
-			return nil, err
-		}
-		filter, args := "", []any{win.startArg(), win.endArg(), nowArg, doc}
+		filter, args := "", []any{win.startArg(), win.endArg(), nowArg}
 		if only != "" {
-			filter = ` AND a.validator_address = ?5`
+			filter = ` AND a.validator_address = ?4`
 			args = append(args, only)
 		}
 		rows, err := s.q(ctx).QueryContext(ctx, loadSQL(filter), args...)

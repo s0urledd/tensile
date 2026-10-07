@@ -3,6 +3,7 @@ package api_test
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
@@ -16,8 +17,9 @@ import (
 )
 
 // An export built with a key is served with its .sig, the index names the
-// key, and /v1/exports/pubkey hands out the key that verifies it. Without a
-// key the pubkey route is a JSON 404 and the list says unsigned.
+// key by its fingerprint, and /v1/exports/pubkey hands out the key that
+// verifies it. Without a key the pubkey route is a JSON 404. The list does
+// not repeat the key block: /v1/exports/pubkey is where it is.
 func TestSignedExportsAreServedWithTheirKey(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
@@ -28,13 +30,12 @@ func TestSignedExportsAreServedWithTheirKey(t *testing.T) {
 
 	// Before any signed export: unsigned, and the route says so.
 	ts := httptestServerWith(t, st, api.WithDataDir(dataDir))
-	var list struct {
-		Signing struct {
-			Signed bool `json:"signed"`
-		} `json:"signing"`
+	var list map[string]json.RawMessage
+	if code := get(t, ts, "/v1/exports", &list); code != 200 {
+		t.Fatalf("exports before signing: %d", code)
 	}
-	if code := get(t, ts, "/v1/exports", &list); code != 200 || list.Signing.Signed {
-		t.Fatalf("exports before signing: %d %+v", code, list)
+	if _, ok := list["signing"]; ok {
+		t.Fatalf("the list carries the signing block: %s", list["signing"])
 	}
 	if code := get(t, ts, "/v1/exports/pubkey", nil); code != 404 {
 		t.Fatalf("pubkey with no signed export: %d, want 404", code)

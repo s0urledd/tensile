@@ -913,15 +913,10 @@ func (s *Server) loadWindow(ctx context.Context, e *epoch, win Window, only stri
 	}
 	filter := ""
 	if only != "" {
-		filter = ` AND a.validator_address = ?6`
+		filter = ` AND a.validator_address = ?5`
 	}
 	for _, sp := range raw {
-		where := `p.settlement_time >= ? AND p.settlement_time <= ? AND p.settlement_height >= ? AND p.settlement_height <= ? AND p.settlement_tx_code = 0 AND p.assignment_error = ''`
-		doc, err := s.origRows.docWhere(ctx, s.st.DB(), where, sp.a, sp.b, sp.hlo, sp.hhi)
-		if err != nil {
-			return nil, err
-		}
-		args := []any{sp.a, sp.b, sp.hlo, sp.hhi, doc}
+		args := []any{sp.a, sp.b, sp.hlo, sp.hhi}
 		if only != "" {
 			args = append(args, only)
 		}
@@ -1055,13 +1050,9 @@ func (l *loadPart) loadBytes() (int64, bool) {
 // read raw over the held publications (loadHeldSQL).
 func (s *Server) heldLoad(ctx context.Context, now time.Time, only string) (map[string]int64, error) {
 	nowArg := store.TS(now.UTC())
-	doc, err := s.origRows.docWhere(ctx, s.st.DB(), `p.settlement_tx_code = 0 AND p.assignment_error = '' AND (p.must_serve_until > ? AND p.settlement_time <= ?)`, nowArg, nowArg)
-	if err != nil {
-		return nil, err
-	}
-	filter, args := "", []any{nil, nil, nowArg, doc}
+	filter, args := "", []any{nil, nil, nowArg}
 	if only != "" {
-		filter = ` AND a.validator_address = ?5`
+		filter = ` AND a.validator_address = ?4`
 		args = append(args, only)
 	}
 	rows, err := s.q(ctx).QueryContext(ctx, loadHeldSQL(filter), args...)

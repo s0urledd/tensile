@@ -19,20 +19,21 @@ import (
 
 // Derived state kept across restarts.
 //
-// Two things the snapshots read are derived from the whole record rather
-// than from a window: the memo of each publication's original_rows
-// (origrows.go) and the ledger of each validator's newest endorsements
-// (signing.go). Both are exact and cheap to keep up to date, and both cost,
-// to rebuild, time in proportion to everything the store has ever held: the
-// memo a JSON parse of every publication's 100 KB record (0.8 ms each, seven
-// seconds for the September store's "all"), the ledger a pass over every
-// assignment ever stored. A restart rebuilt both inside the first
+// What the snapshots read that is derived from the whole record rather than
+// from a window, the ledger of each validator's newest endorsements
+// (signing.go) and the day partials (dayparts_file.go), is exact and cheap
+// to keep up to date, and costs, to rebuild, time in proportion to
+// everything the store has ever held: the ledger a pass over every
+// assignment ever stored. A restart rebuilt it inside the first
 // computations of the windows, whose timeouts do not grow with the store,
 // and a computation cancelled on its timeout started again from nothing.
 //
-// So both are kept in files beside the snapshots (originalRowsFile,
-// endorsementLedgerFile), read back when a computation first needs them and
-// caught up from there, as they are while the process runs.
+// So it is kept in a file beside the snapshots (endorsementLedgerFile),
+// read back when a computation first needs it and caught up from there, as
+// it is while the process runs. (A memo of each publication's original_rows
+// was kept the same way, original-rows.json, until migration 27 made the
+// value a column the statements read: the file is no longer read or
+// written.)
 //
 // A file is used only for the store it was computed from, and only while
 // that store still holds everything the file was computed from. The API
@@ -45,7 +46,7 @@ import (
 //     beyond the entries the load reads again;
 //   - a definition: a digest of the SQL and constants its content is
 //     computed with and of the version of the Go that computes it
-//     (memoVersion, ledgerVersion), so a build that computes it differently
+//     (ledgerVersion), so a build that computes it differently
 //     rebuilds it;
 //   - a high-water mark: the rowid of the newest row it was computed from
 //     and that row's own key. A store restored from an older backup does not
@@ -56,7 +57,7 @@ import (
 // is a rebuild: a file whose digest is not its body's, that does not parse,
 // is of another format or definition, names another store or another
 // schema, or whose mark or entries do not match what the store holds now is
-// refused, and the memo or ledger is built from the store as it was before
+// refused, and the ledger is built from the store as it was before
 // there were files. The file is left for the next write to replace, not
 // removed: another process may have written a good one in its place since
 // it was read. A query that fails while a file is checked is an error of
@@ -67,10 +68,7 @@ import (
 // back costs nothing. Coming forward again, a file written before the
 // rollback has an older mark over a store that has only grown since, and is
 // caught up like any other.
-const (
-	originalRowsFile      = "original-rows.json"
-	endorsementLedgerFile = "endorsement-ledger.json"
-)
+const endorsementLedgerFile = "endorsement-ledger.json"
 
 // storeIdentity is what names a store without writing to it: the moment it
 // was created (the applied_at of schema_migrations' version 1, written once
@@ -82,19 +80,19 @@ const (
 // column a file was computed from: a backfill of assignments.attested, say.
 // The load reads again only the rows a file publishes, so rows that a
 // migration brought into the population below the file's mark would never
-// be folded in. A file from before a migration is refused, and the memo or
-// ledger rebuilt once.
+// be folded in. A file from before a migration is refused, and the ledger
+// rebuilt once.
 //
 // For that, a file names the identity the store had when what it holds
 // began to be read, not the one the store has when the file is written. A
 // process that is running when the collector migrates (the warm-up keeps
 // the old API serving for minutes after) holds rows read before the
 // migration, and a file it wrote after under the new schema would be
-// believed. So the memo and the ledger keep the identity they were built
-// under: the file's, when open kept one, or the store's, read before the
-// first row, when they were built from nothing. A write that finds the
-// store at another identity writes nothing, and they are built again from
-// the store as it is now.
+// believed. So the ledger keeps the identity it was built under: the
+// file's, when open kept one, or the store's, read before the first row,
+// when it was built from nothing. A write that finds the store at another
+// identity writes nothing, and it is built again from the store as it is
+// now.
 type storeIdentity struct {
 	Created string `json:"created"`
 	ChainID string `json:"chain_id"`

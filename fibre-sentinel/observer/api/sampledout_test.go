@@ -297,7 +297,7 @@ func firstDiff(path string, a, b any) string {
 }
 
 func soPaths() []string {
-	paths := []string{"/v1/meta", "/v1/blobs?limit=50", "/v1/sampling?window=7d", "/v1/sampling?window=all"}
+	paths := []string{"/v1/meta", "/v1/blobs?limit=50"}
 	for _, w := range []string{"24h", "7d", "all"} {
 		paths = append(paths, "/v1/network?window="+w, "/v1/validators?window="+w)
 		for i := 0; i < 6; i++ {

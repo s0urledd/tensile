@@ -213,7 +213,6 @@ func TestReconstructabilityIgnoresUnattestedNonServers(t *testing.T) {
 				Status     string `json:"status"`
 				ServedRows int    `json:"served_distinct_rows"`
 				NeededRows int    `json:"needed_rows"`
-				ServedBy   int    `json:"served_by_validators"`
 				Asked      int    `json:"probed_validators"`
 			} `json:"reconstructable"`
 		} `json:"blob"`
@@ -229,8 +228,10 @@ func TestReconstructabilityIgnoresUnattestedNonServers(t *testing.T) {
 	if rc.ServedRows != 4 || rc.NeededRows != 4 {
 		t.Fatalf("rows = %d/%d, want 4/4", rc.ServedRows, rc.NeededRows)
 	}
-	if rc.ServedBy != 2 || rc.Asked != 3 {
-		t.Fatalf("served_by=%d asked=%d, want 2 of 3", rc.ServedBy, rc.Asked)
+	// the reading asked all three (how many of them served is the
+	// assignments' service, not a field of its own)
+	if rc.Asked != 3 {
+		t.Fatalf("asked=%d, want 3", rc.Asked)
 	}
 	if rc.Status != "yes" {
 		t.Fatalf("status = %q, want \"yes\": the rows are all there", rc.Status)

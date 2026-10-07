@@ -105,14 +105,14 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 	// one row per validator per blob and are never pruned: the assignments
 	// are sought from the publications selected, by primary key.
 	const now = "2026-09-08T00:00:00.000Z"
-	for _, only := range []string{"", " AND a.validator_address = ?5"} {
-		args := []any{lo, hi, now, "{}"}
+	for _, only := range []string{"", " AND a.validator_address = ?4"} {
+		args := []any{lo, hi, now}
 		if only != "" {
 			args = append(args, "ab")
 		}
 		cases = append(cases, c{"load one pass" + only, loadSQL(only), args,
 			[]string{"MATERIALIZE pb", "SCAN pb", "SEARCH a USING INDEX", "(promise_hash=?"}})
-		scans["load one pass"+only] = []string{"p", "json_each", "pb"}
+		scans["load one pass"+only] = []string{"p", "pb"}
 	}
 	for _, only := range []string{"", " AND a.validator_address = ?"} {
 		args := []any{lo, hi}
@@ -124,21 +124,14 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 		scans["signing by validator"+only] = []string{"p"}
 	}
 	cases = append(cases,
-		c{"load memo candidates", `SELECT p.promise_hash FROM publications p WHERE ` + loadPopulationSQL, []any{lo, hi, now},
-			[]string{"SCAN p"}},
-		c{"load memo lookup", `SELECT p.promise_hash, ` + originalRowsSQL + ` FROM json_each(?) j JOIN publications p ON p.promise_hash = j.value`, []any{"[]"},
-			[]string{"SEARCH p USING INDEX sqlite_autoindex_publications_1 (promise_hash=?)"}},
 		c{"endorsement ledger", ledgerRowsSQL + ` WHERE a.rowid > ? AND a.rowid <= ? AND ` + recentPopulationSQL,
 			[]any{0, 10}, []string{"SEARCH a USING INTEGER PRIMARY KEY (rowid>? AND rowid<?)", "SEARCH p USING INDEX sqlite_autoindex_publications_1 (promise_hash=?)"}},
-		// The checks a kept memo or ledger passes at a start (derived.go):
-		// the rows the file names, sought one by one, never a walk.
+		// The checks a kept ledger passes at a start (derived.go): the rows
+		// the file names, sought one by one, never a walk.
 		c{"endorsement ledger file", ledgerCheckSQL, []any{"[1,2]"},
 			[]string{"SEARCH a USING INTEGER PRIMARY KEY (rowid=?)", "SEARCH p USING INDEX sqlite_autoindex_publications_1 (promise_hash=?)"}},
-		c{"memo file", memoCheckSQL, []any{10, memoChecked}, []string{"SEARCH p USING INTEGER PRIMARY KEY (rowid<?)"}},
 	)
 	scans["endorsement ledger file"] = []string{"j"} // the list of rowids passed in
-	scans["load memo candidates"] = []string{"p"}
-	scans["load memo lookup"] = []string{"j"} // the list of hashes passed in
 	// The window's publications still waiting for a reading
 	// (reconstructableCount). Publications are walked whole, as nothing
 	// indexes settlement_time; the readings of each are sought by its hash.

@@ -701,9 +701,18 @@ func (s *Server) monikers(ctx context.Context) (map[string]string, error) {
 //   - a reading still settling (verdict.FaultSettling) is left out: a params
 //     range can still withdraw it;
 //   - a tie on started_at goes to the lower promise hash, not to row order;
-//   - a validator with a not-served obligation rolled up on an earlier day
-//     had its first one already, pruned from the raw rows since, and gets
-//     none.
+//   - a validator with a not-served obligation rolled up on a day whose raw
+//     rows were pruned (before raw_from) had its first one already, gone from
+//     the raw rows since, and gets none.
+//
+// Only a day before raw_from says that. Rows are never pruned since the
+// retention decision of 2026-10-04 (rollup), so on a store with no raw_from
+// every first fault is in the raw rows and the rollup is not asked. It used
+// to be asked on any rolled day, and a rolled day is a settlement day while
+// the reading is dated by its start: a blob settled late in the evening is
+// read the next UTC day, and once its settlement day was rolled up (fourteen
+// days on) the validator's first fault dropped out of the feeds two weeks
+// before it aged out.
 func (s *Server) firstFaults(ctx context.Context, addr string, now time.Time) (map[string]feed.Entry, error) {
 	db := s.st.DB()
 	faultWhere := `assigned = 1 AND ` + rollup.NotServedSQL("probes")
@@ -712,29 +721,33 @@ func (s *Server) firstFaults(ctx context.Context, addr string, now time.Time) (m
 		faultWhere += ` AND validator_address = ?`
 		args = append(args, addr)
 	}
-	q := `SELECT validator_address, MIN(day) FROM obligation_daily WHERE broken > 0`
-	if addr != "" {
-		q += ` AND validator_address = ?`
-	}
-	rows, err := db.QueryContext(ctx, q+` GROUP BY validator_address`, args...)
-	if err != nil {
-		return nil, err
-	}
 	rolled := map[string]string{}
-	for rows.Next() {
-		var a, d string
-		if err := rows.Scan(&a, &d); err != nil {
-			rows.Close()
+	if rawFrom, ok := rollup.RawFromIn(ctx, db); ok {
+		q := `SELECT validator_address, MIN(day) FROM obligation_daily WHERE broken > 0 AND day < ?`
+		qargs := []any{rawFrom.Format("2006-01-02")}
+		if addr != "" {
+			q += ` AND validator_address = ?`
+			qargs = append(qargs, addr)
+		}
+		rows, err := db.QueryContext(ctx, q+` GROUP BY validator_address`, qargs...)
+		if err != nil {
 			return nil, err
 		}
-		rolled[a] = d
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
+		for rows.Next() {
+			var a, d string
+			if err := rows.Scan(&a, &d); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			rolled[a] = d
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
 	}
 
-	rows, err = db.QueryContext(ctx, `SELECT validator_address, promise_hash, scheduled_at, started_at, schedule_label FROM probes
+	rows, err := db.QueryContext(ctx, `SELECT validator_address, promise_hash, scheduled_at, started_at, schedule_label FROM probes
 		WHERE `+faultWhere+` AND started_at <= ?
 		ORDER BY validator_address, started_at, promise_hash`, append(args, provisionalCutoff(now))...)
 	if err != nil {

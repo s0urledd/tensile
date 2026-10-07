@@ -18,9 +18,9 @@ import (
 // pass landing in between makes visible (a publication counted in one
 // figure and not yet in the next).
 //
-// The memo of original_rows and the endorsement ledger are the exception:
-// they are caches of the whole record kept across computations
-// (origrows.go, signing.go), and read the database as they always did. A
+// The endorsement ledger is the exception: it is a cache of the whole
+// record kept across computations (signing.go), and reads the database as
+// it always did. A
 // comparison of the partials with the shipped statements (comparePaths)
 // reads the ledger once for both ways (ledgerOnce): read per way, a
 // publication stored in between moved one way's newest endorsements.
@@ -47,8 +47,8 @@ func withQuerier(ctx context.Context, q store.Querier) context.Context {
 // the day partials where it can (readTxFor says when it cannot).
 //
 // A transaction holds one of the store's connections for as long as fn
-// runs, and fn still reads the memo and the ledger through the database
-// (origrows.go, signing.go), which takes a second one for a moment. With
+// runs, and fn still reads the ledger through the database (signing.go),
+// which takes a second one for a moment. With
 // every connection held by a transaction whose holder waits for another,
 // nothing would move, so the transactions open at once are bounded one
 // below the pool (txSlots) and a computation beyond that waits for a

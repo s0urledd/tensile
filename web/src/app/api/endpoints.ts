@@ -302,11 +302,9 @@ const EX_PUBLISHER = `{
       "height": 1204085,
       "time": "2026-09-28T20:48:38.760812205Z",
       "promise_hash": "36f68ba9a781754e80037357ebf485d25e471332f436596904467099cfda2417",
-      "blob_size": 16777216,
       "amount_utia": 3530000
     }
-  ],
-  "recent_blobs_truncated": true
+  ]
 }`;
 
 const EX_MARKET = `{
@@ -324,13 +322,6 @@ const EX_MARKET = `{
       "settlements": 8472,
       "fees_utia": 29896305000,
       "bytes": 142079164416
-    }
-  ],
-  "top_publishers": [
-    {
-      "publisher": "celestia1las83d0dt9gew3faq2mxp2gtupq5drclee9snr",
-      "fees_share": 0.9921409253965701,
-      "bytes_share": 0.9917464966783793
     }
   ]
 }`;
@@ -507,6 +498,7 @@ export const GROUPS: Group[] = [
         id: "validators",
         path: "/v1/validators",
         summary: "Every validator on record, with service, endorsements and hosting.",
+        desc: "A validator that is not bonded and has no open endpoint is listed only for a period that holds something of it; `/v1/validators/{addr}` answers for it in any period.",
         params: [windowParam, asOf],
         example: EX_VALIDATORS,
       },
@@ -616,8 +608,8 @@ export const GROUPS: Group[] = [
       {
         id: "publisher",
         path: "/v1/publishers/{addr}",
-        summary: "One publisher: fees, escrow, withdrawals, recent payments and blobs.",
-        desc: "`window` and `as_of` apply to the `publisher` object only; the rest of the answer is as of now. Each of `windows` lists its namespaces as a row does.",
+        summary: "One publisher: fees, escrow, withdrawals and recent payments.",
+        desc: "`window` and `as_of` apply to the `publisher` object only; the rest of the answer is as of now. Each of `windows` lists its namespaces as a row does; the publisher's blobs are /v1/blobs?publisher=.",
         params: [
           { name: "addr", in: "path", type: "string", required: true, desc: "The publisher's celestia1… account.", example: PUBLISHER },
           windowParam, asOf,
@@ -628,7 +620,8 @@ export const GROUPS: Group[] = [
       {
         id: "market",
         path: "/v1/market",
-        summary: "Blob market totals: settlements, fees, bytes, escrow, daily figures, top publishers.",
+        summary: "Blob market totals: settlements, fees, bytes, escrow, daily figures, readings.",
+        desc: "`readings` counts every blob on record by Tensile's reading, available, unavailable and not_read, over the whole record whatever the period.",
         params: [windowParam, asOf],
         example: EX_MARKET,
       },
@@ -692,7 +685,11 @@ export const GROUPS: Group[] = [
         id: "exports",
         path: "/v1/exports",
         summary: "Daily archives of the record, one per UTC day, with digests.",
-        params: [],
+        desc: "Newest day first. Each archive names the key that signed it by `key_fingerprint`; the keys are /v1/exports/pubkey.",
+        params: [
+          { name: "limit", in: "query", type: "integer", range: "1–1500", default: "60", desc: "Days per page." },
+          { name: "before", in: "query", type: "string", desc: "The days before this one, YYYY-MM-DD: pass `next_before` for the next page." },
+        ],
         example: EX_EXPORTS,
       },
       {

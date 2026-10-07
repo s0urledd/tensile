@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,9 +152,12 @@ func TestAsOfPinsTheWindow(t *testing.T) {
 	}
 }
 
-// A revealed day secret is served beside the day's commitment, and the
-// endpoint says how many days are revealed.
-func TestSamplingServesRevealedSecrets(t *testing.T) {
+// /v1/sampling, the earlier sampling's draws and secrets, is gone: nothing
+// read it, and its window=all walked every reading on each request. What it
+// was computed from stays: the draws on the readings, the revealed secrets
+// (sampling-secrets.jsonl, the daily export), which sentinel-recompute
+// -sampling checks the draws by.
+func TestTheSamplingRouteIsGone(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -184,37 +189,20 @@ func TestSamplingServesRevealedSecrets(t *testing.T) {
 		t.Fatalf("ingest: %+v %v", res, err)
 	}
 	ts := httptestServer(t, st)
-	var out struct {
-		Decisions []struct {
-			DayCommitment string  `json:"day_commitment"`
-			Day           *string `json:"day"`
-			Secret        *string `json:"secret"`
-		} `json:"decisions"`
-		Revealed  int  `json:"secrets_revealed"`
-		Published bool `json:"secret_published"`
-	}
-	if code := get(t, ts, "/v1/sampling?window=all", &out); code != 200 {
-		t.Fatalf("sampling: %d", code)
-	}
-	if out.Revealed != 1 || !out.Published {
-		t.Errorf("revealed=%d published=%v", out.Revealed, out.Published)
-	}
-	seen := map[string]bool{}
-	for _, d := range out.Decisions {
-		seen[d.DayCommitment] = true
-		switch d.DayCommitment {
-		case "commitA":
-			if d.Secret == nil || *d.Secret != "00ff" || d.Day == nil || *d.Day != "2026-09-01" {
-				t.Errorf("commitA not revealed: %+v", d)
-			}
-		case "commitB":
-			if d.Secret != nil {
-				t.Errorf("commitB must stay sealed: %+v", d)
-			}
+	for _, p := range []string{"/v1/sampling", "/v1/sampling?window=all", "/v1/sampling?window=7d"} {
+		if code := get(t, ts, p, nil); code != 404 {
+			t.Errorf("%s: %d, want 404", p, code)
 		}
 	}
-	if !seen["commitA"] || !seen["commitB"] {
-		t.Errorf("decisions = %+v", out.Decisions)
+	var secrets, drawn int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM sampling_secrets`).Scan(&secrets); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM probes WHERE sampling_commitment IS NOT NULL`).Scan(&drawn); err != nil {
+		t.Fatal(err)
+	}
+	if secrets != 1 || drawn != 2 {
+		t.Errorf("%d secrets, %d drawn readings on record; want 1 and 2", secrets, drawn)
 	}
 }
 
@@ -273,6 +261,108 @@ func TestExportsAreListedAndServed(t *testing.T) {
 		if code := get(t, ts, "/v1/exports/"+bad, nil); code != 404 {
 			t.Errorf("%s: %d, want 404", bad, code)
 		}
+	}
+}
+
+// The list is paged, newest day first: limit days at a time, before a day
+// for the days before it, which next_before fills in. Every export stays
+// listed, one page or another.
+func TestExportsArePagedNewestFirst(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	dataDir := t.TempDir()
+	dir := filepath.Join(dataDir, "exports")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var entries []string
+	for d := 70; d >= 1; d-- { // newest first, as the collector writes the index
+		day := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, d-1).Format("2006-01-02")
+		entries = append(entries, `{"name":"tensile-test-`+day+`.tar.gz","bytes":1,"sha256":"a","vantage":"test","day":"`+day+`","files":[]}`)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.json"), []byte("["+strings.Join(entries, ",")+"]"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptestServerWith(t, st, api.WithDataDir(dataDir))
+	type page struct {
+		Exports []struct {
+			Day string `json:"day"`
+		} `json:"exports"`
+		Limit      int    `json:"limit"`
+		Truncated  bool   `json:"truncated"`
+		NextBefore string `json:"next_before"`
+	}
+	var p page
+	if code := get(t, ts, "/v1/exports", &p); code != 200 {
+		t.Fatalf("exports: %d", code)
+	}
+	if len(p.Exports) != 60 || p.Limit != 60 || !p.Truncated || p.Exports[0].Day != "2026-09-08" || p.NextBefore != p.Exports[59].Day {
+		t.Fatalf("first page: %d days from %s, limit %d, truncated %v, next_before %q", len(p.Exports), p.Exports[0].Day, p.Limit, p.Truncated, p.NextBefore)
+	}
+	var seen []string
+	for _, e := range p.Exports {
+		seen = append(seen, e.Day)
+	}
+	for p.Truncated {
+		next := p.NextBefore
+		p = page{}
+		if code := get(t, ts, "/v1/exports?limit=7&before="+next, &p); code != 200 {
+			t.Fatalf("before %s: %d", next, code)
+		}
+		for _, e := range p.Exports {
+			if e.Day >= next {
+				t.Fatalf("before %s listed %s", next, e.Day)
+			}
+			seen = append(seen, e.Day)
+		}
+	}
+	if len(seen) != 70 || !sort.SliceIsSorted(seen, func(i, j int) bool { return seen[i] > seen[j] }) {
+		t.Fatalf("the pages list %d days, want all 70 newest first: %v", len(seen), seen)
+	}
+	for _, bad := range []string{"?limit=0", "?limit=x", "?before=yesterday"} {
+		if code := get(t, ts, "/v1/exports"+bad, nil); code != 400 {
+			t.Errorf("%s: %d, want 400", bad, code)
+		}
+	}
+
+	// A day with two exports (a vantage renamed that day, say) is never
+	// split between pages: next_before, a day, would skip its second.
+	two := []string{
+		`{"name":"tensile-b-2026-07-03.tar.gz","day":"2026-07-03","files":[]}`,
+		`{"name":"tensile-b-2026-07-02.tar.gz","day":"2026-07-02","files":[]}`,
+		`{"name":"tensile-a-2026-07-02.tar.gz","day":"2026-07-02","files":[]}`,
+		`{"name":"tensile-a-2026-07-01.tar.gz","day":"2026-07-01","files":[]}`,
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.json"), []byte("["+strings.Join(two, ",")+"]"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	type named struct {
+		Exports []struct {
+			Name string `json:"name"`
+		} `json:"exports"`
+		Truncated  bool   `json:"truncated"`
+		NextBefore string `json:"next_before"`
+	}
+	var names []string
+	q := "?limit=2"
+	for {
+		var n named
+		if code := get(t, ts, "/v1/exports"+q, &n); code != 200 {
+			t.Fatalf("%s: %d", q, code)
+		}
+		for _, e := range n.Exports {
+			names = append(names, e.Name)
+		}
+		if !n.Truncated {
+			break
+		}
+		q = "?limit=2&before=" + n.NextBefore
+	}
+	if len(names) != 4 {
+		t.Fatalf("pages of two list %v, want all four", names)
 	}
 }
 

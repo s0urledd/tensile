@@ -84,13 +84,14 @@ func TestThePublisherIsTheEscrowOwnerNotTheSubmitter(t *testing.T) {
 			t.Errorf("%s: publisher %s signer %s, want publisher %s (the escrow owner) and signer %s", b.PromiseHash, b.Publisher, b.Signer, owner, submitter)
 		}
 	}
+	// the blobs a publisher's page lists, by /v1/blobs?publisher=
 	pageOf := func(addr string) []string {
 		var p struct {
 			Blobs []struct {
 				PromiseHash string `json:"promise_hash"`
-			} `json:"recent_blobs"`
+			} `json:"blobs"`
 		}
-		if code := get(t, ts, "/v1/publishers/"+addr, &p); code != 200 {
+		if code := get(t, ts, "/v1/blobs?publisher="+addr, &p); code != 200 {
 			return nil
 		}
 		var hs []string

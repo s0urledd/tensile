@@ -71,7 +71,7 @@ import (
 // with nothing new costs well under a millisecond.
 //
 // The memo lives in memory only: a new process computes every publication
-// once. Kept across restarts as the original-rows memo is (derived.go), a
+// once. Kept across restarts as the endorsement ledger is (derived.go), a
 // restart would skip that; it is the next step before mainnet volumes.
 type readingMemo struct {
 	// upd orders updates: one at a time, and a reader that finds one
@@ -95,6 +95,11 @@ type readingMemo struct {
 	chunk int
 	// computed is how many publications the last update computed.
 	computed int
+	// faulted is the publications whose status a record that did not
+	// decode left unknown (rowfault.go): computed again at every update
+	// until it decodes, so a status is never kept from a fault. Only the
+	// updating goroutine touches it (upd).
+	faulted map[string]bool
 }
 
 // readingBuild is a full computation under way: the marks it started from,
@@ -115,6 +120,10 @@ type readingEntry struct {
 	// status is verdict.BlobAvailable, verdict.BlobUnavailable, or "" for
 	// any other status.
 	status string
+	// faulted is a status its record did not decode for (rowfault.go): the
+	// blob is counted in none of the words until it decodes, rather than
+	// as one Tensile did not read.
+	faulted bool
 	// oldest is the earliest scheduled_at of its probe rows (Unix seconds),
 	// 0 when it has none: what the prune is held against.
 	oldest int64
@@ -126,6 +135,16 @@ type readingCounts struct {
 	Unavailable       int64 `json:"unavailable"`
 	InRetentionWindow int64 `json:"in_retention_window"`
 	NotRead           int64 `json:"not_read"`
+}
+
+// readingTotals is every blob on record by what Tensile's reading left it,
+// as /v1/market publishes it: the three words the overview counts, the
+// blobs still in their retention window with no reading left out, and so is
+// a blob whose record did not decode (readingEntry.faulted).
+type readingTotals struct {
+	Available   int64 `json:"available"`
+	Unavailable int64 `json:"unavailable"`
+	NotRead     int64 `json:"not_read"`
 }
 
 // readingSlice is how long one market computation lets a full computation
@@ -403,6 +422,9 @@ func (m *readingMemo) update(ctx context.Context, s *Server, slice time.Duration
 			add(h)
 		}
 	}
+	for h := range m.faulted {
+		add(h)
+	}
 	if day, ok := pruned(old.rawFrom, now.rawFrom); ok && old.rawFrom != now.rawFrom {
 		cut := day.Add(pruneMargin).Unix()
 		for h, e := range m.blobs {
@@ -505,9 +527,20 @@ func (m *readingMemo) compute(ctx context.Context, s *Server, hashes []string, o
 	if err != nil {
 		return fmt.Errorf("statuses: %w", err)
 	}
+	if m.faulted == nil {
+		m.faulted = map[string]bool{}
+	}
+	for _, h := range hashes {
+		delete(m.faulted, h)
+	}
 	for h, e := range got {
-		if rc := verdicts[h]; rc != nil && (rc.Status == verdict.BlobAvailable || rc.Status == verdict.BlobUnavailable) {
+		rc := verdicts[h]
+		if rc != nil && (rc.Status == verdict.BlobAvailable || rc.Status == verdict.BlobUnavailable) {
 			e.status = rc.Status
+		}
+		if rc != nil && rc.faulted {
+			e.faulted = true
+			m.faulted[h] = true
 		}
 		out[h] = e
 	}
@@ -525,7 +558,7 @@ func (m *readingMemo) counts(now time.Time) map[string]readingCounts {
 	}
 	out := map[string]readingCounts{}
 	for _, e := range m.blobs {
-		if e.publisher == "" {
+		if e.publisher == "" || e.faulted {
 			continue
 		}
 		c := out[e.publisher]
@@ -540,6 +573,31 @@ func (m *readingMemo) counts(now time.Time) map[string]readingCounts {
 			c.NotRead++
 		}
 		out[e.publisher] = c
+	}
+	return out
+}
+
+// totals is every blob on record by status at now, whoever paid for it:
+// counts summed over every publisher, and the blobs no publisher is known
+// for with them. Nil until the first full computation has landed.
+func (m *readingMemo) totals(now time.Time) *readingTotals {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.built {
+		return nil
+	}
+	out := &readingTotals{}
+	for _, e := range m.blobs {
+		switch {
+		case e.faulted:
+		case e.status == verdict.BlobAvailable:
+			out.Available++
+		case e.status == verdict.BlobUnavailable:
+			out.Unavailable++
+		case e.msu.After(now):
+		default:
+			out.NotRead++
+		}
 	}
 	return out
 }

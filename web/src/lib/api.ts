@@ -23,7 +23,6 @@ export type ClassCounts = Record<string, number>;
 
 /** /v1/meta: the chain and observer state the header, banners and footer read */
 export type Meta = {
-  api_version: string;
   /** the rules every figure was computed under (a date); see the methodology page */
   methodology_version?: string;
   /**
@@ -254,6 +253,21 @@ export type Validator = {
    */
   confirmed_from?: string;
   also_failed_from?: string;
+  last_reachable_at: string | null;
+  /** one per (validator, blob) endorsed, judged on the validator's own answers at the blob's reading; the headline */
+  obligations: Obligations;
+  /** the part of obligations.broken whose faults are all still settling; absent when none (see ProvisionalFaults) */
+  provisional_faults?: ProvisionalFaults;
+  /** signing participation over the period: see lib/signing.ts. Descriptive, never a fault. */
+  signing?: Signing;
+  /** the shard data it stored and endorsed in the period (from the chain); what it holds now is on its page (DetailLoad) */
+  load?: Load;
+  /** network and country the open endpoint resolved into, from this vantage; absent when the lookup is off */
+  hosting?: import("./hosting").Hosting;
+};
+
+/** the validator object of /v1/validators/{addr}: the list's fields and what only its page shows */
+export type ValidatorDetail = Validator & {
   /**
    * How often this observer completed a TLS conversation with the endpoint
    * over the window, from the five-minute handshake. The one stability figure
@@ -262,21 +276,8 @@ export type Validator = {
    * still gets 288 samples a day.
    */
   reachability_window: Rate;
-  last_reachable_at: string | null;
-  /** one per (validator, blob) endorsed, judged on the validator's own answers at the blob's reading; the headline */
-  obligations: Obligations;
-  /** the part of obligations.broken whose faults are all still settling; absent when none (see ProvisionalFaults) */
-  provisional_faults?: ProvisionalFaults;
-  /** signing participation over the period: see lib/signing.ts. Descriptive, never a fault. */
-  signing?: Signing;
-  /** the shard data it stored and endorsed in the period and what it holds now (from the chain) */
-  load?: Load;
-  /** network and country the open endpoint resolved into, from this vantage; absent when the lookup is off */
-  hosting?: import("./hosting").Hosting;
-};
-
-/** the validator object of /v1/validators/{addr}: the list's fields and what only its page shows */
-export type ValidatorDetail = Validator & {
+  /** the list's load, with what it holds now and its rows per blob */
+  load?: DetailLoad;
   website?: string;
   endpoint_since: string | null;
   /** when it first appeared in x/valaddr's bonded Fibre provider list, whatever host it had then */
@@ -300,7 +301,10 @@ export type ValidatorDetail = Validator & {
   timeouts_enforced?: number;
 };
 
-/** one of a validator's newest readings, as its page lists them */
+/**
+ * one of a validator's newest readings, as its page lists them; the evidence the page does not show (the reason, the
+ * first attempt's outcome, the gRPC code, the shadowing promise, the host at settlement) is /v1/probes' (Probe)
+ */
 export type ValidatorReading = {
   vantage: string;
   promise_hash: string;
@@ -313,19 +317,12 @@ export type ValidatorReading = {
   phase: string;
   outcome: string;
   classification: string;
-  classification_reason: string;
   rows_returned: number;
   rows_expected: number;
   total_duration_ms: number;
   raw_error?: string;
-  retry_first_outcome?: string;
-  rpc_code?: string;
-  shadowed_by?: string;
-  /** where the upload went; host_changed when the host read differs (the validator re-registered during the window) */
-  host_at_settlement?: string;
   /** when the blob settled, which is when the validator endorsed it; absent from an API before it was named */
   settled_at?: string;
-  host_changed?: boolean;
   /**
    * what this request counts as for the validator: served; not_served (at a full reading, its last answer when none
    * served and none was Tensile's own gap or rows of the blob not its own; at an earlier one, rows that did not come
@@ -441,8 +438,6 @@ export type Reconstruct = {
   needed_rows: number;
   /** the blob's encoded row count (16384 for blob v0) */
   total_rows: number;
-  /** validators whose rows came back verified */
-  served_by_validators: number;
   /**
    * validators the reading asked (a request of Tensile's own that failed or could not be made asks no one): at a full
    * reading the endorsing validators, and only those; at a reading before FULL_READ_SINCE, endorsing or not, most of
@@ -474,7 +469,8 @@ export type Blob = {
   /** the promise's blob version, the first byte of the client's blob ID; absent from an API before it was published */
   blob_version?: number;
   settlement_time: string;
-  creation_timestamp: string;
+  /** the promise's creation time, which must_serve_until counts from: on /v1/blobs/{hash} only */
+  creation_timestamp?: string;
   must_serve_until: string;
   validators_with_rows: number;
   assignment_error?: string;
@@ -622,10 +618,8 @@ export function askedTimes(n: number): string {
  */
 export type Charge = {
   fee_utia: number;
-  gas_units: number;
   settled: boolean;
   timed_out: boolean;
-  processor?: string;
 };
 
 /** a count and a total in utia, the shape every money figure takes */
@@ -639,22 +633,7 @@ export function blobFee(f: PriceFormula, size: number): number {
   return (f.base_gas + f.gas_per_chunk * Math.ceil(size / f.chunk_bytes)) * f.utia_per_gas;
 }
 
-export type PublisherShare = {
-  publisher: string;
-  label?: string;
-  fees_utia: number;
-  fees_share: number | null;
-  bytes: number;
-  bytes_share: number | null;
-  settlements: number;
-  publishers?: number;
-};
-
 export type DayBucket = { day: string; fees_utia: number; bytes: number; settlements: number; timeouts: number; timed_out_utia: number };
-/** one publisher's share of one day; publisher is empty for the folded "other" */
-export type DayPublisher = { day: string; publisher: string; label?: string; fees_utia: number; bytes: number; settlements: number };
-/** one publisher's share of one UTC hour, split as DayPublisher splits a day */
-export type HourPublisher = { hour: string; publisher: string; label?: string; fees_utia: number; bytes: number; settlements: number };
 
 /**
  * The publisher side of Fibre over a window. Every figure is something the
@@ -675,8 +654,6 @@ export type Market = {
   timeouts: number;
   timed_out_utia: number;
   deposits: Sum;
-  withdrawals_requested: Sum;
-  withdrawals_executed: Sum;
   escrow_held_utia: number;
   escrow_accounts: number;
   /** x/fibre's module account: every escrow on the chain, read at escrow_total_at */
@@ -685,16 +662,18 @@ export type Market = {
   daily: DayBucket[];
   /** UTC hours, for a window of a day or less */
   hourly?: { hour: string; bytes: number; settlements: number; fees_utia: number }[];
-  /** hourly split by publisher as daily_by_publisher splits daily, set with it */
-  hourly_by_publisher?: HourPublisher[];
-  daily_by_publisher: DayPublisher[];
-  top_publishers: PublisherShare[];
-  other_publishers: PublisherShare | null;
-  largest_poster: PublisherShare | null;
   /** namespaces the window's settlements used, and any settlement on record */
   namespaces?: number;
   namespaces_total?: number;
+  /**
+   * every blob on record by Tensile's reading, network-wide and over the whole record whatever the window (the same on
+   * every window); null until the API has counted them after a start, absent from an API before it was published
+   */
+  readings?: ReadingTotals | null;
 };
+
+/** every blob on record by Tensile's reading: available, unavailable, and not read (its window closed with no reading) */
+export type ReadingTotals = { available: number; unavailable: number; not_read: number };
 
 export type Escrow = { found: boolean; balance_utia: number; available_utia: number; height: number; updated_at: string };
 
@@ -737,11 +716,7 @@ export type Payment = {
   height: number;
   time: string;
   tx_hash?: string;
-  publisher: string;
-  processor?: string;
   promise_hash?: string;
-  namespace?: string;
-  blob_size?: number;
   amount_utia: number;
   available_at?: string;
 };
@@ -1166,6 +1141,9 @@ export function shortBech(s: string): string {
 export type Load = {
   promises: number;
   bytes: number;
+};
+/** Load as the validator page has it: what the validator holds now, and its rows on the newest settled promise */
+export type DetailLoad = Load & {
   stored_bytes: number;
   rows_per_blob: number;
 };

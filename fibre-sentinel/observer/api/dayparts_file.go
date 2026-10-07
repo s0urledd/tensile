@@ -29,7 +29,7 @@ import (
 // A restart would otherwise begin the partials again and read every window
 // raw until the sealer had sealed every day once more, which at a year of
 // busy days is hours. So they are kept beside the snapshots, with the
-// machinery the memo and the ledger use (derived.go): a digest of each
+// machinery the endorsement ledger uses (derived.go): a digest of each
 // file's body, a definition, the identity of the store they were read
 // from.
 //
