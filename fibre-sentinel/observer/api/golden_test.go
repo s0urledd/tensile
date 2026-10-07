@@ -105,6 +105,12 @@ func TestGoldenAnswers(t *testing.T) {
 	// the server as observer-api builds it (its routes, its keepers), its clock fixed before anything starts
 	srv := NewWithVantage(st, VantageInfo{Name: "ut-1"}, nil, withClock(func() time.Time { return now }))
 	defer srv.Close()
+	// The readings memo is built a slice at a time across market refreshes and is nil until its first full
+	// computation lands, so whether an answer carries reading counts would depend on how fast the machine is (two
+	// runs of one build differed on GitHub's runners): built to the end before anything is asked.
+	if err := srv.readings.update(ctx, srv, 0); err != nil {
+		t.Fatalf("readings: %v", err)
+	}
 
 	reqs := goldenRequests(t, st, now)
 	if err := os.MkdirAll(filepath.Join(out, "answers"), 0o755); err != nil {
