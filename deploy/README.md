@@ -280,14 +280,14 @@ failing checks otherwise.
 
 | check | fails when |
 |---|---|
-| `scanner`, `prober`, `heartbeat`, `collector` | the process is missing or dead; it keeps failing (`alive but failing: <stage>`); or its loop has completed no cycle for three of its cadences, and at least three minutes (`no completed cycle for <d>`). The last one is a stuck loop: its status file keeps being refreshed, so nothing else shows it. The prober also fails when its readings failed in the last 15 minutes and none was made. |
-| `work` | one of the collector's stages (export, registry, corrections, holds, retention, heartbeat, hosting) has failed for over ten minutes. The chain poll's success no longer hides it. |
+| `scanner`, `prober`, `heartbeat`, `collector` | the process is missing or dead; it keeps failing (`alive but failing: <stage>`); or its loop has completed no cycle for three of its cadences, and at least three minutes (`no completed cycle for <d>`). The last one is a stuck loop: its status file keeps being refreshed, so nothing else shows it. A scanner waiting at the tip of a chain that makes no block is not stuck; `chain_liveness` says why. The prober also fails when its readings failed in the last 15 minutes and none was made. |
+| `work` | one of the collector's stages has failed for over ten minutes: `state`, `checkpoint`, `late verdicts`, `corrections`, `holds`, `retention`, `registry`, `export`, `heartbeat`, `hosting` or `avatars` (storing a picture). The chain poll's success no longer hides it. |
 | `ingest` | lines have waited in a record file for ten minutes with the collector's cursor unmoved (`collector has ingested nothing for <d>`): its loop is stuck, and the site's figures stop moving. |
-| `chain_polls` | a chain-side poll has not succeeded in time: the chain status, endpoints or escrow for 15 minutes, the validator identities for 26 hours. The last value stays served meanwhile, so this is the only sign. |
+| `chain_polls` | a chain-side poll has not succeeded in time: the chain status for 15 minutes, the endpoints or escrow for 15 minutes once Fibre is active, the validator identities for 26 hours. A poll never recorded fails once the collector has run longer than that. The last value stays served meanwhile, so this is the only sign. |
 | `scanner_lag` | the scanner is more than 200 blocks behind the chain. |
-| `chain_liveness` | the chain's newest block is over ten minutes old: the chain or the node is halted. |
+| `chain_liveness` | the newest block the observer knows of, from the collector's poll or the scanner's own reading, is over ten minutes old: the chain or the node is halted. A stuck collector alone no longer reads as a halted chain. |
 | `vantages` | another vantage seen in the last seven days has sent no endpoint check for 20 minutes: its heartbeat died or the pull fails. |
-| `api_errors` | a route answered a 5xx in the last ten minutes. The error is in the API's journal. |
+| `api_errors` | a route answered a 5xx in the last ten minutes. A 503 is not counted: the API answers it on purpose while a window is still being computed, which `snapshots` covers. The error is in the API's journal. |
 | `snapshots` | a window's figures have not refreshed for twice their interval (at least 15 minutes), or three refreshes in a row failed. The site keeps showing the older figures. |
 | `disk` | the data disk has under 15% free. |
 | `scan_gaps` | a scan gap is recorded (see the Runbook). |
@@ -325,7 +325,13 @@ failing checks under its own name until it holds again:
   have been there that long;
 - `export`: after 04:00 UTC, no daily export for yesterday;
 - `vantage-pull`: with `VANTAGE_PULL_NAMES` set, nothing new from a
-  vantage for 30 minutes, or its pull unit failed and nothing came for 10.
+  vantage for 30 minutes;
+- `fibre-vantage-pull@<network>`: its last run failed and nothing new
+  came from a vantage for 10 minutes. One failed run that the next one
+  fixes is not reported.
+
+A vantage that never sent anything is not judged: before Fibre is live
+there is nothing for it to check.
 
 A backup that stops finishing stops the retirement of local copies after
 its second failed night ("Retiring local copies" below), so it is heard of
@@ -995,11 +1001,13 @@ the database aside, restore or delete it, start the collector, and check
 
 ### Stored data the reading no longer needs
 
-Nothing below is deleted by this change, and nothing is rewritten: the
-earlier schedule's rows (`w1` to `w4`, `grace`, `post`, 8,000 each) and
-the `NOT_PROBED` end rows of readings the old prober could not make are the
-record, and stay. What only served the earlier model, with its size on the
-mocha host on 29 September, and how to remove it once the owner approves:
+No record line, no row and no column with data below is deleted, and
+nothing is rewritten: the earlier schedule's rows (`w1` to `w4`, `grace`,
+`post`, 8,000 each) and the `NOT_PROBED` end rows of readings the old
+prober could not make are the record, and stay. Migration 29 drops only
+indexes and a table that has never held a row. What only served the
+earlier model, with its size on the mocha host on 29 September, and how to
+remove it once the owner approves:
 
 | data | size | still read by | how to remove |
 |---|---|---|---|
@@ -1011,7 +1019,8 @@ mocha host on 29 September, and how to remove it once the owner approves:
 | index `probes_sampling_started` | 68 MB | nothing: `/v1/sampling`, its only reader, is removed | dropped by migration 29 (an index, no row goes). Never `VACUUM` the store: it can renumber rowids that some figures read in order |
 | columns `probe_daily.faults`, `attested`, `unattested`, `unknown_att` | none yet (no day rolled) | nothing: written as 0 | a migration that bumps the schema, whenever the table is next changed |
 | columns `obligation_daily.end_unobserved`, `unobserved_reachable`, `unobserved_unreachable`, `unobserved_not_probed` | none yet | summed into `not_counted` | the same; one `not_counted` column would do |
-| `snapshots/` | 1.0 MB, 12 files | the API, which rewrites every file on start and on each refresh | nothing to do: none is left from an earlier model |
+| `snapshots/` | 1.0 MB, 12 files | the API, which rewrites every file on start and on each refresh | nothing to do, but for `original-rows.json` (below) |
+| `snapshots/original-rows.json` | not measured; an entry per publication | nothing: this build reads each publication's `original_rows` column (migration 27) and neither reads nor writes the file | derived, not record: `rm <DATA_DIR>/snapshots/original-rows.json` once this build runs. An older build put back rebuilds it |
 | table `probe_confirmations` and its indexes, index `probes_cleared` | empty (0 rows) | nothing: the second location's confirmation of failed readings is gone | dropped by migration 29, which refuses if the table holds a row |
 | columns `probes.cleared_by` and `probes.confirmed_by` | every value NULL | nothing | kept: dropping a column rewrites `probes`, most of a 6 GB store on a disk the validator shares |
 | rows stored before the slim record (migration 27, 2026-10-06): full lines in `publications.raw_json` and `probes.raw_json`, full lists in `assignments.rows_json` and `probes.row_indices`, the same row lists several times over | an estimate: about 0.75 GB in `assignments.rows_json` and as much again in `publications.raw_json` | the blob page, `/v1/probes`, the late verdicts, the corrector, the retirement's record check | kept as they are for now. A later change writes them in the slim form, which gives every line back byte for byte; it changes no record file |
@@ -1329,11 +1338,10 @@ cat /var/lib/fibre-observer/mocha/exports/remote-copy.json                  # th
   `journalctl -u fibre-<name>@<network> -n 2000 --no-pager` and report it.
   The collector reads on from its cursors; nothing is lost.
 - **`work` fails.** One collector stage has failed for over ten minutes;
-  the detail names it (`export`, `registry`, `corrections`, `holds`,
-  `retention`, `heartbeat`, `hosting`). `journalctl -u
-  fibre-collector@<network> | grep <stage>` shows the error. An `export`
-  that keeps failing holds the nightly backup's proof and the retirement
-  back, so it is the one to look at first.
+  the detail names it and how long (the stages are in the table above).
+  `journalctl -u fibre-collector@<network> -n 500` has the error. An
+  `export` that keeps failing holds the nightly backup's proof and the
+  retirement back, so it is the one to look at first.
 - **`chain_polls` fails.** The collector's polls of the node fail, and the
   site keeps serving the last values. The detail names the stale polls.
   Check the node (`deploy/test/rpc-check.sh`) and the collector's journal.
@@ -1539,7 +1547,10 @@ sudo systemctl enable --now fibre-hosting-db@mocha.timer
 ```
 
 It is `Persistent`, so a month missed while the host was down is made up
-after boot. `/v1/hosting` says when each file was last changed, and the
+after boot. It refreshes `<DATA_DIR>/hosting` only: files kept elsewhere
+(`HOSTING_ASN_DB=`) are refreshed by whoever put them there, and
+`HOSTING_SKIP_COUNTRY=1` / `HOSTING_SKIP_CITY=1` in the env file skip the
+DB-IP files. `/v1/hosting` says when each file was last changed, and the
 `hosting_db` health check fails once the IP-to-ASN file is over 45 days
 old: the refresh has stopped. The collector re-runs the lookup when a file's
 size or mtime changes. Removing `ip2asn-combined.tsv.gz` turns the feature
