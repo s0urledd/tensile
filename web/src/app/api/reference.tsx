@@ -2,15 +2,17 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import Copy from "@/components/Copy";
 import { API_BASE } from "@/lib/api";
+import { apiDown } from "@/lib/apidown";
 import { API_URL, API_URL_FIXED } from "@/lib/site";
 import { GROUPS, type Endpoint, type Param } from "./endpoints";
 
 /**
  * The parts of the API page that run in the browser: the base URL and the
- * health dot, which depend on the site serving the page, and the reference,
- * which opens, filters and sends. One static export serves every network's
- * site, each with its own API on its own /api, so the base URL is read from
- * the page's origin unless NEXT_PUBLIC_API_URL fixed one at build time.
+ * notice that the API does not answer, which depend on the site serving the
+ * page, and the reference, which opens, filters and sends. One static export
+ * serves every network's site, each with its own API on its own /api, so the
+ * base URL is read from the page's origin unless NEXT_PUBLIC_API_URL fixed
+ * one at build time.
  */
 
 const DEFAULT_BASE = API_URL.replace(/\/v1$/, "");
@@ -35,26 +37,44 @@ export function BaseUrl() {
   );
 }
 
-/** A dot for /v1/health: its status word, or unreachable. */
+/**
+ * A pill in the title row, only while the API does not answer (or the site refuses this reader as too many requests,
+ * which reads busy). The observer's own checks are not shown: the site says nothing about the observer while the API
+ * answers, and /v1/health is listed below for anyone who asks. Asked every minute, not while the tab is hidden.
+ */
 export function Health() {
-  const [status, setStatus] = useState<string | null>(null);
+  const [down, setDown] = useState<{ word: string; why: string } | null>(null);
   useEffect(() => {
-    let live = true;
+    let live = true, last = 0;
     const check = async () => {
+      if (document.hidden) return;
+      last = Date.now();
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 20000);
+      let next: { word: string; why: string } | null;
       try {
-        const r = await fetch(`${API_BASE}/v1/health`, { cache: "no-store" });
-        const body = await r.json() as { status?: string };
-        if (live) setStatus(body.status ?? "unreachable");
-      } catch { if (live) setStatus("unreachable"); }
+        const r = await fetch(`${API_BASE}/v1/health`, { cache: "no-store", signal: ctl.signal });
+        let body: unknown = null;
+        try { body = await r.json(); } catch { /* not JSON: not the API's answer */ }
+        next = apiDown(r.status, body);
+      } catch (e) {
+        next = { word: "Not answering", why: e instanceof DOMException && e.name === "AbortError" ? "no answer within 20 s" : e instanceof Error ? e.message : String(e) };
+      } finally {
+        clearTimeout(t);
+      }
+      if (live) setDown(next);
     };
     check();
     const t = setInterval(check, 60_000);
-    return () => { live = false; clearInterval(t); };
+    const onVis = () => { if (!document.hidden && Date.now() - last >= 60_000) check(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { live = false; clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
   }, []);
+  if (!down) return null;
   return (
-    <span className="api-health" role="status" title="GET /v1/health">
-      <i className={`dot ${status === "ok" ? "ok" : status ? "hold" : "none"}`} aria-hidden="true" />
-      {status ? `Health: ${status}` : "Health: checking"}
+    <span className="api-health" role="status" title={`GET /v1/health: ${down.why}`}>
+      <i className="dot hold" aria-hidden="true" />
+      {down.word}
     </span>
   );
 }
