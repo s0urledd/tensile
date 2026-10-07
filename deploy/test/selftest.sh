@@ -79,7 +79,10 @@
 #                   export missing after 04:00 UTC, a second vantage with
 #                   nothing new for 30 min (its live file emptied by a
 #                   rotation too), and a failed pull unit with nothing new
-#                   for 10 min each fail a check of their own; a new host
+#                   for 10 min each fail a check of their own; so does
+#                   yesterday's export whose newest line in
+#                   exports/remote.jsonl is ok false, or that has none,
+#                   from 06:00 UTC with BACKUP_REMOTE set; a new host
 #                   with no exports directory yet completes its run
 #   snapshot_code   a 503 with "computing": true is asked again until the
 #                   deadline; a 503 without it and a 200 are final at once
@@ -682,10 +685,14 @@ check eq "$(posts)" $((n + 1))
 check eq "$(hwx "$p503" DATA_DIR="$T/hw3")" 1
 check eq "$(posts)" $((n + 2))
 # Outcomes, at a fixed clock: noon UTC on 2026-10-07, with yesterday's
-# export in place.
+# export in place and proven on the remote.
 noon=$(date -u -d 2026-10-07T12:00:00Z +%s)
 mkdir -p "$T/hw/exports"
 touch "$T/hw/exports/tensile-t-2026-10-06.tar.gz"
+proof() { # proof <export> <true|false>: one line of the backup's remote proof
+  printf '{"name":"%s","sha256":"%064d","checked_at":"2026-10-07T03:40:00Z","ok":%s,"remote":"0123456789abcdef"}\n' "$1" 0 "$2" >> "$T/hw/exports/remote.jsonl"
+}
+proof tensile-t-2026-10-06.tar.gz true
 # the backup's last finished copy: 32 hours old fails with BACKUP_REMOTE
 # set, and says nothing without it; a fresh one recovers
 printf '{"copied_at":"2026-10-06T03:20:00Z","remote":"0123456789abcdef"}\n' > "$T/hw/exports/remote-copy.json"
@@ -705,6 +712,31 @@ hwx "$p200" HEALTHWATCH_NOW="$noon" BACKUP_REMOTE=r:bucket >/dev/null
 check eq "$(sed -n 3p "$hwstate")" backup-copy
 check contains "$(lastpost)" "no backup copy has ever finished"
 rm -f "$T/hw/exports/tensile-t-2026-10-04.tar.gz"
+# yesterday's export not proven on the remote, with BACKUP_REMOTE set and
+# the copies finishing: its newest line there ok false (a remote that takes
+# copies and cannot give them back), or none at all, fails from 06:00 UTC;
+# a proof recovers
+printf '{"copied_at":"2026-10-07T03:20:00Z","remote":"0123456789abcdef"}\n' > "$T/hw/exports/remote-copy.json"
+proof tensile-t-2026-10-06.tar.gz false
+hwreset "$noon"
+hwx "$p200" HEALTHWATCH_NOW="$(date -u -d 2026-10-07T05:30:00Z +%s)" BACKUP_REMOTE=r:bucket >/dev/null
+check eq "$(sed -n 1p "$hwstate")" ok
+hwx "$p200" HEALTHWATCH_NOW="$noon" >/dev/null
+check eq "$(sed -n 1p "$hwstate")" ok
+check eq "$(hwx "$p200" HEALTHWATCH_NOW="$noon" BACKUP_REMOTE=r:bucket)" 0
+check eq "$(sed -n 3p "$hwstate")" backup-proof
+check contains "$(lastpost)" "tensile-t-2026-10-06.tar.gz not proven on the remote"
+proof tensile-t-2026-10-06.tar.gz true
+hwx "$p200" HEALTHWATCH_NOW="$noon" BACKUP_REMOTE=r:bucket >/dev/null
+check contains "$(lastpost)" recovered
+: > "$T/hw/exports/remote.jsonl"
+proof tensile-t-2026-10-05.tar.gz true
+hwx "$p200" HEALTHWATCH_NOW="$noon" BACKUP_REMOTE=r:bucket >/dev/null
+check eq "$(sed -n 3p "$hwstate")" backup-proof
+check contains "$(lastpost)" "tensile-t-2026-10-06.tar.gz not proven on the remote"
+proof tensile-t-2026-10-06.tar.gz true
+hwx "$p200" HEALTHWATCH_NOW="$noon" BACKUP_REMOTE=r:bucket >/dev/null
+check contains "$(lastpost)" recovered
 # yesterday's export missing: not yet at 03:30 UTC, a failing check from
 # 04:00 on, recovered once it is there
 rm -f "$T/hw/exports/tensile-t-2026-10-06.tar.gz"

@@ -20,8 +20,8 @@
 # see, judged by what they left behind rather than by their unit's state
 # alone (a timer never enabled leaves a unit that never failed): the
 # nightly backup and archive units, the backup's last finished copy, the
-# day's export, and the second vantages' pulls. Each that is wrong is a
-# failing check of its own (below).
+# day's export and its proof on the remote, and the second vantages'
+# pulls. Each that is wrong is a failing check of its own (below).
 #
 # With neither set it only logs, which journalctl -u
 # fibre-healthwatch@<instance> shows; point any external uptime monitor at
@@ -190,16 +190,42 @@ if [ -n "$backup_remote" ]; then
   fi
 fi
 
+# The run's hour of the day (UTC) and yesterday's date, which the daily
+# export and its remote proof are due by.
+hour=$((10#$(date -u -d "@$epoch" +%H)))
+yday=$(date -u -d "@$((epoch - 86400))" +%F)
+
 # The collector builds each day's export from 03:00 UTC; from 04:00 on,
 # yesterday's must be there. An export that stopped (its index lost, any
 # error it keeps hitting) used to be a log line every pass and nothing else.
-if [ -d "$data/exports" ] && [ $((10#$(date -u -d "@$epoch" +%H))) -ge 4 ]; then
-  yday=$(date -u -d "@$((epoch - 86400))" +%F)
+if [ -d "$data/exports" ] && [ "$hour" -ge 4 ]; then
   found=0
   for f in "$data/exports/"*"-$yday.tar.gz"; do
     if [ -e "$f" ]; then found=1; fi
   done
   if [ "$found" = 0 ]; then fail_check export "no daily export for $yday after 04:00 UTC"; fi
+fi
+
+# The backup reads each export back from the remote and appends what it
+# found to exports/remote.jsonl, the newest line for a name being the one
+# that counts; observer-archive -retire removes a segment only once the
+# exports holding it are proven there. A remote that takes the copies but
+# cannot give them back writes "ok": false lines while the backup unit
+# succeeds, and retirement keeps every segment with nothing saying why. So
+# with BACKUP_REMOTE set, from 06:00 UTC (the backup runs from 03:17),
+# yesterday's export whose newest line there is not a proof, or that has
+# none, is a failing check of its own. An export not there at all is the
+# export check's.
+if [ -n "$backup_remote" ] && [ -d "$data/exports" ] && [ "$hour" -ge 6 ]; then
+  for f in "$data/exports/"*"-$yday.tar.gz"; do
+    [ -e "$f" ] || continue
+    n=${f##*/}
+    last=$(grep -aF "\"name\":\"$n\"" "$data/exports/remote.jsonl" 2>/dev/null | tail -n 1 || true)
+    case $last in
+      *'"ok":true'*) ;;
+      *) fail_check backup-proof "$n not proven on the remote" ;;
+    esac
+  done
 fi
 
 # The second vantages: each pull appends whatever the vantage's heartbeat
