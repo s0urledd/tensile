@@ -13,6 +13,7 @@ import (
 // can be tested against a fake chain.
 type escrowChain interface {
 	StatusAt(ctx context.Context) (string, int64, time.Time, error)
+	HeaderTime(ctx context.Context, height int64) (time.Time, error)
 	EscrowAccount(ctx context.Context, signer string, height int64) (scan.Escrow, error)
 	Withdrawals(ctx context.Context, signer string, height int64) ([]scan.PendingWithdrawal, int64, error)
 }
@@ -24,6 +25,15 @@ type headerTimer interface {
 
 type logf func(format string, a ...any)
 
+// escrowBudget bounds the chain queries of one escrow poll, and, apart, of
+// one fillParamTimes. The poll runs in the collector's one loop, between the
+// ingest and the next pass, with two queries per publisher at -rpc-timeout
+// each: a node that accepts queries and stalls them held the ingest up for
+// a minute per publisher. Past the budget the rest wait for the next poll,
+// and the poll does not count as done (escrow_polled_at stays). A var so a
+// test can shorten it.
+var escrowBudget = time.Minute
+
 // escrowPoll is what one poll did, for the log and for tests.
 type escrowPoll struct {
 	Height     int64
@@ -32,11 +42,14 @@ type escrowPoll struct {
 	Queues     int // withdrawal queues read and stored
 	Change     store.WithdrawalChange
 	Resolved   int
+	// OK: every known publisher's escrow account was read and stored (or
+	// there is none to read). What escrow_polled_at says.
+	OK bool
 }
 
 // pollEscrow reads, for every publisher the payments table knows, the
-// escrow balance and the withdrawal queue, both at one height: the chain
-// tip when the poll starts.
+// escrow balance and the withdrawal queue, both at one height: the last
+// block the chain had committed when the poll started.
 //
 // One height for both reads, and for every publisher, is the point. The
 // module keeps balance - available equal to the sum of the queue (see the
@@ -45,6 +58,14 @@ type escrowPoll struct {
 // height is what says whether a withdrawal that vanished could have been
 // paid yet. Reading "latest" twice would straddle a block whenever one
 // lands between the two queries.
+//
+// That height is the one below the tip /status names. /status reports the
+// block store's height, and a node saves block h before it executes it and
+// the app commits it, so for a moment every query at h is answered "cannot
+// query with height in the future" (ABCI code 26). A poll that started in
+// that moment failed for every publisher, about one poll in a hundred on
+// Mocha, and the next was five minutes away. h-1 is committed whenever h is
+// named, and it is dated by its own header.
 //
 // A publisher whose escrow read fails is skipped whole, as before. One
 // whose queue read fails keeps its escrow row and its queue history
@@ -59,19 +80,35 @@ func pollEscrow(ctx context.Context, c escrowChain, st *store.Store, now time.Ti
 	}
 	out.Publishers = len(pubs)
 	if len(pubs) == 0 {
+		out.OK = true
 		return out
 	}
-	_, h, blockTime, err := c.StatusAt(ctx)
+	// The budget covers the chain; the store calls below keep ctx.
+	cctx, cancel := context.WithTimeout(ctx, escrowBudget)
+	defer cancel()
+	_, tip, _, err := c.StatusAt(cctx)
 	if err != nil {
 		log("escrow: chain tip: %v", err)
 		return out
 	}
+	h := tip
+	if h > 1 {
+		h--
+	}
+	blockTime, err := c.HeaderTime(cctx, h)
+	if err != nil {
+		log("escrow: header %d: %v", h, err)
+		return out
+	}
 	out.Height = h
 	for _, pub := range pubs {
-		if ctx.Err() != nil {
+		if cctx.Err() != nil {
+			if ctx.Err() == nil {
+				log("escrow: poll stopped at the %s budget with %d of %d account(s) read; the rest wait for the next poll", escrowBudget, out.Escrows, len(pubs))
+			}
 			break
 		}
-		e, err := c.EscrowAccount(ctx, pub, h)
+		e, err := c.EscrowAccount(cctx, pub, h)
 		if err != nil {
 			log("escrow: %s: %v", pub, err)
 			continue
@@ -82,7 +119,7 @@ func pollEscrow(ctx context.Context, c escrowChain, st *store.Store, now time.Ti
 		}
 		out.Escrows++
 
-		ws, answered, err := c.Withdrawals(ctx, pub, h)
+		ws, answered, err := c.Withdrawals(cctx, pub, h)
 		if err != nil {
 			log("withdrawals: %s: %v", pub, err)
 			continue
@@ -112,6 +149,7 @@ func pollEscrow(ctx context.Context, c escrowChain, st *store.Store, now time.Ti
 				h, pub, len(ws), ch.Opened, ch.Reduced, ch.Closed, ch.Reopened)
 		}
 	}
+	out.OK = out.Escrows == len(pubs)
 	if out.Escrows > 0 {
 		_ = st.SetMeta("escrow_accounts", itoa(int64(out.Escrows)), now)
 	}
@@ -155,12 +193,14 @@ func fillParamTimes(ctx context.Context, c headerTimer, st *store.Store, log log
 		log("params: undated heights: %v", err)
 		return 0
 	}
+	cctx, cancel := context.WithTimeout(ctx, escrowBudget)
+	defer cancel()
 	done := 0
 	for i, h := range hs {
-		if i >= paramTimesPerPass || ctx.Err() != nil {
+		if i >= paramTimesPerPass || cctx.Err() != nil {
 			break
 		}
-		t, err := c.HeaderTime(ctx, h)
+		t, err := c.HeaderTime(cctx, h)
 		if err != nil {
 			if !scan.IsHeightUnavailable(err) {
 				log("params: header %d: %v", h, err)

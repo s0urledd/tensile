@@ -12,33 +12,61 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
-const pubA = "celestia1d3mmg652pxj776dyqwlsrc93y64088g6ux8deq"
+const (
+	pubA = "celestia1d3mmg652pxj776dyqwlsrc93y64088g6ux8deq"
+	pubB = "celestia1e3mmg652pxj776dyqwlsrc93y64088g6ux8deq"
+	pubC = "celestia1f3mmg652pxj776dyqwlsrc93y64088g6ux8deq"
+)
 
 // fakeChain answers the escrow poll from fixed state, one "block" at a time.
+// height is the tip /status names; like a real node's, it is saved before
+// the app has committed it, and a query at it is refused (code 26) while
+// tipUncommitted is set. blockTime is the time of the block below it, the
+// one the poll reads.
 type fakeChain struct {
-	height    int64
-	blockTime time.Time
-	escrow    scan.Escrow
-	queue     []scan.PendingWithdrawal
-	queueErr  error
-	answerAt  int64 // height the Withdrawals answer claims; 0 = the asked height
-	asked     []int64
-	headers   map[int64]time.Time
+	height         int64
+	blockTime      time.Time
+	tipUncommitted bool
+	escrow         scan.Escrow
+	queue          []scan.PendingWithdrawal
+	queueErr       error
+	answerAt       int64 // height the Withdrawals answer claims; 0 = the asked height
+	asked          []int64
+	headers        map[int64]time.Time
+	// stall makes every state query wait for its context to end.
+	stall bool
 }
 
 func (f *fakeChain) StatusAt(context.Context) (string, int64, time.Time, error) {
-	return "test", f.height, f.blockTime, nil
+	return "test", f.height, f.blockTime.Add(6 * time.Second), nil
 }
 
-func (f *fakeChain) EscrowAccount(_ context.Context, signer string, height int64) (scan.Escrow, error) {
+// query is what every state query meets first.
+func (f *fakeChain) query(ctx context.Context, height int64) error {
 	f.asked = append(f.asked, height)
+	if f.stall {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if f.tipUncommitted && height >= f.height {
+		return &scan.ABCIError{Code: 26, Codespace: "sdk", Log: fmt.Sprintf("cannot query with height in the future; please provide a valid height: %d", height)}
+	}
+	return nil
+}
+
+func (f *fakeChain) EscrowAccount(ctx context.Context, signer string, height int64) (scan.Escrow, error) {
+	if err := f.query(ctx, height); err != nil {
+		return scan.Escrow{}, err
+	}
 	e := f.escrow
 	e.Signer, e.Height = signer, height
 	return e, nil
 }
 
-func (f *fakeChain) Withdrawals(_ context.Context, signer string, height int64) ([]scan.PendingWithdrawal, int64, error) {
-	f.asked = append(f.asked, height)
+func (f *fakeChain) Withdrawals(ctx context.Context, signer string, height int64) ([]scan.PendingWithdrawal, int64, error) {
+	if err := f.query(ctx, height); err != nil {
+		return nil, 0, err
+	}
 	if f.queueErr != nil {
 		return nil, 0, f.queueErr
 	}
@@ -52,6 +80,9 @@ func (f *fakeChain) Withdrawals(_ context.Context, signer string, height int64) 
 func (f *fakeChain) HeaderTime(_ context.Context, h int64) (time.Time, error) {
 	if t, ok := f.headers[h]; ok {
 		return t, nil
+	}
+	if h == f.height-1 && !f.blockTime.IsZero() {
+		return f.blockTime, nil
 	}
 	return time.Time{}, fmt.Errorf("height %d is not available, lowest height is 500", h)
 }
@@ -116,12 +147,12 @@ func TestPollEscrowFollowsTheQueue(t *testing.T) {
 			{Signer: pubA, Denom: "utia", AmountUtia: 100, RequestedAt: r2, AvailableAt: r2.Add(delay)},
 		}}
 	p := pollEscrow(ctx, c, st, time.Now(), quiet)
-	if p.Height != 100 || p.Escrows != 1 || p.Queues != 1 || p.Change.Opened != 2 {
+	if p.Height != 99 || p.Escrows != 1 || p.Queues != 1 || p.Change.Opened != 2 || !p.OK {
 		t.Fatalf("first poll: %+v", p)
 	}
 	for _, h := range c.asked {
-		if h != 100 {
-			t.Fatalf("every read of a poll must be at the tip height it started from; asked %v", c.asked)
+		if h != 99 {
+			t.Fatalf("every read of a poll must be at the block below the tip it started from; asked %v", c.asked)
 		}
 	}
 	var wh sql.NullInt64
@@ -129,7 +160,7 @@ func TestPollEscrowFollowsTheQueue(t *testing.T) {
 	if err := st.DB().QueryRow(`SELECT withdrawals_height, pending_utia FROM escrow_accounts WHERE publisher = ?`, pubA).Scan(&wh, &pending); err != nil {
 		t.Fatal(err)
 	}
-	if wh.Int64 != 100 || pending.Int64 != 300 {
+	if wh.Int64 != 99 || pending.Int64 != 300 {
 		t.Fatalf("escrow row: withdrawals_height=%v pending=%v", wh, pending)
 	}
 
@@ -149,7 +180,7 @@ func TestPollEscrowFollowsTheQueue(t *testing.T) {
 	if r := queueRow(t, st, r1); r.amount != 150 || r.first != 200 || r.gone.Valid {
 		t.Fatalf("r1 after the shortfall: %+v", r)
 	}
-	if r := queueRow(t, st, r2); !r.gone.Valid || r.gone.Int64 != 110 || r.outcome.String != store.WithdrawalConsumed {
+	if r := queueRow(t, st, r2); !r.gone.Valid || r.gone.Int64 != 109 || r.outcome.String != store.WithdrawalConsumed {
 		t.Fatalf("r2 missed before available_at must be consumed: %+v", r)
 	}
 
@@ -161,13 +192,13 @@ func TestPollEscrowFollowsTheQueue(t *testing.T) {
 	if p.Escrows != 1 || p.Queues != 0 {
 		t.Fatalf("failed queue read: %+v", p)
 	}
-	if r := queueRow(t, st, r1); r.gone.Valid || r.lastSeen != 110 {
+	if r := queueRow(t, st, r1); r.gone.Valid || r.lastSeen != 109 {
 		t.Fatalf("a failed read changed r1: %+v", r)
 	}
 	c.queueErr = nil
 
 	// A node that answers from another height is not stored either.
-	c.answerAt = 119
+	c.answerAt = 118
 	if p = pollEscrow(ctx, c, st, time.Now(), quiet); p.Queues != 0 {
 		t.Fatalf("answer from another height was stored: %+v", p)
 	}
@@ -188,7 +219,7 @@ func TestPollEscrowFollowsTheQueue(t *testing.T) {
 	}
 
 	// The scanner reaches past 200 and the payout is on record: the only
-	// payout of 150 to this account between heights 110 and 200.
+	// payout of 150 to this account between heights 109 and 199.
 	pay(t, st, scan.Payment{DedupeKey: "h180:executed:0", Kind: scan.PaymentWithdrawalExecuted, Height: 180, Time: r1.Add(delay).Add(6 * time.Second), TxIndex: -1, AmountUtia: 150})
 	_ = st.SetMeta("last_scanned_height", "260", time.Now())
 	p = pollEscrow(ctx, c, st, time.Now(), quiet)
@@ -210,12 +241,53 @@ func TestPollEscrowFollowsTheQueue(t *testing.T) {
 	}
 }
 
-// No publisher, no chain call.
+// No publisher, no chain call, and nothing left unread.
 func TestPollEscrowWithoutPublishers(t *testing.T) {
 	st := openStore(t)
 	c := &fakeChain{height: 1, blockTime: time.Now()}
-	if p := pollEscrow(context.Background(), c, st, time.Now(), quiet); p.Publishers != 0 || len(c.asked) != 0 {
+	if p := pollEscrow(context.Background(), c, st, time.Now(), quiet); p.Publishers != 0 || len(c.asked) != 0 || !p.OK {
 		t.Fatalf("poll with nobody to poll: %+v asked=%v", p, c.asked)
+	}
+}
+
+// /status names a block the app has not committed yet: a query at it is
+// refused ("cannot query with height in the future"). The poll reads the
+// block below, so it is not refused, and dates the queue by that block.
+func TestPollEscrowReadsCommittedState(t *testing.T) {
+	st := openStore(t)
+	t0 := time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC)
+	pay(t, st, scan.Payment{DedupeKey: "dep", Kind: scan.PaymentDeposit, Height: 90, Time: t0.Add(-time.Hour), AmountUtia: 1000})
+	pay(t, st, scan.Payment{DedupeKey: "dep-b", Kind: scan.PaymentDeposit, Height: 91, Time: t0.Add(-time.Hour), AmountUtia: 10, Publisher: pubB})
+	c := &fakeChain{height: 100, blockTime: t0, tipUncommitted: true,
+		escrow: scan.Escrow{Denom: "utia", BalanceUtia: 1000, AvailableUtia: 1000, Found: true}}
+	var logs []string
+	p := pollEscrow(context.Background(), c, st, time.Now(), func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) })
+	if !p.OK || p.Escrows != 2 || p.Queues != 2 || p.Height != 99 {
+		t.Fatalf("poll at an uncommitted tip: %+v logs=%v", p, logs)
+	}
+	if v, _ := st.Meta("withdrawals_polled_at"); v != store.TS(t0) {
+		t.Fatalf("withdrawals_polled_at = %q, want the time of the block read (%s)", v, store.TS(t0))
+	}
+}
+
+// A node that takes queries and never answers holds the poll for the
+// budget, not for two -rpc-timeouts per publisher; the poll is not done.
+func TestPollEscrowStopsAtItsBudget(t *testing.T) {
+	st := openStore(t)
+	t0 := time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC)
+	for i, p := range []string{pubA, pubB, pubC} {
+		pay(t, st, scan.Payment{DedupeKey: fmt.Sprintf("dep-%d", i), Kind: scan.PaymentDeposit, Height: 90, Time: t0, AmountUtia: 10, Publisher: p})
+	}
+	defer func(b time.Duration) { escrowBudget = b }(escrowBudget)
+	escrowBudget = 50 * time.Millisecond
+	c := &fakeChain{height: 100, blockTime: t0, stall: true}
+	start := time.Now()
+	p := pollEscrow(context.Background(), c, st, time.Now(), quiet)
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("a stalled node held the poll for %s", took)
+	}
+	if p.OK || p.Escrows != 0 || p.Publishers != 3 {
+		t.Fatalf("stalled poll: %+v", p)
 	}
 }
 
