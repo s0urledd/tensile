@@ -1536,18 +1536,10 @@ func (s *Store) UpsertPublication(p scan.Publication, raw []byte) (inserted bool
 		return false, nil
 	}
 	for _, v := range a.Validators {
-		var rowsJSON any
-		if v.Rows != nil {
-			// the validator's own assignment is marked, not copied: the record's set and commitment give it again
-			if got := intsToU32(v.Rows); sameRows(pub, v.Address, got) {
-				rowsJSON = RowsAssigned
-			} else {
-				b, err := json.Marshal(v.Rows)
-				if err != nil {
-					return false, err
-				}
-				rowsJSON = string(b)
-			}
+		// the validator's own assignment is marked, not copied: the record's set and commitment give it again
+		rowsJSON, err := assignmentRows(pub, v.Address, v.Rows)
+		if err != nil {
+			return false, err
 		}
 		var attested any
 		if p.HasAttestation() {
@@ -1637,10 +1629,7 @@ func (s *Store) InsertProbe(m probe.Measurement, raw []byte) (inserted bool, err
 		}
 	}()
 	// the validator's own assignment is marked, not copied
-	rowIdx := nullIfEmpty(rowIndicesJSON(m))
-	if sameRows(pub, m.ValidatorAddress, m.Download.RowIndices) {
-		rowIdx = RowsAssigned
-	}
+	rowIdx := readingRows(pub, m.ValidatorAddress, m.Download.RowIndices)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return false, err
@@ -1753,12 +1742,12 @@ func nullIfEmpty(s string) any {
 	return s
 }
 
-// rowIndicesJSON is the returned row indices as a JSON array, "" when none.
-func rowIndicesJSON(m probe.Measurement) string {
-	if len(m.Download.RowIndices) == 0 {
+// rowIndicesJSON is a reading's returned row indices as a JSON array, "" when none.
+func rowIndicesJSON(rows []uint32) string {
+	if len(rows) == 0 {
 		return ""
 	}
-	b, err := json.Marshal(m.Download.RowIndices)
+	b, err := json.Marshal(rows)
 	if err != nil {
 		return ""
 	}
@@ -2336,12 +2325,7 @@ func (s *Store) InsertReachability(m probe.Measurement, raw []byte) (inserted bo
 		return false, err
 	}
 	kept := t.Stored()
-	var body any = string(raw)
-	if b, err := t.EncodeReachability(raw); err == nil {
-		body = b
-	} else {
-		t.Rollback(kept) // kept as its line: whatever the attempt added is not needed
-	}
+	body, _ := reachabilityBody(t, raw, kept)
 	committed := false
 	defer func() {
 		if !committed {

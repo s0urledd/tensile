@@ -364,6 +364,27 @@ line byte for byte; otherwise the line itself. 155 bytes of a 1,362-byte line on
 the golden records, 760 bytes a row with its columns and indexes where it took
 2,311.
 
+*The rows stored before (the slim backfill, `store/backfill.go`).* The
+collector writes the rows an earlier build stored in the forms a new row gets,
+with the insert paths' own functions: the slim publication, reading and
+endpoint check in `raw_json`, `=` in `assignments.rows_json` and
+`probes.row_indices` where the list is the validator's own assignment. A
+value is converted only where its new form reads back through the store's
+readers to the old value byte for byte; any other stays as it is and is
+counted with why. The publications go first (the others are converted against
+them), then the assignments, the readings and the endpoint checks, each by
+rowid, a few hundred rows a transaction: the rows read whole and the statement
+closed before anything else is asked of the store, each row written back only
+where it still holds what was read, the table entries added kept, and the
+table's last rowid done written to `meta` (`slim_backfill_<table>`), so a
+restart goes on where it stopped. It runs only in the collector (the one
+writer of the shared tables), for `-slim-backfill-budget` (2 s) after a pass
+that ingested every file, while no ingest is due and the disk is not busy by
+`/proc/pressure/io`, and it gives the freed pages back after each batch, 2,000
+at most. Nothing a reader decodes changes, rowids included, so the API's
+caches stay right. Once every table is done it says so (`meta`
+`slim_backfill_done_at`) and reads nothing more.
+
 The store is append-only **in its inserts** (`ON CONFLICT DO NOTHING`) but not
 in its verdicts: `ApplyAmendment` updates a row's classification in place when
 a deferred shadow verdict settles, and `ApplyProbeCorrection` /

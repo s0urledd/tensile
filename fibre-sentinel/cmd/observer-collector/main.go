@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/pace"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
@@ -71,6 +72,7 @@ func main() {
 		retEvery  = flag.Duration("retention-every", time.Hour, "how often the rollup pass runs")
 		avEvery   = flag.Duration("avatars-every", time.Hour, "how often to look for validator Keybase pictures to fetch or refresh (0 = never)")
 		avMaxAge  = flag.Duration("avatar-max-age", 24*time.Hour, "re-resolve a validator's Keybase picture after this long")
+		bfBudget  = flag.Duration("slim-backfill-budget", 2*time.Second, "after each pass that ingested every file, spend up to this long converting the rows stored before the slim record (migration 27) to the slim forms a new row gets, a batch at a time, while no ingest is due and the disk is not busy (\"some avg10\" in "+pace.ProcFile+" above 6, or \"full avg10\" above 4); once every row is done it stops for good (0 = never)")
 	)
 	flag.Parse()
 
@@ -256,7 +258,8 @@ func main() {
 	var lastEscrow time.Time
 	var escrowAt escrowRound // where the next escrow poll goes on from (withdrawals.go)
 	var exportHeld string    // the hold last logged, so it is said once
-	pass := func(pollEndpoints bool) {
+	// pass is one pass; it reports whether the ingest read every file.
+	pass := func(pollEndpoints bool) bool {
 		now := time.Now()
 		passErrs := coll.Pass(ctx, now)
 		if exporter != nil {
@@ -334,6 +337,7 @@ func main() {
 			live.Set("publications", c.Publications)
 			live.Set("probes", c.Probes)
 		}
+		return len(passErrs) == 0
 	}
 
 	pass(true)
@@ -388,6 +392,16 @@ func main() {
 		}
 		log.Printf("fast tick: state.json, publications and payments every %s between passes%s", *fastEvery, watching)
 	}
+	// The slim backfill (backfill.go), after a pass that ingested every
+	// file, while no ingest is due: not the next pass, nor the fast tick for
+	// a change the file watch saw (without the watch, for its timer).
+	backfill := newSlimBackfill(st, *bfBudget, log.Printf, live, work)
+	ingestDue := func() bool {
+		if len(tick.C) > 0 || len(wakeC) > 0 {
+			return true
+		}
+		return wakeC == nil && len(fastC) > 0
+	}
 	lastEP := time.Now()
 	for {
 		select {
@@ -402,9 +416,20 @@ func main() {
 			fast.run(time.Now())
 		case <-tick.C:
 			due := *epEvery > 0 && time.Since(lastEP) >= *epEvery
-			pass(due)
+			ingested := pass(due)
 			if due {
 				lastEP = time.Now()
+			}
+			if ingested && backfill != nil {
+				// what fell due while the pass ran is read first
+				select {
+				case <-wakeC:
+					fast.run(time.Now())
+				case <-fastC:
+					fast.run(time.Now())
+				default:
+				}
+				backfill.run(ctx, time.Now(), ingestDue)
 			}
 		}
 	}

@@ -372,6 +372,42 @@ func measurementBody(t *slim.Tables, raw []byte, pub *slim.Pub, lookup slim.Look
 	return string(raw), nil
 }
 
+// reachabilityBody is what reachability.raw_json keeps of the line raw: its slim form, which EncodeReachability gives
+// only where it reads back to the line byte for byte, else the line, why saying what refused the slim form.
+func reachabilityBody(t *slim.Tables, raw []byte, kept [4]int) (body any, why error) {
+	b, err := t.EncodeReachability(raw)
+	if err != nil {
+		t.Rollback(kept) // kept as its line: whatever the attempt added is not needed
+		return string(raw), err
+	}
+	return b, nil
+}
+
+// assignmentRows is what assignments.rows_json keeps of a validator's row list in its publication pub: NULL where the
+// record has none, RowsAssigned where it is the validator's own assignment in its order, else the list.
+func assignmentRows(pub *slim.Pub, validator string, rows []int) (any, error) {
+	if rows == nil {
+		return nil, nil
+	}
+	if sameRows(pub, validator, intsToU32(rows)) {
+		return RowsAssigned, nil
+	}
+	b, err := json.Marshal(rows)
+	if err != nil {
+		return nil, err
+	}
+	return string(b), nil
+}
+
+// readingRows is what probes.row_indices keeps of the rows a reading of pub returned: NULL where it returned none,
+// RowsAssigned where they are the validator's own assignment in its order, else the list.
+func readingRows(pub *slim.Pub, validator string, rows []uint32) any {
+	if sameRows(pub, validator, rows) {
+		return RowsAssigned
+	}
+	return nullIfEmpty(rowIndicesJSON(rows))
+}
+
 // keepEntries writes the table entries the last encoding added, in tx.
 func keepEntries(tx *sql.Tx, es []slim.Entry) error {
 	for _, e := range es {

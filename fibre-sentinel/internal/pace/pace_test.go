@@ -219,6 +219,54 @@ func TestNothingToReadNeverHolds(t *testing.T) {
 	}
 }
 
+// Busy reads once and never waits: busy by the rule a pause starts by ("some
+// avg10" above Some, or "full avg10" above Full), and not busy where there is
+// nothing to read, where the reading fails (said once) or where pacing is
+// off.
+func TestBusyReadsOnceAndNeverWaits(t *testing.T) {
+	for _, c := range []struct {
+		at   Pressure
+		busy bool
+	}{{Pressure{}, false}, {Pressure{Some: 6, Full: 4}, false}, {Pressure{Some: 6.01}, true}, {Pressure{Some: 1, Full: 4.5}, true}} {
+		s := &script{readings: []Pressure{c.at}}
+		p, clock, log := paced(s.read)
+		at, busy := p.Busy("x")
+		if busy != c.busy || at != c.at || s.reads != 1 || clock.slept != 0 || len(*log) != 0 {
+			t.Fatalf("%+v: busy %v (%+v), %d read(s), slept %s, log %q", c.at, busy, at, s.reads, clock.slept, *log)
+		}
+	}
+	if d := (&Pacer{Some: 6, Full: 4}).Describe(Pressure{Some: 8.5, Full: 1}); d != "some avg10 8.50 > 6, full avg10 1.00" {
+		t.Fatalf("describe: %q", d)
+	}
+	broken := func() (Pressure, error) { return Pressure{}, errors.New("permission denied") }
+	p, _, log := paced(broken)
+	for i := 0; i < 3; i++ {
+		if _, busy := p.Busy("x"); busy {
+			t.Fatal("an unreadable pressure reads busy")
+		}
+	}
+	if len(*log) != 1 || !strings.Contains((*log)[0], "could not be read (permission denied)") {
+		t.Fatalf("unreadable: log %q", *log)
+	}
+	missing := func() (Pressure, error) {
+		return Pressure{}, &fs.PathError{Op: "open", Path: ProcFile, Err: fs.ErrNotExist}
+	}
+	p, _, log = paced(missing)
+	if _, busy := p.Busy("x"); busy || len(*log) != 0 {
+		t.Fatalf("no pressure file: busy %v, log %q", busy, *log)
+	}
+	var none *Pacer
+	if _, busy := none.Busy("x"); busy {
+		t.Fatal("a nil Pacer reads busy")
+	}
+	s := &script{readings: []Pressure{busy(50)}}
+	p, _, _ = paced(s.read)
+	p.Some = 0
+	if _, b := p.Busy("x"); b || s.reads != 0 {
+		t.Fatalf("off: busy %v, %d read(s)", b, s.reads)
+	}
+}
+
 // A context that ends during a pause ends the wait with its error.
 func TestContextEndsAPause(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

@@ -223,6 +223,31 @@ func (p *Pacer) Wait(ctx context.Context, what string) error {
 	}
 }
 
+// Busy reads the pressure once and reports whether the disk is busy by the
+// rule a pause starts by, without waiting: for work that skips its turn
+// rather than pauses, because it comes round again soon or because it must
+// not wait with a transaction open. A nil Pacer, or one whose Some is 0, is
+// never busy. A pressure that cannot be read is not busy, as in Wait, and
+// the first such error is logged, once; a missing ProcFile is not an error.
+func (p *Pacer) Busy(what string) (Pressure, bool) {
+	if p == nil || p.Some <= 0 {
+		return Pressure{}, false
+	}
+	at, err := p.read()
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) && !p.warned {
+			p.warned = true
+			p.logf("%s: the I/O pressure could not be read (%v); going on, and not holding back on any later read that fails either", what, err)
+		}
+		return Pressure{}, false
+	}
+	return at, p.busy(at)
+}
+
+// Describe is a reading with the threshold each value is over, for a caller
+// that logs the turns it skips (Busy).
+func (p *Pacer) Describe(at Pressure) string { return p.describe(at) }
+
 // Paused is how many pauses there were and how long they lasted in all.
 func (p *Pacer) Paused() (int, time.Duration) {
 	if p == nil {
