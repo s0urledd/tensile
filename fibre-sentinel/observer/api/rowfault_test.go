@@ -163,6 +163,29 @@ func TestARowThatDoesNotDecodeIsItsOwnFault(t *testing.T) {
 	if c := (&Server{}).recordsCheck(time.Now()); !c.OK {
 		t.Errorf("records check with every row decoded: %+v", c)
 	}
+	// and /v1/health carries it, so healthwatch says so (it answers 503 while
+	// any check fails)
+	resp, err := http.Get(ts.URL + "/v1/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var health struct {
+		Checks []healthCheck `json:"checks"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&health)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var records *healthCheck
+	for i := range health.Checks {
+		if health.Checks[i].Name == "records" {
+			records = &health.Checks[i]
+		}
+	}
+	if records == nil || records.OK {
+		t.Errorf("/v1/health after a row that did not decode: records check %+v, want failing", records)
+	}
 
 	// A request that ends is the request's error, not the row's: its blobs
 	// are never published unknown.

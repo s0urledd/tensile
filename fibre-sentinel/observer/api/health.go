@@ -377,7 +377,7 @@ func (s *Server) health(ctx context.Context, now time.Time) healthResponse {
 	} else if s.noParts {
 		parts = &dayPartsHealth{State: "off"}
 	}
-	checks = append(checks, s.apiErrorsCheck(now), s.snapshotsCheck(now))
+	checks = append(checks, s.apiErrorsCheck(now), s.snapshotsCheck(now), s.recordsCheck(now))
 	if c, ok := hostingDBCheck(meta, now); ok {
 		checks = append(checks, c)
 	}
