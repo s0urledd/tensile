@@ -430,7 +430,7 @@ cmd/sentinel-synth         writes a synthetic network-scale record for load and 
 cmd/observer-collector     tails the record files into SQLite and polls the endpoint registry
 cmd/observer-heartbeat     dials every registered endpoint (DNS, TCP, TLS, identity) every few minutes
 cmd/observer-api           the read-only JSON API
-cmd/record-verify          reports whether the store gives back each finished day's record files byte for byte; reads only, deletes nothing
+cmd/record-verify          reports whether the store gives back each finished day's record files byte for byte; with -ledger records what it found in the exports dir's verified.json; deletes nothing
 internal/scan              scanner, param history, record schema, store, CometBFT RPC client
 internal/probe             reading, client order, layered request, measurement store, classifier, prober loop
 internal/uploadprobe       upload-side measurement groundwork: per-validator results from the fibre client's spans

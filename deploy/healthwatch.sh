@@ -16,7 +16,9 @@
 # one says so once.
 #
 # The site shows no check, only an API that does not answer: a failing
-# check reaches the operator here alone.
+# check reaches the operator here alone. So do the nightly backup and
+# archive units, which /v1/health cannot see: one that failed is a failing
+# check of its own (below).
 #
 # With neither set it only logs, which journalctl -u
 # fibre-healthwatch@<instance> shows; point any external uptime monitor at
@@ -111,6 +113,26 @@ print(str(h.get("status", "?")) + ": " + "; ".join(str(c.get("name", "?")) + ": 
   failing=$(printf '%s\n' "$parsed" | sed -n 1p)
   summary=$(printf '%s\n' "$parsed" | sed -n 2p)
   [ -n "$summary" ] || summary="health $code"
+fi
+
+# The nightly jobs fail where /v1/health cannot see them: a backup that no
+# longer copies (and with it the remote proofs that retiring a local copy
+# rests on, which then stops), or an archive run that failed (which skips
+# the retirement after it). A failed unit joins the failing checks under
+# its own name, so it alerts once, nags while it stays failed, and its next
+# good run recovers. SYSTEMCTL is the systemctl binary (the selftest puts a
+# fake there); with none, nothing is asked.
+sysctl_bin="${SYSTEMCTL:-systemctl}"
+if command -v "$sysctl_bin" >/dev/null 2>&1; then
+  for unit in "fibre-backup@$instance.service" "fibre-archive@$instance.service"; do
+    "$sysctl_bin" is-failed --quiet "$unit" 2>/dev/null || continue
+    # shellcheck disable=SC2086 # the check names hold no spaces
+    failing=$(printf '%s\n' ${failing//,/ } "${unit%.service}" | LC_ALL=C sort -u | paste -sd, -)
+    case $now in
+      ok) now="degraded"; summary="every observer process is alive; $unit failed (journalctl -u $unit)" ;;
+      *) summary="$summary; $unit failed (journalctl -u $unit)" ;;
+    esac
+  done
 fi
 
 # The state file: line 1 the state (ok, degraded, down), line 2 the epoch of

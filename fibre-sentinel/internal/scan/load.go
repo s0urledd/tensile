@@ -7,7 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
+
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
 )
 
 // LoadPublications reads a publications.jsonl file (one Publication per line)
@@ -15,8 +16,13 @@ import (
 // error (a corrupt record must not be silently dropped), with one exception:
 // a malformed FINAL line that has no trailing newline is a write in progress
 // or a torn tail, and is ignored.
+//
+// The whole record is read, archived segments then the live file
+// (record.OpenAll): once the file is rotated its older lines are no longer
+// in the live file, and a reader of the live file alone would lose them. A
+// file never archived reads exactly as it did.
 func LoadPublications(path string) ([]Publication, error) {
-	f, err := os.Open(path)
+	f, err := record.OpenAll(path)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
@@ -51,9 +57,9 @@ func LoadPublications(path string) ([]Publication, error) {
 }
 
 // LoadPayments reads a payments.jsonl file under the same rules as
-// LoadPublications.
+// LoadPublications, the archived segments included.
 func LoadPayments(path string) ([]Payment, error) {
-	f, err := os.Open(path)
+	f, err := record.OpenAll(path)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}

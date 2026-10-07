@@ -12,6 +12,9 @@
 // before the day that turn up in that range (a late probe row, a straggler
 // after a restart) are included and counted as late, so every line lands
 // in exactly one export and the manifest says which ones came late.
+//
+// The heartbeats pulled in from the other vantages are exported the same
+// way, one member per vantage after the observer's own files (VantageFiles).
 package export
 
 import (
@@ -65,6 +68,33 @@ var Files = []FileSpec{
 	// and cannot see why.
 	{"param_uncertainty.jsonl", "detected_at"},
 	{"corrections.jsonl", "judged_at"},
+}
+
+// VantagesDir, under the data dir, holds the heartbeats of the other
+// vantages, pulled in by deploy/vantage-pull.sh: <name>/reachability.jsonl
+// each (ingest.VantagesDir).
+const VantagesDir = "vantages"
+
+// VantageFiles is one FileSpec per other vantage's reachability.jsonl under
+// dataDir, sorted by name, each named by its path relative to dataDir with
+// forward slashes ("vantages/de-1/reachability.jsonl"). That name is the
+// member's name in the tarball and its key in the export's state, so a
+// vantage whose directory appears later starts its file at offset 0 in the
+// next export, every line it holds counted late. They are dated like the
+// observer's own heartbeats. A data dir without other vantages has none.
+func VantageFiles(dataDir string) ([]FileSpec, error) {
+	// Glob only fails on a malformed pattern and returns its matches sorted,
+	// which is the order the members go into every export.
+	paths, err := filepath.Glob(filepath.Join(filepath.Clean(dataDir), VantagesDir, "*", "reachability.jsonl"))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]FileSpec, 0, len(paths))
+	for _, p := range paths {
+		name := filepath.Base(filepath.Dir(p))
+		out = append(out, FileSpec{Name: VantagesDir + "/" + name + "/reachability.jsonl", TimeField: "started_at"})
+	}
+	return out, nil
 }
 
 // StateFile is the scanner's state, carried in every export as a snapshot
@@ -239,6 +269,9 @@ func (b *Builder) build(day string, st *state, now time.Time) error {
 	if err := os.MkdirAll(b.Dir, 0o755); err != nil {
 		return err
 	}
+	if err := indexLost(b.Dir, b.name(day)); err != nil {
+		return err
+	}
 	man := Manifest{Vantage: b.Vantage, Day: day, GeneratedAt: now.UTC(), Build: b.Build, Methodology: verdict.MethodologyVersion, Rule: rule}
 	newOffsets := map[string]int64{}
 	// The whole state, as it stands, not the part dated today: it is a
@@ -249,12 +282,19 @@ func (b *Builder) build(day string, st *state, now time.Time) error {
 	if stateErr != nil && !errors.Is(stateErr, fs.ErrNotExist) {
 		return stateErr
 	}
+	// The other vantages' heartbeats follow the observer's own files, so the
+	// members every export had before keep their places.
+	vantages, err := VantageFiles(b.DataDir)
+	if err != nil {
+		return err
+	}
+	specs := append(append([]FileSpec(nil), Files...), vantages...)
 	var tarBuf bytes.Buffer
 	gz := gzip.NewWriter(&tarBuf)
 	tw := tar.NewWriter(gz)
-	for _, f := range Files {
+	for _, f := range specs {
 		from := st.Offsets[f.Name]
-		m, data, to, err := collect(filepath.Join(b.DataDir, f.Name), f, day, from)
+		m, data, to, err := collect(filepath.Join(b.DataDir, filepath.FromSlash(f.Name)), f, day, from)
 		if err != nil {
 			return err
 		}
@@ -514,10 +554,68 @@ func ReadIndex(dir string) ([]Entry, error) {
 	return out, nil
 }
 
+// atomicWrite replaces path with data: a temp file, fsynced, renamed over
+// path, and the directory fsynced. index.json is rewritten every night and
+// is what the API lists the exports by; a power cut soon after a rename of
+// a file whose data had not reached the disk can leave it empty or short,
+// and the backup would then copy that over the remote's good copy. The
+// directory is synced where the platform can: without it a power cut can
+// at worst bring back the file as it was before the rename, whole.
 func atomicWrite(path string, data []byte) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	if d, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = d.Sync()
+		d.Close()
+	}
+	return nil
+}
+
+// indexLost is why dir must not get a new index.json for the export name:
+// the index is missing while other export tarballs are there. A missing
+// index reads as no exports at all, so a build would start a new one that
+// lists only this day: the API would stop listing every older export, and
+// observer-archive -retire and every reader of a retired segment's
+// exports, which look each tarball up in the index, would find none of
+// them. The tarballs carry their own manifests, but nothing builds the
+// index again from them, so the build stops until the index is put back
+// (the remote backup has the last good one). A crashed first build leaves
+// only its own tarball, which the next build of that day replaces.
+func indexLost(dir, name string) error {
+	if _, err := os.Stat(filepath.Join(dir, "index.json")); !errors.Is(err, os.ErrNotExist) {
+		return nil // there, or unreadable: ReadIndex says which
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	var others []string
+	for _, e := range ents {
+		if n := e.Name(); n != name && strings.HasSuffix(n, ".tar.gz") && NamePattern.MatchString(n) {
+			others = append(others, n)
+		}
+	}
+	if len(others) == 0 {
+		return nil
+	}
+	sort.Strings(others)
+	return fmt.Errorf("%s has no index.json but holds %d export tarball(s) (%s ... %s): a new index would list only %s; put index.json back (the remote backup keeps a copy) before exports are built again",
+		dir, len(others), others[0], others[len(others)-1], name)
 }

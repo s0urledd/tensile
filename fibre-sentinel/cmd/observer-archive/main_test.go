@@ -26,6 +26,7 @@ func dataDir(t *testing.T, days int) string {
 	os.WriteFile(filepath.Join(dir, "measurements.jsonl"), m.Bytes(), 0o644)
 	os.WriteFile(filepath.Join(dir, "reachability.jsonl"), r.Bytes(), 0o644)
 	os.WriteFile(filepath.Join(dir, "state.json"), []byte(`{"param_history":[{"params":{"payment_promise_timeout_seconds":3600,"shard_retention_seconds":14400}}]}`), 0o644)
+	scannerStarted(t, dir, true)
 	return dir
 }
 
@@ -51,6 +52,9 @@ func TestMinKeepAndCutoff(t *testing.T) {
 }
 
 func TestRunArchivesVerifiesAndRefuses(t *testing.T) {
+	if !rotates(t) {
+		t.Skip("record.Archive needs flock, which this platform does not have; this runs on Linux (CI)")
+	}
 	dir := dataDir(t, 12)
 	if code, _, errs := runArgs(t, "-data-dir", dir, "-keep", "20h"); code != 2 || !strings.Contains(errs, "shorter than") {
 		t.Fatalf("a keep under the retention window was accepted: %d %s", code, errs)
@@ -97,7 +101,53 @@ func TestRunArchivesVerifiesAndRefuses(t *testing.T) {
 	if !bytes.Equal(got.Bytes(), before) {
 		t.Fatal("the record read through the archive is not the file as it was")
 	}
-	if code, _, errs := runArgs(t, "-data-dir", dir, "-files", "publications.jsonl"); code != 2 || !strings.Contains(errs, "not an archived file") {
+	if code, _, errs := runArgs(t, "-data-dir", dir, "-files", "registry.jsonl"); code != 2 || !strings.Contains(errs, "not an archived file") {
 		t.Fatalf("an unknown file was accepted: %d %s", code, errs)
+	}
+}
+
+// The scanner's two files are rotated only once runs.jsonl shows that the
+// scanner running now follows a rotation: with no scanner start, or with a
+// newest start from a build that held its files open with plain appends
+// (one not restarted since an upgrade), they are left as they are and the
+// run says why, while the other files are archived; a start of this
+// build's scanner lets them through.
+func TestScannerFilesWaitForAScannerThatFollows(t *testing.T) {
+	dir := t.TempDir()
+	var archived []string
+	archiveFile = func(path string, o record.Options) (record.Result, error) {
+		archived = append(archived, filepath.Base(path))
+		return record.Result{File: filepath.Base(path), Skipped: "stand-in"}, nil
+	}
+	t.Cleanup(func() { archiveFile = record.Archive })
+	runOnce := func() string {
+		t.Helper()
+		archived = nil
+		code, out, errs := runArgs(t, "-data-dir", dir)
+		if code != 0 {
+			t.Fatalf("%d\n%s%s", code, out, errs)
+		}
+		return out
+	}
+
+	out := runOnce()
+	for _, name := range []string{"publications.jsonl", "payments.jsonl"} {
+		if !strings.Contains(out, name+": left as it is: no scanner start in runs.jsonl") {
+			t.Fatalf("no scanner start, %s:\n%s", name, out)
+		}
+	}
+	if strings.Join(archived, ",") != "measurements.jsonl,sampling_decisions.jsonl,reachability.jsonl" {
+		t.Fatalf("archived %v", archived)
+	}
+	scannerStarted(t, dir, true)
+	scannerStarted(t, dir, false) // the newest start counts: an older build's
+	out = runOnce()
+	if !strings.Contains(out, "publications.jsonl: left as it is: the scanner started at 2026-10-01T00:00:00Z (build t) writes it without following a rotation; restart fibre-scan on this build first") ||
+		len(archived) != 3 {
+		t.Fatalf("an older scanner: archived %v\n%s", archived, out)
+	}
+	scannerStarted(t, dir, true)
+	if out = runOnce(); strings.Contains(out, "left as it is") || len(archived) != len(Files) {
+		t.Fatalf("this build's scanner: archived %v\n%s", archived, out)
 	}
 }

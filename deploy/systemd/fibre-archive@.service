@@ -1,5 +1,5 @@
 [Unit]
-Description=Fibre observer (%i): move the older lines of the biggest record files into archive/
+Description=Fibre observer (%i): move the older record lines into archive/ and retire the segments proven elsewhere
 After=local-fs.target
 
 [Service]
@@ -10,12 +10,33 @@ EnvironmentFile=/etc/fibre-observer/%i.env
 # an empty value adds no argument. observer-archive refuses a -keep shorter
 # than the longest retention window in state.json plus a day.
 ExecStart=/usr/local/bin/observer-archive -data-dir ${DATA_DIR} $ARCHIVE_ARGS
+# Then the retirement: a segment's gzip file is removed only when every byte
+# of it is in daily exports intact here, given back byte for byte by the
+# store (opened read-only; record-verify's ledger, exports/verified.json)
+# and on the remote backup with the same SHA-256 (exports/remote.jsonl,
+# which fibre-backup writes before this runs, since only it has network),
+# read from the remote fibre-backup last finished a copy to, within
+# -remote-max-age (exports/remote-copy.json). At most -check-days days are
+# checked against the store per run. It runs after the archive step, so it
+# sees the segments that step just wrote, and with the same ARCHIVE_ARGS,
+# so -files, -keep and -exports-dir mean the same to both. A segment not
+# proven is kept, with the reason in the journal and in
+# archive/retire-report.json. A failed archive step skips it and fails the
+# unit, which fibre-healthwatch reports; a file left unrotated for a torn
+# last line is no failure.
+ExecStart=/usr/local/bin/observer-archive -data-dir ${DATA_DIR} -retire -db ${DATA_DIR}/observer.db $ARCHIVE_ARGS
 Nice=10
+# On an NVMe disk with the "none" scheduler the I/O class lowers nothing:
+# observer-archive paces itself instead, waiting between files, days and
+# segments while /proc/pressure/io shows the disk busy (-pace-* flags, in
+# ARCHIVE_ARGS to change them).
 IOSchedulingClass=idle
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+# Nothing here needs the network: the remote proof is read from
+# exports/remote.jsonl, not taken here.
 PrivateNetwork=true
 CapabilityBoundingSet=
 ReadWritePaths=/var/lib/fibre-observer/%i

@@ -102,8 +102,8 @@ func TestArchiveKeepsEveryByteAtItsOffset(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if s.End() != int64(want.Len()) || s.Base() != int64(want.Len()-len(live)) {
-		t.Fatalf("base %d end %d, want %d %d", s.Base(), s.End(), want.Len()-len(live), want.Len())
+	if s.End() != int64(want.Len()) || s.Base() != int64(want.Len()-len(live)) || !s.Placed() {
+		t.Fatalf("base %d end %d placed %v, want %d %d placed", s.Base(), s.End(), s.Placed(), want.Len()-len(live), want.Len())
 	}
 	for _, off := range []int64{0, 1, 57, s.Base() - 1, s.Base(), s.Base() + 3, s.End()} {
 		r, err := s.ReaderFrom(off)
@@ -332,8 +332,107 @@ func TestArchiveCrashBetweenSteps(t *testing.T) {
 	}
 }
 
+// A run that fails before its index is saved leaves no segment file behind:
+// the segment keeps its temp name until then, and the run takes it back.
+// Under its own name it would stay unlisted, since the next run's segment
+// of another day has another name, and the backup would copy it.
+func TestFailedArchiveLeavesNoSegment(t *testing.T) {
+	skipUnsupported(t)
+	path := filepath.Join(t.TempDir(), "measurements.jsonl")
+	var want bytes.Buffer
+	for d := 0; d < 6; d++ {
+		l := lineAt(t0.Add(time.Duration(d)*24*time.Hour), "a", d)
+		want.WriteString(l)
+		appendLines(t, path, l)
+	}
+	archiveAt(t, path, t0.Add(2*24*time.Hour))
+	for _, stop := range []string{"segment", "tail"} {
+		_, err := Archive(path, Options{Cutoff: t0.Add(4 * 24 * time.Hour), TimeField: "scheduled_at", Limit: -1, Now: t0,
+			hook: func(s string) error {
+				if s == stop {
+					return errors.New("failed")
+				}
+				return nil
+			}})
+		if err == nil {
+			t.Fatalf("%s: the run did not fail", stop)
+		}
+		ents, _ := os.ReadDir(ArchiveDir(path))
+		var names []string
+		for _, e := range ents {
+			names = append(names, e.Name())
+		}
+		if len(names) != 2 { // the first run's segment and the index
+			t.Fatalf("after a run that failed at %s the archive dir holds %v", stop, names)
+		}
+	}
+	// The next run, on another day, has one segment more and nothing else.
+	archiveAt(t, path, t0.Add(5*24*time.Hour))
+	ents, _ := os.ReadDir(ArchiveDir(path))
+	if len(ents) != 3 {
+		t.Fatalf("archive dir holds %d entries, want two segments and the index", len(ents))
+	}
+	if got := readAll(t, path); !bytes.Equal(got, want.Bytes()) {
+		t.Fatalf("the record reads %q", got)
+	}
+}
+
+// A live file that ends inside a line at the swap is left as it is and the
+// run says why in Skipped, not as an error, so the other files' runs and the
+// retirement after them go on; its segment is not left behind. Once the
+// line is whole (a copier's next pull, a writer's repair), the file is
+// archived as usual.
+func TestArchiveSkipsATornTail(t *testing.T) {
+	skipUnsupported(t)
+	path := filepath.Join(t.TempDir(), "reachability.jsonl")
+	var want bytes.Buffer
+	for d := 0; d < 4; d++ {
+		l := lineAt(t0.Add(time.Duration(d)*24*time.Hour), "a", d)
+		want.WriteString(l)
+		appendLines(t, path, l)
+	}
+	torn := lineAt(t0.Add(4*24*time.Hour), "a", 4)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(torn[:10])
+	f.Close()
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Archive(path, Options{Cutoff: t0.Add(2 * 24 * time.Hour), TimeField: "scheduled_at", Limit: -1, Now: t0})
+	if err != nil || !strings.HasPrefix(res.Skipped, "ends inside a line") || res.Cut != 0 || res.Segment != "" {
+		t.Fatalf("a torn tail: %+v %v", res, err)
+	}
+	if after, _ := os.ReadFile(path); !bytes.Equal(after, before) {
+		t.Fatal("the live file changed")
+	}
+	if ents, _ := os.ReadDir(ArchiveDir(path)); len(ents) != 0 {
+		t.Fatalf("the skipped run left %d file(s) in the archive dir", len(ents))
+	}
+	if idx, err := LoadIndex(path); err != nil || len(idx.Segments) != 0 {
+		t.Fatalf("index: %+v %v", idx, err)
+	}
+	f, err = os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(torn[10:])
+	f.Close()
+	want.WriteString(torn)
+	if res := archiveAt(t, path, t0.Add(2*24*time.Hour)); res.Lines != 2 || res.Skipped != "" {
+		t.Fatalf("once the line is whole: %+v", res)
+	}
+	if got := readAll(t, path); !bytes.Equal(got, want.Bytes()) {
+		t.Fatalf("the record reads %q", got)
+	}
+}
+
 // A live file replaced outside the archiver is not cut, and reads as a file
-// of its own (base 0) rather than at an offset that is not its own.
+// of its own (base 0, not placed) rather than at an offset that is not its
+// own.
 func TestReplacedLiveFileIsRefused(t *testing.T) {
 	skipUnsupported(t)
 	path := filepath.Join(t.TempDir(), "measurements.jsonl")
@@ -350,8 +449,8 @@ func TestReplacedLiveFileIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if s.Base() != 0 {
-		t.Fatalf("base %d", s.Base())
+	if s.Base() != 0 || s.Placed() {
+		t.Fatalf("base %d placed %v", s.Base(), s.Placed())
 	}
 	if _, err := Verify(path); err == nil {
 		t.Fatal("verify passed a live file the index does not describe")

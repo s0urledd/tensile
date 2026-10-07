@@ -26,6 +26,11 @@
 // line. A reader finds its base by the first line of the file it actually
 // opened, so a reader holding the file from before a rotation and one
 // holding the file after it each read the right bytes.
+//
+// A segment whose bytes are proven to be in the daily exports can later be
+// retired (Retire): its gzip file is removed, the index names the exports
+// that hold it, and a reader gets the same bytes back from those tarballs,
+// held to their digests (exports.go).
 package record
 
 import (
@@ -48,6 +53,14 @@ const Dir = "archive"
 // IndexFile is the index of one file's segments and generations.
 const IndexFile = "index.json"
 
+// RetiredFile, beside the index, keeps a second copy of every retired
+// segment's entry (Retire writes it before it saves the index). A build from
+// before retirement reads index.json into a Segment without Retired and
+// writes it back whenever it archives, which drops every retired record
+// from the index; it never opens this file, so LoadIndex puts each record
+// back from here, and the next save writes it into the index again.
+const RetiredFile = "retired.json"
+
 // Segment is one gzip file of archived lines: logical bytes [From, To) of
 // the record, exactly as they were written.
 type Segment struct {
@@ -65,6 +78,29 @@ type Segment struct {
 	// comes before the first line of the file dated at or after it.
 	Cutoff     time.Time `json:"cutoff"`
 	ArchivedAt time.Time `json:"archived_at"`
+	// Retired is set once the segment's file was removed (Retire): its
+	// bytes are read back from the daily exports.
+	Retired *Retired `json:"retired,omitempty"`
+}
+
+// Retired says where a removed segment's bytes are and what was proven
+// before its file went.
+type Retired struct {
+	At time.Time `json:"at"`
+	// Exports are the export tarballs, oldest first, whose members of this
+	// file together hold [From, To).
+	Exports []string `json:"exports"`
+	// Member is the file's member name inside them ("publications.jsonl",
+	// "vantages/de-1/reachability.jsonl").
+	Member string `json:"member"`
+	// ExportsDir is the exports directory relative to ArchiveDir(path), so
+	// a restored copy of the data directory reads its own exports
+	// ("../../exports" for a top-level file, "../../../../exports" for
+	// vantages/<n>/<file>).
+	ExportsDir string `json:"exports_dir"`
+	// Proof is what was checked before the file was removed, in words (for
+	// whoever reads the index).
+	Proof string `json:"proof"`
 }
 
 // Generation is one live file: the logical offset its first byte stands
@@ -96,7 +132,10 @@ func ArchiveDir(path string) string {
 }
 
 // LoadIndex reads path's index. A file that was never archived has none,
-// which is an empty index and no error.
+// which is an empty index and no error. A segment the index lists without
+// a retired record gets the one RetiredFile keeps for it, if any: the same
+// segment (name, range and digest) retired, whose record an older build
+// dropped when it rewrote the index.
 func LoadIndex(path string) (*Index, error) {
 	raw, err := os.ReadFile(filepath.Join(ArchiveDir(path), IndexFile))
 	if errors.Is(err, os.ErrNotExist) {
@@ -109,7 +148,72 @@ func LoadIndex(path string) (*Index, error) {
 	if err := json.Unmarshal(raw, idx); err != nil {
 		return nil, fmt.Errorf("%s: %w", filepath.Join(ArchiveDir(path), IndexFile), err)
 	}
+	kept, err := loadRetired(ArchiveDir(path))
+	if err != nil {
+		return nil, err
+	}
+	for i, sg := range idx.Segments {
+		if sg.Retired != nil {
+			continue
+		}
+		for _, k := range kept.Segments {
+			if k.Retired != nil && k.Name == sg.Name && k.From == sg.From && k.To == sg.To && k.SHA256 == sg.SHA256 {
+				r := *k.Retired
+				idx.Segments[i].Retired = &r
+			}
+		}
+	}
 	return idx, nil
+}
+
+// retiredRecords is RetiredFile: the entry of every segment Retire retired,
+// as the index listed it with its retired record.
+type retiredRecords struct {
+	Version  int       `json:"version"`
+	File     string    `json:"file"`
+	Segments []Segment `json:"segments"`
+}
+
+// loadRetired reads RetiredFile in the archive directory adir; none is an
+// empty list. One that does not read is an error rather than no records: a
+// reader that went on without it could call a retired segment lost.
+func loadRetired(adir string) (*retiredRecords, error) {
+	p := filepath.Join(adir, RetiredFile)
+	raw, err := os.ReadFile(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return &retiredRecords{Version: indexVersion}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	rr := &retiredRecords{}
+	if err := json.Unmarshal(raw, rr); err != nil {
+		return nil, fmt.Errorf("%s: %w", p, err)
+	}
+	return rr, nil
+}
+
+// keepRetired adds sg, retired, to RetiredFile in adir (replacing an entry
+// of the same name), written as the index is: a temp file, fsynced, renamed,
+// the directory fsynced. Retire calls it under the archive lock.
+func keepRetired(adir, file string, sg Segment) error {
+	rr, err := loadRetired(adir)
+	if err != nil {
+		return err
+	}
+	rr.Version, rr.File = indexVersion, file
+	out := rr.Segments[:0]
+	for _, k := range rr.Segments {
+		if k.Name != sg.Name {
+			out = append(out, k)
+		}
+	}
+	rr.Segments = append(out, sg)
+	raw, err := json.MarshalIndent(rr, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeSync(filepath.Join(adir, RetiredFile), append(raw, '\n'))
 }
 
 // LiveSince is the time from which every line of path is in the live file;
