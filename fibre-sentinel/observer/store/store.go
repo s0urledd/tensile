@@ -1027,7 +1027,7 @@ func (s *Store) applyMigration(m migration) error {
 			}
 			return fmt.Errorf("migration %d (%s): %w\n%s", m.version, m.note, err, stmt)
 		}
-		if reRewrite.MatchString(stmt) {
+		if reRewrite.MatchString(stmt) && !writesMeta(stmt) {
 			n, _ := res.RowsAffected()
 			rewritten += n
 		}
@@ -1052,7 +1052,7 @@ func (s *Store) applyMigration(m migration) error {
 // that wrote a row: a backfill over rows already stored), advanced in the
 // migration's own transaction. A migration that only adds tables, columns
 // or indexes leaves it alone, and so does a backfill over a new store,
-// which has no rows to rewrite.
+// which has no rows to rewrite, and so does a note in meta (writesMeta).
 //
 // What is derived from the store and kept across restarts (the API's day
 // partials) is begun again when a migration rewrote rows it was computed
@@ -1064,6 +1064,22 @@ const MetaMigrationRewrites = "migration_rewrites"
 
 // reRewrite is a statement that writes rows rather than the schema.
 var reRewrite = regexp.MustCompile(`(?is)^\s*(INSERT|UPDATE|DELETE|REPLACE|WITH)\b`)
+
+// reWrites is the table a statement that starts by naming it writes.
+var reWrites = regexp.MustCompile(`(?is)^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+(\w+)`)
+
+// writesMeta reports a statement that writes meta, which no migration counts
+// as a rewrite: a migration's write there is a note for whoever reads the
+// store by hand (migration 28's slim boundary) or this count itself, and the
+// keys derived data does read (raw_from, the holds' revision) are read again
+// at every look, whoever moved them. Counting migration 28's note made every
+// API discard and rebuild its day partials, a heavy read on the disk the
+// store shares, with nothing they read changed. A statement whose target the
+// pattern cannot name (one led by WITH) is counted.
+func writesMeta(stmt string) bool {
+	m := reWrites.FindStringSubmatch(stmt)
+	return m != nil && strings.EqualFold(m[1], "meta")
+}
 
 // addsColumn reports an ALTER TABLE ... ADD COLUMN statement.
 func addsColumn(stmt string) bool {
