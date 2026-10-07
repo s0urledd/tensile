@@ -254,7 +254,8 @@ func main() {
 		poll = &chainPoll{chain: chain, st: st, live: live, logf: log.Printf, appendRegistry: appendRegistry} // chainpoll.go
 	}
 	var lastEscrow time.Time
-	var exportHeld string // the hold last logged, so it is said once
+	var escrowAt escrowRound // where the next escrow poll goes on from (withdrawals.go)
+	var exportHeld string    // the hold last logged, so it is said once
 	pass := func(pollEndpoints bool) {
 		now := time.Now()
 		passErrs := coll.Pass(ctx, now)
@@ -290,7 +291,9 @@ func main() {
 			// read from one committed height (withdrawals.go), then the
 			// block time of every params change not yet dated; each within
 			// escrowBudget, since this runs in the loop the ingest runs in.
-			p := pollEscrow(ctx, chain, st, now, log.Printf)
+			// A poll the budget cuts short leaves the rest of its round to
+			// the next one.
+			p := pollEscrow(ctx, chain, st, &escrowAt, now, log.Printf)
 			fillParamTimes(ctx, chain, st, log.Printf)
 			// The total, from the module account every escrow lives in: exact
 			// where the sum above is a floor, since it covers only accounts
@@ -303,7 +306,9 @@ func main() {
 				_ = st.SetMeta("escrow_module_polled_at", store.TS(now), now)
 			}
 			if p.OK && err == nil {
-				_ = st.SetMeta("escrow_polled_at", store.TS(now), now)
+				// The poll the finished round began in: every balance
+				// on record was read at or after it.
+				_ = st.SetMeta("escrow_polled_at", store.TS(p.Since), now)
 			}
 		}
 		if pollEndpoints && poll != nil {
