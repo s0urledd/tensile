@@ -22,8 +22,8 @@ on:
         description: also convert a pre-slim store with head (true or false)
         default: "false"
       pre:
-        description: the build that writes the pre-slim store (a ref)
-        default: bc1200d
+        description: the build that writes the pre-slim store (a ref; a commit in full)
+        default: bc1200d74705d47929d1fd2fd8407ee477fcc558
 
 permissions:
   contents: read
@@ -145,10 +145,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 345
     steps:
+      # the whole history: a commit named by a short hash is found only there
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.pre }}
           path: pre
+          fetch-depth: 0
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.head }}
