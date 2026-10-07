@@ -30,7 +30,7 @@ The processes share files, not memory, and only one of them writes SQLite.
 | process | binary | writes | reads |
 |---|---|---|---|
 | scanner | `sentinel-scan` | `publications.jsonl`, `payments.jsonl`, `host_history.jsonl`, `state.json` | chain RPC, and its websocket's new block headers |
-| prober | `sentinel-probe` | `measurements.jsonl`, `sampling-secrets.jsonl` (reveals of the earlier draws) | `publications.jsonl`, `state.json`, `registry.jsonl`, `sampling-master.key`, chain RPC |
+| prober | `sentinel-probe` | `measurements.jsonl` (and `sampling-secrets.jsonl` only with `-policy`, which no network sets now: section 8) | `publications.jsonl`, `state.json`, `registry.jsonl`, chain RPC |
 | heartbeat | `observer-heartbeat` | `reachability.jsonl` | chain RPC (registry) |
 | collector | `observer-collector` | `observer.db`, `registry.jsonl`, `amendments.jsonl`, `exports/` | every `.jsonl`, `state.json`, chain RPC |
 | API | `observer-api` | `snapshots/*.json` | `observer.db` (read-only), status files |
@@ -38,6 +38,15 @@ The processes share files, not memory, and only one of them writes SQLite.
 Each writes a status file (`internal/status`) that `/v1/health` reads
 **without going through the database** — deliberately, because the collector
 is one of the four and "is the observer working" must not depend on it.
+Each file also states how often its loop completes a cycle (`cadence_s`),
+and a process whose last completed cycle is older than three of those (at
+least three minutes) fails health however fresh its file is: the file is
+rewritten by a goroutine of its own, so a stuck loop kept it fresh (on 7
+October 2026 the collector waited on its own store connection and read
+"alive"). The checks that are about the record (`ingest`, `chain_polls`,
+`vantages`) read the store, and those about the API's own answers
+(`api_errors`, `snapshots`, `records`) what the API process saw;
+`deploy/README.md`, "Health and alerting", lists every check.
 
 Every process also appends a `RunEvent` to `runs.jsonl` on start and stop,
 carrying its flags and `status.BuildRevision()`. That is how a published row
@@ -268,7 +277,7 @@ needs a full VACUUM, which is why an existing DB has to be deleted). The
 collector owns the schema; the API opens `query_only` and refuses a database
 older *or* newer than the binary expects.
 
-**Schema version 28.** Base tables from `schema.sql`: `schema_migrations`,
+**Schema version 29.** Base tables from `schema.sql`: `schema_migrations`,
 `observer_runs`, `ingest_cursors`, `params_history`, `publications`,
 `assignments`, `endpoints`, `probes`, `meta`, `reachability`. Migrations add:
 
@@ -290,13 +299,14 @@ older *or* newer than the binary expects.
 | 15 | `validator_avatars` |
 | 16 | `probe_daily.identity_up` |
 | 17 | `probe_daily` attestation split |
-| 18 | indexes for `/v1/probes?at=` and `/v1/sampling` |
+| 18 | indexes for `/v1/probes?at=` and `/v1/sampling` (the second dropped by 29) |
 | 20 | `param_uncertainty.corrected_at`: verifying a range and having applied what it proves are two different facts, and `holds` is derived from both |
-| 19 | params uncertainty: `param_uncertainty`, `publication_corrections`, `probe_corrections`, the `retention_unverified` hold and the `*_at_scan` / `*_at_probe` originals, `obligation_daily.held_param_unverified`, and `publications.must_serve_until_ambiguous` (written to the record since it was added and read by nothing until now) |
+| 19 | params uncertainty: `param_uncertainty`, `publication_corrections`, `probe_corrections`, the `retention_unverified` hold and the `*_at_scan` / `*_at_probe` originals, `obligation_daily.held_param_unverified`, and `publications.must_serve_until_ambiguous` (filled once here and then not written again until 29) |
 | 24 | `sampling_decisions` and its points: a sampled-out publication stored once; `probe_rows` derives its NOT_PROBED rows for every figure; the rows already stored for one are collapsed into it |
 | 26 | `publications_tx` and `publications_commitment`: a blob looked up by its settlement transaction or its commitment (`/v1/blobs?tx=`, `?commitment=`) is a seek, not a walk |
 | 27 | the slim record: `publications.original_rows` / `total_rows` (the two values queries read out of `raw_json`), `slim_entries`, `reading_rows` |
 | 28 | the slim endpoint check record in `reachability.raw_json`; no table change (the version keeps an older build, which would read the column as JSON, off the store) |
+| 29 | what the earlier sampling and the second vantage's confirmations left goes: the indexes `probes_sampling_started` and `probes_cleared`, and the empty table `probe_confirmations` with its indexes (the migration refuses if it holds a row; the columns `probes.cleared_by` and `confirmed_by` stay, unread, since dropping a column rewrites the table). `must_serve_until_ambiguous` is set from the records where they say so, and written on every insert. No row is rewritten but those; an older build refuses the store, and the way back is a copy taken before (`deploy/README.md`, "Going back past schema 29") |
 
 **The slim record (migration 27, `store/slim.go`, `internal/slim`).** A row this
 build writes keeps in `raw_json` the slim form of its record: every field of the
@@ -317,6 +327,35 @@ assignment in its order (`Store.RowIndices`, `Store.AssignedRows`), and
 the rollup used to count with `json_each` over the lists. A row's record in
 `raw_json` is therefore not JSON: read it through those functions, never with
 `json_extract`.
+
+A publication or reading is kept slim only where its slim form reads back to
+its line byte for byte, and as its line otherwise, as an endpoint check is. A
+string carrying a byte that is not UTF-8 (a remote server's error text) is the
+case: the line holds the escape of U+FFFD, and the slim form would give back
+the character instead, the same JSON value in other bytes. A stored record
+that does not read back (`store.ErrUndecodable`) is that row's error: a read
+over many rows logs it once, leaves that row aside and goes on. The API
+publishes such a row with the part that needed its record marked (a blob's
+`reconstructable` status `unknown`, a reading's `row_indices` left out),
+neither caches the status it computed from it nor counts it in the reading
+totals, so the row is computed again once it decodes, and it fails
+`/v1/health`'s `records` check for 15 minutes after the last one it met.
+
+*Under which pin.* The rows are computed again with the fibre-assign compiled
+in, so a record derives them only when the celestia-app pin it names
+(`assignment.protocol_params.pinned_celestia_app_commit`) is one this build
+reproduces: its own `PinnedCelestiaAppCommit`, or an earlier pin whose
+assignment code did not change (`assignPins` in `internal/slim`; today
+v10.2.0-mocha and v10.4.0-mocha). A record of any other pin keeps every
+validator's rows whole. A build that does not list the pin a record was
+derived under refuses it (`slim.ErrAssignmentPin`) rather than compute its
+rows with another assignment, and the API publishes that row with the part
+marked. So a pin bump adds the pin it leaves to `assignPins` when reftest is
+bit-identical across the two, and when the assignment changed, settles how
+the records derived under the old pin stay readable before it ships. A test
+lists every pin the record was written under and fails when a bump drops
+one, and a frozen corpus of real records (`internal/slim/testdata`) fails if
+fibre-assign's output for them changes.
 
 An endpoint check row (`reachability`, migration 28) keeps its record the same
 way, with nothing computed again: each value by the format's tags against the
@@ -542,13 +581,17 @@ Until 27 September 2026 a load policy (`observer/policy`) sampled
 publications against byte and request budgets, with a commit-and-reveal draw:
 a blob was probed iff `H(promise_hash ‖ day_secret) < p·2^64`,
 `day_secret = HMAC(master, date)`. Nothing is sampled or budgeted now. The
-policy keeps only the master secret (`<data-dir>/sampling-master.key`), so
-the prober can keep publishing each day's secret seven days after it ends
-(`sampling-secrets.jsonl`, `/v1/sampling`) and the draws already made stay
-auditable (`sentinel-recompute -sampling`). Once the last day with a draw is
-revealed (2026-10-04), the key can be deleted; `probe-budget.json` is not
-read any more. deploy/README.md lists every stored file and table only the
-earlier model needed, with its size and how to remove it.
+last day with a draw (2026-09-26) was revealed on 2026-10-04, so every
+draw made stays auditable from the record alone: the day secrets in
+`sampling-secrets.jsonl`, the decisions in `sampling_decisions.jsonl`, both
+in every export, and `sentinel-recompute -sampling`. The prober's unit no
+longer passes `-policy` (`POLICY` in the env file stays empty): with a
+policy and its master key, the prober reveals a secret for every day,
+draws or not. `/v1/sampling`, which served the commitments and secrets and scanned
+every reading to do it, is removed, and so is the index it read
+(migration 29). `probe-budget.json` is not read any more. deploy/README.md
+lists every stored file and table only the earlier model needed, with its
+size and how to remove it.
 
 ---
 
@@ -558,8 +601,8 @@ earlier model needed, with its size and how to remove it.
 
 ```
 GET /v1/meta                  what the site's header, banners and footer read: chain, app
-                              versions, health and its checks, scan gaps, counts (the site's own;
-                              not on the API page)
+                              versions, the upgrade signal, counts (the site's own; not on the
+                              API page; the observer's health is /v1/health's alone)
 GET /v1/network               the window summary
 GET /v1/validators            one row per validator (last_served_at: the newest reading whose rows
                               came back verified, which the overview map names)
@@ -576,18 +619,23 @@ GET /v1/blobs                 publication list (?limit=, ?offset=, ?before_heigh
                               carries its settlement_tx_hash and blob_version
 GET /v1/blobs/{hash}          one blob: its reading, each assigned validator's service word, the rows
                               (?rows=1 adds each reading's row_indices and rows_sha256)
-GET /v1/namespaces            namespaces by newest settlement
+GET /v1/namespaces            namespaces by newest settlement; one answer computed for every reader
+                              and kept for a short while, not one per request
 GET /v1/probes                raw rows (?blob=, ?validator=, ?at=, ?class=, ?served=no, ?since=,
                               ?before=; up to 1000 a page, next_before continues; ?rows=1 adds
                               each reading's row_indices and rows_sha256, up to 200 a page)
-GET /v1/sampling              the earlier sampling: day commitments, and secrets once revealed
-GET /v1/exports[/{name}]      daily tarballs + digests; /v1/exports/pubkey the signing keys
+GET /v1/exports[/{name}]      daily tarballs + digests, newest first, 60 a page (?limit=, ?before=);
+                              /v1/exports/pubkey the signing keys
 GET /v1/avatars/{identity}    Keybase picture
-GET /v1/health                machine-readable liveness (200 / 503), each process's status
+GET /v1/health                machine-readable health (200 / 503): every check by name with a short
+                              detail, and each process as present / alive / ok and its age; no
+                              error text, path, disk size or build (deploy/README.md, "Health
+                              and alerting")
 GET /v1/tip                   the newest block read, and the newest blob stored (latest_blob);
                               one answer kept for 250 ms, so the node and the store are asked
                               at most four times a second however many pages poll it
-GET /v1/market                the publisher side
+GET /v1/market                the publisher side, and the network's reading totals over the whole
+                              record (readings: available, unavailable, not_read)
 GET /v1/publishers[/{addr}]   incl. the escrow withdrawal queue read from state
 GET /v1/params                x/fibre params + change log (heights, block times), pinned protocol
                               constants, the fee formula (price_formula)
@@ -629,8 +677,7 @@ with, so a feed reader never sees an entry twice.
 The public documentation is the site's API page (`web/src/app/api`, served at `/api/`):
 every documented route in order, with its parameters, a Try it and an
 example answer (`endpoints.ts`), then what every route shares. `/v1/meta`
-and `/v1/avatars` are the site's own, and `/v1/sampling` serves the earlier
-sampling's audit; none is on it. A
+and `/v1/avatars` are the site's own and are not on it. A
 response carries what some reader uses: a field nothing reads is dropped
 from the answer, never from the store (the snapshot rows keep their
 internal figures; `shapes.go` projects them).
@@ -653,27 +700,28 @@ so it refreshes about every 35–45 s), and the windows of one cache are taken
 at different moments, so a longer window can count less than a shorter one
 until its next refresh. Persisted to `<data-dir>/snapshots/` (`-snapshot-dir`)
 so a restart serves the last figures at once; the warm-up then replaces them.
-Two files beside them keep what the snapshots derive from the whole record,
-`original-rows.json` (each publication's `original_rows`, read once from its
-record) and `endorsement-ledger.json` (each validator's newest
-endorsements), so a restart catches them up instead of rebuilding them
-(`derived.go`). Each is used only by a build that computes it the same way
-(a digest of its SQL and of a version of the Go that folds it), and only
-for the store it was computed from while that store still holds everything
-it was computed from: the store's creation time (`schema_migrations` version
-1), chain id and schema version (so a migration costs one rebuild), the
-newest row it read and that row's key, and its newest entries read again.
-The identity a file names is the one the store had when the memo or ledger
-began to be read, not when the file is written: an API still running when
-the collector migrates writes neither under the new schema, but drops both
-and builds them again from the migrated store.
-Each also carries a sha256 of its own body, so an edit or damage below the
-entries read again is caught too. Anything else, a file whose digest is not
-its body's, or one that does not parse, is refused and rebuilt from the
-store, and left for the next write to replace rather than removed, since
-another process may have written a good one in its place meanwhile. Each
-write goes to a temporary file of its own, synced and renamed into place.
-An older build does not read them.
+A file beside them keeps what the snapshots derive from the whole record,
+`endorsement-ledger.json` (each validator's newest endorsements), so a
+restart catches it up instead of rebuilding it (`derived.go`). It is used
+only by a build that computes it the same way (a digest of its SQL and of a
+version of the Go that folds it), and only for the store it was computed
+from while that store still holds everything it was computed from: the
+store's creation time (`schema_migrations` version 1), chain id and schema
+version (so a migration costs one rebuild), the newest row it read and that
+row's key, and its newest entries read again. The identity the file names
+is the one the store had when the ledger began to be read, not when the
+file is written: an API still running when the collector migrates does not
+write it under the new schema, but drops it and builds it again from the
+migrated store. It also carries a sha256 of its own body, so an edit or
+damage below the entries read again is caught too. Anything else, a file
+whose digest is not its body's, or one that does not parse, is refused and
+rebuilt from the store, and left for the next write to replace rather than
+removed, since another process may have written a good one in its place
+meanwhile. Each write goes to a temporary file of its own, synced and
+renamed into place. An older build does not read it. Earlier builds kept a
+second file, `original-rows.json`, each publication's `original_rows`
+read once from its record; since migration 27 that is a column, which the
+figures read directly.
 A file is served only under the revision it was computed under (holds,
 activation, `verdict.MethodologyVersion`) and for the vantage it was computed
 for. A window with nothing to serve makes a reader wait at most 8 s, then
@@ -779,6 +827,10 @@ headline. Tests hold both paths off the cache.
 
 Next.js `output: "export"` — plain files, all data fetched in the browser from
 `NEXT_PUBLIC_API_BASE` (default `/api`, which Caddy proxies same-origin).
+Two things are fixed when it is built, so each network gets its own build
+(`deploy/README.md`, "5. The site"): `NEXT_PUBLIC_API_URL`, the public API
+the methodology page links the exports, the signing key and the recompute
+command to, and `NEXT_PUBLIC_SELF_VALIDATOR` (below).
 
 Every page's header and footer read `/v1/meta` and `/v1/tip`. The header's
 search asks for a blob identifier that found nothing again each time
@@ -787,14 +839,14 @@ after the identifier was first asked.
 
 | route | reads |
 |---|---|
-| `/` | `/v1/network` (the period), `/v1/publishers?window=all` (Available: the readings of every publisher summed, available over available plus unavailable), `/v1/validators` (the map's "served last" line is the rows' `last_served_at`), `/v1/blobs` (the recent blobs: as soon as `/v1/tip`'s `latest_blob` names a blob the grid does not hold, and every 30 s besides) |
+| `/` | `/v1/validators` (the table, the map, and the notice when the API does not answer; the map's "served last" line is the rows' `last_served_at`), `/v1/market?window=all` (Available: the network's reading totals, `readings`, available over available plus unavailable), `/v1/blobs` (the recent blobs: as soon as `/v1/tip`'s `latest_blob` names a blob the grid does not hold, and every 30 s besides) |
 | `/validator/?addr=` | `/v1/validators/{addr}` |
 | `/blobs/` | `/v1/blobs` (the first page again as the chain moves), `/v1/namespaces`, `/v1/market` (the period), `/v1/publishers` (once its filter opens); its search (`?blob=`) asks 64 hex as `/v1/blobs/{hash}`, `?commitment=` and `?tx=`, and a blob ID as `?commitment=` |
 | `/blob/?hash=`, `?id=`, `?tx=` | `/v1/blobs/{hash}`; a blob ID (`?id=`) or a settlement transaction (`?tx=`) is found first with `/v1/blobs?commitment=` or `?tx=`, and several matches open the Blobs list of them; a blob not on record yet is asked for again each time `/v1/tip`'s `latest_blob` changes, and every 30 s |
 | `/publishers/` | `/v1/market`, `/v1/publishers` |
 | `/publisher/?addr=` | `/v1/publishers/{addr}` |
 | `/methodology/` | `/v1/params` (the protocol-parameters section; the rest is static) |
-| `/api/` | `/v1/health` for its status dot, and each route when its Try it is sent; its example answers are fixed text (`endpoints.ts`) |
+| `/api/` | `/v1/health` once a minute, only to say when the API does not answer (a 429 reads busy, not down; the observer's own checks are not shown), and each route when its Try it is sent; its example answers are fixed text (`endpoints.ts`) |
 
 Every link to a validator's page — the overview's table and map, the map's
 line of events from `/v1/feed.atom`, a blob's assignments — carries the
@@ -812,7 +864,9 @@ this observer exists to publish.
 
 `NEXT_PUBLIC_SELF_VALIDATOR` marks the row belonging to this observer's own
 operator. It marks and nothing else — no filter, no exclusion, no adjustment.
-Default empty.
+It is that network's consensus address, so it is set per build;
+`web/.env.production` carries Mocha's, and a value given when building
+wins over it.
 
 ---
 
@@ -822,14 +876,18 @@ Systemd templates, instance = network (`fibre-scan@mocha`). All
 `Restart=always`, `RestartSec=5`, `User=fibre-observer`,
 `EnvironmentFile=/etc/fibre-observer/%i.env`, and `ProtectSystem=strict` with
 `ReadWritePaths=/var/lib/fibre-observer/%i` — **the data directory is the only
-path a unit can write**, which is why the sampling secret lives there.
+path a unit can write**.
 
 Units: `fibre-scan@`, `fibre-probe@`, `fibre-heartbeat@`, `fibre-collector@`,
 `fibre-api@`, plus timers for `fibre-backup@` (rclone **copy**, never sync,
 then the remote proof of the exports), `fibre-archive@` (rotation, then
 retirement; `PrivateNetwork=true`), `fibre-vantage-pull@` (each other
-vantage's heartbeats, every minute) and `fibre-healthwatch@` (polls
-`/v1/health`, posts to a webhook), and optional `fibre-litestream@`.
+vantage's heartbeats, every minute), `fibre-healthwatch@` (polls
+`/v1/health` and checks what the nightly jobs left behind, posts to a
+webhook and Telegram) and `fibre-hosting-db@` (monthly, the hosting
+lookup's IP files), and optional `fibre-litestream@` and `fibre-site@`
+(the site and its `/api` proxy, for a host whose front proxy cannot serve
+files).
 
 **The nightly order** (UTC). 03:00: the collector builds the previous day's
 export (`-export-hour`). 03:17 plus up to 20 minutes (by about 03:36):
@@ -839,8 +897,14 @@ files and the exports, records the finished copy in
 yet proven on it and appends the result to `exports/remote.jsonl`. 04:40:
 `fibre-archive` rotates, then retires what the three proofs of section 4 cover,
 pausing between files, days and segments while the disk is busy (section 4,
-"Pacing"). `fibre-healthwatch` reports either unit when its last run
-failed, which `/v1/health` cannot see.
+"Pacing"). `fibre-healthwatch` reports what `/v1/health` cannot see, by
+what the jobs left behind: either unit's last run failed, no backup copy
+has finished for 26 hours, yesterday's export is missing after 04:00, or a
+second vantage has sent nothing for 30 minutes. It sends an alert first
+and records it as sent only once a destination took it, so a refused one
+is sent again on the next run. It exits 0 for a run that did its job,
+whatever it found, and 1 when an alert was refused or its state could not
+be written: a failed `fibre-healthwatch@` unit is the watcher in trouble.
 The backup holds every archive lock shared from its cut to its last check
 and a run holds a file's lock exclusively, so the two never overlap; an
 export proven a night late retires its segments a night late.
@@ -851,7 +915,8 @@ whole store on the disk the validator shares. It runs at idle I/O priority
 (`ionice -c3`) and is paused (`SIGSTOP`, then `SIGCONT`) while the disk's
 I/O pressure (`some avg10` in `/proc/pressure/io`) is high: on NVMe with the
 `none` scheduler the priority class alone does not hold it back
-(`deploy/README.md`, "Going back past schema 27", has the loop).
+(`deploy/README.md`, "Going back past schema 27", has the loop; "Going
+back past schema 29" uses the same copy).
 
 **Upgrade order matters**: install binaries → **stop the API** → restart the
 collector (it owns migrations) → start the API. `store.OpenReadOnly` refuses a
@@ -860,8 +925,10 @@ direction, so an API left running against a database the collector has just
 migrated will fail its next open rather than serve columns it does not know.
 The scanner shares no schema with the store and can be rolled at any point.
 
-Caddy serves the static export from `/var/www/fibre-observer` and proxies
-`/api/*` to the API port.
+Caddy serves each network's own build from `/var/www/fibre-observer/<network>`
+and proxies `/api/v1/*` to that network's API port; where the front proxy
+cannot serve files, `fibre-site@<network>` does both from
+`/srv/fibre-site/<network>`.
 
 ---
 
@@ -1043,17 +1110,19 @@ Stated here because they are properties of the machine, not of any validator.
 
 | symptom | look at |
 |---|---|
-| a figure is stale | `computed_at` on the response; `snapshots/` on disk; the warm-up log |
+| a figure is stale | `computed_at` on the response; the `snapshots` check in `/v1/health`; `snapshots/` on disk; the warm-up log |
+| the site's figures stop moving while every process is alive | the `ingest` check and each process's `no completed cycle` in `/v1/health`: a stuck loop. `systemctl kill -s QUIT fibre-<name>@<network>` writes every goroutine's stack to the journal before the unit restarts |
+| a blob with readings reads `unknown`, or a reading has no `row_indices` | the `records` check in `/v1/health`: a stored row this build cannot decode. The API's journal names each one once (`a row that does not decode is published without it`) |
 | the 7d, 30d or all windows are slow, or the disk busy | `day_partials` in `/v1/health` (state, oldest day not sealed, last audit); the API's `day partials:` log lines (one per sealer burst and per audit, a unit's failure and its recovery) |
 | a validator reads 0 obligations | `attested` NULL vs 0; `assignment_error` on the publication |
 | the service rate moved with no new readings | an amendment settled a deferred verdict (`probe_amendments`) |
 | every validator failed in one reading | the blob's rows (`/v1/probes?blob=`): if no request reached a server (`PROBE_ERROR`, or a failed lookup or dial, everywhere) the blob reads not read and no one counts; otherwise it is unavailable, and at a full reading each validator is not served by its last answer |
 | the scanner stopped | scan gaps in `state.json`; `scanner_lag` and `chain_liveness` in `/v1/health` |
-| the prober records nothing | the prober's status `reads` block (queued, in progress, started late and missed in the last hour; `/v1/health` components), `BackfillMissed` horizon |
+| the prober records nothing | the prober's status file on the host (`status/prober.json`): its `reads` block (queued, in progress, started late and missed in the last hour) and `reading_errors_15m`; `BackfillMissed` horizon |
 | a validator is often counted neither way | the status `reads` block: `requests_not_started_last_hour`, `admit_wait_p95_ms` and the reading-rate ceiling's part of it (`rate_wait_p95_ms`), the `retries_*` counts and `retries_not_made_by_validator_last_hour`; `observer_load` on its rows |
 | the build says `-dirty` | an untracked file in the working tree at build time |
 | a segment is not retired | its reason in `archive/retire-report.json`; the day in `exports/verified.json` (the store's answer) and in `exports/remote.jsonl` (the remote's) |
-| nothing is retired, every segment kept for the backup's last copy | `exports/remote-copy.json` is missing, names another remote than the proofs, or is older than `-remote-max-age`: `fibre-backup@` has not finished a copy lately (`journalctl -u fibre-backup@<network>`; healthwatch reports the failed unit) |
+| nothing is retired, every segment kept for the backup's last copy | `exports/remote-copy.json` is missing, names another remote than the proofs, or is older than `-remote-max-age`: `fibre-backup@` has not finished a copy lately (`journalctl -u fibre-backup@<network>`; healthwatch reports the failed unit, and `backup-copy` once no copy has finished for 26 hours) |
 | `fibre-archive@` fails with `remote.jsonl line N` | a complete line in `exports/remote.jsonl` that is not a check, which `fibre-backup` never writes (it drops a torn last line, NUL bytes included, before appending): a hand edit. Delete that line; an export whose newest line is then not a proof is read back again the next night |
 | the archive run does not rotate a file | `ends inside a line`: its writer has not finished or cut the line yet (a writer that died mid-line and is still down; a pull a crash cut off, until the next pull); `left as it is: ... restart fibre-scan`: the newest scanner start in `runs.jsonl` is of a build that does not follow a rotation |
 | a read of the whole record stops at a segment | its file is gone and neither `index.json` nor `retired.json` beside it names exports for it. An older `observer-archive` rewrites `index.json` without the `retired` records, and this build reads them from `retired.json`; with neither, the file was moved by hand: put it back. The remote backup has a segment's file only if a backup ran while it existed |

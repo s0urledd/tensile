@@ -25,17 +25,22 @@ import (
 
 // fakeNode is a JSON-RPC node with an ABCI query table: every path not in
 // the table is "unknown query path" with code 6, which is what a chain
-// below app version 10 says to any x/fibre or x/valaddr query.
+// below app version 10 says to any x/fibre or x/valaddr query. Its /status
+// names base as its oldest block and tip as its newest (1 and 60 unless a
+// test sets them; tipNext, when set, gives the tip of each next call).
 type fakeNode struct {
-	srv    *httptest.Server
-	mu     sync.Mutex
-	calls  map[string]int
-	answer map[string]func(height int64) abci.ResponseQuery
+	srv     *httptest.Server
+	mu      sync.Mutex
+	calls   map[string]int
+	answer  map[string]func(height int64) abci.ResponseQuery
+	base    int64
+	tip     int64
+	tipNext func() int64
 }
 
 func newFakeNode(t *testing.T) *fakeNode {
 	t.Helper()
-	n := &fakeNode{calls: map[string]int{}, answer: map[string]func(int64) abci.ResponseQuery{}}
+	n := &fakeNode{calls: map[string]int{}, answer: map[string]func(int64) abci.ResponseQuery{}, base: 1, tip: 60}
 	n.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ID     json.RawMessage `json:"id"`
@@ -48,6 +53,17 @@ func newFakeNode(t *testing.T) *fakeNode {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if req.Method == "status" {
+			n.mu.Lock()
+			n.calls["status"]++
+			if n.tipNext != nil {
+				n.tip = n.tipNext()
+			}
+			base, tip := n.base, n.tip
+			n.mu.Unlock()
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, req.ID, statusJSON(base, tip))
+			return
+		}
 		if req.Method != "abci_query" {
 			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"Method not found"}}`, req.ID)
 			return
@@ -74,6 +90,12 @@ func newFakeNode(t *testing.T) *fakeNode {
 	}))
 	t.Cleanup(n.srv.Close)
 	return n
+}
+
+// statusJSON is a /status answer from a synced node on test-1 holding
+// blocks base to tip.
+func statusJSON(base, tip int64) string {
+	return fmt.Sprintf(`{"node_info":{"network":"test-1","protocol_version":{"p2p":"8","block":"11","app":"10"},"id":"","listen_addr":"","version":"","channels":"","moniker":"fake","other":{"tx_index":"on","rpc_address":""}},"sync_info":{"latest_block_hash":"","latest_app_hash":"","latest_block_height":"%d","latest_block_time":"2026-09-24T18:00:00Z","earliest_block_hash":"","earliest_app_hash":"","earliest_block_height":"%d","earliest_block_time":"2026-09-21T00:00:00Z","catching_up":false},"validator_info":{"address":"","pub_key":null,"voting_power":"0"}}`, tip, base)
 }
 
 func (n *fakeNode) count(path string) int {

@@ -98,7 +98,7 @@ if [ -n "$DATA_DIR" ] && [ -f "$DATA_DIR/sampling-master.key" ]; then
   mode=$(stat -c '%a %U' "$DATA_DIR/sampling-master.key")
   case "$mode" in "600 $SERVICE_USER") pass "sampling-master.key is 600 $SERVICE_USER" ;; *) fail "sampling-master.key is $mode (want 600 $SERVICE_USER)" ;; esac
 else
-  warn "no sampling-master.key under $DATA_DIR yet (the prober writes it on first start)"
+  pass "no sampling-master.key under $DATA_DIR (none is needed with POLICY empty)"
 fi
 
 echo
