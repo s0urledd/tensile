@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -149,9 +151,20 @@ func main() {
 	}
 	handler := api.NewWithVantage(st, info, log, opts...)
 
+	// Every request runs under base, which the shutdown cancels once the
+	// drain has run out, and is counted in inflight, which the shutdown
+	// waits for: the store is closed only after the last one has ended.
+	base, cancelRequests := context.WithCancel(context.Background())
+	defer cancelRequests()
+	var inflight sync.WaitGroup
 	srv := &http.Server{
-		Addr:              *listen,
-		Handler:           handler,
+		Addr: *listen,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			inflight.Add(1)
+			defer inflight.Done()
+			handler.ServeHTTP(w, r)
+		}),
+		BaseContext:       func(net.Listener) context.Context { return base },
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		// No single WriteTimeout: it applied to /v1/exports/<name>, a tarball
@@ -165,16 +178,23 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	drained := make(chan struct{})
 	go func() {
+		defer close(drained)
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
+		shutdown(srv, cancelRequests, &inflight, drainWait, requestsWait, log)
 	}()
 	log.Printf("api up: listen=%s db=%s vantage=%s", *listen, *dbPath, *vantage)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("serve: %v", err)
 	}
+	// ListenAndServe returns as soon as the shutdown begins, while requests
+	// are still being answered. main used to go on from here and close the
+	// store under them, and under the keepers and the refreshes, which
+	// nothing stopped: every restart logged "sql: database is closed" as if
+	// a refresh had failed, and cut the answers in flight.
+	<-drained
+	closeWithin(handler, closeWait, log)
 	// What the day partials, the memo and the ledger have come to since
 	// their last write, so the next start begins from it.
 	keepCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -183,6 +203,58 @@ func main() {
 	}
 	cancel()
 	log.Printf("stopped")
+}
+
+// Shutdown's pace: requests get drainWait to finish, those still running
+// then are cancelled and get requestsWait more to end, and the server's
+// background work gets closeWait to stop. With the 30 seconds main gives
+// KeepDerived after them, all of it fits inside systemd's default 90
+// seconds before it kills the process.
+const (
+	drainWait    = 10 * time.Second
+	requestsWait = 10 * time.Second
+	closeWait    = 30 * time.Second
+)
+
+// shutdown stops the listener and returns once every request has ended:
+// the ones that finish within drain as they are, the rest cancelled (their
+// contexts derive from the one cancel ends) and waited for up to requests
+// more.
+func shutdown(srv *http.Server, cancel context.CancelFunc, inflight *sync.WaitGroup, drain, requests time.Duration, log *scan.Logger) {
+	drainCtx, done := context.WithTimeout(context.Background(), drain)
+	defer done()
+	err := srv.Shutdown(drainCtx)
+	cancel()
+	if err == nil {
+		return
+	}
+	log.Printf("shutdown: requests still running after %s are cancelled", drain)
+	ended := make(chan struct{})
+	go func() {
+		inflight.Wait()
+		close(ended)
+	}()
+	select {
+	case <-ended:
+	case <-time.After(requests):
+		log.Printf("shutdown: requests still running %s after they were cancelled; closing the store under them", requests)
+	}
+}
+
+// closeWithin stops the API's background work (the keepers, the sealer,
+// the refreshes in flight) and waits for it, at most wait: past that the
+// store is closed under whatever is left, which says so in the log.
+func closeWithin(h *api.Server, wait time.Duration, log *scan.Logger) {
+	closed := make(chan struct{})
+	go func() {
+		h.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(wait):
+		log.Printf("shutdown: background work still running after %s; closing the store under it", wait)
+	}
 }
 
 // sameDir reports whether a and b name one directory: the same path once

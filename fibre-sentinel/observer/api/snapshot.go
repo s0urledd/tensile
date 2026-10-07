@@ -228,6 +228,20 @@ type snapshotCache[T any] struct {
 	failed map[string]error
 	// firstWait overrides firstReadWait (tests).
 	firstWait time.Duration
+
+	// What /v1/health's snapshots check reads (snapshotsCheck): when the
+	// cache was made, each window's last successful computation (when it
+	// ended, on the wall clock) and how many have failed since, in a row.
+	// A failed refresh is not a failed request, and only logged: before
+	// these, a window whose every refresh failed was served, older by the
+	// hour, with nothing anywhere failing.
+	started  time.Time
+	lastOK   map[string]time.Time
+	failures map[string]int
+	// base is what every background computation runs under; halt cancels
+	// it, so a Close does not wait out a refresh's timeout.
+	base context.Context
+	halt context.CancelFunc
 }
 
 // persisted is the on-disk form of one snapshot.
@@ -321,9 +335,12 @@ func (c *snapshotCache[T]) clock() time.Time {
 }
 
 func newSnapshotCache[T any](label string, compute func(context.Context, Window) (T, error)) *snapshotCache[T] {
+	base, halt := context.WithCancel(context.Background())
 	return &snapshotCache[T]{
 		label: label, compute: compute,
 		entries: map[string]*snap[T]{}, refreshing: map[string]bool{}, failed: map[string]error{},
+		started: time.Now(), lastOK: map[string]time.Time{}, failures: map[string]int{},
+		base: base, halt: halt,
 	}
 }
 
@@ -470,7 +487,7 @@ func (c *snapshotCache[T]) await(ctx context.Context, log logf, win Window, rev 
 // background recomputes away from any request: the reader that triggered it has
 // long since been served, so its context must not be the one that goes away.
 func (c *snapshotCache[T]) background(log logf, win Window) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeoutFor(win.Name))
+	ctx, cancel := context.WithTimeout(c.base, timeoutFor(win.Name))
 	defer cancel()
 	started := time.Now()
 	_, err := c.fill(ctx, win)
@@ -532,6 +549,7 @@ func (c *snapshotCache[T]) fill(ctx context.Context, win Window) (*snap[T], erro
 		c.mu.Lock()
 		c.refreshing[win.Name] = false
 		c.failed[win.Name] = err
+		c.failures[win.Name]++
 		c.mu.Unlock()
 		return nil, err
 	}
@@ -545,6 +563,8 @@ func (c *snapshotCache[T]) fill(ctx context.Context, win Window) (*snap[T], erro
 	c.entries[win.Name] = s
 	c.refreshing[win.Name] = false
 	delete(c.failed, win.Name)
+	delete(c.failures, win.Name)
+	c.lastOK[win.Name] = time.Now()
 	c.mu.Unlock()
 	return s, nil
 }
@@ -609,6 +629,10 @@ func (c *snapshotCache[T]) warm(log logf, now time.Time) {
 // wait blocks until every background computation in flight has finished
 // and persisted its snapshot.
 func (c *snapshotCache[T]) wait() { c.bg.Wait() }
+
+// stop cancels every background computation in flight and any started
+// after: for a server being closed, whose store goes next.
+func (c *snapshotCache[T]) stop() { c.halt() }
 
 // windowFor builds the Window parseWindow would build for a name.
 func windowFor(name string, now time.Time) Window {

@@ -75,6 +75,11 @@ func main() {
 	st.RecordRuns(cfg)
 	st.Start()
 	defer st.Stop("exit")
+	// A round every -interval, and two minutes for the round itself: a
+	// round over every endpoint, a third of them timing out, takes about
+	// that. /v1/health fails the heartbeat once its last completed round is
+	// a few of these old.
+	st.Set(status.CadenceKey, int((*interval+2*time.Minute)/time.Second))
 
 	// A round the chain side refuses writes nothing to reachability.jsonl:
 	// there is no validator to attribute a row to. The status file is where

@@ -1,0 +1,26 @@
+[Unit]
+Description=Fibre observer (%i): refresh the hosting lookup's IP databases
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=fibre-observer
+EnvironmentFile=/etc/fibre-observer/%i.env
+# Downloads into <DATA_DIR>/hosting, where the collector finds the files
+# without configuration, and replaces each only once the new one checks
+# out (deploy/hosting-db.sh). HOSTING_SKIP_COUNTRY=1 / HOSTING_SKIP_CITY=1
+# in the env file skip the DB-IP files. The collector notices the new files
+# on its next endpoint poll; nothing restarts. A network whose env file
+# points HOSTING_ASN_DB elsewhere refreshes that place itself.
+ExecStart=/usr/local/bin/fibre-hosting-db ${DATA_DIR}/hosting
+# The city file is about 85 MB, on a disk the validator may share.
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/fibre-observer/%i

@@ -104,3 +104,15 @@ func NetworkJSON(st *store.Store, vantage, window string, asOf time.Time) ([]byt
 	}
 	return json.Marshal(resp)
 }
+
+// WithClock fixes the server's clock (withClock), for a test that moves it
+// between two calls of a check that remembers what the first one saw.
+func WithClock(f func() time.Time) Option { return withClock(f) }
+
+// FailDayPartsSave records err as the day partials' last write, as a write
+// of the files that failed records it (dayParts.save).
+func (s *Server) FailDayPartsSave(err error) {
+	s.parts.mu.Lock()
+	s.parts.saveErr, s.parts.saveErrAt = err.Error(), time.Now()
+	s.parts.mu.Unlock()
+}

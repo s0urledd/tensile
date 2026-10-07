@@ -25,7 +25,7 @@ func TestWriterRoundTrip(t *testing.T) {
 	if !r.Alive(time.Now()) {
 		t.Fatal("a fresh file must read as alive")
 	}
-	if r.Disk == nil || r.Disk.TotalBytes == 0 {
+	if diskSupported && (r.Disk == nil || r.Disk.TotalBytes == 0) {
 		t.Fatal("disk figures missing")
 	}
 	w.OK()
@@ -48,4 +48,35 @@ func TestWriterRoundTrip(t *testing.T) {
 	nilW.Error("x")
 	nilW.Stop("x")
 	New("", "x", "", "").OK() // no dir: records nothing, never panics
+}
+
+// A main states a detail its library's writer starts with (the scanner's
+// cadence), and a reader gets the cadence back from the file as a duration.
+func TestDefaultsReachTheWriterAndTheCadenceReadsBack(t *testing.T) {
+	dir := t.TempDir()
+	SetDefault(CadenceKey, 60)
+	defer func() {
+		defaults.mu.Lock()
+		delete(defaults.m, CadenceKey)
+		defaults.mu.Unlock()
+	}()
+	w := New(dir, "scanner", "", "t")
+	w.Start()
+	defer w.Stop("test")
+	if d, ok := (Report{Detail: w.r.Detail}).Cadence(); !ok || d != time.Minute {
+		t.Fatalf("in-process cadence: %s %v", d, ok)
+	}
+	r, ok := ReadOne(filepath.Join(dir, "status"), "scanner")
+	if !ok {
+		t.Fatal("no status file")
+	}
+	if d, ok := r.Cadence(); !ok || d != time.Minute {
+		t.Fatalf("cadence read back: %s %v (detail %v)", d, ok, r.Detail)
+	}
+	if _, ok := (Report{}).Cadence(); ok {
+		t.Fatal("a report without a cadence must say so")
+	}
+	if New(dir, "other", "", "t").r.Detail[CadenceKey] != 60 {
+		t.Fatal("every writer made after SetDefault starts with it")
+	}
 }
