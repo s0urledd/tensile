@@ -1,0 +1,17 @@
+[Unit]
+Description=Fibre observer (%i): monthly refresh of the hosting IP databases
+
+[Timer]
+# DB-IP publishes its Lite files once a month (hosting-db.sh takes last
+# month's while this month's is not up yet), iptoasn every hour. The 3rd of
+# the month, after the night's export (03:00), backup and archive (04:40)
+# runs. Persistent: a refresh missed while the host was down is made at
+# boot. /v1/health fails hosting_db once the IP-to-ASN file is 45 days old.
+OnCalendar=*-*-03 06:10:00 UTC
+RandomizedDelaySec=30min
+Persistent=true
+Unit=fibre-hosting-db@%i.service
+
+[Install]
+WantedBy=timers.target
+# one instance per network: systemctl enable --now fibre-hosting-db@mocha.timer
