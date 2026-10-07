@@ -269,7 +269,8 @@ function useFeedEvents(enabled: boolean): FeedEvent[] {
       } catch { /* no feed, no events */ }
     };
     load();
-    const t = window.setInterval(load, 120000);
+    // not while the tab is hidden, as every stream of the site (lib/api.ts)
+    const t = window.setInterval(() => { if (!document.hidden) load(); }, 120000);
     return () => { dead = true; window.clearInterval(t); };
   }, [enabled]);
   return events;
