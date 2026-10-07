@@ -1126,7 +1126,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		Vantages:   s.recentVantages(ctx, now),
 		AppVersion: meta["app_version"], FibreAppVersion: meta["fibre_app_version"], FibreActive: meta["fibre_active"] == "yes",
 		ChainHeight: meta["chain_height"], Counts: counts, LastProbeAt: lastProbe, ServerTime: now.UTC(),
-		ScanGaps: s.scanGaps(ctx), ParamUncertainty: ranges, PinStatus: pinStatus(meta["app_version"]),
+		ScanGaps: publicGaps(s.scanGaps(ctx)), ParamUncertainty: ranges, PinStatus: pinStatus(meta["app_version"]),
 		UpgradeSignal: signal,
 	})
 }

@@ -217,6 +217,18 @@ func (s *Server) scanGaps(ctx context.Context) []scan.ScanGap {
 	return gaps
 }
 
+// publicGaps is gaps as /v1/health and /v1/meta publish them. A gap's last
+// error is the scanner's RPC error as it came, the node's address in it;
+// the range, its reason and its times are the gap.
+func publicGaps(gaps []scan.ScanGap) []scan.ScanGap {
+	var out []scan.ScanGap
+	for _, g := range gaps {
+		g.LastError = ""
+		out = append(out, g)
+	}
+	return out
+}
+
 // pinStatus compares the chain's app version with the celestia-app major
 // this build's assignment constants are pinned to. "chain_ahead" means the
 // chain has upgraded past the pin and the row assignments this observer
@@ -383,14 +395,7 @@ func (s *Server) health(ctx context.Context, now time.Time) healthResponse {
 	for i, c := range comps {
 		out[i] = componentOut{Component: c.Component, Present: c.Present, Alive: c.Alive, OK: c.OK, StartedAt: c.StartedAt, AgeS: c.AgeS}
 	}
-	// A gap's last error is the scanner's RPC error as it came, the node's
-	// address in it; the range, its reason and its times are the gap.
-	var pubGaps []scan.ScanGap
-	for _, g := range gaps {
-		g.LastError = ""
-		pubGaps = append(pubGaps, g)
-	}
-	return healthResponse{Status: st, Checks: checks, Components: out, ScanGaps: pubGaps, PinStatus: pin, ServerTime: now.UTC(), DayPartials: parts}
+	return healthResponse{Status: st, Checks: checks, Components: out, ScanGaps: publicGaps(gaps), PinStatus: pin, ServerTime: now.UTC(), DayPartials: parts}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

@@ -39,7 +39,8 @@ type healthState struct {
 	// errs are the API's own 5xx answers (health_errors.go).
 	errs routeErrors
 	// ingest is each record file's cursor offset as the last call saw it,
-	// and when it was first seen there (ingestCheck).
+	// when it was first seen there, and since when lines have been seen
+	// waiting past it (ingestCheck).
 	ingestMu sync.Mutex
 	ingest   map[string]ingestSeen
 }
@@ -166,11 +167,13 @@ func workCheck(c componentStatus, now time.Time) healthCheck {
 // collector's passes many times over.
 const ingestStaleAfter = 10 * time.Minute
 
-// ingestSeen is one cursor's offset as a check saw it, and when it first
-// saw it there.
+// ingestSeen is one cursor's offset as a check saw it, when it first saw
+// it there, and when it first saw lines waiting past it there (zero while
+// none were).
 type ingestSeen struct {
-	offset int64
-	since  time.Time
+	offset  int64
+	since   time.Time
+	waiting time.Time
 }
 
 // ingestCheck says whether the collector keeps up with the record: for
@@ -180,6 +183,17 @@ type ingestSeen struct {
 // while it was, the chain's liveness included, and then blamed the chain;
 // this one names the record, which is what stops moving. A file with
 // nothing to ingest says nothing, so a quiet chain is not a stall.
+//
+// The wait is the lines' own: from the later of the cursor's last move and
+// the first call that saw them waiting at its offset. A file the collector
+// ingests rarely (the publications between blobs on a quiet chain, the
+// registry, a second vantage's file after a quiet spell) has a cursor that
+// last moved long ago, and a line appended to it waits up to a pass, ten
+// seconds, as every line does; measured from the cursor, every call in
+// those seconds failed. So a stuck file fails once a call finds lines that
+// an earlier call saw waiting still there, at the same offset,
+// ingestStaleAfter later: about that long after the first call that saw
+// them, the first call after an API restart included.
 //
 // The cursor's updated_at is when its last pass began, so a single pass
 // over a long backlog would look stuck; an offset that moved since the
@@ -221,34 +235,45 @@ func (s *Server) ingestCheck(ctx context.Context, now time.Time) (healthCheck, b
 	readable := 0
 	for _, c := range cs {
 		progress := c.updated
-		if seen, ok := s.hs.ingest[c.file]; ok && seen.offset == c.offset {
+		seen, ok := s.hs.ingest[c.file]
+		if ok && seen.offset == c.offset {
 			if seen.since.After(progress) {
 				progress = seen.since
 			}
 		} else {
-			since := time.Time{}
+			seen = ingestSeen{offset: c.offset}
 			if ok {
 				// moved since the last call: that is progress now
-				since = now
+				seen.since = now
 				progress = now
 			}
-			s.hs.ingest[c.file] = ingestSeen{offset: c.offset, since: since}
 		}
 		if progress.After(latest) {
 			latest = progress
 		}
 		end, err := record.LogicalEnd(c.file)
 		if err != nil {
+			s.hs.ingest[c.file] = seen
 			continue // gone, or unreadable here
 		}
 		readable++
 		if end <= c.offset {
-			continue // nothing waiting
+			seen.waiting = time.Time{} // nothing waiting
+		} else if seen.waiting.IsZero() {
+			seen.waiting = now
 		}
-		if now.Sub(progress) > ingestStaleAfter {
+		s.hs.ingest[c.file] = seen
+		if seen.waiting.IsZero() {
+			continue
+		}
+		from := progress
+		if seen.waiting.After(from) {
+			from = seen.waiting
+		}
+		if now.Sub(from) > ingestStaleAfter {
 			stuck = append(stuck, filepath.Base(c.file))
-			if progress.After(stuckLatest) {
-				stuckLatest = progress
+			if from.After(stuckLatest) {
+				stuckLatest = from
 			}
 		}
 	}
@@ -268,8 +293,9 @@ func (s *Server) ingestCheck(ctx context.Context, now time.Time) (healthCheck, b
 	sort.Strings(stuck)
 	stuck = compactStrings(stuck)
 	// How long nothing came: from any file when none moved within the
-	// bound, else from the files named, as a line the collector cannot get
-	// past would leave them while the others move on.
+	// bound, else from the files named (at least as long as their lines
+	// have waited), as a line the collector cannot get past would leave
+	// them while the others move on.
 	if d := now.Sub(latest); d > ingestStaleAfter {
 		return healthCheck{"ingest", false, fmt.Sprintf("collector has ingested nothing for %s; lines waiting in %s", d.Round(time.Second), strings.Join(stuck, ", "))}, true
 	}

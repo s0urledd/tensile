@@ -2,11 +2,13 @@ package api_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +27,8 @@ type healthFixture struct {
 	dir string
 	st  *store.Store
 	now time.Time
+	// srv is the server server() started last.
+	srv *api.Server
 }
 
 func newHealthFixture(t *testing.T) *healthFixture {
@@ -79,12 +83,25 @@ func (f *healthFixture) meta(k, v string) {
 	}
 }
 
-func (f *healthFixture) server() *httptest.Server {
-	srv := api.NewWithVantage(f.st, api.VantageInfo{Name: "ut-1"}, nil, api.WithDataDir(f.dir))
+func (f *healthFixture) server(opts ...api.Option) *httptest.Server {
+	srv := api.NewWithVantage(f.st, api.VantageInfo{Name: "ut-1"}, nil, append([]api.Option{api.WithDataDir(f.dir)}, opts...)...)
 	ts := httptest.NewServer(srv)
 	f.t.Cleanup(func() { ts.Close(); srv.Close() })
+	f.srv = srv
 	return ts
 }
+
+// testClock is a clock a test moves while the server reads it.
+type testClock struct{ ns atomic.Int64 }
+
+func newTestClock(at time.Time) *testClock {
+	c := &testClock{}
+	c.ns.Store(at.UnixNano())
+	return c
+}
+
+func (c *testClock) now() time.Time      { return time.Unix(0, c.ns.Load()).UTC() }
+func (c *testClock) add(d time.Duration) { c.ns.Add(int64(d)) }
 
 func (f *healthFixture) health(ts *httptest.Server) healthBody {
 	f.t.Helper()
@@ -251,10 +268,10 @@ func TestHealthFailsCollectorWorkThatKeepsFailing(t *testing.T) {
 	}
 }
 
-// /v1/health is public: it says which stage failed and how long ago, and
-// keeps the host's internals (the raw error, with its paths and SQL; the
-// disk's size; the build) to the host. healthwatch reads only status and
-// the checks' names and details.
+// /v1/health and /v1/meta are public: they say which stage failed and how
+// long ago, and keep the host's internals (the raw error, with its paths,
+// RPC addresses and SQL; the disk's size; the build) to the host.
+// healthwatch reads only status and the checks' names and details.
 func TestHealthPublishesNoHostInternals(t *testing.T) {
 	f := newHealthFixture(t)
 	f.healthy()
@@ -264,20 +281,37 @@ func TestHealthPublishesNoHostInternals(t *testing.T) {
 		Disk:      &status.Disk{FreeBytes: 493777162240, TotalBytes: 948334632960, FreeShare: 0.52},
 		Detail:    map[string]any{"clock_offset_ms": 3307}})
 	f.meta("scan_gaps", `[{"from":10,"to":12,"reason":"block_results unavailable","last_error":"Post \"http://127.0.0.1:26657\": EOF","at":"2026-10-01T00:00:00Z"}]`)
-	resp, err := http.Get(f.server().URL + "/v1/health")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	var raw map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		t.Fatal(err)
-	}
-	b, _ := json.Marshal(raw)
-	for _, leak := range []string{"127.0.0.1", "26657", "1caeda46cf87", "493777162240", "948334632960", "GiB", "clock_offset", "last_error", "\"disk\":{", "hostname"} {
-		if strings.Contains(string(b), leak) {
-			t.Errorf("/v1/health carries %q: %s", leak, b)
+	ts := f.server()
+	// A write of the day partials that failed: its error names the files
+	// under the data directory.
+	f.srv.FailDayPartsSave(&os.PathError{Op: "open", Path: filepath.Join(f.dir, "snapshots", "day-partials.json.tmp"), Err: errors.New("no space left on device")})
+	get := func(route string) (map[string]any, []byte) {
+		t.Helper()
+		resp, err := http.Get(ts.URL + route)
+		if err != nil {
+			t.Fatal(err)
 		}
+		defer resp.Body.Close()
+		var raw map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := json.Marshal(raw)
+		for _, leak := range []string{"127.0.0.1", "26657", "1caeda46cf87", "493777162240", "948334632960", "GiB", "clock_offset", "last_error", "\"disk\":{", "hostname", "day-partials.json", "no space left"} {
+			if strings.Contains(string(b), leak) {
+				t.Errorf("%s carries %q: %s", route, leak, b)
+			}
+		}
+		if gaps, _ := raw["scan_gaps"].([]any); len(gaps) != 1 || gaps[0].(map[string]any)["from"] != float64(10) {
+			t.Errorf("%s: the scan gap itself must stay: %v", route, raw["scan_gaps"])
+		}
+		return raw, b
+	}
+	get("/v1/meta")
+	raw, b := get("/v1/health")
+	parts, _ := raw["day_partials"].(map[string]any)
+	if parts["last_save_error"] == nil || parts["last_save_error_at"] == nil {
+		t.Errorf("the failed write and its time must stay: %v", parts)
 	}
 	for _, c := range raw["components"].([]any) {
 		for k := range c.(map[string]any) {
@@ -287,9 +321,6 @@ func TestHealthPublishesNoHostInternals(t *testing.T) {
 				t.Errorf("component field %q is published", k)
 			}
 		}
-	}
-	if gaps, _ := raw["scan_gaps"].([]any); len(gaps) != 1 || gaps[0].(map[string]any)["from"] != float64(10) {
-		t.Errorf("the scan gap itself must stay: %v", raw["scan_gaps"])
 	}
 	var h healthBody
 	_ = json.Unmarshal(b, &h)
@@ -302,41 +333,75 @@ func TestHealthPublishesNoHostInternals(t *testing.T) {
 	}
 }
 
-// Lines waiting in a record file with the cursor unmoved for ten minutes:
-// the collector has stopped ingesting, whatever its status file says. A
-// file with nothing waiting says nothing.
+// Lines that a call saw waiting in a record file, still there at the same
+// offset ten minutes later: the collector has stopped ingesting, whatever
+// its status file says. The wait is the lines' own, not the cursor's: a
+// file the collector ingests rarely has a cursor that last moved long ago,
+// and a line appended to it waits a pass like any other. A file with
+// nothing waiting says nothing.
 func TestHealthFailsWhenTheRecordStopsBeingIngested(t *testing.T) {
 	f := newHealthFixture(t)
 	f.healthy()
-	file := filepath.Join(f.dir, "measurements.jsonl")
-	if err := os.WriteFile(file, []byte(strings.Repeat(`{"x":1}`+"\n", 3)), 0o644); err != nil {
+	file := filepath.Join(f.dir, "publications.jsonl")
+	line := `{"x":1}` + "\n"
+	if err := os.WriteFile(file, []byte(strings.Repeat(line, 4)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.st.SetCursor(file, 8, 1, f.now.Add(-25*time.Minute)); err != nil {
+	// A quiet file: its cursor last moved 25 minutes ago, and lines came
+	// since, which the collector's next pass takes.
+	if err := f.st.SetCursor(file, 16, 2, f.now.Add(-25*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	ts := f.server()
-	ok, detail, found := check(f.health(ts), "ingest")
-	if !found || ok || !strings.HasPrefix(detail, "collector has ingested nothing for 25m") || !strings.Contains(detail, "measurements.jsonl") {
-		t.Fatalf("ingest: found=%v ok=%v %q", found, ok, detail)
+	clock := newTestClock(f.now)
+	ts := f.server(api.WithClock(clock.now))
+	if ok, detail, found := check(f.health(ts), "ingest"); !found || !ok {
+		t.Fatalf("a quiet cursor and fresh lines: found=%v ok=%v %q", found, ok, detail)
+	}
+	// The same lines, the cursor unmoved, eleven minutes on.
+	clock.add(11 * time.Minute)
+	ok, detail, _ := check(f.health(ts), "ingest")
+	if ok || detail != "collector has ingested nothing for 36m0s; lines waiting in publications.jsonl" {
+		t.Fatalf("ingest: ok=%v %q", ok, detail)
 	}
 	if strings.Contains(detail, f.dir) {
 		t.Fatalf("the detail carries a path: %q", detail)
 	}
 	// A pass over a long backlog keeps its start time on the cursor: an
-	// offset that moved between two calls is progress.
-	if err := f.st.SetCursor(file, 16, 2, f.now.Add(-25*time.Minute)); err != nil {
+	// offset that moved between two calls is progress, lines still waiting
+	// past it or not.
+	if err := f.st.SetCursor(file, 24, 3, f.now.Add(-25*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if ok, detail, _ := check(f.health(ts), "ingest"); !ok {
 		t.Fatalf("a cursor that moved: %q", detail)
 	}
-	// Everything ingested: nothing waits, however old the cursor.
-	if err := f.st.SetCursor(file, 24, 3, f.now.Add(-25*time.Minute)); err != nil {
+	// Everything ingested: nothing waits, however long the cursor stays.
+	if err := f.st.SetCursor(file, 32, 4, f.now.Add(-25*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	for range 2 {
+		if ok, detail, _ := check(f.health(ts), "ingest"); !ok {
+			t.Fatalf("nothing waiting: %q", detail)
+		}
+		clock.add(11 * time.Minute)
+	}
+	// A line the collector never takes, and an API restarted meanwhile,
+	// which has seen nothing wait: it says so once its own first call is
+	// ten minutes old.
+	if err := os.WriteFile(file, []byte(strings.Repeat(line, 5)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ts = f.server(api.WithClock(clock.now))
 	if ok, detail, _ := check(f.health(ts), "ingest"); !ok {
-		t.Fatalf("nothing waiting: %q", detail)
+		t.Fatalf("a restarted API's first call: %q", detail)
+	}
+	clock.add(9 * time.Minute)
+	if ok, detail, _ := check(f.health(ts), "ingest"); !ok {
+		t.Fatalf("nine minutes on: %q", detail)
+	}
+	clock.add(2 * time.Minute)
+	if ok, detail, _ := check(f.health(ts), "ingest"); ok || !strings.Contains(detail, "lines waiting in publications.jsonl") {
+		t.Fatalf("eleven minutes on: ok=%v %q", ok, detail)
 	}
 }
 
@@ -359,9 +424,17 @@ func TestHealthIngestNamesTheStuckFileAndFallsBackOnTheCursors(t *testing.T) {
 	if err := f.st.SetCursor(moving, 16, 2, f.now.Add(-time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	ts := f.server()
+	clock := newTestClock(f.now)
+	ts := f.server(api.WithClock(clock.now))
+	if ok, detail, _ := check(f.health(ts), "ingest"); !ok {
+		t.Fatalf("lines first seen waiting: %q", detail)
+	}
+	clock.add(11 * time.Minute)
+	if err := f.st.SetCursor(moving, 24, 3, clock.now().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 	ok, detail, _ := check(f.health(ts), "ingest")
-	if ok || detail != "collector has ingested nothing for 25m0s from measurements.jsonl while lines wait there; other files are ingested" {
+	if ok || detail != "collector has ingested nothing for 11m0s from measurements.jsonl while lines wait there; other files are ingested" {
 		t.Fatalf("ingest: ok=%v %q", ok, detail)
 	}
 
