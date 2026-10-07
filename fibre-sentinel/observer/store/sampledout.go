@@ -110,8 +110,11 @@ const ObligationRowsVerified = `(SELECT ` + probeRowsCols + `, tls_ok, must_serv
 //   - there is exactly one row per assigned validator (assignments, row
 //     count > 0, the same row count and attestation) per point, each point
 //     with one label and one phase: which is what sampled_out_rows derives;
-//   - nothing amended, corrected, cleared or confirmed any of them, and no
-//     decision for the promise exists yet.
+//   - nothing amended or corrected any of them, and no decision for the
+//     promise exists yet. (cleared_by and confirmed_by, a second vantage's
+//     answer to a fault, were never set on a sampled-out row, which is no
+//     fault, and nothing sets them any more; probe_confirmations went with
+//     migration 29, which drops it only empty.)
 //
 // A set short of that (a prober stopped half-way through writing one, a
 // vantage that also probed unassigned validators) keeps its rows.
@@ -123,7 +126,7 @@ var collapseSampledOut = []string{
 		       COUNT(DISTINCT scheduled_at) AS npts,
 		       COUNT(DISTINCT scheduled_at || '|' || schedule_label || '|' || phase) AS nlabels,
 		       MIN(assigned) AS all_assigned, MAX(retention_unverified) AS held,
-		       COUNT(corrected_at) + COUNT(amended_at) + COUNT(cleared_by) + COUNT(confirmed_by) AS touched,
+		       COUNT(corrected_at) + COUNT(amended_at) AS touched,
 		       COUNT(DISTINCT classification_reason) AS nreason,
 		       COUNT(DISTINCT COALESCE(sampling_p, -1)) AS np, MIN(sampling_p) AS p,
 		       COUNT(DISTINCT COALESCE(sampling_binding, '')) AS nbinding,
@@ -143,7 +146,6 @@ var collapseSampledOut = []string{
 	             WHERE x.promise_hash = c.promise_hash AND a.row_count > 0
 	               AND a.row_count = x.assigned_row_count AND a.attested IS x.attested)
 	  AND NOT EXISTS (SELECT 1 FROM probe_corrections k WHERE k.promise_hash = c.promise_hash)
-	  AND NOT EXISTS (SELECT 1 FROM probe_confirmations k WHERE k.promise_hash = c.promise_hash)
 	  AND NOT EXISTS (SELECT 1 FROM sampling_decisions d WHERE d.promise_hash = c.promise_hash)`,
 	// The decision, in the shape the prober now writes it (probe.SampledOut),
 	// so an export or a reader of raw_json sees one kind of record whichever

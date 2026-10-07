@@ -4,8 +4,9 @@ package store
 // readings (probe_confirmations) and cleared_by / confirmed_by on the row
 // they answered. Nothing reads or writes them any more: a blob's reading is
 // this observer's own, and what counts follows from it alone
-// (observer/verdict). The migration stays, so the schema and its version do
-// not move.
+// (observer/verdict). The migration stays, so a new store travels the same
+// path as an old one; migration 29 (leftovers.go) drops the table, empty,
+// and the indexes, and leaves the two columns, all NULL, where they are.
 
 var confirmMigration = migration{
 	version: 23,

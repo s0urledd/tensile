@@ -39,7 +39,7 @@ var schemaSQL string
 // an upgraded one — baseline, then every migration — so the two end up
 // identical in shape and the migration code is exercised by every test run
 // rather than only on upgrade day.
-const SchemaVersion = 28
+const SchemaVersion = 29
 
 // migration is one numbered step above the baseline. The statements run in a
 // single transaction: SQLite supports transactional DDL, so a failed step
@@ -48,6 +48,13 @@ type migration struct {
 	version int
 	note    string
 	stmts   []string
+	// check, when set, runs first in the migration's transaction; an error
+	// refuses the migration, which leaves the store as it was.
+	check func(tx *sql.Tx) error
+	// backfill, when set, runs last in the migration's transaction, for rows
+	// no statement can read (a record in its slim form). It returns the rows
+	// it wrote, counted as a statement's are.
+	backfill func(s *Store, tx *sql.Tx) (int64, error)
 }
 
 // migrations must stay append-only and in ascending order. Never edit a
@@ -563,7 +570,9 @@ var migrations = []migration{
 			// uncertainty axis while the first stays invisible would be
 			// worse than having one. Backfilled from raw_json, which the
 			// retention pass strips after 30 days; older rows keep 0, which
-			// understates rather than invents.
+			// understates rather than invents. (Nothing wrote it on insert
+			// until migration 29, which fills the rows stored meanwhile:
+			// leftovers.go.)
 			// The ninth obligation bucket. Rolled days from before this
 			// migration keep 0, which is honest: nothing was held then.
 			`ALTER TABLE obligation_daily ADD COLUMN held_param_unverified INTEGER NOT NULL DEFAULT 0`,
@@ -796,6 +805,10 @@ var migrations = []migration{
 			 ON CONFLICT(key) DO NOTHING`,
 		},
 	},
+	// leftovers.go (leftoversMigration): what the sampling and the second
+	// vantage's confirmations left goes, and must_serve_until_ambiguous is
+	// written.
+	leftoversMigration,
 }
 
 // Store wraps one SQLite database.
@@ -1016,6 +1029,11 @@ func (s *Store) applyMigration(m migration) error {
 		return err
 	}
 	defer tx.Rollback()
+	if m.check != nil {
+		if err := m.check(tx); err != nil {
+			return fmt.Errorf("migration %d (%s) refused: %w", m.version, m.note, err)
+		}
+	}
 	var rewritten int64
 	for _, stmt := range m.stmts {
 		res, err := tx.Exec(stmt)
@@ -1033,6 +1051,13 @@ func (s *Store) applyMigration(m migration) error {
 			n, _ := res.RowsAffected()
 			rewritten += n
 		}
+	}
+	if m.backfill != nil {
+		n, err := m.backfill(s, tx)
+		if err != nil {
+			return fmt.Errorf("migration %d (%s): backfill: %w", m.version, m.note, err)
+		}
+		rewritten += n
 	}
 	if rewritten > 0 {
 		if _, err := tx.Exec(`INSERT INTO meta (key, value, updated_at) VALUES (?, '1', ?)
@@ -1471,9 +1496,10 @@ func (s *Store) UpsertPublication(p scan.Publication, raw []byte) (inserted bool
 		 validator_set_height, total_voting_power, sigma_rows, distinct_rows, wrap_overlaps, validators_with_rows,
 		 recorded_at, raw_json,
 		 attested_with_rows, attested_voting_power, signature_entries, signatures_verified,
-		 signatures_unmatched, signatures_out_of_position, original_rows, total_rows, retention_unverified)
+		 signatures_unmatched, signatures_out_of_position, must_serve_until_ambiguous, original_rows, total_rows,
+		 retention_unverified)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-		        ?, ?, ?, ?, ?, ?,
+		        ?, ?, ?, ?, ?, ?, ?,
 		-- the two values the queries used to read out of raw_json, read out of the line the same way
 		json_extract(?, '$.assignment.protocol_params.original_rows'), json_extract(?, '$.assignment.protocol_params.total_rows'),
 		-- Born withheld when a range that still withholds already covers
@@ -1494,6 +1520,7 @@ func (s *Store) UpsertPublication(p scan.Publication, raw []byte) (inserted bool
 		ts(p.RecordedAt), body,
 		att(int64(a.AttestedWithRows)), att(a.AttestedVotingPower), att(int64(a.SignatureEntries)),
 		att(int64(a.SignaturesVerified)), att(int64(a.SignaturesUnmatched)), att(int64(a.SignaturesOutOfPosition)),
+		b2i(p.MustServeUntilAmbiguous),
 		string(raw), string(raw),
 		p.Promise.Height, p.SettlementHeight)
 	if err != nil {
