@@ -109,37 +109,25 @@ func marketServer(t *testing.T, labels map[string]api.PublisherLabel) (*httptest
 func TestMarketSummary(t *testing.T) {
 	ts, _ := marketServer(t, map[string]api.PublisherLabel{samplePublisher: {Address: samplePublisher, Label: "Sentinel test publisher", Source: "this observer"}})
 	var m struct {
-		Settlements     int64                       `json:"settlements"`
-		Blobs           int64                       `json:"blobs"`
-		Fees            int64                       `json:"fees_settled_utia"`
-		Bytes           int64                       `json:"bytes"`
-		Publishers      int64                       `json:"publishers_active"`
-		PerMiB          *float64                    `json:"paid_per_mib_utia"`
-		Timeouts        int64                       `json:"timeouts"`
-		TimedOut        int64                       `json:"timed_out_utia"`
-		Deposits        struct{ Count, Utia int64 } `json:"deposits"`
-		WithdrawalsExec struct{ Count, Utia int64 } `json:"withdrawals_executed"`
-		EscrowHeld      int64                       `json:"escrow_held_utia"`
-		EscrowAccounts  int64                       `json:"escrow_accounts"`
-		Daily           []map[string]any            `json:"daily"`
-		Hourly          []struct {
+		Settlements    int64                       `json:"settlements"`
+		Blobs          int64                       `json:"blobs"`
+		Fees           int64                       `json:"fees_settled_utia"`
+		Bytes          int64                       `json:"bytes"`
+		Publishers     int64                       `json:"publishers_active"`
+		PerMiB         *float64                    `json:"paid_per_mib_utia"`
+		Timeouts       int64                       `json:"timeouts"`
+		TimedOut       int64                       `json:"timed_out_utia"`
+		Deposits       struct{ Count, Utia int64 } `json:"deposits"`
+		EscrowHeld     int64                       `json:"escrow_held_utia"`
+		EscrowAccounts int64                       `json:"escrow_accounts"`
+		Daily          []map[string]any            `json:"daily"`
+		Hourly         []struct {
 			Hour        string `json:"hour"`
 			Bytes       int64  `json:"bytes"`
 			Settlements int64  `json:"settlements"`
 			Fees        int64  `json:"fees_utia"`
 		} `json:"hourly"`
-		HourlyByPub []struct {
-			Publisher string `json:"publisher"`
-			Fees      int64  `json:"fees_utia"`
-		} `json:"hourly_by_publisher"`
-		Top []struct {
-			Publisher string   `json:"publisher"`
-			Label     string   `json:"label"`
-			FeesShare *float64 `json:"fees_share"`
-		} `json:"top_publishers"`
-		Other      *map[string]any             `json:"other_publishers"`
-		Largest    *struct{ Publisher string } `json:"largest_poster"`
-		ComputedAt string                      `json:"computed_at"`
+		ComputedAt string `json:"computed_at"`
 	}
 	if code := get(t, ts, "/v1/market?window=24h", &m); code != 200 {
 		t.Fatalf("market: %d", code)
@@ -154,8 +142,8 @@ func TestMarketSummary(t *testing.T) {
 	if m.Timeouts != 1 || m.TimedOut != 830_000 {
 		t.Fatalf("timeouts: %+v", m)
 	}
-	if m.Deposits.Count != 1 || m.Deposits.Utia != 6_000_000_000 || m.WithdrawalsExec.Utia != 1000 {
-		t.Fatalf("deposits/withdrawals: %+v", m)
+	if m.Deposits.Count != 1 || m.Deposits.Utia != 6_000_000_000 {
+		t.Fatalf("deposits: %+v", m)
 	}
 	if m.EscrowHeld != 5_999_304_000 || m.EscrowAccounts != 1 {
 		t.Fatalf("escrow: held=%d accounts=%d (a not-found account must not count)", m.EscrowHeld, m.EscrowAccounts)
@@ -174,22 +162,20 @@ func TestMarketSummary(t *testing.T) {
 	if hs != m.Settlements || hb != m.Bytes || hf != m.Fees {
 		t.Fatalf("hourly sums to %d settlements, %d bytes, %d utia; want %d, %d, %d", hs, hb, hf, m.Settlements, m.Bytes, m.Fees)
 	}
-	// and by publisher (TestHourlySplitSumsToTheDays holds it to the days)
-	var pf int64
-	for _, h := range m.HourlyByPub {
-		pf += h.Fees
+	// What no page read is not published: the split by publisher (the
+	// publishers' own figures are /v1/publishers), the top five and the
+	// fold, the largest poster and the withdrawal sums (the queue is
+	// withdrawal_queue).
+	var whole map[string]json.RawMessage
+	get(t, ts, "/v1/market?window=24h", &whole)
+	for _, k := range []string{"hourly_by_publisher", "daily_by_publisher", "top_publishers", "other_publishers", "largest_poster",
+		"withdrawals_requested", "withdrawals_executed"} {
+		if _, ok := whole[k]; ok {
+			t.Errorf("/v1/market still carries %s", k)
+		}
 	}
-	if len(m.HourlyByPub) != 2 || pf != m.Fees {
-		t.Fatalf("hourly by publisher: %d rows, %d utia; want one per publisher, %d", len(m.HourlyByPub), pf, m.Fees)
-	}
-	if len(m.Top) != 2 || m.Top[0].Publisher != otherPublisher || m.Top[1].Label != "Sentinel test publisher" {
-		t.Fatalf("top: %+v", m.Top)
-	}
-	if m.Other != nil {
-		t.Fatalf("two publishers must not produce an 'other' bucket: %v", m.Other)
-	}
-	if m.Largest == nil || m.Largest.Publisher != otherPublisher {
-		t.Fatalf("largest poster: %+v", m.Largest)
+	if _, ok := whole["readings"]; !ok {
+		t.Error("/v1/market carries no readings")
 	}
 	if m.ComputedAt == "" {
 		t.Fatal("no computed_at")
@@ -214,14 +200,13 @@ func TestMarketSummary(t *testing.T) {
 	var m30 struct {
 		Settlements int64
 		Hourly      []map[string]any `json:"hourly"`
-		HourlyByPub []map[string]any `json:"hourly_by_publisher"`
 	}
 	get(t, ts, "/v1/market?window=30d", &m30)
 	if m30.Settlements != 3 {
 		t.Fatalf("30d settlements: %d", m30.Settlements)
 	}
-	if m30.Hourly != nil || m30.HourlyByPub != nil {
-		t.Fatalf("a 30-day window carries hourly buckets: %d, %d by publisher", len(m30.Hourly), len(m30.HourlyByPub))
+	if m30.Hourly != nil {
+		t.Fatalf("a 30-day window carries hourly buckets: %d", len(m30.Hourly))
 	}
 	if code := get(t, ts, "/v1/market?window=1y", nil); code != 400 {
 		t.Fatalf("bad window: %d", code)
@@ -229,11 +214,9 @@ func TestMarketSummary(t *testing.T) {
 }
 
 // A day is charted by the hour as longer periods are by the day: over the
-// same settlements the hours' fees add up to the days', and the hours split
-// by publisher as the days are, the same five named, the rest folded into
-// one row without a publisher, labelled and ordered alike, so every
-// publisher's hours (the fold's included) add up to its days.
-func TestHourlySplitSumsToTheDays(t *testing.T) {
+// same settlements the hours' fees, bytes and settlements add up to the
+// days' and to the period's.
+func TestHourlySumsToTheDays(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "observer.db"))
 	if err != nil {
@@ -290,20 +273,12 @@ func TestHourlySplitSumsToTheDays(t *testing.T) {
 		Settlements int64   `json:"settlements"`
 		Daily       []slice `json:"daily"`
 		Hourly      []slice `json:"hourly"`
-		DailyByPub  []slice `json:"daily_by_publisher"`
-		HourlyByPub []slice `json:"hourly_by_publisher"`
-		Top         []struct {
-			Publisher string `json:"publisher"`
-		} `json:"top_publishers"`
-		Other *struct {
-			Publishers int64 `json:"publishers"`
-		} `json:"other_publishers"`
 	}
 	if code := get(t, ts, "/v1/market?window=24h", &m); code != 200 {
 		t.Fatalf("market: %d", code)
 	}
-	if m.Settlements != 28 || len(m.Top) != 5 || m.Other == nil || m.Other.Publishers != 2 {
-		t.Fatalf("%d settlements, %d named, other %+v; want 28, 5 and 2 folded", m.Settlements, len(m.Top), m.Other)
+	if m.Settlements != 28 {
+		t.Fatalf("%d settlements, want 28", m.Settlements)
 	}
 
 	// The hours' fees, bytes and settlements are the days'.
@@ -318,62 +293,6 @@ func TestHourlySplitSumsToTheDays(t *testing.T) {
 	if hf != df || hb != db || hn != dn || hf != m.Fees || hb != m.Bytes || hn != m.Settlements {
 		t.Fatalf("hours sum to %d utia, %d bytes, %d settlements; days to %d, %d, %d; the period %d, %d, %d",
 			hf, hb, hn, df, db, dn, m.Fees, m.Bytes, m.Settlements)
-	}
-
-	// Each publisher's hours, and the fold's, are its days, under the same
-	// name, and the split names the same publishers the days do.
-	type tally struct {
-		label              string
-		fees, bytes, count int64
-	}
-	byPub := func(rows []slice) map[string]tally {
-		out := map[string]tally{}
-		for _, r := range rows {
-			x := out[r.Publisher]
-			x.label, x.fees, x.bytes, x.count = r.Label, x.fees+r.Fees, x.bytes+r.Bytes, x.count+r.Settlements
-			out[r.Publisher] = x
-		}
-		return out
-	}
-	days, hours := byPub(m.DailyByPub), byPub(m.HourlyByPub)
-	if len(hours) != 6 || len(days) != 6 {
-		t.Fatalf("the split names %d publishers by the hour, %d by the day; want the five and the fold", len(hours), len(days))
-	}
-	named := []string{""}
-	for _, p := range m.Top {
-		named = append(named, p.Publisher)
-	}
-	for _, p := range named {
-		if h, ok := hours[p]; !ok || h.count == 0 || h != days[p] {
-			t.Fatalf("publisher %q: hours %+v, days %+v", p, h, days[p])
-		}
-	}
-	if _, folded := hours[pubs[0]]; folded || hours[pubs[5]].label != "Named publisher" {
-		t.Fatalf("the fold or the label: %+v", hours)
-	}
-
-	// Every hour's split adds up to that hour, and is ordered as the days
-	// are: by time, then publisher, the fold first.
-	perHour := map[string]slice{}
-	for i, r := range m.HourlyByPub {
-		if i > 0 {
-			p := m.HourlyByPub[i-1]
-			if p.Hour > r.Hour || p.Hour == r.Hour && p.Publisher >= r.Publisher {
-				t.Fatalf("row %d (%s %q) after (%s %q)", i, r.Hour, r.Publisher, p.Hour, p.Publisher)
-			}
-		}
-		x := perHour[r.Hour]
-		x.Fees, x.Bytes, x.Settlements = x.Fees+r.Fees, x.Bytes+r.Bytes, x.Settlements+r.Settlements
-		perHour[r.Hour] = x
-	}
-	if len(perHour) != len(m.Hourly) {
-		t.Fatalf("the split covers %d hours, the buckets %d", len(perHour), len(m.Hourly))
-	}
-	for _, h := range m.Hourly {
-		x := perHour[h.Hour]
-		if x.Fees != h.Fees || x.Bytes != h.Bytes || x.Settlements != h.Settlements {
-			t.Fatalf("hour %s: split %+v, bucket %+v", h.Hour, x, h)
-		}
 	}
 }
 
@@ -421,13 +340,7 @@ func TestPublishersListAndDetail(t *testing.T) {
 			Window      struct{ Name string } `json:"window"`
 			Settlements int64                 `json:"settlements"`
 		} `json:"windows"`
-		Payments []struct{ Kind string } `json:"recent_payments"`
-		Blobs    []struct {
-			PromiseHash string `json:"promise_hash"`
-			Charge      *struct {
-				Fee int64 `json:"fee_utia"`
-			} `json:"charge"`
-		} `json:"recent_blobs"`
+		Payments []map[string]any `json:"recent_payments"`
 	}
 	if code := get(t, ts, "/v1/publishers/"+samplePublisher+"?window=24h", &one); code != 200 {
 		t.Fatalf("publisher detail: %d", code)
@@ -449,8 +362,33 @@ func TestPublishersListAndDetail(t *testing.T) {
 			t.Fatalf("24h span: %+v", w)
 		}
 	}
-	if len(one.Blobs) == 0 || one.Blobs[len(one.Blobs)-1].Charge == nil || one.Blobs[len(one.Blobs)-1].Charge.Fee != 695_000 {
-		t.Fatalf("the settled sample blob must carry its charge: %+v", one.Blobs)
+	// A payment does not repeat the page's publisher, and the blob it paid
+	// for is the blob's own page; the publisher's blobs are
+	// /v1/blobs?publisher=, which its page lists them by.
+	for _, p := range one.Payments {
+		for _, k := range []string{"publisher", "processor", "namespace", "blob_size"} {
+			if _, ok := p[k]; ok {
+				t.Errorf("a recent payment carries %s: %v", k, p)
+			}
+		}
+	}
+	var whole map[string]json.RawMessage
+	get(t, ts, "/v1/publishers/"+samplePublisher+"?window=24h", &whole)
+	for _, k := range []string{"recent_blobs", "recent_blobs_truncated"} {
+		if _, ok := whole[k]; ok {
+			t.Errorf("the publisher's page still carries %s", k)
+		}
+	}
+	var blobs struct {
+		Blobs []struct {
+			Charge *struct {
+				Fee int64 `json:"fee_utia"`
+			} `json:"charge"`
+		} `json:"blobs"`
+	}
+	if code := get(t, ts, "/v1/blobs?publisher="+samplePublisher, &blobs); code != 200 || len(blobs.Blobs) == 0 ||
+		blobs.Blobs[len(blobs.Blobs)-1].Charge == nil || blobs.Blobs[len(blobs.Blobs)-1].Charge.Fee != 695_000 {
+		t.Fatalf("the settled sample blob must carry its charge: %d %+v", code, blobs.Blobs)
 	}
 	// A publisher with history but nothing in the window still resolves.
 	var quiet struct {
@@ -498,7 +436,6 @@ func TestBlobChargeAndValidatorTimeouts(t *testing.T) {
 			Publisher string `json:"publisher"`
 			Charge    *struct {
 				Fee      int64 `json:"fee_utia"`
-				Gas      int64 `json:"gas_units"`
 				Settled  bool  `json:"settled"`
 				TimedOut bool  `json:"timed_out"`
 			} `json:"charge"`
@@ -859,4 +796,52 @@ func TestPublishersAndMarketAreOneSnapshot(t *testing.T) {
 	if b2.ComputedAt == b1.ComputedAt && b2.Fees != b1.Fees {
 		t.Fatalf("the board moved without its snapshot: %d → %d", b1.Fees, b2.Fees)
 	}
+}
+
+// A blob row publishes what a page reads: the charge's fee and outcome (its
+// gas is the fee at one utia per gas, the timeout's submitter is the
+// payment's), not how many validators served it (each assignment says), and
+// the promise's creation time only on the blob's own page, where a reader
+// checks its deadline.
+func TestBlobRowsPublishWhatIsRead(t *testing.T) {
+	ts, _ := marketServer(t, nil)
+	pubs, err := scan.LoadPublications(filepath.Join(sampleDir, "publications.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type row = map[string]json.RawMessage
+	absent := func(where string, r row, keys ...string) {
+		t.Helper()
+		for _, k := range keys {
+			if _, ok := r[k]; ok {
+				t.Errorf("%s carries %s: %s", where, k, r[k])
+			}
+		}
+	}
+	var list struct {
+		Blobs []row `json:"blobs"`
+	}
+	if code := get(t, ts, "/v1/blobs", &list); code != 200 || len(list.Blobs) == 0 {
+		t.Fatalf("blobs: %d, %d rows", code, len(list.Blobs))
+	}
+	for _, b := range list.Blobs {
+		absent("a listed blob", b, "creation_timestamp")
+		var c, rc row
+		_ = json.Unmarshal(b["charge"], &c)
+		_ = json.Unmarshal(b["reconstructable"], &rc)
+		absent("a listed blob's charge", c, "gas_units", "processor")
+		absent("a listed blob's reading", rc, "served_by_validators")
+	}
+	var one struct {
+		Blob row `json:"blob"`
+	}
+	if code := get(t, ts, "/v1/blobs/"+pubs[0].PromiseHash, &one); code != 200 {
+		t.Fatalf("blob: %d", code)
+	}
+	if _, ok := one.Blob["creation_timestamp"]; !ok {
+		t.Error("the blob's own page has no creation_timestamp")
+	}
+	var c row
+	_ = json.Unmarshal(one.Blob["charge"], &c)
+	absent("the blob's charge", c, "gas_units", "processor")
 }

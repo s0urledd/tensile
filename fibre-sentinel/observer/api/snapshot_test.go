@@ -369,13 +369,13 @@ func TestMarketSnapshotWithNoPublisherIsReloaded(t *testing.T) {
 	}
 }
 
-// A day's market snapshot from before the hours carried fees and a publisher
-// split is refused as one from before the publisher list is: its hours would
-// chart no fees and no publisher until the warm-up replaced it. This build's
-// file is read back, and so is a day with no settlement, which has neither.
-func TestMarketSnapshotWithoutTheHourlySplitIsRefused(t *testing.T) {
+// A day's market snapshot from before the hours carried fees is refused as
+// one from before the publisher list is: its hours would chart no fees until
+// the warm-up replaced it. This build's file is read back, and so is a day
+// with no settlement, which has none.
+func TestMarketSnapshotWithoutHourlyFeesIsRefused(t *testing.T) {
 	hours := []hourBucket{{Hour: "2026-09-29T10", Bytes: 1 << 20, Settlements: 1, FeesUtia: 830_000}}
-	split := []hourPublisher{{Hour: "2026-09-29T10", Publisher: "celestia1zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3shxjgz", Bytes: 1 << 20, Settlements: 1, FeesUtia: 830_000}}
+	unpriced := []hourBucket{{Hour: "2026-09-29T10", Bytes: 1 << 20, Settlements: 1}}
 	loads := func(r *marketResponse) bool {
 		dir := t.TempDir()
 		w := newSnapshotCache[*marketResponse]("market", nil)
@@ -388,10 +388,10 @@ func TestMarketSnapshotWithoutTheHourlySplitIsRefused(t *testing.T) {
 		defer c.mu.Unlock()
 		return c.entries["24h"] != nil
 	}
-	if loads(&marketResponse{PublishersListed: true, PublisherRows: publisherRowsVersion, Hourly: hours}) {
-		t.Fatal("an older build's day, hours without the split, was loaded")
+	if loads(&marketResponse{PublishersListed: true, PublisherRows: publisherRowsVersion, Hourly: unpriced}) {
+		t.Fatal("an older build's day, hours without fees, was loaded")
 	}
-	if !loads(&marketResponse{PublishersListed: true, PublisherRows: publisherRowsVersion, Hourly: hours, HourlyByPub: split}) {
+	if !loads(&marketResponse{PublishersListed: true, PublisherRows: publisherRowsVersion, Hourly: hours}) {
 		t.Fatal("this build's day was not read back")
 	}
 	if !loads(&marketResponse{PublishersListed: true, PublisherRows: publisherRowsVersion, Hourly: []hourBucket{}}) {
@@ -399,7 +399,7 @@ func TestMarketSnapshotWithoutTheHourlySplitIsRefused(t *testing.T) {
 	}
 	// A file whose rows are from before namespaces, the settlement times and
 	// the readings would publish every row without them: refused.
-	if loads(&marketResponse{PublishersListed: true, Hourly: hours, HourlyByPub: split}) {
+	if loads(&marketResponse{PublishersListed: true, Hourly: hours}) {
 		t.Fatal("an older build's file, rows without namespaces, settlements and readings, was loaded")
 	}
 }

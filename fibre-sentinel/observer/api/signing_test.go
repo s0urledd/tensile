@@ -258,17 +258,29 @@ func TestSigningLeavesOutPromisesWithoutAHost(t *testing.T) {
 	}
 	var det struct {
 		Validator struct {
-			Signing struct {
-				signingJSON
-				NoHost int64 `json:"no_host"`
-			} `json:"signing"`
+			Signing signingJSON `json:"signing"`
 		} `json:"validator"`
 	}
 	if code := get(t, ts, "/v1/validators/"+sigV3+"?window=all", &det); code != 200 {
 		t.Fatalf("detail: %d", code)
 	}
-	if s := det.Validator.Signing; s.Assigned != 1 || s.Signed != 1 || s.NoHost != 2 {
-		t.Fatalf("signing = %+v, want 1/1 with 2 promises without a host", s)
+	if s := det.Validator.Signing; s.Assigned != 1 || s.Signed != 1 {
+		t.Fatalf("signing = %+v, want 1/1", s)
+	}
+	// counted apart in the row, which the page does not publish
+	var rows struct {
+		Validators []struct {
+			Address string `json:"address"`
+			Signing struct {
+				NoHost int64 `json:"no_host"`
+			} `json:"signing"`
+		} `json:"validators"`
+	}
+	rowsOf(t, st, "test", "all", time.Time{}, &rows)
+	for _, v := range rows.Validators {
+		if v.Address == sigV3 && v.Signing.NoHost != 2 {
+			t.Fatalf("%s: %d promises without a host, want 2", v.Address, v.Signing.NoHost)
+		}
 	}
 	partsAfter(t, st, "test", time.Time{})
 }

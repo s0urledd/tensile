@@ -75,51 +75,12 @@ func publisherList(rows []publisherRow) []publisherListRow {
 	return out
 }
 
-// recentBlob is one of a publisher's newest blobs as its page lists them:
-// the blob's identity, when it settled, what it was charged and whether it
-// was available. The whole row is /v1/blobs/{promise_hash}.
-type recentBlob struct {
-	PromiseHash        string        `json:"promise_hash"`
-	Commitment         string        `json:"commitment"`
-	Namespace          string        `json:"namespace"`
-	BlobSize           int64         `json:"blob_size"`
-	SettlementHeight   int64         `json:"settlement_height"`
-	SettlementTime     string        `json:"settlement_time"`
-	ValidatorsWithRows int           `json:"validators_with_rows"`
-	Charge             *recentCharge `json:"charge"`
-	Reconstructable    *recentStatus `json:"reconstructable"`
-}
-
-type recentCharge struct {
-	FeeUtia int64 `json:"fee_utia"`
-}
-
-type recentStatus struct {
-	Status string `json:"status"`
-}
-
-func recentBlobs(rows []blobRow) []recentBlob {
-	out := make([]recentBlob, len(rows))
-	for i, b := range rows {
-		out[i] = recentBlob{
-			PromiseHash: b.PromiseHash, Commitment: b.Commitment, Namespace: b.Namespace, BlobSize: b.BlobSize,
-			SettlementHeight: b.SettlementHeight, SettlementTime: b.SettlementTime, ValidatorsWithRows: b.ValidatorsWithRows,
-		}
-		if b.Charge != nil {
-			out[i].Charge = &recentCharge{FeeUtia: b.Charge.FeeUtia}
-		}
-		if b.Reconstructable != nil {
-			out[i].Reconstructable = &recentStatus{Status: b.Reconstructable.Status}
-		}
-	}
-	return out
-}
-
 // exportOut is one daily export as /v1/exports lists it: the index entry
 // without the rule every entry repeats (the answer states it once), the
-// public key the signature block copies from signing.current, and the
-// byte ranges of the observer's own source files each member was read
-// from. The manifest inside the tarball keeps all of it.
+// public key the signature block copies (/v1/exports/pubkey serves it, and
+// the entry names it by its fingerprint), and the byte ranges of the
+// observer's own source files each member was read from. The manifest
+// inside the tarball keeps all of it.
 type exportOut struct {
 	Name        string            `json:"name"`
 	Bytes       int64             `json:"bytes"`
@@ -181,7 +142,9 @@ func exportList(entries []export.Entry) []exportOut {
 	return out
 }
 
-// validatorOut is one validator as /v1/validators lists it.
+// validatorOut is one validator as /v1/validators lists it. Reachability
+// and the stored half of Load are the validator page's only (detailOf): a
+// list row leaves them out.
 type validatorOut struct {
 	Address          string             `json:"address"`
 	ConsAddress      string             `json:"cons_address"`
@@ -203,7 +166,7 @@ type validatorOut struct {
 	IdentityReason   string             `json:"identity_reason,omitempty"`
 	ConfirmedFrom    string             `json:"confirmed_from,omitempty"`
 	AlsoFailedFrom   string             `json:"also_failed_from,omitempty"`
-	Reachability     Rate               `json:"reachability_window"`
+	Reachability     *Rate              `json:"reachability_window,omitempty"`
 	LastReachableAt  *string            `json:"last_reachable_at"`
 	Obligations      obligationStats    `json:"obligations"`
 	Signing          signingOut         `json:"signing"`
@@ -229,22 +192,23 @@ type validatorDetailOut struct {
 }
 
 // signingOut is signingStats without its rate, which is signed over
-// assigned; Recent only on the validator page.
+// assigned, and without no_host, which nothing shows; Recent only on the
+// validator page.
 type signingOut struct {
 	Assigned       int64              `json:"assigned"`
 	Signed         int64              `json:"signed"`
 	Unknown        int64              `json:"unknown"`
-	NoHost         int64              `json:"no_host"`
 	LastEndorsedAt *string            `json:"last_endorsed_at"`
 	Recent         *recentEndorsement `json:"recent,omitempty"`
 }
 
-// loadOut is loadStats without the row count, which bytes already sizes.
+// loadOut is loadStats without the row count, which bytes already sizes;
+// StoredBytes and RowsPerBlob on the validator page only.
 type loadOut struct {
-	Promises    int64 `json:"promises"`
-	Bytes       int64 `json:"bytes"`
-	StoredBytes int64 `json:"stored_bytes"`
-	RowsPerBlob int64 `json:"rows_per_blob"`
+	Promises    int64  `json:"promises"`
+	Bytes       int64  `json:"bytes"`
+	StoredBytes *int64 `json:"stored_bytes,omitempty"`
+	RowsPerBlob *int64 `json:"rows_per_blob,omitempty"`
 }
 
 // hostingOut is the endpoint's hosting as a validator row publishes it:
@@ -289,14 +253,50 @@ func listOf(v validatorRow) validatorOut {
 		Host: v.Host, LastHost: v.LastHost, EndpointClosedAt: v.EndpointClosedAt, VotingPower: v.VotingPower, LastSeenAt: v.LastSeenAt,
 		LastServedAt: v.LastServedAt,
 		Reachable:    v.Reachable, EndpointState: v.EndpointState, IdentityStatus: v.IdentityStatus, IdentityReason: v.IdentityReason,
-		ConfirmedFrom: v.ConfirmedFrom, AlsoFailedFrom: v.AlsoFailedFrom, Reachability: v.Reachability, LastReachableAt: v.LastReachableAt,
+		ConfirmedFrom: v.ConfirmedFrom, AlsoFailedFrom: v.AlsoFailedFrom, LastReachableAt: v.LastReachableAt,
 		Obligations: v.Obligations,
-		Signing: signingOut{Assigned: v.Signing.Assigned, Signed: v.Signing.Signed, Unknown: v.Signing.Unknown, NoHost: v.Signing.NoHost,
+		Signing: signingOut{Assigned: v.Signing.Assigned, Signed: v.Signing.Signed, Unknown: v.Signing.Unknown,
 			LastEndorsedAt: v.Signing.LastEndorsedAt},
-		Load:        loadOut{Promises: v.Load.Promises, Bytes: v.Load.Bytes, StoredBytes: v.Load.StoredBytes, RowsPerBlob: v.Load.RowsPerBlob},
+		Load:        loadOut{Promises: v.Load.Promises, Bytes: v.Load.Bytes},
 		Hosting:     hostingOf(v.Hosting),
 		Provisional: v.ProvisionalFaults,
 	}
+}
+
+// listedRows is the rows a validator list publishes: every row but a
+// former validator's with nothing in the window. A validator that once
+// held a Fibre endpoint or an assignment keeps a row in the snapshot for
+// good (the validator page, its status route and the feeds read it), and
+// the list used to carry it in every window too: the 24h list, re-read by
+// every overview viewer every fifteen seconds, grew with every validator
+// that ever left the set, not with the set. A row is left out of a list
+// only when it has no open endpoint, is not bonded, and the window holds
+// nothing of it: no obligation, assignment, endorsement or row data,
+// nothing held now, no reading, no endpoint check and no timeout its
+// operator enforced. In a window where it
+// has any of those it is listed as before, and /v1/validators/{addr}
+// answers for it whatever the window. Nothing is dropped from the
+// snapshot itself.
+func listedRows(rows []validatorRow) []validatorRow {
+	out := make([]validatorRow, 0, len(rows))
+	for _, v := range rows {
+		if v.Host == "" && v.BondStatus != "BOND_STATUS_BONDED" && !hasFigures(v) {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// hasFigures reports whether the window holds anything of v's.
+func hasFigures(v validatorRow) bool {
+	o := v.Obligations
+	a := v.Attestation
+	return o.Total > 0 || o.Served > 0 || o.Broken > 0 || o.HeldParamUnverified > 0 || o.NotCounted > 0 || o.Pending > 0 ||
+		v.Signing.Assigned > 0 || v.Signing.Unknown > 0 || v.Signing.NoHost > 0 ||
+		a.AttestedBlobs > 0 || a.UnattestedBlobs > 0 || a.UnknownBlobs > 0 ||
+		v.Load.Promises > 0 || v.Load.StoredBytes > 0 ||
+		v.ProbeCount > 0 || v.Reachability.Den > 0 || v.ProvisionalFaults != nil || v.TimeoutsEnforced > 0
 }
 
 // listOfRows is listOf over a snapshot's rows, never nil.
@@ -315,6 +315,8 @@ func detailOf(v validatorRow) validatorDetailOut {
 		LastUnreachableAt: v.LastUnreachableAt, Attestation: v.Attestation, BytesPerSecond: v.BytesPerSecond,
 		ThroughputSample: v.ThroughputSample, TimeoutsEnforced: v.TimeoutsEnforced,
 	}
+	reach, stored, rows := v.Reachability, v.Load.StoredBytes, v.Load.RowsPerBlob
+	out.Reachability, out.Load.StoredBytes, out.Load.RowsPerBlob = &reach, &stored, &rows
 	recent := v.Signing.Recent
 	out.Signing.Recent = &recent
 	return out
@@ -322,34 +324,29 @@ func detailOf(v validatorRow) validatorDetailOut {
 
 // validatorReading is one of a validator's newest readings as its page
 // lists them: the reading's own fields, without the validator's address and
-// host, which are the page's (host_at_settlement and host_changed say when
-// the upload went elsewhere), and without the build and clock of the run
-// that made it, which the exports carry. Vantage and scheduled_at key the
-// row.
+// host, which are the page's, without the build and clock of the run that
+// made it, which the exports carry, and without the evidence the page does
+// not show (the reason recorded at the probe, the first attempt's outcome,
+// the gRPC code, the shadowing promise, the host at settlement), which
+// /v1/probes carries row for row. Vantage and scheduled_at key the row.
 type validatorReading struct {
-	Vantage           string `json:"vantage"`
-	PromiseHash       string `json:"promise_hash"`
-	Attested          *bool  `json:"attested"`
-	ScheduleLabel     string `json:"schedule_label"`
-	ScheduledAt       string `json:"scheduled_at"`
-	StartedAt         string `json:"started_at"`
-	Phase             string `json:"phase"`
-	Outcome           string `json:"outcome"`
-	Classification    string `json:"classification"`
-	Reason            string `json:"classification_reason"`
-	RowsReturned      int    `json:"rows_returned"`
-	RowsExpected      int    `json:"rows_expected"`
-	TotalDurationMS   int64  `json:"total_duration_ms"`
-	RawError          string `json:"raw_error,omitempty"`
-	RetryFirstOutcome string `json:"retry_first_outcome,omitempty"`
-	RPCCode           string `json:"rpc_code,omitempty"`
-	ShadowedBy        string `json:"shadowed_by,omitempty"`
-	HostAtSettlement  string `json:"host_at_settlement,omitempty"`
-	HostChanged       bool   `json:"host_changed,omitempty"`
-	Service           string `json:"service,omitempty"`
-	Provisional       bool   `json:"provisional,omitempty"`
-	Attempt           int    `json:"attempt,omitempty"`
-	NextAttemptDue    string `json:"next_attempt_due,omitempty"`
+	Vantage         string `json:"vantage"`
+	PromiseHash     string `json:"promise_hash"`
+	Attested        *bool  `json:"attested"`
+	ScheduleLabel   string `json:"schedule_label"`
+	ScheduledAt     string `json:"scheduled_at"`
+	StartedAt       string `json:"started_at"`
+	Phase           string `json:"phase"`
+	Outcome         string `json:"outcome"`
+	Classification  string `json:"classification"`
+	RowsReturned    int    `json:"rows_returned"`
+	RowsExpected    int    `json:"rows_expected"`
+	TotalDurationMS int64  `json:"total_duration_ms"`
+	RawError        string `json:"raw_error,omitempty"`
+	Service         string `json:"service,omitempty"`
+	Provisional     bool   `json:"provisional,omitempty"`
+	Attempt         int    `json:"attempt,omitempty"`
+	NextAttemptDue  string `json:"next_attempt_due,omitempty"`
 	// RowsSubsetOfAssignment: see probeRow.
 	RowsSubsetOfAssignment *bool `json:"rows_subset_of_assignment,omitempty"`
 	// SettledAt is when the blob settled, which is when the validator endorsed
@@ -364,10 +361,9 @@ func validatorReadings(rows []probeRow) []validatorReading {
 	for i, p := range rows {
 		out[i] = validatorReading{
 			Vantage: p.Vantage, PromiseHash: p.PromiseHash, Attested: p.Attested, ScheduleLabel: p.ScheduleLabel, ScheduledAt: p.ScheduledAt,
-			StartedAt: p.StartedAt, Phase: p.Phase, Outcome: p.Outcome, Classification: p.Classification, Reason: p.Reason,
+			StartedAt: p.StartedAt, Phase: p.Phase, Outcome: p.Outcome, Classification: p.Classification,
 			RowsReturned: p.RowsReturned, RowsExpected: p.RowsExpected, TotalDurationMS: p.TotalDurationMS, RawError: p.RawError,
-			RetryFirstOutcome: p.RetryFirstOutcome, RPCCode: p.RPCCode, ShadowedBy: p.ShadowedBy, HostAtSettlement: p.HostAtSettlement,
-			HostChanged: p.HostChanged, Service: p.Service, Provisional: p.Provisional, Attempt: p.Attempt,
+			Service: p.Service, Provisional: p.Provisional, Attempt: p.Attempt,
 			NextAttemptDue: p.NextAttemptDue, RowsSubsetOfAssignment: p.RowsSubsetOfAssignment,
 		}
 	}

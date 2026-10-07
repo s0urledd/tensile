@@ -81,42 +81,6 @@ type hourBucket struct {
 	FeesUtia int64 `json:"fees_utia"`
 }
 
-// dayPublisher is one publisher's share of one day, for the stacked daily
-// chart: the window's top five publishers by fees keep their identity, the
-// rest fold into one "other" row per day (publisher empty).
-type dayPublisher struct {
-	Day         string `json:"day"`
-	Publisher   string `json:"publisher"`
-	Label       string `json:"label,omitempty"`
-	FeesUtia    int64  `json:"fees_utia"`
-	Bytes       int64  `json:"bytes"`
-	Settlements int64  `json:"settlements"`
-}
-
-// hourPublisher is one publisher's share of one UTC hour, for the one-day
-// stacked chart, split as dayPublisher splits a day (splitByPublisher).
-type hourPublisher struct {
-	Hour        string `json:"hour"`
-	Publisher   string `json:"publisher"`
-	Label       string `json:"label,omitempty"`
-	FeesUtia    int64  `json:"fees_utia"`
-	Bytes       int64  `json:"bytes"`
-	Settlements int64  `json:"settlements"`
-}
-
-// publisherShare is one slice of the top-N breakdown.
-type publisherShare struct {
-	Publisher   string   `json:"publisher"` // empty for the "other" bucket
-	Label       string   `json:"label,omitempty"`
-	FeesUtia    int64    `json:"fees_utia"`
-	FeesShare   *float64 `json:"fees_share"`
-	Bytes       int64    `json:"bytes"`
-	BytesShare  *float64 `json:"bytes_share"`
-	Settlements int64    `json:"settlements"`
-	// Publishers is how many accounts the "other" bucket folds together.
-	Publishers int64 `json:"publishers,omitempty"`
-}
-
 // marketResponse is /v1/market. Every figure is a chain record: settlements,
 // timeouts, deposits and withdrawals from the payments table, escrow
 // balances by state query; a settlement's fee is recomputed from blob_size
@@ -146,9 +110,7 @@ type marketResponse struct {
 	Timeouts     int64 `json:"timeouts"`
 	TimedOutUtia int64 `json:"timed_out_utia"`
 
-	Deposits             sum `json:"deposits"`
-	WithdrawalsRequested sum `json:"withdrawals_requested"`
-	WithdrawalsExecuted  sum `json:"withdrawals_executed"`
+	Deposits sum `json:"deposits"`
 	// EscrowHeldUtia is the sum of every known publisher's current balance,
 	// from state queries; EscrowAccounts how many were polled.
 	EscrowHeldUtia int64 `json:"escrow_held_utia"`
@@ -167,18 +129,18 @@ type marketResponse struct {
 	// Hourly is set for windows of a day or less, where a daily chart is one
 	// bar.
 	Hourly []hourBucket `json:"hourly,omitempty"`
-	// HourlyByPub is Hourly split by publisher as DailyByPub splits Daily,
-	// set with it.
-	HourlyByPub []hourPublisher  `json:"hourly_by_publisher,omitempty"`
-	DailyByPub  []dayPublisher   `json:"daily_by_publisher"`
-	Top         []publisherShare `json:"top_publishers"`
-	Other       *publisherShare  `json:"other_publishers"`
-	// LargestPoster is the publisher with the most bytes in the window.
-	LargestPoster *publisherShare `json:"largest_poster"`
 	// Namespaces is how many namespaces the window's settlements used, and
 	// NamespacesTotal how many any settlement on record has used.
 	Namespaces      int64 `json:"namespaces"`
 	NamespacesTotal int64 `json:"namespaces_total"`
+	// Readings is every blob on record by what Tensile's reading left it,
+	// network-wide and over the whole history whatever the window: the same
+	// counts as the publisher rows' readings, summed over every blob,
+	// publisher or not (readingMemo.totals). Every window carries the same
+	// figure, as of the snapshot's refresh, so the overview reads it from
+	// whichever it asks for rather than adding up every publisher's row.
+	// Null until the API has counted them after a start.
+	Readings *readingTotals `json:"readings"`
 	// Publishers is /v1/publishers over the same window, computed in the
 	// same pass (computePublishing), so the publisher page's board and its
 	// table cannot describe two moments. It is not part of /v1/market
@@ -497,13 +459,9 @@ func (s *Server) computeMarket(ctx context.Context, win Window) (*marketResponse
 		Scan(&r.Timeouts, &r.TimedOutUtia); err != nil {
 		return nil, fmt.Errorf("timeouts: %w", err)
 	}
-	for kind, dst := range map[string]*sum{
-		"deposit": &r.Deposits, "withdrawal_request": &r.WithdrawalsRequested, "withdrawal_executed": &r.WithdrawalsExecuted,
-	} {
-		if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(amount_utia),0) FROM payments WHERE kind = ? AND time >= ? AND time <= ?`, kind, start, end).
-			Scan(&dst.Count, &dst.Utia); err != nil {
-			return nil, fmt.Errorf("%s: %w", kind, err)
-		}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(amount_utia),0) FROM payments WHERE kind = 'deposit' AND time >= ? AND time <= ?`, start, end).
+		Scan(&r.Deposits.Count, &r.Deposits.Utia); err != nil {
+		return nil, fmt.Errorf("deposit: %w", err)
 	}
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(balance_utia),0) FROM escrow_accounts WHERE found = 1`).
 		Scan(&r.EscrowAccounts, &r.EscrowHeldUtia); err != nil {
@@ -576,158 +534,28 @@ func (s *Server) computeMarket(ctx context.Context, win Window) (*marketResponse
 		return nil, err
 	}
 
-	// Top publishers by fees, the rest folded into one bucket so the
-	// breakdown always sums to the window.
-	prow, err := db.QueryContext(ctx, `SELECT publisher, COUNT(*), COALESCE(SUM(amount_utia),0), COALESCE(SUM(blob_size),0)
-		FROM payments WHERE kind = 'settlement' AND time >= ? AND time <= ?
-		GROUP BY publisher ORDER BY SUM(amount_utia) DESC, publisher`, start, end)
-	if err != nil {
-		return nil, fmt.Errorf("top: %w", err)
-	}
-	r.Top = []publisherShare{}
-	var other publisherShare
-	var largest *publisherShare
-	n := 0
-	for prow.Next() {
-		var p publisherShare
-		if err := prow.Scan(&p.Publisher, &p.Settlements, &p.FeesUtia, &p.Bytes); err != nil {
-			prow.Close()
-			return nil, err
-		}
-		p.Label, _ = s.label(p.Publisher)
-		p.FeesShare = share(p.FeesUtia, r.FeesSettledUtia)
-		p.BytesShare = share(p.Bytes, r.Bytes)
-		if largest == nil || p.Bytes > largest.Bytes {
-			cp := p
-			largest = &cp
-		}
-		if n < 5 {
-			r.Top = append(r.Top, p)
-		} else {
-			other.Publishers++
-			other.FeesUtia += p.FeesUtia
-			other.Bytes += p.Bytes
-			other.Settlements += p.Settlements
-		}
-		n++
-	}
-	prow.Close()
-	if err := prow.Err(); err != nil {
-		return nil, err
-	}
-	if other.Publishers > 0 {
-		other.FeesShare = share(other.FeesUtia, r.FeesSettledUtia)
-		other.BytesShare = share(other.Bytes, r.Bytes)
-		r.Other = &other
-	}
-	r.LargestPoster = largest
-
-	// Per day per top publisher, the rest of each day folded into "other".
-	// Identity is fixed by the window's ranking above, so a publisher keeps
-	// its slot on every day of the chart.
-	top := map[string]bool{}
-	for _, p := range r.Top {
-		top[p.Publisher] = true
-	}
-	days, err := s.splitByPublisher(ctx, dayKey, start, end, top)
-	if err != nil {
-		return nil, fmt.Errorf("daily by publisher: %w", err)
-	}
-	r.DailyByPub = make([]dayPublisher, len(days))
-	for i, d := range days {
-		r.DailyByPub[i] = dayPublisher{Day: d.Bucket, Publisher: d.Publisher, Label: d.Label, FeesUtia: d.FeesUtia, Bytes: d.Bytes, Settlements: d.Settlements}
-	}
-	// The same split per hour where the window is charted by the hour, by
-	// the same ranking, so the one-day chart names the same publishers.
-	if r.Hourly != nil {
-		hours, err := s.splitByPublisher(ctx, hourKey, start, end, top)
-		if err != nil {
-			return nil, fmt.Errorf("hourly by publisher: %w", err)
-		}
-		r.HourlyByPub = make([]hourPublisher, len(hours))
-		for i, h := range hours {
-			r.HourlyByPub[i] = hourPublisher{Hour: h.Bucket, Publisher: h.Publisher, Label: h.Label, FeesUtia: h.FeesUtia, Bytes: h.Bytes, Settlements: h.Settlements}
-		}
-	}
 	return r, nil
-}
-
-// The prefixes of a block time (RFC 3339, UTC) that key a UTC day and a UTC
-// hour: "2026-09-21" and "2026-09-21T14".
-const (
-	dayKey  = len("2006-01-02")
-	hourKey = len("2006-01-02T15")
-)
-
-// publisherSlice is one publisher's share of one time bucket.
-type publisherSlice struct {
-	Bucket, Publisher, Label     string
-	FeesUtia, Bytes, Settlements int64
-}
-
-// splitByPublisher is the window's settlements per time bucket (the first
-// keyLen characters of the block time) per publisher in top, the rest of each
-// bucket folded into one row with no publisher, ordered by bucket, then
-// publisher. The daily and the hourly split are both this, so the two charts
-// fold and order alike.
-func (s *Server) splitByPublisher(ctx context.Context, keyLen int, start, end string, top map[string]bool) ([]publisherSlice, error) {
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT substr(time, 1, ?) AS bucket, publisher, COUNT(*), COALESCE(SUM(amount_utia),0), COALESCE(SUM(blob_size),0)
-		FROM payments WHERE kind = 'settlement' AND time >= ? AND time <= ?
-		GROUP BY bucket, publisher ORDER BY bucket, publisher`, keyLen, start, end)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []publisherSlice{}
-	other := map[string]*publisherSlice{}
-	var otherBuckets []string
-	for rows.Next() {
-		var p publisherSlice
-		if err := rows.Scan(&p.Bucket, &p.Publisher, &p.Settlements, &p.FeesUtia, &p.Bytes); err != nil {
-			return nil, err
-		}
-		if top[p.Publisher] {
-			p.Label, _ = s.label(p.Publisher)
-			out = append(out, p)
-			continue
-		}
-		o := other[p.Bucket]
-		if o == nil {
-			o = &publisherSlice{Bucket: p.Bucket}
-			other[p.Bucket] = o
-			otherBuckets = append(otherBuckets, p.Bucket)
-		}
-		o.Settlements += p.Settlements
-		o.FeesUtia += p.FeesUtia
-		o.Bytes += p.Bytes
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for _, b := range otherBuckets {
-		out = append(out, *other[b])
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Bucket != out[j].Bucket {
-			return out[i].Bucket < out[j].Bucket
-		}
-		return out[i].Publisher < out[j].Publisher
-	})
-	return out, nil
 }
 
 // marketSnapshotCurrent vets a market snapshot read back from disk: a file
 // from before computePublishing carries no publisher list, and serving it
 // would answer /v1/publishers with an empty table until the warm-up
-// replaced it. Likewise a day's file from before the hours carried fees and
-// a publisher split: its hours would chart no fees and no publisher. Any
-// settlement in an hour puts that hour in the split, so hours with no split
-// are such a file. And a file whose rows are of an older shape
-// (publisherRowsVersion) would publish their new fields as empty: null where
-// a publisher has settled, no reading where Tensile read its blobs.
+// replaced it. Likewise a day's file from before the hours carried fees:
+// its hours would chart no fees. Every settlement is charged, so an hour
+// with settlements and no fees is such a file. And a file whose rows are of
+// an older shape (publisherRowsVersion) would publish their new fields as
+// empty: null where a publisher has settled, no reading where Tensile read
+// its blobs.
 func marketSnapshotCurrent(r *marketResponse) bool {
-	return r != nil && r.PublishersListed && r.PublisherRows >= publisherRowsVersion &&
-		(len(r.Hourly) == 0 || len(r.HourlyByPub) > 0)
+	if r == nil || !r.PublishersListed || r.PublisherRows < publisherRowsVersion {
+		return false
+	}
+	for _, h := range r.Hourly {
+		if h.Settlements > 0 && h.FeesUtia == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // computePublishing is the market snapshot: computeMarket and the publisher
@@ -760,6 +588,7 @@ func (s *Server) computePublishing(ctx context.Context, win Window) (*marketResp
 		return nil, fmt.Errorf("readings: %w", err)
 	}
 	s.attachReadings(rows)
+	r.Readings = s.readings.totals(s.now())
 	r.Publishers, r.PublishersListed, r.PublisherRows = rows, true, publisherRowsVersion
 	return r, nil
 }
@@ -869,24 +698,23 @@ func (s *Server) attachReadings(rows []publisherRow) {
 	}
 }
 
-// paymentRow is one escrow movement as the API shows it. A settlement's or
-// a timeout's amount is its gas at one utia per gas.
+// paymentRow is one escrow movement as a publisher's page lists it. A
+// settlement's or a timeout's amount is its gas at one utia per gas. The
+// publisher is the page's own, so a row does not repeat it, and the rest of
+// the payment (who submitted a timeout, the namespace and size of the blob
+// it paid for) is the blob's, /v1/blobs/{promise_hash}.
 type paymentRow struct {
 	Kind        string `json:"kind"`
 	Height      int64  `json:"height"`
 	Time        string `json:"time"`
 	TxHash      string `json:"tx_hash,omitempty"`
-	Publisher   string `json:"publisher"`
-	Processor   string `json:"processor,omitempty"`
 	PromiseHash string `json:"promise_hash,omitempty"`
-	Namespace   string `json:"namespace,omitempty"`
-	BlobSize    int64  `json:"blob_size,omitempty"`
 	AmountUtia  int64  `json:"amount_utia"`
 	AvailableAt string `json:"available_at,omitempty"`
 }
 
 func (s *Server) paymentRows(ctx context.Context, where string, limit int, args ...any) ([]paymentRow, error) {
-	q := `SELECT kind, height, time, tx_hash, publisher, processor, promise_hash, namespace, blob_size, amount_utia, COALESCE(available_at, '')
+	q := `SELECT kind, height, time, tx_hash, promise_hash, amount_utia, COALESCE(available_at, '')
 		FROM payments`
 	if where != "" {
 		q += " WHERE " + where
@@ -900,8 +728,7 @@ func (s *Server) paymentRows(ctx context.Context, where string, limit int, args 
 	out := []paymentRow{}
 	for rows.Next() {
 		var p paymentRow
-		if err := rows.Scan(&p.Kind, &p.Height, &p.Time, &p.TxHash, &p.Publisher, &p.Processor, &p.PromiseHash, &p.Namespace,
-			&p.BlobSize, &p.AmountUtia, &p.AvailableAt); err != nil {
+		if err := rows.Scan(&p.Kind, &p.Height, &p.Time, &p.TxHash, &p.PromiseHash, &p.AmountUtia, &p.AvailableAt); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -909,19 +736,19 @@ func (s *Server) paymentRows(ctx context.Context, where string, limit int, args 
 	return out, rows.Err()
 }
 
-// blobCharge is what the payments table knows about one promise.
+// blobCharge is what the payments table knows about one promise. Its gas
+// is fee_utia at /v1/params' utia_per_gas, and the account that submitted
+// a timeout is the payment's, so neither is repeated here.
 type blobCharge struct {
-	FeeUtia  int64 `json:"fee_utia"`
-	GasUnits int64 `json:"gas_units"`
+	FeeUtia int64 `json:"fee_utia"`
 	// Publisher is the account the chain charged, which the blob row
 	// publishes as its publisher.
 	Publisher string `json:"-"`
 	// Settled is true when a MsgPayForFibre for this promise is in the
 	// payments table; TimedOut when a MsgPaymentPromiseTimeout is. Both can
 	// be false for a publication ingested before payments were recorded.
-	Settled   bool   `json:"settled"`
-	TimedOut  bool   `json:"timed_out"`
-	Processor string `json:"processor,omitempty"` // who submitted the timeout
+	Settled  bool `json:"settled"`
+	TimedOut bool `json:"timed_out"`
 }
 
 // paidBy selects the publications addr paid for, as a WHERE term over
@@ -979,16 +806,16 @@ func (s *Server) chargesFor(ctx context.Context, hashes []string) (map[string]*b
 	for i, h := range hashes {
 		args[i], marks[i] = h, "?"
 	}
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT promise_hash, kind, amount_utia, gas_units, publisher, processor
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT promise_hash, kind, amount_utia, publisher
 		FROM payments WHERE kind IN ('settlement','timeout') AND promise_hash IN (`+strings.Join(marks, ",")+`)`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var h, kind, pub, proc string
-		var amt, gas int64
-		if err := rows.Scan(&h, &kind, &amt, &gas, &pub, &proc); err != nil {
+		var h, kind, pub string
+		var amt int64
+		if err := rows.Scan(&h, &kind, &amt, &pub); err != nil {
 			return nil, err
 		}
 		c := out[h]
@@ -996,13 +823,12 @@ func (s *Server) chargesFor(ctx context.Context, hashes []string) (map[string]*b
 			c = &blobCharge{}
 			out[h] = c
 		}
-		c.FeeUtia, c.GasUnits, c.Publisher = amt, gas, pub
+		c.FeeUtia, c.Publisher = amt, pub
 		switch kind {
 		case "settlement":
 			c.Settled = true
 		case "timeout":
 			c.TimedOut = true
-			c.Processor = proc
 		}
 	}
 	return out, rows.Err()
@@ -1052,9 +878,9 @@ func accountKey(bech string) string {
 // publisher's answer pins its row alone; the spans and lists beside it are
 // the ones its page shows today.
 const (
-	marketAsOfNote     = "payments after as_of are left out; escrow_held_utia, escrow_accounts and escrow_total_utia are balances as of now, not as_of, and withdrawal_queue is not given, since past states of the queue are not kept"
+	marketAsOfNote     = "payments after as_of are left out; escrow_held_utia, escrow_accounts and escrow_total_utia are balances as of now, not as_of, readings span the whole record as of the newest snapshot, not as_of, and withdrawal_queue is not given, since past states of the queue are not kept"
 	publishersAsOfNote = "payments after as_of are left out of every row's figures and namespaces; first_seen_at, last_seen_at, first_settlement_at and last_settlement_at span the whole record, and readings, escrow and pending_withdrawals are as of now, not as_of"
-	publisherAsOfNote  = "only publisher is pinned: payments after as_of are left out of its figures and namespaces, while its first_seen_at, last_seen_at, first_settlement_at, last_settlement_at, readings, escrow and pending_withdrawals are as of now; windows, withdrawals, recent_payments and recent_blobs are as of now, not as_of"
+	publisherAsOfNote  = "only publisher is pinned: payments after as_of are left out of its figures and namespaces, while its first_seen_at, last_seen_at, first_settlement_at, last_settlement_at, readings, escrow and pending_withdrawals are as of now; windows, withdrawals and recent_payments are as of now, not as_of"
 )
 
 func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
@@ -1087,6 +913,11 @@ func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.ComputedAt = at.UTC().Format(time.RFC3339Nano)
 		resp.AsOfNote = marketAsOfNote
+		// The record's reading totals are no figure of the window: the ones
+		// the window's snapshot carries, not counted again per request.
+		if snap, _, _, ok := s.market.peek(s.logf(), windowFor(win.Name, at)); ok {
+			resp.Readings = snap.Readings
+		}
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, 200, resp)
 		return
@@ -1247,25 +1078,13 @@ func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
 		sp.Namespaces, sp.NamespacesTotal = spanNss[i], spanNsTotal[i]
 		spans = append(spans, sp)
 	}
+	// The publisher's blobs are /v1/blobs?publisher=, which its page lists
+	// them by; they are not repeated here.
 	payments, err := s.paymentRows(ctx, `publisher = ?`, 100, addr)
 	if err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
 	}
-	where, wargs, err := s.paidBy(ctx, addr)
-	if err != nil {
-		s.writeInternal(w, r.URL.Path, err)
-		return
-	}
-	blobs, err := s.blobRows(ctx, "("+where+")", 50, wargs...)
-	if err != nil {
-		s.writeInternal(w, r.URL.Path, err)
-		return
-	}
-	if blobs == nil {
-		blobs = []blobRow{}
-	}
-	blobs, moreBlobs := trim(blobs, 50)
 	if err := s.attachPending(ctx, rows); err != nil {
 		s.writeInternal(w, r.URL.Path, err)
 		return
@@ -1278,25 +1097,12 @@ func (s *Server) handlePublisher(w http.ResponseWriter, r *http.Request) {
 	}
 	out := map[string]any{
 		"window": win, "publisher": rows[0], "windows": spans, "withdrawals": withdrawals,
-		"recent_payments": payments, "recent_blobs": recentBlobs(blobs), "recent_blobs_truncated": moreBlobs,
+		"recent_payments": payments,
 	}
 	if win.AsOf {
 		out["as_of_note"] = publisherAsOfNote
 	}
 	writeJSON(w, 200, out)
-}
-
-// sortShares orders a breakdown by fees, then bytes, then address.
-func sortShares(v []publisherShare) {
-	sort.Slice(v, func(i, j int) bool {
-		if v[i].FeesUtia != v[j].FeesUtia {
-			return v[i].FeesUtia > v[j].FeesUtia
-		}
-		if v[i].Bytes != v[j].Bytes {
-			return v[i].Bytes > v[j].Bytes
-		}
-		return v[i].Publisher < v[j].Publisher
-	})
 }
 
 // publisherRowsSQL is publisherRows' query; filter narrows the window's rows

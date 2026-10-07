@@ -42,9 +42,6 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/verdict"
 )
 
-// Version is reported in /v1/meta.
-const Version = "0.1.0"
-
 // VantageInfo describes where this observer watches from.
 //
 // Every reachability observation on the site is a statement about a network
@@ -115,6 +112,12 @@ type Server struct {
 	// readings keeps each publication's reading status for the publisher
 	// rows (see readings.go).
 	readings readingMemo
+	// faults is the rows found undecodable (rowfault.go); namespaces the
+	// /v1/namespaces answer as last computed (namespaces.go); exportIndex
+	// the exports index as last read (exports_list.go).
+	faults      rowFaults
+	namespaces  namespaceCache
+	exportIndex exportIndexCache
 	// lanes is the keepers' pace, and keepers the schedule they run (see
 	// snapshot.go).
 	lanes   lanes
@@ -264,7 +267,6 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 	s.mux.HandleFunc("GET /v1/namespaces", s.handleNamespaces)
 	s.mux.HandleFunc("GET /v1/blobs/{hash}", s.handleBlob)
 	s.mux.HandleFunc("GET /v1/probes", s.handleProbes)
-	s.mux.HandleFunc("GET /v1/sampling", s.handleSampling)
 	s.mux.HandleFunc("GET /v1/exports", s.handleExports)
 	s.mux.HandleFunc("GET /v1/exports/pubkey", s.handleExportPubkey) // exports_signing.go; more specific than {name}
 	s.mux.HandleFunc("GET /v1/exports/{name}", s.handleExportFile)
@@ -791,7 +793,6 @@ func rate(num, den int64) Rate {
 // banners and footer read, beside the store's row counts and the heartbeat
 // vantages, which the deploy tests and the team watch.
 type metaResponse struct {
-	APIVersion string `json:"api_version"`
 	// MethodologyVersion is verdict.MethodologyVersion: the rules the figures
 	// on every page were computed under.
 	MethodologyVersion string `json:"methodology_version"`
@@ -904,8 +905,19 @@ func upgradeSignalOf(meta map[string]string, now time.Time) *upgradeSignal {
 	n := func(k string) int64 { v, _ := strconv.ParseInt(meta[k], 10, 64); return v }
 	u := &upgradeSignal{
 		Version: n("signal_version"), VotingPower: n("signal_voting_power"), ThresholdPower: n("signal_threshold_power"),
-		TotalVotingPower: n("signal_total_voting_power"), UpgradeHeight: n("signal_upgrade_height"), PolledAt: meta["signal_polled_at"],
+		TotalVotingPower: n("signal_total_voting_power"), PolledAt: meta["signal_polled_at"],
 		MissingValidators: []string{},
+	}
+	// The height x/signal scheduled is the upgrade that reached quorum,
+	// whichever version that is: a chain two versions below Fibre schedules
+	// the one in between first. Only the upgrade to the Fibre version is the
+	// one this block announces (the site words it "Fibre activates at"), so
+	// the height and everything counted from it are published only when the
+	// collector recorded that version beside it (signal_upgrade_app_version);
+	// a height scheduled for another version, or by a collector that did not
+	// record which, is left out.
+	if v, err := strconv.ParseInt(meta["signal_upgrade_app_version"], 10, 64); err == nil && v == scan.FibreAppVersion {
+		u.UpgradeHeight = n("signal_upgrade_height")
 	}
 	if u.TotalVotingPower > 0 {
 		u.Share = float64(u.VotingPower) / float64(u.TotalVotingPower)
@@ -1096,7 +1108,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		signal = &upgradeSignalOut{UpgradeHeight: u.UpgradeHeight, ETASeconds: u.ETASeconds}
 	}
 	writeJSON(w, 200, metaResponse{
-		APIVersion: Version, MethodologyVersion: verdict.MethodologyVersion, ChainID: meta["chain_id"],
+		MethodologyVersion: verdict.MethodologyVersion, ChainID: meta["chain_id"],
 		Vantages:   s.recentVantages(ctx, now),
 		AppVersion: meta["app_version"], FibreAppVersion: meta["fibre_app_version"], FibreActive: meta["fibre_active"] == "yes",
 		ChainHeight: meta["chain_height"], Counts: counts, LastProbeAt: lastProbe, ServerTime: now.UTC(),
@@ -2856,6 +2868,25 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 	}
 	for addr, st := range reach {
 		v := get(addr)
+		if v.LastSeenAt == nil || st.at > *v.LastSeenAt {
+			at := st.at
+			v.LastSeenAt = &at
+		}
+		// The endpoint's state is its host's: a check that had no host to ask
+		// (NO_REGISTERED_HOST: a registry state, not a refusal to serve) says
+		// nothing about an endpoint, and once the registry names the
+		// validator, neither does a check of another host than the one it
+		// has open: none, when its endpoint closed. Without this, a bonded
+		// validator that never registered a host was published
+		// "unreachable" from its readings, and one whose endpoint closed kept
+		// the word of its last check for good. Its state is then left unset,
+		// reachable null, as for an endpoint not checked yet. (A validator
+		// the registry has no row of at all keeps its newest check's word,
+		// as before the registry was read.)
+		inRegistry := v.Host != "" || v.EndpointClosedAt != nil
+		if st.host == "" || (inRegistry && st.host != v.Host) {
+			continue
+		}
 		r := st.up()
 		v.Reachable = &r
 		switch {
@@ -2868,10 +2899,6 @@ func (s *Server) validatorRows(ctx context.Context, win Window, only string) ([]
 		v.IdentityStatus = identityStatus(&stc)
 		v.IdentityReason = st.identityReason
 		v.ConfirmedFrom, v.AlsoFailedFrom = st.confirmedFrom, st.alsoFailedFrom
-		if v.LastSeenAt == nil || st.at > *v.LastSeenAt {
-			at := st.at
-			v.LastSeenAt = &at
-		}
 	}
 	// Names from the staking module, and a row for every bonded validator
 	// whether or not anything has been measured about it yet.
@@ -3126,7 +3153,7 @@ func (s *Server) handleValidators(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, 200, map[string]any{
-			"window": win, "validators": listOfRows(snap.Rows), "as_of_note": AsOfNote,
+			"window": win, "validators": listOfRows(listedRows(snap.Rows)), "as_of_note": AsOfNote,
 			"record_through": snap.RecordThrough,
 			"computed_at":    at.UTC().Format(time.RFC3339Nano),
 		})
@@ -3138,7 +3165,7 @@ func (s *Server) handleValidators(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := map[string]any{
-		"window": snap.Window, "validators": listOfRows(snap.Rows),
+		"window": snap.Window, "validators": listOfRows(listedRows(snap.Rows)),
 		"record_through": snap.RecordThrough,
 		"computed_at":    at.UTC().Format(time.RFC3339Nano),
 	}
@@ -3390,9 +3417,12 @@ type blobRow struct {
 	// MsgPayForFibre, in lower-case hex like every hash here (the submitting
 	// client and the chain's tools print the same hash in upper case); ?tx=
 	// looks the blob up by it in either case.
-	SettlementTxHash  string `json:"settlement_tx_hash"`
-	SettlementTime    string `json:"settlement_time"`
-	CreationTimestamp string `json:"creation_timestamp"`
+	SettlementTxHash string `json:"settlement_tx_hash"`
+	SettlementTime   string `json:"settlement_time"`
+	// CreationTimestamp is the promise's, what must_serve_until is counted
+	// from: on /v1/blobs/{hash}, where a reader checks one blob's deadline,
+	// and left out of the lists (handleBlobs).
+	CreationTimestamp string `json:"creation_timestamp,omitempty"`
 	MustServeUntil    string `json:"must_serve_until"`
 	// BlobVersion is the promise's blob version, the first byte of the blob
 	// ID the Fibre client returns (the commitment is the rest). 0 is the only
@@ -3465,8 +3495,12 @@ type reconstruct struct {
 	// served (assignments[].service). A full reading asks every endorsing
 	// validator, and only those; a reading from before it stopped once it
 	// had enough rows, so a validator it did not ask is no gap.
-	ServedBy         int `json:"served_by_validators"`
+	ServedBy         int `json:"-"`
 	ProbedValidators int `json:"probed_validators"`
+	// faulted is a status of "unknown" because the blob's record did not
+	// decode where the status needed it (rowfault.go): never cached, never
+	// kept by the readings memo.
+	faulted bool
 }
 
 // maxBlobOffset bounds ?offset=: deep pages are what the cursor is for.
@@ -3567,7 +3601,7 @@ func (s *Server) blobRowsAt(ctx context.Context, where string, limit, offset int
 			return nil, err
 		}
 		out[i].Classes, out[i].ProbeCount = classes, total
-		rc, err := s.reconstructable(ctx, hash, asOfPin{now: s.now()})
+		rc, err := s.readStatus(ctx, hash, asOfPin{now: s.now()})
 		if err != nil {
 			return nil, err
 		}
@@ -3575,8 +3609,9 @@ func (s *Server) blobRowsAt(ctx context.Context, where string, limit, offset int
 		// Only once the obligation has ended. window_over is the one part of a
 		// verdict that depends on the clock rather than on the store, and
 		// caching it before it flips would freeze "still under obligation" onto
-		// a blob whose deadline has since passed.
-		if rc != nil && rc.WindowOver {
+		// a blob whose deadline has since passed. Nor a status its record did
+		// not decode for, which the next read tries again.
+		if rc != nil && rc.WindowOver && !rc.faulted {
 			s.blobs.put(hash, blobVerdict{fp: fp, classes: classes, total: total, rc: rc})
 		}
 	}
@@ -3586,7 +3621,9 @@ func (s *Server) blobRowsAt(ctx context.Context, where string, limit, offset int
 // reconstructable reads one blob's status from its rows. It is the
 // reference implementation: reconstructBatch computes the status of many
 // blobs at once from bounds, and falls back to this where they cannot
-// decide.
+// decide. A blob whose record does not decode where the status needs it
+// returns an *errRowFault beside the blob as far as it is known, status
+// "unknown" (faulted); readStatus contains it.
 func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) (*reconstruct, error) {
 	db := s.q(ctx)
 	var needed, total sql.NullInt64
@@ -3679,7 +3716,7 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 			if rr.row.CommitmentVerified && rr.idx != "" {
 				idx, err := s.st.RowIndices(ctx, db, hash, rr.row.Validator, rr.idx)
 				if err != nil {
-					return nil, err
+					return faulted(rc, rowFault(ctx, hash, "the row indices", err))
 				}
 				if err := json.Unmarshal([]byte(idx), &rr.row.RowIndices); err != nil {
 					rr.row.RowIndices = nil
@@ -3697,7 +3734,7 @@ func (s *Server) reconstructable(ctx context.Context, hash string, pin asOfPin) 
 		// is published from those.
 		n, err := s.servedRowsFromAssignments(ctx, hash, point)
 		if err != nil {
-			return nil, err
+			return faulted(rc, err)
 		}
 		rc.ServedRows = n
 	}
@@ -3745,7 +3782,7 @@ func (s *Server) servedRowsFromAssignments(ctx context.Context, hash string, poi
 		for _, a := range got {
 			rj, err := s.st.AssignedRows(ctx, q, hash, a.v, sql.NullString{String: a.rj, Valid: true})
 			if err != nil {
-				return 0, err
+				return 0, rowFault(ctx, hash, "the assignment", err)
 			}
 			var idx []uint32
 			if json.Unmarshal([]byte(rj.String), &idx) == nil {
@@ -4012,6 +4049,9 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 		blobs = []blobRow{}
 	}
 	blobs, truncated := trim(blobs, limit)
+	for i := range blobs {
+		blobs[i].CreationTimestamp = ""
+	}
 	var total int64
 	countQ := `SELECT COUNT(*) FROM publications`
 	if where != "" {
@@ -4220,110 +4260,6 @@ func (s *Server) blobService(ctx context.Context, hash string, assigns []assignm
 	}
 	return nil
 }
-
-// ---- sampling ----
-
-// handleSampling publishes the load policy's admission decisions so the
-// commit-and-reveal audit the methodology page describes can actually be
-// carried out. Each row is one day's commitment to the secret the draws used,
-// with the publications decided under it and the probability each was drawn
-// at. Once the day's secret is revealed, anyone can recompute
-// H(promise_hash || secret) < p * 2^64 for every promise hash of that day and
-// check this observer's sample against their own.
-func (s *Server) handleSampling(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	win, err := parseWindow(r, s.now())
-	if err != nil {
-		writeErr(w, 400, err.Error())
-		return
-	}
-	type day struct {
-		DayCommitment string  `json:"day_commitment"`
-		Binding       string  `json:"binding"`
-		P             float64 `json:"p"`
-		Publications  int64   `json:"publications"`
-		Probed        int64   `json:"publications_probed"`
-		SampledOut    int64   `json:"publications_sampled_out"`
-		// Day, Secret and RevealedAt are filled once the prober has
-		// published the day's secret (sampling-secrets.jsonl): from then
-		// on H(promise_hash || secret) < p * 2^64 can be recomputed by
-		// anyone for every promise settled that day.
-		Day        *string `json:"day"`
-		Secret     *string `json:"secret"`
-		RevealedAt *string `json:"revealed_at"`
-	}
-	secrets := map[string]struct{ day, secret, at string }{}
-	if srows, err := s.st.DB().QueryContext(ctx, `SELECT commitment, day, secret, revealed_at FROM sampling_secrets`); err == nil {
-		for srows.Next() {
-			var c, d, sec, at string
-			if srows.Scan(&c, &d, &sec, &at) == nil {
-				secrets[c] = struct{ day, secret, at string }{d, sec, at}
-			}
-		}
-		srows.Close()
-	}
-	// A sampled-out publication is one sampling_decisions row, standing for
-	// NOT_PROBED rows that all carry its draw and start at decided_at; it
-	// joins the probe rows here as one row of the same shape, which is all
-	// the per-promise counts below need of it.
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT
-			COALESCE(sampling_commitment, '') AS c,
-			COALESCE(sampling_binding, '') AS b,
-			COALESCE(sampling_p, 1.0) AS p,
-			COUNT(DISTINCT promise_hash),
-			COUNT(DISTINCT CASE WHEN classification != 'NOT_PROBED' THEN promise_hash END),
-			COUNT(DISTINCT CASE WHEN classification = 'NOT_PROBED' AND classification_reason LIKE 'budget:%' THEN promise_hash END)
-		FROM (
-			SELECT sampling_commitment, sampling_binding, sampling_p, promise_hash, classification, classification_reason
-			FROM probes WHERE started_at >= ? AND started_at <= ?
-			UNION ALL
-			SELECT sampling_commitment, sampling_binding, sampling_p, promise_hash, 'NOT_PROBED', reason
-			FROM sampling_decisions WHERE decided_at >= ? AND decided_at <= ?
-		)
-		GROUP BY c, b, p ORDER BY c, p`, win.startArg(), win.endArg(), win.startArg(), win.endArg())
-	if err != nil {
-		s.writeInternal(w, r.URL.Path, err)
-		return
-	}
-	defer rows.Close()
-	days := []day{}
-	revealed := 0
-	for rows.Next() {
-		var d day
-		if err := rows.Scan(&d.DayCommitment, &d.Binding, &d.P, &d.Publications, &d.Probed, &d.SampledOut); err != nil {
-			s.writeInternal(w, r.URL.Path, err)
-			return
-		}
-		if sec, ok := secrets[d.DayCommitment]; ok {
-			dd, ss, at := sec.day, sec.secret, sec.at
-			d.Day, d.Secret, d.RevealedAt = &dd, &ss, &at
-			revealed++
-		}
-		days = append(days, d)
-	}
-	if err := rows.Err(); err != nil {
-		s.writeInternal(w, r.URL.Path, err)
-		return
-	}
-	writeJSON(w, 200, map[string]any{
-		"window":    win,
-		"vantage":   s.vantage,
-		"decisions": days,
-		"how_to_audit": "Each row commits to that day's secret as SHA256(secret). " +
-			"The prober publishes a day's secret " + policyRevealNote + " after the day ends (the row's secret field; " +
-			"the record is sampling-secrets.jsonl, also in the daily export). With it, recompute " +
-			"H(promise_hash || secret) < p * 2^64 for every MsgPayForFibre settled that day: the promise hashes that " +
-			"pass are the ones this observer should have read while it sampled, and sampling_decisions.jsonl in the daily export records the ones it drew out. " +
-			"sentinel-recompute -sampling does this from the export. Nothing has been sampled since the reading became one per blob.",
-		"days_listed":      len(days),
-		"secrets_revealed": revealed,
-		"secret_published": revealed > 0,
-	})
-}
-
-// policyRevealNote is the reveal delay as the prober's default (policy.
-// DefaultRevealAfter); the API does not import the policy package.
-const policyRevealNote = "seven days"
 
 // ---- probes ----
 
@@ -4547,6 +4483,12 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 	for i := range assignedAt {
 		idx, err := s.st.RowIndices(ctx, db, out[i].PromiseHash, out[i].ValidatorAddress, store.RowsAssigned)
 		if err != nil {
+			// A record that does not decode leaves this reading without its
+			// row indices, not the list without its readings (rowfault.go).
+			if f, ok := isRowFault(rowFault(ctx, out[i].PromiseHash, "the row indices", err)); ok {
+				s.noteRowFault(f)
+				continue
+			}
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(idx), &out[i].RowIndices)
@@ -4773,28 +4715,59 @@ func (s *Server) exportsDir() string {
 // every record file's lines for that day, with a manifest of digests. It
 // is what a verifier downloads; sentinel-recompute re-derives every verdict
 // and every published figure from it.
+//
+// The list is paged, newest day first: ?limit= exports, one a day
+// (exportsPageDefault unless asked), and ?before= a day to list the days
+// before it, which next_before fills in when there are more. Every export is kept for good
+// and the index grows by a day's entry every day, so the whole list in one
+// answer grew without bound, and a reader after yesterday's export
+// downloaded all of them. The signing key is /v1/exports/pubkey's alone; each
+// entry names the key that signed it by its fingerprint.
 func (s *Server) handleExports(w http.ResponseWriter, r *http.Request) {
+	limit, err := parseLimit(r, exportsPageDefault, exportsPageMax)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	before := r.URL.Query().Get("before")
+	if before != "" {
+		if _, err := time.Parse("2006-01-02", before); err != nil {
+			writeErr(w, 400, "before must be a day, YYYY-MM-DD")
+			return
+		}
+	}
 	entries := []export.Entry{}
 	if dir := s.exportsDir(); dir != "" {
-		var err error
-		if entries, err = export.ReadIndex(dir); err != nil {
+		if entries, err = s.exportIndex.read(dir); err != nil {
 			s.writeInternal(w, r.URL.Path, err)
 			return
 		}
 	}
+	// The index is newest day first (export.ReadIndex). A day is never split
+	// between two pages, so that next_before, a day, cannot skip a second
+	// export of the day a page ends on: such a page runs past limit.
+	page := make([]export.Entry, 0, min(limit, len(entries)))
+	truncated := false
+	for _, e := range entries {
+		if before != "" && e.Day >= before {
+			continue
+		}
+		if len(page) >= limit && e.Day != page[len(page)-1].Day {
+			truncated = true
+			break
+		}
+		page = append(page, e)
+	}
 	out := map[string]any{
-		"exports": exportList(entries),
+		"exports": exportList(page), "limit": limit, "truncated": truncated,
 		"how_to_verify": "download /v1/exports/<name>, check its sha256 against the entry (and the .sha256 sidecar), " +
 			"untar, check each member against manifest.json, then run sentinel-recompute on the directory: it re-derives " +
 			"every row's phase and classification from the row's own fields and the run's recorded configuration, and every " +
 			"obligation figure from the rows, and prints what differs from this API's /v1/validators?as_of=<day end>.",
 		"rule": "records are assigned to a day by their own timestamp; a record that reached the file after its day's export was built is in the next export, counted as late",
 	}
-	// Whether exports are signed, by which key, and how to check (see
-	// exports_signing.go). An unreadable key record hides the block rather
-	// than failing the list: the exports are still the exports.
-	if sig, err := s.exportSigning(); err == nil {
-		out["signing"] = sig
+	if truncated {
+		out["next_before"] = page[len(page)-1].Day
 	}
 	writeJSON(w, 200, out)
 }
