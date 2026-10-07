@@ -351,34 +351,44 @@ func (r *Refresher) targets(ctx context.Context, since time.Time) ([]target, err
 	if err != nil {
 		return nil, err
 	}
+	// The rows are read whole and closed before any is decoded: Record may
+	// query the store (the slim tables' first load, or the entries added
+	// since), and the collector's store has a single connection, which open
+	// rows would hold while Record waits for it.
+	type beatRow struct {
+		addr, host, at string
+		raw            []byte
+	}
+	var beats []beatRow
 	for rows.Next() {
-		var addr, host, at string
-		var raw []byte
-		if err := rows.Scan(&addr, &host, &at, &raw); err != nil {
+		var b beatRow
+		if err := rows.Scan(&b.addr, &b.host, &b.at, &b.raw); err != nil {
 			rows.Close()
 			return nil, err
 		}
+		beats = append(beats, b)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, b := range beats {
+		raw := b.raw
 		switch {
 		case r.Record != nil:
 			line, err := r.Record(ctx, raw)
 			if err != nil {
-				rows.Close()
-				return nil, fmt.Errorf("heartbeat of %s: %w", addr, err)
+				return nil, fmt.Errorf("heartbeat of %s: %w", b.addr, err)
 			}
 			raw = line
 		case len(raw) > 0 && raw[0] != '{':
-			rows.Close()
-			return nil, fmt.Errorf("heartbeat of %s: a slim record and no Record to read it", addr)
+			return nil, fmt.Errorf("heartbeat of %s: a slim record and no Record to read it", b.addr)
 		}
 		addrs, connected := AddressesFromMeasurement(raw)
 		if len(addrs) == 0 {
 			continue
 		}
-		latest[key{strings.ToLower(addr), host}] = target{addrs: addrs, connected: connected, resolvedAt: at, resolvedBy: "heartbeat"}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
+		latest[key{strings.ToLower(b.addr), b.host}] = target{addrs: addrs, connected: connected, resolvedAt: b.at, resolvedBy: "heartbeat"}
 	}
 
 	out := make([]target, 0, len(order))
