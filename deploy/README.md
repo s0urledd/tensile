@@ -453,6 +453,12 @@ build:
   `sudo systemctl enable --now fibre-archive@mocha.timer` once this build
   is back. (This build's `-retire` would also remove a retired segment's
   file wherever it finds one, as a retirement a crash cut short.)
+- its `sentinel-recompute` and `sentinel-verify` read `publications.jsonl`
+  as a plain file, not through the archive: once this build has rotated
+  it, they see only the live lines and report every archived publication
+  missing. Check the record with this build's tools, which read the
+  archive and the exports. The older collector and API read the archive
+  and are not affected.
 
 Once a segment is retired, the exports are the copy of its lines on this
 disk: each member is a contiguous byte range of the source file, so the
@@ -1116,6 +1122,25 @@ name) and `fibre-backup-manifest cat`. The export builder reads only bytes
 it has not exported yet, which are never retired, and the scanner and the
 prober read nothing retired at start. The schema rollback is in
 "Going back past schema 27" above.
+
+This was tested on a copy of the Mocha record of 24 September to 5
+October (3.0 GB of record files, its 19 daily exports, a store built from
+it, a local directory as the remote). Everything dated before 29 September
+was archived into five segments. With no finished copy recorded, a copy
+finished before the segments were archived, a copy to another remote, a
+tarball read back from the remote with another digest, a failed or
+missing remote check, or a copy 72 hours old, nothing was retired and
+each segment said why; with one byte of a local tarball altered nothing
+was retired and the run failed. With every condition met, three segments
+went (publications 383.8 MB, endpoint checks 8.4 MB, payments 0.8 MB of
+gzip) and two stayed: the readings, for the 22,560 sampled-out lines of 25
+September, and the sampling decisions; a second run retired nothing more.
+A store rebuilt from zero over the retired directory gave the same 18,274
+API answers, byte for byte, as one built before anything was archived,
+and `sentinel-recompute` the same output (24 h, 7 d, all: everything
+matches). The build before retirement gave those 18,274 answers too, both
+over the record as it was and, rebuilt from zero, over the retired
+directory once the retired files were copied back from the remote.
 
 The nightly order, all UTC:
 
