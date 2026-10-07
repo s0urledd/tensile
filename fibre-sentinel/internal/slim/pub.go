@@ -1,6 +1,8 @@
 package slim
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -12,21 +14,28 @@ import (
 )
 
 // valSet is a validator set as a publication's assignment lists it: addresses and voting powers, voting power
-// descending then address ascending (the scanner's canonical order).
+// descending then address ascending (the scanner's canonical order). A store's tables hold every set they have met
+// for the life of the process, so a set keeps nothing it can compute: an address's hex is written when it is needed.
 type valSet struct {
 	addr  [][20]byte
 	power []int64
-	hexes []string
 }
 
-func (s *valSet) key() string {
-	var b strings.Builder
+func (s *valSet) hex(i int) string { return hex.EncodeToString(s.addr[i][:]) }
+
+// key identifies the set in its table by a hash of its addresses and powers: a key spelling them out would keep a
+// second copy of every set the tables hold.
+func (s *valSet) key() [32]byte {
+	h := sha256.New()
+	var b []byte
 	for i := range s.addr {
-		b.WriteString(s.hexes[i])
-		b.WriteString(strconv.FormatInt(s.power[i], 10))
-		b.WriteByte(';')
+		b = append(b[:0], s.addr[i][:]...)
+		b = binary.AppendVarint(b, s.power[i])
+		h.Write(b)
 	}
-	return b.String()
+	var k [32]byte
+	h.Sum(k[:0])
+	return k
 }
 
 func (s *valSet) validators() []assign.Validator {
@@ -55,8 +64,28 @@ type Pub struct {
 	Hash string
 	tree *Value
 	set  *valSet
-	idx  map[string]int // validator address (hex) → its place in set
-	rows [][]int        // each validator's assigned rows, as fibre-assign computes them
+	idx  map[[20]byte]int // validator address → its place in set
+	rows [][]int          // each validator's assigned rows, as fibre-assign computes them
+}
+
+// index is the place in the publication's set of the validator at addr (its consensus address in lowercase hex).
+func (p *Pub) index(addr string) (int, bool) {
+	if len(addr) != 40 || !isHex(addr) {
+		return 0, false
+	}
+	var a [20]byte
+	hex.Decode(a[:], []byte(addr))
+	i, ok := p.idx[a]
+	return i, ok
+}
+
+// assigned keeps set and rows as the publication's assignment, and indexes the set.
+func (p *Pub) assigned(set *valSet, rows [][]int) {
+	p.set, p.rows = set, rows
+	p.idx = make(map[[20]byte]int, len(set.addr))
+	for i, a := range set.addr {
+		p.idx[a] = i
+	}
 }
 
 // pubTree keeps of a publication record only what its readings take from it: the promise's commitment and blob
@@ -98,7 +127,7 @@ func PubFromLine(line []byte) (*Pub, error) {
 	if err != nil {
 		return nil, err
 	}
-	info := &Pub{tree: pubTree(orig), idx: map[string]int{}}
+	info := &Pub{tree: pubTree(orig)}
 	info.Hash, _ = strField(orig, "promise_hash")
 	a := orig.Get("assignment")
 	set := setFrom(a.Get("validators"))
@@ -106,10 +135,7 @@ func PubFromLine(line []byte) (*Pub, error) {
 	pp, okp := protocolParams(orig)
 	if set != nil && okc && okp && a.Get("error") == nil {
 		if rows, ok := assignRows(set, c, pp); ok {
-			info.set, info.rows = set, rows
-			for i, h := range set.hexes {
-				info.idx[h] = i
-			}
+			info.assigned(set, rows)
 		}
 	}
 	return info, nil
@@ -129,7 +155,7 @@ func (p *Pub) Rows(addr string) ([]int, bool) {
 	if p == nil || p.set == nil {
 		return nil, false
 	}
-	i, ok := p.idx[addr]
+	i, ok := p.index(addr)
 	if !ok {
 		return nil, false
 	}
@@ -209,7 +235,7 @@ func assignRows(set *valSet, c [32]byte, pp assign.ProtocolParams) ([][]int, boo
 func (t *Tables) expectedValidator(set *valSet, i int, rows []int, rowsStored, attested bool, h hostEntry) *Value {
 	v := &Value{Kind: Obj}
 	add := func(k string, x *Value) { v.Keys = append(v.Keys, k); v.Vals = append(v.Vals, x) }
-	add("address", str(set.hexes[i]))
+	add("address", str(set.hex(i)))
 	add("voting_power", num(set.power[i]))
 	add("row_count", num(int64(len(rows))))
 	if rowsStored && len(rows) > 0 {
@@ -245,7 +271,6 @@ func setFrom(vs *Value) *valSet {
 		copy(ad[:], b)
 		s.addr = append(s.addr, ad)
 		s.power = append(s.power, n)
-		s.hexes = append(s.hexes, a.S)
 	}
 	return s
 }
@@ -363,7 +388,7 @@ func (t *Tables) EncodePublication(line []byte) ([]byte, *Pub, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	v := clone(orig)
-	info := &Pub{tree: pubTree(orig), idx: map[string]int{}}
+	info := &Pub{tree: pubTree(orig)}
 	info.Hash, _ = strField(orig, "promise_hash")
 
 	// the namespace's version and id are its first byte and the rest
@@ -387,10 +412,7 @@ func (t *Tables) EncodePublication(line []byte) ([]byte, *Pub, error) {
 	pp, okp := protocolParams(orig)
 	if set != nil && okc && okp && a.Get("error") == nil {
 		if rows, ok := assignRows(set, c, pp); ok {
-			info.set, info.rows = set, rows
-			for i, h := range set.hexes {
-				info.idx[h] = i
-			}
+			info.assigned(set, rows)
 			vt := &valTable{set: t.setEntry(set), attested: make([]byte, (len(set.addr)+7)/8), exceptions: map[int]*Value{}}
 			hv := make([]hostEntry, len(set.addr))
 			att := make([]bool, len(set.addr))
@@ -489,7 +511,7 @@ func (t *Tables) DecodePublication(b []byte) ([]byte, *Pub, error) {
 	if d.r.i != len(b) || v.Kind != Obj {
 		return nil, nil, errors.New("slim: not a publication record")
 	}
-	info := &Pub{idx: map[string]int{}}
+	info := &Pub{}
 	if err := t.fillPublication(v, info); err != nil {
 		return nil, nil, err
 	}
@@ -552,10 +574,7 @@ func (t *Tables) fillPublication(v *Value, info *Pub) error {
 			list.Vals = append(list.Vals, t.expectedValidator(set, j, rows[j], vt.rowsStored, att[j], hv[j]))
 		}
 		a.Vals[i] = list
-		info.set, info.rows = set, rows
-		for j, h := range set.hexes {
-			info.idx[h] = j
-		}
+		info.assigned(set, rows)
 	}
 	if set != nil {
 		sum := assignmentSummary(set, rows, att)

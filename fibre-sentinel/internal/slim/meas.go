@@ -81,7 +81,7 @@ func (t *Tables) EncodeMeasurement(line []byte, pub *Pub, lookup Lookup) ([]byte
 	}
 	if pub != nil && pub.set != nil {
 		if a, ok := strField(orig, "validator_address"); ok {
-			if i, ok := pub.idx[a]; ok {
+			if i, ok := pub.index(a); ok {
 				vidx = i
 			}
 		}
@@ -103,7 +103,7 @@ func (t *Tables) EncodeMeasurement(line []byte, pub *Pub, lookup Lookup) ([]byte
 		if vidx >= 0 {
 			pv := pub.validator(vidx)
 			rows := pub.rows[vidx]
-			derive(v, "validator_address", str(pub.set.hexes[vidx]))
+			derive(v, "validator_address", str(pub.set.hex(vidx)))
 			derive(v, "assigned", boolean(len(rows) > 0))
 			derive(v, "assigned_row_count", num(int64(len(rows))))
 			derive(v, "attested", pv.Get("attested"))
@@ -138,7 +138,7 @@ func rowsSlim(dl *Value, pub *Pub, vidx int, shadowPub *Pub) {
 		own := pub.rows[vidx]
 		if Same(dl.Vals[i], rowList(own)) {
 			dl.Vals[i] = &Value{Kind: derived}
-		} else if sb, ok := strField(dl, "shadowed_by"); ok && shadowPub != nil && shadowPub.Hash == sb && shadowMatches(shadowPub, pub.set.hexes[vidx], got) {
+		} else if sb, ok := strField(dl, "shadowed_by"); ok && shadowPub != nil && shadowPub.Hash == sb && shadowMatches(shadowPub, pub.set.hex(vidx), got) {
 			dl.Vals[i] = &Value{Kind: derived, rowsBy: rowsShadow, shadow: sb}
 		} else if pos, ok := positions(own, got); ok {
 			dl.Vals[i] = &Value{Kind: derived, rowsBy: rowsOwnPositions, pos: pos}
@@ -155,7 +155,7 @@ func shadowMatches(o *Pub, addr string, got []int) bool {
 	if o == nil || o.set == nil {
 		return false
 	}
-	j, ok := o.idx[addr]
+	j, ok := o.index(addr)
 	if !ok {
 		return false
 	}
@@ -260,7 +260,7 @@ func fillMeasurement(v *Value, pub *Pub, vidx int, lookup Lookup) ([]byte, error
 		case "commitment", "blob_version", "must_serve_until", "validator_set_height":
 			v.Vals[i] = clone(pub.tree.Path(fromPublication[k]...))
 		case "validator_address":
-			v.Vals[i] = str(pub.set.hexes[vidx])
+			v.Vals[i] = str(pub.set.hex(vidx))
 		case "assigned":
 			v.Vals[i] = boolean(len(pub.rows[vidx]) > 0)
 		case "assigned_row_count":
@@ -303,7 +303,7 @@ func fillMeasurement(v *Value, pub *Pub, vidx int, lookup Lookup) ([]byte, error
 				if lookup != nil {
 					o = lookup(x.shadow)
 				}
-				r, ok := o.Rows(pub.set.hexes[vidx])
+				r, ok := o.Rows(pub.set.hex(vidx))
 				if !ok {
 					return nil, fmt.Errorf("slim: the shadowing promise %s is not on record", x.shadow)
 				}
