@@ -242,7 +242,9 @@ function Publisher({ addr }: { addr: string }) {
 
   // the whole record: every figure on this page is the account's own over all of it, but its escrow, which is now
   const pub = useApi<Detail>(`/v1/publishers/${addr}?window=all`);
-  const pf = useApi<Params>("/v1/params", 0).data?.price_formula;
+  // the price of a blob, for the low-escrow warning: the parameters' own 5-minute stream (PublishersTop's too), asked
+  // again soon after a failure, so one failed first answer does not lose the warning for the life of the page
+  const pf = useApi<Params>("/v1/params", 300000).data?.price_formula;
   const tip = useApi<Tip>("/v1/tip", TIP_MS); // the header's stream: no request of its own
   const skew = tip.data?.server_time && tip.fetchedAt ? Date.parse(tip.data.server_time) - Date.parse(tip.fetchedAt) : 0;
   const now = Date.now() + skew;
