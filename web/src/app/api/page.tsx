@@ -22,7 +22,7 @@ const CONVENTIONS: [string, ReactNode][] = [
   ["Units", <>Sizes in bytes, amounts in utia (1 TIA is 1,000,000 utia), times in RFC 3339 UTC; <code>_s</code> is seconds, <code>_ms</code> milliseconds.</>],
   ["Pagination", <><code>/v1/blobs</code> pages on from <code>next_before_height</code> and <code>next_before_tx_index</code>, <code>/v1/probes</code> from <code>next_before</code>; <code>truncated</code> is true while more remain.</>],
   ["Errors", <>JSON <code>{"{\"error\": \"…\"}"}</code>: 400 a parameter that cannot be read, 404 nothing on record, 429 over a limit, 503 with <code>&quot;computing&quot;: true</code> while a figure is computed.</>],
-  ["Rate limits", <>Per client, 120 requests in a burst, then 10 a second and 16 at once; <code>as_of</code> and <code>exclude</code>, 4 in a burst, then one every 2 seconds, across all clients.</>],
+  ["Rate limits", <>Per client, 120 requests in a burst, then 10 a second and 16 at once, with <code>/v1/tip</code> counted apart (60 in a burst, then 30 a second); <code>as_of</code> and <code>exclude</code>, 4 in a burst, then one every 2 seconds, across all clients.</>],
 ];
 
 export default function Developers() {
