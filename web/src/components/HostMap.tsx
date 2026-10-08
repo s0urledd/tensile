@@ -193,9 +193,11 @@ const RING = 8;
  * window. The windows stand in one column at the box's east edge, under the view buttons, each as level with its
  * place as the others allow
  */
-const INSET_W = 120, INSET_H = 96, INSET_W_NARROW = 84, INSET_H_NARROW = 64;
-const INSET_PAD_X = 16, INSET_PAD_Y = 12, INSET_PAD_NARROW = 8;
+const INSET_W = 112, INSET_H = 92, INSET_W_NARROW = 84, INSET_H_NARROW = 64;
+const INSET_PAD_X = 12, INSET_PAD_Y = 10, INSET_PAD_NARROW = 8;
 const INSET_EDGE = 8, INSET_LINE = 14, INSET_GAP = 16;
+/** px²: a piece of land the window's edge cuts down to less than this is left out (an island's tip, not a coast) */
+const INSET_CRUMB = 40;
 /** the country's outline, if it would meet the badge or the name: smaller, and moved by these px, first that clears */
 const INSET_FITS = [1, 0.92, 0.84, 0.76];
 const INSET_SHIFTS: [number, number][] = [[0, 0], [-4, 0], [0, 4], [4, 0], [0, -4], [-4, 4], [4, -4], [-8, 0], [0, 8], [8, 0], [0, -8]];
@@ -238,6 +240,25 @@ function mainPoints(d: string): number[] {
   const rs = ringsOf(d), as = rs.map(area), big = Math.max(0, ...as);
   return rs.filter((_, i) => as[i] >= big * 0.05).flat();
 }
+/** a ring of absolute points cut to a box (Sutherland-Hodgman, one side at a time) */
+function clipRing(p: number[], [x0, y0, x1, y1]: [number, number, number, number]): number[] {
+  let out = p;
+  for (const [a, v, s] of [[0, x0, 1], [0, x1, -1], [1, y0, 1], [1, y1, -1]]) {
+    const q = out;
+    out = [];
+    for (let i = 0; i < q.length; i += 2) {
+      const j = (i + 2) % q.length, inI = s * (q[i + a] - v) >= 0, inJ = s * (q[j + a] - v) >= 0;
+      if (inI) out.push(q[i], q[i + 1]);
+      if (inI !== inJ) {
+        const t = (v - q[i + a]) / (q[j + a] - q[i + a]);
+        out.push(q[i] + t * (q[j] - q[i]), q[i + 1] + t * (q[j + 1] - q[i + 1]));
+      }
+    }
+    if (out.length < 6) return [];
+  }
+  return out;
+}
+const ringPath = (p: number[]) => `M${p.slice(0, 2).map((v) => +v.toFixed(2)).join(" ")}L${p.slice(2).map((v) => +v.toFixed(2)).join(" ")}Z`;
 /** the world's outlines with their bounds, for a window drawn from them; read when the first one is */
 let worldBoxes: { cc: string; d: string; box: [number, number, number, number] }[] | null = null;
 const worldOutlines = () => (worldBoxes ??= COUNTRIES.map(([cc, d]) => ({ cc, d, box: bounds(ringsOf(d).flat()) })));
@@ -351,12 +372,19 @@ function layInsets(small: { cc: string; own: Own }[], hosts: Host[], home: View,
     if (!pts.length) return [];
     const name = Math.min(w - 2 * INSET_EDGE, countryName(cc).length * 6.2);
     const at = placeIn(pts, bounds(pts), w, h, px, py, [badgeW(n, narrow), badgeH(n, narrow)], name, patch && coast ? [coast.hx, coast.hy] : null);
-    let land: [string, string][] = patch ?? [[cc, own.d]];
-    if (!own.unit) {
-      const vx = at.cx - at.dx / at.k, vy = at.cy - at.dy / at.k, hw = w / 2 / at.k, hh = h / 2 / at.k;
-      land = worldOutlines().filter(({ box: [x0, y0, x1, y1] }) => x0 < vx + hw && x1 > vx - hw && y0 < vy + hh && y1 > vy - hh)
-        .sort((a, b) => Number(a.cc === cc) - Number(b.cc === cc)).map((o): [string, string] => [o.cc, o.d]);
-    }
+    // what the window shows, in the land's units; each ring cut to it, less the crumbs the cut leaves
+    const vx = at.cx - at.dx / at.k, vy = at.cy - at.dy / at.k, hw = w / 2 / at.k, hh = h / 2 / at.k;
+    const view: [number, number, number, number] = [vx - hw, vy - hh, vx + hw, vy + hh];
+    const all: [string, string][] = patch ?? (own.unit ? [[cc, own.d]] : worldOutlines()
+      .filter(({ box: [x0, y0, x1, y1] }) => x0 < view[2] && x1 > view[0] && y0 < view[3] && y1 > view[1])
+      .sort((a, b) => Number(a.cc === cc) - Number(b.cc === cc)).map((o): [string, string] => [o.cc, o.d]));
+    const land = all.flatMap(([c, d]): [string, string][] => {
+      const rs = ringsOf(d).flatMap((r) => {
+        const cut = clipRing(r, view), a = area(cut);
+        return cut.length && (a * at.k * at.k >= INSET_CRUMB || a >= area(r) - 1e-6) ? [ringPath(cut)] : [];
+      });
+      return rs.length ? [[c, rs.join("")]] : [];
+    });
     return [{ cc, x, y, w, h, land, ...at, n, unreach, none }];
   });
 }
