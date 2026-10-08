@@ -1142,12 +1142,13 @@ body { background: var(--canvas); }
 .cm-pip { position: absolute; width: 7px; height: 7px; border-radius: 50%; box-shadow: 0 0 0 2px var(--cm-halo); pointer-events: none; transition: background-color 180ms ease-out; }
 .cm-pip.hold { background: var(--hold); }
 .cm-atlas.has-open .cm-pin:not(.open) .cm-pip.hold { background: var(--cm-hold-dim); }
-/* the bar's validator: a still ring round its badge, as the open one's, for three seconds after the bar names it, then none */
+/* the bar's validator: a still ring round its badge for three seconds after the bar names it, then none. Close to the
+   badge, so it stays clear of a neighbour five px away */
 .cm-pin.live .cm-badge::after {
-  content: ""; position: absolute; inset: -5px; border-radius: 12px; border: 2px solid var(--accent);
+  content: ""; position: absolute; inset: -4px; border-radius: 11px; border: 2px solid var(--accent);
   animation: cm-named 3s linear 1; opacity: 0; pointer-events: none;
 }
-.cm-pin.one.live .cm-badge::after { border-radius: 8px; }
+.cm-pin.one.live .cm-badge::after { border-radius: 7px; }
 @keyframes cm-named { from, to { opacity: 1; } }
 
 /* a place's hosts: a flat card on the map, as the pills are (solid, a hairline, no shadow and no blur) */

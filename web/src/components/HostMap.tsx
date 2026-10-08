@@ -59,7 +59,7 @@ const MAX_BACK = 1.4;
 /** the room every badge of the home view keeps from the box's edges, in px: above, beside, and below (or above the bar) */
 const ROOM_TOP = 28, ROOM_SIDE = 12, ROOM_FOOT = 8;
 const ROOM_TOP_NARROW = 14;
-/** a wide home view starts this many px above 72°N, so the far north's coasts have a little sea over them rather than meeting the box's top */
+/** a wide home view sits this many px lower than that fit (as far as the badges at its foot allow), so the far north's coasts have a little sea over them rather than meeting the box's top */
 const SEA_TOP = 8;
 
 /**
@@ -90,11 +90,11 @@ function fitView(pts: [number, number][], a: number, pad = 0.35, minW = FRAME.w 
 
 /**
  * The home view and its badges. It starts from the whole width of the world (a phone: a crop from
- * 72°N to 50°S, centred on the hosts) with its top at 72°N (a wide box: SEA_TOP above it), and keeps every badge inside the box:
+ * 72°N to 50°S, centred on the hosts) with its top at 72°N, and keeps every badge inside the box:
  * ROOM_TOP below the top edge, ROOM_SIDE from either side, and clear of the floating bar (bar: its
  * left, top and width in px, where it lies over the box) or ROOM_FOOT above the bottom. Where the
- * top at 72°N leaves a badge outside, the view moves north or south as far as the others allow;
- * where no position does, it steps back a little and tries again, until the world is MAX_BACK times
+ * top at 72°N leaves a badge outside, the view moves north or south as far as the others allow, and
+ * a wide view then sits SEA_TOP lower where the foot allows; where no position does, it steps back a little and tries again, until the world is MAX_BACK times
  * narrower than the box.
  */
 function fitHome(hosts: Host[], a: number, width: number, bar: [number, number, number, number] | null, narrow: boolean): [View, Cluster[]] {
@@ -118,7 +118,8 @@ function fitHome(hosts: Host[], a: number, width: number, bar: [number, number, 
       hi = Math.min(hi, c.uy - (top + rr) / s);
       lo = Math.max(lo, c.uy - (foot - rr) / s);
     }
-    const y = Math.min(hi, Math.max(lo, TOP - (narrow ? 0 : SEA_TOP / s)));
+    // at 72°N or as near as the badges allow, then a wide view SEA_TOP lower still, as far as the badges at its foot allow
+    const y = Math.max(lo, Math.min(hi, Math.max(lo, TOP)) - (narrow ? 0 : SEA_TOP / s));
     last = [clampView({ w, x, y: lo <= hi ? y : (lo + hi) / 2 }, a, w0 * MAX_BACK), cs];
     if (fits && lo <= hi) break;
   }
