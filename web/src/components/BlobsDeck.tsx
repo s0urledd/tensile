@@ -127,7 +127,7 @@ const METRICS: Record<Metric, {
 }> = {
   n: {
     name: "Settlements", chart: "Settlements", unit: "settlements", title: () => "Settlements paid in the period: one per blob paid for.", wait: "0,000",
-    figure: (m) => <>{int(m.settlements)}{m.blobs !== m.settlements && <span className="beside" title="A blob settled twice counts once as a blob and twice as a settlement."><b>{int(m.blobs)}</b> blobs</span>}</>,
+    figure: (m) => <>{int(m.settlements)}{m.blobs !== m.settlements && <span className="beside" title="A blob settled twice counts once as a blob and twice as a settlement."><b>{int(m.blobs)}</b> {m.blobs === 1 ? "blob" : "blobs"}</span>}</>,
     of: (c) => c.settlements, fmt: (v) => int(v), note: (c) => `${bytes(c.bytes)} · ${tia(c.fees)} fees`,
   },
   bytes: {

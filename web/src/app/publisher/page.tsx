@@ -342,9 +342,8 @@ function Publisher({ addr }: { addr: string }) {
     short && `Not enough for one more ${bytes(Math.round(avg!))} blob (${tia(need)})`,
     queued && queued.reduced_utia > 0 && `Settlements used ${tia(queued.reduced_utia)} of a queued withdrawal; that part will not be paid out`,
   ].filter(Boolean).join(". ");
-  // its blobs: as many as Tensile's reading counts (a blob settled twice is one blob), or its settlements until it has
+  // Tensile's readings of it: one per settlement, since each promise is read on its own (a blob paid for twice is read twice)
   const readN = read ? Object.values(read).reduce((a, b) => a + b, 0) : 0;
-  const blobN = readN || p.settlements;
   // the blobs Tensile has read: an available or an unavailable one; one in its retention window, or not read, is neither
   const readDone = read ? (read.available ?? 0) + (read.unavailable ?? 0) : 0;
   // what it paid: the fees of its settlements, and what any timed-out promise was charged as a blob
@@ -367,20 +366,14 @@ function Publisher({ addr }: { addr: string }) {
 
   // The account's four figures, each a label and a value, what qualifies it on hover: the escrow it has left now (an
   // amber dot when it cannot pay for one more blob of its usual size, or settlements took part of a queued
-  // withdrawal), then over its whole record its blobs, what it paid (a red dot for a timed-out promise), and how many
-  // of its blobs Tensile found available (a red dot for one it did not).
+  // withdrawal), then over its whole record its settlements, what it paid (a red dot for a timed-out promise), and how
+  // many of them Tensile found available (a red dot for one it did not).
   const escTitle = e ? [
     queued ? `${tia(queued.utia)} queued to withdraw${queued.next_available_at ? `, payable from ${utcWord(queued.next_available_at)}` : ""}; balance ${tia(e.balance_utia)}` : "",
     `${queued ? "as" : "As"} of block #${int(e.height)}, ${utcWord(e.updated_at)}`,
   ].filter(Boolean).join("; ") : p.escrow ? "No escrow account on the chain" : "Not read yet";
   const escVal = e ? <>{unit(tia(e.available_utia))}{escWarn && <Warn text={escWarn} />}</> : <span className="na">—</span>;
-  const blobsTitle = posted && newest ? [
-    first ? `First ${utcWord(first)}` : "",
-    `last ${utcWord(newest)}`,
-    readN && readN !== p.settlements ? `${plural(p.settlements, "settlement")}: a blob settled twice is one blob` : "",
-  ].filter(Boolean).join("; ") : undefined;
-  // a blob settled twice is one blob: its settlements beside it, quietly, when they are more
-  const twice = readN > 0 && readN !== p.settlements ? plural(p.settlements, "settlement") : null;
+  const settledTitle = posted && newest ? [first ? `First ${utcWord(first)}` : "", `last ${utcWord(newest)}`].filter(Boolean).join("; ") : undefined;
   const paidTitle = paid > 0 ? [
     `${tia(p.fees_utia)} in fees for ${plural(p.settlements, "settlement")}`,
     p.timeouts > 0 ? `${tia(p.timed_out_utia)} charged for ${plural(p.timeouts, "timed-out promise")}` : "",
@@ -388,7 +381,7 @@ function Publisher({ addr }: { addr: string }) {
   ].filter(Boolean).join("; ") : undefined;
   const paidDot = p.timeouts > 0 && <Warn tone="fault" text={`${plural(p.timeouts, "payment promise")} timed out; ${tia(p.timed_out_utia)} charged all the same`} />;
   const paidVal = <>{unit(tia(paid))}{paidDot}</>;
-  const readTitle = read ? `Tensile's reading of its ${plural(readN, "blob")}: ${[
+  const readTitle = read ? `Tensile's reading of its ${plural(readN, "settlement")}: ${[
     read.available ? `${int(read.available)} available` : "",
     read.unavailable ? `${int(read.unavailable)} unavailable` : "",
     read["retention window"] ? `${int(read["retention window"])} in the retention window` : "",
@@ -434,8 +427,8 @@ function Publisher({ addr }: { addr: string }) {
         <dl className="pan pbd-acct" aria-label="The account at a glance">
           <dt>Escrow available<span className="per"> · now</span></dt>
           <dd className="pbd-v" title={escTitle}>{escVal}</dd>
-          <dt>Blobs<span className="per"> · all time</span></dt>
-          <dd className="pbd-v" title={blobsTitle}>{int(blobN)}{twice && <span className="beside">{twice}</span>}</dd>
+          <dt>Settlements<span className="per"> · all time</span></dt>
+          <dd className="pbd-v" title={settledTitle}>{int(p.settlements)}</dd>
           <dt>Total paid<span className="per"> · all time</span></dt>
           <dd className="pbd-v" title={paidTitle}>{paidVal}</dd>
           <dt className="tz"><Eye /><span>Available<span className="per"> · all time</span></span></dt>
