@@ -14,6 +14,10 @@ const LISTED = 12;
 /** a message's name: its type URL after the last dot */
 const nameOf = (url: string) => url.slice(url.lastIndexOf(".") + 1);
 
+/** the fee as the chain printed it ("800utia", coins joined by commas), with each amount's digits grouped and a space before its denomination */
+const coins = (fee: string) =>
+  fee.split(",").map((c) => c.replace(/^(\d+)(\D.*)$/, (_, n: string, d: string) => `${n.length <= 15 ? int(Number(n)) : n} ${d}`)).join(", ");
+
 /** a message, or a MsgExec with a message inside it, that carries Fibre */
 const carries = (m: FailedTxMsg) => m.fibre || !!m.inner?.some((i) => i.fibre);
 
@@ -74,9 +78,9 @@ export default function FailedTx({ hex, f, meta, metaErr, at }: { hex: string; f
           <dt>Code</dt><dd><span className="mono">{f.codespace ? `${f.codespace} ${f.code}` : f.code}</span></dd>
           <dt>Messages</dt><dd>{msgs}{listed.length < f.messages.length && <em>of {int(f.messages.length)} messages</em>}</dd>
           <dt>Gas</dt><dd><b>{int(f.gas_used)}</b><em>used of {int(f.gas_wanted)}</em></dd>
-          <dt>Fee</dt>
+          <dt>Transaction fee</dt>
           <dd>{f.ante_passed
-            ? <><b>{f.fee ? `Paid ${f.fee}` : "None"}</b><em>this transaction cannot run again</em></>
+            ? <><b>{f.fee ? `Paid ${coins(f.fee)}` : "None"}</b><em>this transaction cannot run again</em></>
             : <><b>Not taken</b><em>the chain stopped it before running it, so the same transaction could still be included in a later block</em></>}</dd>
         </dl>
       </div>
