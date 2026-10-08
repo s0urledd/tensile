@@ -29,6 +29,11 @@ jobs:
       - name: npm ci
         working-directory: web
         run: npm ci --no-audit --no-fund
+      - name: coast patches (this round only)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/ne_10m_admin_0_countries.geojson" https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_admin_0_countries.geojson
+          node web/scripts/build-coast.mjs "$RUNNER_TEMP/ne_10m_admin_0_countries.geojson"
+          mkdir -p shots && cp web/src/lib/map/coast.json shots/coast.json
       - name: npm test
         working-directory: web
         run: npm test
