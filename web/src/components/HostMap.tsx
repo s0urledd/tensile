@@ -13,9 +13,10 @@ import { type EndpointState, endpointState, readiness } from "@/components/Readi
  * The overview's host map: every registered Fibre host of the bonded set,
  * placed by the city its address geolocates to (hosting.lat/lon) or, without
  * one, by its country's label point, over Natural Earth country outlines
- * (Equal Earth) drawn as calm solid land. A country with a host is a shade
- * warmer; one too small to show around its badge is drawn larger, in its own
- * shape; the open place's countries are lit.
+ * (Equal Earth) drawn as calm solid land. A country with a host is tinted,
+ * always at its true size; one too small to show around its badge also gets
+ * a detail window at the map's east edge, its true outline at a larger scale
+ * with its own badges and its name; the open place's countries are lit.
  *
  * Every place is a rounded square in the accent carrying its count; a lone
  * host is a small square with no figure. Hosts close together on screen share
@@ -38,6 +39,11 @@ import { type EndpointState, endpointState, readiness } from "@/components/Readi
 
 type Host = { v: Validator; state: EndpointState; share: number; cc: string; city: string; loc: string; lon: number; lat: number; ux: number; uy: number; provider: string };
 type Cluster = { id: string; hosts: Host[]; ux: number; uy: number; locs: number; ccs: string[] };
+/**
+ * a small hosted country's detail window at the home view: its box in px, the scale of its outline (px per unit of
+ * its own shape) and that outline's middle, and its places, each at px from the window's middle
+ */
+type Inset = { cc: string; own: Own; x: number; y: number; w: number; h: number; k: number; cx: number; cy: number; places: { c: Cluster; px: number; py: number }[] };
 /** the visible part of the map, in map units: top-left corner and width (height follows the box) */
 type View = { x: number; y: number; w: number };
 
@@ -161,15 +167,13 @@ function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
 }
 
 /**
- * A hosted country too small to show around its badge would vanish under it, so it is drawn larger: a
- * copy of its own outline about its middle, flat in the hosted tint as every other hosted country, on
- * top of the land and under the badges. Where a larger hosted country beside it already
- * shows the place blue (Slovenia, the Baltics, South Korea beside Japan), it is left as it is. Which
- * countries are small is decided at the home view, so the set holds through a zoom; each copy keeps its
- * size until its own outline, zoomed in, is as large.
+ * A hosted country too small to show around its badge would vanish under it. On the world it stays at its
+ * true size, tinted as every other hosted country; beside the world it gets a detail window: its own
+ * outline at a scale where it shows, flat in the hosted tint, with its own badges and its name under it.
+ * Where a larger hosted country beside it already shows the place blue (Slovenia, the Baltics, South Korea
+ * beside Japan), it needs none. Which countries are small is decided at the home view, and the windows
+ * stand at the home view only: a zoom hides them.
  */
-/** px: the larger side a small hosted country is drawn at: about 2.4 times a two-host badge (23 px, 19 px narrow), so 13-16 px of its land shows past it on its long side */
-const TINY_L = 56, TINY_L_NARROW = 44;
 /** px at the home view: a country at least this wide shows around its badge; a smaller one is hidden by it */
 const SHOWN = 30, SHOWN_NARROW = 24;
 /** px: a shown hosted country whose land comes this close to a small one's middle already makes that place read blue */
@@ -177,48 +181,123 @@ const NEAR = 16, NEAR_NARROW = 12;
 /** px: a neighbour's piece smaller than this does not count as beside (India's Andaman and Nicobar Islands beside Singapore) */
 const RING = 8;
 /**
- * the shape a small country is drawn larger in: its middle and larger side in map units, and its path,
- * on TINY's grid where e is 100 (unit) or in map units
+ * a detail window's size in px (wide box, narrow box); the room its outline keeps from its sides and from its top
+ * and foot; the line under it for the name, and the gap to the next window. The windows stand in one column at the
+ * box's east edge, under the view buttons, each as level with its place as the others allow
  */
-type Own = { x: number; y: number; e: number; d: string; unit: boolean };
+const INSET_W = 112, INSET_H = 88, INSET_W_NARROW = 84, INSET_H_NARROW = 64;
+const INSET_PAD_X = 20, INSET_PAD_Y = 14, INSET_PAD_NARROW = 10;
+const INSET_NAME = 20, INSET_GAP = 12;
+/** px: the column's room from the box's east edge (the view buttons' own), and from the top (under the buttons) */
+const INSET_SIDE = 16, INSET_TOP = 62, INSET_TOP_NARROW = 10;
 /**
- * each country's size and its rings (each one's size and points) in map units, from its outline (absolute
- * M, relative m and l, z), and its own shape: its 1:10m outline from TINY, else its largest ring, so far
- * islands (the Azores, Marion Island) neither move its middle nor grow with it
+ * a country's own shape: its middle and larger side in map units, its path on TINY's grid where e is 100 (unit) or
+ * in map units, and its bounds in the path's own units
+ */
+type Own = { x: number; y: number; e: number; d: string; unit: boolean; box: [number, number, number, number] };
+/** an outline's rings as absolute points, from its path (absolute M and L, relative m and l, z) */
+function ringsOf(d: string): number[][] {
+  let x = 0, y = 0, sx = 0, sy = 0, cmd = "M";
+  const rings: number[][] = [];
+  const t = d.match(/[MmLlZz]|-?\d+(?:\.\d+)?/g) ?? [];
+  for (let i = 0; i < t.length; i++) {
+    const k = t[i];
+    if (/[MmLlZz]/.test(k)) { cmd = k; if (k === "z" || k === "Z") { x = sx; y = sy; } continue; }
+    const a = +k, b = +t[++i];
+    if (cmd === "M") { x = a; y = b; sx = x; sy = y; cmd = "L"; rings.push([]); }
+    else if (cmd === "m") { x += a; y += b; sx = x; sy = y; cmd = "l"; rings.push([]); }
+    else if (cmd === "L") { x = a; y = b; }
+    else { x += a; y += b; }
+    rings[rings.length - 1].push(x, y);
+  }
+  return rings;
+}
+const bounds = (p: number[]): [number, number, number, number] => {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let i = 0; i < p.length; i += 2) { x0 = Math.min(x0, p[i]); y0 = Math.min(y0, p[i + 1]); x1 = Math.max(x1, p[i]); y1 = Math.max(y1, p[i + 1]); }
+  return [x0, y0, x1, y1];
+};
+/**
+ * each country's size and its rings (each one's size and points) in map units, and its own shape: its 1:10m
+ * outline from TINY, else its largest ring, so far islands (the Azores, Marion Island) neither move its middle
+ * nor grow with it
  */
 type Shape = { e: number; rings: { e: number; pts: number[] }[]; own: Own };
 const SHAPES: Map<string, Shape> = (() => {
   const out = new Map<string, Shape>();
   const extent = (p: number[]) => {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (let i = 0; i < p.length; i += 2) { x0 = Math.min(x0, p[i]); y0 = Math.min(y0, p[i + 1]); x1 = Math.max(x1, p[i]); y1 = Math.max(y1, p[i + 1]); }
+    const [x0, y0, x1, y1] = bounds(p);
     return { x: (x0 + x1) / 2, y: (y0 + y1) / 2, e: Math.max(x1 - x0, y1 - y0) };
   };
   for (const [cc, d] of COUNTRIES) {
     if (!cc) continue;
-    let x = 0, y = 0, sx = 0, sy = 0, cmd = "M";
-    const rings: number[][] = [];
-    const t = d.match(/[MmLlZz]|-?\d+(?:\.\d+)?/g) ?? [];
-    for (let i = 0; i < t.length; i++) {
-      const k = t[i];
-      if (/[MmLlZz]/.test(k)) { cmd = k; if (k === "z" || k === "Z") { x = sx; y = sy; } continue; }
-      const a = +k, b = +t[++i];
-      if (cmd === "M") { x = a; y = b; sx = x; sy = y; cmd = "L"; rings.push([]); }
-      else if (cmd === "m") { x += a; y += b; sx = x; sy = y; cmd = "l"; rings.push([]); }
-      else if (cmd === "L") { x = a; y = b; }
-      else { x += a; y += b; }
-      rings[rings.length - 1].push(x, y);
-    }
+    const rings = ringsOf(d);
     if (!rings.length) continue;
     const rs = rings.map((pts) => ({ ...extent(pts), pts }));
     const big = rs.reduce((p, q) => (q.e > p.e ? q : p)), tiny = TINY[cc];
     const own: Own = tiny
-      ? { x: tiny[0], y: tiny[1], e: tiny[2], d: tiny[3], unit: true }
-      : { x: big.x, y: big.y, e: big.e, d: `M${big.pts.slice(0, 2).join(" ")}L${big.pts.slice(2).join(" ")}Z`, unit: false };
+      ? { x: tiny[0], y: tiny[1], e: tiny[2], d: tiny[3], unit: true, box: bounds(ringsOf(tiny[3]).flat()) }
+      : { x: big.x, y: big.y, e: big.e, d: `M${big.pts.slice(0, 2).join(" ")}L${big.pts.slice(2).join(" ")}Z`, unit: false, box: bounds(big.pts) };
     out.set(cc, { e: extent(rings.flat()).e, rings: rs.map(({ e, pts }) => ({ e, pts })), own });
   }
   return out;
 })();
+
+/**
+ * The detail windows of the small hosted countries at the home view (view, scale s px per unit), in one column at
+ * the box's east edge: each as level with its own places as the others allow, from under the view buttons to
+ * above the bar. A window that would meet a badge of the world is left out.
+ */
+function layInsets(small: { cc: string; own: Own }[], hosts: Host[], home: View, s: number, width: number, height: number,
+  bar: [number, number, number, number] | null, badges: Cluster[], narrow: boolean): Inset[] {
+  if (!small.length || !s) return [];
+  const w = narrow ? INSET_W_NARROW : INSET_W, h = narrow ? INSET_H_NARROW : INSET_H;
+  const px = narrow ? INSET_PAD_NARROW : INSET_PAD_X, py = narrow ? INSET_PAD_NARROW : INSET_PAD_Y;
+  const step = h + INSET_NAME + INSET_GAP, x = width - INSET_SIDE - w;
+  const top = narrow ? INSET_TOP_NARROW : INSET_TOP, foot = (bar ? bar[1] : height) - 10 - INSET_NAME;
+  const want = small.flatMap(({ cc, own }) => {
+    const hs = hosts.filter((q) => q.cc === cc);
+    if (!hs.length) return [];
+    const uy = hs.reduce((t, q) => t + q.uy, 0) / hs.length;
+    return [{ cc, own, hs, y: (uy - home.y) * s - h / 2 }];
+  }).sort((a, b) => a.y - b.y);
+  // stacked in order, each run of windows that would overlap centred on where its windows want to be (sum: each
+  // window's wanted top less its place in the run)
+  const groups: { n: number; y: number; sum: number }[] = [];
+  want.forEach((q) => {
+    groups.push({ n: 1, y: q.y, sum: q.y });
+    for (;;) {
+      const g = groups.length, a = groups[g - 2], b = groups[g - 1];
+      if (!a || a.y + a.n * step <= b.y) break;
+      const n = a.n + b.n, sum = a.sum + b.sum - b.n * a.n * step;
+      groups.splice(g - 2, 2, { n, y: sum / n, sum });
+    }
+  });
+  const ys = groups.flatMap((g) => Array.from({ length: g.n }, (_, i) => g.y + i * step));
+  // then into the column's room: down from the top, and up from the foot
+  for (let i = 0; i < ys.length; i++) ys[i] = Math.max(ys[i], i ? ys[i - 1] + step : top);
+  for (let i = ys.length - 1; i >= 0; i--) ys[i] = Math.min(ys[i], i < ys.length - 1 ? ys[i + 1] - step : foot - h);
+  const rooms = badges.map((c) => {
+    const r = drawn(c.hosts.length, narrow) / 2 + 6;
+    return [(c.ux - home.x) * s - r, (c.uy - home.y) * s - r, 2 * r] as const;
+  });
+  return want.flatMap(({ cc, own, hs }, i) => {
+    const y = ys[i];
+    if (y < top - 0.5) return [];
+    if (rooms.some(([bx, by, d]) => bx < x + w && bx + d > x && by < y + h + INSET_NAME && by + d > y)) return [];
+    const [x0, y0, x1, y1] = own.box;
+    const k = Math.min((w - 2 * px) / Math.max(1e-6, x1 - x0), (h - 2 * py) / Math.max(1e-6, y1 - y0));
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    // a map unit in the window: the outline's own units are TINY's grid (e is 100) or map units
+    const u = own.unit ? (k * 100) / own.e : k;
+    const toOwn = (ux: number, uy: number): [number, number] => (own.unit ? [((ux - own.x) * 100) / own.e, ((uy - own.y) * 100) / own.e] : [ux, uy]);
+    const places = cluster(hs, u, narrow).map((c) => {
+      const [ox, oy] = toOwn(c.ux, c.uy), r = drawn(c.hosts.length, narrow) / 2 + 4;
+      return { c, px: Math.max(-w / 2 + r, Math.min(w / 2 - r, (ox - cx) * k)), py: Math.max(-h / 2 + r, Math.min(h / 2 - r, (oy - cy) * k)) };
+    });
+    return [{ cc, own, x, y, w, h, k, cx, cy, places }];
+  });
+}
 
 /** what a badge is called: its city, its country, or its countries */
 function placeLabel(c: Cluster): string {
@@ -376,7 +455,7 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
   // ---- drag to pan, once zoomed in ----
   const drag = useRef<{ id: number; x: number; y: number; v: View; moved: boolean } | null>(null);
   const onPointerDown = (e: React.PointerEvent) => {
-    if (!zoomed || e.button !== 0 || (e.target as Element).closest(".cm-pin, .cm-tools")) return;
+    if (!zoomed || e.button !== 0 || (e.target as Element).closest(".cm-pin, .cm-tools, .cm-inset")) return;
     cancelAnimationFrame(raf.current);
     drag.current = { id: e.pointerId, x: e.clientX, y: e.clientY, v: viewRef.current, moved: false };
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
@@ -399,7 +478,7 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
     go({ w, x: ux - (px / width) * w, y: uy - (py / width) * w });
   };
   const onDoubleClick = (e: React.MouseEvent) => {
-    if ((e.target as Element).closest(".cm-pin, .cm-tools")) return;
+    if ((e.target as Element).closest(".cm-pin, .cm-tools, .cm-inset")) return;
     const b = box.current!.getBoundingClientRect();
     zoomAt(2, e.clientX - b.left, e.clientY - b.top);
   };
@@ -442,7 +521,7 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(null); };
-    const onDown = (e: PointerEvent) => { if (!(e.target as Element)?.closest?.(".cm-pin")) setOpen(null); };
+    const onDown = (e: PointerEvent) => { if (!(e.target as Element)?.closest?.(".cm-pin, .cm-inset")) setOpen(null); };
     document.addEventListener("keydown", onKey);
     document.addEventListener("pointerdown", onDown);
     return () => { document.removeEventListener("keydown", onKey); document.removeEventListener("pointerdown", onDown); };
@@ -538,9 +617,15 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
       && !others.some((o) => o.e * sHome >= shown && o.rings.some((r) => r.e * sHome >= RING && r.d * sHome < near)))
       .sort((a, b) => b.own.e - a.own.e);
   }, [beside, sHome, narrow]);
-  // each drawn with its larger side tinyL px, until its own outline is that large
-  const tinyL = narrow ? TINY_L_NARROW : TINY_L;
-  const grown = scale > 0 ? small.filter(({ own }) => own.e * scale < tinyL) : [];
+  // their detail windows, at the home view
+  const insets = useMemo(() => layInsets(small, hosts, home, sHome, width, height, barAt, homeClusters, narrow),
+    [small, hosts, home, sHome, width, height, barAt, homeClusters, narrow]);
+  /** the world's badge that holds most of a country's hosts: a window opens that one */
+  const worldOf = (cc: string) => {
+    let best: Cluster | undefined, most = 0;
+    for (const c of clusters) { const n = c.hosts.filter((h) => h.cc === cc).length; if (n > most) { best = c; most = n; } }
+    return best;
+  };
 
   // ---- badges on screen ----
   const placed = width > 0 ? clusters.map((c) => {
@@ -568,13 +653,40 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
           {width > 0 && (
             <svg className="cm-land" viewBox={`${view.x} ${view.y} ${view.w} ${view.w * aspect}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false">
               {land}
-              {grown.map(({ cc, own: o }) => (
-                <path key={"tiny-" + cc} d={o.d} className={openCcs.has(cc) ? "hi" : "on"}
-                  transform={o.unit ? `translate(${o.x} ${o.y}) scale(${tinyL / scale / 100})` : `translate(${o.x} ${o.y}) scale(${tinyL / (o.e * scale)}) translate(${-o.x} ${-o.y})`} />
-              ))}
             </svg>
           )}
         </div>
+        {/* the small hosted countries' detail windows: a duplicate of their places for the eye, so out of the tab order and
+            the reading; a pointer on one opens its place on the world */}
+        {insets.length > 0 && (
+          <div className={`cm-insets${zoomed || moving ? " off" : ""}`} aria-hidden="true">
+            {insets.map((d) => {
+              const world = worldOf(d.cc);
+              return (
+                <div key={d.cc} className={`cm-inset${world && open === world.id ? " open" : ""}`} style={{ left: d.x, top: d.y, width: d.w }}
+                  onMouseEnter={() => world && openNow(world.id)} onMouseLeave={closeSoon} onClick={() => world && openNow(world.id)}>
+                  <div className="cm-inset-map" style={{ height: d.h }}>
+                    <svg viewBox={`${-d.w / 2} ${-d.h / 2} ${d.w} ${d.h}`} width={d.w} height={d.h} focusable="false">
+                      <path d={d.own.d} className={openCcs.has(d.cc) ? "hi" : undefined} transform={`scale(${d.k}) translate(${-d.cx} ${-d.cy})`} />
+                    </svg>
+                    {d.places.map(({ c, px, py }) => {
+                      const n = c.hosts.length, bw = badgeW(n, narrow), bh = badgeH(n, narrow);
+                      const unreach = c.hosts.filter((h) => h.state === "unreachable").length, none = c.hosts.filter((h) => h.state === "none").length;
+                      const tone = unreach === n ? "hold" : none === n ? "none" : "ok";
+                      return (
+                        <span key={c.id} className={`cm-inset-b${n === 1 ? " one" : ""}`} style={{ left: d.w / 2 + px, top: d.h / 2 + py, width: bw, height: bh }}>
+                          <span className="cm-badge" data-tone={tone} style={{ width: bw, height: bh }}>{n === 1 ? null : n}</span>
+                          {unreach > 0 && tone !== "hold" && <i className="cm-pip hold" style={{ left: bw - 3, top: -2 }} />}
+                        </span>
+                      );
+                    })}
+                  </div>
+                  <span className="cm-inset-name">{countryName(d.cc)}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
         {/* no heading of its own: the counts on the bar say what the map shows, and "Current Fibre providers" below is the one heading */}
         <div className="cm-title">
           <p className="cm-key" title="Observed by Tensile: whether each registered host answered its latest endpoint check">
