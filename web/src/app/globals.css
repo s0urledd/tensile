@@ -2131,7 +2131,7 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
 .pb-chip .hd { color: var(--text-3); }
 .pb-chip .tl { font-family: var(--mono); font-weight: 500; color: var(--text-2); }
 /* the whole address, and a copy button with its mark */
-.pb-addr { --copy-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.4'%3E%3Crect x='5.5' y='5.5' width='8' height='8' rx='1.8'/%3E%3Cpath d='M10.5 3.6v-.2c0-.9-.7-1.6-1.6-1.6H4.1c-.9 0-1.6.7-1.6 1.6v4.8c0 .9.7 1.6 1.6 1.6h.2' stroke-linecap='round'/%3E%3C/svg%3E");
+.pb-addr, .bd-err-a { --copy-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.4'%3E%3Crect x='5.5' y='5.5' width='8' height='8' rx='1.8'/%3E%3Cpath d='M10.5 3.6v-.2c0-.9-.7-1.6-1.6-1.6H4.1c-.9 0-1.6.7-1.6 1.6v4.8c0 .9.7 1.6 1.6 1.6h.2' stroke-linecap='round'/%3E%3C/svg%3E");
   display: flex; align-items: center; gap: 10px; margin-top: 10px; min-width: 0; }
 .pb-addr .mono { font-size: var(--t-cell); color: var(--text-2); letter-spacing: .01em; }
 /* the blob page names what the identifier is, and how many settlements carry it when more than this one */
