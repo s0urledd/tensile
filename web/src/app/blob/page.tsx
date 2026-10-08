@@ -8,6 +8,7 @@ import StatusLine from "@/components/StatusLine";
 import { Eye } from "@/components/Metrics";
 import Copy from "@/components/Copy";
 import Warn from "@/components/Warn";
+import FailedTx from "@/components/FailedTx";
 import { unit } from "@/components/Unit";
 import { Who } from "@/components/Ledger";
 import { monthDayTime } from "@/components/BlobsDeck";
@@ -36,7 +37,8 @@ type Detail = {
 /**
  * A blob opened by an identifier other than its promise hash: ?id= the client's blob ID, which is its commitment behind
  * a version byte, or ?tx= the hash of the transaction that settled it. One settlement opens here; several open the
- * Blobs list of them. bad is an identifier that is none.
+ * Blobs list of them; a Fibre transaction that failed in a block opens what the chain returned (FailedTx). bad is an
+ * identifier that is none.
  */
 type Via = { kind: "id" | "tx"; text: string; key: BlobKey } | { kind: "bad"; of: "id" | "tx"; text: string };
 function viaOf(id: string | null, tx: string | null): Via | null {
@@ -292,6 +294,8 @@ function Page() {
   }
   if (!hash && !via) return <p className="notice">Open a blob from the <Link href="/blobs/">list</Link>, or add <code>?hash=&lt;promise hash&gt;</code>, <code>?id=&lt;blob ID&gt;</code> or <code>?tx=&lt;transaction hash&gt;</code> to the address.</p>;
   if (!hash && via) {
+    // a transaction that failed in a block settled no blob: what the chain returned, and the lookup asks no more
+    if (via.kind === "tx" && hit?.failedTx) return <FailedTx hex={via.key.hex} f={hit.failedTx} meta={meta} metaErr={metaErr} at={hit.at} />;
     const name = (via.kind === "bad" ? via.of : via.kind) === "id" ? "blob ID" : "transaction hash";
     // nothing on record: Tensile has not indexed it yet, or the transaction carries no Fibre blob
     const none = !!hit && !hit.error && hit.total === 0;

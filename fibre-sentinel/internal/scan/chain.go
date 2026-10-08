@@ -223,11 +223,17 @@ func (c *Chain) queryError(parent context.Context, path string, height int64, r 
 }
 
 // BlockResults holds the per-tx result codes and the events the scanner scans
-// for EventUpdateFibreParams (both tx events and FinalizeBlock events).
+// for EventUpdateFibreParams (both tx events and FinalizeBlock events). The
+// per-tx slices run parallel to TxCodes; codespace, log and gas are what a
+// failed transaction's record (failed_txs.jsonl) keeps of its result.
 type BlockResults struct {
 	Height       int64
 	TxCodes      []uint32
 	TxEvents     [][]abci.Event
+	TxCodespace  []string // per tx, as the node returned it
+	TxLog        []string
+	TxGasWanted  []int64
+	TxGasUsed    []int64
 	FinalizeEvts []abci.Event
 }
 
@@ -243,11 +249,16 @@ func (c *Chain) BlockResults(parent context.Context, height int64) (*BlockResult
 		Height:       res.Height,
 		TxCodes:      make([]uint32, len(res.TxsResults)),
 		TxEvents:     make([][]abci.Event, len(res.TxsResults)),
+		TxCodespace:  make([]string, len(res.TxsResults)),
+		TxLog:        make([]string, len(res.TxsResults)),
+		TxGasWanted:  make([]int64, len(res.TxsResults)),
+		TxGasUsed:    make([]int64, len(res.TxsResults)),
 		FinalizeEvts: res.FinalizeBlockEvents,
 	}
 	for i, r := range res.TxsResults {
 		out.TxCodes[i] = r.Code
 		out.TxEvents[i] = r.Events
+		out.TxCodespace[i], out.TxLog[i], out.TxGasWanted[i], out.TxGasUsed[i] = r.Codespace, r.Log, r.GasWanted, r.GasUsed
 	}
 	return out, nil
 }

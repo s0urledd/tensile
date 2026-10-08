@@ -4132,13 +4132,31 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 		last := blobs[len(blobs)-1]
 		out["next_before_height"], out["next_before_tx_index"] = last.SettlementHeight, last.SettlementTxIndex
 	}
+	// A Fibre transaction that failed in a block settled no blob: a lookup by
+	// its hash says so (failed_tx), from the scanner's record of it. Only
+	// when the hash is the one filter that narrows the lookup, so that total
+	// counts every publication carrying it, and only when none does: a
+	// settlement under the same hash wins.
+	var failed *failedTxAnswer
+	byTxOnly := tx != "" && commitment == "" && q.Get("namespace") == "" && publisher == "" && q.Get("before_height") == ""
+	if byTxOnly && total == 0 {
+		if failed, err = s.failedTx(r.Context(), tx); err != nil {
+			s.writeInternal(w, r.URL.Path, err)
+			return
+		}
+		if failed != nil {
+			out["failed_tx"] = failed
+		}
+	}
 	// A lookup by commitment or transaction that finds nothing is not kept
 	// by a cache. It is how a reader asks for a blob it has just submitted,
 	// often a second before the scanner has read its block, and a miss held
 	// for 15 seconds would answer "not indexed yet" for 15 seconds after the
 	// blob was on record. A 404 from /v1/blobs/{hash} is never cached either
 	// (statusWriter); a lookup that finds its blob keeps the usual policy.
-	if (commitment != "" || tx != "") && total == 0 {
+	// So does a failure that is final (ante_passed): the same transaction can
+	// never be in a block again, so its answer cannot change.
+	if (commitment != "" || tx != "") && total == 0 && (failed == nil || !failed.AntePassed) {
 		w.Header().Set("Cache-Control", "no-store")
 	}
 	writeJSON(w, 200, out)

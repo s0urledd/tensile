@@ -122,6 +122,8 @@ var notReadTables = map[string]bool{
 	"schema_migrations": true, "observer_runs": true, "ingest_cursors": true, "params_history": true, "endpoints": true,
 	"validator_identities": true, "validator_avatars": true, "payments": true, "escrow_accounts": true, "withdrawal_queue": true,
 	"host_events": true, "sampling_secrets": true, "probe_confirmations": true, "endpoint_hosting": true, "hosting_sources": true,
+	// the failed transactions (migration 30): read by the transaction lookup alone
+	"failed_txs": true,
 }
 
 var (

@@ -68,6 +68,11 @@ var Files = []FileSpec{
 	// and cannot see why.
 	{"param_uncertainty.jsonl", "detected_at"},
 	{"corrections.jsonl", "judged_at"},
+	// The transactions that failed in a block while carrying a Fibre message
+	// (internal/failedtx), dated by their block. Last, so that every member
+	// an export had before keeps its place; an export built before the
+	// scanner's first failure carries it empty. No figure reads it.
+	{"failed_txs.jsonl", "time"},
 }
 
 // VantagesDir, under the data dir, holds the heartbeats of the other

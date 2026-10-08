@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/failedtx"
 )
 
 func TestLoadPublications_TornTailIgnored(t *testing.T) {
@@ -180,19 +182,24 @@ func wholeLines(t *testing.T, path string) int {
 }
 
 // host_history.jsonl and param_uncertainty.jsonl are repaired before the
-// first append, as publications.jsonl and payments.jsonl are at open. A
-// crash or a full disk in the middle of a write leaves a partial last line;
-// the next record used to be written straight after it, and the two came
-// out as one line the collector cannot decode and skips: a range or a
-// registration the scanner never writes again.
+// first append, as publications.jsonl and payments.jsonl are at open, and
+// failed_txs.jsonl is at open too (its seen-set is read there). A crash or
+// a full disk in the middle of a write leaves a partial last line; the next
+// record used to be written straight after it, and the two came out as one
+// line the collector cannot decode and skips: a range or a registration
+// the scanner never writes again.
 func TestTheSideRecordsAreRepairedBeforeTheFirstAppend(t *testing.T) {
 	dir := t.TempDir()
 	unc := filepath.Join(dir, "param_uncertainty.jsonl")
 	hosts := filepath.Join(dir, "host_history.jsonl")
+	failed := filepath.Join(dir, failedtx.FileName)
 	if err := os.WriteFile(unc, []byte(`{"schema_version":1,"id":"t:check_skipped:1-2"}`+"\n"+`{"schema_version":1,"id":"t:silent_chan`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(hosts, []byte(`{"cons_address":"aa","source":"seed"}`+"\n"+`{"cons_addr`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(failed, []byte(`{"schema_version":1,"dedupe_key":"h1:0","height":1}`+"\n"+`{"schema_version":1,"dedupe_ke`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	st, err := OpenStore(dir)
@@ -206,7 +213,10 @@ func TestTheSideRecordsAreRepairedBeforeTheFirstAppend(t *testing.T) {
 	if err := st.AppendHostEvent(HostEvent{HostEntry: HostEntry{FromHeight: 5, ConsAddress: "bb", Host: "b.example:7980", Source: HostFromEvent}}); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{unc, hosts} {
+	if err := st.AppendFailedTx(failedtx.Record{SchemaVersion: failedtx.SchemaVersion, DedupeKey: failedtx.Key(2, 0), Height: 2, Code: 5, Codespace: "sdk"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{unc, hosts, failed} {
 		if n := wholeLines(t, path); n != 2 {
 			t.Fatalf("%s: %d lines, want the whole one before and the new one", filepath.Base(path), n)
 		}
@@ -232,6 +242,9 @@ func TestAFailedSideRecordAppendIsRetriedOntoAWholeLine(t *testing.T) {
 		}},
 		{"host_history.jsonl", func(st *Store) *os.File { return st.hostFile }, func(st *Store, i int) error {
 			return st.AppendHostEvent(HostEvent{HostEntry: HostEntry{FromHeight: int64(i), ConsAddress: "aa", Host: "a.example:7980", Source: HostFromEvent}})
+		}},
+		{failedtx.FileName, func(st *Store) *os.File { return st.failFile }, func(st *Store, i int) error {
+			return st.AppendFailedTx(failedtx.Record{SchemaVersion: failedtx.SchemaVersion, DedupeKey: failedtx.Key(int64(i), 0), Height: int64(i), Code: 5, Codespace: "sdk"})
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {

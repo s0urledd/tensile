@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/failedtx"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/pace"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
@@ -236,6 +237,8 @@ func main() {
 			Reachability: *reachPath, VantagesDir: *vantDir, Registry: *regPath, Payments: *payPath,
 			Runs: *runsPath, SamplingSecrets: *secPath, HostHistory: *hostsPath, Amendments: *amendPath,
 			ParamUncertainty: *uncPath, Corrections: *corrPath,
+			// no flag of its own: the export reads it from -data-dir by this name
+			FailedTxs: filepath.Join(*dataDir, failedtx.FileName),
 		},
 		Vantage: *vantage, Logf: log.Printf, Live: live, AmendFile: amendFile, PruneTolerance: *pruneTol,
 		Corrector: corr, Retention: retention, RetentionEvery: *retEvery, Work: work,

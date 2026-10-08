@@ -39,7 +39,7 @@ var schemaSQL string
 // an upgraded one — baseline, then every migration — so the two end up
 // identical in shape and the migration code is exercised by every test run
 // rather than only on upgrade day.
-const SchemaVersion = 29
+const SchemaVersion = 30
 
 // migration is one numbered step above the baseline. The statements run in a
 // single transaction: SQLite supports transactional DDL, so a failed step
@@ -809,6 +809,9 @@ var migrations = []migration{
 	// vantage's confirmations left goes, and must_serve_until_ambiguous is
 	// written.
 	leftoversMigration,
+	// failedtxs.go (failedTxsMigration): the failed Fibre transactions,
+	// read only by the transaction lookup.
+	failedTxsMigration,
 }
 
 // Store wraps one SQLite database.

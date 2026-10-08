@@ -170,6 +170,10 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 		)
 		scans[f.name+" selection"] = []string{"sel"}
 	}
+	// A transaction's newest failed inclusion, asked on every lookup by a
+	// hash no publication carries: the hash sought in migration 30's index,
+	// which gives the order too (no sort, checked below).
+	cases = append(cases, c{"failed tx by hash", failedTxByHashSQL, []any{"ab"}, []string{"failed_txs_tx (tx_hash=?)"}})
 	// The tip's newest blob, asked up to four times a second whoever is
 	// reading: the highest height from the index's last entry, then that
 	// block's rows, never a walk of publications.
@@ -204,7 +208,7 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 				t.Errorf("%s: plan does not use %q\nplan:\n%s", tc.name, w, joined)
 			}
 		}
-		if strings.Contains(joined, "TEMP B-TREE FOR ORDER BY") && strings.HasPrefix(tc.name, "latest answer") {
+		if strings.Contains(joined, "TEMP B-TREE FOR ORDER BY") && (strings.HasPrefix(tc.name, "latest answer") || tc.name == "failed tx by hash") {
 			t.Errorf("%s sorts instead of reading the index in rowid order\nplan:\n%s", tc.name, joined)
 		}
 	}

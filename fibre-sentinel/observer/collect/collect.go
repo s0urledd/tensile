@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/failedtx"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/correct"
@@ -41,6 +42,9 @@ type Paths struct {
 	State, Publications, Measurements, SampledOut, Reachability, VantagesDir string
 	Registry, Payments, Runs, SamplingSecrets, HostHistory, Amendments       string
 	ParamUncertainty, Corrections                                            string
+	// FailedTxs is failed_txs.jsonl, the scanner's record of the failed
+	// transactions that carried a Fibre message (empty: not read).
+	FailedTxs string
 }
 
 // Status is the part of the collector's status file (internal/status) a
@@ -164,6 +168,7 @@ func DefaultPaths(dataDir string) Paths {
 		Amendments:       filepath.Join(dataDir, "amendments.jsonl"),
 		ParamUncertainty: filepath.Join(dataDir, "param_uncertainty.jsonl"),
 		Corrections:      filepath.Join(dataDir, "corrections.jsonl"),
+		FailedTxs:        filepath.Join(dataDir, failedtx.FileName),
 	}
 }
 
@@ -336,6 +341,20 @@ func (c *Collector) Pass(ctx context.Context, now time.Time) []string {
 		fail("host history", err)
 	} else if r.Inserted > 0 {
 		c.logf("host history: +%d registration(s) (read %d, line %d)", r.Inserted, r.Read, r.Line)
+	}
+	// The failed transactions that carried a Fibre message: read by the
+	// transaction lookup alone, and by nothing this pass does after.
+	if c.Paths.FailedTxs != "" {
+		if r, err := ingest.FailedTxs(st, c.Paths.FailedTxs, now); err != nil {
+			fail("failed txs", err)
+		} else {
+			if r.Inserted > 0 {
+				c.logf("failed txs: +%d (read %d, line %d)", r.Inserted, r.Read, r.Line)
+			}
+			if r.Skipped > 0 {
+				c.logf("failed txs: WARNING skipped %d undecodable line(s); last: %s", r.Skipped, r.LastSkipped)
+			}
+		}
 	}
 	c.amendmentsReplayed = false
 	if r, err := ingest.Amendments(st, c.Paths.Amendments, now); err != nil {

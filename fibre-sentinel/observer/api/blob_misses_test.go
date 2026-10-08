@@ -46,3 +46,41 @@ func TestALookupThatFindsNothingIsNotCached(t *testing.T) {
 		}
 	}
 }
+
+// A lookup by the hash of a transaction that failed in a block finds no
+// blob, and answers the failure (failed_tx). A final failure cannot change,
+// so its answer keeps the usual policy; one that could still be included
+// again is a miss, not cached. The failure is answered only to the hash
+// asked alone (the page aside): beside a commitment, a namespace, a
+// publisher or a cursor, the lookup is a miss like any other, as nothing
+// it filters on is held for a failure.
+func TestAFailedTransactionIsCachedWhenFinalAndAnsweredToItsHashAlone(t *testing.T) {
+	ts, _ := ftxFixture(t, true)
+	for _, c := range []struct {
+		path   string
+		cache  string
+		failed bool
+	}{
+		// the hash alone, as the site asks it
+		{"/v1/blobs?tx=" + ftxFinal, "public, max-age=15", true},
+		{"/v1/blobs?tx=" + ftxFinal + "&limit=25&offset=0", "public, max-age=15", true},
+		{"/v1/blobs?tx=0x" + strings.ToUpper(ftxFinal) + "&limit=25", "public, max-age=15", true},
+		// stopped before the ante: it could still be included, so a miss
+		{"/v1/blobs?tx=" + ftxOpen, "no-store", true},
+		{"/v1/blobs?tx=" + ftxOpen + "&limit=25", "no-store", true},
+		// the hash beside another filter
+		{"/v1/blobs?tx=" + ftxFinal + "&commitment=" + strings.Repeat("ab", 32), "no-store", false},
+		{"/v1/blobs?tx=" + ftxFinal + "&publisher=" + samplePublisher, "no-store", false},
+		{"/v1/blobs?tx=" + ftxFinal + "&before_height=1000", "no-store", false},
+		// f1's transaction settled it in fixtureNS, and failed once before
+		{"/v1/blobs?tx=" + ftxSettled + "&namespace=" + strings.Repeat("00", 29), "no-store", false},
+		// a hash nothing carries
+		{"/v1/blobs?tx=" + strings.Repeat("00", 32), "no-store", false},
+	} {
+		a := ftxAsk(t, ts, c.path)
+		_, has := a.keys["failed_tx"]
+		if a.status != 200 || a.cache != c.cache || has != c.failed || string(a.keys["total"]) != "0" {
+			t.Errorf("%s: %d %q failed_tx=%v total %s, want 200 %q failed_tx=%v total 0", c.path, a.status, a.cache, has, a.keys["total"], c.cache, c.failed)
+		}
+	}
+}

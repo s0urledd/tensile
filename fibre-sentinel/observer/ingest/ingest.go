@@ -23,6 +23,7 @@ import (
 
 	"github.com/cosmos/cosmos-sdk/types/bech32"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/failedtx"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
@@ -590,6 +591,21 @@ func HostEvents(st *store.Store, path string, now time.Time) (Result, error) {
 			return false, fmt.Errorf("%w: host event without address or source", ErrBadRecord)
 		}
 		return st.ReplayHostEvent(e)
+	}, now)
+}
+
+// FailedTxs ingests failed_txs.jsonl, the scanner's record of failed transactions
+// that carried a Fibre message. Read only by the transaction lookup.
+func FailedTxs(st *store.Store, path string, now time.Time) (Result, error) {
+	return tail(st, path, func(raw []byte) (bool, error) {
+		var r failedtx.Record
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return false, fmt.Errorf("%w: decode failed tx: %v", ErrBadRecord, err)
+		}
+		if r.DedupeKey == "" || len(r.TxHash) != 64 || r.Code == 0 || r.Height <= 0 || r.TxIndex < 0 || r.Time.IsZero() {
+			return false, fmt.Errorf("%w: failed tx without dedupe_key, tx_hash, code, height, tx_index or time", ErrBadRecord)
+		}
+		return st.InsertFailedTx(r, raw)
 	}, now)
 }
 

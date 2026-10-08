@@ -106,7 +106,11 @@ import time
 import zlib
 
 # Dependents first: a line in measurements.jsonl names a promise that
-# publications.jsonl must already hold once both cuts are taken.
+# publications.jsonl must already hold once both cuts are taken. A file
+# whose lines name nothing another file holds goes before payments and
+# publications all the same. The list is exactly the record files the
+# daily export carries (observer/export.Files; a Go test holds the two to
+# each other).
 RECORD_FILES = [
     "measurements.jsonl",
     # a publication the prober's load policy sampled out, once (it names a
@@ -120,6 +124,9 @@ RECORD_FILES = [
     "runs.jsonl",
     "host_history.jsonl",
     "param_uncertainty.jsonl",
+    # the transactions that failed in a block while carrying a Fibre
+    # message: no line names a payment or a publication
+    "failed_txs.jsonl",
     "payments.jsonl",
     "publications.jsonl",
 ]

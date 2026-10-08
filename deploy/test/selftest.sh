@@ -73,6 +73,12 @@
 #                   verifies against; a cut that cannot be taken copies
 #                   everything, records the copy, uploads no manifest and
 #                   fails the run
+#   failed          failed_txs.jsonl, in a data dir and manifest of its own:
+#   transactions    the cut counts its records and a copy verifies; a copy
+#                   with it altered in place (the output names it and its
+#                   digest) or missing fails; a data dir without it cuts and
+#                   verifies; record_distinct counts a line written twice
+#                   once
 #   vantage pull    vantage-sync.sh: the pull resumes from the local file's
 #                   logical end, a rotated one included, and a remote file
 #                   shorter than the record fetches nothing and fails; two
@@ -765,6 +771,48 @@ cp "$T/clive.bak" "$C/measurements.jsonl"
 check cbackup
 check not cmp -s "$T/cm2.json" "$CRT/backup-manifest.json"
 check crestore
+
+echo "== backup manifest with failed transactions"
+# failed_txs.jsonl is a record file like the others: cut, counted, copied
+# and verified. Its own data dir and manifest, so the copies above and
+# their failing cases stay as they are.
+F="$T/fdata"; mkdir -p "$F"
+printf '{"promise_hash":"f1","x":1}\n' > "$F/publications.jsonl"
+printf '{"vantage":"t","promise_hash":"f1","validator_address":"v1","scheduled_at":"2026-10-08T00:00:01Z"}\n' > "$F/measurements.jsonl"
+printf '{"last_scanned_height":901,"last_scanned_time":"2026-10-08T00:00:06Z"}\n' > "$F/state.json"
+fline() { # fline <height> <tx index>: a failed_txs.jsonl line as the scanner writes it
+  printf '{"schema_version":1,"dedupe_key":"h%d:%d","height":%d,"time":"2026-10-08T00:00:05Z","app_version":10,"tx_hash":"%064d","tx_index":%d,"code":5,"codespace":"sdk","log":"insufficient funds","gas_wanted":200000,"gas_used":91234,"ante_passed":true,"fee":"2000utia","messages":[{"index":0,"type_url":"/celestia.fibre.v1.MsgDepositToEscrow"}],"recorded_at":"2026-10-08T00:00:06Z"}\n' \
+    "$1" "$2" "$1" "$1$2" "$2"
+}
+{ fline 900 1; fline 901 0; } > "$F/failed_txs.jsonl"
+check python3 "$MANIFEST" write "$F" "$T/fmanifest.json" >/dev/null
+check eq "$(python3 -c 'import json,sys; f=json.load(open(sys.argv[1]))["files"]["failed_txs.jsonl"]; print(f["records"], f["bytes"])' "$T/fmanifest.json")" \
+         "2 $(wc -c < "$F/failed_txs.jsonl" | tr -d ' ')"
+fcopy() { rm -rf "$T/fcopy"; mkdir -p "$T/fcopy"; cp "$F/publications.jsonl" "$F/measurements.jsonl" "$F/failed_txs.jsonl" "$F/state.json" "$T/fcopy/"; }
+fcopy; check python3 "$MANIFEST" verify "$T/fcopy" "$T/fmanifest.json" >/dev/null
+# altered in place, same length: fails, and says which file and its digest
+fcopy; { fline 900 1 | sed 's/"code":5/"code":6/'; fline 901 0; } > "$T/fcopy/failed_txs.jsonl"
+check eq "$(wc -c < "$T/fcopy/failed_txs.jsonl" | tr -d ' ')" "$(wc -c < "$F/failed_txs.jsonl" | tr -d ' ')"
+check not python3 "$MANIFEST" verify "$T/fcopy" "$T/fmanifest.json"
+python3 "$MANIFEST" verify "$T/fcopy" "$T/fmanifest.json" > "$T/fverify.out" 2>&1 || true
+fsha=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["files"]["failed_txs.jsonl"]["sha256"][:16])' "$T/fmanifest.json")
+check grep -q 'FAIL failed_txs.jsonl: sha256 differs' "$T/fverify.out"
+check grep -Eq "failed_txs\.jsonl +[0-9]+ bytes +2 records $fsha" "$T/fverify.out"
+# missing
+fcopy; rm "$T/fcopy/failed_txs.jsonl"
+check not python3 "$MANIFEST" verify "$T/fcopy" "$T/fmanifest.json"
+# a data dir without the file (no failure yet) cuts and verifies, and its
+# manifest does not name it
+rm -rf "$T/fnone" "$T/fnone-copy"; mkdir -p "$T/fnone"
+cp "$F/publications.jsonl" "$F/measurements.jsonl" "$F/state.json" "$T/fnone/"
+check python3 "$MANIFEST" write "$T/fnone" "$T/fmanifest-none.json" >/dev/null
+check eq "$(python3 -c 'import json,sys; print("failed_txs.jsonl" in json.load(open(sys.argv[1]))["files"])' "$T/fmanifest-none.json")" False
+cp -r "$T/fnone" "$T/fnone-copy"
+check python3 "$MANIFEST" verify "$T/fnone-copy" "$T/fmanifest-none.json" >/dev/null
+# a re-scan wrote the first line again: two records with distinct keys of
+# three lines, as the store keeps them
+fline 900 1 >> "$F/failed_txs.jsonl"
+check eq "$(record_distinct "$MANIFEST" "$F" failed_txs.jsonl dedupe_key)" "3 2"
 
 echo "== vantage pull"
 # deploy/vantage-pull.sh against the fake rclone, with util-linux's flock

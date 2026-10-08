@@ -1,5 +1,6 @@
 "use client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import PreLive from "@/components/PreLive";
 import { useApi, type Meta, type Market, type Blob, type NamespaceRow, type Publisher, type Tip, int, bytes, failedWords, hhmm, nsDisplay, nsName, shortMid, utcWord, TIP_MS } from "@/lib/api";
@@ -47,7 +48,7 @@ const findText = (s: string | null) => { const k = blobKey(s); return k ? keyTex
 /** every format the search takes, behind the "i" beside it */
 const FORMATS = (
   <ul className="lg-formats">
-    <li><b>Transaction hash</b>: the MsgPayForFibre transaction that settled the blob, 64 hex characters.</li>
+    <li><b>Transaction hash</b>: the MsgPayForFibre transaction that settled the blob, 64 hex characters. A Fibre transaction that failed shows why.</li>
     <li><b>Blob ID</b>: as the Fibre client returns it, in base64 (standard or URL-safe, with or without padding) or in hex, 66 characters starting 00.</li>
     <li><b>Commitment</b>: 64 hex characters, the blob ID without its version byte.</li>
     <li><b>Promise hash</b>: 64 hex characters, the hash of the blob's payment promise.</li>
@@ -272,13 +273,17 @@ function Page() {
     if (typed.current) setFound(found);
     typed.current = false;
   }, [hit]); // eslint-disable-line react-hooks/exhaustive-deps
-  const tx = !!hit && hit.by.length === 1 && hit.by[0] === "tx";
-  const foundLabel = key?.kind === "id" ? "Blob ID" : !hit?.by.length || hit.by.length > 1 ? "Search" : tx ? "Tx" : hit.by[0] === "commitment" ? "Commitment" : "Blob";
+  // what matched was a transaction: the blobs it settled, or a Fibre transaction that failed in a block
+  const tx = !!hit && ((hit.by.length === 1 && hit.by[0] === "tx") || (hit.rows.length === 0 && !!hit.failedTx));
+  const foundLabel = key?.kind === "id" ? "Blob ID" : tx ? "Tx" : !hit?.by.length || hit.by.length > 1 ? "Search" : hit.by[0] === "commitment" ? "Commitment" : "Blob";
   const foundFeed: Feed | null = key
     ? { path: `find:${found}`, rows: hit?.rows ?? [], total: hit?.rows.length ?? 0, loaded: !!hit && !hit.error, error: hit?.error ?? null, refused: false, lastNewAt: 0 }
     : null;
-  // nothing matched: Tensile has not indexed it yet, or the transaction carries no blob; never that the chain refused it
-  const none = key && hit && !hit.error && hit.total === 0 && (key.kind === "id"
+  // nothing matched: the transaction failed in a block, as the chain recorded it (its page says why); or Tensile has not
+  // indexed it yet, or the transaction carries no blob
+  const none = key && hit && !hit.error && hit.total === 0 && (hit.failedTx
+    ? <>Transaction <Ident8 text={found} tx /> failed in block #{int(hit.failedTx.height)}. <Link href={`/blob/?tx=${key.hex}`}>See why →</Link></>
+    : key.kind === "id"
     ? <>Tensile has not indexed a blob with the blob ID <Ident8 text={found} /> yet. A blob appears once Tensile has read the block that settled it.</>
     : <>
       {hit.noTx
