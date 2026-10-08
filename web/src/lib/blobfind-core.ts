@@ -1,4 +1,4 @@
-import type { Blob } from "@/lib/api";
+import type { Blob, FailedTx } from "@/lib/api";
 import type { BlobKey } from "@/lib/blobkey";
 
 /** what an identifier matched: a blob's promise hash, its commitment (which a blob ID carries), or its settlement transaction */
@@ -18,12 +18,14 @@ export type Found = {
   partial: string | null;
   /** nothing was found and a lookup failed, for this reason: nothing is known either way */
   error: string | null;
+  /** the transaction failed in a block: what the chain returned; set only with no rows */
+  failedTx: FailedTx | null;
   /** when the answers came in */
   at: string;
 };
 
 export const ALL: MatchBy[] = ["promise", "commitment", "tx"];
-type List = { blobs?: Blob[]; total?: number; commitment?: string; tx?: string };
+type List = { blobs?: Blob[]; total?: number; commitment?: string; tx?: string; failed_tx?: FailedTx };
 type Get = (url: string, init: RequestInit) => Promise<Pick<Response, "ok" | "status" | "json">>;
 
 /** one lookup: its blobs, or "none" (a 404, or a 400 for a value the route does not take), or an error */
@@ -46,7 +48,9 @@ async function ask(get: Get, url: string): Promise<{ data: unknown } | { none: t
  * Looks an identifier up as each thing it can be: 64 hex characters as a promise hash, a commitment and a transaction
  * hash (only a lookup tells them apart; as narrows it to some), a blob ID as its commitment. A list counts only when it
  * says it filtered on this identifier: an API from before ?tx= ignores the filter and answers the newest blobs. One
- * lookup that fails leaves the answer incomplete (partial), and with nothing found unknown (error), never "none".
+ * lookup that fails leaves the answer incomplete (partial), and with nothing found unknown (error), never "none". A
+ * transaction hash that settled no blob may have failed in a block: ?tx= then says so (failed_tx), and with nothing
+ * found that is the answer (failedTx), not an unknown.
  * base is the API's address, get the fetch that asks it.
  */
 export async function findBlobs(key: BlobKey, opts: { as?: MatchBy[]; limit?: number; base: string; get: Get }): Promise<Found> {
@@ -59,6 +63,7 @@ export async function findBlobs(key: BlobKey, opts: { as?: MatchBy[]; limit?: nu
   const rows: Blob[] = [];
   const by: MatchBy[] = [];
   let more = 0, noTx = false;
+  let failedTx: FailedTx | null = null;
   const errors: string[] = [];
   want.forEach((w, i) => {
     const a = answers[i];
@@ -73,6 +78,8 @@ export async function findBlobs(key: BlobKey, opts: { as?: MatchBy[]; limit?: nu
       const echo = w === "commitment" ? l.commitment : l.tx;
       if (w === "tx" && echo === undefined) noTx = true;
       if (echo !== hex) return;
+      // the transaction failed in a block: only beside no blob, and only on an answer that filtered on it (above)
+      if (w === "tx" && l.failed_tx && (l.blobs ?? []).length === 0) failedTx = l.failed_tx;
       // a blob ID names its version too: the commitment's settlements under another version are not its own
       blobs = (l.blobs ?? []).filter((b) => key.kind !== "id" || (b.blob_version ?? 0) === key.version);
       more += Math.max(0, (l.total ?? (l.blobs ?? []).length) - (l.blobs ?? []).length);
@@ -82,5 +89,14 @@ export async function findBlobs(key: BlobKey, opts: { as?: MatchBy[]; limit?: nu
   });
   rows.sort((a, b) => b.settlement_height - a.settlement_height || b.settlement_tx_index - a.settlement_tx_index);
   const failed = errors[0] ?? null;
-  return { rows, total: rows.length + more, by, noTx, partial: failed, error: rows.length === 0 ? failed : null, at: new Date().toISOString() };
+  return {
+    rows, total: rows.length + more, by, noTx, partial: failed,
+    // a failed transaction is known: a lookup that failed beside it leaves nothing open
+    error: rows.length === 0 && !failedTx ? failed : null,
+    failedTx: rows.length === 0 ? failedTx : null,
+    at: new Date().toISOString(),
+  };
 }
+
+/** an answer that still leaves the identifier open: nothing found, a lookup failed or incomplete; a transaction that failed in a block closes it */
+export const isShort = (f: Found) => !(f.rows.length === 0 && !!f.failedTx) && !!(f.error || f.partial || f.rows.length === 0);

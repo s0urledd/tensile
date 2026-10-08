@@ -579,7 +579,7 @@ export const GROUPS: Group[] = [
         params: [
           { name: "namespace", in: "query", type: "string", desc: "A namespace, 58 hex characters.", example: NAMESPACE },
           { name: "commitment", in: "query", type: "string", desc: "A blob commitment, the client's blob ID without its version byte: 64 hex characters, either case, with or without 0x. An answer with no blob is not cached." },
-          { name: "tx", in: "query", type: "string", desc: "The hash of the transaction that settled the blob: 64 hex characters, either case, with or without 0x. An answer with no blob is not cached." },
+          { name: "tx", in: "query", type: "string", desc: "The hash of the transaction that settled the blob: 64 hex characters, either case, with or without 0x. Asked on its own, a Fibre transaction that failed in a block answers `failed_tx` instead: its block, code, reason, messages, gas and error. An answer with no blob is not cached, unless it carries a `failed_tx` whose `ante_passed` is true." },
           { name: "publisher", in: "query", type: "string", desc: "The celestia1… account whose escrow paid." },
           { name: "limit", in: "query", type: "integer", range: "1–500", default: "50", desc: "Blobs per page.", example: "2" },
           { name: "before_height", in: "query", type: "integer", desc: "Blobs settled before this height: pass `next_before_height`." },

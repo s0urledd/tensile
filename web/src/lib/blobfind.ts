@@ -1,16 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { API_BASE } from "@/lib/api";
 import type { BlobKey } from "@/lib/blobkey";
-import { ALL, findBlobs, type Found, type MatchBy } from "@/lib/blobfind-core";
+import { ALL, findBlobs, isShort, type Found, type MatchBy } from "@/lib/blobfind-core";
 
 export type { Found, MatchBy };
 
-/** an answer that leaves the blob unknown: nothing found, a lookup failed, or the answer is incomplete */
-const short = (f: Found) => !!(f.error || f.partial || f.rows.length === 0);
-
 /**
  * findBlobs as a hook: null until this identifier's answer is in (an earlier identifier's never stands for it).
- * refreshMs asks again while it names nothing, failed or is incomplete, for a blob the scanner has not indexed yet.
+ * refreshMs asks again while it names nothing, failed or is incomplete (isShort), for a blob the scanner has not
+ * indexed yet; a transaction that failed in a block is an answer, and nothing is asked after it.
  * retryOn asks again, while the answer is still short of that, each time it changes: the tip's newest blob
  * (/v1/tip's latest_blob), so a blob is found as soon as Tensile records one rather than at the next refreshMs.
  * retryForMs stops that so long after the identifier was first asked (the timer of refreshMs goes on).
@@ -36,11 +34,11 @@ export function useFind(key: BlobKey | null, opts: { as?: MatchBy[]; limit?: num
       if (!on) return;
       last = found;
       setSt({ sig, found });
-      if (again && short(found)) { again = false; run(); return; }
+      if (again && isShort(found)) { again = false; run(); return; }
       again = false;
-      if (opts.refreshMs && short(found)) t = setTimeout(run, opts.refreshMs);
+      if (opts.refreshMs && isShort(found)) t = setTimeout(run, opts.refreshMs);
     };
-    live.current = { sig, since: Date.now(), ask: () => { if (busy) again = true; else if (last && short(last)) run(); } };
+    live.current = { sig, since: Date.now(), ask: () => { if (busy) again = true; else if (last && isShort(last)) run(); } };
     run();
     return () => { on = false; clearTimeout(t); live.current = null; };
   }, [sig]); // eslint-disable-line react-hooks/exhaustive-deps

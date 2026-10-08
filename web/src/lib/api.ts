@@ -477,6 +477,23 @@ export type Blob = {
   reconstructable: Reconstruct | null;
 };
 
+/** one message of a failed transaction, in its order */
+export type FailedTxMsg = { index: number; type_url: string; fibre: boolean; inner?: FailedTxMsg[] };
+/** a Fibre transaction that failed in a block, as /v1/blobs?tx= answers it beside no blob */
+export type FailedTx = {
+  height: number; time: string; code: number; codespace: string;
+  /** plain words for the chain's error code; absent when Tensile has none that rests on exact information */
+  reason?: string;
+  /** the message the error names, by its index; absent when the error does not say */
+  failed_msg_index?: number;
+  messages: FailedTxMsg[]; gas_wanted: number; gas_used: number;
+  /** the ante handler passed: the fee and sequence were taken, so the same transaction can never be in a block again */
+  ante_passed: boolean;
+  /** the fee the chain took, as it printed it ("2000utia"); absent for none */
+  fee?: string;
+  log: string; log_cut?: boolean;
+};
+
 /** one validator's reading of a blob, as the blob page lists them */
 export type BlobReading = {
   validator_address: string;
