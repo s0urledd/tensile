@@ -79,27 +79,54 @@ type cachedFeed struct {
 	at       time.Time
 }
 
-// feedCache holds rendered feeds per server, per URL and per public host
+// feedCache holds rendered feeds per server, per feed and per public host
 // (the host is in every entry ID). Package-level rather than a Server
 // field so this feature adds nothing to the Server struct; keyed by the
 // server's address so two servers in one process (tests) never share.
+//
+// A feed is keyed by what it is of (feedKey): the network, or one validator
+// by the consensus address its path resolved to. Keyed by the path as it was
+// typed, every spelling of one address (a hex address has some 2^15 in upper
+// and lower case alone) missed the cache and built the feed on the request.
 var feedCache = struct {
 	sync.Mutex
 	m map[string]cachedFeed
 	// refreshing marks the keys being rebuilt in the background, so a burst
 	// of readers of a stale feed starts one rebuild, not one each.
 	refreshing map[string]bool
-}{m: map[string]cachedFeed{}, refreshing: map[string]bool{}}
+	// first are the first builds running, so a burst of readers of a feed
+	// with nothing cached waits for one build, not one each.
+	first map[string]*firstFeed
+}{m: map[string]cachedFeed{}, refreshing: map[string]bool{}, first: map[string]*firstFeed{}}
 
 const feedCacheMax = 2048
+
+// networkFeedName is the name the network feed is cached under; a validator's
+// is "v:" and its consensus address.
+const networkFeedName = "network"
+
+// feedKey is the cache key of the feed name of s at authority.
+func feedKey(s *Server, authority, name string) string {
+	return fmt.Sprintf("%p|%s|%s", s, authority, name)
+}
+
+// firstFeed is one first build of a feed: what it came to, once done is
+// closed.
+type firstFeed struct {
+	done   chan struct{}
+	c      cachedFeed
+	status int
+	err    error
+}
 
 // feedBuilder builds one feed; status is http.StatusOK or the status to
 // answer with instead (a validator the observer has not seen).
 type feedBuilder func(ctx context.Context, authority string, now time.Time) (*feed.Feed, int, error)
 
-func (s *Server) serveFeed(w http.ResponseWriter, r *http.Request, build feedBuilder) {
+// serveFeed answers the feed name (feedKey) from the cache, built by build.
+func (s *Server) serveFeed(w http.ResponseWriter, r *http.Request, name string, build feedBuilder) {
 	authority := feedAuthority(r)
-	key := fmt.Sprintf("%p|%s|%s", s, authority, r.URL.Path)
+	key := feedKey(s, authority, name)
 	now := s.now()
 	feedCache.Lock()
 	c, ok := feedCache.m[key]
@@ -107,23 +134,35 @@ func (s *Server) serveFeed(w http.ResponseWriter, r *http.Request, build feedBui
 	if start {
 		feedCache.refreshing[key] = true
 	}
+	var first *firstFeed
+	if !ok {
+		if first = feedCache.first[key]; first == nil {
+			first = &firstFeed{done: make(chan struct{})}
+			feedCache.first[key] = first
+			s.firstBuild(key, first, build, authority, now)
+		}
+	}
 	feedCache.Unlock()
 	switch {
 	case !ok:
-		// Nothing to serve: this reader waits for the build, as only the
-		// first reader of each feed after a start does.
-		var status int
-		var err error
-		c, status, err = renderFeed(r.Context(), build, authority, now)
-		if err != nil {
-			s.writeInternal(w, r.URL.Path, err)
+		// Nothing to serve: this reader waits for the build, one for every
+		// reader that finds it missing, as only the first readers of each
+		// feed after a start do. The build is the server's, not this
+		// reader's: a reader that leaves does not end it for the others.
+		select {
+		case <-first.done:
+		case <-r.Context().Done():
 			return
 		}
-		if status != http.StatusOK {
-			writeErr(w, status, validatorNotSeen)
+		if first.err != nil {
+			s.writeInternal(w, r.URL.Path, first.err)
 			return
 		}
-		storeFeed(key, c)
+		if first.status != http.StatusOK {
+			writeErr(w, first.status, validatorNotSeen)
+			return
+		}
+		c = first.c
 	case start:
 		// Stale: served as it stands, rebuilt behind it. A feed a few
 		// minutes past its TTL says nothing false (every entry is dated, and
@@ -150,6 +189,33 @@ func (s *Server) serveFeed(w http.ResponseWriter, r *http.Request, build feedBui
 	}
 }
 
+// firstBuild builds key for the readers waiting on f, in the background and
+// in its turn among the rebuilds (feedRebuilds), and keeps what it builds; a
+// feed that answers otherwise than 200 is not kept. Called with feedCache
+// held.
+func (s *Server) firstBuild(key string, f *firstFeed, build feedBuilder, authority string, now time.Time) {
+	s.bg.Add(1)
+	go func() {
+		defer s.bg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), feedBuildTimeout)
+		defer cancel()
+		select {
+		case feedRebuilds <- struct{}{}:
+			f.c, f.status, f.err = rebuildFeed(ctx, build, authority, now)
+			<-feedRebuilds
+		case <-ctx.Done():
+			f.err = fmt.Errorf("waiting for a turn to build the feed: %w", ctx.Err())
+		}
+		feedCache.Lock()
+		if f.err == nil && f.status == http.StatusOK {
+			storeFeedLocked(key, f.c)
+		}
+		delete(feedCache.first, key)
+		feedCache.Unlock()
+		close(f.done)
+	}()
+}
+
 // renderFeed builds and renders one feed as the cache holds it.
 func renderFeed(ctx context.Context, build feedBuilder, authority string, now time.Time) (cachedFeed, int, error) {
 	f, status, err := build(ctx, authority, now)
@@ -173,8 +239,24 @@ func renderFeed(ctx context.Context, build feedBuilder, authority string, now ti
 func storeFeed(key string, c cachedFeed) {
 	feedCache.Lock()
 	defer feedCache.Unlock()
-	if len(feedCache.m) >= feedCacheMax {
-		feedCache.m = map[string]cachedFeed{} // crude, bounded; a refill costs one query set per feed
+	storeFeedLocked(key, c)
+}
+
+// storeFeedLocked keeps c under key. A full cache gives up the feed built
+// longest ago, a validator's before the network's: it used to start again
+// from nothing, and every reader of the network feed then built it at once.
+func storeFeedLocked(key string, c cachedFeed) {
+	if _, ok := feedCache.m[key]; !ok && len(feedCache.m) >= feedCacheMax {
+		var oldest string
+		var oldestAt time.Time
+		oldestNetwork := true
+		for k, v := range feedCache.m {
+			network := strings.HasSuffix(k, "|"+networkFeedName)
+			if oldest == "" || (oldestNetwork && !network) || (network == oldestNetwork && v.at.Before(oldestAt)) {
+				oldest, oldestAt, oldestNetwork = k, v.at, network
+			}
+		}
+		delete(feedCache.m, oldest)
 	}
 	feedCache.m[key] = c
 }
@@ -185,12 +267,12 @@ func storeFeed(key string, c cachedFeed) {
 // TTL tries again. A feed that now answers otherwise than 200 (the validator
 // is no longer on record) is dropped, so the next reader gets that answer
 // rather than the old feed.
-// feedRebuilds bounds the background rebuilds. They run off the request, so
-// the site server's caps on requests in flight no longer bound them, and a
-// feed kept under many spellings of one path could start a rebuild each. A
-// few at a time is plenty for feeds that change in minutes; a stale feed
-// whose turn has not come is served as it stands until the next reader past
-// the TTL asks again.
+// feedRebuilds bounds the builds, the first builds (firstBuild) and the
+// rebuilds behind a stale feed. They run off the request, so the site
+// server's caps on requests in flight do not bound them. A few at a time is
+// plenty for feeds that change in minutes: a first build waits for its turn,
+// and a stale feed whose rebuild finds none is served as it stands until
+// the next reader past the TTL asks again.
 var feedRebuilds = make(chan struct{}, 2)
 
 func (s *Server) refreshFeed(key string, build feedBuilder, authority string) {
@@ -288,13 +370,13 @@ func (s *Server) handleValidatorFeed(w http.ResponseWriter, r *http.Request) {
 		s.writeAddrErr(w, r.URL.Path, err)
 		return
 	}
-	s.serveFeed(w, r, func(ctx context.Context, authority string, now time.Time) (*feed.Feed, int, error) {
+	s.serveFeed(w, r, "v:"+addr, func(ctx context.Context, authority string, now time.Time) (*feed.Feed, int, error) {
 		return s.validatorFeed(ctx, addr, authority, now)
 	})
 }
 
 func (s *Server) handleNetworkFeed(w http.ResponseWriter, r *http.Request) {
-	s.serveFeed(w, r, func(ctx context.Context, authority string, now time.Time) (*feed.Feed, int, error) {
+	s.serveFeed(w, r, networkFeedName, func(ctx context.Context, authority string, now time.Time) (*feed.Feed, int, error) {
 		f, err := s.networkFeed(ctx, authority, now)
 		return f, http.StatusOK, err
 	})
