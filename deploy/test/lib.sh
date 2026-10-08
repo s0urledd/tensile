@@ -32,6 +32,8 @@
 #                the lines, while the store keeps one row per promise: a
 #                publication appended again by a re-scan would have failed a
 #                good backup.
+#   record_distinct the same rule for a file keyed by another field
+#                (failed_txs.jsonl, one row per dedupe_key).
 #   alert_destinations exposure.sh took ALERT_WEBHOOK alone for "somebody
 #                is told": a host that alerts through Telegram only failed
 #                the check for a false reason and never sent its test.
@@ -233,6 +235,33 @@ for line in cat.stdout:
     seen.add(r.get("promise_hash"))
 if cat.wait() != 0:
     raise SystemExit("publications.jsonl: the manifest tool could not read the record")
+print(n, len(seen))
+PY
+}
+
+# record_distinct <manifest-tool> <dir> <file> <field>: "<records> <distinct
+# values of field>" of <file>'s whole record under dir, read with the
+# manifest tool's cat as record_promises reads publications.jsonl. The store
+# keeps one row per value of the file's key (failed_txs.jsonl by dedupe_key,
+# ON CONFLICT DO NOTHING), and a re-scan can append a line again, so a
+# rebuild holds the distinct values, not the lines. A line that is not a
+# JSON object is not a record, as the manifest counts records.
+record_distinct() {
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
+import json, subprocess, sys
+cat = subprocess.Popen([sys.argv[1], "cat", sys.argv[2], sys.argv[3]], stdout=subprocess.PIPE)
+n, seen = 0, set()
+for line in cat.stdout:
+    try:
+        r = json.loads(line)
+    except (ValueError, RecursionError):
+        continue
+    if not isinstance(r, dict):
+        continue
+    n += 1
+    seen.add(r.get(sys.argv[4]))
+if cat.wait() != 0:
+    raise SystemExit(sys.argv[3] + ": the manifest tool could not read the record")
 print(n, len(seen))
 PY
 }

@@ -30,11 +30,13 @@
 #     below then reads it.
 #   - rebuilds the database from the verified cut and requires it to hold
 #     exactly the cut's records (publications one per promise, as the store
-#     keeps them: a line appended again by a re-scan is said, not failed);
+#     keeps them: a line appended again by a re-scan is said, not failed;
+#     failed transactions one per dedupe_key, the same way);
 #   - starts a second observer-api on a spare port against it and reads
 #     /v1/meta, /v1/network and /v1/validators, waiting out the first
 #     computation of each window; the counts it serves must be the rebuilt
-#     ones.
+#     ones. With a failed transaction on record, the newest one asked by
+#     its hash must answer it.
 #
 # The live host's counts are printed for orientation and compared with
 # nothing: they are a different moment.
@@ -73,6 +75,17 @@ con = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
 # of those lines.
 print(*con.execute("""SELECT (SELECT COUNT(*) FROM publications), (SELECT COUNT(*) FROM probes),
     (SELECT COUNT(*) FROM probes) + (SELECT COALESCE(SUM(points * validators), 0) FROM sampling_decisions WHERE source = 'rows')""").fetchone())
+PY
+}
+# failed_rows <db>: the failed transactions stored, and the hash of the
+# newest inclusion (empty when there is none)
+failed_rows() {
+  python3 - "$1" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+n = con.execute("SELECT COUNT(*) FROM failed_txs").fetchone()[0]
+newest = con.execute("SELECT tx_hash FROM failed_txs ORDER BY height DESC, tx_index DESC LIMIT 1").fetchone()
+print(n, newest[0] if newest else "")
 PY
 }
 
@@ -130,6 +143,18 @@ fi
 read -r rpub rprobe rlines <<<"$(counts "$TMP/observer.db")"
 [ "$rpub" = "$want_pub" ] && pass "rebuilt publications ($rpub) == distinct promises in the cut ($want_pub)" || fail "rebuilt publications $rpub != distinct promises in the cut $want_pub"
 [ "$rlines" = "$want_probe" ] && pass "rebuilt probes ($rprobe, standing for $rlines lines) == manifest records ($want_probe)" || fail "rebuilt probes stand for $rlines lines != manifest records $want_probe"
+# The failed transactions, once the scanner has recorded one: one row per
+# dedupe_key, as the store keeps them (a line a re-scan appended again is
+# a line, not a row).
+fail_hash=""
+if python3 -c 'import json,sys; sys.exit(0 if sys.argv[2] in json.load(open(sys.argv[1]))["files"] else 1)' "$TMP/backup-manifest.json" failed_txs.jsonl; then
+  if read -r fail_lines want_fail <<<"$(record_distinct "$MANIFEST_TOOL" "$TMP" failed_txs.jsonl dedupe_key)" && [ -n "$want_fail" ]; then
+    read -r rfail fail_hash <<<"$(failed_rows "$TMP/observer.db")"
+    [ "$rfail" = "$want_fail" ] && pass "rebuilt failed transactions ($rfail) == distinct keys in the cut ($want_fail, of $fail_lines line(s))" || fail "rebuilt failed transactions $rfail != distinct keys in the cut $want_fail"
+  else
+    fail "failed_txs.jsonl could not be read through the manifest tool"
+  fi
+fi
 
 echo "== 4. serve it on :$PORT"
 /usr/local/bin/observer-api -data-dir "$TMP" -listen "127.0.0.1:$PORT" -vantage "$VANTAGE" > "$TMP/api.log" 2>&1 &
@@ -142,6 +167,16 @@ fi
 code=$(http_code "http://127.0.0.1:$PORT/v1/meta" "$TMP/meta.json")
 read -r apub aprobe <<<"$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["counts"]; print(c["Publications"], c["Probes"])' "$TMP/meta.json")"
 [ "$code" = 200 ] && [ "$apub" = "$rpub" ] && [ "$aprobe" = "$rprobe" ] && pass "/v1/meta counts are the rebuilt ones (publications=$apub probes=$aprobe)" || fail "/v1/meta -> $code counts publications=$apub probes=$aprobe, rebuilt $rpub/$rprobe"
+# The newest failed transaction, asked by its hash as the site asks: its
+# failure, or the blob a publication under the same hash settled.
+if [ -n "$fail_hash" ]; then
+  code=$(http_code "http://127.0.0.1:$PORT/v1/blobs?tx=$fail_hash&limit=1" "$TMP/failed.json")
+  if [ "$code" = 200 ] && python3 -c 'import json,sys; b=json.load(open(sys.argv[1])); sys.exit(0 if b.get("failed_tx") or b.get("total") else 1)' "$TMP/failed.json"; then
+    pass "/v1/blobs?tx= answers the newest failed transaction (${fail_hash:0:12}) from the restored data"
+  else
+    fail "/v1/blobs?tx=$fail_hash -> $code with neither a failed_tx nor a blob"
+  fi
+fi
 # The restored directory has no snapshot files, so this API computes every
 # window from its start, and a read that arrives before a window has been
 # computed is a 503 with "computing": true: not an answer yet, and asked
