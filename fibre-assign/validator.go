@@ -53,8 +53,19 @@ type Validator struct {
 // canonicalOrder returns a copy of vals in the order core.ValidatorSet keeps
 // its members: voting power descending, ties broken by address ascending
 // (bytes.Compare). This is the order Set.Assign walks. It also reports a
-// duplicate address if present.
+// duplicate address if present. The check is by address over the whole set,
+// not between sort neighbours: two entries for one address with different
+// voting power are not adjacent once another validator's power falls between
+// them.
 func canonicalOrder(vals []Validator) ([]Validator, *Address) {
+	seen := make(map[Address]struct{}, len(vals))
+	for _, v := range vals {
+		if _, ok := seen[v.Address]; ok {
+			dup := v.Address
+			return nil, &dup
+		}
+		seen[v.Address] = struct{}{}
+	}
 	out := slices.Clone(vals)
 	slices.SortFunc(out, func(a, b Validator) int {
 		if a.VotingPower != b.VotingPower {
@@ -65,11 +76,5 @@ func canonicalOrder(vals []Validator) ([]Validator, *Address) {
 		}
 		return bytes.Compare(a.Address[:], b.Address[:])
 	})
-	for i := 1; i < len(out); i++ {
-		if out[i-1].Address == out[i].Address {
-			dup := out[i].Address
-			return out, &dup
-		}
-	}
 	return out, nil
 }
