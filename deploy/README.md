@@ -608,8 +608,8 @@ The upgrade to schema 29, in order:
 pure DDL: the table `failed_txs` and its index. It moves no row, and not
 `meta.migration_rewrites`, so the day partials are kept; it does move the
 schema version, so the endorsement ledger, which is keyed on it, is built
-again once. Every binary that opens the store (the collector, the API,
-`observer-archive`, `record-verify`) refuses one at another schema, so the
+again once. The API, `observer-archive` and `record-verify` refuse a store
+at another schema, and an older collector refuses a newer one, so the
 whole `bin/` set is installed together, with `deploy/backup-manifest.py`,
 whose cut lists the new file. It takes the additive path below (the old
 API serves from the migrated store during the warm-up), with the archive
@@ -652,9 +652,10 @@ until then. `-include-failed` is retired: the scanner keeps the flag, so
 is true.
 
 **Going back past schema 30.** Migration 30 only added a table and an
-index the older build never reads, so the way back is the one-row delete,
-not a copy of the store. `observer-archive` and `record-verify` refuse a
-store at another schema too, so they go back with the rest:
+index the older build never reads, so the way back deletes its version row
+and the new file's cursor row, not a copy of the store. `observer-archive`
+and `record-verify` refuse a store at another schema too, so they go back
+with the rest:
 
 1. `sudo systemctl stop fibre-archive@mocha.timer`;
 2. install the previous build's whole `bin/` set and its
@@ -664,7 +665,12 @@ store at another schema too, so they go back with the rest:
 3. `sudo systemctl restart fibre-scan@mocha`: the older scanner writes no
    more failure lines;
 4. stop `fibre-api@mocha` and `fibre-collector@mocha`;
-5. `sudo -u fibre-observer sqlite3 /var/lib/fibre-observer/mocha/observer.db 'DELETE FROM schema_migrations WHERE version > 29'`;
+5. take the version back, and the file's cursor row with it:
+   `sudo -u fibre-observer sqlite3 /var/lib/fibre-observer/mocha/observer.db "DELETE FROM schema_migrations WHERE version > 29; DELETE FROM ingest_cursors WHERE file LIKE '%/failed_txs.jsonl'"`.
+   The newer scanner may have written a line the collector had not read
+   by the time it stopped, and the older collector never reads the file,
+   so a row left behind would have the older API's ingest check report
+   the file stuck for as long as the older build runs;
 6. put the schema-29 ledger back:
    `sudo -u fibre-observer cp -p /var/lib/fibre-observer/mocha/endorsement-ledger-v29.json /var/lib/fibre-observer/mocha/snapshots/endorsement-ledger.json`.
    The older API then catches it up from its mark instead of building it
@@ -672,11 +678,11 @@ store at another schema too, so they go back with the rest:
 7. start the collector, wait for its cursors to move, then start the API;
 8. `sudo systemctl start fibre-archive@mocha.timer`.
 
-The table, the index and the `failed_txs.jsonl` cursor row stay, unread;
-the older scanner does not grow the file, so the health check does not
-flag the row. A later upgrade runs migration 30 again over them and reads
-on from the cursor. The new site works against the older API, which never
-answers `failed_tx`, so it may stay.
+The table and the index stay, unread, and the older API has no cursor row
+of the file to watch. A later upgrade runs migration 30 again over them and
+reads the file again from its start, which adds only the lines not yet
+stored (a key already there is left alone). The new site works against the
+older API, which never answers `failed_tx`, so it may stay.
 
 **Once anything is retired.** A collector that reads a retired range
 ("Retiring local copies" below) reads it from the exports; one from before
@@ -1345,8 +1351,10 @@ files, and its manifest names every segment and the live base; `restore.sh`
 and `verify` check each segment. The small record files (host history,
 failed transactions, the collector's own logs, runs) are not archived:
 their writers hold them open without the lock. `failed_txs.jsonl` is
-bounded by the chain's limits, at most about 80 KiB a line (600 messages
-and an 8 KiB log) and 800 lines a block; past 1 MiB a day or 64 MiB in
+bounded by the chain's limits, at most about 180 KiB a line (600 messages,
+each with what it asked for, and an 8 KiB log) and 800 lines a block; each
+string copied from a message is cut at 256 bytes, which keeps even a line
+of malformed messages under about 3 MiB. Past 1 MiB a day or 64 MiB in
 all it is to be archived as `payments.jsonl` is. `vantage-pull` resumes each vantage's file from its
 logical end (`observer-archive -logical-end vantages/<name>/reachability.jsonl`,
 the live file's base plus its size), not from its size, so a rotated file

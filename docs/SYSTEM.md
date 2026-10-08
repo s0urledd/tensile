@@ -180,9 +180,11 @@ writer's restart, or `vantage-pull`'s next pull, which appends whole lines
 only, finishes or cuts the line), and a run that fails takes back its
 segment, which keeps a temp name until the index naming it is saved.
 `failed_txs.jsonl` is not rotated: by the chain's limits a line is at most
-about 80 KiB (600 messages and an 8 KiB log) and a block gives at most 800
-lines, and it is archived later, as payments are, if it passes 1 MiB a day
-or 64 MiB in all.
+about 180 KiB (600 messages, each with what it asked for, and an 8 KiB log)
+and a block gives at most 800 lines; each string copied from a message is
+cut at 256 bytes, which keeps even a line of malformed messages under about
+3 MiB. It is archived later, as payments are, if it passes 1 MiB a day or
+64 MiB in all.
 
 **Retiring a local copy.** `observer-archive -retire -db observer.db`, the
 second step of `fibre-archive@`, removes an archived segment's gzip file,
@@ -329,7 +331,7 @@ older *or* newer than the binary expects.
 | 27 | the slim record: `publications.original_rows` / `total_rows` (the two values queries read out of `raw_json`), `slim_entries`, `reading_rows` |
 | 28 | the slim endpoint check record in `reachability.raw_json`; no table change (the version keeps an older build, which would read the column as JSON, off the store) |
 | 29 | what the earlier sampling and the second vantage's confirmations left goes: the indexes `probes_sampling_started` and `probes_cleared`, and the empty table `probe_confirmations` with its indexes (the migration refuses if it holds a row; the columns `probes.cleared_by` and `confirmed_by` stay, unread, since dropping a column rewrites the table). `must_serve_until_ambiguous` is set from the records where they say so, and written on every insert. No row is rewritten but those; an older build refuses the store, and the way back is a copy taken before (`deploy/README.md`, "Going back past schema 29") |
-| 30 | `failed_txs` and its index `failed_txs_tx (tx_hash, height, tx_index)`: one row per failed inclusion from `failed_txs.jsonl`, its line verbatim, read only by the transaction lookup and in no count, rollup, slim encoder or aggregate. Pure DDL: `meta.migration_rewrites` does not move, so the day partials are kept, but the schema version does, so the endorsement ledger, which is keyed on it, is built again once (and once more on the way back). The way back is the one-row delete (`deploy/README.md`, "Going back past schema 30") |
+| 30 | `failed_txs` and its index `failed_txs_tx (tx_hash, height, tx_index)`: one row per failed inclusion from `failed_txs.jsonl`, its line verbatim, read only by the transaction lookup and in no count, rollup, slim encoder or aggregate. Pure DDL: `meta.migration_rewrites` does not move, so the day partials are kept, but the schema version does, so the endorsement ledger, which is keyed on it, is built again once (and on the way back only if the kept schema-29 ledger is not put back). The way back deletes the version row and the file's `ingest_cursors` row (`deploy/README.md`, "Going back past schema 30") |
 
 **The slim record (migration 27, `store/slim.go`, `internal/slim`).** A row this
 build writes keeps in `raw_json` the slim form of its record: every field of the
