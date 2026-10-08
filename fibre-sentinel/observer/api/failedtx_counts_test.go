@@ -96,7 +96,7 @@ func ctFailures() []any {
 	deposit := failedtx.Msg{Index: 1, TypeURL: "/celestia.fibre.v1.MsgDepositToEscrow", Signer: ctPublisher,
 		Detail: &failedtx.MsgDetail{Publisher: ctPublisher, Amount: "50000000utia"}}
 	host := failedtx.Msg{Index: 0, TypeURL: "/celestia.valaddr.v1.MsgSetFibreProviderInfo", Signer: ctValoper,
-		Detail: &failedtx.MsgDetail{Host: "127.0.0.1:7990", Validator: ctValoper}}
+		Detail: &failedtx.MsgDetail{Host: "127.0.0.1:7990"}}
 	exec := failedtx.Msg{Index: 0, TypeURL: failedtx.ExecTypeURL, Inner: []failedtx.Msg{host}}
 	invalid := errorsmod.Wrap(sdkerrors.ErrInvalidRequest, "payment promise height must be positive")
 	short := errorsmod.Wrapf(errorsmod.Wrapf(sdkerrors.ErrInsufficientFunds, "spendable balance %s is smaller than %s", "10utia", "50000000utia"),

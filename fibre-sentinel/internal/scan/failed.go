@@ -77,7 +77,8 @@ func failedTxMsgs(raw []byte) (msgs []failedtx.Msg, problems []error, ok bool) {
 // bytes: what it asked for, never what happened. Any other message is left
 // as it is. A message that does not decode is left without either; a
 // promise whose publisher or hash cannot be derived keeps the rest. The
-// error says what was left out.
+// error says what was left out. Each string is kept to
+// failedtx.MaxFieldBytes (cutFields).
 func describeFibre(m *failedtx.Msg, value []byte) error {
 	d := &failedtx.MsgDetail{}
 	var err error
@@ -120,16 +121,31 @@ func describeFibre(m *failedtx.Msg, value []byte) error {
 			return fmt.Errorf("MsgSetFibreProviderInfo did not decode: %w", uerr)
 		}
 		m.Signer = msg.Signer
-		// The message has no validator field of its own: it names the
-		// validator by its signer, the operator address it registers for.
-		d.Host, d.Validator = msg.Host, msg.Signer
+		// d.Validator stays empty: the message has no validator field. It
+		// registers the host for its signer, the operator address, which
+		// m.Signer holds.
+		d.Host = msg.Host
 	default:
 		return nil
 	}
+	cutFields(m, d)
 	if *d != (failedtx.MsgDetail{}) {
 		m.Detail = d
 	}
 	return err
+}
+
+// cutFields keeps every string a Fibre message gave the record to
+// failedtx.MaxFieldBytes and marks the message when one was longer. A
+// value the chain accepts is far shorter; a refused message that a
+// proposer put in a block without CheckTx can carry one as long as its tx.
+func cutFields(m *failedtx.Msg, d *failedtx.MsgDetail) {
+	for _, f := range []*string{&m.Signer, &d.Publisher, &d.PromiseHash, &d.Namespace, &d.Amount, &d.Host} {
+		var cut bool
+		if *f, cut = failedtx.CutField(*f); cut {
+			m.Cut = true
+		}
+	}
 }
 
 // promiseDetail fills the escrow owner and the promise hash of a promise a

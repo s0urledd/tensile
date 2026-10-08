@@ -24,6 +24,12 @@ const SchemaVersion = 1
 // MaxLogBytes caps the stored log (CutLog).
 const MaxLogBytes = 8 << 10
 
+// MaxFieldBytes caps each string a Fibre message gives the record (Signer
+// and every MsgDetail string, CutField): far above any value the chain
+// accepts, so that a message it refused, which a proposer that skips
+// CheckTx can still put in a block, never makes a line as long as its tx.
+const MaxFieldBytes = 256
+
 // Msg is one message of the transaction, in TxBody order.
 type Msg struct {
 	Index   int    `json:"index"`    // position in TxBody.messages (or in MsgExec.msgs for Inner)
@@ -34,6 +40,9 @@ type Msg struct {
 	// Fibre messages only (IsFibre), decoded from the message itself; empty when it did not decode.
 	Signer string     `json:"signer,omitempty"` // the message's signer field, bech32 as written
 	Detail *MsgDetail `json:"detail,omitempty"`
+	// Cut: Signer or a Detail string was longer than MaxFieldBytes and is
+	// kept cut there (CutField).
+	Cut bool `json:"cut,omitempty"`
 }
 
 // MsgDetail is what the message asked for, never what happened (the tx failed: none of it took effect).
@@ -44,7 +53,10 @@ type MsgDetail struct {
 	BlobSize    int64  `json:"blob_size,omitempty"`    // PFF: the promise's blob size
 	Amount      string `json:"amount,omitempty"`       // deposit and withdrawal: the coin as the message carries it, e.g. "1000000utia"
 	Host        string `json:"host,omitempty"`         // MsgSetFibreProviderInfo: the requested host, verbatim
-	Validator   string `json:"validator,omitempty"`    // MsgSetFibreProviderInfo: the validator it registers for, as the message names it
+	// Validator stays empty: MsgSetFibreProviderInfo has no validator field
+	// at the pinned version (x/valaddr: Signer and Host only). It registers
+	// the host for its signer, so the validator is Msg.Signer.
+	Validator string `json:"validator,omitempty"`
 }
 
 // Record is one line of failed_txs.jsonl.
@@ -144,11 +156,24 @@ func CutLog(codespace string, code uint32, log string) (stored string, cut bool)
 		}
 	}
 	if len(stored) > MaxLogBytes {
-		n := MaxLogBytes
-		for n > 0 && !utf8.RuneStart(stored[n]) {
-			n--
-		}
-		stored, cut = stored[:n], true
+		stored, cut = cutRunes(stored, MaxLogBytes), true
 	}
 	return stored, cut
+}
+
+// CutField is a string of a message as stored: past MaxFieldBytes, cut to
+// the last UTF-8 rune start <= MaxFieldBytes. cut reports it.
+func CutField(s string) (stored string, cut bool) {
+	if len(s) <= MaxFieldBytes {
+		return s, false
+	}
+	return cutRunes(s, MaxFieldBytes), true
+}
+
+// cutRunes is s, longer than n bytes, cut to its last UTF-8 rune start <= n.
+func cutRunes(s string, n int) string {
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }

@@ -30,6 +30,7 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/bech32"
 	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
+	cosmostx "github.com/cosmos/cosmos-sdk/types/tx"
 	"github.com/cosmos/cosmos-sdk/x/authz"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	gogojsonpb "github.com/cosmos/gogoproto/jsonpb"
@@ -109,6 +110,27 @@ func inMsg(err error, i int) error {
 	return errorsmod.Wrapf(err, "failed to execute message; message index: %d", i)
 }
 
+// bodyWrappers are a BlobTx and an IndexWrapper whose tx field holds the
+// TxBody of msg, not a whole TxRaw. Read as a TxRaw, such a wrapper gives
+// its tx field as the body bytes, so it decodes as a tx carrying msg: only
+// the wrapper check in failedTxMsgs keeps it off the record.
+func bodyWrappers(t *testing.T, msg proto, blob *share.Blob) (blobTx, indexWrapper []byte) {
+	t.Helper()
+	var raw cosmostx.TxRaw
+	if err := raw.Unmarshal(rawTx(t, msg)); err != nil {
+		t.Fatal(err)
+	}
+	blobTx, err := squaretx.MarshalBlobTx(raw.BodyBytes, blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexWrapper, err = squaretx.MarshalIndexWrapper(raw.BodyBytes, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return blobTx, indexWrapper
+}
+
 // failedCase is one transaction of case 2's block: its bytes, its result,
 // and the line failed_txs.jsonl must hold for it (nil: none). The line's
 // place (height, index, key, hash, time, app version) is filled by the
@@ -157,6 +179,7 @@ func failedCases(t *testing.T, key *secp256k1.PrivKey) []failedCase {
 	if err != nil {
 		t.Fatal(err)
 	}
+	blobTxBody, wrappedBody := bodyWrappers(t, deposit, blob)
 	p := params(time.Second, time.Second, time.Second)
 	js, err := (&gogojsonpb.Marshaler{}).MarshalToString(&p)
 	if err != nil {
@@ -180,13 +203,13 @@ func failedCases(t *testing.T, key *secp256k1.PrivKey) []failedCase {
 		{"MsgSetFibreProviderInfo, zero fee", rawTx(t, hostMsg{&valaddrtypes.MsgSetFibreProviderInfo{Signer: op1, Host: "h1.example:7980"}}), hostRes, &failedtx.Record{
 			Code: 2, Codespace: "valaddr", Log: hostRes.Log, GasWanted: 150000, GasUsed: 61000, AntePassed: true, Fee: "",
 			Messages: []failedtx.Msg{
-				{Index: 0, TypeURL: msgSetHostTypeURL, Signer: op1, Detail: &failedtx.MsgDetail{Host: "h1.example:7980", Validator: op1}},
+				{Index: 0, TypeURL: msgSetHostTypeURL, Signer: op1, Detail: &failedtx.MsgDetail{Host: "h1.example:7980"}},
 			}}},
 		{"MsgExec[MsgSetFibreProviderInfo], ante failed", rawTx(t, execOf(t, hostMsg{&valaddrtypes.MsgSetFibreProviderInfo{Signer: op2, Host: "h2.example:7980"}})), execRes, &failedtx.Record{
 			Code: 32, Codespace: "sdk", Log: execRes.Log, GasWanted: 150000, GasUsed: 0, AntePassed: false, Fee: "",
 			Messages: []failedtx.Msg{
 				{Index: 0, TypeURL: failedtx.ExecTypeURL, Inner: []failedtx.Msg{
-					{Index: 0, TypeURL: msgSetHostTypeURL, Signer: op2, Detail: &failedtx.MsgDetail{Host: "h2.example:7980", Validator: op2}},
+					{Index: 0, TypeURL: msgSetHostTypeURL, Signer: op2, Detail: &failedtx.MsgDetail{Host: "h2.example:7980"}},
 				}},
 			}}},
 		{"MsgPayForFibre, a panic", rawTx(t, payMsg{&fibretypes.MsgPayForFibre{Signer: owner, PaymentPromise: pp2}}), panicRes, &failedtx.Record{
@@ -206,6 +229,8 @@ func failedCases(t *testing.T, key *secp256k1.PrivKey) []failedCase {
 		{"MsgSend alone", rawTx(t, send), resultOf(inMsg(sdkerrors.ErrInsufficientFunds, 0), 100000, 50000, anteEvents("300utia")...), nil},
 		{"a BlobTx whose tx carries a deposit", blobTx, resultOf(sdkerrors.ErrOutOfGas, 100000, 100100, anteEvents("300utia")...), nil},
 		{"an IndexWrapper whose tx carries a deposit", wrapped, resultOf(sdkerrors.ErrOutOfGas, 100000, 100100, anteEvents("300utia")...), nil},
+		{"a BlobTx whose tx field is a deposit's TxBody", blobTxBody, resultOf(sdkerrors.ErrOutOfGas, 100000, 100100, anteEvents("300utia")...), nil},
+		{"an IndexWrapper whose tx field is a deposit's TxBody", wrappedBody, resultOf(sdkerrors.ErrOutOfGas, 100000, 100100, anteEvents("300utia")...), nil},
 		{"not an SDK tx", []byte("not an sdk tx at all"), resultOf(sdkerrors.ErrTxDecode, 0, 0), nil},
 		{"a successful deposit", rawTx(t, depositMsg{&fibretypes.MsgDepositToEscrow{Signer: owner, Amount: sdk.NewInt64Coin("utia", 3)}}), resultOf(nil, 100000, 60000, anteEvents("300utia")...), nil},
 	}
@@ -215,6 +240,12 @@ func failedCases(t *testing.T, key *secp256k1.PrivKey) []failedCase {
 // txs with results, at failTime under app version 10, with one validator
 // (val) for any promise height.
 func failScanner(t *testing.T, dir string, txs [][]byte, results []*abci.ExecTxResult, val *cmttypes.Validator) *Scanner {
+	t.Helper()
+	return failScannerAt(t, dir, FibreAppVersion, txs, results, val)
+}
+
+// failScannerAt is failScanner with every block's header at app version app.
+func failScannerAt(t *testing.T, dir string, app uint64, txs [][]byte, results []*abci.ExecTxResult, val *cmttypes.Validator) *Scanner {
 	t.Helper()
 	if len(txs) != len(results) {
 		t.Fatalf("%d txs, %d results", len(txs), len(results))
@@ -227,7 +258,7 @@ func failScanner(t *testing.T, dir string, txs [][]byte, results []*abci.ExecTxR
 		switch method {
 		case "block":
 			return coretypes.ResultBlock{Block: &cmttypes.Block{
-				Header: cmttypes.Header{Version: cmtversion.Consensus{Block: 11, App: FibreAppVersion}, ChainID: "test-1", Height: height, Time: failTime},
+				Header: cmttypes.Header{Version: cmtversion.Consensus{Block: 11, App: app}, ChainID: "test-1", Height: height, Time: failTime},
 				Data:   cmttypes.Data{Txs: blockTxs},
 			}}, ""
 		case "block_results":
@@ -325,6 +356,69 @@ func TestEveryFailedFibreTransactionOfABlockIsRecorded(t *testing.T) {
 	}
 }
 
+// D4: BlobTx and IndexWrapper bytes are skipped before anything reads them
+// as an SDK tx. A wrapper whose tx field is a deposit's TxBody decodes as a
+// tx carrying the deposit, so the wrapper check alone keeps it, failed, off
+// the record.
+func TestAWrapperIsNeverReadAsAFailedTx(t *testing.T) {
+	key := secp256k1.GenPrivKey()
+	owner, err := bech32.ConvertAndEncode(accountHRP, key.PubKey().Address())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deposit := depositMsg{&fibretypes.MsgDepositToEscrow{Signer: owner, Amount: sdk.NewInt64Coin("utia", 1_000_000)}}
+	blob, err := share.NewV0Blob(share.MustNewV0Namespace([]byte("failed-w")), []byte("blob data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobTx, wrapped := bodyWrappers(t, deposit, blob)
+	for name, raw := range map[string][]byte{"BlobTx": blobTx, "IndexWrapper": wrapped} {
+		// Without the check, these bytes are a failed deposit.
+		if got := decodeTxMsgs(raw); len(got) != 1 || got[0].typeURL != msgDepositTypeURL {
+			t.Fatalf("%s: decodeTxMsgs read %+v, not the deposit: the fixture does not reach the check", name, got)
+		}
+		if msgs, problems, ok := failedTxMsgs(raw); ok || msgs != nil || problems != nil {
+			t.Errorf("%s: failedTxMsgs = %+v %v %v, want nothing", name, msgs, problems, ok)
+		}
+	}
+
+	fail := resultOf(sdkerrors.ErrOutOfGas, 100000, 100100, anteEvents("300utia")...)
+	dir := t.TempDir()
+	s := failScanner(t, dir, [][]byte{blobTx, wrapped}, []*abci.ExecTxResult{fail, fail}, nil)
+	if n := s.processBlock(context.Background(), 100); n != 0 {
+		t.Fatalf("processBlock = %d", n)
+	}
+	if _, err := os.Stat(filepath.Join(dir, failedtx.FileName)); !os.IsNotExist(err) {
+		t.Fatalf("a wrapper was recorded as a failed tx: %v", err)
+	}
+}
+
+// A line carries the app version of the block it failed in, from that
+// block's header, not a constant: the rules the block ran under. A block
+// run under a version the reason table is not pinned to is read with no
+// reason and no message index, though its log names one.
+func TestAFailedTxCarriesItsBlocksAppVersion(t *testing.T) {
+	c := failedCases(t, secp256k1.GenPrivKey())[0] // [MsgSend, MsgDepositToEscrow], the deposit failed
+	for _, w := range []struct {
+		app     uint64
+		explain failedtx.Explanation
+	}{
+		{FibreAppVersion, failedtx.Explanation{Reason: "Insufficient funds", MsgIndex: 1}},
+		{FibreAppVersion + 1, failedtx.Explanation{Reason: "", MsgIndex: -1}},
+	} {
+		dir := t.TempDir()
+		s := failScannerAt(t, dir, w.app, [][]byte{c.raw}, []*abci.ExecTxResult{c.res}, nil)
+		s.processBlock(context.Background(), 100)
+		got := readFailed(t, dir)
+		if len(got) != 1 || got[0].AppVersion != w.app {
+			t.Fatalf("a block at app v%d: %+v", w.app, got)
+		}
+		if e := failedtx.Explain(got[0]); e != w.explain {
+			t.Errorf("a block at app v%d is read as %+v, want %+v", w.app, e, w.explain)
+		}
+	}
+}
+
 // Every Fibre message keeps what it asked for, at the top of the tx and
 // inside a MsgExec alike.
 func TestEachFibreMessageKeepsWhatItAskedFor(t *testing.T) {
@@ -352,7 +446,7 @@ func TestEachFibreMessageKeepsWhatItAskedFor(t *testing.T) {
 		{Index: 1, TypeURL: msgDepositTypeURL, Signer: owner, Detail: &failedtx.MsgDetail{Publisher: owner, Amount: "42utia"}},
 		{Index: 2, TypeURL: msgWithdrawalTypeURL, Signer: owner, Detail: &failedtx.MsgDetail{Publisher: owner, Amount: "9utia"}},
 		{Index: 3, TypeURL: msgTimeoutTypeURL, Signer: "celestia1anyone", Detail: &failedtx.MsgDetail{Publisher: owner, PromiseHash: hash}},
-		{Index: 4, TypeURL: msgSetHostTypeURL, Signer: op, Detail: &failedtx.MsgDetail{Host: "x.example:7980", Validator: op}},
+		{Index: 4, TypeURL: msgSetHostTypeURL, Signer: op, Detail: &failedtx.MsgDetail{Host: "x.example:7980"}},
 	}
 
 	msgs, problems, ok := failedTxMsgs(rawTx(t, kinds...))
@@ -382,6 +476,35 @@ func TestEachFibreMessageKeepsWhatItAskedFor(t *testing.T) {
 	}
 	if p := problems[0].Error(); !strings.Contains(p, "publisher") || !strings.Contains(p, "promise hash") {
 		t.Fatalf("the problem does not name what was left out: %v", p)
+	}
+}
+
+// A message the chain refused can carry a signer, a host or a denom as long
+// as its tx. Each string a Fibre message gives the record is kept to
+// failedtx.MaxFieldBytes, cut on a rune start, and the message is marked;
+// one within the cap, at the top or inside a MsgExec, is kept whole.
+func TestAFibreMessagesLongStringsAreCut(t *testing.T) {
+	long := strings.Repeat("a", failedtx.MaxFieldBytes-1) + "é" + strings.Repeat("b", 4096)
+	kept := strings.Repeat("a", failedtx.MaxFieldBytes-1)
+	op := valoper(t, 'y')
+	coin := sdk.NewInt64Coin("utia", 5)
+	coin.Denom = long
+	msgs, problems, ok := failedTxMsgs(rawTx(t,
+		hostMsg{&valaddrtypes.MsgSetFibreProviderInfo{Signer: long, Host: long}},
+		depositMsg{&fibretypes.MsgDepositToEscrow{Signer: op, Amount: coin}},
+		execOf(t, hostMsg{&valaddrtypes.MsgSetFibreProviderInfo{Signer: op, Host: "y.example:7980"}}, hostMsg{&valaddrtypes.MsgSetFibreProviderInfo{Signer: op, Host: long}}),
+	))
+	want := []failedtx.Msg{
+		{Index: 0, TypeURL: msgSetHostTypeURL, Signer: kept, Detail: &failedtx.MsgDetail{Host: kept}, Cut: true},
+		// "5" and the denom: cut at the cap, where the é starts.
+		{Index: 1, TypeURL: msgDepositTypeURL, Signer: op, Detail: &failedtx.MsgDetail{Publisher: op, Amount: "5" + kept}, Cut: true},
+		{Index: 2, TypeURL: failedtx.ExecTypeURL, Inner: []failedtx.Msg{
+			{Index: 0, TypeURL: msgSetHostTypeURL, Signer: op, Detail: &failedtx.MsgDetail{Host: "y.example:7980"}},
+			{Index: 1, TypeURL: msgSetHostTypeURL, Signer: op, Detail: &failedtx.MsgDetail{Host: kept}, Cut: true},
+		}},
+	}
+	if !ok || len(problems) != 0 || !reflect.DeepEqual(msgs, want) {
+		t.Fatalf("ok=%v problems=%v\n got %+v\nwant %+v", ok, problems, msgs, want)
 	}
 }
 

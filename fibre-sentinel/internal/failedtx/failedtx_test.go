@@ -111,6 +111,27 @@ func TestCutLogKeepsAWholeRuneUnderTheCap(t *testing.T) {
 	}
 }
 
+// A message's string is kept to MaxFieldBytes, cut on a rune start; one
+// within the cap is kept whole.
+func TestCutFieldKeepsAWholeRuneUnderTheCap(t *testing.T) {
+	if MaxFieldBytes != 256 {
+		t.Fatalf("MaxFieldBytes = %d, want 256", MaxFieldBytes)
+	}
+	for _, s := range []string{"", "celestiavaloper1x", strings.Repeat("a", MaxFieldBytes)} {
+		if stored, cut := CutField(s); stored != s || cut {
+			t.Errorf("a string within the cap changed: len %d -> %d, cut=%v", len(s), len(stored), cut)
+		}
+	}
+	long := strings.Repeat("a", MaxFieldBytes-1) + "é" + strings.Repeat("b", 1<<20)
+	if stored, cut := CutField(long); !cut || stored != strings.Repeat("a", MaxFieldBytes-1) || !utf8.ValidString(stored) {
+		t.Fatalf("cut=%v len=%d valid=%v", cut, len(stored), utf8.ValidString(stored))
+	}
+	exact := strings.Repeat("a", MaxFieldBytes-2) + "é" + "z"
+	if stored, cut := CutField(exact); !cut || stored != strings.Repeat("a", MaxFieldBytes-2)+"é" {
+		t.Fatalf("a rune ending at the cap: cut=%v len=%d", cut, len(stored))
+	}
+}
+
 func TestCutLogLeavesAShortLogAlone(t *testing.T) {
 	for _, l := range []string{"", "out of gas in location: WritePerByte; gasWanted: 53233, gasUsed: 53641: out of gas", strings.Repeat("a", MaxLogBytes)} {
 		if stored, cut := CutLog("sdk", 11, l); stored != l || cut {
@@ -129,7 +150,7 @@ func TestRecordJSONRoundTrip(t *testing.T) {
 		Messages: []Msg{
 			{Index: 0, TypeURL: urlSend},
 			{Index: 1, TypeURL: urlDeposit, Signer: "celestia1abc", Detail: &MsgDetail{Publisher: "celestia1abc", Amount: "1000000utia"}},
-			{Index: 2, TypeURL: urlExec, Inner: []Msg{{Index: 0, TypeURL: urlSetHost, Signer: "celestiavaloper1x", Detail: &MsgDetail{Host: "h.example:7980", Validator: "celestiavaloper1x"}}}},
+			{Index: 2, TypeURL: urlExec, Inner: []Msg{{Index: 0, TypeURL: urlSetHost, Signer: "celestiavaloper1x", Detail: &MsgDetail{Host: "h.example:7980"}, Cut: true}}},
 		},
 		RecordedAt: time.Date(2026, 10, 10, 8, 1, 4, 500000000, time.UTC),
 	}
@@ -144,14 +165,14 @@ func TestRecordJSONRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(full, back) {
 		t.Fatalf("round trip changed the record:\n%+v\n%+v", full, back)
 	}
-	for _, k := range []string{`"log_cut":true`, `"fee":"2000utia"`, `"inner":[`, `"detail":{"publisher":"celestia1abc","amount":"1000000utia"}`} {
+	for _, k := range []string{`"log_cut":true`, `"fee":"2000utia"`, `"inner":[`, `"detail":{"publisher":"celestia1abc","amount":"1000000utia"}`, `"detail":{"host":"h.example:7980"},"cut":true`} {
 		if !strings.Contains(string(b), k) {
 			t.Errorf("%s missing from %s", k, b)
 		}
 	}
 
 	// The optional keys are absent when empty: no log cut, no fee, a message
-	// with no inner messages, no signer and no detail.
+	// with no inner messages, no signer, no detail and nothing cut.
 	bare := full
 	bare.LogCut, bare.Fee, bare.AntePassed = false, "", false
 	bare.Messages = []Msg{{Index: 0, TypeURL: urlSetHost}}
@@ -159,7 +180,7 @@ func TestRecordJSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"log_cut", `"fee"`, "inner", "signer", "detail"} {
+	for _, k := range []string{"log_cut", `"fee"`, "inner", "signer", "detail", `"cut"`} {
 		if strings.Contains(string(b), k) {
 			t.Errorf("%s present in %s", k, b)
 		}

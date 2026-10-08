@@ -91,7 +91,7 @@ func ftxRecords() []failedtx.Record {
 	pff := failedtx.Msg{Index: 0, TypeURL: ftxURLPFF, Signer: samplePublisher,
 		Detail: &failedtx.MsgDetail{Publisher: samplePublisher, PromiseHash: "f1", Namespace: fixtureNS, BlobSize: 262144}}
 	host := failedtx.Msg{Index: 0, TypeURL: ftxURLSetHost, Signer: "celestiavaloper1v",
-		Detail: &failedtx.MsgDetail{Host: "fibre.example.org:7980", Validator: "celestiavaloper1v"}}
+		Detail: &failedtx.MsgDetail{Host: "fibre.example.org:7980"}}
 	send := failedtx.Msg{Index: 0, TypeURL: ftxURLSend}
 	// x/fibre keeper msg_server.go:53, over the bank's spendable-balance error.
 	short := errorsmod.Wrapf(errorsmod.Wrapf(sdkerrors.ErrInsufficientFunds, "spendable balance %s is smaller than %s", "10utia", "1000000utia"),
