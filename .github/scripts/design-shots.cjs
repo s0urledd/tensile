@@ -56,6 +56,14 @@ const server = http.createServer((req, res) => {
       if (b) await page.screenshot({ path: path.join(out, `asia-${tag}.png`), animations: "disabled", clip: { x: b.x + b.width * 0.58, y: b.y + b.height * 0.12, width: b.width * 0.3, height: b.height * 0.62 } });
       // the east edge, where the detail windows stand, with the places they detail
       if (b) await page.screenshot({ path: path.join(out, `east-${tag}.png`), animations: "disabled", clip: { x: b.x + b.width * 0.64, y: b.y, width: b.width * 0.36, height: b.height } });
+      // a pointer on the last detail window: its place opens on the world
+      const inset = page.locator(".cm-inset").last();
+      if (await inset.count()) {
+        await inset.hover();
+        await page.waitForTimeout(700);
+        await atlas.screenshot({ path: path.join(out, `open-${tag}.png`), animations: "disabled" });
+        await page.mouse.move(1, 1);
+      }
       await ctx.close();
     }
   }
