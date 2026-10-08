@@ -995,14 +995,14 @@ body { background: var(--canvas); }
    The map of Fibre providers sits full-bleed at the top of the panel, its sea
    the panel itself, flat, the land one calm solid shade with no grid and no
    borders (a country with a host tinted, at its true size; one too small to
-   show gets a detail window at the east edge). Places are rounded squares in the
-   accent with their count; a lone host is a small square with none. Names
-   only on hover, focus or tap. One floating bar straddles the map's foot: the
-   newest event, then the three counts. Under it a row of three instruments:
-   the current Fibre providers' share of voting power over a strip of the
-   validators themselves, open on the panel; the recent blobs (newest first, a
-   tape that moves once per read) in a window of their own; the latest blob's
-   readout on a sheet of the accent.
+   show also in a detail window at the east edge). Places are rounded squares
+   in the accent with their count; a lone host is a small square with none.
+   Names only on hover, focus or tap. One floating bar straddles the map's
+   foot: the newest event, then the three counts. Under it a row of three
+   instruments: the current Fibre providers' share of voting power over a
+   strip of the validators themselves, open on the panel; the recent blobs
+   (newest first, a tape that moves once per read) in a window of their own;
+   the latest blob's readout on a sheet of the accent.
 
    Colour is spent as elsewhere: the accent for the chain's facts and the
    instruments, amber only for an unreachable host or an unavailable blob, red
