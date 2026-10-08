@@ -40,10 +40,10 @@ import { type EndpointState, endpointState, readiness } from "@/components/Readi
 type Host = { v: Validator; state: EndpointState; share: number; cc: string; city: string; loc: string; lon: number; lat: number; ux: number; uy: number; provider: string };
 type Cluster = { id: string; hosts: Host[]; ux: number; uy: number; locs: number; ccs: string[] };
 /**
- * a small hosted country's detail window at the home view: its box in px, the scale of its outline (px per unit of
- * its own shape) and that outline's middle, and its places, each at px from the window's middle
+ * a small hosted country's detail window at the home view: its outline as drawn, its box in px, the outline's scale
+ * (px per unit of its own shape) and middle, and its places, each at px from the window's middle
  */
-type Inset = { cc: string; own: Own; x: number; y: number; w: number; h: number; k: number; cx: number; cy: number; places: { c: Cluster; px: number; py: number }[] };
+type Inset = { cc: string; path: string; x: number; y: number; w: number; h: number; k: number; cx: number; cy: number; places: { c: Cluster; px: number; py: number }[] };
 /** the visible part of the map, in map units: top-left corner and width (height follows the box) */
 type View = { x: number; y: number; w: number };
 
@@ -212,6 +212,25 @@ function ringsOf(d: string): number[][] {
   }
   return rings;
 }
+/**
+ * an outline as a window draws it: each ring's corners cut twice (Chaikin), so the few straight sides a small
+ * country's outline keeps read as a coast at the window's scale; it moves no point by more than a quarter of a side
+ */
+function smooth(d: string): string {
+  const f = (v: number) => String(+v.toFixed(2));
+  return ringsOf(d).map((r) => {
+    let p = r;
+    for (let n = 0; n < 2 && p.length >= 6; n++) {
+      const q: number[] = [];
+      for (let i = 0; i < p.length; i += 2) {
+        const j = (i + 2) % p.length;
+        q.push(0.75 * p[i] + 0.25 * p[j], 0.75 * p[i + 1] + 0.25 * p[j + 1], 0.25 * p[i] + 0.75 * p[j], 0.25 * p[i + 1] + 0.75 * p[j + 1]);
+      }
+      p = q;
+    }
+    return `M${f(p[0])} ${f(p[1])}L${p.slice(2).map(f).join(" ")}Z`;
+  }).join("");
+}
 const bounds = (p: number[]): [number, number, number, number] => {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (let i = 0; i < p.length; i += 2) { x0 = Math.min(x0, p[i]); y0 = Math.min(y0, p[i + 1]); x1 = Math.max(x1, p[i]); y1 = Math.max(y1, p[i + 1]); }
@@ -295,7 +314,7 @@ function layInsets(small: { cc: string; own: Own }[], hosts: Host[], home: View,
       const [ox, oy] = toOwn(c.ux, c.uy), r = drawn(c.hosts.length, narrow) / 2 + 4;
       return { c, px: Math.max(-w / 2 + r, Math.min(w / 2 - r, (ox - cx) * k)), py: Math.max(-h / 2 + r, Math.min(h / 2 - r, (oy - cy) * k)) };
     });
-    return [{ cc, own, x, y, w, h, k, cx, cy, places }];
+    return [{ cc, path: smooth(own.d), x, y, w, h, k, cx, cy, places }];
   });
 }
 
@@ -667,7 +686,7 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
                   onMouseEnter={() => world && openNow(world.id)} onMouseLeave={closeSoon} onClick={() => world && openNow(world.id)}>
                   <div className="cm-inset-map" style={{ height: d.h }}>
                     <svg viewBox={`${-d.w / 2} ${-d.h / 2} ${d.w} ${d.h}`} width={d.w} height={d.h} focusable="false">
-                      <path d={d.own.d} className={openCcs.has(d.cc) ? "hi" : undefined} transform={`scale(${d.k}) translate(${-d.cx} ${-d.cy})`} />
+                      <path d={d.path} className={openCcs.has(d.cc) ? "hi" : undefined} transform={`scale(${d.k}) translate(${-d.cx} ${-d.cy})`} />
                     </svg>
                     {d.places.map(({ c, px, py }) => {
                       const n = c.hosts.length, bw = badgeW(n, narrow), bh = badgeH(n, narrow);

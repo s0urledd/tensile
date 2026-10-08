@@ -1045,7 +1045,7 @@ body { background: var(--canvas); }
 }
 /* unlit, unlike the other pages' chain panels: the map's sea is the panel's flat paper */
 :root[data-theme="dark"] .deck {
-  --cm-land: #1d252a;
+  --cm-land: #1f272c;
   --cm-land-on: #1b4a51;
   --cm-land-hi: #23646d;
   --cm-inset-edge: rgb(255 255 255 / .1);
