@@ -1086,12 +1086,12 @@ body { background: var(--canvas); }
 .cm-land path.hi, .cm-inset path.hi { fill: var(--cm-land-hi); stroke: var(--cm-land-hi); }
 
 /* a small hosted country's detail window at the east edge: the same map closer, its 1:10m coast and its neighbours'
-   in the same tones, set on the sea with no frame (its land ends at its sides, as the world's ends at the box's);
-   its hosts' badge as the world's in the top-right corner, its name in the bottom-left. It stands only at the home
-   view */
+   in the same tones, set on the sea with no frame (its land ends at its sides, as the world's ends at the box's;
+   its ground is the sea's own paper, so an atoll's speck under it does not show through); its hosts' badge as the
+   world's in the top-right corner, its name in the bottom-left. It stands only at the home view */
 .cm-insets { position: absolute; inset: 0; z-index: 4; pointer-events: none; transition: opacity 180ms ease-out, visibility 180ms; }
 .cm-insets.off { opacity: 0; visibility: hidden; }
-.cm-inset { position: absolute; pointer-events: auto; cursor: pointer; transition: opacity 180ms ease-out; }
+.cm-inset { position: absolute; background: var(--paper); pointer-events: auto; cursor: pointer; transition: opacity 180ms ease-out; }
 .cm-atlas.has-open .cm-inset:not(.open) { opacity: .42; }
 .cm-inset svg { position: absolute; left: 0; top: 0; display: block; overflow: hidden; }
 .cm-inset-b { position: absolute; right: 8px; top: 8px; z-index: 1; }

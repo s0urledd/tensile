@@ -193,14 +193,17 @@ const RING = 8;
  * window. The windows stand in one column at the box's east edge, under the view buttons, each as level with its
  * place as the others allow
  */
-const INSET_W = 112, INSET_H = 92, INSET_W_NARROW = 84, INSET_H_NARROW = 64;
+const INSET_W = 112, INSET_H = 104, INSET_W_NARROW = 84, INSET_H_NARROW = 64;
 const INSET_PAD_X = 12, INSET_PAD_Y = 10, INSET_PAD_NARROW = 8;
-const INSET_EDGE = 8, INSET_LINE = 14, INSET_GAP = 16;
+const INSET_EDGE = 8, INSET_LINE = 14, INSET_GAP = 12;
 /** px²: a piece of land the window's edge cuts down to less than this is left out (an island's tip, not a coast) */
-const INSET_CRUMB = 40;
-/** the country's outline, if it would meet the badge or the name: smaller, and moved by these px, first that clears */
-const INSET_FITS = [1, 0.92, 0.84, 0.76];
-const INSET_SHIFTS: [number, number][] = [[0, 0], [-4, 0], [0, 4], [4, 0], [0, -4], [-4, 4], [4, -4], [-8, 0], [0, 8], [8, 0], [0, -8]];
+const INSET_CRUMB = 90;
+/** px: the room a window keeps from the world's land above and below it */
+const INSET_CLEAR = 10;
+/** the country's outline, if it would meet the badge or the name: smaller, and moved by these px, the least first */
+const INSET_FITS = [1, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7];
+const INSET_SHIFTS = [0, -4, 4, -8, 8].flatMap((dx) => [0, -2, 2, -4, 4, -6, 6, -8, 8].map((dy): [number, number] => [dx, dy]))
+  .sort((a, b) => Math.hypot(a[0], a[1]) - Math.hypot(b[0], b[1]));
 /** px: the column's room from the box's east edge (the view buttons' own), and from the top (under the buttons) */
 const INSET_SIDE = 16, INSET_TOP = 62, INSET_TOP_NARROW = 10;
 /**
@@ -301,8 +304,8 @@ function placeIn(pts: number[], box: [number, number, number, number], w: number
   const [x0, y0, x1, y1] = box, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
   const k0 = Math.min((w - 2 * padX) / Math.max(1e-6, x1 - x0), (h - 2 * padY) / Math.max(1e-6, y1 - y0));
   // the corners' rooms, in px from the window's top-left: the badge's right and top edges, the name's left and foot
-  const bx = w - INSET_EDGE - badge[0] - 4, by = INSET_EDGE + badge[1] + 4;
-  const nx = INSET_EDGE + name + 4, ny = h - INSET_EDGE - INSET_LINE - 4;
+  const bx = w - INSET_EDGE - badge[0] - 2, by = INSET_EDGE + badge[1] + 2;
+  const nx = INSET_EDGE + name + 2, ny = h - INSET_EDGE - INSET_LINE - 2;
   let best = { k: k0, cx, cy, dx: 0, dy: 0 }, fewest = Infinity;
   for (const f of INSET_FITS) {
     const k = k0 * f;
@@ -332,13 +335,28 @@ function layInsets(small: { cc: string; own: Own }[], hosts: Host[], home: View,
   const w = narrow ? INSET_W_NARROW : INSET_W, h = narrow ? INSET_H_NARROW : INSET_H;
   const px = narrow ? INSET_PAD_NARROW : INSET_PAD_X, py = narrow ? INSET_PAD_NARROW : INSET_PAD_Y;
   const step = h + INSET_GAP, x = width - INSET_SIDE - w;
-  const top = narrow ? INSET_TOP_NARROW : INSET_TOP, foot = (bar ? bar[1] : height) - 10;
+  let top = narrow ? INSET_TOP_NARROW : INSET_TOP, foot = (bar ? bar[1] : height) - 10;
   const want = small.flatMap(({ cc, own }) => {
     const hs = hosts.filter((q) => q.cc === cc);
     if (!hs.length || (own.unit && !coast)) return [];
     const uy = hs.reduce((t, q) => t + q.uy, 0) / hs.length;
     return [{ cc, own, hs, y: (uy - home.y) * s - h / 2 }];
   }).sort((a, b) => a.y - b.y);
+  // the world's land in the column's lane, a piece of 2 px or more, keeps the windows INSET_CLEAR px off it where the
+  // column still holds them all: land above the column's middle moves its top down, land below moves its foot up.
+  // A speck of an island under a window is hidden by the window's paper
+  const mid = (top + foot) / 2;
+  let lTop = top, lFoot = foot;
+  for (const { rings } of SHAPES.values()) for (const { e, pts } of rings) {
+    if (e * s < 2) continue;
+    for (let i = 0; i < pts.length; i += 2) {
+      const X = (pts[i] - home.x) * s;
+      if (X < x || X > x + w) continue;
+      const Y = (pts[i + 1] - home.y) * s;
+      if (Y < mid) lTop = Math.max(lTop, Y + INSET_CLEAR); else lFoot = Math.min(lFoot, Y - INSET_CLEAR);
+    }
+  }
+  if (lFoot - lTop >= want.length * step - INSET_GAP) { top = lTop; foot = lFoot; }
   // stacked in order, each run of windows that would overlap centred on where its windows want to be (sum: each
   // window's wanted top less its place in the run)
   const groups: { n: number; y: number; sum: number }[] = [];
