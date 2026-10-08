@@ -33,7 +33,9 @@ func OpenAppender(path string) (*Appender, error) {
 	return &Appender{path: path, f: f}, nil
 }
 
-// Write appends b, which must be whole lines, in one write(2).
+// Write appends b, which must be whole lines, in one write(2). A write that
+// fails part-way is cut back off (WriteWhole), so the file still ends on a
+// whole line when Write returns its error.
 func (a *Appender) Write(b []byte) (int, error) {
 	for try := 0; ; try++ {
 		if err := lockShared(a.f); err != nil {
@@ -45,7 +47,7 @@ func (a *Appender) Write(b []byte) (int, error) {
 			return 0, err
 		}
 		if cur {
-			n, err := a.f.Write(b)
+			n, err := WriteWhole(a.f, b)
 			_ = unlock(a.f)
 			return n, err
 		}
@@ -62,6 +64,48 @@ func (a *Appender) Write(b []byte) (int, error) {
 		_ = a.f.Close()
 		a.f = f
 	}
+}
+
+// fileWrite is (*os.File).Write; a test puts a write that fails part-way
+// here.
+var fileWrite = (*os.File).Write
+
+// WriteWhole appends b, whole lines, to f, a file opened for append whose
+// one writer is the caller, in one write(2), and takes back what reached
+// the file of a write that fails part-way. That is what a full disk does:
+// the kernel writes what fits in the file's last block and refuses the
+// rest, and Go returns the count with the error. The start of a line left
+// at the end of the file would have the next line appended glued onto it,
+// the two lost to every reader for good (the ingest steps over the pair as
+// undecodable, the export ships it undated, and the archive's cut stops at
+// it). So the bytes are cut off again, and the write reports 0 and its
+// error. When they cannot be (the file is not as the write left it, or the
+// cut fails), the error says so, and the writer's RepairTail cuts them
+// before it next writes.
+func WriteWhole(f *os.File, b []byte) (int, error) {
+	before, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	n, err := fileWrite(f, b)
+	if err == nil || n == 0 {
+		return n, err
+	}
+	after, serr := f.Stat()
+	switch {
+	case serr != nil:
+	case after.Size() != before.Size()+int64(n):
+		serr = fmt.Errorf("the file is %d bytes, not the %d the write left", after.Size(), before.Size()+int64(n))
+	default:
+		serr = f.Truncate(before.Size())
+	}
+	if serr != nil {
+		return n, fmt.Errorf("%w (and the %d byte(s) of it written could not be cut: %v)", err, n, serr)
+	}
+	// Synced where it can be; a crash before the cut reaches the disk
+	// brings back a torn tail, which RepairTail cuts when the writer starts.
+	_ = f.Sync()
+	return 0, err
 }
 
 // current reports whether the path still names the file held.
@@ -134,6 +178,15 @@ func cutTornTail(f *os.File) (int64, error) {
 		return 0, err
 	}
 	size := info.Size()
+	// The last byte first: a file that ends on a newline, which is every
+	// file but one a write left torn, needs no further read.
+	var last [1]byte
+	if _, err := f.ReadAt(last[:], size-1); err != nil {
+		return 0, err
+	}
+	if last[0] == '\n' {
+		return 0, nil
+	}
 	end, err := lastLineEnd(f, size)
 	if err != nil || end == size {
 		return 0, err

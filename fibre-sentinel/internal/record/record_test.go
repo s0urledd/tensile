@@ -541,6 +541,61 @@ func TestRepairTail(t *testing.T) {
 	}
 }
 
+// A write that fails part-way, as one does when the disk fills inside a
+// line, is cut back off: the file still ends on its last whole line, and
+// the next line written is a line of its own, not glued onto a fragment.
+func TestAFailedWriteLeavesNoFragment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reachability.jsonl")
+	first := lineAt(t0, "a", 0)
+	appendLines(t, path, first)
+	full := errors.New("no space left on device")
+	fileWrite = func(f *os.File, b []byte) (int, error) {
+		n, _ := f.Write(b[:len(b)/2])
+		return n, full
+	}
+	t.Cleanup(func() { fileWrite = (*os.File).Write })
+	a, err := OpenAppender(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if n, err := a.Write([]byte(lineAt(t0.Add(time.Hour), "a", 1))); !errors.Is(err, full) || n != 0 {
+		t.Fatalf("a write that failed part-way: %d %v", n, err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != first {
+		t.Fatalf("the file after a failed write: %q", got)
+	}
+	fileWrite = (*os.File).Write
+	next := lineAt(t0.Add(2*time.Hour), "a", 2)
+	if _, err := a.Write([]byte(next)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != first+next {
+		t.Fatalf("the next line was not a line of its own: %q", got)
+	}
+
+	// A plain file of the collector's own, the same.
+	own := filepath.Join(t.TempDir(), "amendments.jsonl")
+	f, err := os.OpenFile(own, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := WriteWhole(f, []byte(first)); err != nil {
+		t.Fatal(err)
+	}
+	fileWrite = func(f *os.File, b []byte) (int, error) {
+		n, _ := f.Write(b[:3])
+		return n, full
+	}
+	if n, err := WriteWhole(f, []byte(next)); !errors.Is(err, full) || n != 0 {
+		t.Fatalf("WriteWhole failing part-way: %d %v", n, err)
+	}
+	if got, _ := os.ReadFile(own); string(got) != first {
+		t.Fatalf("WriteWhole left %q", got)
+	}
+}
+
 // A writer holding its file across a rotation follows it through the
 // Appender; one that writes to a plain O_APPEND descriptor would write into
 // the file the rotation replaced, which is why every writer of an archived
