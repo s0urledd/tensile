@@ -190,3 +190,46 @@ func TestTipNamesTheNewestBlob(t *testing.T) {
 		t.Fatalf("/v1/blobs' newest is not the tip's: %s", rec.Body.String())
 	}
 }
+
+// /v1/tip reads the store with its cache's lock held, and every open page
+// asks it every second. While every connection of the store's pool is held
+// by reads ahead of it, it answers within tipStoreTimeout all the same,
+// without the store's figures for that answer, and Fibre's state is the
+// last answer's. It used to read through Store.Meta, which takes no
+// context: it waited for a connection for as long as those reads ran, and
+// every reader of the route waited behind it.
+func TestTipAnswersWhileEveryConnectionIsHeld(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db")) // a pool of one connection
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	_ = st.SetMeta("fibre_active", "yes", time.Now())
+	_ = st.SetMeta("chain_height", "1000", time.Now())
+	srv := api.NewWithVantage(st, api.VantageInfo{Name: "test"}, nil)
+	defer srv.Close()
+	if b, _ := getTip(t, srv); !b.FibreActive || b.Height != 1000 {
+		t.Fatalf("tip %+v", b)
+	}
+	tx, err := st.DB().Begin() // holds the one connection
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	time.Sleep(300 * time.Millisecond) // past the answer kept
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/tip", nil))
+		done <- rec
+	}()
+	select {
+	case rec := <-done:
+		var b tipBody
+		if err := json.Unmarshal(rec.Body.Bytes(), &b); err != nil || rec.Code != http.StatusOK || !b.FibreActive {
+			t.Errorf("with every connection held: %d %s", rec.Code, rec.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("/v1/tip waited for a connection of the store")
+	}
+}

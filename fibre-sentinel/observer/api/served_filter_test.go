@@ -3,6 +3,7 @@ package api_test
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -56,7 +57,11 @@ func TestProbesServedNoFollowsTheObligationRule(t *testing.T) {
 			ValidatorAddress string `json:"validator_address"`
 		} `json:"probes"`
 	}
-	if code := get(t, ts, "/v1/probes?served=no&limit=100", &probes); code != 200 {
+	// The readings are from before FullReadSince, further back than the
+	// span served=no reads when no validator, blob or reading narrows it:
+	// before brings the span to them.
+	before := url.QueryEscape(now.Add(time.Hour).Format(time.RFC3339))
+	if code := get(t, ts, "/v1/probes?served=no&limit=100&before="+before, &probes); code != 200 {
 		t.Fatalf("served=no: %d", code)
 	}
 	var got []string

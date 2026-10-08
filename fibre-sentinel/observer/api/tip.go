@@ -55,8 +55,9 @@ const latestBlobSQL = `SELECT promise_hash, settlement_height FROM publications
 	WHERE settlement_height = (SELECT MAX(settlement_height) FROM publications)
 	ORDER BY settlement_tx_index DESC LIMIT 1`
 
-// tipStoreTimeout bounds the store's part of one answer. A read in WAL mode is
-// never blocked by the collector writing, so this is a backstop only: the
+// tipStoreTimeout bounds the store's part of one answer, every read of it
+// together. A read in WAL mode is never blocked by the collector writing, but
+// it waits for a connection of the pool while long reads hold them all; the
 // cache's mutex is held while readTip runs, and every reader waits on it.
 const tipStoreTimeout = 500 * time.Millisecond
 
@@ -100,11 +101,23 @@ func (s *Server) handleTip(w http.ResponseWriter, r *http.Request) {
 // it follows the tip, after reading it), and the collector's meta row (a poll
 // behind) when the scanner has written nothing. The newest blob comes from the
 // store whichever of them answers.
+//
+// The store is read within tipStoreTimeout, never through Store.Meta, which
+// takes no context and waited for a free connection for as long as the reads
+// ahead of it ran, with the cache's mutex held. A store that does not answer
+// in time costs this answer its store figures, not the answer: Fibre's state
+// stays the last answer's, which the store has not been seen to change.
+// Called with s.tip.mu held.
 func (s *Server) readTip(now time.Time) tipResponse {
 	var out tipResponse
-	active, _ := s.st.Meta("fibre_active")
-	out.FibreActive = active == "yes"
-	out.LatestBlob = s.latestBlob(now)
+	ctx, cancel := context.WithTimeout(context.Background(), tipStoreTimeout)
+	defer cancel()
+	if active, err := s.metaWithin(ctx, "fibre_active"); err == nil {
+		out.FibreActive = active == "yes"
+	} else {
+		out.FibreActive = s.tip.v.FibreActive
+	}
+	out.LatestBlob = s.latestBlob(ctx, now)
 	if s.tipRPC != "" {
 		if h, t, ok := nodeTip(s.tipRPC); ok {
 			out.Height, out.BlockTime = h, &t
@@ -127,10 +140,10 @@ func (s *Server) readTip(now time.Time) tipResponse {
 			}
 		}
 	}
-	if v, _ := s.st.Meta("chain_height"); v != "" {
+	if v, _ := s.metaWithin(ctx, "chain_height"); v != "" {
 		out.Height, _ = strconv.ParseInt(v, 10, 64)
 	}
-	if v, _ := s.st.Meta("chain_tip_time"); v != "" {
+	if v, _ := s.metaWithin(ctx, "chain_tip_time"); v != "" {
 		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
 			out.BlockTime = &t
 		}
@@ -138,13 +151,22 @@ func (s *Server) readTip(now time.Time) tipResponse {
 	return out
 }
 
+// metaWithin is Store.Meta within ctx: one meta value, "" when the key is
+// not there.
+func (s *Server) metaWithin(ctx context.Context, key string) (string, error) {
+	var v string
+	err := s.st.DB().QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return v, err
+}
+
 // latestBlob is the newest blob the store holds (latestBlobSQL); nil when it
-// holds none, or when the store could not say, in which case the answer leaves
-// the field out and a page reads /v1/blobs at its slow pace, as it would from
-// an API that never published it. Called with s.tip.mu held.
-func (s *Server) latestBlob(now time.Time) *tipBlob {
-	ctx, cancel := context.WithTimeout(context.Background(), tipStoreTimeout)
-	defer cancel()
+// holds none, or when the store could not say within ctx, in which case the
+// answer leaves the field out and a page reads /v1/blobs at its slow pace, as
+// it would from an API that never published it. Called with s.tip.mu held.
+func (s *Server) latestBlob(ctx context.Context, now time.Time) *tipBlob {
 	var b tipBlob
 	if err := s.st.DB().QueryRowContext(ctx, latestBlobSQL).Scan(&b.PromiseHash, &b.SettlementHeight); err != nil {
 		if !errors.Is(err, sql.ErrNoRows) && s.log != nil && now.Sub(s.tip.blobErrAt) >= time.Minute {
