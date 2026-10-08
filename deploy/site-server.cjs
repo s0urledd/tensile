@@ -19,6 +19,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
+const { pipeline } = require("stream");
 
 const ROOT = path.resolve(process.env.SITE_ROOT || "");
 if (!process.env.SITE_ROOT || !fs.existsSync(path.join(ROOT, "index.html"))) {
@@ -73,46 +74,85 @@ const SECURITY = {
 // many ask. TIP_RATE is about thirty shown pages' worth. Avatars are exempt:
 // the overview asks for one per validator in a burst, and the API serves them
 // from its own cache.
-const RATE = { burst: 120, perSec: 10 };        // token bucket per client address
+//
+// The two in-flight caps count different things. INFLIGHT_TOTAL is the API's
+// work: a request holds its place from admission until the API's answer
+// begins (its headers), so a client that reads an answer slowly, a day's
+// export over half an hour, holds none of the places every other client's
+// requests need. INFLIGHT_PER_CLIENT is one client's share of the site: a
+// request holds its place until both its halves, the client's and the API's,
+// are over, so slow downloads cost only the client that makes them.
+const RATE = { burst: 120, perSec: 10 };        // token bucket per client
 const TIP_RATE = { burst: 60, perSec: 30 };     // the same, for /v1/tip alone
 const INFLIGHT_PER_CLIENT = 16, INFLIGHT_TOTAL = 48;
-const buckets = new Map();                      // address -> { tokens, tips, at, inflight }
+// A client is an IPv4 address or an IPv6 /64 (clientOf). Past CLIENTS_MAX of
+// them in the last ten minutes, which this site's readers do not come near,
+// every new one shares one allowance: a flood of new addresses neither grows
+// the map without end nor gets a burst for each address.
+const CLIENTS_MAX = 50_000;
+const buckets = new Map();                      // client -> { tokens, tips, at, inflight }
+const newBucket = (now) => ({ tokens: RATE.burst, tips: TIP_RATE.burst, at: now, inflight: 0 });
+const overflow = newBucket(Date.now());
 let inflight = 0;
 setInterval(() => {
   const now = Date.now();
   for (const [k, b] of buckets) if (b.inflight === 0 && now - b.at > 10 * 60_000) buckets.delete(k);
 }, 60_000).unref();
 
-// The client's address: the front proxy's X-Forwarded-For when the request
-// comes from a private address (the proxy's container), else the socket's.
+// The first four groups of an IPv6 address, its /64: one host is given a whole
+// /64 and can send from any address in it. Whatever the spelling: :: and a
+// dotted IPv4 tail are expanded, a zone dropped, leading zeros read away.
+function v6net(a) {
+  const s = a.replace(/%.*$/, "").replace(/\d+\.\d+\.\d+\.\d+$/, "0:0");
+  const at = s.indexOf("::");
+  const head = (at < 0 ? s : s.slice(0, at)).split(":").filter(Boolean);
+  const tail = at < 0 ? [] : s.slice(at + 2).split(":").filter(Boolean);
+  const groups = at < 0 ? head : [...head, ...Array(Math.max(0, 8 - head.length - tail.length)).fill("0"), ...tail];
+  return groups.slice(0, 4).map((g) => (parseInt(g, 16) || 0).toString(16)).join(":") + "::/64";
+}
+
+// The client a request is counted as: the front proxy's X-Forwarded-For when
+// the request comes from a private address (the proxy's container), else the
+// socket's; an IPv6 address by its /64 (v6net).
 function clientOf(req) {
   const peer = (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
   const priv = /^(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|::1$|f[cd])/.test(peer);
   const xff = priv && typeof req.headers["x-forwarded-for"] === "string" ? req.headers["x-forwarded-for"].split(",")[0].trim() : "";
-  return xff || peer;
+  const who = (xff || peer).toLowerCase().replace(/^::ffff:(?=\d+\.)/, "");
+  return who.includes(":") ? v6net(who) : who;
 }
 
-// tip: the request is for /v1/tip, and spends TIP_RATE's tokens instead of RATE's.
+function refuse(res) {
+  res.writeHead(429, { ...SECURITY, "content-type": "application/json", "retry-after": "5" });
+  res.end('{"error":"too many requests"}');
+  return null;
+}
+
+// tip: the request is for /v1/tip, and spends TIP_RATE's tokens instead of
+// RATE's. The places it holds are given back through what it returns:
+// answered() when the API's answer begins or the request to it is over (the
+// global place), over() when both halves are (the client's own).
 function admit(req, res, tip) {
   const who = clientOf(req), now = Date.now();
   let b = buckets.get(who);
-  if (!b) buckets.set(who, b = { tokens: RATE.burst, tips: TIP_RATE.burst, at: now, inflight: 0 });
+  if (!b) {
+    // refused anyway: no entry is made for it
+    if (inflight >= INFLIGHT_TOTAL) return refuse(res);
+    if (buckets.size >= CLIENTS_MAX) b = overflow;
+    else buckets.set(who, b = newBucket(now));
+  }
   const s = (now - b.at) / 1000;
   b.tokens = Math.min(RATE.burst, b.tokens + s * RATE.perSec);
   b.tips = Math.min(TIP_RATE.burst, b.tips + s * TIP_RATE.perSec);
   b.at = now;
   const spend = tip ? "tips" : "tokens";
-  if (b[spend] < 1 || b.inflight >= INFLIGHT_PER_CLIENT || inflight >= INFLIGHT_TOTAL) {
-    res.writeHead(429, { ...SECURITY, "content-type": "application/json", "retry-after": "5" });
-    res.end('{"error":"too many requests"}');
-    return null;
-  }
+  if (b[spend] < 1 || b.inflight >= INFLIGHT_PER_CLIENT || inflight >= INFLIGHT_TOTAL) return refuse(res);
   b[spend] -= 1;
   b.inflight++; inflight++;
-  let done = false;
-  const release = () => { if (!done) { done = true; b.inflight--; inflight--; } };
-  res.on("close", release);
-  return release;
+  let working = true, open = true;
+  const answered = () => { if (working) { working = false; inflight--; } };
+  const over = () => { answered(); if (open) { open = false; b.inflight--; } };
+  return { answered, over };
 }
 
 // Next's hashed build output never changes under a name; everything else can.
@@ -192,9 +232,11 @@ async function send(req, res, status, found, rel) {
   }
   res.writeHead(status, { ...headers, "content-length": found.size });
   if (req.method === "HEAD") return res.end();
-  const stream = fs.createReadStream(found.file);
-  stream.on("error", () => res.destroy());
-  stream.pipe(res);
+  // A client gone while the file was looked up: no file is opened for it.
+  if (req.socket.destroyed) return res.destroy();
+  // pipeline, not pipe: a client that goes away mid-file destroys the stream, which closes its file, where a pipe only
+  // paused it and kept the file open for the life of the process; a read error destroys the response.
+  pipeline(fs.createReadStream(found.file), res, () => {});
 }
 
 // After start, every compressible file of the export is compressed in the background, one at a time, so the first
@@ -215,6 +257,9 @@ async function warm(dir = ROOT) {
 
 // SLOW_MS is when an API answer is worth a journal line.
 const SLOW_MS = 1000;
+// IDLE_MS: an answer the client has stopped reading, or the API has stopped
+// sending, is given up after this long without a byte moving.
+const IDLE_MS = 60_000;
 
 const HOP = new Set(["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer", "host"]);
 
@@ -223,7 +268,9 @@ function proxy(req, res, u) {
     res.writeHead(405, { ...SECURITY, allow: "GET, HEAD" });
     return res.end();
   }
-  if (!u.pathname.startsWith("/api/v1/avatars/") && !admit(req, res, u.pathname === "/api/v1/tip")) return;
+  const counted = !u.pathname.startsWith("/api/v1/avatars/");
+  const slot = counted ? admit(req, res, u.pathname === "/api/v1/tip") : null;
+  if (counted && !slot) return;
   // A page waiting on the API is the thing to catch before a visitor does:
   // every answer slower than SLOW_MS goes to the journal with its time.
   const t0 = Date.now();
@@ -233,14 +280,39 @@ function proxy(req, res, u) {
   });
   const headers = {};
   for (const [k, v] of Object.entries(req.headers)) if (!HOP.has(k)) headers[k] = v;
-  const up = http.request({ host: API.host, port: API.port, method: req.method, path: u.pathname.slice(4) + u.search, headers, timeout: 60_000 }, (r) => {
-    const out = {};
-    for (const [k, v] of Object.entries(r.headers)) if (!HOP.has(k)) out[k] = v;
-    res.writeHead(r.statusCode || 502, { ...SECURITY, ...out });
-    r.pipe(res);
-  });
+  // gone: the client went away before its answer was whole
+  let up, gone = false;
+  try {
+    up = http.request({ host: API.host, port: API.port, method: req.method, path: u.pathname.slice(4) + u.search, headers, timeout: IDLE_MS }, (r) => {
+      // The API has answered: carrying the answer to the client is no work of the API's.
+      slot?.answered();
+      if (gone) return r.destroy();
+      const out = {};
+      for (const [k, v] of Object.entries(r.headers)) if (!HOP.has(k)) out[k] = v;
+      res.writeHead(r.statusCode || 502, { ...SECURITY, ...out });
+      res.setTimeout(IDLE_MS, () => res.destroy());
+      // pipeline, not pipe: an API that closes mid-answer (a restart, its write deadline) ends the client's answer
+      // too, where a pipe left it open, and a client that goes away ends the API's.
+      pipeline(r, res, () => {});
+    });
+  } catch (e) {
+    slot?.over();
+    throw e;
+  }
+  // A client that goes away cancels its request to the API, whose handler's
+  // context is cancelled with it, rather than leaving it to run out its time.
+  res.on("close", () => { if (!res.writableFinished) { gone = true; up.destroy(); } });
+  // The places follow the request to the API: the global one is given back
+  // when the request is over at the latest, the client's own when both
+  // halves are.
+  let halves = 2;
+  const half = () => { if (--halves === 0) slot?.over(); };
+  up.on("close", () => { slot?.answered(); half(); });
+  res.on("close", half);
   up.on("timeout", () => up.destroy(new Error("upstream timeout")));
   up.on("error", (e) => {
+    // a request cancelled for a client that went away: nothing to answer, and nothing for the journal
+    if (gone) return;
     console.error(`site-server: api ${u.pathname}: ${e.message}`);
     if (!res.headersSent) { res.writeHead(502, { ...SECURITY, "content-type": "application/json" }); res.end('{"error":"observer API unavailable"}'); }
     else res.destroy();

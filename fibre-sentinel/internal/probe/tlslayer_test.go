@@ -360,7 +360,13 @@ func TestRun_UnroutableRegisteredHostIsNotDialled(t *testing.T) {
 		return bigShard(64), nil
 	}})
 
-	for _, addr := range []string{"127.0.0.1:9000", "10.0.0.5:443", "192.168.1.1:443", "169.254.1.1:443", "[::1]:443", "0.0.0.0:443"} {
+	for _, addr := range []string{"127.0.0.1:9000", "10.0.0.5:443", "192.168.1.1:443", "169.254.1.1:443", "[::1]:443", "0.0.0.0:443",
+		// shared address space: carrier-grade NAT, and overlay networks
+		// such as Tailscale
+		"100.64.0.1:7980", "100.100.1.1:7980",
+		// benchmarking, documentation, reserved, a NAT64 address of a
+		// private one, IPv6 documentation
+		"198.18.0.1:443", "203.0.113.9:7980", "240.0.0.1:443", "[64:ff9b::a00:1]:443", "[2001:db8::1]:443"} {
 		in := probeInput(addr, consPub)
 		in.AllowUnroutableHost = false
 		m := Run(context.Background(), in, mustCoder(t), StepTimeouts{})
@@ -384,5 +390,53 @@ func TestRun_UnroutableRegisteredHostIsNotDialled(t *testing.T) {
 	in := probeInput(host, consPub)
 	if m := Run(context.Background(), in, mustCoder(t), StepTimeouts{}); m.Outcome == OutcomeBadHost {
 		t.Fatalf("the escape did not admit a loopback test server: %s", m.RawError)
+	}
+}
+
+// The identity check runs inside the handshake, before the peer proves it
+// holds the certificate's key: TLS 1.3 checks its CertificateVerify after
+// tls.Config.VerifyConnection. An endpoint that presents a validator's
+// genuine certificate, which anyone can fetch from the validator, without
+// its key fails the handshake, and its identity is not verified either, on
+// the reachability check and on a reading alike. Such an answer fails
+// before any blob is asked for, so it answers the validator's other
+// waiting attempts too (shareable).
+func TestRun_AGenuineCertificateWithoutItsKeyIsNoIdentity(t *testing.T) {
+	consPub, consPriv, _ := ed25519.GenerateKey(rand.Reader)
+	now := time.Now()
+	genuine := fibreCert(t, consPriv, "test-chain", now.Add(-time.Hour), now.Add(24*time.Hour))
+	_, otherKey, _ := ed25519.GenerateKey(rand.Reader)
+	replayed := tls.Certificate{Certificate: genuine.Certificate, PrivateKey: otherKey, Leaf: genuine.Leaf}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{replayed}, MinVersion: tls.VersionTLS13})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				_ = c.(*tls.Conn).Handshake()
+				_ = c.Close()
+			}()
+		}
+	}()
+	for _, skip := range []bool{true, false} {
+		in := probeInput(ln.Addr().String(), consPub)
+		in.SkipDownload = skip
+		m := Run(context.Background(), in, mustCoder(t), StepTimeouts{})
+		if m.Outcome != OutcomeTLSFail || m.TLS.OK {
+			t.Fatalf("skip download %v: outcome %s (%s), want TLS_HANDSHAKE_FAIL", skip, m.Outcome, m.RawError)
+		}
+		if !m.Identity.Attempted || m.Identity.OK || !strings.Contains(m.Identity.Error, "did not prove it holds") {
+			t.Fatalf("skip download %v: identity %+v, verified without proof of the key", skip, m.Identity)
+		}
+		m.ScheduleLabel = FullReadLabel
+		if !shareable(m) {
+			t.Fatalf("skip download %v: a handshake that failed before any blob was asked for is not shareable", skip)
+		}
 	}
 }

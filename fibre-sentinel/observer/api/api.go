@@ -103,6 +103,11 @@ type Server struct {
 	blobs *blobCache
 	// asOf rations pinned-window requests (see asOfLimiter).
 	asOf asOfLimiter
+	// probeScans holds a slot per /v1/probes read no index narrows
+	// (probeScanSlots); blobWork one per publication whose /v1/blobs verdict
+	// is being computed (blobWorkSlots).
+	probeScans chan struct{}
+	blobWork   chan struct{}
 	// details caches the validator page (see validator_detail.go).
 	details detailCache
 	// signing caches /v1/signing (see signing.go).
@@ -369,7 +374,7 @@ func newServer(st *store.Store, info VantageInfo, log *scan.Logger, opts ...Opti
 	}
 	info.Complete = info.Location != "" && info.Provider != ""
 	s := &Server{st: st, vantage: info.Name, info: info, mux: http.NewServeMux(), log: log, blobs: newBlobCache(), labels: map[string]PublisherLabel{},
-		histCacheMB: -1, mergeDays: -1}
+		histCacheMB: -1, mergeDays: -1, probeScans: make(chan struct{}, probeScanSlots), blobWork: make(chan struct{}, blobWorkSlots)}
 	s.txSlots = readSlots(st.DB().Stats().MaxOpenConnections)
 	for _, o := range opts {
 		o(s)
@@ -3616,32 +3621,54 @@ func (s *Server) blobRowsAt(ctx context.Context, where string, limit, offset int
 		return nil, err
 	}
 	for i := range out {
-		hash := out[i].PromiseHash
-		fp := fps[hash]
-		if v, ok := s.blobs.get(hash, fp); ok {
-			out[i].Classes, out[i].ProbeCount, out[i].Reconstructable = v.classes, v.total, v.rc
-			continue
-		}
-		classes, total, err := s.classCountsWhere(ctx, `promise_hash = ?`, hash)
-		if err != nil {
+		if err := s.blobVerdictOf(ctx, &out[i], fps[out[i].PromiseHash]); err != nil {
 			return nil, err
-		}
-		out[i].Classes, out[i].ProbeCount = classes, total
-		rc, err := s.readStatus(ctx, hash, asOfPin{now: s.now()})
-		if err != nil {
-			return nil, err
-		}
-		out[i].Reconstructable = rc
-		// Only once the obligation has ended. window_over is the one part of a
-		// verdict that depends on the clock rather than on the store, and
-		// caching it before it flips would freeze "still under obligation" onto
-		// a blob whose deadline has since passed. Nor a status its record did
-		// not decode for, which the next read tries again.
-		if rc != nil && rc.WindowOver && !rc.faulted {
-			s.blobs.put(hash, blobVerdict{fp: fp, classes: classes, total: total, rc: rc})
 		}
 	}
 	return out, nil
+}
+
+// blobVerdictOf fills b's class tally and status: from the verdict cache
+// when it holds them for fp, else computed in one of the blobWorkSlots.
+func (s *Server) blobVerdictOf(ctx context.Context, b *blobRow, fp string) error {
+	hash := b.PromiseHash
+	if v, ok := s.blobs.get(hash, fp); ok {
+		b.Classes, b.ProbeCount, b.Reconstructable = v.classes, v.total, v.rc
+		return nil
+	}
+	if s.blobWork != nil {
+		select {
+		case s.blobWork <- struct{}{}:
+			defer func() { <-s.blobWork }()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		// Another reader of the same page may have computed it while this
+		// one waited for the slot.
+		if v, ok := s.blobs.get(hash, fp); ok {
+			b.Classes, b.ProbeCount, b.Reconstructable = v.classes, v.total, v.rc
+			return nil
+		}
+	}
+	classes, total, err := s.classCountsWhere(ctx, `promise_hash = ?`, hash)
+	if err != nil {
+		return err
+	}
+	b.Classes, b.ProbeCount = classes, total
+	rc, err := s.readStatus(ctx, hash, asOfPin{now: s.now()})
+	if err != nil {
+		return err
+	}
+	b.Reconstructable = rc
+	// Only once the obligation has ended. window_over is the one part of a
+	// verdict that depends on the clock rather than on the store, and
+	// caching it before it flips would freeze "still under obligation" onto
+	// a blob whose deadline has since passed. Nor a status its record did
+	// not decode for, which the next read tries again.
+	if rc != nil && rc.WindowOver && !rc.faulted {
+		s.blobs.put(hash, blobVerdict{fp: fp, classes: classes, total: total, rc: rc})
+	}
+	return nil
 }
 
 // reconstructable reads one blob's status from its rows. It is the
@@ -4415,37 +4442,8 @@ type probeRow struct {
 // of the row's bytes and a thousand of them came to megabytes of JSON parsed
 // for nothing.
 func (s *Server) probeRows(ctx context.Context, where string, limit int, withRows bool, args ...any) ([]probeRow, error) {
-	// The effective classification, not the stored one. /v1/probes,
-	// /v1/blobs/{hash}.probes and a validator's recent probes are all
-	// served from here, and a held row published as a bare "FAULT" beside
-	// validator_address is the accusation this whole mechanism exists to
-	// withhold — a third party counting classifications would count it.
-	// retention_unverified rides along so a reader can see why, and
-	// phase_at_probe / classification_at_probe / corrected_at say what the
-	// row was stamped with before a correction moved it.
-	rowCols := `COALESCE(row_indices, ''), COALESCE(rows_sha256, '')`
-	if !withRows {
-		rowCols = `'', ''`
-	}
-	q := `SELECT vantage, promise_hash, validator_address, validator_host, assigned, attested, assigned_row_count, schedule_label, scheduled_at,
-		started_at, phase, outcome, ` + rollup.EffectiveClass("") + `, classification_reason, rows_returned, rows_expected, total_duration_ms, raw_error,
-		COALESCE(retry_first_outcome, ''),
-		` + rowCols + `, COALESCE(rpc_code, ''), COALESCE(shadowed_by, ''),
-		COALESCE(shadow_gap, ''), COALESCE(classification_at_probe, ''), COALESCE(amended_at, ''),
-		COALESCE(host_at_settlement, ''), COALESCE(settlement_host_outcome, ''), settlement_host_served,
-		retention_unverified, COALESCE(phase_at_probe, ''), COALESCE(corrected_at, ''),
-		` + rollup.CountedClass("probes") + `, ` + lateSQL + `, dedupe_key,
-		COALESCE(next_attempt_due, ''), rows_subset_of_assignment
-		FROM probes`
-	if where != "" {
-		q += " WHERE " + where
-	}
-	// One more than asked, so the caller can be told the bound bit rather
-	// than left to guess whether 100 rows is all of them. The extra row is
-	// trimmed by the caller that reports truncation.
-	q += " ORDER BY started_at DESC LIMIT " + strconv.Itoa(limit+1)
 	db := s.q(ctx)
-	rows, err := db.QueryContext(ctx, q, args...)
+	rows, err := db.QueryContext(ctx, probeRowsSQL(where, limit, withRows), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -4525,6 +4523,41 @@ func (s *Server) probeRows(ctx context.Context, where string, limit int, withRow
 	return out, nil
 }
 
+// probeRowsSQL is the statement probeRows runs: the readings where selects,
+// newest first, one more than limit.
+func probeRowsSQL(where string, limit int, withRows bool) string {
+	// The effective classification, not the stored one. /v1/probes,
+	// /v1/blobs/{hash}.probes and a validator's recent probes are all
+	// served from here, and a held row published as a bare "FAULT" beside
+	// validator_address is the accusation this whole mechanism exists to
+	// withhold — a third party counting classifications would count it.
+	// retention_unverified rides along so a reader can see why, and
+	// phase_at_probe / classification_at_probe / corrected_at say what the
+	// row was stamped with before a correction moved it.
+	rowCols := `COALESCE(row_indices, ''), COALESCE(rows_sha256, '')`
+	if !withRows {
+		rowCols = `'', ''`
+	}
+	q := `SELECT vantage, promise_hash, validator_address, validator_host, assigned, attested, assigned_row_count, schedule_label, scheduled_at,
+		started_at, phase, outcome, ` + rollup.EffectiveClass("") + `, classification_reason, rows_returned, rows_expected, total_duration_ms, raw_error,
+		COALESCE(retry_first_outcome, ''),
+		` + rowCols + `, COALESCE(rpc_code, ''), COALESCE(shadowed_by, ''),
+		COALESCE(shadow_gap, ''), COALESCE(classification_at_probe, ''), COALESCE(amended_at, ''),
+		COALESCE(host_at_settlement, ''), COALESCE(settlement_host_outcome, ''), settlement_host_served,
+		retention_unverified, COALESCE(phase_at_probe, ''), COALESCE(corrected_at, ''),
+		` + rollup.CountedClass("probes") + `, ` + lateSQL + `, dedupe_key,
+		COALESCE(next_attempt_due, ''), rows_subset_of_assignment
+		FROM probes`
+	if where != "" {
+		q += " WHERE " + where
+	}
+	// One more than asked, so the caller can be told the bound bit rather
+	// than left to guess whether 100 rows is all of them. The extra row is
+	// trimmed by the caller that reports truncation.
+	q += " ORDER BY started_at DESC LIMIT " + strconv.Itoa(limit+1)
+	return q
+}
+
 // serviceReason words a reading's reason by the rule it counts by, where
 // the reason recorded at the probe (a statement about the wire, written
 // for any schedule) would say otherwise: a not-served reading, and rows
@@ -4583,6 +4616,55 @@ const (
 	probesMaxWithRows = 200
 )
 
+// /v1/probes reads the probes table newest first (probes_started) until it
+// has a page of rows its filters select. A filter on a column an index leads
+// with (validator, blob, at) or on the stored class (probeClassConds) is
+// sought; served=no and class=RETENTION_UNVERIFIED are expressions over each
+// row, served=no with correlated reads of its reading, which no index
+// serves. Alone, a selection they rarely or never match read every row the
+// table holds, a second and more per request on the observer's store in
+// October 2026 and growing with it, as the rows are kept for good; a few at
+// once held every connection of the pool, and every other route waited.
+//
+// Unless validator, blob or at narrows them, such a read covers at most
+// probeScanSpan of readings, from since, or back from before (or now) when
+// since is not given, which the answer then names as its since; a since
+// further back is a 400. And at most probeScanSlots of them run at once,
+// past which the answer is a 429: the work, not the request, is what is
+// scarce.
+const (
+	probeScanDays  = 7
+	probeScanSpan  = probeScanDays * 24 * time.Hour
+	probeScanSlots = 2
+)
+
+// probeClassConds selects the readings published with class
+// (rollup.EffectiveClass), an expression no index serves. Every class but
+// RETENTION_UNVERIFIED is published as it is stored (that one is laid over
+// stored HEALTHY and FAULT rows), so beside the expression the stored class
+// is the same selection, which probes_class_time seeks newest first: a rare
+// class reads its own rows, not the table. Where validator, blob or at
+// narrows the read (narrowed), their index serves it and the stored class is
+// left out, so SQLite does not walk every row of the class to find one
+// validator's.
+func probeClassConds(class string, narrowed bool) ([]string, []any) {
+	conds, args := []string{rollup.EffectiveClass("") + ` = ?`}, []any{class}
+	if !narrowed && class != string(probe.ClassRetentionUnverified) {
+		conds, args = append(conds, `classification = ?`), append(args, class)
+	}
+	return conds, args
+}
+
+// knownClass reports whether class is one this observer publishes.
+func knownClass(class string) bool {
+	for _, c := range probe.AllClassifications {
+		if string(c) == class {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	// The row indices and their digest are what a verifier re-deriving a
@@ -4605,6 +4687,9 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 	}
 	var conds []string
 	var args []any
+	// narrowed: validator, blob or at selects the rows through an index of
+	// its own, whatever else is asked (probeScanSpan).
+	narrowed := false
 	if v := q.Get("validator"); v != "" {
 		addr, err := s.resolveAddr(r.Context(), v)
 		if err != nil {
@@ -4612,28 +4697,41 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		conds, args = append(conds, `validator_address = ?`), append(args, addr)
+		narrowed = true
 	}
 	if b := q.Get("blob"); b != "" {
 		conds, args = append(conds, `promise_hash = ?`), append(args, strings.ToLower(b))
+		narrowed = true
 	}
-	if since := q.Get("since"); since != "" {
-		t, err := time.Parse(time.RFC3339, since)
+	var since, before time.Time
+	if raw := q.Get("since"); raw != "" {
+		t, err := time.Parse(time.RFC3339, raw)
 		if err != nil {
 			writeErr(w, 400, "since must be RFC 3339")
 			return
 		}
+		since = t
 		conds, args = append(conds, `started_at >= ?`), append(args, store.TS(t))
 	}
-	if c := q.Get("class"); c != "" {
-		// Filtered on the class the rows are published with, so ?class=FAULT
-		// never returns a row that reads RETENTION_UNVERIFIED.
-		conds, args = append(conds, rollup.EffectiveClass("")+` = ?`), append(args, strings.ToUpper(c))
+	// class: filtered on the class the rows are published with, so
+	// ?class=FAULT never returns a row that reads RETENTION_UNVERIFIED. One
+	// this observer does not publish is a 400, not a read of every row for
+	// a class no row carries.
+	class := strings.ToUpper(strings.TrimSpace(q.Get("class")))
+	if class != "" && !knownClass(class) {
+		names := make([]string, len(probe.AllClassifications))
+		for i, c := range probe.AllClassifications {
+			names[i] = string(c)
+		}
+		writeErr(w, 400, "class must be one of "+strings.Join(names, ", "))
+		return
 	}
 	// served=no: the readings the obligations count as not served
 	// (rollup.CountedClass): at a full reading, a validator's last answer
 	// when none served and none was this observer's gap; before it, no rows
 	// came back, on a blob that was Unavailable.
-	if q.Get("served") == "no" {
+	servedNo := q.Get("served") == "no"
+	if servedNo {
 		conds = append(conds, rollup.NotServedSQL("probes"))
 	}
 	// at: one reading, by its scheduled time, so the rows behind a blob's
@@ -4651,19 +4749,52 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		conds, args = append(conds, `scheduled_at = ?`), append(args, store.TS(t))
+		narrowed = true
 	}
 	// before: the upper bound that makes the list walkable. The order is
 	// started_at DESC and since is a lower bound, so without this there was
 	// no parameter that could reach the rows past the limit — on the one
 	// route docs/verdicts.md points a reader at as the evidence behind a
 	// reading, which can hold more rows than the maximum limit allows.
-	if before := q.Get("before"); before != "" {
-		t, err := time.Parse(time.RFC3339, before)
+	if raw := q.Get("before"); raw != "" {
+		t, err := time.Parse(time.RFC3339, raw)
 		if err != nil {
 			writeErr(w, 400, "before must be RFC 3339")
 			return
 		}
+		before = t
 		conds, args = append(conds, `started_at < ?`), append(args, store.TS(t))
+	}
+	if class != "" {
+		c, a := probeClassConds(class, narrowed)
+		conds, args = append(conds, c...), append(args, a...)
+	}
+	// A filter no index serves, with nothing to narrow it: a span of
+	// readings, and a slot (probeScanSpan).
+	var impliedSince time.Time
+	if !narrowed && (servedNo || class == string(probe.ClassRetentionUnverified)) {
+		upper := s.now()
+		if !before.IsZero() {
+			upper = before
+		}
+		floor := upper.Add(-probeScanSpan).Truncate(time.Second)
+		switch {
+		case since.IsZero():
+			impliedSince = floor
+			conds, args = append(conds, `started_at >= ?`), append(args, store.TS(floor))
+		case since.Before(floor):
+			writeErr(w, 400, fmt.Sprintf("without validator, blob or at, served=no and class=%s read at most %d days of readings: "+
+				"since must be within %d days of before, or of now", probe.ClassRetentionUnverified, probeScanDays, probeScanDays))
+			return
+		}
+		select {
+		case s.probeScans <- struct{}{}:
+			defer func() { <-s.probeScans }()
+		default:
+			w.Header().Set("Retry-After", "5")
+			writeErr(w, 429, "readings filtered without validator, blob or at already in flight; try again shortly")
+			return
+		}
 	}
 	rows, err := s.probeRows(r.Context(), strings.Join(conds, " AND "), limit, withRows, args...)
 	if err != nil {
@@ -4680,6 +4811,11 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 		withOperators(rows, ops)
 	}
 	out := map[string]any{"probes": rows, "limit": limit, "truncated": truncated, "rows_included": withRows}
+	if !impliedSince.IsZero() {
+		// The bound the route set itself, named so an answer that stops
+		// there does not read as every such reading on record.
+		out["since"] = impliedSince.UTC().Format(time.RFC3339)
+	}
 	if truncated && len(rows) > 0 {
 		// Where to continue from: everything strictly older than the last row
 		// returned. Paired with the same filters it walks the whole selection.

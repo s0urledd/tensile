@@ -337,6 +337,25 @@ func TestAssign_DuplicateAddress(t *testing.T) {
 	}
 }
 
+// Two entries for one address with different power are not neighbours once
+// another validator's power sorts between them; the set is still refused.
+func TestAssign_DuplicateAddressNotAdjacent(t *testing.T) {
+	a := MustAddressFromHex("0000000000000000000000000000000000000001")
+	b := MustAddressFromHex("0000000000000000000000000000000000000002")
+	vals := []Validator{{Address: a, VotingPower: 10}, {Address: b, VotingPower: 5}, {Address: a, VotingPower: 1}}
+	m, err := Assign(testCommitment, vals, ParamsV10BlobV0)
+	dup, ok := err.(*DuplicateAddressError)
+	if !ok {
+		t.Fatalf("want *DuplicateAddressError, got %v (map of %d)", err, len(m))
+	}
+	if dup.Address != a {
+		t.Fatalf("duplicate reported as %s, want %s", dup.Address, a)
+	}
+	if m != nil {
+		t.Fatalf("a refused set must not return a map, got %d entries", len(m))
+	}
+}
+
 func TestParams_Validate(t *testing.T) {
 	if err := ParamsV10BlobV0.Validate(); err != nil {
 		t.Fatalf("ParamsV10BlobV0 must validate: %v", err)

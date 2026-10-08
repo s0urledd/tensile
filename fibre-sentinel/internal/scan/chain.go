@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -708,6 +709,32 @@ func IsHeightInFuture(err error) bool {
 		return true
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "cannot query with height in the future")
+}
+
+// nodeBase reads the node's oldest block out of CometBFT's answer for a
+// height below it: "height 42 is not available, lowest height is 5000"
+// (rpc/core/env.go getHeight, for /block, /block_results, /validators and
+// the rest). False for any other error.
+func nodeBase(err error) (int64, bool) {
+	if err == nil {
+		return 0, false
+	}
+	const marker = "lowest height is "
+	s := strings.ToLower(err.Error())
+	i := strings.LastIndex(s, marker)
+	if i < 0 {
+		return 0, false
+	}
+	rest := s[i+len(marker):]
+	n := 0
+	for n < len(rest) && rest[n] >= '0' && rest[n] <= '9' {
+		n++
+	}
+	base, perr := strconv.ParseInt(rest[:n], 10, 64)
+	if perr != nil || base <= 0 {
+		return 0, false
+	}
+	return base, true
 }
 
 // IsHeightUnavailable reports an error that means the node does not have

@@ -11,10 +11,13 @@ import (
 	"fmt"
 	"math/bits"
 	"net"
+	"net/netip"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	celfibre "github.com/celestiaorg/celestia-app/v10/fibre"
 	"github.com/celestiaorg/celestia-app/v10/pkg/rsema1d"
@@ -30,7 +33,8 @@ import (
 )
 
 // StepTimeouts bounds every layer of a request. Nothing in a request blocks
-// longer than the relevant field, and under Input.ClientRules nothing blocks
+// longer than the relevant field (the connect step as a whole, every
+// address it tries, by TCP), and under Input.ClientRules nothing blocks
 // longer than Input.RequestTimeout altogether.
 type StepTimeouts struct {
 	DNS      time.Duration
@@ -146,6 +150,13 @@ type Input struct {
 	// ExpectedShardBytes is the estimated wire size of this validator's shard
 	// (ShardBytes); it scales the download deadline. 0 = base deadline only.
 	ExpectedShardBytes int64
+	// LargestShardBytes is the estimated wire size of the largest shard of
+	// this blob any validator can hold under any promise over its
+	// commitment: ShardBytes at OriginalRows rows, as the assignment gives
+	// no validator more. Under the client's rules an answer over this
+	// shard's receive bound is asked for again under this one's
+	// (widerRecvLimit). 0 = the protocol's message bound.
+	LargestShardBytes int64
 
 	// MaxMessageSize is the receive bound for this publication's protocol
 	// params, not the observer's compile-time defaults. A blob whose params
@@ -189,14 +200,31 @@ type Input struct {
 	//     TLS handshake are bounded by it alone, as the client's are; a
 	//     request that runs out of it after the connection was made is the
 	//     validator's (RPC_TIMEOUT);
-	//   - the receive bound is the protocol's message bound, which is the
-	//     client's, and an answer over it, or one the client cannot parse,
-	//     is the validator's (MALFORMED_SHARD);
+	//   - the host's addresses are raced as the client's pick_first races
+	//     them (raceDial): the next one DialStagger after the one before it
+	//     unless that one has connected or failed, and the first to connect
+	//     is the endpoint;
+	//   - the receive bound is what this validator's shard of this blob can
+	//     weigh, a tenth to spare and a mebibyte at least, never above the
+	//     protocol's message bound, which is the client's (recvLimitFor). An
+	//     answer over it may still be a genuine shard of this blob held
+	//     under another promise over the commitment, so it is asked for
+	//     again under the bound of the largest shard any validator can hold
+	//     of this blob (widerRecvLimit) when the byte budget has room for it
+	//     (widen), and is this observer's gap when it has none. An answer
+	//     over that bound too, which no shard of this blob can be, or one the
+	//     client cannot parse, is the validator's (MALFORMED_SHARD);
 	//   - an InvalidArgument or Unimplemented answer is the server's error;
-	//   - "no route to host" is the validator's host not answering, as the
-	//     client meets it; only a failure that never left this machine (no
-	//     route out, no local address, a local socket error) is this
-	//     observer's, and so is a DNS failure other than "no such host".
+	//   - an ICMP unreachable ("no route to host", "host is down", "network
+	//     is unreachable" while this machine has a route out to the
+	//     address) is the validator's host not answering, as the client
+	//     meets it; only a failure that never left this machine (no route
+	//     out, no local address, a local socket error) is this observer's.
+	//     At a full reading ownSide keeps it the validator's only while this
+	//     observer's connections over the same IP version reach servers;
+	//   - a DNS failure other than "no such host" is this observer's, unless
+	//     at a full reading ownSide finds its resolver working in the same
+	//     minutes: then it is the validator's (DNS_FAIL).
 	//
 	// Without it the request is judged by the earlier schedule's rules.
 	ClientRules    bool
@@ -211,6 +239,68 @@ type Input struct {
 	// across every validator it asks (the blob's Reconstructor), as the
 	// client does; nil builds one for this request alone.
 	Verifier ShardVerifier
+
+	// widen, when set, takes extra bytes of the byte budget for this
+	// request, already let go and with its time running, without waiting
+	// for them: an answer over the receive bound is asked for again under a
+	// wider one only when it gives them (downloadAndVerify). The prober sets
+	// it (Prober.widen); nil, a request outside the prober, which keeps no
+	// budget, takes them at once.
+	widen func(extra int64) (release func(), ok bool)
+
+	// hooks stand in for this machine's resolver, connect and route lookup;
+	// nil is the machine's own. Tests only.
+	hooks *netHooks
+}
+
+// netHooks are a request's resolver, connect and route lookup (Input.hooks);
+// a nil member is this machine's own.
+type netHooks struct {
+	lookup func(ctx context.Context, host string) ([]string, error)
+	dial   func(ctx context.Context, addr string) (net.Conn, error)
+	routed func(addr string) bool
+}
+
+// lookupHost resolves a registered host name.
+func (in Input) lookupHost(ctx context.Context, host string) ([]string, error) {
+	if in.hooks != nil && in.hooks.lookup != nil {
+		return in.hooks.lookup(ctx, host)
+	}
+	return net.DefaultResolver.LookupHost(ctx, host)
+}
+
+// dialTCP opens a TCP connection to addr (host:port) within ctx.
+func (in Input) dialTCP(ctx context.Context, addr string) (net.Conn, error) {
+	if in.hooks != nil && in.hooks.dial != nil {
+		return in.hooks.dial(ctx, addr)
+	}
+	var d net.Dialer
+	return d.DialContext(ctx, "tcp", addr)
+}
+
+// routedOut reports whether this machine has a route out to addr
+// (host:port): a UDP "connect" looks the route up and sends nothing, and
+// fails, as a TCP connect does, when there is none.
+func (in Input) routedOut(addr string) bool {
+	if in.hooks != nil && in.hooks.routed != nil {
+		return in.hooks.routed(addr)
+	}
+	c, err := net.Dial("udp", addr)
+	if err != nil {
+		return false
+	}
+	_ = c.Close()
+	return true
+}
+
+// widenBy takes extra bytes of the byte budget for this request
+// (Input.widen); a request outside the prober keeps no budget and takes
+// them at once.
+func (in Input) widenBy(extra int64) (release func(), ok bool) {
+	if in.widen == nil {
+		return func() {}, true
+	}
+	return in.widen(extra)
 }
 
 // ShardVerifier checks a shard's rows against the blob commitment and keeps
@@ -343,7 +433,10 @@ func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measur
 			} else {
 				m.RawError = "probe abandoned (" + caller.Err().Error() + "): " + m.RawError
 			}
+			// abandoned is abandoned, whatever its lookup did
+			m.resolverFailed = false
 		}
+		clipText(&m)
 		classifyRow(&m)
 	}()
 
@@ -395,7 +488,7 @@ func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measur
 	} else {
 		t0 := time.Now()
 		dctx, cancel := context.WithTimeout(ctx, to.DNS)
-		got, derr := net.DefaultResolver.LookupHost(dctx, host)
+		got, derr := in.lookupHost(dctx, host)
 		cancel()
 		m.DNS = StepResult{Attempted: true, OK: derr == nil, DurationMS: sinceMS(t0)}
 		if derr != nil {
@@ -405,10 +498,17 @@ func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measur
 			var dnsErr *net.DNSError
 			if in.ClientRules && !(errors.As(derr, &dnsErr) && dnsErr.IsNotFound) {
 				// The resolver did not answer, or answered with an error of
-				// its own: this observer's resolver, not the validator's
-				// name. Only "no such host" is the validator's.
+				// its own: a lame or broken zone of the validator's reads
+				// the same as this observer's own resolver failing. Only "no
+				// such host" is plainly the validator's; anything else is
+				// this observer's gap unless, at a full reading, its
+				// resolver is shown working in the same minutes (ownSide).
+				// A lookup that failed on this machine itself (no socket,
+				// no buffer) or could not reach its resolver stays its gap
+				// whatever else answered (localResolverFault).
 				m.Outcome = OutcomeProbeError
 				m.RawError = "resolver: " + derr.Error()
+				m.resolverFailed = !localResolverFault(derr)
 			}
 			return m
 		}
@@ -433,29 +533,51 @@ func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measur
 	}
 
 	// ---- L2: TCP ----
-	// Every resolved address is tried in turn (IPv4 first), like a real
-	// client's happy-eyeballs would; the first that connects is the endpoint
-	// every later layer talks to. A vantage without IPv6 must not turn a
-	// dual-stack validator into a FAULT.
+	// The resolved addresses are raced the way grpc-go's pick_first races
+	// them for celestia-app's Fibre client (raceDial): IPv4 first and the
+	// families taking turns (orderAddrs), the next address started as soon
+	// as the one before it fails, or DialStagger after it started while it
+	// is still connecting. The first that connects is the endpoint every
+	// later layer talks to, and the rest are let go. One dead address in a
+	// validator's DNS must not make it not served when every client
+	// connects to the next one a quarter of a second later, and a vantage
+	// without IPv6 must not turn a dual-stack validator into a FAULT.
 	t0 := time.Now()
-	var rawConn net.Conn
+	lctx, untried := ctx, 0
+	if !(in.ClientRules && in.RequestTimeout > 0) {
+		// Outside the client's rules (the reachability heartbeat) the whole
+		// step is bounded by to.TCP, and only the first
+		// heartbeatAddrsPerFamily addresses of each IP version are tried: a
+		// name that resolves to thousands of addresses would otherwise hold
+		// a heartbeat round for hours, and send a SYN to every one of them.
+		var cancel context.CancelFunc
+		lctx, cancel = context.WithTimeout(ctx, to.TCP)
+		defer cancel()
+		addrs, untried = firstPerFamily(addrs, heartbeatAddrsPerFamily)
+	}
+	rawConn, tried := raceDial(lctx, in.dialTCP, addrs, port, to.TCP, DialStagger)
+	untried += len(addrs) - len(tried)
+	if rawConn != nil {
+		untried--
+	}
 	var terr error
-	var attempts []string
-	allLocal := len(addrs) > 0
-	for _, cand := range addrs {
-		d := net.Dialer{Timeout: to.TCP}
-		c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(cand, port))
-		if err == nil {
-			rawConn = c
-			allLocal = false
-			break
+	terrLocal := false
+	var failed, letGo []string
+	allLocal := len(tried) > 0
+	for _, a := range tried {
+		if a.err == nil {
+			letGo = append(letGo, a.addr)
+			continue
 		}
-		attempts = append(attempts, cand+": "+err.Error())
-		local := isNoRoute(err) || localDialFault(err)
-		if in.ClientRules && isHostUnreachable(err) {
-			// "No route to host" is the host not answering (an ICMP
-			// unreachable from the path to it), as the client meets it.
+		failed = append(failed, a.addr+": "+a.err.Error())
+		local := isNoRoute(a.err) || localDialFault(a.err)
+		if in.ClientRules && pathUnreachable(a.err, func() bool { return in.routedOut(net.JoinHostPort(a.addr, port)) }) {
+			// An ICMP unreachable from the path to the host is the host
+			// not answering, as the client meets it. ownSide holds it as
+			// the validator's only while this observer's connections over
+			// the same IP version reach other servers.
 			local = false
+			m.unreachFamilies = appendOnce(m.unreachFamilies, family(a.addr))
 		}
 		if !local {
 			allLocal = false
@@ -464,41 +586,54 @@ func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measur
 		// unreachable" from this vantage says nothing about the validator,
 		// while "connection refused" from another of its addresses does, and
 		// the old rule could let the first overwrite the second.
-		if terr == nil || (!local && isNoRoute(terr)) {
-			terr = err
-		}
-		if ctx.Err() != nil {
-			break
+		if terr == nil || (terrLocal && !local) {
+			terr, terrLocal = a.err, local
 		}
 	}
 	m.TCP = StepResult{Attempted: true, OK: rawConn != nil, DurationMS: sinceMS(t0)}
+	notTried := ""
+	if untried > 0 {
+		notTried = fmt.Sprintf("%d more address(es) not tried", untried)
+	}
 	if rawConn == nil {
 		if terr == nil {
 			terr = errors.New("no address to dial")
 		}
-		m.TCP.Error = strings.Join(attempts, "; ")
-		if allLocal {
+		m.TCP.Error = joinNonEmpty("; ", strings.Join(failed, "; "), notTried)
+		switch {
+		case allLocal:
 			// Every candidate address failed on this machine's own network:
-			// no stack for the family, no route, no local source address. The
-			// packets never left. That is the observer's problem, and calling
-			// it a retention failure would fault an IPv6-only validator for
-			// the vantage's lack of IPv6, permanently.
+			// no stack for the family, no route, no local source address.
+			// The packets never left. That is the observer's problem, and
+			// calling it a retention failure would fault an IPv6-only
+			// validator for the vantage's lack of IPv6, permanently.
 			m.Outcome = OutcomeProbeError
-		} else {
+		case in.ClientRules && !terrLocal && pathUnreachable(terr, func() bool { return true }):
+			m.Outcome = OutcomeTCPUnreachable
+		default:
 			m.Outcome = classifyDialError(terr)
 		}
 		// The selected error alone loses the evidence a reader needs to tell
 		// a routing problem from a validator that is down, so publish the
 		// whole attempt list when more than one address was tried.
-		if len(attempts) > 1 {
-			m.RawError = strings.Join(attempts, "; ")
+		if len(failed) > 1 || notTried != "" {
+			m.RawError = m.TCP.Error
 		} else {
 			m.RawError = terr.Error()
 		}
 		return m
 	}
-	if len(attempts) > 0 {
-		m.TCP.Detail = "failed " + strings.Join(attempts, "; ") + "; "
+	// The endpoint is written last and never cut (clip bounds what comes
+	// before it): readers take it from after the last "-> ".
+	var tries []string
+	if len(failed) > 0 {
+		tries = append(tries, "failed "+strings.Join(failed, "; "))
+	}
+	if len(letGo) > 0 {
+		tries = append(tries, "let go "+strings.Join(letGo, ", ")+" (still connecting)")
+	}
+	if len(tries) > 0 {
+		m.TCP.Detail = clip(strings.Join(tries, "; ")) + "; "
 	}
 	m.TCP.Detail += "-> " + rawConn.RemoteAddr().String()
 
@@ -603,48 +738,83 @@ type dlResult struct {
 // verdict from either can be told apart once both are in play.
 const downloadRPCUnary = "DownloadShard"
 
-// recvLimitFor sizes the receive bound for this probe: the publication's
-// own protocol bound (or the pinned defaults), never below what this
-// validator's shard of this blob is expected to weigh plus a tenth and the
-// promise. The upstream bound is derived from the pinned MaxBlobSize; a
-// chain that raised it would otherwise turn its largest shards, the ones
-// most worth checking, into receive errors on this side.
-// recvLimitFor is what this probe may receive: what the shard should weigh,
-// with a tenth for framing and room for the promise, and never less than
-// grpc-go would need for the smallest real answer.
+// recvLimitFor is what this probe may receive: what this validator's shard
+// of this blob should weigh (ExpectedShardBytes), with a tenth for framing
+// and room for the promise, never less than minRecvMsgSize; the protocol's
+// message bound (the publication's own, or the pinned defaults) only when
+// there is no expectation to work from. Under the client's rules it is
+// never above that bound either, the most the client accepts.
 //
 // It used to start from the protocol maximum and take the expected size only
-// as a floor, so every probe — of a 1 KiB blob as readily as a 128 MiB one —
-// would accept the protocol's whole 132 MiB from an endpoint whose address a
-// validator puts on chain. That also defeated the in-flight byte budget in
-// the prober, which reserves what the shard should weigh: the ceiling it
-// exists to impose was not the one being enforced. The bound is the
-// expectation now, and the protocol maximum only when there is no expectation
-// to work from.
+// as a floor, and under the client's rules it was that maximum outright, so
+// every request, of a 1 KiB blob as readily as a 128 MiB one, would accept
+// the protocol's whole 132 MiB from an endpoint whose address a validator
+// puts on chain. That also defeated the in-flight byte budget in the
+// prober, which reserved what the shard should weigh: a padded answer
+// (an honest shard and a hundred-odd megabytes in a field nobody reads,
+// which still parses and verifies) took sixteen times the budget at once,
+// and the link the reading-rate ceiling protects. The bound is the
+// expectation now, and the prober charges its byte budget the bound
+// (blobReading.ask, Prober.attempt), and an answer asked for again under a
+// wider one the difference (Prober.widen), so the budget holds whatever a
+// server sends.
 //
-// Tightening it cannot produce a false accusation. A refusal on this side is
-// already read as the observer's own gap, not the validator's: see
-// classifyDownloadError and TestRun_SizeBoundsAreToldApartFromAThrottle.
+// This validator's honest shard of this promise cannot exceed it: the
+// estimate is the shard's own rows, proofs and RLC vector, and the slack
+// covers a row rounded up to the code's row size and a deeper proof many
+// times over. But the store serves one shard per commitment, and a genuine
+// shard of this blob held under another promise over it (SHADOWED_SHARD, or
+// an upload that never settled: FullForeign) can carry more rows, when that
+// promise's validator set gave this validator a larger share. The client
+// takes such an answer. So under the client's rules an answer over this
+// bound is asked for again under widerRecvLimit's, when the byte budget has
+// room for it (downloadAndVerify), and only an answer over that one too,
+// which no shard of this blob can be, is the validator's (MALFORMED_SHARD:
+// clientRulesOutcome). Under the earlier rules an answer over it is this
+// observer's gap (classifyDownloadError,
+// TestRun_SizeBoundsAreToldApartFromAThrottle).
 func recvLimitFor(in Input) int {
-	if in.ClientRules {
-		// The client's own bound: whatever it would accept is judged, and
-		// whatever it would refuse is the validator's.
-		if in.MaxMessageSize > 0 {
-			return in.MaxMessageSize
-		}
-		return defaultMaxRecvMsgSize
-	}
-	if in.ExpectedShardBytes > 0 {
-		limit := int(in.ExpectedShardBytes+in.ExpectedShardBytes/10) + celfibre.MaxPaymentPromiseSize
-		if limit < minRecvMsgSize {
-			limit = minRecvMsgSize
-		}
-		return limit
-	}
+	return recvBound(in, in.ExpectedShardBytes)
+}
+
+// widerRecvLimit is the bound an answer over recvLimitFor's is asked for
+// again under: what the largest shard of this blob any validator can hold
+// weighs (Input.LargestShardBytes), with the same slack, never above the
+// protocol's message bound; that bound itself when the largest is not known.
+func widerRecvLimit(in Input) int {
+	return recvBound(in, in.LargestShardBytes)
+}
+
+// recvBound is a receive bound for an answer of shard bytes: a tenth for
+// framing and room for the promise, never less than minRecvMsgSize; the
+// protocol's message bound (the publication's own, or the pinned defaults)
+// when there is no size to work from, and under the client's rules never
+// above it, the most the client accepts.
+func recvBound(in Input, shard int64) int {
+	protocol := defaultMaxRecvMsgSize
 	if in.MaxMessageSize > 0 {
-		return in.MaxMessageSize
+		protocol = in.MaxMessageSize
 	}
-	return defaultMaxRecvMsgSize
+	if shard <= 0 {
+		return protocol
+	}
+	limit := int(shard+shard/10) + celfibre.MaxPaymentPromiseSize
+	if limit < minRecvMsgSize {
+		limit = minRecvMsgSize
+	}
+	if in.ClientRules && limit > protocol {
+		limit = protocol
+	}
+	return limit
+}
+
+// overRecvBound reports an answer this side refused at its receive bound:
+// grpc-go reads the message's length first and refuses it before its bytes
+// come over (or after decompressing it).
+func overRecvBound(err error) bool {
+	ls := strings.ToLower(err.Error())
+	return status.Code(err) == codes.ResourceExhausted &&
+		(strings.Contains(ls, "received message larger than max") || strings.Contains(ls, "after decompression larger than max"))
 }
 
 // minRecvMsgSize keeps a tiny blob's bound above the fixed cost of an answer
@@ -680,14 +850,18 @@ const userAgent = "fibre-sentinel-observer"
 // land on a different address from the one whose certificate was checked, and
 // the record could not say which.
 //
-// The cost is real and is the reason this comment exists. L2 tries every
-// resolved address and takes the first that connects, so a host with several
-// addresses is not judged on one of them alone; but if that address accepts
-// TCP and then fails at the RPC layer, the probe does not fall back to the
-// next. The result is UNREACHABLE, which is already outside the serve rate
-// and already says the observer could not complete a conversation rather than
-// that the validator refused to serve, so the trade costs coverage of a
-// multi-address host rather than fairness to it.
+// The cost is real and is the reason this comment exists. L2 races every
+// resolved address as the client's pick_first does and takes the first that
+// connects, so an address that does not answer costs a host nothing it
+// would not cost it with a client. But pick_first counts an address as
+// connected once its TLS handshake is done too, and moves on to the next
+// when the handshake fails; this probe settles on the address whose TCP
+// connect came first, and a handshake or certificate that then fails there
+// is the row's answer. At a full reading that answer counts as not served
+// when it is the validator's last, so a host that lists an address taking
+// connections it cannot serve beside one that serves is judged on the
+// first; a client may still read from the second. An answer from the RPC
+// itself is final for the client too: it does not fall back after one.
 func downloadAndVerify(ctx context.Context, in Input, coder *Coder, conn net.Conn, hs *handshake, timeout time.Duration) dlResult {
 	r := dlResult{DownloadResult: DownloadResult{Attempted: true, RowsExpected: in.Target.RowCount, RPC: downloadRPCUnary}}
 	t0 := time.Now()
@@ -705,6 +879,10 @@ func downloadAndVerify(ctx context.Context, in Input, coder *Coder, conn net.Con
 		grpc.WithTransportCredentials(&probeCreds{hs: hs, abort: cancel}),
 		grpc.WithContextDialer(handOff(conn)),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(recvLimit)),
+		// The headers and trailers a server may send, its error text among
+		// them (grpc-message), bounded as the message is: grpc-go's own
+		// default is 16 MiB.
+		grpc.WithMaxHeaderListSize(maxHeaderListSize),
 		grpc.WithUserAgent(userAgent),
 		// grpc-go consults HTTPS_PROXY even for a passthrough target, so
 		// without this the download could take a proxy while L1-L3 dialled
@@ -731,7 +909,31 @@ func downloadAndVerify(ctx context.Context, in Input, coder *Coder, conn net.Con
 	}
 	dctx = metadata.AppendToOutgoingContext(dctx, "x-fibre-observer", in.Vantage)
 	blobID := celfibre.NewBlobID(uint8(in.BlobVersion), celfibre.Commitment(in.Commitment))
-	resp, err := fibretypes.NewFibreClient(cc).DownloadShard(dctx, &fibretypes.DownloadShardRequest{BlobId: blobID})
+	client := fibretypes.NewFibreClient(cc)
+	req := &fibretypes.DownloadShardRequest{BlobId: blobID}
+	resp, err := client.DownloadShard(dctx, req)
+	if wider := widerRecvLimit(in); err != nil && in.ClientRules && overRecvBound(err) && wider > recvLimit {
+		// An answer over this shard's bound may be a genuine shard of this
+		// blob held under another promise over the commitment, which the
+		// client takes (recvLimitFor). It is asked for again on this
+		// connection under the bound of the largest shard of this blob, when
+		// the byte budget has room for the difference now: waiting for it
+		// would spend the request's time on this observer's own limits.
+		// Without room the answer is this observer's gap.
+		release, ok := in.widenBy(int64(wider - recvLimit))
+		if !ok {
+			r.DurationMS = sinceMS(t0)
+			r.Error = wireText(err)
+			r.RPCCode = rpcCodeOf(err)
+			r.outcome = OutcomeProbeError
+			r.rawErr = clip(fmt.Sprintf("an answer over this shard's receive bound of %d bytes, which a genuine shard of this blob held under another promise can be, and no room in this observer's byte budget to take it under the bound of the largest shard of this blob, %d bytes (this observer's own gap); on the wire: %s",
+				recvLimit, wider, r.Error))
+			return r
+		}
+		defer release()
+		r.RecvLimit = wider
+		resp, err = client.DownloadShard(dctx, req, grpc.MaxCallRecvMsgSize(wider))
+	}
 	r.DurationMS = sinceMS(t0)
 	if err != nil {
 		if _, _, failed := hs.failure(); failed {
@@ -739,9 +941,10 @@ func downloadAndVerify(ctx context.Context, in Input, coder *Coder, conn net.Con
 			// made, and the verdict is the handshake's (Run reads it).
 			return dlResult{}
 		}
-		r.Error = err.Error()
+		// The server writes this text: kept to maxRecordedText (wireText).
+		r.Error = wireText(err)
 		r.RPCCode = rpcCodeOf(err)
-		r.outcome, r.rawErr = classifyDownloadError(err), err.Error()
+		r.outcome, r.rawErr = classifyDownloadError(err), r.Error
 		if in.ClientRules {
 			r.outcome = clientRulesOutcome(err, r.outcome, dctx.Err() == nil)
 		}
@@ -901,11 +1104,72 @@ func parseShard(shard *fibretypes.BlobShard, originalRows, totalRows int) ([]*rs
 }
 
 // routableIP reports whether this observer will open a connection to an
-// address. Global unicast only: loopback, the private and link-local ranges,
-// the unspecified address and multicast are all things a validator can put
-// on chain and none of them is an endpoint a client could fetch from.
+// address (RoutableAddr).
 func routableIP(ip net.IP) bool {
-	return ip != nil && ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast()
+	a, ok := netip.AddrFromSlice(ip)
+	return ok && RoutableAddr(a)
+}
+
+// RoutableAddr reports whether this observer will open a connection to an
+// address: global unicast on the public internet only. Loopback, the private
+// and link-local ranges, the unspecified address, multicast and the
+// special-purpose ranges below are all things a validator can put on chain,
+// and none of them is an endpoint a client on the internet could fetch from;
+// some of them (shared address space, an overlay network such as Tailscale)
+// lead into private networks this observer's host may be part of. A NAT64
+// address (64:ff9b::/96) is judged by the IPv4 address it carries.
+// observer/hosting draws the same line for the addresses it places.
+func RoutableAddr(a netip.Addr) bool {
+	a = a.Unmap().WithZone("")
+	if !a.IsValid() || !a.IsGlobalUnicast() || a.IsPrivate() || a.IsLinkLocalUnicast() {
+		return false
+	}
+	if nat64.Contains(a) {
+		b := a.As16()
+		return RoutableAddr(netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}))
+	}
+	return specialRange(a) == ""
+}
+
+// nat64 is the well-known NAT64 prefix (RFC 6052): the last four bytes are
+// the IPv4 address a translator connects to.
+var nat64 = netip.MustParsePrefix("64:ff9b::/96")
+
+// specialRanges are the ranges of the IANA IPv4 and IPv6 special-purpose
+// address registries that are not reachable on the public internet and
+// that Go's IsGlobalUnicast and IsPrivate let through, each with the name a
+// row gives it.
+var specialRanges = []struct {
+	prefix netip.Prefix
+	name   string
+}{
+	{netip.MustParsePrefix("0.0.0.0/8"), "this-network"},
+	{netip.MustParsePrefix("100.64.0.0/10"), "shared (carrier-grade NAT)"},
+	{netip.MustParsePrefix("192.0.0.0/24"), "protocol-assignment"},
+	{netip.MustParsePrefix("192.0.2.0/24"), "documentation"},
+	{netip.MustParsePrefix("198.18.0.0/15"), "benchmarking"},
+	{netip.MustParsePrefix("198.51.100.0/24"), "documentation"},
+	{netip.MustParsePrefix("203.0.113.0/24"), "documentation"},
+	{netip.MustParsePrefix("240.0.0.0/4"), "reserved"},
+	{netip.MustParsePrefix("::/96"), "IPv4-compatible"},
+	{netip.MustParsePrefix("64:ff9b:1::/48"), "local-use NAT64"},
+	{netip.MustParsePrefix("100::/64"), "discard-only"},
+	{netip.MustParsePrefix("2001:2::/48"), "benchmarking"},
+	{netip.MustParsePrefix("2001:10::/28"), "ORCHID"},
+	{netip.MustParsePrefix("2001:20::/28"), "ORCHID"},
+	{netip.MustParsePrefix("2001:db8::/32"), "documentation"},
+	{netip.MustParsePrefix("3fff::/20"), "documentation"},
+	{netip.MustParsePrefix("fec0::/10"), "site-local"},
+}
+
+// specialRange names the special-purpose range a holds, "" when none.
+func specialRange(a netip.Addr) string {
+	for _, r := range specialRanges {
+		if r.prefix.Contains(a) {
+			return r.name
+		}
+	}
+	return ""
 }
 
 // addrClass names why an address was not dialled, for the row.
@@ -921,9 +1185,13 @@ func addrClass(ip net.IP) string {
 		return "unspecified"
 	case ip.IsMulticast():
 		return "multicast"
-	default:
-		return "non-routable"
 	}
+	if a, ok := netip.AddrFromSlice(ip); ok {
+		if name := specialRange(a.Unmap()); name != "" {
+			return name
+		}
+	}
+	return "non-routable"
 }
 
 // splitRoutable divides resolved addresses into the ones this observer will
@@ -950,19 +1218,48 @@ func splitRoutable(got []string) (routable, dropped []string) {
 // validator, and the default arm of a string switch is the wrong place to put
 // an error nobody recognised.
 func localDialFault(err error) bool {
-	for _, e := range []syscall.Errno{
-		syscall.EAFNOSUPPORT, // this host has no stack for that address family
-		syscall.EMFILE,       // out of file descriptors
-		syscall.ENFILE,
-		syscall.ENOMEM,
-		syscall.ENOBUFS,
-		syscall.EADDRINUSE,    // local port exhaustion
-		syscall.EADDRNOTAVAIL, // no local source address
-		syscall.EACCES,        // local policy refused the socket
-		syscall.EPERM,
-		syscall.EINVAL,
-	} {
+	for _, e := range localErrnos {
 		if errors.Is(err, e) {
+			return true
+		}
+	}
+	return false
+}
+
+// localErrnos are the socket errors that never leave this machine
+// (localDialFault).
+var localErrnos = []syscall.Errno{
+	syscall.EAFNOSUPPORT, // this host has no stack for that address family
+	syscall.EMFILE,       // out of file descriptors
+	syscall.ENFILE,
+	syscall.ENOMEM,
+	syscall.ENOBUFS,
+	syscall.EADDRINUSE,    // local port exhaustion
+	syscall.EADDRNOTAVAIL, // no local source address
+	syscall.EACCES,        // local policy refused the socket
+	syscall.EPERM,
+	syscall.EINVAL,
+}
+
+// localResolverFault reports a lookup that failed on this observer's side
+// of its resolver: a socket this machine could not open or use
+// (localErrnos), or its resolver's own address refusing it or out of
+// reach, which nothing in a validator's zone can cause. Go's resolver keeps
+// only the text of such an error (net.DNSError.Err: it wraps context errors
+// alone), so the text is what is read. A timeout is not among them: a lame
+// zone of the validator's makes the resolver slow, and that is for ownSide
+// to judge.
+func localResolverFault(err error) bool {
+	if localDialFault(err) {
+		return true
+	}
+	var dnsErr *net.DNSError
+	if !errors.As(err, &dnsErr) {
+		return false
+	}
+	text := strings.ToLower(dnsErr.Err)
+	for _, e := range append(localErrnos[:len(localErrnos):len(localErrnos)], syscall.ECONNREFUSED, syscall.ENETUNREACH, syscall.EHOSTUNREACH) {
+		if strings.Contains(text, strings.ToLower(e.Error())) {
 			return true
 		}
 	}
@@ -1007,14 +1304,17 @@ func rpcCodeOf(err error) string {
 // clientRulesOutcome re-reads a download error the way the Fibre client
 // meets it (Input.ClientRules): running out of the request's time after
 // connecting is the validator's slowness, a refusal as malformed or
-// unimplemented is the server's error, and a reply over the protocol's
-// message bound is one no client accepts. A CANCELLED status while the
-// request's own context is still alive (alive) was sent by the server: the
-// client meets it as a failed shard and skips it, so it is the server's
-// error too. Everything else keeps its earlier reading; the caller's own
-// cancel stays a gap (Run reads it from the caller's context).
+// unimplemented is the server's error, and a reply over the receive bound
+// it was last asked for under (downloadAndVerify: the bound of the largest
+// shard of this blob any validator can hold, a tenth to spare and a
+// mebibyte at least, or the protocol's message bound, the client's) is one
+// no honest server sends: no shard of this blob weighs that much
+// (MALFORMED_SHARD). A CANCELLED status while the request's own context is
+// still alive (alive) was sent by the server: the client meets it as a
+// failed shard and skips it, so it is the server's error too. Everything
+// else keeps its earlier reading; the caller's own cancel stays a gap (Run
+// reads it from the caller's context).
 func clientRulesOutcome(err error, o Outcome, alive bool) Outcome {
-	ls := strings.ToLower(err.Error())
 	switch {
 	case o == OutcomeRPCDeadline:
 		return OutcomeRPCTimeout
@@ -1022,7 +1322,7 @@ func clientRulesOutcome(err error, o Outcome, alive bool) Outcome {
 		return OutcomeServerError
 	case status.Code(err) == codes.Canceled && alive:
 		return OutcomeServerError
-	case strings.Contains(ls, "received message larger than max"), strings.Contains(ls, "after decompression larger than max"):
+	case overRecvBound(err):
 		return OutcomeMalformedShard
 	}
 	return o
@@ -1146,18 +1446,164 @@ func identityStale(r tlsverify.Reason) bool {
 // empty reason field.
 var errVerifyTimeout = errors.New("identity verification timed out in the observer")
 
-// orderAddrs puts IPv4 literals before IPv6 ones, keeping the resolver's
-// order within each family.
+// orderAddrs is the order a host's addresses are dialled in: each once, an
+// IPv4 address first and the two families taking turns after it, as
+// grpc-go's pick_first interleaves them (RFC 8305), each family in the
+// resolver's order.
 func orderAddrs(addrs []string) []string {
 	var v4, v6 []string
+	seen := make(map[string]bool, len(addrs))
 	for _, a := range addrs {
-		if ip := net.ParseIP(a); ip != nil && ip.To4() == nil {
+		if seen[a] {
+			continue
+		}
+		seen[a] = true
+		if family(a) == "IPv6" {
 			v6 = append(v6, a)
 		} else {
 			v4 = append(v4, a)
 		}
 	}
-	return append(v4, v6...)
+	out := make([]string, 0, len(v4)+len(v6))
+	for i := 0; i < len(v4) || i < len(v6); i++ {
+		if i < len(v4) {
+			out = append(out, v4[i])
+		}
+		if i < len(v6) {
+			out = append(out, v6[i])
+		}
+	}
+	return out
+}
+
+// family names an address's IP version: "IPv6", or "IPv4" for anything else.
+func family(addr string) string {
+	if ip := net.ParseIP(addr); ip != nil && ip.To4() == nil {
+		return "IPv6"
+	}
+	return "IPv4"
+}
+
+// firstPerFamily keeps the first n addresses of each IP version, in order,
+// and says how many it left out.
+func firstPerFamily(addrs []string, n int) ([]string, int) {
+	kept := map[string]int{}
+	var out []string
+	for _, a := range addrs {
+		if f := family(a); kept[f] < n {
+			kept[f]++
+			out = append(out, a)
+		}
+	}
+	return out, len(addrs) - len(out)
+}
+
+// DialStagger is how long a connect to one of a host's addresses runs alone
+// before the next address is started beside it: grpc-go's pick_first, which
+// celestia-app's Fibre client connects with, waits connectionDelayInterval,
+// 250 ms (RFC 8305, Happy Eyeballs).
+const DialStagger = 250 * time.Millisecond
+
+// heartbeatAddrsPerFamily is how many of a host's addresses of each IP
+// version a request outside the client's rules (the reachability heartbeat)
+// tries.
+const heartbeatAddrsPerFamily = 2
+
+// dialAttempt is the connect to one address of a race that it did not win:
+// err is why it failed, nil when it was still connecting as another
+// address connected and was let go.
+type dialAttempt struct {
+	addr string
+	err  error
+}
+
+// raceDial connects to one of addrs the way grpc-go's pick_first connects
+// the Fibre client (balancer/pickfirst): in order, the next address started
+// as soon as the newest one fails, or stagger after it started while it is
+// still connecting; every connect is bounded by each, and all of them by
+// ctx. The first to connect wins and the others are let go. tried is every
+// address started except the winner, in the order started; an address
+// never started (a winner came first, or ctx ended) is in neither.
+func raceDial(ctx context.Context, dial func(context.Context, string) (net.Conn, error), addrs []string, port string, each, stagger time.Duration) (net.Conn, []dialAttempt) {
+	type result struct {
+		i   int
+		c   net.Conn
+		err error
+	}
+	rctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	res := make(chan result, len(addrs))
+	errs := make([]error, len(addrs))
+	var won net.Conn
+	winner, started, pending := -1, 0, 0
+	startNext := func() {
+		if started >= len(addrs) || won != nil || rctx.Err() != nil {
+			return
+		}
+		i := started
+		started++
+		pending++
+		go func() {
+			actx, acancel := context.WithTimeout(rctx, each)
+			defer acancel()
+			c, err := dial(actx, net.JoinHostPort(addrs[i], port))
+			res <- result{i, c, err}
+		}()
+	}
+	timer := time.NewTimer(stagger)
+	defer timer.Stop()
+	startNext()
+	for pending > 0 {
+		select {
+		case r := <-res:
+			pending--
+			switch {
+			case r.err == nil && won == nil:
+				won, winner = r.c, r.i
+				cancel()
+			case r.err == nil:
+				_ = r.c.Close()
+			case won == nil:
+				errs[r.i] = r.err
+				if r.i == started-1 {
+					// The newest address failed: the next one at once.
+					startNext()
+					timer.Reset(stagger)
+				}
+			}
+		case <-timer.C:
+			startNext()
+			timer.Reset(stagger)
+		}
+	}
+	var tried []dialAttempt
+	for i := 0; i < started; i++ {
+		if i != winner {
+			tried = append(tried, dialAttempt{addr: addrs[i], err: errs[i]})
+		}
+	}
+	return won, tried
+}
+
+// appendOnce appends s to list unless it is there already.
+func appendOnce(list []string, s string) []string {
+	for _, x := range list {
+		if x == s {
+			return list
+		}
+	}
+	return append(list, s)
+}
+
+// joinNonEmpty joins the parts that are not empty.
+func joinNonEmpty(sep string, parts ...string) string {
+	var out []string
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, sep)
 }
 
 // isNoRoute reports the local "this family is not routed from here" failures.
@@ -1181,6 +1627,28 @@ func isHostUnreachable(err error) bool {
 	return errors.Is(err, syscall.EHOSTUNREACH) || strings.Contains(strings.ToLower(err.Error()), "no route to host")
 }
 
+// pathUnreachable reports a connect turned away by an ICMP unreachable from
+// the path to the host: Linux ends a connect still waiting for its SYN-ACK
+// with the errno the ICMP code maps to, "no route to host" (host, filtered),
+// "host is down", "machine is not on the network", "protocol not
+// available", and "network is unreachable" (net unreachable or unknown).
+// The last is also this machine's own answer when it has no route out to
+// the address, and then the connect never left it: it is the path's only
+// when routed (a route out exists) says so. All of these can be the
+// validator's own doing (an iptables REJECT of that type) or a router's on
+// its side.
+func pathUnreachable(err error, routed func() bool) bool {
+	ls := strings.ToLower(err.Error())
+	switch {
+	case isHostUnreachable(err), errors.Is(err, syscall.EHOSTDOWN), errors.Is(err, syscall.ENOPROTOOPT),
+		strings.Contains(ls, "host is down"), strings.Contains(ls, "machine is not on the network"):
+		return true
+	case errors.Is(err, syscall.ENETUNREACH), strings.Contains(ls, "network is unreachable"):
+		return routed()
+	}
+	return false
+}
+
 // ShardBytes estimates the wire size of one validator's shard for a blob:
 // rows × (row data + 14 proof hashes + framing) plus the row-linear-combination
 // vector (originalRows × 16 bytes) and the response envelope. Framing is 36
@@ -1198,6 +1666,90 @@ func ShardBytes(blobSize uint32, originalRows, rows int) int64 {
 }
 
 func sinceMS(t time.Time) int64 { return time.Since(t).Milliseconds() }
+
+// maxRecordedText bounds every piece of text a row keeps from the wire or
+// the resolver: an error, a list of attempts, a list of resolved addresses.
+// A validator's server writes the text of its own errors (gRPC's
+// grpc-message), and a row's text is written out twice (raw_error and the
+// step's error), JSON-escaped at up to six bytes a character. Unbounded,
+// one endpoint could fill the disk this host shares, and a line too long
+// for the restart's reader would stop the prober until the file was edited
+// by hand.
+const maxRecordedText = 4 << 10
+
+// maxHeaderListSize bounds the headers and trailers a server may send on the
+// download connection: a Fibre server's take a few hundred bytes.
+const maxHeaderListSize = 64 << 10
+
+// clip cuts s to at most maxRecordedText bytes, at a character boundary,
+// and says how long it was: "… (N bytes in all)", the mark within the
+// bound. A text that ends in that mark already, this observer's words put
+// before a text cut earlier (ownSide, sharedRow, an abandoned request),
+// keeps it and is cut before it: N stays how much came over the wire, not
+// how long the words made it. clip of clip's result is that result.
+func clip(s string) string {
+	return clipTo(s, maxRecordedText, true)
+}
+
+// clipTo cuts s to at most bound bytes, as clip does. keepMark honours a
+// mark s ends in; text as it came over the wire is cut without it, as a
+// mark there is the sender's own words, not a count.
+func clipTo(s string, bound int, keepMark bool) string {
+	if len(s) <= bound {
+		return s
+	}
+	body, mark := s, ""
+	if at := clipMarkAt(s); keepMark && at >= 0 {
+		body, mark = s[:at], s[at:]
+	} else {
+		mark = clipMarkHead + strconv.Itoa(len(s)) + clipMarkTail
+	}
+	cut := max(bound-len(mark), 0)
+	for i := 0; i < utf8.UTFMax && cut > 0 && !utf8.RuneStart(body[cut]); i++ {
+		cut--
+	}
+	return body[:cut] + mark
+}
+
+// clipMarkHead and clipMarkTail frame the length clip puts on a text it cut.
+const clipMarkHead, clipMarkTail = "… (", " bytes in all)"
+
+// clipMarkAt is where the mark clip puts on a text it cut begins in s, or
+// -1 when s does not end in one.
+func clipMarkAt(s string) int {
+	if !strings.HasSuffix(s, clipMarkTail) {
+		return -1
+	}
+	at := strings.LastIndex(s, clipMarkHead)
+	if at < 0 {
+		return -1
+	}
+	digits := s[at+len(clipMarkHead) : len(s)-len(clipMarkTail)]
+	if n, err := strconv.Atoi(digits); err != nil || n <= 0 || strconv.Itoa(n) != digits {
+		return -1
+	}
+	return at
+}
+
+// wireText is a download error's text kept to maxRecordedText. Of a gRPC
+// status the server's own message (grpc-message) is what is cut, so the
+// length on the mark is how much the server sent.
+func wireText(err error) string {
+	if st, ok := status.FromError(err); ok && err != nil {
+		head := "rpc error: code = " + st.Code().String() + " desc = "
+		return head + clipTo(st.Message(), maxRecordedText-len(head), false)
+	}
+	return clipTo(err.Error(), maxRecordedText, false)
+}
+
+// clipText bounds the text of a row (clip). TCP.Detail is built bounded,
+// with the endpoint it reached last, where readers look for it.
+func clipText(m *Measurement) {
+	for _, s := range []*string{&m.RawError, &m.DNS.Detail, &m.DNS.Error, &m.TCP.Error,
+		&m.TLS.Error, &m.Identity.Error, &m.Download.Error} {
+		*s = clip(*s)
+	}
+}
 
 func tlsVersionString(v uint16) string {
 	switch v {

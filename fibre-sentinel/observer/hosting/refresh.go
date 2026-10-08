@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
@@ -451,9 +452,11 @@ func (r *Refresher) targets(ctx context.Context, since time.Time) ([]target, err
 //	dns.detail  "literal IP 203.0.113.5"
 //	tcp.detail  "failed 2001:db8::5: …; -> 203.0.113.5:7980"
 //
-// Addresses the observer refused to dial (private, loopback) are not
-// returned: they say nothing about hosting and publishing them is exactly
-// what the prober avoids.
+// (The examples use documentation ranges, which the prober does not dial.)
+// Addresses the observer refuses to dial (private,
+// loopback, shared, special-purpose: publicAddr) are not returned, even
+// from a row written before it refused them: they say nothing about
+// hosting and publishing them is exactly what the prober avoids.
 func AddressesFromMeasurement(raw []byte) (addrs []netip.Addr, connected netip.Addr) {
 	var m struct {
 		DNS struct {
@@ -512,10 +515,11 @@ func literalHost(hostport string) (netip.Addr, bool) {
 	return a.Unmap(), true
 }
 
-// publicAddr is the same line the prober draws (routableIP): nothing
-// private, loopback, link-local, multicast or unspecified.
+// publicAddr is the line the prober draws (probe.RoutableAddr): nothing
+// private, loopback, link-local, multicast, unspecified, shared (100.64/10),
+// reserved, documentation or otherwise special-purpose.
 func publicAddr(a netip.Addr) bool {
-	return a.IsValid() && a.IsGlobalUnicast() && !a.IsPrivate() && !a.IsLoopback() && !a.IsLinkLocalUnicast()
+	return probe.RoutableAddr(a)
 }
 
 // statFile returns "size|modified" for a readable regular file, which is

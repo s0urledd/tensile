@@ -244,6 +244,67 @@ func TestBuilder_ForwardClockStepDoesNotFreezeAFile(t *testing.T) {
 	}
 }
 
+// A catch-up build of several days in one run (the collector down, or the
+// export held, past a midnight) judges a line's clock against the day it runs
+// on. A line dated two days after the day being built is not a clock step
+// then: it waits for its own day's export, and no manifest names a skew that
+// never happened. A line dated the day the run is on waits for tomorrow's.
+func TestBuilder_CatchUpLeavesLaterDaysToTheirOwnExports(t *testing.T) {
+	data := t.TempDir()
+	dir := filepath.Join(data, "exports")
+	amends := filepath.Join(data, "amendments.jsonl")
+	d0, d1, d3, d4 := "2026-10-04", "2026-10-05", "2026-10-07", "2026-10-08"
+	if err := os.WriteFile(amends, []byte(line("judged_at", d0+"T10:00:00Z", "d0")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := &Builder{DataDir: data, Dir: dir, Vantage: "v", Build: "x", Hour: 3}
+	if built, err := b.Run(time.Date(2026, 10, 5, 3, 0, 0, 0, time.UTC)); err != nil || len(built) != 1 {
+		t.Fatalf("d0: built %v, %v", built, err)
+	}
+	// Sparse: a line on d1, none on the 6th, two on d3, one on d4, the day
+	// the catch-up runs on.
+	f, err := os.OpenFile(amends, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(line("judged_at", d1+"T10:00:00Z", "d1") + line("judged_at", d3+"T01:00:00Z", "d3a") +
+		line("judged_at", d3+"T02:00:00Z", "d3b") + line("judged_at", d4+"T01:00:00Z", "d4"))
+	f.Close()
+	built, err := b.Run(time.Date(2026, 10, 8, 3, 5, 0, 0, time.UTC))
+	if err != nil || len(built) != 3 {
+		t.Fatalf("catch-up: built %v, %v", built, err)
+	}
+	want := map[string]string{
+		b.name(d1):           line("judged_at", d1+"T10:00:00Z", "d1"),
+		b.name("2026-10-06"): "",
+		b.name(d3):           line("judged_at", d3+"T01:00:00Z", "d3a") + line("judged_at", d3+"T02:00:00Z", "d3b"),
+	}
+	for _, name := range built {
+		m := readTar(t, filepath.Join(dir, name))
+		if got := string(m["amendments.jsonl"]); got != want[name] {
+			t.Errorf("%s amendments member:\n%q\nwant:\n%q", name, got, want[name])
+		}
+		var man Manifest
+		if err := json.Unmarshal(m["manifest.json"], &man); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range man.Files {
+			if f.SkewedLines != 0 {
+				t.Errorf("%s: %s reports %d skewed lines; nothing was dated after the build", name, f.Name, f.SkewedLines)
+			}
+		}
+	}
+	// The d4 line waits for d4's export.
+	built, err = b.Run(time.Date(2026, 10, 9, 3, 0, 0, 0, time.UTC))
+	if err != nil || len(built) != 1 {
+		t.Fatalf("d4: built %v, %v", built, err)
+	}
+	m := readTar(t, filepath.Join(dir, built[0]))
+	if got := string(m["amendments.jsonl"]); got != line("judged_at", d4+"T01:00:00Z", "d4") {
+		t.Errorf("d4 amendments member: %q", got)
+	}
+}
+
 // Every export carries the scanner state, because sentinel-recompute redraws
 // verdicts with the scan gaps, the param history and the host seed that live
 // in it. Without it a late shadow verdict the record defers on a gap is

@@ -191,6 +191,38 @@ func TestLinesNotBackAreCountedByWhy(t *testing.T) {
 	}
 }
 
+// A failure of the database's own while a slim row is written back (the store busy, a read that failed) is the check's
+// error, not a line counted as different: a day checked through it went into the ledger as not reproducible, which the
+// ledger keeps for as long as the tarball's digest stays, though nothing in the store is wrong. Once the store reads
+// again, the same lines come back byte for byte.
+func TestAFailingStoreIsNotADifferentLine(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	var seq int
+	var name, path string
+	if err := f.st.DB().QueryRow(`PRAGMA database_list`).Scan(&seq, &name, &path); err != nil {
+		t.Fatal(err)
+	}
+	// Another handle, as observer-archive and record-verify open the store: nothing of it is read yet.
+	ro, err := store.OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ro.Close() })
+	if _, err := f.st.DB().Exec(`ALTER TABLE slim_entries RENAME TO slim_entries_away`); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := CheckLines(ctx, ro, "measurements.jsonl", bytes.NewReader(file(f.readings...)), 1); err == nil {
+		t.Fatalf("a store that could not be read gave a report: %+v", r)
+	}
+	if _, err := f.st.DB().Exec(`ALTER TABLE slim_entries_away RENAME TO slim_entries`); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := CheckLines(ctx, ro, "measurements.jsonl", bytes.NewReader(file(f.readings...)), 1); err != nil || !r.Reproducible || r.SlimRows != int64(len(f.readings)) {
+		t.Fatalf("once the store reads again: %+v %v", r, err)
+	}
+}
+
 // A day's export is checked as a whole: the tarball against the index and the sidecar, the members against the
 // manifest, and the checked files against the store.
 func TestDay(t *testing.T) {

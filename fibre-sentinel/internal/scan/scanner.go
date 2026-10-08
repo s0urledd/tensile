@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/cosmos/cosmos-sdk/types/bech32"
-	"math"
 	"strings"
 	"time"
 
@@ -107,6 +106,11 @@ type Scanner struct {
 	// that will never have the height look the same for the first minutes;
 	// the ones after it do not, because by then the answer is known.
 	unavailableRun int
+	// hole is set by processBlock when the node answered a block read with
+	// a height below its oldest block: every height up to that block is as
+	// far gone, and Run records them at once (crossHole) instead of asking
+	// for each one.
+	hole *ErrHeightUnavailable
 
 	// fibreInactive is set when the x/fibre module does not answer queries
 	// (the chain is on an app version before Fibre). The scanner keeps
@@ -281,6 +285,14 @@ func (s *Scanner) Run(parent context.Context) error {
 			if !s.fibreInactive && h%paramReconcileEvery == 0 {
 				s.reconcileParams(ctx, h)
 			}
+			if u := s.hole; u != nil {
+				s.hole = nil
+				if to := min(u.Base-1, target); to > h {
+					s.crossHole(h+1, to, u.Base, u.Err.Error())
+					h = to
+					sinceCheckpoint = s.cfg.CheckpointEvery // the gaps go on record now
+				}
+			}
 			next = h + 1
 			sinceCheckpoint++
 			if sinceCheckpoint >= s.cfg.CheckpointEvery || h == target {
@@ -337,7 +349,7 @@ func (s *Scanner) resume(ctx context.Context, tip int64) (int64, error) {
 		}
 		s.lastReconcile = st.LastReconcileHeight
 		s.reconcileFailingSince = st.ReconcileFailingSince
-		resumeAt := st.LastScannedHeight + 1
+		resumeAt := s.resumeAboveBase(ctx, st.LastScannedHeight+1, tip)
 		s.store.SetSettledCoverFrom(resumeAt)
 		s.log.Printf("resuming: last_scanned=%d, %d param-history entries%s", st.LastScannedHeight, len(st.ParamHistory),
 			map[bool]string{true: " (x/fibre not active yet)", false: ""}[s.fibreInactive])
@@ -388,6 +400,64 @@ func (s *Scanner) resume(ctx context.Context, tip int64) (int64, error) {
 		return 0, err
 	}
 	return start, nil
+}
+
+// resumeAboveBase is the height a resume at next starts from on a node
+// whose oldest block (/status earliest_block_height) is above it: a node
+// rebuilt from a state-sync snapshot, or pruned while the scanner was down.
+// Not a single height below that block can be read from it, so they are
+// recorded as one gap at once (crossHole) and the scan starts at the node's
+// oldest block. Met one by one they cost ten minutes for the first and
+// thirty seconds for each after it, with the feed stalled throughout: two
+// thousand heights took about seventeen hours. A node whose history cannot
+// be asked for leaves next as it is, and the heights are met one by one.
+func (s *Scanner) resumeAboveBase(ctx context.Context, next, tip int64) int64 {
+	var base int64
+	if err := s.retryRPC(ctx, "node history", func() error {
+		var err error
+		base, _, err = s.chain.History(ctx)
+		return err
+	}); err != nil || base <= next {
+		return next
+	}
+	limit := tip
+	if s.cfg.MaxHeight > 0 && s.cfg.MaxHeight < limit {
+		limit = s.cfg.MaxHeight
+	}
+	to := min(base-1, limit)
+	if to < next {
+		return next
+	}
+	s.crossHole(next, to, base, fmt.Sprintf("height %d is not available, lowest height is %d (the node's /status at resume)", next, base))
+	return to + 1
+}
+
+// unavailableReason is the ScanGap.Reason of a height the node could not
+// serve.
+const unavailableReason = "height unavailable from the RPC node (pruned, or storage.discard_abci_responses = true)"
+
+// crossHole records every height from `from` through `to` as a gap the node
+// cannot serve, without asking for any of them: they are all below its
+// oldest block, base, and a node's oldest block only moves up. The gaps are
+// the ones the heights met one by one would have left, in the same ranges
+// with the same reason: a height the operator listed in -skip-heights keeps
+// its own reason, as it does when it is met on its own.
+func (s *Scanner) crossHole(from, to, base int64, lastErr string) {
+	if to < from {
+		return
+	}
+	for h := from; h <= to; h++ {
+		if s.skipListed(h) {
+			if !s.gapCovers(h) {
+				s.addGap(h, SkipReason, "not read: height listed in -skip-heights", time.Time{})
+			}
+			continue
+		}
+		s.noteGap(h, unavailableReason, lastErr, time.Time{}, false)
+	}
+	s.log.Printf("WARNING: GAP h=%d-%d not scanned: below this node's oldest block %d; recorded at once, the scan goes on from h=%d (%d gap ranges so far)",
+		from, to, base, to+1, len(s.gaps))
+	s.status.Error(fmt.Sprintf("gap at h=%d-%d: below the node's oldest block %d", from, to, base))
 }
 
 // historyWaitEvery is how often a fresh scan from the tip asks again
@@ -549,7 +619,7 @@ func (s *Scanner) recordGapRead(h int64, err error, blockTime time.Time, eventsR
 	if !errors.As(err, &ue) {
 		return false
 	}
-	s.noteGap(h, "height unavailable from the RPC node (pruned, or storage.discard_abci_responses = true)", ue.Err.Error(), blockTime, eventsRead)
+	s.noteGap(h, unavailableReason, ue.Err.Error(), blockTime, eventsRead)
 	s.log.Printf("WARNING: GAP h=%d not scanned: %v; recorded and moving on (%d gap ranges so far)", h, ue.Err, len(s.gaps))
 	s.status.Error(fmt.Sprintf("gap at h=%d: %v", h, ue.Err))
 	return true
@@ -724,8 +794,13 @@ var unavailableGrace = 10 * time.Minute
 // been established, the second answer is known, and paying ten minutes per
 // height meant a thousand-block hole — the span the chain allows between a
 // promise and its settlement — took a week to cross, one height at a time,
-// with the feed stopped throughout.
-const unavailableRunGrace = 20 * time.Second
+// with the feed stopped throughout. A hole below the node's oldest block
+// pays no grace at all (retryRPCAt, crossHole).
+var unavailableRunGrace = 20 * time.Second
+
+// unavailableWait is the wait between two asks for a height the node says
+// it does not have, within the grace.
+const unavailableWait = 30 * time.Second
 
 // rpcWarnEvery is how often a still-failing retry is logged as a WARNING,
 // so a long outage leaves a trail without a line every few seconds.
@@ -733,25 +808,40 @@ const rpcWarnEvery = 5 * time.Minute
 
 // ErrHeightUnavailable wraps an RPC error that means the node cannot serve
 // this height at all: pruned, or ABCI responses discarded. It is returned
-// only after unavailableGrace of retries.
+// after the grace of retries, or at once for a height below the node's
+// oldest block, which the node names (Base).
 type ErrHeightUnavailable struct {
 	Height int64
-	Err    error
+	// Base is the node's oldest block when Height is below it, zero
+	// otherwise.
+	Base int64
+	Err  error
 }
 
 func (e *ErrHeightUnavailable) Error() string {
+	if e.Base > 0 {
+		return fmt.Sprintf("height %d is below this node's oldest block %d: %v", e.Height, e.Base, e.Err)
+	}
 	return fmt.Sprintf("height %d unavailable from this node after %s: %v", e.Height, unavailableGrace, e.Err)
 }
 
 func (e *ErrHeightUnavailable) Unwrap() error { return e.Err }
+
+// finalErr wraps an error the caller of retryRPCAt has already judged no
+// retry changes: it is handed back at once, with no grace and no backoff.
+type finalErr struct{ err error }
+
+func (e finalErr) Error() string { return e.err.Error() }
+func (e finalErr) Unwrap() error { return e.err }
 
 // retryRPC runs fn until it succeeds. A transient failure (the node is down,
 // a timeout, a tip race) is retried for as long as it takes, with capped
 // backoff and a WARNING every few minutes: an RPC outage is the node's
 // problem, and the scanner should be there when it comes back rather than
 // exit and be restarted in a loop by the supervisor. It gives up at once on
-// a context cancellation or on x/fibre being inactive, and after
-// unavailableGrace on a height the node says it does not have.
+// a context cancellation, on x/fibre being inactive, on an error fn marked
+// final (finalErr) and on a height below the node's oldest block, and after
+// unavailableGrace on any other height the node says it does not have.
 func (s *Scanner) retryRPC(ctx context.Context, what string, fn func() error) error {
 	return s.retryRPCAt(ctx, what, 0, fn)
 }
@@ -778,6 +868,22 @@ func (s *Scanner) retryRPCAt(ctx context.Context, what string, height int64, fn 
 		}
 		if IsModuleInactive(err) {
 			return err
+		}
+		var fe finalErr
+		if errors.As(err, &fe) {
+			return fe.err
+		}
+		// Below the node's oldest block: CometBFT names that block in its
+		// answer ("height H is not available, lowest height is B"), and a
+		// node's oldest block only moves up, so no wait changes the answer.
+		// Under the grace, a node rebuilt from a state-sync snapshot above
+		// the scan's cursor cost ten minutes for the first height of the
+		// hole and thirty seconds for each after it, and a publication whose
+		// promise predates the snapshot cost ten minutes on its validator
+		// set.
+		if base, ok := nodeBase(err); ok && height > 0 && height < base {
+			s.unavailableRun++
+			return &ErrHeightUnavailable{Height: height, Base: base, Err: err}
 		}
 		// A recovered panic the node repeats is not an outage. Proven to be
 		// the module not existing yet, it returned above; otherwise it is
@@ -807,19 +913,20 @@ func (s *Scanner) retryRPCAt(ctx context.Context, what string, height int64, fn 
 			}
 		}
 		unavailable := IsHeightUnavailable(err) || (resultsGone && IsResultsMissing(err))
-		if unavailable {
-			grace := unavailableGrace
-			if s.unavailableRun > 0 {
-				grace = unavailableRunGrace
-			}
-			if time.Since(start) >= grace {
-				s.unavailableRun++
-				return &ErrHeightUnavailable{Height: height, Err: err}
-			}
+		grace := unavailableGrace
+		if s.unavailableRun > 0 {
+			grace = unavailableRunGrace
+		}
+		if unavailable && time.Since(start) >= grace {
+			s.unavailableRun++
+			return &ErrHeightUnavailable{Height: height, Err: err}
 		}
 		wait := rpcBackoff(attempt)
 		if unavailable {
-			wait = 30 * time.Second
+			// Never past the grace: a fixed thirty seconds after the
+			// twenty-second run grace made each height of a run cost
+			// thirty, not the twenty it promises.
+			wait = min(unavailableWait, grace-time.Since(start))
 		}
 		if panicked {
 			wait = appPanicWait
@@ -940,22 +1047,48 @@ const paramReconcileEvery = 60
 // (RETENTION_UNVERIFIED) until the params of every height are read; a
 // re-scan from the interval's start rewrites nothing (the record is
 // append-only), so the log line and the range are the record.
+//
+// A state the node has pruned is not waited for. The scan reads blocks,
+// which the node keeps longer than state, so a scanner further behind the
+// tip than the node's state retention (after a long outage) meets pruned
+// state at every check: waited out under the unavailable grace, each check
+// cost ten minutes and the scan made about sixty blocks per ten minutes,
+// slower than the chain, so it never caught up. A check that cannot read
+// state is a failed check, recorded once per run (check_skipped), and the
+// first one that reads state near the tip covers the whole widened
+// interval. The tip race (code 26) is still retried.
 func (s *Scanner) reconcileParams(ctx context.Context, h int64) {
 	s.reconcileParamsWith(h, func() (fibretypes.Params, error) {
 		var live fibretypes.Params
 		err := s.retryRPC(ctx, fmt.Sprintf("params reconcile at height %d", h), func() error {
 			var err error
 			live, err = s.chain.FibreParamsAt(ctx, h)
+			if IsHeightUnavailable(err) {
+				return finalErr{err}
+			}
 			return err
 		})
-		return live, err
+		return live, stopped(ctx, err)
 	}, func(at int64) (fibretypes.Params, error) {
 		// One try per height, no retry loop: the read is bounded work
 		// inside the block loop and a range that cannot be read now is
 		// recorded unresolvable rather than stalling the scan. A later
 		// pass can close it.
-		return s.chain.FibreParamsAt(ctx, at)
+		p, err := s.chain.FibreParamsAt(ctx, at)
+		return p, stopped(ctx, err)
 	})
+}
+
+// errStopped marks a read cut short because the scan is stopping (its
+// context ended): no check happened, and none failed either.
+var errStopped = errors.New("the scan is stopping")
+
+// stopped marks err as errStopped when the scan's context has ended.
+func stopped(ctx context.Context, err error) error {
+	if err != nil && ctx.Err() != nil {
+		return fmt.Errorf("%w (%v)", errStopped, err)
+	}
+	return err
 }
 
 // reconcileParamsWith is reconcileParams with the two state reads injected,
@@ -971,6 +1104,15 @@ func (s *Scanner) reconcileParamsWith(h int64, readState func() (fibretypes.Para
 		since = s.startHeight - 1
 	}
 	live, err := readState()
+	if errors.Is(err, errStopped) {
+		// A stop, during the read or before it: nothing is recorded and
+		// the marker stays, so the next process's first check covers this
+		// one. Recorded as a failed check, every restart (each deploy) that
+		// landed here left a check_skipped range in the record and the
+		// exports for a check that failed only because of the stop.
+		s.log.Printf("h=%d: params reconcile not made: %v", h, err)
+		return
+	}
 	if err != nil {
 		// The marker stays where it was. It is the start of the interval a
 		// silent change could have landed in, and a check that did not
@@ -1001,7 +1143,14 @@ func (s *Scanner) reconcileParamsWith(h int64, readState func() (fibretypes.Para
 		return
 	}
 	s.reconcileFailingSince = 0
-	cur := s.params.at(h, math.MaxInt)
+	// The history's view of the state after block h: every tx event of
+	// block h and its FinalizeBlock event, which takes effect from h+1
+	// (AddFinalizeEvent). State at h already holds a change governance
+	// made in block h's EndBlock; compared with the history at the end of
+	// block h instead, that change, announced by its event, was reported
+	// as a silent one at every check height it landed on. A change made in
+	// block h without an event (an upgrade handler) is still found.
+	cur := s.params.at(h+1, -1)
 	if cur != nil && paramsEqual(cur.Params, live) {
 		s.lastReconcile = h
 		return
@@ -1048,7 +1197,16 @@ func (s *Scanner) reconcileParamsWith(h int64, readState func() (fibretypes.Para
 			PublicationsAffected: n,
 			IsFloor:              isFloor,
 		}
-		s.resolveUncertainty(&u, readAt)
+		if !s.resolveUncertainty(&u, readAt) {
+			// The scan stopped in the middle of the read. Written now, the
+			// range would be unresolvable only because of the stop, and
+			// held as such; left alone, with the history and the marker
+			// where they are, the next process's first check finds the
+			// same difference and reads the range again.
+			s.log.Printf("h=%d: x/fibre params in state differ from the event history over heights %d-%d; the scan stopped while the range was read, so nothing is recorded and the next check finds it again",
+				h, since+1, h)
+			return
+		}
 		// The record is the only thing that makes this range knowable to
 		// anything downstream, and nothing here may move past it until it
 		// is on disk. So neither the param history nor the reconcile
@@ -1098,9 +1256,12 @@ const maxVerifyHeights = 5000
 // the scanner is already following. That keeps the common case closed
 // within one reconcile instead of waiting on a separate process, and it is
 // why nothing downstream has to hold a verdict for long.
-func (s *Scanner) resolveUncertainty(u *ParamUncertainty, readAt func(int64) (fibretypes.Params, error)) {
+//
+// It reports false, with u left unresolved, when a read was cut short by the
+// scan stopping (errStopped): that proves nothing either way.
+func (s *Scanner) resolveUncertainty(u *ParamUncertainty, readAt func(int64) (fibretypes.Params, error)) bool {
 	if readAt == nil {
-		return
+		return true
 	}
 	from, to := u.FromHeight-1, u.ToHeight
 	if from < 1 {
@@ -1113,7 +1274,7 @@ func (s *Scanner) resolveUncertainty(u *ParamUncertainty, readAt func(int64) (fi
 		u.ResolvedAt = &now
 		u.ResolveMethod = "exhaustive_read"
 		u.ResolveError = fmt.Sprintf("the range is %d heights, over the %d this scanner will read in one pass; nothing was read, so nothing is proven", span, maxVerifyHeights)
-		return
+		return true
 	}
 	var values []ResolvedValue
 	skipped := int64(0)
@@ -1127,6 +1288,9 @@ func (s *Scanner) resolveUncertainty(u *ParamUncertainty, readAt func(int64) (fi
 			skipped++
 			continue
 		}
+		if errors.Is(err, errStopped) {
+			return false
+		}
 		if err != nil {
 			u.Resolution = ResolutionUnresolvable
 			u.ResolvedAt = &now
@@ -1134,7 +1298,7 @@ func (s *Scanner) resolveUncertainty(u *ParamUncertainty, readAt func(int64) (fi
 			u.HeightsRead = at - from
 			u.ResolveError = fmt.Sprintf("params at height %d: %v", at, err)
 			u.Values = nil // a partial read proves nothing about the heights it skipped
-			return
+			return true
 		}
 		if n := len(values); n > 0 && paramsEqual(values[n-1].Params.toParams(), p) {
 			continue
@@ -1150,6 +1314,7 @@ func (s *Scanner) resolveUncertainty(u *ParamUncertainty, readAt func(int64) (fi
 	// that, and only once the record is on disk: a history that has moved
 	// past a range nothing recorded is a range that can never be found
 	// again.
+	return true
 }
 
 func (u ParamUncertainty) resolutionNote() string {
@@ -1277,6 +1442,12 @@ func (s *Scanner) processBlock(ctx context.Context, h int64) int {
 			return blockStopped
 		}
 		if s.recordGap(h, err, time.Time{}) {
+			// Below the node's oldest block: Run records the rest of the
+			// hole at once.
+			var ue *ErrHeightUnavailable
+			if errors.As(err, &ue) && ue.Base > 0 {
+				s.hole = ue
+			}
 			return 0
 		}
 		s.log.Fatalf("fetch block %d: %v", h, err)
@@ -1400,6 +1571,9 @@ func (s *Scanner) processBlock(ctx context.Context, h int64) int {
 			continue
 		}
 		if s.fibreInactive && !s.trySeed(ctx, h) {
+			if ctx.Err() != nil {
+				return blockStopped
+			}
 			s.log.Fatalf("h=%d tx=%d: MsgPayForFibre seen but x/fibre params cannot be read%s", h, i, skipHint(h))
 		}
 		msg, derr := decodePayForFibre(raw)
@@ -1408,6 +1582,18 @@ func (s *Scanner) processBlock(ctx context.Context, h int64) int {
 			continue
 		}
 		pub, berr := s.buildPublication(ctx, msg, blk, i, txHash, code)
+		// A stop that lands while the publication is built (its validator
+		// set, a newcomer's registration) is a stop, as one during the
+		// block read is: nothing more of h is written and the scan stops
+		// before h. h is read again on restart, where the publications
+		// already appended are deduped by their settlement tx, and the
+		// params and host events already taken from it are found on
+		// record. Handled as a read that failed, it was a crash dump
+		// telling the operator to skip a healthy block, or a publication
+		// appended with its host unknown_no_seed for good.
+		if ctx.Err() != nil {
+			return blockStopped
+		}
 		if berr != nil {
 			// A height this node cannot serve is a gap, not a crash. The
 			// validator set is fetched at the PROMISE height, which the
@@ -1494,7 +1680,9 @@ func (s *Scanner) buildPublication(ctx context.Context, msg *fibretypes.MsgPayFo
 	// skipped by the prober for good, and there is no re-scan path.
 	var table AssignmentTable
 	var set valSetEntry
-	if verr := s.retryRPC(ctx, fmt.Sprintf("validator set at height %d", pp.Height), func() error {
+	// Asked at the promise height, so a promise below the node's oldest
+	// block is unavailable at once (retryRPCAt), not after the grace.
+	if verr := s.retryRPCAt(ctx, fmt.Sprintf("validator set at height %d", pp.Height), pp.Height, func() error {
 		var err error
 		set, err = s.validatorSet(ctx, pp.Height)
 		return err
@@ -1666,13 +1854,13 @@ func (s *Scanner) seedHosts(ctx context.Context, startHeight int64) {
 		return
 	}
 	// Only now: the entries already on record are kept, and the seed is
-	// merged into them.
+	// merged into them. A line that cannot be written is fatal, as it is
+	// for a registration read from a block (appendHost): logged and left
+	// behind, the seed stood in state.json while host_history.jsonl, which
+	// the collector and a verifier read, never had it.
 	s.hosts.Seed(at, provs, source)
 	for _, e := range s.hosts.Entries() {
-		if err := s.store.AppendHostEvent(HostEvent{HostEntry: e, Time: time.Now().UTC()}); err != nil {
-			s.log.Printf("host_history: %v", err)
-			break
-		}
+		s.appendHost(e)
 	}
 	s.log.Printf("host history seeded at h=%d (%s) with %d registrations", at, source, len(provs))
 }

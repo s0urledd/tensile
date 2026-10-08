@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -376,5 +377,169 @@ func TestAFreshScanFromTheTipWaitsForAPromiseWindowOfHistory(t *testing.T) {
 	defer cancel()
 	if _, err := s3.resume(ctx, 5300); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("resume under a stop: %v", err)
+	}
+}
+
+// A scanner further behind the tip than the node keeps state (after a long
+// outage) meets pruned state at every params check: the blocks are still
+// served, the state after them is not. Waited out under the unavailable
+// grace, each check cost ten minutes, and a scan making about sixty blocks
+// per ten minutes never caught up with a chain making a hundred. The check
+// fails at once now, recorded once for the run, and the tip race is still
+// retried.
+func TestAParamsCheckOnPrunedStateDoesNotWaitForIt(t *testing.T) {
+	node := newFakeNode(t)
+	node.tip = 9000
+	node.answer[pathFibreParams] = paramsBelow(t, 5000)
+	dir := t.TempDir()
+	s := freshScanner(t, node, dir)
+	defer s.store.Close()
+	s.params = NewParamHistory(100, fibretypes.DefaultParams())
+	s.startHeight, s.lastReconcile = 100, 120
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	s.reconcileParams(ctx, 180)
+	s.reconcileParams(ctx, 240)
+	if took := time.Since(start); took > 5*time.Second || ctx.Err() != nil {
+		t.Fatalf("two checks on pruned state took %s (ctx: %v); the grace was waited out", took, ctx.Err())
+	}
+	if n := node.count(pathFibreParams); n != 2 {
+		t.Fatalf("params asked %d times for two checks, want once each", n)
+	}
+	got := readUncertainty(t, filepath.Join(dir, "param_uncertainty.jsonl"))
+	if len(got) != 1 || got[0].Kind != UncertaintyCheckSkipped || got[0].FromHeight != 121 || got[0].ToHeight != 180 ||
+		!strings.Contains(got[0].LastError, "failed to load state at height 180") {
+		t.Fatalf("records: %+v, want one check_skipped 121-180 naming the pruned state", got)
+	}
+	if s.lastReconcile != 120 || s.reconcileFailingSince != 121 {
+		t.Fatalf("marker=%d failing_since=%d, want 120 and 121", s.lastReconcile, s.reconcileFailingSince)
+	}
+
+	// Near the tip the state is there; the tip race (code 26) on the way is
+	// asked again, as before.
+	ok, err := (&fibretypes.QueryParamsResponse{Params: fibretypes.DefaultParams()}).Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	raced := false
+	node.mu.Lock()
+	node.answer[pathFibreParams] = func(h int64) abci.ResponseQuery {
+		mu.Lock()
+		defer mu.Unlock()
+		if !raced {
+			raced = true
+			return abci.ResponseQuery{Code: 26, Codespace: "sdk", Log: "cannot query with height in the future; please provide a valid height: invalid height", Height: h}
+		}
+		return abci.ResponseQuery{Value: ok, Height: h}
+	}
+	node.mu.Unlock()
+	s.reconcileParams(ctx, 8940)
+	if s.lastReconcile != 8940 || s.reconcileFailingSince != 0 {
+		t.Fatalf("after the tip race: marker=%d failing_since=%d", s.lastReconcile, s.reconcileFailingSince)
+	}
+	if got := readUncertainty(t, filepath.Join(dir, "param_uncertainty.jsonl")); len(got) != 1 {
+		t.Fatalf("a check that read state wrote a record: %+v", got)
+	}
+}
+
+// A stop (every deploy restarts the scanner) that lands on a params check
+// is not a check that failed: before, it left a check_skipped range in the
+// record and the exports, and the next process carried its latch.
+func TestAStopDuringAParamsCheckRecordsNothing(t *testing.T) {
+	node := newFakeNode(t)
+	node.answer[pathFibreParams] = paramsBelow(t, 1)
+	dir := t.TempDir()
+	s := freshScanner(t, node, dir)
+	defer s.store.Close()
+	s.params = NewParamHistory(100, fibretypes.DefaultParams())
+	s.startHeight, s.lastReconcile = 100, 120
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	s.reconcileParams(ctx, 180)
+	if got := readUncertainty(t, filepath.Join(dir, "param_uncertainty.jsonl")); len(got) != 0 {
+		t.Fatalf("a stop wrote %d record(s): %+v", len(got), got)
+	}
+	if s.lastReconcile != 120 || s.reconcileFailingSince != 0 {
+		t.Fatalf("marker=%d failing_since=%d after a stop, want 120 and 0", s.lastReconcile, s.reconcileFailingSince)
+	}
+}
+
+// CometBFT answers a read below its oldest block with that block's height
+// ("height 42 is not available, lowest height is 5000"), and the oldest
+// block only moves up. A validator set at a promise height a state-synced
+// node does not hold was retried for the ten minutes of the grace, once
+// for every such publication; it is unavailable at once now.
+func TestAHeightBelowTheNodesOldestBlockIsUnavailableAtOnce(t *testing.T) {
+	node := newRPCNode(t, func(method string, height int64) (any, string) {
+		if method == "validators" {
+			return nil, fmt.Sprintf("height %d is not available, lowest height is 5000", height)
+		}
+		return nil, "unexpected " + method
+	})
+	s := scannerOn(t, node.srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	err := s.retryRPCAt(ctx, "validator set at height 42", 42, func() error {
+		_, err := s.chain.ValidatorSet(ctx, 42)
+		return err
+	})
+	var ue *ErrHeightUnavailable
+	if !errors.As(err, &ue) || ue.Height != 42 || ue.Base != 5000 {
+		t.Fatalf("a height below the node's oldest block: %v", err)
+	}
+	if took := time.Since(start); took > 5*time.Second || node.count("validators") != 1 {
+		t.Fatalf("took %s and %d asks, want one ask and no wait", took, node.count("validators"))
+	}
+	if !s.recordPublicationGap(100, err, time.Time{}) || len(s.gaps) != 1 || !s.gaps[0].HostEventsRead {
+		t.Fatalf("not recorded as a publication gap: %+v", s.gaps)
+	}
+
+	for msg, want := range map[string]int64{
+		"validators h=42 page=1: RPC error -32603 - Internal error: height 42 is not available, lowest height is 5000": 5000,
+		"height 7 is not available, lowest height is 12)":                                                              12,
+		"height 42 is not available": 0,
+		"lowest height is":           0,
+	} {
+		if got, ok := nodeBase(errors.New(msg)); got != want || ok != (want > 0) {
+			t.Errorf("nodeBase(%q) = %d %v, want %d", msg, got, ok, want)
+		}
+	}
+}
+
+// After the first height of a run of unavailable ones the grace is the run
+// grace, and the wait between two asks never runs past it: a fixed thirty
+// seconds made each height cost thirty, not the twenty the run grace says.
+func TestARunOfUnavailableHeightsCostsTheRunGraceNotMore(t *testing.T) {
+	node := newRPCNode(t, func(method string, height int64) (any, string) {
+		if method == "block_results" {
+			return nil, "node is not persisting finalize block responses"
+		}
+		return nil, "unexpected " + method
+	})
+	s := scannerOn(t, node.srv.URL)
+	prev := unavailableRunGrace
+	unavailableRunGrace = 300 * time.Millisecond
+	defer func() { unavailableRunGrace = prev }()
+	s.unavailableRun = 1
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	err := s.retryRPCAt(ctx, "fetch block_results 500", 500, func() error {
+		_, err := s.chain.BlockResults(ctx, 500)
+		return err
+	})
+	var ue *ErrHeightUnavailable
+	if !errors.As(err, &ue) || ue.Height != 500 {
+		t.Fatalf("a height in a run: %v", err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("a height in a run cost %s with a run grace of %s", took, unavailableRunGrace)
 	}
 }

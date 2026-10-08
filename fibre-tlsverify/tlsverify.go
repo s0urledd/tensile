@@ -100,9 +100,14 @@ type Identity struct {
 // endorsed by the expected validator consensus key for chainID, and that the
 // certificate is internally consistent with the signed binding at instant now.
 //
-// A nil error means: the peer holds the consensus key `expected`, it authorized
-// this exact TLS key, and the binding is in force at `now`. Any error is a
-// *VerificationError; switch on its Reason.
+// A nil error means: the holder of the consensus key `expected` authorized
+// this certificate's TLS key, and the binding is in force at `now`. It does
+// not mean the peer that presented the certificate holds that TLS key:
+// anyone can present a validator's genuine certificate. Only a TLS handshake
+// that completes proves that (TLS 1.3 checks the peer's CertificateVerify
+// after tls.Config.VerifyConnection runs), so a caller that verifies inside
+// the handshake must treat the identity as verified only once the handshake
+// has succeeded. Any error is a *VerificationError; switch on its Reason.
 //
 // The checks run in a fixed order so the first failing property determines the
 // Reason. That order matches celestia-app's tlsid.verifyCertAt.

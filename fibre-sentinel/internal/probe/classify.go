@@ -38,10 +38,15 @@ const (
 	// (15 s), after the connection was made. The client moves on without
 	// the rows, and so does the reading.
 	OutcomeRPCTimeout Outcome = "RPC_TIMEOUT"
-	// OutcomeMalformedShard: the server answered with something the Fibre
-	// client cannot use as a shard: empty, unparseable, rows outside the
-	// code, or a reply larger than the protocol's message bound. The client
-	// skips such a shard, and so does the reading.
+	// OutcomeMalformedShard: the server answered with something that is no
+	// shard of this blob: empty, unparseable or with rows outside the code,
+	// which the Fibre client skips, or a reply over the receive bound it was
+	// last asked for under, the largest shard of this blob any validator
+	// can hold (a tenth to spare, a mebibyte at least) or the protocol's
+	// message bound, which no honest server sends (clientRulesOutcome). A
+	// reply over this validator's own shard's bound alone is asked for
+	// again under the wider one, and is this observer's gap when its byte
+	// budget has no room for that.
 	OutcomeMalformedShard Outcome = "MALFORMED_SHARD"
 	// OutcomeNoHost: the validator has no fibre host registered in x/valaddr,
 	// so nobody can fetch its rows.
@@ -488,7 +493,7 @@ func Classify(in Evidence) (Classification, string) {
 		case o == OutcomeServerError:
 			return ClassServerError, "endpoint reached and identity verified; the server answered with an application error instead of the shard, which from one probe is not distinguishable from a transient fault"
 		case o == OutcomeMalformedShard:
-			return ClassServerError, "endpoint reached and identity verified; the server answered with a shard the Fibre client cannot use (empty, unparseable, or larger than the protocol's message bound)"
+			return ClassServerError, "endpoint reached and identity verified; the server answered with something that is no shard of this blob (empty, unparseable, or over the receive bound of the largest shard of this blob any validator can hold, a tenth to spare and a mebibyte at least)"
 		case o == OutcomeThrottled:
 			return ClassThrottled, "endpoint reached and identity verified; the server refused the download with a rate limit, which says nothing about the shard"
 		case o.reachFailure():

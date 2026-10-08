@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import { bytes, shortHex, span, useApi, utc } from "@/lib/api";
 import type { ParamEntry, Params } from "@/lib/withdrawals";
 import { H3 } from "@/components/RefHeading";
+import { fragmentId } from "@/lib/fragment";
 
 /**
  * The x/fibre parameters this site computes every deadline from, and the
@@ -59,7 +60,7 @@ export default function ProtocolParams() {
   useEffect(() => {
     if (!p || settled.current) return;
     settled.current = true;
-    const id = decodeURIComponent(window.location.hash.slice(1));
+    const id = fragmentId(window.location.hash);
     const here = document.getElementById("params-chain");
     const target = id ? document.getElementById(id) : null;
     if (!here || !target) return;

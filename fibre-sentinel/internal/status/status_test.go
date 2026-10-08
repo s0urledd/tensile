@@ -1,7 +1,10 @@
 package status
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -78,5 +81,64 @@ func TestDefaultsReachTheWriterAndTheCadenceReadsBack(t *testing.T) {
 	}
 	if New(dir, "other", "", "t").r.Detail[CadenceKey] != 60 {
 		t.Fatal("every writer made after SetDefault starts with it")
+	}
+}
+
+// runs.jsonl is a member of every public daily export, and the scanner,
+// the prober and the heartbeat record every flag they run under in it. An
+// RPC address with a password, a provider's API key in its path or query,
+// or the private address of the node the observer reads from went out
+// verbatim, with the machine's host name beside it.
+func TestRunEventsPublishNoAddressOrSecret(t *testing.T) {
+	dir := t.TempDir()
+	w := New(dir, "scanner", "", "abc123")
+	w.RecordRuns(map[string]any{
+		"rpc":              "https://user:s3cret@rpc.provider.example:443/v1/k3y-in-path?api_key=k3y-in-query#frag",
+		"node":             "http://100.115.35.10:26657",
+		"local":            "http://127.0.0.1:26657",
+		"local-auth":       "http://op:pw@localhost:26657/websocket?token=t0k",
+		"v6":               "http://[::1]:26657",
+		"data-dir":         "/var/lib/fibre-observer",
+		"poll":             "2s",
+		"follows_rotation": true,
+	})
+	w.Start()
+	w.Stop("test")
+
+	raw, err := os.ReadFile(filepath.Join(dir, RunsFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, _ := os.Hostname()
+	for _, leak := range []string{"s3cret", "user", "rpc.provider.example", "k3y-in-path", "k3y-in-query", "frag", "100.115.35.10", "pw@", "t0k", `"hostname"`} {
+		if strings.Contains(string(raw), leak) {
+			t.Errorf("runs.jsonl carries %q:\n%s", leak, raw)
+		}
+	}
+	if host != "" && strings.Contains(string(raw), `"`+host+`"`) {
+		t.Errorf("runs.jsonl carries the host name %q:\n%s", host, raw)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("runs.jsonl: %q", raw)
+	}
+	var start RunEvent
+	if err := json.Unmarshal([]byte(lines[0]), &start); err != nil || start.Kind != RunStarted {
+		t.Fatalf("start event %q: %v", lines[0], err)
+	}
+	want := map[string]any{
+		"rpc":              "https://" + RedactedHost + ":443",
+		"node":             "http://" + RedactedHost + ":26657",
+		"local":            "http://127.0.0.1:26657",
+		"local-auth":       "http://localhost:26657/websocket",
+		"v6":               "http://[::1]:26657",
+		"data-dir":         "/var/lib/fibre-observer",
+		"poll":             "2s",
+		"follows_rotation": true,
+	}
+	for k, v := range want {
+		if start.Config[k] != v {
+			t.Errorf("config[%q] = %v, want %v", k, start.Config[k], v)
+		}
 	}
 }

@@ -340,12 +340,24 @@ unbounded) caps how far back the readings go. A
 publication whose settlement tx failed, or whose promise names another chain
 than the RPC's, is skipped with one log line.
 
-The gRPC receive limit is the protocol's message bound
-(`ProtocolParams.MaxMessageSize()`, about 139 MB), as the client's; an
-answer over it, or one the client cannot parse, is `MALFORMED_SHARD`. Every
-resolved address of a host is tried, IPv4 first, and the download talks to
-the address the TLS check passed on. A validator with no `x/valaddr` host
-is `NO_REGISTERED_HOST`.
+The gRPC receive limit is what the validator's shard of the blob should
+weigh, a tenth to spare and a mebibyte at least, never above the
+protocol's message bound (`ProtocolParams.MaxMessageSize()`, about 139 MB,
+the client's), and the in-flight byte budget is charged that limit. An
+answer over it can still be a genuine shard of the blob held under another
+promise over the same commitment, so it is asked for again under the limit
+of the largest shard any validator can hold of the blob (all its original
+rows), the budget charged the difference, when the budget has that room
+free at once; without it the answer is `PROBE_ERROR`. An answer over that
+limit too, which no shard of the blob can be, or one the client cannot
+parse, is `MALFORMED_SHARD`. A host's resolved addresses are raced as the client's
+pick_first races them, IPv4 first and the families taking turns, the next
+250 ms after the one before it (or at once when it fails); the download
+talks to the address that connected first, the one the TLS check passed
+on. Shared (100.64.0.0/10), documentation, benchmarking, reserved and
+other special-purpose addresses are not dialled, as loopback and private
+ones are not. A server's error text is kept to 4 KiB on a row. A
+validator with no `x/valaddr` host is `NO_REGISTERED_HOST`.
 
 `-read-now` reads every publication whose window still leaves room for a
 request at once and exits: a dry run, for a scratch data directory.

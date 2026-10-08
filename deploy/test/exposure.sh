@@ -13,10 +13,17 @@
 #   - HTTPS: the Caddyfile validates and https://$DOMAIN/api/v1/health
 #     answers 200 or 503 — either proves the proxy, the certificate and the
 #     API are wired; 000 means one of them is not.
-#   - alerts: fibre-healthwatch --test posts a real message to ALERT_WEBHOOK,
-#     run as the service user with the instance's EnvironmentFile exactly as
-#     the timer runs it. Delivery is the point of an alert; a webhook that
-#     was never exercised is a guess. The webhook is never printed.
+#   - alerts: fibre-healthwatch --test posts a real message to every
+#     destination the env file sets (ALERT_WEBHOOK, and the Telegram chat
+#     with TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID), run as the service user
+#     with the instance's EnvironmentFile exactly as the timer runs it.
+#     Delivery is the point of an alert; a destination that was never
+#     exercised is a guess. Neither set fails: nobody would be told. No
+#     webhook or token is ever printed.
+#   - secrets: the env file, rclone.conf and litestream's env file hold the
+#     alert and backup credentials, and no other account on the host may
+#     read them (0640 root:fibre-observer; systemd reads EnvironmentFile= as
+#     root).
 #
 # Usage: sudo deploy/test/exposure.sh [instance]   (default mocha)
 # Reads /etc/fibre-observer/<instance>.env. Exit 0 when every check passes.
@@ -81,17 +88,28 @@ else
 fi
 
 echo "== alert delivery"
-if [ -z "$(envval "$ENVFILE" ALERT_WEBHOOK)" ]; then
-  fail "ALERT_WEBHOOK is empty: healthwatch only logs; nobody is told when the observer breaks"
+dests=$(alert_destinations "$ENVFILE")
+if [ -z "$dests" ]; then
+  fail "neither ALERT_WEBHOOK nor TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set: healthwatch only logs; nobody is told when the observer breaks"
 elif [ -x /usr/local/bin/fibre-healthwatch ]; then
   if run_as_service "$ENVFILE" "$SERVICE_USER" /usr/local/bin/fibre-healthwatch "$INSTANCE" --test; then
-    pass "test alert delivered to ALERT_WEBHOOK as $SERVICE_USER with $ENVFILE; check that it arrived where a human looks"
+    pass "test alert delivered to every configured destination ($dests) as $SERVICE_USER with $ENVFILE; check that it arrived where a human looks"
   else
-    fail "test alert not delivered"
+    fail "test alert not delivered to every configured destination ($dests); healthwatch said which refused it, above"
   fi
 else
   fail "/usr/local/bin/fibre-healthwatch missing"
 fi
+
+echo "== secrets readable by the service only"
+for f in "$ENVFILE" /etc/fibre-observer/rclone.conf "/etc/fibre-observer/litestream-$INSTANCE.env"; do
+  [ -e "$f" ] || continue
+  if m=$(private_file "$f"); then
+    pass "$f is $m"
+  else
+    fail "$f is ${m:-unreadable}: other accounts on the host can read it (sudo chown root:$SERVICE_USER $f; sudo chmod 0640 $f)"
+  fi
+done
 
 echo "== the master key stays on the host"
 if [ -n "$DATA_DIR" ] && [ -f "$DATA_DIR/sampling-master.key" ]; then

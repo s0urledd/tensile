@@ -539,15 +539,24 @@ the way celestia-app's Fibre client asks for a shard (a full reading, label
   and cannot is not made, and its validator's row says so (`NOT_PROBED`):
   this observer's gap. The client's re-dial is part of its request and
   follows it, past that point or not
-- a rate limit, a `CANCELLED` the server sends, a timeout or "no route to
-  host" from a validator is that validator's rows not coming back, as the
-  client sees it, unless it rests on this observer's own side: at a full
-  reading a connect that timed out or found no route while no request
-  reached any server from 30 s before it until it ended and none of up to
-  three other validators' endpoints reached last accepts a connect now, a
-  timeout after a lookup that took more than 5 s, or a certificate read as
-  outside its window within the clock offset and a minute of its edge, is
-  rewritten to `PROBE_ERROR` with the wire outcome in `raw_error`
+- a host's addresses are raced as the client's `pick_first` races them:
+  IPv4 first and the families taking turns, the next 250 ms after the one
+  before unless it has connected or failed; the first to connect is the
+  endpoint
+- a rate limit, a `CANCELLED` the server sends, a timeout, an ICMP
+  unreachable or a lookup that failed other than with "no such host" from
+  a validator is that validator's rows not coming back, as the client sees
+  it, only when this observer's own side is shown working: at a full
+  reading a connect that timed out while no request reached any server
+  from 30 s before it until it ended and none of up to three other
+  validators' endpoints reached last accepts a connect now, an ICMP
+  unreachable while this observer's connections over the same IP version
+  were not shown reaching other servers, a failed lookup or a timeout
+  after a lookup that took more than 5 s while its resolver was not shown
+  working (answering other validators' names in those minutes, and a fresh
+  name after the request), or a certificate read as outside its window
+  within the clock offset and a minute of its edge, is rewritten to
+  `PROBE_ERROR` with the wire outcome in `raw_error`
 - load: 16 blobs (`-blob-concurrency`) and 256 requests (`-concurrency`)
   at once, 512 MiB of shards in flight (`-in-flight-mib`), and with
   `-link-mbps` set, no more shard bytes than the link moves in half a
@@ -897,7 +906,12 @@ Systemd templates, instance = network (`fibre-scan@mocha`). All
 `Restart=always`, `RestartSec=5`, `User=fibre-observer`,
 `EnvironmentFile=/etc/fibre-observer/%i.env`, and `ProtectSystem=strict` with
 `ReadWritePaths=/var/lib/fibre-observer/%i` — **the data directory is the only
-path a unit can write**.
+path a unit can write**. The env file holds the alert token, the webhook
+and the backup remote, and is `0640 root:fibre-observer`, as is
+`rclone.conf`; systemd reads `EnvironmentFile=` as root. `fibre-site@`
+(a `DynamicUser`, facing the internet) is the exception: it loads
+`/etc/fibre-observer/site-%i.env`, which holds `SITE_LISTEN` and
+`API_LISTEN` and nothing else.
 
 Units: `fibre-scan@`, `fibre-probe@`, `fibre-heartbeat@`, `fibre-collector@`,
 `fibre-api@`, plus timers for `fibre-backup@` (rclone **copy**, never sync,
@@ -913,9 +927,16 @@ files).
 **The nightly order** (UTC). 03:00: the collector builds the previous day's
 export (`-export-hour`). 03:17 plus up to 20 minutes (by about 03:36):
 `fibre-backup` takes the manifest's cut, copies segments, then the live
-files and the exports, records the finished copy in
+files and the exports, then the manifest, last and alone, records the
+finished copy in
 `exports/remote-copy.json`, then reads back from the remote each export not
-yet proven on it and appends the result to `exports/remote.jsonl`. 04:40:
+yet proven on it and appends the result to `exports/remote.jsonl`. A line
+in a record file that is not a JSON record is listed in the cut, not
+refused; a cut that cannot be taken at all still lets the copy run, without
+a new manifest, and fails the unit at the end. The remote's manifest is
+therefore never newer than its files, and `verify` accepts it beside files
+that grew since (trimmed back) or were rotated since (the cut's live bytes
+read back from the newer segments). 04:40:
 `fibre-archive` rotates, then retires what the three proofs of section 4 cover,
 pausing between files, days and segments while the disk is busy (section 4,
 "Pacing"). `fibre-healthwatch` reports what `/v1/health` cannot see, by
@@ -926,6 +947,9 @@ and records it as sent only once a destination took it, so a refused one
 is sent again on the next run. It exits 0 for a run that did its job,
 whatever it found, and 1 when an alert was refused or its state could not
 be written: a failed `fibre-healthwatch@` unit is the watcher in trouble.
+The webhook and the bot token reach curl through a config on its stdin,
+never its command line, which other accounts could read in the process
+list.
 The backup holds every archive lock shared from its cut to its last check
 and a run holds a file's lock exclusively, so the two never overlap; an
 export proven a night late retires its segments a night late.
@@ -949,7 +973,12 @@ The scanner shares no schema with the store and can be rolled at any point.
 Caddy serves each network's own build from `/var/www/fibre-observer/<network>`
 and proxies `/api/v1/*` to that network's API port; where the front proxy
 cannot serve files, `fibre-site@<network>` does both from
-`/srv/fibre-site/<network>`.
+`/srv/fibre-site/<network>`. site-server rations the API per client (an
+IPv4 address or an IPv6 /64; past 50,000 in ten minutes new ones share one
+allowance) and for the site as a whole (48 requests at the API at once,
+each holding its place only until the API's answer begins, so a slow
+reader costs only its own 16); an answer with no byte moving for 60 s is
+given up, and a client that leaves cancels its request to the API.
 
 ---
 

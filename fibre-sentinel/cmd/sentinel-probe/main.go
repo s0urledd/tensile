@@ -83,7 +83,7 @@ func main() {
 		localHosts  = flag.Bool("allow-unroutable-hosts", false,
 			"dial registered hosts on loopback or a private range (a local devnet; never a public vantage)")
 		backfill = flag.Duration("backfill-missed", 0, "on (re)start, write NOT_PROBED rows only for readings newer than this that were not made; 0 (default) writes them for every one still on record")
-		dnsTO    = flag.Duration("dns-timeout", 5*time.Second, "bound on the DNS lookup, inside the request's time (a lookup that times out is this observer's resolver)")
+		dnsTO    = flag.Duration("dns-timeout", 5*time.Second, "not used: under the Fibre client's rules the lookup is bounded by the request's time alone (-download-timeout); a lookup that fails other than with \"no such host\" is this observer's resolver unless, at a full reading, its resolver is shown working in the same minutes")
 		dlTO     = flag.Duration("download-timeout", probe.ClientRPCTimeout, "one request's whole time, connect, TLS and DownloadShard: the Fibre client's RPCTimeout")
 		logLines = flag.Int("log-ring", 400, "log lines kept in memory for the crash dump")
 

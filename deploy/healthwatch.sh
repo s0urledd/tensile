@@ -57,9 +57,20 @@ epoch="${HEALTHWATCH_NOW:-$(date +%s)}"
 
 # post URL JSON prints the HTTP status, 000 when nothing answered. Only the
 # status is ever printed: curl's own error text can carry the URL, and the
-# URL is the secret (the webhook, or the bot token inside Telegram's).
+# URL is the secret (the webhook, or the bot token inside Telegram's). Nor
+# is the URL on curl's command line, which every account on the host can
+# read in the process list for as long as the post takes: curl reads it
+# from a config on its stdin (-K -), written by printf, a builtin, so it is
+# in no process's arguments. In the config's quotes a backslash and a
+# double quote are escaped.
 post() {
-  curl -sS -m 20 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d "$2" "$1" 2>/dev/null || echo 000
+  local u=${1//\\/\\\\} code
+  u=${u//\"/\\\"}
+  code=$(printf 'url = "%s"\n' "$u" | curl -sS -m 20 -K - -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d "$2" 2>/dev/null) || true
+  case "$code" in
+    [1-5][0-9][0-9]) printf '%s\n' "$code" ;;
+    *) printf '000\n' ;;
+  esac
 }
 
 # deliver MSG posts to every destination that is set, says which one

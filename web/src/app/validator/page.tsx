@@ -20,6 +20,7 @@ import { SELF_VALIDATOR } from "@/lib/site";
 import PreLive from "@/components/PreLive";
 import { diagnose } from "@/components/Diagnosis";
 import { pageAddr } from "@/lib/addr";
+import { validatorAddr } from "@/lib/sitefind";
 
 
 type Span = { window: Window; obligations: Obligations; provisional_faults?: ProvisionalFaults };
@@ -303,7 +304,9 @@ function Strip({ cells, slots }: { cells: Cell[]; slots: number }) {
 }
 
 function Page() {
-  const addr = useSearchParams().get("addr") ?? "";
+  const asked = useSearchParams().get("addr") ?? "";
+  // the address as the API takes it, or none: a value that is no validator's address never reaches the API's path
+  const addr = validatorAddr(asked) ?? "";
   const [win, setWin] = useWindow("24h");
   const [onlyNotServed, setOnlyNotServed] = useState(false);
   const router = useRouter();
@@ -315,9 +318,17 @@ function Page() {
   // another validator starts at the top of its own list
   useEffect(() => { setOnlyNotServed(false); }, [addr]);
   const { data: meta, error: metaErr } = useApi<Meta>("/v1/meta");
-  const d = useApi<Detail>(addr ? `/v1/validators/${addr}?window=${win}` : null);
+  const d = useApi<Detail>(addr ? `/v1/validators/${encodeURIComponent(addr)}?window=${win}` : null);
   const notLive = !!meta?.app_version && !meta.fibre_active;
-  if (!addr) return <p className="notice">Open a validator from the <Link href="/">overview</Link>, or add <code>?addr=</code> with its consensus, operator (<code>celestiavaloper1…</code>) or account address to the address.</p>;
+  if (!asked.trim()) return <p className="notice">Open a validator from the <Link href="/">overview</Link>, or add <code>?addr=</code> with its consensus, operator (<code>celestiavaloper1…</code>) or account address to the address.</p>;
+  if (!addr) {
+    return (
+      <>
+        <div className="head"><div><p className="crumb"><Link href="/">Validators</Link> › …</p><h1>Not a validator address</h1></div></div>
+        <p className="notice"><span className="mono">{shortMid(asked.trim(), 16, 6)}</span> is not a validator address: one is a consensus address (40 hex characters or <code>celestiavalcons1…</code>), an operator address (<code>celestiavaloper1…</code>) or the operator’s account address (<code>celestia1…</code>). Open a validator from the <Link href="/">overview</Link>.</p>
+      </>
+    );
+  }
   const data = d.data;
   if (!data) {
     return (

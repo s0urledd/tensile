@@ -33,7 +33,7 @@ func TestAStaleFeedIsServedAtOnceAndRebuiltBehindIt(t *testing.T) {
 	}
 	serve := func() *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
-		s.serveFeed(rec, httptest.NewRequest(http.MethodGet, "/v1/feed.atom", nil), build)
+		s.serveFeed(rec, httptest.NewRequest(http.MethodGet, "/v1/feed.atom", nil), networkFeedName, build)
 		return rec
 	}
 	age := func() { ageFeeds(s) }
@@ -88,6 +88,11 @@ func ownFeeds(t *testing.T, s *Server) {
 				delete(feedCache.refreshing, k)
 			}
 		}
+		for k := range feedCache.first {
+			if strings.HasPrefix(k, prefix) {
+				delete(feedCache.first, k)
+			}
+		}
 	}
 	forget()
 	// no wait for s.bg here: a test that failed early can leave a rebuild
@@ -126,7 +131,7 @@ func TestAPanickingFeedRebuildKeepsTheFeedAndTheProcess(t *testing.T) {
 	}
 	serve := func() *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
-		s.serveFeed(rec, httptest.NewRequest(http.MethodGet, "/v1/feed.atom", nil), build)
+		s.serveFeed(rec, httptest.NewRequest(http.MethodGet, "/v1/feed.atom", nil), networkFeedName, build)
 		return rec
 	}
 

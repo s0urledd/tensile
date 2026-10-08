@@ -3,6 +3,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "
 import Copy from "@/components/Copy";
 import { API_BASE, useApi, type Meta } from "@/lib/api";
 import { apiDown } from "@/lib/apidown";
+import { fragmentId } from "@/lib/fragment";
 import { API_URL, API_URL_FIXED } from "@/lib/site";
 import { GROUPS, type Endpoint, type Param } from "./endpoints";
 
@@ -424,7 +425,7 @@ export function Reference() {
   // A link to #id opens that row, on arrival and on every change of the hash.
   useEffect(() => {
     const go = () => {
-      const id = decodeURIComponent(window.location.hash.slice(1));
+      const id = fragmentId(window.location.hash);
       if (IDS.has(id)) {
         openRow(id);
         requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ block: "start" }));

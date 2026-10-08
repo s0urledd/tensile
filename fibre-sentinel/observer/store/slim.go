@@ -237,9 +237,18 @@ func (s *Store) pub(ctx context.Context, q Querier, hash string) (*slim.Pub, err
 	return p, nil
 }
 
-func (s *Store) lookup(ctx context.Context, q Querier) slim.Lookup {
+// lookup is the slim.Lookup a reading is encoded or decoded with: the publication of the promise its rows are
+// another's of, nil where the store does not hold it or holds it in a form that does not decode, which a decoding
+// refuses as the reading's own (ErrUndecodable). A read of it that fails (the store busy, the context ended) gives nil
+// as well, though it says nothing about the record: with failed non-nil, the first such error is kept there, for a
+// decoding to give as the read's. An encoding passes nil: a promise it does not find keeps the reading's rows as
+// they are, which only keeps more bytes.
+func (s *Store) lookup(ctx context.Context, q Querier, failed *error) slim.Lookup {
 	return func(hash string) *slim.Pub {
-		p, _ := s.pub(ctx, q, hash)
+		p, err := s.pub(ctx, q, hash)
+		if err != nil && !errors.Is(err, ErrUndecodable) && failed != nil && *failed == nil {
+			*failed = fmt.Errorf("the shadowing promise %s: %w", hash, err)
+		}
 		return p
 	}
 }
@@ -269,11 +278,17 @@ func (s *Store) ProbeRecord(ctx context.Context, q Querier, promiseHash string, 
 		return nil, err
 	}
 	var line []byte
+	var failed error
 	err = s.decodeRetry(ctx, q, func(t *slim.Tables) error {
 		var e error
-		line, e = t.DecodeMeasurement(raw, p, s.lookup(ctx, q))
+		line, e = t.DecodeMeasurement(raw, p, s.lookup(ctx, q, &failed))
 		return e
 	})
+	if err != nil && failed != nil {
+		// the shadowing promise's publication could not be read: the read's error, not the row's (record-verify
+		// counted it as a different line, and the day as not reproducible for good)
+		return nil, failed
+	}
 	return line, err
 }
 

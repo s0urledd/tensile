@@ -582,8 +582,11 @@ func (p *Prober) attempt(ctx context.Context, j *retryJob) (Measurement, bool) {
 	// the byte budget with its shard.
 	in := p.inputFor(j.pub, j.target, j.point, commitment, nil, p.shadowBlindness(j.pub))
 	// The verifier is charged to the byte budget, not to the reading-rate
-	// ceiling: it is memory, not bytes on the wire.
-	release, load, err := p.admitBy(ctx, j.cutoff, in.ExpectedShardBytes+verifierBytes(pp.OriginalRows, pp.TotalRows), in.ExpectedShardBytes)
+	// ceiling: it is memory, not bytes on the wire. The budget is charged
+	// the most the request may receive (and the rest of a wider bound when
+	// it asks for an answer again under one: Prober.widen), the ceiling
+	// what its shard should weigh (blobReading.ask).
+	release, load, err := p.admitBy(ctx, j.cutoff, int64(recvLimitFor(in))+verifierBytes(pp.OriginalRows, pp.TotalRows), in.ExpectedShardBytes)
 	if err != nil {
 		if ctx.Err() != nil {
 			return Measurement{}, false
@@ -664,8 +667,8 @@ func (p *Prober) sharedRow(o *retryJob, m Measurement) Measurement {
 	}
 	s.Outcome = m.Outcome
 	s.SharedFrom = m.DedupeKey()
-	s.RawError = fmt.Sprintf("the validator's endpoint failed before any blob was asked for, on request %s for blob %s, made while this attempt was due and waiting for it: %s",
-		s.SharedFrom, short(m.PromiseHash), m.RawError)
+	s.RawError = clip(fmt.Sprintf("the validator's endpoint failed before any blob was asked for, on request %s for blob %s, made while this attempt was due and waiting for it: %s",
+		s.SharedFrom, short(m.PromiseHash), m.RawError))
 	s.ObserverLoad = m.ObserverLoad
 	classifyRow(&s)
 	return o.stamp(s)
