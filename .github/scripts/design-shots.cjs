@@ -61,6 +61,14 @@ const server = http.createServer((req, res) => {
         await page.waitForTimeout(700);
         await atlas.screenshot({ path: path.join(out, `hover-${tag}.png`), animations: "disabled" });
       }
+      // zoomed in twice (a double click each) on the sea just south of Singapore
+      if (b) {
+        const zx = b.x + b.width * 0.735, zy = b.y + b.height * 0.66;
+        await page.mouse.move(zx, zy);
+        await page.waitForTimeout(400);
+        for (let i = 0; i < 2; i++) { await page.mouse.dblclick(zx, zy); await page.waitForTimeout(900); }
+        await atlas.screenshot({ path: path.join(out, `zoom-${tag}.png`), animations: "disabled" });
+      }
       await ctx.close();
     }
   }
