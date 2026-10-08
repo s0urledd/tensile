@@ -4,16 +4,22 @@
 # from it, checked against what was written down when it was taken, and
 # served.
 #
-# backup.sh writes a manifest before it copies anything: the byte length
-# of every record file at one cut, the SHA-256 of exactly those bytes, the
-# record count in them, and the scanner's checkpoint. This pulls the copy
+# backup.sh writes a manifest before it copies anything, and uploads it
+# after everything else: the byte length of every record file at one cut,
+# the SHA-256 of exactly those bytes, the record count in them, and the
+# scanner's checkpoint. This pulls the copy
 # and the manifest from BACKUP_REMOTE, and:
 #
 #   - verifies the copy against the manifest: every listed file present,
 #     at least as long as the cut (the files only grow; a copy taken after
 #     the cut is trimmed back to it), the hash of the cut equal, every line
-#     a complete JSON record, the record count equal, and no sampling
-#     master key. The copy's state.json was read later than the cut and
+#     a complete JSON record but the ones the cut lists as not (a write a
+#     full disk cut short), the record count equal, and no sampling master
+#     key. A live file observer-archive rotated after the cut (a night whose
+#     copy or manifest did not finish) is read back from the copy's newer
+#     segments into its place. The manifest came from the remote, so verify
+#     touches no file it names outside the copy, though this runs as root.
+#     The copy's state.json was read later than the cut and
 #     points past it; verify puts the cut's own state.json (carried whole
 #     in the manifest) in its place, so the scanner resumes from the
 #     checkpoint these records were cut with. Missing, truncated, altered
