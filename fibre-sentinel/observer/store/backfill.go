@@ -502,7 +502,7 @@ func (b *Backfill) record(ctx context.Context, tx *sql.Tx, t *slim.Tables, table
 		if err != nil {
 			return nil, "", "", err
 		}
-		if body, err = measurementBody(t, line, pub, s.lookup(ctx, tx), k); err != nil {
+		if body, err = measurementBody(t, line, pub, s.lookup(ctx, tx, nil), k); err != nil {
 			t.Rollback(k)
 			return nil, whyEncode, err.Error(), nil
 		}

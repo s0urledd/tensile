@@ -322,3 +322,85 @@ func TestAReadingOfAPublicationThatDoesNotDecodeIsStoredAsItsLine(t *testing.T) 
 			n, want, first, len(next))
 	}
 }
+
+// failingFor reads through db, but a read that names hash fails as one does when the store is busy or the run's
+// context has ended.
+type failingFor struct {
+	*sql.DB
+	hash string
+}
+
+func (q failingFor) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	for _, a := range args {
+		if a == q.hash {
+			ended, cancel := context.WithCancel(ctx)
+			cancel()
+			return q.DB.QueryRowContext(ended, query, args...)
+		}
+	}
+	return q.DB.QueryRowContext(ctx, query, args...)
+}
+
+// A reading whose rows are the assignment of the promise that answered in its place is kept naming that promise, and
+// its rows are read back from that promise's publication. A read of the publication that fails (the store busy, the
+// run's context ended) says nothing about the reading: it is the read's error, not ErrUndecodable, which record-verify
+// counted as a different line, so the day went into the ledger as not reproducible for good. A shadowing publication
+// that does not decode is still the reading's own.
+func TestAShadowingPublicationThatCouldNotBeReadIsTheReadsError(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "observer.db")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	pub, other := slimPublication(t, 0x51, 5), slimPublication(t, 0x52, 5)
+	for _, p := range []scan.Publication{pub, other} {
+		l, _ := json.Marshal(p)
+		if ok, err := st.UpsertPublication(p, l); err != nil || !ok {
+			t.Fatalf("publication %s: %v %v", p.PromiseHash, ok, err)
+		}
+	}
+	// the validator's rows in the other promise
+	m := slimReading(pub, pub.Assignment.Validators[1], u32(other.Assignment.Validators[1].Rows))
+	m.Download.ShadowedBy = other.PromiseHash
+	line, _ := json.Marshal(m)
+	if ok, err := st.InsertProbe(m, line); err != nil || !ok {
+		t.Fatalf("probe: %v %v", ok, err)
+	}
+	var raw []byte
+	if err := st.DB().QueryRow(`SELECT raw_json FROM probes WHERE dedupe_key = ?`, m.DedupeKey()).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw[0] == '{' {
+		t.Fatal("the reading is kept as its line")
+	}
+	// each read in a handle of its own, as record-verify opens the store: no publication is read in it yet
+	read := func(through func(*sql.DB) store.Querier) ([]byte, error) {
+		t.Helper()
+		ro, err := store.OpenReadOnly(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ro.Close()
+		return ro.ProbeRecord(ctx, through(ro.DB()), pub.PromiseHash, raw)
+	}
+	plain := func(db *sql.DB) store.Querier { return db }
+	if back, err := read(plain); err != nil || !bytes.Equal(back, line) {
+		t.Fatalf("the reading back: %v\n got %.300s\nwant %.300s", err, back, line)
+	}
+	_, err = read(func(db *sql.DB) store.Querier { return failingFor{db, other.PromiseHash} })
+	if err == nil {
+		t.Fatal("the reading came back without the other promise's publication: its rows were not kept naming it")
+	}
+	if errors.Is(err, store.ErrUndecodable) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("a shadowing publication the store could not read: %v", err)
+	}
+	// the shadowing publication stops decoding: that is the reading's own
+	if _, err := st.DB().Exec(`UPDATE publications SET raw_json = ? WHERE promise_hash = ?`, undecodable, other.PromiseHash); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := read(plain); !errors.Is(err, store.ErrUndecodable) {
+		t.Fatalf("a shadowing publication that does not decode: %v", err)
+	}
+}

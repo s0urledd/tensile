@@ -1618,7 +1618,7 @@ func (s *Store) InsertProbe(m probe.Measurement, raw []byte) (inserted bool, err
 	kept := t.Stored()
 	var body any = string(raw)
 	if !asLine {
-		if body, err = measurementBody(t, raw, pub, s.lookup(ctx, s.db), kept); err != nil {
+		if body, err = measurementBody(t, raw, pub, s.lookup(ctx, s.db, nil), kept); err != nil {
 			return false, fmt.Errorf("probe %s: slim: %w", m.DedupeKey(), err)
 		}
 	}
