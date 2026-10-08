@@ -159,7 +159,10 @@ const PITCH = 4, SQUARE = 2, TILE = 64;
  * the Philippines) keeps its squares
  */
 const LIT = 34;
-/** cells: a lit cell with no other within this many is a speck in open sea, not a coast, and is left out */
+/**
+ * cells: lit cells this close to each other are one piece of land; a piece of one or two cells is a speck in open
+ * sea (a dead pixel, not a coast) and is left out
+ */
 const SPECK = 2;
 /** the halvings of the lattice: at the deepest zoom the squares are some 8 px apart */
 const LEVELS = 3;
@@ -177,13 +180,15 @@ function grid(dpr: number): Grid {
   return { pd, sd, od, p: pd / dpr, s: sd / dpr, f: (od + sd / 2) / pd - 0.5 };
 }
 let LAND: Path2D | null = null, RASTER: CanvasRenderingContext2D | null = null;
+/** a tile of the board: its squares' path, and each cell's land: 0 none, 1 some (or a speck's), 2 a square */
+type Tile = { d: string; s: Uint8Array };
 /**
  * the land cells of one tile, as squares in device pixels from the tile's corner (a cell g.pd): the cell (i, j) is
- * the lattice's (ti * TILE + i, tj * TILE + j). SPECK cells around it are read too, so a cell's neighbours across the
+ * the lattice's (ti * TILE + i, tj * TILE + j). 2 * SPECK cells around it are read too, so pieces of land across the
  * tile's edge count.
  */
-function boardTile(o: Lattice, ti: number, tj: number, g: Grid): string {
-  const n = TILE + 2 * SPECK;
+function boardTile(o: Lattice, ti: number, tj: number, g: Grid): Tile {
+  const pad = 2 * SPECK, n = TILE + 2 * pad, s = new Uint8Array(TILE * TILE);
   if (!RASTER) {
     const c = document.createElement("canvas");
     c.width = c.height = n;
@@ -191,22 +196,35 @@ function boardTile(o: Lattice, ti: number, tj: number, g: Grid): string {
     LAND = new Path2D(COUNTRIES.map(([, d]) => d).join(""));
   }
   const r = RASTER, land = LAND;
-  if (!r || !land) return "";
+  if (!r || !land) return { d: "", s };
   r.setTransform(1, 0, 0, 1, 0, 0);
   r.clearRect(0, 0, n, n);
   // a cell is the canvas's pixel, the lattice point at its middle; the pixel's alpha is how much of the cell is land
-  r.setTransform(1 / o.p, 0, 0, 1 / o.p, 0.5 + SPECK - ti * TILE - o.x / o.p, 0.5 + SPECK - tj * TILE - o.y / o.p);
+  r.setTransform(1 / o.p, 0, 0, 1 / o.p, 0.5 + pad - ti * TILE - o.x / o.p, 0.5 + pad - tj * TILE - o.y / o.p);
   r.fill(land);
   const a = r.getImageData(0, 0, n, n).data;
   const lit = (i: number, j: number) => a[(j * n + i) * 4 + 3] >= LIT;
+  // the lit cells within SPECK of (i, j), other than it and than (xi, xj), up to two
+  const near = (i: number, j: number, xi: number, xj: number) => {
+    const out: [number, number][] = [];
+    for (let v = j - SPECK; v <= j + SPECK; v++) for (let u = i - SPECK; u <= i + SPECK; u++) {
+      if ((u !== i || v !== j) && (u !== xi || v !== xj) && lit(u, v)) { out.push([u, v]); if (out.length > 1) return out; }
+    }
+    return out;
+  };
   let d = "";
-  for (let j = SPECK; j < SPECK + TILE; j++) for (let i = SPECK; i < SPECK + TILE; i++) {
+  for (let j = pad; j < pad + TILE; j++) for (let i = pad; i < pad + TILE; i++) {
+    const k = (j - pad) * TILE + i - pad;
+    if (!a[(j * n + i) * 4 + 3]) continue;
+    s[k] = 1;
     if (!lit(i, j)) continue;
-    let near = false;
-    for (let v = j - SPECK; v <= j + SPECK && !near; v++) for (let u = i - SPECK; u <= i + SPECK; u++) if ((u !== i || v !== j) && lit(u, v)) { near = true; break; }
-    if (near) d += `M${(i - SPECK) * g.pd + g.od} ${(j - SPECK) * g.pd + g.od}h${g.sd}v${g.sd}h${-g.sd}z`;
+    // a piece of three cells or more: two lit within reach, or one that has another of its own
+    const m = near(i, j, i, j);
+    if (m.length < 2 && !(m.length === 1 && near(m[0][0], m[0][1], i, j).length > 0)) continue;
+    s[k] = 2;
+    d += `M${(i - pad) * g.pd + g.od} ${(j - pad) * g.pd + g.od}h${g.sd}v${g.sd}h${-g.sd}z`;
   }
-  return d;
+  return { d, s };
 }
 
 /**
@@ -602,20 +620,24 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
   lat.x = home.x + lat.p / 2;
   lat.y = home.y + lat.p / 2;
   // a tile is read once per lattice; a new home view (another width) or another screen starts the board again
-  const tiles = useRef<{ base: string; d: Map<string, string> }>({ base: "", d: new Map() });
+  const tiles = useRef<{ base: string; d: Map<string, Tile> }>({ base: "", d: new Map() });
+  const base = `${p0}|${home.x}|${home.y}|${gd.pd}|${gd.sd}`;
+  if (tiles.current.base !== base) tiles.current = { base, d: new Map() };
+  const tileAt = (ti: number, tj: number) => {
+    const key = `${lat.p}|${ti}|${tj}`, cache = tiles.current.d;
+    let t = cache.get(key);
+    if (!t) { t = boardTile(lat, ti, tj, gd); cache.set(key, t); }
+    return t;
+  };
   const board: React.ReactNode[] = [];
   if (width > 0) {
-    const base = `${p0}|${home.x}|${home.y}|${gd.pd}|${gd.sd}`;
-    if (tiles.current.base !== base) tiles.current = { base, d: new Map() };
-    const cache = tiles.current.d, p = lat.p;
+    const p = lat.p;
     const tile = (v: number, o: number) => Math.floor(Math.floor((v - o) / p + 0.5) / TILE);
     for (let tj = tile(view.y, lat.y); tj <= tile(view.y + view.w * aspect, lat.y); tj++) {
       for (let ti = tile(view.x, lat.x); ti <= tile(view.x + view.w, lat.x); ti++) {
-        const key = `${p}|${ti}|${tj}`;
-        let d = cache.get(key);
-        if (d === undefined) { d = boardTile(lat, ti, tj, gd); cache.set(key, d); }
+        const { d } = tileAt(ti, tj);
         // the tile's squares in device pixels of a cell, from its first cell's corner
-        if (d) board.push(<path key={key} d={d} transform={`translate(${home.x + ti * TILE * p} ${home.y + tj * TILE * p}) scale(${p / gd.pd})`} />);
+        if (d) board.push(<path key={`${p}|${ti}|${tj}`} d={d} transform={`translate(${home.x + ti * TILE * p} ${home.y + tj * TILE * p}) scale(${p / gd.pd})`} />);
       }
     }
   }
@@ -638,14 +660,21 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
   const shown = !zoomed || narrow ? placed : placed.filter((p) => p.x - p.bw / 2 >= INSET + M && p.x + p.bw / 2 <= width - INSET - M && p.y - p.bh / 2 >= INSET + M
     && !chrome.some(([l, t, rt, b]) => p.x + p.bw / 2 > l - M && p.x - p.bw / 2 < rt + M && p.y + p.bh / 2 > t - M && p.y - p.bh / 2 < b + M));
 
-  // the cells around each badge are land, so none sits on open sea: its block's edge cells, the corners left as the
-  // land has them
+  // the cells around each badge (its block's edge cells, the corners left as the land has them): those with any land
+  // in them, so the board meets a badge on its coast; and where none of them shows land (a badge alone at sea or on a
+  // speck), all of them, so no badge sits on open sea
   let rim = "";
   for (const b of shown) {
     const bx = (b.x - ax) / cp, by = (b.y - ay) / cp, hx = b.bw / 2 / cp, hy = b.bh / 2 / cp;
+    const ring: [number, number, number][] = [];
+    let shore = false;
     for (let j = Math.ceil(by - hy - 1); j <= Math.floor(by + hy + 1); j++) for (let i = Math.ceil(bx - hx - 1); i <= Math.floor(bx + hx + 1); i++) {
-      if ((Math.abs(i - bx) > hx) !== (Math.abs(j - by) > hy)) rim += `M${i * gd.pd + gd.od} ${j * gd.pd + gd.od}h${gd.sd}v${gd.sd}h${-gd.sd}z`;
+      if ((Math.abs(i - bx) > hx) === (Math.abs(j - by) > hy)) continue;
+      const ti = Math.floor(i / TILE), tj = Math.floor(j / TILE), land = tileAt(ti, tj).s[(j - tj * TILE) * TILE + i - ti * TILE];
+      if (land === 2) shore = true;
+      else ring.push([i, j, land]);
     }
+    for (const [i, j, land] of ring) if (land || !shore) rim += `M${i * gd.pd + gd.od} ${j * gd.pd + gd.od}h${gd.sd}v${gd.sd}h${-gd.sd}z`;
   }
 
   // ---- counts ----
