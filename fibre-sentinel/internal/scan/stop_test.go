@@ -101,3 +101,18 @@ func TestAStopWhileARegistrationIsReadAppendsNothing(t *testing.T) {
 		t.Fatalf("processBlock without a stop = %d, seen=%v", n, s2.store.Seen(txHash2))
 	}
 }
+
+// A stop while the params seed is read for the first MsgPayForFibre on a
+// chain the scanner still calls x/fibre-inactive: the read fails, and that
+// was the fatal "params cannot be read" with a skip-heights hint.
+func TestAStopWhileTheParamsSeedIsReadStopsCleanly(t *testing.T) {
+	s, ctx, txHash := payBlockScanner(t, "abci_query")
+	s.fibreInactive = true
+	s.activationSeen = true // the seed is tried in the publication loop, not at activation
+	if n := s.processBlock(ctx, 101); n != blockStopped {
+		t.Fatalf("processBlock = %d, want blockStopped", n)
+	}
+	if s.store.Seen(txHash) || len(s.gaps) != 0 {
+		t.Fatalf("a stop left a record: seen=%v gaps=%+v", s.store.Seen(txHash), s.gaps)
+	}
+}
