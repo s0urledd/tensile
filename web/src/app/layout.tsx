@@ -3,6 +3,7 @@ import { preload } from "react-dom";
 import "./fonts.css";
 import "./globals.css";
 import { Header, Footer } from "@/components/Chrome";
+import { SITE_URL } from "@/lib/site";
 
 // Fonts are served from this site's own origin (fonts.css, public/fonts): a
 // visitor's browser opens no connection to a font CDN, which is the same
@@ -12,9 +13,23 @@ import { Header, Footer } from "@/components/Chrome";
 // next/font did.
 const preloaded = ["ibm-plex-sans-latin", "ibm-plex-mono-latin", "ibm-plex-mono-latin-500", "dm-sans-latin"];
 
+// What a shared link shows (X, Discord, Telegram, Slack): the preview's title, one plain sentence, and
+// public/og.png. Pages that set only their own title keep this preview.
+const DESCRIPTION = "Real-time data for Fibre on Celestia: blobs, publishers, escrow, Fibre providers, validators and endorsements, with blob availability and an open API.";
+const PREVIEW_TITLE = "Tensile · Celestia Fibre explorer";
+const PREVIEW_IMAGE = {
+  url: "/og.png",
+  width: 1200,
+  height: 630,
+  alt: "Tensile: real-time explorer for blobs and validators on Celestia Fibre, beside a bundle of fibres held between two grips",
+};
+
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: "Tensile · Real-time Celestia Fibre explorer",
-  description: "Tensile: independent measurement of whether Celestia validators keep their Fibre serving promise.",
+  description: DESCRIPTION,
+  openGraph: { type: "website", siteName: "Tensile", title: PREVIEW_TITLE, description: DESCRIPTION, images: [PREVIEW_IMAGE] },
+  twitter: { card: "summary_large_image", title: PREVIEW_TITLE, description: DESCRIPTION, images: [PREVIEW_IMAGE] },
 };
 
 // The site opens dark for everyone; a theme the reader picked with the toggle is applied before the first paint, so

@@ -821,7 +821,8 @@ is wrong on the other:
 - `NEXT_PUBLIC_API_URL`, that site's public API
   (`https://mocha.observer.example.org/api/v1`). The methodology page's
   links to the exports and the signing key, and the recompute command it
-  prints, use it. Unset, it is Mocha's live API.
+  prints, use it, and a shared link's preview takes the site's address
+  from it. Unset, it is Mocha's live API.
 - `NEXT_PUBLIC_SELF_VALIDATOR`, the consensus address
   (`celestiavalcons1…`) of the validator the operator runs on that
   network, which the site marks "runs Tensile". `web/.env.production`

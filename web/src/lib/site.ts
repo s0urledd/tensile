@@ -18,6 +18,12 @@ export const SOURCE_URL = (process.env.NEXT_PUBLIC_SOURCE_URL ?? "https://github
 export const API_URL_FIXED = !!process.env.NEXT_PUBLIC_API_URL;
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "https://tensile.huginn.tech/api/v1").replace(/\/$/, "");
 
+/**
+ * This network's site, the origin of its API address: a link preview needs the
+ * absolute address of its image, so each network's build names its own site.
+ */
+export const SITE_URL = new URL(API_URL).origin;
+
 /** The dispute route: what to do about a verdict you think is wrong. */
 export const DISPUTE_URL = `${SOURCE_URL}/blob/main/docs/verdicts.md#disputing-a-verdict`;
 
