@@ -55,10 +55,12 @@ const latestBlobSQL = `SELECT promise_hash, settlement_height FROM publications
 	WHERE settlement_height = (SELECT MAX(settlement_height) FROM publications)
 	ORDER BY settlement_tx_index DESC LIMIT 1`
 
-// tipStoreTimeout bounds the store's part of one answer, every read of it
-// together. A read in WAL mode is never blocked by the collector writing, but
-// it waits for a connection of the pool while long reads hold them all; the
-// cache's mutex is held while readTip runs, and every reader waits on it.
+// tipStoreTimeout bounds the store's reads of one answer: those before the
+// node is asked together, and the collector's meta row after it, when that
+// answers, together again. A read in WAL mode is never blocked by the
+// collector writing, but it waits for a connection of the pool while long
+// reads hold them all; the cache's mutex is held while readTip runs, and
+// every reader waits on it.
 const tipStoreTimeout = 500 * time.Millisecond
 
 // tipCache keeps one answer for a quarter of a second: every open page polls
@@ -106,7 +108,8 @@ func (s *Server) handleTip(w http.ResponseWriter, r *http.Request) {
 // takes no context and waited for a free connection for as long as the reads
 // ahead of it ran, with the cache's mutex held. A store that does not answer
 // in time costs this answer its store figures, not the answer: Fibre's state
-// stays the last answer's, which the store has not been seen to change.
+// stays the last answer's, which the store has not been seen to change, and
+// so does the block when the collector's row is the one left to name it.
 // Called with s.tip.mu held.
 func (s *Server) readTip(now time.Time) tipResponse {
 	var out tipResponse
@@ -118,6 +121,7 @@ func (s *Server) readTip(now time.Time) tipResponse {
 		out.FibreActive = s.tip.v.FibreActive
 	}
 	out.LatestBlob = s.latestBlob(ctx, now)
+	cancel()
 	if s.tipRPC != "" {
 		if h, t, ok := nodeTip(s.tipRPC); ok {
 			out.Height, out.BlockTime = h, &t
@@ -140,10 +144,20 @@ func (s *Server) readTip(now time.Time) tipResponse {
 			}
 		}
 	}
-	if v, _ := s.metaWithin(ctx, "chain_height"); v != "" {
+	// The meta row is read within a timeout of its own, begun only now: a
+	// node that does not answer takes tipRPCTimeout to say so, longer than
+	// the reads above were given.
+	mctx, mcancel := context.WithTimeout(context.Background(), tipStoreTimeout)
+	defer mcancel()
+	v, err := s.metaWithin(mctx, "chain_height")
+	if err != nil {
+		out.Height, out.BlockTime = s.tip.v.Height, s.tip.v.BlockTime
+		return out
+	}
+	if v != "" {
 		out.Height, _ = strconv.ParseInt(v, 10, 64)
 	}
-	if v, _ := s.metaWithin(ctx, "chain_tip_time"); v != "" {
+	if v, _ := s.metaWithin(mctx, "chain_tip_time"); v != "" {
 		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
 			out.BlockTime = &t
 		}
