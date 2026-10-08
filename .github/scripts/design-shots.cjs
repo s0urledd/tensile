@@ -54,6 +54,17 @@ const server = http.createServer((req, res) => {
       // Southeast and East Asia, where the smallest hosted places are
       const b = await atlas.boundingBox();
       if (b) await page.screenshot({ path: path.join(out, `asia-${tag}.png`), animations: "disabled", clip: { x: b.x + b.width * 0.58, y: b.y + b.height * 0.12, width: b.width * 0.3, height: b.height * 0.62 } });
+      // the bar's validator, its badge ringed: the ring is held where it is, then the map and the bar photographed
+      try {
+        await page.waitForFunction(() => {
+          const a = document.getAnimations().filter((x) => x.animationName === "cm-named");
+          for (const x of a) x.pause();
+          return a.length > 0;
+        }, null, { timeout: 8000 });
+        await page.waitForTimeout(500);
+        if (b) await page.screenshot({ path: path.join(out, `live-${tag}.png`), clip: { x: b.x, y: b.y, width: b.width, height: b.height + 24 } });
+        await page.evaluate(() => { for (const x of document.getAnimations()) if (x.animationName === "cm-named") x.finish(); });
+      } catch { notes.push(`${width} ${theme}: no ringed badge within 8 s`); }
       // the popover, open on Singapore's badge
       const sg = page.locator('.cm-b[aria-label*="Singapore"]').first();
       if (b && await sg.count()) {

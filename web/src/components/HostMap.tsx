@@ -59,6 +59,8 @@ const MAX_BACK = 1.4;
 /** the room every badge of the home view keeps from the box's edges, in px: above, beside, and below (or above the bar) */
 const ROOM_TOP = 28, ROOM_SIDE = 12, ROOM_FOOT = 8;
 const ROOM_TOP_NARROW = 14;
+/** a wide home view starts this many px above 72°N, so the far north's coasts have a little sea over them rather than meeting the box's top */
+const SEA_TOP = 8;
 
 /**
  * the graticule every 30°, under the land: meridians curve, parallels are straight; the meridians at 180° are the
@@ -88,7 +90,7 @@ function fitView(pts: [number, number][], a: number, pad = 0.35, minW = FRAME.w 
 
 /**
  * The home view and its badges. It starts from the whole width of the world (a phone: a crop from
- * 72°N to 50°S, centred on the hosts) with its top at 72°N, and keeps every badge inside the box:
+ * 72°N to 50°S, centred on the hosts) with its top at 72°N (a wide box: SEA_TOP above it), and keeps every badge inside the box:
  * ROOM_TOP below the top edge, ROOM_SIDE from either side, and clear of the floating bar (bar: its
  * left, top and width in px, where it lies over the box) or ROOM_FOOT above the bottom. Where the
  * top at 72°N leaves a badge outside, the view moves north or south as far as the others allow;
@@ -116,7 +118,7 @@ function fitHome(hosts: Host[], a: number, width: number, bar: [number, number, 
       hi = Math.min(hi, c.uy - (top + rr) / s);
       lo = Math.max(lo, c.uy - (foot - rr) / s);
     }
-    const y = Math.min(hi, Math.max(lo, TOP));
+    const y = Math.min(hi, Math.max(lo, TOP - (narrow ? 0 : SEA_TOP / s)));
     last = [clampView({ w, x, y: lo <= hi ? y : (lo + hi) / 2 }, a, w0 * MAX_BACK), cs];
     if (fits && lo <= hi) break;
   }
