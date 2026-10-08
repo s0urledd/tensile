@@ -330,6 +330,7 @@ const EX_NETWORK = `{
   "window": {"name": "7d"},
   "registered_endpoints": 78,
   "reachability": {"num": 76, "den": 78, "value": 0.9743589743589743},
+  "reachability_window": {"num": 156374, "den": 158666, "value": 0.9855545611536183},
   "obligations": {
     "served": 282534,
     "broken": 4,
@@ -421,6 +422,23 @@ const EX_PUBKEY = `{
     "first_day": "2026-09-24",
     "last_day": "2026-10-03"
   }
+}`;
+
+const EX_META = `{
+  "methodology_version": "2026-10-08",
+  "chain_id": "mocha-5",
+  "vantages": [
+    {"name": "de-1", "newest_at": "2026-10-08T11:38:34.687949213Z", "primary": false},
+    {"name": "ut-1", "newest_at": "2026-10-08T11:41:39.549261168Z", "primary": true}
+  ],
+  "app_version": "10",
+  "fibre_app_version": "10",
+  "fibre_active": true,
+  "chain_height": "1494936",
+  "counts": {"Publications": 8918, "Assignments": 731950, "Probes": 517247, "OpenEndpoints": 80, "Runs": 231},
+  "last_probe_at": "2026-10-08T10:55:29.371169265Z",
+  "server_time": "2026-10-08T11:41:48.842585946Z",
+  "pin_status": "matches"
 }`;
 
 const EX_TIP = `{
@@ -635,7 +653,7 @@ export const GROUPS: Group[] = [
         id: "network",
         path: "/v1/network",
         summary: "Network service rate, availability and endpoint reachability.",
-        desc: "`exclude` recomputes the figures without the named validators; availability still counts every validator. `provisional_faults`, when present, counts the `broken` obligations that rest only on not-served readings under 30 minutes old, which can still be withdrawn.",
+        desc: "`reachability` is the registered endpoints that answered their latest check, now; `reachability_window` is every endpoint check in the selected period that answered. `exclude` recomputes the figures without the named validators (availability still counts every validator), and `provisional_faults`, when present, counts the `broken` obligations that rest only on not-served readings under 30 minutes old, which can still be withdrawn.",
         params: [
           windowParam, asOf,
           { name: "exclude", in: "query", type: "string", desc: "Up to 8 validators in any address form, comma-separated or repeated." },
@@ -719,6 +737,14 @@ export const GROUPS: Group[] = [
     id: "status",
     title: "Status",
     endpoints: [
+      {
+        id: "meta",
+        path: "/v1/meta",
+        summary: "The methodology version, the chain, Fibre's activation and record counts.",
+        desc: "`methodology_version` is the version of the rules every figure the API serves is computed under; each export manifest carries its own day's. `pin_status` is matches, chain_ahead, chain_behind or unknown: whether the chain's app version matches the celestia-app release Tensile is built against.",
+        params: [],
+        example: EX_META,
+      },
       {
         id: "tip",
         path: "/v1/tip",

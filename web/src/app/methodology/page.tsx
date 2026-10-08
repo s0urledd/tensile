@@ -101,7 +101,7 @@ export default function Methodology() {
       <header className="meth-head">
         <h1>Methodology</h1>
         <p className="meth-lede">What each figure on Tensile means, how it is computed, and where to find the record behind it.</p>
-        <p className="meth-ver">Version <a href="#version">{METHODOLOGY_VERSION}</a>, published with every figure as <code>methodology_version</code></p>
+        <p className="meth-ver">Version <a href="#version">{METHODOLOGY_VERSION}</a>, published as <code>methodology_version</code> in <code>/v1/meta</code></p>
       </header>
 
       <OnThisPage items={SECTIONS} version={METHODOLOGY_VERSION} />
@@ -344,7 +344,7 @@ export default function Methodology() {
           </Def>
 
           <Def id="version" name="Methodology version" say={<>{METHODOLOGY_VERSION}.</>}>
-            <p>Published with every figure as <code>methodology_version</code>, in <code>/v1/meta</code> and in every export manifest. It changes with any rule that can move a figure.</p>
+            <p>Published as <code>methodology_version</code> in <code>/v1/meta</code> and in every export manifest. It changes with any rule that can move a figure.</p>
           </Def>
 
           <Def id="corrections" name="Disputes and corrections" say={<>To challenge a reading, open an issue with its promise hash and time, as the <a href={DISPUTE_URL} rel="noopener noreferrer" target="_blank">dispute route</a> describes.</>}>
