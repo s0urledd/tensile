@@ -54,6 +54,21 @@ const server = http.createServer((req, res) => {
       // Southeast and East Asia, where the smallest hosted places are
       const b = await atlas.boundingBox();
       if (b) await page.screenshot({ path: path.join(out, `asia-${tag}.png`), animations: "disabled", clip: { x: b.x + b.width * 0.58, y: b.y + b.height * 0.12, width: b.width * 0.3, height: b.height * 0.62 } });
+      // at 1440: Singapore's popover over the board, then the map zoomed in once
+      if (b && width === 1440) {
+        const sg = page.locator('.cm-b[aria-label^="Singapore"]').first();
+        if (await sg.count()) {
+          await sg.hover();
+          await page.waitForTimeout(600);
+          await page.screenshot({ path: path.join(out, `pop-${tag}.png`), animations: "disabled", clip: { x: b.x + b.width * 0.42, y: b.y, width: b.width * 0.46, height: b.height } });
+          await page.mouse.move(b.x + 4, b.y + b.height - 4);
+          await page.waitForTimeout(600);
+        } else notes.push(`${tag}: no Singapore badge to hover`);
+        await page.locator('.cm-tools button[aria-label="Zoom in"]').click();
+        await page.mouse.move(b.x + 4, b.y + b.height - 4);
+        await page.waitForTimeout(1500);
+        await atlas.screenshot({ path: path.join(out, `zoom-${tag}.png`), animations: "disabled" });
+      }
       await ctx.close();
     }
   }

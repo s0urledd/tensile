@@ -1012,7 +1012,7 @@ body { background: var(--canvas); }
    ========================================================================== */
 .deck {
   /* the sea is the panel; the board's squares and the badges are tokens so the two themes are a handful of lines */
-  --cm-px: #b7c2c6;
+  --cm-px: #b2bfc4;
   --cm-halo: var(--paper);
   --cm-badge: var(--accent);
   --cm-badge-ink: #ffffff;
@@ -1042,7 +1042,7 @@ body { background: var(--canvas); }
 }
 /* flat, not lit from its corners as the other pages' chain panels are: its top is the map's sea, one tone */
 :root[data-theme="dark"] .deck {
-  --cm-px: #35434a;
+  --cm-px: #3c4c53;
   --cm-badge: #33b3bf;
   --cm-badge-ink: #04171a;
   --cm-badge-hold-ink: #1f1500;
@@ -1088,7 +1088,7 @@ body { background: var(--canvas); }
 .cm-key .k-none { width: 8px; height: 8px; border-radius: 2px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
 .cm-tools {
   position: absolute; right: 16px; top: 14px; z-index: 6; display: inline-flex; gap: 2px; padding: 3px; border-radius: 999px;
-  background: color-mix(in srgb, var(--paper) 84%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  background: var(--paper);
   box-shadow: var(--shadow-sm), 0 0 0 1px var(--border);
 }
 .cm-tools button { display: grid; place-items: center; width: 28px; height: 26px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--text-2); cursor: pointer; transition: background var(--dur), color var(--dur), box-shadow var(--dur); }
@@ -1126,10 +1126,10 @@ body { background: var(--canvas); }
 .cm-pin.one.live .cm-badge::after { border-radius: 5px; }
 @keyframes cm-pulse { 0% { transform: scale(1); opacity: .55; } 100% { transform: scale(2); opacity: 0; } }
 
-/* a place's hosts: the charts' tooltip surface */
+/* a place's hosts: the charts' tooltip surface, solid, so the board under it never shows blurred */
 .cm-pop {
   position: absolute; display: flex; flex-direction: column; padding: 12px 14px 10px; border-radius: 12px; text-align: left; font-size: var(--t-cell); cursor: auto;
-  background: color-mix(in srgb, var(--paper) 94%, transparent); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  background: var(--paper);
   border: 1px solid var(--border); box-shadow: var(--shadow-pop); animation: cm-in var(--dur) ease-out;
 }
 .cm-pop-h { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 0 0 8px; }
@@ -1148,7 +1148,7 @@ body { background: var(--canvas); }
 .cm-zoomin { display: block; width: 100%; margin-top: 8px; height: 30px; border: 0; border-radius: 999px; background: var(--accent-tint); color: var(--accent-ink); font: inherit; font-size: var(--t-small); font-weight: 600; cursor: pointer; }
 .cm-zoomin:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 
-/* across the map's foot, two small pills of one height: the newest event at the left, the counts in the centre.
+/* across the map's foot, two small solid pills of one height: the newest event at the left, the counts in the centre.
    The bar itself is only their line: the side columns share what the counts leave, so the event never reaches them */
 .cm-bar {
   position: absolute; left: 24px; right: 24px; bottom: 0; z-index: 4; transform: translateY(50%);
@@ -1156,8 +1156,7 @@ body { background: var(--canvas); }
 }
 .cm-ev, .cm-counts {
   height: 36px; border-radius: 999px; pointer-events: auto;
-  background: color-mix(in srgb, var(--paper) 84%, transparent);
-  -webkit-backdrop-filter: blur(14px) saturate(1.3); backdrop-filter: blur(14px) saturate(1.3);
+  background: var(--paper);
   border: 1px solid var(--border); box-shadow: var(--shadow-pop);
 }
 .cm-ev { grid-column: 1; justify-self: start; display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; margin: 0; padding: 0 14px 0 13px; font-size: 12.5px; color: var(--text-2); animation: cm-in .35s ease-out; }

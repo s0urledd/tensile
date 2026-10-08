@@ -133,8 +133,8 @@ const fmtShare = (s: number) => { const p = s * 100; return p >= 0.1 ? `${p.toFi
  * its coverage) and drawn as one path of squares.
  */
 const PITCH = 4, SQUARE = 2, TILE = 64;
-/** a cell is land where at least this much of it is (of 255) */
-const LIT = 102;
+/** a cell is land where at least this much of it is (of 255): under a third, so a thin peninsula or a small island keeps its squares */
+const LIT = 77;
 /** the halvings of the lattice: at the deepest zoom the squares are some 8 px apart */
 const LEVELS = 3;
 /** a lattice in map units: the middle of its cell (0, 0), and the step between two cells */
