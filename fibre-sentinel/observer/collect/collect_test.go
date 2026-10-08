@@ -2,6 +2,8 @@ package collect_test
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/collect"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/correct"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/ingest"
@@ -181,5 +185,119 @@ func TestAFailureAfterTheIngestIsOnTheWorkList(t *testing.T) {
 	c.Pass(ctx, now.Add(10*time.Second))
 	if w := live.work(); len(w) != 0 {
 		t.Fatalf("work_errors after recovery = %v", w)
+	}
+}
+
+// deferredRow stores a publication and one probe row of it the prober
+// deferred on a scan gap, which a late verdict judges at once, and returns
+// the row's dedupe key.
+func deferredRow(t *testing.T, st *store.Store, at time.Time) string {
+	t.Helper()
+	pub := scan.Publication{
+		SchemaVersion: scan.AttestationSchemaVersion, PromiseHash: "aaaa",
+		SettlementHeight: 300, SettlementTime: at, MustServeUntil: at.Add(30 * time.Minute), RecordedAt: at,
+		SettlementTxHash: "txaaaa", Signer: "celestia1pub",
+		Promise:                 scan.PromiseFields{ChainID: "t", Height: 299, Commitment: "cc1", CreationTimestamp: at.Add(-time.Minute), BlobSize: 4096},
+		ValidatorSignatureCount: 1,
+		Assignment: scan.AssignmentTable{
+			ProtocolParams:     scan.ProtocolParamsSnapshot{OriginalRows: 4, TotalRows: 16},
+			ValidatorSetHeight: 299, TotalVotingPower: 10, Sigma: 4, Distinct: 4,
+			ValidatorsWithRows: 1, AttestedWithRows: 1, SignatureEntries: 1, SignaturesVerified: 1, AttestedVotingPower: 10,
+			Validators: []scan.ValidatorAssignment{{Address: "v1", VotingPower: 10, RowCount: 2, Rows: []int{0, 1}, Attested: true}},
+		},
+	}
+	pub.ParamsAtPublication.PaymentPromiseTimeoutSeconds = 3600
+	pub.ParamsAtPublication.ShardRetentionSeconds = 1800
+	raw, err := json.Marshal(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertPublication(pub, raw); err != nil {
+		t.Fatal(err)
+	}
+	probeAt := at.Add(10 * time.Minute)
+	m := probe.Measurement{
+		SchemaVersion: probe.AttestationSchemaVersion, Vantage: "ut-1",
+		PromiseHash: pub.PromiseHash, Commitment: pub.Promise.Commitment, MustServeUntil: pub.MustServeUntil, ValidatorSetHeight: 299,
+		ValidatorAddress: "v1", ValidatorHost: "v1:443", Assigned: true, Attested: true, AssignedRowCount: 2,
+		ScheduleLabel: "w2", ScheduledAt: probeAt, StartedAt: probeAt, FinishedAt: probeAt.Add(time.Second),
+		Phase: probe.PhaseInWindow, Outcome: probe.OutcomeWrongRows, TotalDurationMS: 1000,
+	}
+	m.TCP.OK, m.TLS.OK, m.Identity.OK = true, true, true
+	m.Download.Attempted, m.Download.RowsReturned, m.Download.RowsExpected = true, 1, 2
+	m.Download.CommitmentVerified, m.Download.RowIndices = true, []uint32{9}
+	m.Download.ShadowGap = probe.ShadowGapScanPrefix + " #100-#110 overlaps the shard lifetime"
+	m.Classification, m.ClassificationReason = probe.Classify(probe.Evidence{Assigned: true, Attested: true, Phase: probe.PhaseInWindow,
+		Outcome: probe.OutcomeWrongRows, CommitmentVerified: true, ShadowUncertain: true})
+	if raw, err = json.Marshal(m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.InsertProbe(m, raw); err != nil {
+		t.Fatal(err)
+	}
+	return m.DedupeKey()
+}
+
+func amendedAt(t *testing.T, st *store.Store, key string) string {
+	t.Helper()
+	var at sql.NullString
+	if err := st.DB().QueryRow(`SELECT amended_at FROM probes WHERE dedupe_key = ?`, key).Scan(&at); err != nil {
+		t.Fatal(err)
+	}
+	return at.String
+}
+
+// A late verdict on record that the store does not have yet (its apply
+// failed, or the replay stopped before it) is the one the row gets: no
+// second verdict is drawn for the row while amendments.jsonl has not been
+// replayed to its end. ApplyAmendment takes a row's first amendment, so a
+// second line drawn live would be the row's verdict in the live store and
+// the first line its verdict in every store rebuilt from the file.
+func TestNoLateVerdictIsDrawnWhileOneOnRecordWaits(t *testing.T) {
+	dir := t.TempDir()
+	c := newCollector(t, dir, &fakeStatus{})
+	ctx := context.Background()
+	t0 := time.Date(2026, 10, 7, 10, 0, 0, 0, time.UTC)
+	key := deferredRow(t, c.St, t0)
+	now := t0.Add(2 * time.Hour)
+	if err := c.St.SetMeta("last_scanned_time", store.TS(now), now); err != nil {
+		t.Fatal(err)
+	}
+	// On record: a verdict for a row not ingested yet, which the replay
+	// waits on for a few passes, and after it the row's own verdict, drawn
+	// an hour ago and never applied.
+	recorded := t0.Add(time.Hour)
+	waiting, _ := json.Marshal(store.Amendment{DedupeKey: "not-ingested-yet", To: "PROBE_ERROR", JudgedAt: recorded})
+	mine, _ := json.Marshal(store.Amendment{DedupeKey: key, PromiseHash: "aaaa", ValidatorAddress: "v1", From: "PROBE_ERROR", To: "PROBE_ERROR",
+		Reason: "no verdict: a scan gap covers the interval", JudgedAt: recorded, ScannerFrontier: recorded})
+	path := filepath.Join(dir, "amendments.jsonl")
+	body := string(waiting) + "\n" + string(mine) + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		c.Pass(ctx, now.Add(time.Duration(i)*10*time.Second))
+		if got, _ := os.ReadFile(path); string(got) != body {
+			t.Fatalf("pass %d drew a second verdict for a row whose verdict is on record:\n%s", i+1, got)
+		}
+	}
+	if got := amendedAt(t, c.St, key); got != store.TS(recorded) {
+		t.Fatalf("the row's verdict was drawn at %q, want the one on record (%s)", got, store.TS(recorded))
+	}
+}
+
+// The corrector stops at the first line it cannot write, which a full disk
+// leaves written in part; that part is cut before the corrector runs again,
+// so its next line is not glued onto it.
+func TestAPartCorrectionLineIsCutBeforeTheNextRun(t *testing.T) {
+	dir := t.TempDir()
+	c := newCollector(t, dir, &fakeStatus{})
+	path := filepath.Join(dir, "corrections.jsonl")
+	if err := os.WriteFile(path, []byte(`{"kind":"probe_verdict","dedupe_key":"ab`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.Pass(context.Background(), time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC))
+	if got, _ := os.ReadFile(path); len(got) != 0 {
+		t.Fatalf("corrections.jsonl after the pass: %q", got)
 	}
 }

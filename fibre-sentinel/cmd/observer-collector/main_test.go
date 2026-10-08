@@ -1,12 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
+	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
 // Fibre is live when the chain is on its version and x/fibre answers, not
@@ -54,5 +58,34 @@ func TestTheExportIsHeldWhileAVantageFileIsFromAnotherChain(t *testing.T) {
 	fail := errors.New("index.json missing")
 	if _, held, err = exportStep(func(time.Time) ([]string, error) { return nil, fail }, nil, now); held || !errors.Is(err, fail) {
 		t.Fatalf("a builder failure: held=%v err=%v", held, err)
+	}
+}
+
+// The collector's own logs are opened with a torn last line cut off: a crash
+// in the middle of a write leaves the start of a line, and the first line
+// appended after the restart would be glued onto it, the two lost to every
+// reader of the file.
+func TestOwnLogsOpenWithATornLineCut(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.jsonl")
+	whole := `{"kind":"endpoint_opened","validator_cons_address":"celestiavalcons1aa","host":"a:7980","height":5,"at":"2026-10-07T11:00:00Z"}` + "\n"
+	if err := os.WriteFile(path, []byte(whole+`{"kind":"endpoint_clo`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := openOwnLog(path, quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	ev := store.EndpointEvent{Kind: store.EndpointClosed, ConsAddress: "celestiavalcons1aa", Host: "a:7980", Height: 9,
+		At: time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC), Reason: "left_bonded_provider_list"}
+	if err := writeRegistry(f, []store.EndpointEvent{ev}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != whole+string(b)+"\n" {
+		t.Fatalf("registry.jsonl after a restart and one event:\n%s", got)
 	}
 }

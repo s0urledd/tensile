@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	fibretypes "github.com/celestiaorg/celestia-app/v10/x/fibre/types"
@@ -58,8 +59,9 @@ type chainPoll struct {
 	st    *store.Store
 	live  liveStatus
 	logf  logf
-	// appendRegistry writes endpoint events to registry.jsonl.
-	appendRegistry func([]store.EndpointEvent)
+	// appendRegistry writes endpoint events to registry.jsonl, fsynced, and
+	// says whether they are on record.
+	appendRegistry func([]store.EndpointEvent) error
 	// waiting: the endpoint diff is held back for the registry replay, and
 	// the log has said so.
 	waiting bool
@@ -201,10 +203,36 @@ func (p *chainPoll) status(ctx context.Context, now time.Time, ingested, registr
 		}
 		return
 	}
-	evs, err := p.st.ObserveEndpointEvents(ctx, provs, height, now)
+	// The openings and closings go to registry.jsonl, fsynced, before the
+	// store has them, the order the amendments and corrections keep. The
+	// file is the endpoint history's only record, and the store's diff,
+	// once committed, is never drawn again: events the store had and the
+	// file did not were lost to every export and every rebuild. A line on
+	// record whose rows did not change replays into the store on the next
+	// pass, before the next diff (RegistryReplayed); a write that fails
+	// leaves the store as it was, so the next poll finds the same diff.
+	open, err := p.st.CurrentEndpoints(ctx)
 	if err != nil {
 		p.logf("endpoints: store: %v", err)
 		return
+	}
+	evs := endpointDiff(open, provs, height, now)
+	if len(evs) > 0 {
+		if err := p.appendRegistry(evs); err != nil {
+			p.logf("endpoints: registry.jsonl: %v; the endpoints are left as they were, and the next poll diffs them again", err)
+			return
+		}
+	}
+	got, err := p.st.ObserveEndpointEvents(ctx, provs, height, now)
+	if err != nil {
+		p.logf("endpoints: store: %v", err)
+		return
+	}
+	if !sameEvents(evs, got) {
+		// Nothing but this poll writes the endpoint rows between the read
+		// above and this, so this is a bug, said where it can be seen.
+		p.logf("endpoints: WARNING the store changed %d endpoint(s) where registry.jsonl was given %d: %+v, on record %+v", len(got), len(evs), got, evs)
+		p.live.Error(fmt.Sprintf("endpoints: the store's diff (%d) is not the one on record (%d)", len(got), len(evs)))
 	}
 	if len(evs) > 0 {
 		opened, closed := 0, 0
@@ -216,11 +244,66 @@ func (p *chainPoll) status(ctx context.Context, now time.Time, ingested, registr
 			}
 		}
 		p.logf("endpoints: h=%d registered=%d opened=%d closed=%d", height, len(provs), opened, closed)
-		p.appendRegistry(evs)
 	}
 	p.setMeta("endpoints_height", itoa(height), now)
 	p.setMeta("endpoints_registered", itoa(int64(len(provs))), now)
 	p.setMeta("endpoints_polled_at", store.TS(now), now)
+}
+
+// endpointDiff is what store.ObserveEndpointEvents will change, given the
+// open endpoint rows: an opening for each provider with no open row, a
+// closing for each open row no provider names, at height and now.
+func endpointDiff(open []store.Endpoint, provs []scan.FibreProvider, height int64, now time.Time) []store.EndpointEvent {
+	type key struct{ addr, host string }
+	isOpen := map[key]bool{}
+	for _, e := range open {
+		isOpen[key{e.ValidatorConsAddress, e.Host}] = true
+	}
+	var evs []store.EndpointEvent
+	seen := map[key]bool{}
+	for _, p := range provs {
+		k := key{p.ConsAddressBech32, p.Host}
+		seen[k] = true
+		if !isOpen[k] {
+			evs = append(evs, store.EndpointEvent{Kind: store.EndpointOpened, ConsAddress: k.addr, Host: k.host, Height: height, At: now.UTC()})
+		}
+	}
+	var gone []key
+	for k := range isOpen {
+		if !seen[k] {
+			gone = append(gone, k)
+		}
+	}
+	sort.Slice(gone, func(i, j int) bool {
+		if gone[i].addr != gone[j].addr {
+			return gone[i].addr < gone[j].addr
+		}
+		return gone[i].host < gone[j].host
+	})
+	for _, k := range gone {
+		evs = append(evs, store.EndpointEvent{Kind: store.EndpointClosed, ConsAddress: k.addr, Host: k.host, Height: height, At: now.UTC(), Reason: "left_bonded_provider_list"})
+	}
+	return evs
+}
+
+// sameEvents reports whether a and b hold the same events, in any order.
+func sameEvents(a, b []store.EndpointEvent) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	count := map[string]int{}
+	id := func(e store.EndpointEvent) string {
+		return e.Kind + "|" + e.ConsAddress + "|" + e.Host + "|" + itoa(e.Height) + "|" + store.TS(e.At) + "|" + e.Reason
+	}
+	for _, e := range a {
+		count[id(e)]++
+	}
+	for _, e := range b {
+		if count[id(e)]--; count[id(e)] < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // identities stores the validators' names, from the chain's own staking
