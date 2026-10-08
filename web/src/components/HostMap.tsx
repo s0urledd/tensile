@@ -135,8 +135,8 @@ const valLink = (v: Validator) => validatorHref(v.operator_address, v.cons_addre
 const name = (v: Validator) => v.moniker || v.operator_address || v.address;
 const fmtShare = (s: number) => { const p = s * 100; return p >= 0.1 ? `${p.toFixed(1)}%` : p > 0 ? "<0.1%" : "0%"; };
 
-/** a badge's height in px: a little taller for more hosts, so a crowd reads as one (24 to 31 px); a lone host is a small square */
-const badgeH = (n: number, narrow: boolean) => (n === 1 ? (narrow ? 8 : 10) : narrow ? Math.round(17 + Math.min(6, 1.9 * Math.sqrt(n - 1))) : Math.round(22 + Math.min(9, 2.4 * Math.sqrt(n - 1))));
+/** a badge's height in px: a little taller for more hosts, so a crowd reads as one (24 to 29 px); a lone host is a small square */
+const badgeH = (n: number, narrow: boolean) => (n === 1 ? (narrow ? 8 : 10) : narrow ? Math.round(17 + Math.min(6, 1.9 * Math.sqrt(n - 1))) : Math.round(22 + Math.min(7, 2.3 * Math.sqrt(n - 1))));
 /** its width: square, or wider for a figure of three digits */
 const badgeW = (n: number, narrow: boolean) => (n === 1 ? badgeH(1, narrow) : Math.max(badgeH(n, narrow), Math.round(String(n).length * (narrow ? 6.3 : 7.8) + (narrow ? 9 : 12))));
 /** the room a badge takes, for the merging and for keeping clear of the bar */

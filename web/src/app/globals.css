@@ -1014,7 +1014,7 @@ body { background: var(--canvas); }
   /* the map's sea, its graticule and its land, and the pills and buttons over it: tokens, so the two themes are a
      handful of lines. The land is lighter than the sea in both */
   --cm-sea: #eceff1;
-  --cm-grid: rgb(255 255 255 / .8);
+  --cm-grid: rgb(255 255 255 / .55);
   --cm-land: #ffffff;
   --cm-edge: rgb(var(--ink) / .07);
   --cm-chrome: #ffffff;
