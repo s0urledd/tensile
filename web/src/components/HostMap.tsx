@@ -61,6 +61,13 @@ const MAX_BACK = 1.4;
 /** the room every badge of the home view keeps from the box's edges, in px: above, beside, and below (or above the bar) */
 const ROOM_TOP = 28, ROOM_SIDE = 12, ROOM_FOOT = 8;
 const ROOM_TOP_NARROW = 14;
+/** px: the board stops this far inside the box's top and sides (the stylesheet's clip of .cm-land) */
+const INSET = 12;
+/**
+ * px: a wide box's home view sets the land's northernmost coast this far below its top, so the board ends on the
+ * Arctic's own coast inside the inset, not on a row cut straight; it steps back for that by at most ARCTIC_BACK
+ */
+const ARCTIC = 14, ARCTIC_BACK = 0.08;
 
 /** a view inside the world; one at least as wide as the world (the home view, stepped back) is centred on it */
 function clampView(v: View, a: number, maxW = FRAME.w): View {
@@ -83,32 +90,46 @@ function fitView(pts: [number, number][], a: number, pad = 0.35, minW = FRAME.w 
  * left, top and width in px, where it lies over the box) or ROOM_FOOT above the bottom. Where the
  * top at 72°N leaves a badge outside, the view moves north or south as far as the others allow;
  * where no position does, it steps back a little and tries again, until the world is MAX_BACK times
- * narrower than the box.
+ * narrower than the box. A wide box then sets the land's top ARCTIC px down, stepping back as little
+ * more as that takes, with the badges it found (see ARCTIC).
  */
 function fitHome(hosts: Host[], a: number, width: number, bar: [number, number, number, number] | null, narrow: boolean): [View, Cluster[]] {
   const height = width * a;
   const w0 = Math.min(FRAME.w, (BOTTOM - TOP) / a);
   const xs = hosts.map((h) => h.ux), cx = xs.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : FRAME.w / 2;
   const top = narrow ? ROOM_TOP_NARROW : ROOM_TOP;
-  let last: [View, Cluster[]] | null = null;
-  for (let i = 0; i <= 12; i++) {
-    const w = Math.min(w0 * MAX_BACK, w0 / (1 - 0.03 * i));
-    const s = width / w;
-    const x = w >= FRAME.w ? (FRAME.w - w) / 2 : Math.min(FRAME.w - w, Math.max(0, cx - w / 2));
-    const cs = cluster(hosts, s, narrow);
-    // the band of view tops that keeps every badge in: lo from the badges that must stay above the foot, hi from those below the top
-    let lo = -Infinity, hi = Infinity, fits = true;
+  const left = (w: number) => (w >= FRAME.w ? (FRAME.w - w) / 2 : Math.min(FRAME.w - w, Math.max(0, cx - w / 2)));
+  // the band of view tops that keeps every badge in: lo from the badges that must stay above the foot, hi from those
+  // below the top; and the largest scale at which every badge still clears the foot with the land's top ARCTIC px down
+  const band = (cs: Cluster[], s: number, x: number) => {
+    let lo = -Infinity, hi = Infinity, fits = true, arctic = Infinity;
     for (const c of cs) {
-      const px = (c.ux - x) * s, rr = drawn(c.hosts.length, narrow) / 2;
+      const px = (c.ux - x) * s, rr = room(c.hosts.length, narrow) / 2;
       if (px - rr < ROOM_SIDE || px + rr > width - ROOM_SIDE) fits = false;
       const under = !!bar && px + rr > bar[0] - 6 && px - rr < bar[0] + bar[2] + 6;
       const foot = under ? bar![1] - 6 : height - ROOM_FOOT;
       hi = Math.min(hi, c.uy - (top + rr) / s);
       lo = Math.max(lo, c.uy - (foot - rr) / s);
+      if (c.uy > 0) arctic = Math.min(arctic, (foot - rr - ARCTIC) / c.uy);
     }
+    return { lo, hi, fits: fits && lo <= hi, arctic };
+  };
+  let last: [View, Cluster[]] | null = null;
+  for (let i = 0; i <= 12; i++) {
+    const w = Math.min(w0 * MAX_BACK, w0 / (1 - 0.03 * i));
+    const s = width / w, x = left(w);
+    const cs = cluster(hosts, s, narrow);
+    const { lo, hi, fits, arctic } = band(cs, s, x);
     const y = Math.min(hi, Math.max(lo, TOP));
     last = [clampView({ w, x, y: lo <= hi ? y : (lo + hi) / 2 }, a, w0 * MAX_BACK), cs];
-    if (fits && lo <= hi) break;
+    if (!fits) continue;
+    // the land's top (the frame's own, 0) ARCTIC px down, above the frame's edge: the badges stay the ones found here
+    const s2 = Math.min(s, arctic), w2 = width / s2;
+    if (!narrow && s2 >= s * (1 - ARCTIC_BACK) && w2 <= Math.min(w0 * MAX_BACK, FRAME.h / a)) {
+      const x2 = left(w2), b = band(cs, s2, x2);
+      if (b.fits) return [{ w: w2, x: x2, y: Math.min(b.hi, Math.max(b.lo, -ARCTIC / s2)) }, cs];
+    }
+    break;
   }
   return last!;
 }
@@ -126,39 +147,65 @@ const name = (v: Validator) => v.moniker || v.operator_address || v.address;
 const fmtShare = (s: number) => { const p = s * 100; return p >= 0.1 ? `${p.toFixed(1)}%` : p > 0 ? "<0.1%" : "0%"; };
 
 /**
- * The land is a board of small squares: one in every cell of a lattice that is mostly land, PITCH px apart at the
- * home view and SQUARE px each, on whole pixels there, so every square is crisp. No coast is drawn and no country
- * marked. Zoomed in, the lattice halves at each doubling, so the squares keep about their size on screen. The board
- * is cut in tiles of TILE by TILE cells, each read once from the outlines (filled on a small canvas, a cell lit by
- * its coverage) and drawn as one path of squares.
+ * The land is a board of small squares: one in every cell of a lattice with some land in it, PITCH px apart at the
+ * home view and SQUARE px each, on whole device pixels there, so every square is crisp. No coast is drawn and no
+ * country marked. Zoomed in, the lattice halves at each doubling, so the squares keep about their size on screen. The
+ * board is cut in tiles of TILE by TILE cells, each read once from the outlines (filled on a small canvas, a cell lit
+ * by its coverage) and drawn as one path of squares.
  */
 const PITCH = 4, SQUARE = 2, TILE = 64;
-/** a cell is land where at least this much of it is (of 255): under a third, so a thin peninsula or a small island keeps its squares */
-const LIT = 77;
+/**
+ * a cell is land where at least this much of it is (of 255, about 13%), so a thin peninsula (Malaya, Japan, Taiwan,
+ * the Philippines) keeps its squares
+ */
+const LIT = 34;
+/** cells: a lit cell with no other within this many is a speck in open sea, not a coast, and is left out */
+const SPECK = 2;
 /** the halvings of the lattice: at the deepest zoom the squares are some 8 px apart */
 const LEVELS = 3;
 /** a lattice in map units: the middle of its cell (0, 0), and the step between two cells */
 type Lattice = { x: number; y: number; p: number };
+/**
+ * the board on the screen's own pixels: PITCH and SQUARE rounded to whole device pixels (pd, sd; each square od in
+ * from its cell's corner), so at a display scale of 125% or 150% every square falls alike and the board never beats
+ * into bands. p and s are the same in css px, and f is the squares' middle from their lattice point, in cells (half
+ * a device pixel where the gap is odd)
+ */
+type Grid = { p: number; s: number; pd: number; sd: number; od: number; f: number };
+function grid(dpr: number): Grid {
+  const pd = Math.max(2, Math.round(PITCH * dpr)), sd = Math.max(1, Math.round(SQUARE * dpr)), od = Math.floor((pd - sd) / 2);
+  return { pd, sd, od, p: pd / dpr, s: sd / dpr, f: (od + sd / 2) / pd - 0.5 };
+}
 let LAND: Path2D | null = null, RASTER: CanvasRenderingContext2D | null = null;
-/** the land cells of one tile, as squares in cells from the tile's corner: the cell (i, j) is the lattice's (ti * TILE + i, tj * TILE + j) */
-function boardTile(o: Lattice, ti: number, tj: number): string {
+/**
+ * the land cells of one tile, as squares in device pixels from the tile's corner (a cell g.pd): the cell (i, j) is
+ * the lattice's (ti * TILE + i, tj * TILE + j). SPECK cells around it are read too, so a cell's neighbours across the
+ * tile's edge count.
+ */
+function boardTile(o: Lattice, ti: number, tj: number, g: Grid): string {
+  const n = TILE + 2 * SPECK;
   if (!RASTER) {
     const c = document.createElement("canvas");
-    c.width = c.height = TILE;
+    c.width = c.height = n;
     RASTER = c.getContext("2d", { willReadFrequently: true });
     LAND = new Path2D(COUNTRIES.map(([, d]) => d).join(""));
   }
-  const g = RASTER, land = LAND;
-  if (!g || !land) return "";
-  g.setTransform(1, 0, 0, 1, 0, 0);
-  g.clearRect(0, 0, TILE, TILE);
+  const r = RASTER, land = LAND;
+  if (!r || !land) return "";
+  r.setTransform(1, 0, 0, 1, 0, 0);
+  r.clearRect(0, 0, n, n);
   // a cell is the canvas's pixel, the lattice point at its middle; the pixel's alpha is how much of the cell is land
-  g.setTransform(1 / o.p, 0, 0, 1 / o.p, 0.5 - ti * TILE - o.x / o.p, 0.5 - tj * TILE - o.y / o.p);
-  g.fill(land);
-  const a = g.getImageData(0, 0, TILE, TILE).data;
+  r.setTransform(1 / o.p, 0, 0, 1 / o.p, 0.5 + SPECK - ti * TILE - o.x / o.p, 0.5 + SPECK - tj * TILE - o.y / o.p);
+  r.fill(land);
+  const a = r.getImageData(0, 0, n, n).data;
+  const lit = (i: number, j: number) => a[(j * n + i) * 4 + 3] >= LIT;
   let d = "";
-  const s = SQUARE / PITCH;
-  for (let j = 0; j < TILE; j++) for (let i = 0; i < TILE; i++) if (a[(j * TILE + i) * 4 + 3] >= LIT) d += `M${i} ${j}h${s}v${s}h${-s}z`;
+  for (let j = SPECK; j < SPECK + TILE; j++) for (let i = SPECK; i < SPECK + TILE; i++) {
+    if (!lit(i, j)) continue;
+    let near = false;
+    for (let v = j - SPECK; v <= j + SPECK && !near; v++) for (let u = i - SPECK; u <= i + SPECK; u++) if ((u !== i || v !== j) && lit(u, v)) { near = true; break; }
+    if (near) d += `M${(i - SPECK) * g.pd + g.od} ${(j - SPECK) * g.pd + g.od}h${g.sd}v${g.sd}h${-g.sd}z`;
+  }
   return d;
 }
 
@@ -167,20 +214,47 @@ function boardTile(o: Lattice, ti: number, tj: number): string {
  * wide), so at the home view it covers that block of cells edge to edge and the board's gap around it is its edge
  */
 const CELLS = (n: number) => (n === 1 ? 3 : n < 10 ? 6 : 7);
-const span = (cells: number) => cells * PITCH - (PITCH - SQUARE);
+const span = (cells: number, g: Grid) => cells * g.p - (g.p - g.s);
 /** a badge's height in px: a little taller for a crowd, so it reads as one; a lone host is a small square */
-const badgeH = (n: number, narrow: boolean) => (!narrow ? span(CELLS(n)) : n === 1 ? 8 : Math.round(17 + Math.min(6, 1.9 * Math.sqrt(n - 1))));
+const badgeH = (n: number, narrow: boolean, g: Grid) => (!narrow ? span(CELLS(n), g) : n === 1 ? 8 : Math.round(17 + Math.min(6, 1.9 * Math.sqrt(n - 1))));
 /** its width: square, or wider for a figure of three digits */
-const badgeW = (n: number, narrow: boolean) => (!narrow ? span(n < 100 ? CELLS(n) : 9) : n === 1 ? 8 : Math.max(badgeH(n, narrow), Math.round(String(n).length * 6.3 + 9)));
-/** the room a badge takes, for the merging and for keeping clear of the bar */
-const drawn = (n: number, narrow: boolean) => Math.max(badgeH(n, narrow), badgeW(n, narrow));
-/** px between two badges' edges at least; a wide box's badges then keep a gap after each is set on the board */
-const APART = (narrow: boolean) => (narrow ? 5 : 8);
+const badgeW = (n: number, narrow: boolean, g: Grid) => (!narrow ? span(n < 100 ? CELLS(n) : 9, g) : n === 1 ? 8 : Math.max(badgeH(n, narrow, g), Math.round(String(n).length * 6.3 + 9)));
 /**
- * a badge's middle set on the board, in px, where the board's cells are PITCH px and a cell's middle is at a (px from
+ * the room a badge takes, for the merging and for keeping clear of the bar: a place's badge as it was before the
+ * board (none on the board is larger), so the board changes neither which hosts share a badge nor where the home
+ * view sits
+ */
+function room(n: number, narrow: boolean): number {
+  if (n === 1) return narrow ? 8 : 10;
+  const h = narrow ? Math.round(17 + Math.min(6, 1.9 * Math.sqrt(n - 1))) : Math.round(21 + Math.min(8, 2.3 * Math.sqrt(n - 1)));
+  return Math.max(h, Math.round(String(n).length * (narrow ? 6.3 : 7.2) + (narrow ? 9 : 12)));
+}
+/**
+ * a badge's middle set on the board, in px, where the board's cells are p px and a square's middle is at a (px from
  * the box's corner): a block of odd cells is centred on a cell, an even one between two
  */
-const onBoard = (v: number, cells: number, a: number) => a + (cells % 2 ? Math.round((v - a) / PITCH) : Math.round((v - a) / PITCH - 0.5) + 0.5) * PITCH;
+const onBoard = (v: number, cells: number, a: number, p: number) => a + (cells % 2 ? Math.round((v - a) / p) : Math.round((v - a) / p - 0.5) + 0.5) * p;
+type Placed = { c: Cluster; x: number; y: number; bw: number; bh: number; hit: number };
+/**
+ * badges set on the board keep at least one of its cells between them: where setting them closed a gap down to the
+ * board's own, the smaller of the two moves a cell away, on the side where they are already further apart
+ */
+function apart(ps: Placed[], g: Grid) {
+  const min = 2 * g.p - g.s - 0.01;
+  for (let k = 0; k < 6; k++) {
+    let moved = false;
+    for (let i = 0; i < ps.length; i++) for (let j = i + 1; j < ps.length; j++) {
+      const a = ps[i], b = ps[j];
+      const gx = Math.abs(a.x - b.x) - (a.bw + b.bw) / 2, gy = Math.abs(a.y - b.y) - (a.bh + b.bh) / 2;
+      if (gx >= min || gy >= min) continue;
+      const m = a.c.hosts.length < b.c.hosts.length ? a : b, o = m === a ? b : a;
+      if (gx >= gy) m.x += (m.x >= o.x ? 1 : -1) * g.p;
+      else m.y += (m.y >= o.y ? 1 : -1) * g.p;
+      moved = true;
+    }
+    if (!moved) break;
+  }
+}
 
 /** hosts -> clusters: one per place (city, else country), then merged while two badges would touch on screen */
 function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
@@ -193,7 +267,7 @@ function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
     let best: [number, number, number] | null = null;
     for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) {
       const d = Math.hypot(cs[i].ux - cs[j].ux, cs[i].uy - cs[j].uy) * pxPerUnit;
-      const need = (drawn(cs[i].hosts.length, narrow) + drawn(cs[j].hosts.length, narrow)) / 2 + APART(narrow);
+      const need = (room(cs[i].hosts.length, narrow) + room(cs[j].hosts.length, narrow)) / 2 + 5;
       if (d < need && (!best || d - need < best[2])) best = [i, j, d - need];
     }
     if (!best) break;
@@ -313,14 +387,39 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
   const aspect = narrow ? TALL : WIDE;
   const height = width * aspect;
 
-  // the floating bar, where it lies over the map: measured, so no badge is left under it
+  // the screen's pixels per css px, so the board falls on whole device pixels (see grid); read again when it changes
+  const [dpr, setDpr] = useState(1);
+  useLayoutEffect(() => {
+    let mq: MediaQueryList | null = null;
+    const read = () => {
+      const d = window.devicePixelRatio || 1;
+      setDpr(d);
+      mq?.removeEventListener("change", read);
+      mq = window.matchMedia(`(resolution: ${d}dppx)`);
+      mq.addEventListener("change", read);
+    };
+    read();
+    return () => mq?.removeEventListener("change", read);
+  }, []);
+  const gd = useMemo(() => grid(dpr), [dpr]);
+
+  // the floating bar, where it lies over the map: measured, so no badge is left under it. And the key, the view
+  // buttons and the bar's two pills, where they lie over the box: a zoomed view keeps its badges clear of them
   const bar = useRef<HTMLDivElement>(null);
+  const keyEl = useRef<HTMLParagraphElement>(null), toolsEl = useRef<HTMLDivElement>(null);
   const [barAt, setBarAt] = useState<[number, number, number, number] | null>(null);
+  const [chrome, setChrome] = useState<number[][]>([]);
   useLayoutEffect(() => {
     const a = box.current?.getBoundingClientRect(), b = bar.current?.getBoundingClientRect();
     let at: [number, number, number, number] | null = null;
     if (a && b && b.top < a.bottom && b.bottom > a.top) at = [Math.round(b.left - a.left), Math.round(b.top - a.top), Math.round(b.width), Math.round(Math.min(b.bottom, a.bottom) - b.top)];
     if (JSON.stringify(at) !== JSON.stringify(barAt)) setBarAt(at);
+    const els = [keyEl.current, toolsEl.current, ...Array.from(bar.current?.children ?? [])];
+    const rs = a ? els.flatMap((el) => {
+      const q = el?.getBoundingClientRect();
+      return q && q.width > 2 && q.height > 2 ? [[q.left - a.left, q.top - a.top, q.right - a.left, q.bottom - a.top].map(Math.round)] : [];
+    }) : [];
+    if (JSON.stringify(rs) !== JSON.stringify(chrome)) setChrome(rs);
   });
 
   // the home view keeps every badge inside the box and clear of the bar (see fitHome)
@@ -496,17 +595,17 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
   // ---- the land: the board's tiles that the view shows, on the lattice of its zoom ----
   const hosted = useMemo(() => new Set(hosts.map((h) => h.cc)), [hosts]);
   const unchecked = hosts.some((h) => h.state === "none");
-  // at the home view a cell is PITCH px and its middle PITCH / 2 px from the box's corner, so the squares sit on whole
-  // pixels; each doubling of the zoom past it halves the cell
-  const p0 = width > 0 ? (PITCH * home.w) / width : 0;
+  // at the home view a cell is gd.p px (PITCH on whole device pixels) from the box's corner, so the squares sit on
+  // whole pixels; each doubling of the zoom past it halves the cell
+  const p0 = width > 0 ? (gd.p * home.w) / width : 0;
   const lat: Lattice = { x: 0, y: 0, p: p0 / 2 ** Math.max(0, Math.min(LEVELS, Math.round(Math.log2(home.w / view.w)))) };
   lat.x = home.x + lat.p / 2;
   lat.y = home.y + lat.p / 2;
-  // a tile is read once per lattice; a new home view (another width) starts the board again
+  // a tile is read once per lattice; a new home view (another width) or another screen starts the board again
   const tiles = useRef<{ base: string; d: Map<string, string> }>({ base: "", d: new Map() });
   const board: React.ReactNode[] = [];
   if (width > 0) {
-    const base = `${p0}|${home.x}|${home.y}`;
+    const base = `${p0}|${home.x}|${home.y}|${gd.pd}|${gd.sd}`;
     if (tiles.current.base !== base) tiles.current = { base, d: new Map() };
     const cache = tiles.current.d, p = lat.p;
     const tile = (v: number, o: number) => Math.floor(Math.floor((v - o) / p + 0.5) / TILE);
@@ -514,22 +613,40 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
       for (let ti = tile(view.x, lat.x); ti <= tile(view.x + view.w, lat.x); ti++) {
         const key = `${p}|${ti}|${tj}`;
         let d = cache.get(key);
-        if (d === undefined) { d = boardTile(lat, ti, tj); cache.set(key, d); }
-        // each square SQUARE / PITCH of a cell, centred on its lattice point
-        if (d) board.push(<path key={key} d={d} transform={`translate(${lat.x + (ti * TILE - SQUARE / PITCH / 2) * p} ${lat.y + (tj * TILE - SQUARE / PITCH / 2) * p}) scale(${p})`} />);
+        if (d === undefined) { d = boardTile(lat, ti, tj, gd); cache.set(key, d); }
+        // the tile's squares in device pixels of a cell, from its first cell's corner
+        if (d) board.push(<path key={key} d={d} transform={`translate(${home.x + ti * TILE * p} ${home.y + tj * TILE * p}) scale(${p / gd.pd})`} />);
       }
     }
   }
 
-  // ---- badges on screen: at rest on a cell of PITCH px (the home view, or a zoom by whole doublings) each set on the board ----
-  const settled = !narrow && !moving && Math.abs(lat.p * scale - PITCH) < 0.01;
-  const ax = (lat.x - view.x) * scale, ay = (lat.y - view.y) * scale;
-  const placed = width > 0 ? clusters.map((c) => {
+  // ---- badges on screen: at rest on a cell of gd.p px (the home view, or a zoom by whole doublings) each set on the board ----
+  const settled = !narrow && !moving && Math.abs(lat.p * scale - gd.p) < 0.01;
+  // a cell on screen, and the middle of the squares of the cell (0, 0), in px from the box's corner
+  const cp = lat.p * scale;
+  const ax = (lat.x - view.x) * scale + gd.f * cp, ay = (lat.y - view.y) * scale + gd.f * cp;
+  const placed: Placed[] = width > 0 ? clusters.map((c) => {
     const [ux, uy] = toPx(c.ux, c.uy);
-    const n = c.hosts.length, bw = badgeW(n, narrow), bh = badgeH(n, narrow);
-    const x = settled ? onBoard(ux, n < 100 ? CELLS(n) : 9, ax) : ux, y = settled ? onBoard(uy, CELLS(n), ay) : uy;
+    const n = c.hosts.length, bw = badgeW(n, narrow, gd), bh = badgeH(n, narrow, gd);
+    const x = settled ? onBoard(ux, n < 100 ? CELLS(n) : 9, ax, gd.p) : ux, y = settled ? onBoard(uy, CELLS(n), ay, gd.p) : uy;
     return { c, x, y, bw, bh, hit: Math.max(24, bw + 4, bh + 4) };
   }).filter((p) => p.x >= p.bw / 2 - 2 && p.x <= width - p.bw / 2 + 2 && p.y >= p.bh / 2 - 2 && p.y <= height - p.bh / 2 + 2) : [];
+  if (settled) apart(placed, gd);
+  // zoomed in, a badge shows only where the view is open: on the board (INSET in from the top and sides) and clear of
+  // the key, the view buttons and the two pills. One past them is past the view's edge, a drag away
+  const M = 4;
+  const shown = !zoomed || narrow ? placed : placed.filter((p) => p.x - p.bw / 2 >= INSET + M && p.x + p.bw / 2 <= width - INSET - M && p.y - p.bh / 2 >= INSET + M
+    && !chrome.some(([l, t, rt, b]) => p.x + p.bw / 2 > l - M && p.x - p.bw / 2 < rt + M && p.y + p.bh / 2 > t - M && p.y - p.bh / 2 < b + M));
+
+  // the cells around each badge are land, so none sits on open sea: its block's edge cells, the corners left as the
+  // land has them
+  let rim = "";
+  for (const b of shown) {
+    const bx = (b.x - ax) / cp, by = (b.y - ay) / cp, hx = b.bw / 2 / cp, hy = b.bh / 2 / cp;
+    for (let j = Math.ceil(by - hy - 1); j <= Math.floor(by + hy + 1); j++) for (let i = Math.ceil(bx - hx - 1); i <= Math.floor(bx + hx + 1); i++) {
+      if ((Math.abs(i - bx) > hx) !== (Math.abs(j - by) > hy)) rim += `M${i * gd.pd + gd.od} ${j * gd.pd + gd.od}h${gd.sd}v${gd.sd}h${-gd.sd}z`;
+    }
+  }
 
   // ---- counts ----
   const countries = hosted.size - (hosted.has("") ? 1 : 0);
@@ -550,12 +667,13 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
           {width > 0 && (
             <svg className="cm-land" viewBox={`${view.x} ${view.y} ${view.w} ${view.w * aspect}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false">
               {board}
+              {rim && <path d={rim} transform={`translate(${home.x} ${home.y}) scale(${lat.p / gd.pd})`} />}
             </svg>
           )}
         </div>
         {/* no heading of its own: the counts on the bar say what the map shows, and "Current Fibre providers" below is the one heading */}
         <div className="cm-title">
-          <p className="cm-key" title="Observed by Tensile: whether each registered host answered its latest endpoint check">
+          <p className="cm-key" ref={keyEl} title="Observed by Tensile: whether each registered host answered its latest endpoint check">
             <Eye />
             <span><i className="k-ok" />reachable</span>
             <span><i className="k-hold" />unreachable</span>
@@ -563,7 +681,7 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
           </p>
         </div>
         <ul className="cm-pins" aria-label="Fibre providers by location">
-          {placed.map(({ c, x, y, bw, bh, hit }) => {
+          {shown.map(({ c, x, y, bw, bh, hit }) => {
             const isOpen = open === c.id;
             const place = placeLabel(c);
             const tally = ORDER.map((s) => [s, c.hosts.filter((h) => h.state === s).length] as const).filter(([, n]) => n > 0);
@@ -587,7 +705,7 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
                 <button type="button" className="cm-b" aria-expanded={split ? undefined : isOpen} aria-describedby="cm-pins-keys"
                   aria-label={`${place}${cities.length ? ` (${cities.map(([k, m]) => (m > 1 ? `${k} ${m}` : k)).join(", ")})` : ""}: ${n} Fibre provider${one ? "" : "s"}, ${tally.map(([s, k]) => `${k} ${STATE_WORD[s]}`).join(", ")}${split ? ". Zoom in" : ""}`}
                   style={{ width: hit, height: hit }}
-                  tabIndex={c.id === (placed.some((q) => q.c.id === roving) ? roving : placed[0]?.c.id) ? 0 : -1}
+                  tabIndex={c.id === (shown.some((q) => q.c.id === roving) ? roving : shown[0]?.c.id) ? 0 : -1}
                   onFocus={() => { setRoving(c.id); openNow(c.id); }} onKeyDown={walk} onClick={() => activate(c)}>
                   <span className="cm-badge" data-tone={tone} style={{ width: bw, height: bh }}>{one ? null : n}</span>
                   {unreach > 0 && tone !== "hold" && <i className="cm-pip hold" aria-hidden="true" style={{ left: `calc(50% + ${bw / 2 - 3}px)`, top: `calc(50% - ${bh / 2 + 2}px)` }} />}
@@ -617,7 +735,7 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
           })}
         </ul>
         <span id="cm-pins-keys" className="sr-only">Arrow keys move between places.</span>
-        <div className="cm-tools" role="group" aria-label="Map view">
+        <div className="cm-tools" ref={toolsEl} role="group" aria-label="Map view">
           <button type="button" aria-label="Zoom in" disabled={target.w <= FRAME.w / MAX_ZOOM + 1} onClick={() => zoomAt(2)}>
             <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
           </button>

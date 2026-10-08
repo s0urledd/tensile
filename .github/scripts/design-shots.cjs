@@ -68,9 +68,30 @@ const server = http.createServer((req, res) => {
         await page.mouse.move(b.x + 4, b.y + b.height - 4);
         await page.waitForTimeout(1500);
         await atlas.screenshot({ path: path.join(out, `zoom-${tag}.png`), animations: "disabled" });
+        // back home, then zoomed in once about North America's west, under the key
+        await page.locator('.cm-tools button[aria-label="Whole map"]').click();
+        await page.waitForTimeout(1000);
+        await page.mouse.dblclick(b.x + b.width * 0.22, b.y + b.height * 0.3);
+        await page.mouse.move(b.x + 4, b.y + b.height - 4);
+        await page.waitForTimeout(1500);
+        await atlas.screenshot({ path: path.join(out, `zoomnw-${tag}.png`), animations: "disabled" });
       }
       await ctx.close();
     }
+  }
+  // the board at a display scale of 125% and 150%, where its squares must keep one rhythm
+  for (const scale of [1.25, 1.5]) {
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: scale, colorScheme: "light" });
+    await ctx.addInitScript(() => { try { localStorage.setItem("theme", "light"); } catch {} });
+    const page = await ctx.newPage();
+    await page.goto("http://127.0.0.1:4173/", { waitUntil: "domcontentloaded" });
+    try {
+      await page.waitForFunction(() => document.querySelectorAll(".cm-pin").length >= 5, null, { timeout: 45000 });
+    } catch { notes.push(`${scale}x: fewer than 5 places after 45 s`); }
+    await page.evaluate(() => document.fonts.ready);
+    await page.waitForTimeout(2500);
+    await page.locator(".cm-atlas").first().screenshot({ path: path.join(out, `dpr${Math.round(scale * 100)}-1440-light.png`), animations: "disabled" });
+    await ctx.close();
   }
   await browser.close();
   server.close();

@@ -1072,8 +1072,8 @@ body { background: var(--canvas); }
 @container (max-width: 559px) { .cm-atlas { aspect-ratio: 1 / .56; } }
 .cm-atlas.zoomed { touch-action: none; cursor: grab; }
 .cm-atlas.zoomed:active { cursor: grabbing; }
-/* the board stops 12 px inside the panel's top and sides (between two rows of squares at the home view) and runs
-   under the bar at the foot: a clean cut, no fade */
+/* the board stops 12 px inside the panel's top and sides (HostMap.tsx INSET, between two rows of squares at the home
+   view, where the Arctic's own coast ends inside it) and runs under the bar at the foot: a clean cut, no fade */
 .cm-vp { position: absolute; inset: 0; overflow: hidden; border-radius: var(--r-panel) var(--r-panel) 0 0; }
 .cm-land { display: block; width: 100%; height: 100%; clip-path: inset(12px 12px 0); }
 /* only the land's squares, one shade: no coast, no border, no grid, no country marked */
