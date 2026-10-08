@@ -2137,10 +2137,10 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
 /* the blob page names what the identifier is, and how many settlements carry it when more than this one */
 .pb-addr .bd-idl { flex: none; font-size: var(--t-small); font-weight: 500; color: var(--text-3); }
 .pb-addr .bd-many { flex: none; font-size: var(--t-small); color: var(--accent-ink); white-space: nowrap; }
-.pb-addr .copy { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 24px; margin: 0; padding: 0 9px 0 7px; border-radius: 999px; border: 1px solid var(--border); background: var(--paper); box-shadow: var(--shadow-sm); color: var(--text-2); font: 500 var(--t-small)/1 var(--sans); text-transform: capitalize; transition: color var(--dur), border-color var(--dur); }
-.pb-addr .copy::before { content: ""; width: 13px; height: 13px; background: var(--text-3); -webkit-mask: var(--copy-mark) center / contain no-repeat; mask: var(--copy-mark) center / contain no-repeat; }
-.pb-addr .copy:hover { color: var(--accent-ink); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
-.pb-addr .copy:hover::before { background: var(--accent-ink); }
+.pb-addr .copy, .bd-err-a .copy { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 24px; margin: 0; padding: 0 9px 0 7px; border-radius: 999px; border: 1px solid var(--border); background: var(--paper); box-shadow: var(--shadow-sm); color: var(--text-2); font: 500 var(--t-small)/1 var(--sans); text-transform: capitalize; transition: color var(--dur), border-color var(--dur); }
+.pb-addr .copy::before, .bd-err-a .copy::before { content: ""; width: 13px; height: 13px; background: var(--text-3); -webkit-mask: var(--copy-mark) center / contain no-repeat; mask: var(--copy-mark) center / contain no-repeat; }
+.pb-addr .copy:hover, .bd-err-a .copy:hover { color: var(--accent-ink); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.pb-addr .copy:hover::before, .bd-err-a .copy:hover::before { background: var(--accent-ink); }
 /* When it last and first posted, and where: all-time facts, in a light frame of their own with
    a hairline between them, quieter than the table (no paper, no shadow). A label column of its own, so
    every value starts at one x, on a wide screen and on a phone. The labels sit as far in as the table's,
