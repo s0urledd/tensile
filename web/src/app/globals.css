@@ -1013,9 +1013,8 @@ body { background: var(--canvas); }
 .deck {
   /* the sea is the panel; land and badges are tokens so the two themes are a handful of lines */
   --cm-land: #e4e8ea;
-  --cm-land-on: #bcdfe3;
-  --cm-land-hi: #97ccd2;
-  --cm-inset-edge: rgb(var(--ink) / .11);
+  --cm-land-on: #cfe6e8;
+  --cm-land-hi: #a8d3d8;
   --cm-halo: var(--paper);
   --cm-badge: var(--accent);
   --cm-badge-ink: #ffffff;
@@ -1046,9 +1045,8 @@ body { background: var(--canvas); }
 /* unlit, unlike the other pages' chain panels: the map's sea is the panel's flat paper */
 :root[data-theme="dark"] .deck {
   --cm-land: #1f272c;
-  --cm-land-on: #1b4a51;
-  --cm-land-hi: #23646d;
-  --cm-inset-edge: rgb(255 255 255 / .1);
+  --cm-land-on: #1c3b41;
+  --cm-land-hi: #22575f;
   --cm-badge: #33b3bf;
   --cm-badge-ink: #04171a;
   --cm-badge-hold-ink: #1f1500;
@@ -1084,22 +1082,25 @@ body { background: var(--canvas); }
 /* only the land: no grid and no borders, a hosted country set off by its tint alone. Each country is stroked in its
    own fill, so the seams where two outlines meet do not show as hairlines */
 .cm-land path, .cm-inset path { fill: var(--cm-land); stroke: var(--cm-land); stroke-width: .6; stroke-linejoin: round; vector-effect: non-scaling-stroke; transition: fill 220ms ease-out, stroke 220ms ease-out; }
-.cm-land path.on, .cm-inset path { fill: var(--cm-land-on); stroke: var(--cm-land-on); }
+.cm-land path.on, .cm-inset path.on { fill: var(--cm-land-on); stroke: var(--cm-land-on); }
 .cm-land path.hi, .cm-inset path.hi { fill: var(--cm-land-hi); stroke: var(--cm-land-hi); }
 
-/* a small hosted country's detail window at the east edge: its true outline in the hosted tint on the panel's paper,
-   one hairline round it and its name under it; its badges as the world's. It stands only at the home view */
+/* a small hosted country's detail window at the east edge: the same map closer, its 1:10m coast and its neighbours'
+   in the same tones, set on the sea with no frame (its land ends at its sides, as the world's ends at the box's);
+   its hosts' badge as the world's in the top-right corner, its name in the bottom-left. It stands only at the home
+   view */
 .cm-insets { position: absolute; inset: 0; z-index: 4; pointer-events: none; transition: opacity 180ms ease-out, visibility 180ms; }
 .cm-insets.off { opacity: 0; visibility: hidden; }
 .cm-inset { position: absolute; pointer-events: auto; cursor: pointer; transition: opacity 180ms ease-out; }
 .cm-atlas.has-open .cm-inset:not(.open) { opacity: .42; }
-.cm-inset-map { position: relative; border-radius: 12px; background: var(--paper); }
-.cm-inset-map::after { content: ""; position: absolute; inset: 0; border: 1px solid var(--cm-inset-edge); border-radius: inherit; pointer-events: none; }
-.cm-inset-map svg { position: absolute; left: 0; top: 0; display: block; overflow: hidden; }
-.cm-inset-b { position: absolute; z-index: 1; transform: translate(-50%, -50%); }
+.cm-inset svg { position: absolute; left: 0; top: 0; display: block; overflow: hidden; }
+.cm-inset-b { position: absolute; right: 8px; top: 8px; z-index: 1; }
 .cm-inset-b.one .cm-badge { border-radius: 3px; }
 .cm-inset.open .cm-badge { transform: scale(1.1); outline-color: var(--accent); }
-.cm-inset-name { display: block; margin-top: 6px; padding-left: 2px; font-size: var(--t-tiny); line-height: 14px; color: var(--text-3); white-space: nowrap; }
+.cm-inset-name {
+  position: absolute; left: 8px; bottom: 8px; max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis;
+  font-size: var(--t-tiny); line-height: 14px; color: var(--text-3); white-space: nowrap;
+}
 
 /* the map's name and the key of Tensile's check, in its top-left corner; the view buttons in the other */
 .cm-title { position: absolute; left: 24px; top: 18px; z-index: 6; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px; pointer-events: none; }
@@ -1109,10 +1110,10 @@ body { background: var(--canvas); }
 .cm-key .k-ok { width: 8px; height: 8px; border-radius: 2px; background: var(--cm-badge); }
 .cm-key .k-hold { width: 7px; height: 7px; border-radius: 50%; background: var(--hold); vertical-align: .5px; }
 .cm-key .k-none { width: 8px; height: 8px; border-radius: 2px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+/* the map's UI on solid paper with one hairline, flat as the map: no blur, no shadow */
 .cm-tools {
-  position: absolute; right: 16px; top: 14px; z-index: 6; display: inline-flex; gap: 2px; padding: 3px; border-radius: 999px;
-  background: color-mix(in srgb, var(--paper) 84%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
-  box-shadow: var(--shadow-sm), 0 0 0 1px var(--border);
+  position: absolute; right: 16px; top: 14px; z-index: 6; display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px;
+  background: var(--paper); border: 1px solid var(--border);
 }
 .cm-tools button { display: grid; place-items: center; width: 28px; height: 26px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--text-2); cursor: pointer; transition: background var(--dur), color var(--dur), box-shadow var(--dur); }
 .cm-tools button:hover:not(:disabled) { background: var(--seg-on); color: var(--seg-on-ink); box-shadow: var(--seg-on-shadow); }
@@ -1149,11 +1150,10 @@ body { background: var(--canvas); }
 .cm-pin.one.live .cm-badge::after { border-radius: 5px; }
 @keyframes cm-pulse { 0% { transform: scale(1); opacity: .55; } 100% { transform: scale(2); opacity: 0; } }
 
-/* a place's hosts: the charts' tooltip surface */
+/* a place's hosts: solid paper and one hairline, as the map's pills */
 .cm-pop {
   position: absolute; display: flex; flex-direction: column; padding: 12px 14px 10px; border-radius: 12px; text-align: left; font-size: var(--t-cell); cursor: auto;
-  background: color-mix(in srgb, var(--paper) 94%, transparent); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
-  border: 1px solid var(--border); box-shadow: var(--shadow-pop); animation: cm-in var(--dur) ease-out;
+  background: var(--paper); border: 1px solid var(--border); animation: cm-in var(--dur) ease-out;
 }
 .cm-pop-h { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 0 0 8px; }
 .cm-pop-h b { font-weight: 600; color: var(--text); }
@@ -1177,12 +1177,7 @@ body { background: var(--canvas); }
   position: absolute; left: 24px; right: 24px; bottom: 0; z-index: 4; transform: translateY(50%);
   display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; column-gap: 12px; height: 36px; pointer-events: none;
 }
-.cm-ev, .cm-counts {
-  height: 36px; border-radius: 999px; pointer-events: auto;
-  background: color-mix(in srgb, var(--paper) 84%, transparent);
-  -webkit-backdrop-filter: blur(14px) saturate(1.3); backdrop-filter: blur(14px) saturate(1.3);
-  border: 1px solid var(--border); box-shadow: var(--shadow-pop);
-}
+.cm-ev, .cm-counts { height: 36px; border-radius: 999px; pointer-events: auto; background: var(--paper); border: 1px solid var(--border); }
 .cm-ev { grid-column: 1; justify-self: start; display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; margin: 0; padding: 0 14px 0 13px; font-size: 12.5px; color: var(--text-2); animation: cm-in .35s ease-out; }
 .cm-ev-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-tint); }
 .cm-ev-dot[data-tone="hold"] { background: var(--hold); box-shadow: 0 0 0 3px var(--hold-tint); }
@@ -1457,11 +1452,9 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .cm-bar {
     position: relative; left: auto; right: auto; bottom: auto; transform: none; height: auto; pointer-events: auto;
     display: flex; flex-direction: column-reverse; align-items: stretch; margin: -6px 12px 0; padding: 0; border-radius: 14px;
-    background: color-mix(in srgb, var(--paper) 84%, transparent);
-    -webkit-backdrop-filter: blur(14px) saturate(1.3); backdrop-filter: blur(14px) saturate(1.3);
-    border: 1px solid var(--border); box-shadow: var(--shadow-pop);
+    background: var(--paper); border: 1px solid var(--border);
   }
-  .cm-ev, .cm-counts { height: auto; border: 0; border-radius: 0; background: none; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .cm-ev, .cm-counts { height: auto; border: 0; border-radius: 0; background: none; }
   /* the event wraps to two lines rather than stopping mid-word, in a line that keeps room for two, so the rotation never moves the page */
   .cm-ev { display: flex; align-items: center; max-width: none; height: 56px; padding: 0 12px; border-top: 1px solid var(--border); font-size: var(--t-small); }
   .cm-ev-t { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; white-space: normal; line-height: 18px; }

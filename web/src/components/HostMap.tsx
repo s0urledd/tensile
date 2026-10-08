@@ -4,7 +4,7 @@ import Link from "next/link";
 import { type Validator, API_BASE, ago, utcWord, int } from "@/lib/api";
 import { validatorHref } from "@/lib/addr";
 import type { Hosting } from "@/lib/hosting";
-import { FRAME, COUNTRIES, TINY, project, countryPoint } from "@/lib/map/project";
+import { type Coast, FRAME, COUNTRIES, TINY, project, countryPoint, loadCoast } from "@/lib/map/project";
 import { countryName } from "@/components/Flag";
 import { Eye } from "@/components/Metrics";
 import { type EndpointState, endpointState, readiness } from "@/components/Readiness";
@@ -15,8 +15,9 @@ import { type EndpointState, endpointState, readiness } from "@/components/Readi
  * one, by its country's label point, over Natural Earth country outlines
  * (Equal Earth) drawn as calm solid land. A country with a host is tinted,
  * always at its true size; one too small to show around its badge also gets
- * a detail window at the map's east edge, its true outline at a larger scale
- * with its own badges and its name; the open place's countries are lit.
+ * a detail window at the map's east edge: that piece of the map at a scale
+ * where the country shows, its 1:10m coast and its neighbours', with its
+ * hosts' badge and its name. The open place's countries are lit.
  *
  * Every place is a rounded square in the accent carrying its count; a lone
  * host is a small square with no figure. Hosts close together on screen share
@@ -40,10 +41,14 @@ import { type EndpointState, endpointState, readiness } from "@/components/Readi
 type Host = { v: Validator; state: EndpointState; share: number; cc: string; city: string; loc: string; lon: number; lat: number; ux: number; uy: number; provider: string };
 type Cluster = { id: string; hosts: Host[]; ux: number; uy: number; locs: number; ccs: string[] };
 /**
- * a small hosted country's detail window at the home view: its outline as drawn, its box in px, the outline's scale
- * (px per unit of its own shape) and middle, and its places, each at px from the window's middle
+ * a small hosted country's detail window at the home view: its box in px; its land, each country's outline in the
+ * window's own units (a coast patch's grid, else map units), the country itself last; the scale (px per unit), the
+ * point drawn at the window's middle shifted by dx, dy px; and the country's hosts, as one badge
  */
-type Inset = { cc: string; path: string; x: number; y: number; w: number; h: number; k: number; cx: number; cy: number; places: { c: Cluster; px: number; py: number }[] };
+type Inset = {
+  cc: string; x: number; y: number; w: number; h: number; land: [string, string][]; k: number; cx: number; cy: number; dx: number; dy: number;
+  n: number; unreach: number; none: number;
+};
 /** the visible part of the map, in map units: top-left corner and width (height follows the box) */
 type View = { x: number; y: number; w: number };
 
@@ -168,11 +173,13 @@ function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
 
 /**
  * A hosted country too small to show around its badge would vanish under it. On the world it stays at its
- * true size, tinted as every other hosted country; beside the world it gets a detail window: its own
- * outline at a scale where it shows, flat in the hosted tint, with its own badges and its name under it.
- * Where a larger hosted country beside it already shows the place blue (Slovenia, the Baltics, South Korea
- * beside Japan), it needs none. Which countries are small is decided at the home view, and the windows
- * stand at the home view only: a zoom hides them.
+ * true size, tinted as every other hosted country; beside the world it gets a detail window: the same
+ * map at a scale where the country shows, its coast and its neighbours' (a country of TINY from its
+ * 1:10m coast patch, a larger one from the world's own outlines), flat in the same tones, with no frame;
+ * its hosts' badge in the window's top-right corner and its name in the bottom-left, clear of its
+ * outline. Where a larger hosted country beside it already shows the place blue (Slovenia, the Baltics,
+ * South Korea beside Japan), it needs none. Which countries are small is decided at the home view, and
+ * the windows stand at the home view only: a zoom hides them.
  */
 /** px at the home view: a country at least this wide shows around its badge; a smaller one is hidden by it */
 const SHOWN = 30, SHOWN_NARROW = 24;
@@ -181,20 +188,24 @@ const NEAR = 16, NEAR_NARROW = 12;
 /** px: a neighbour's piece smaller than this does not count as beside (India's Andaman and Nicobar Islands beside Singapore) */
 const RING = 8;
 /**
- * a detail window's size in px (wide box, narrow box); the room its outline keeps from its sides and from its top
- * and foot; the line under it for the name, and the gap to the next window. The windows stand in one column at the
- * box's east edge, under the view buttons, each as level with its place as the others allow
+ * a detail window's size in px (wide box, narrow box); the room its country's outline keeps from its sides and from
+ * its top and foot; the badge's and the name's inset from the corners, the name's line, and the gap to the next
+ * window. The windows stand in one column at the box's east edge, under the view buttons, each as level with its
+ * place as the others allow
  */
-const INSET_W = 112, INSET_H = 88, INSET_W_NARROW = 84, INSET_H_NARROW = 64;
-const INSET_PAD_X = 20, INSET_PAD_Y = 14, INSET_PAD_NARROW = 10;
-const INSET_NAME = 20, INSET_GAP = 12;
+const INSET_W = 120, INSET_H = 96, INSET_W_NARROW = 84, INSET_H_NARROW = 64;
+const INSET_PAD_X = 16, INSET_PAD_Y = 12, INSET_PAD_NARROW = 8;
+const INSET_EDGE = 8, INSET_LINE = 14, INSET_GAP = 16;
+/** the country's outline, if it would meet the badge or the name: smaller, and moved by these px, first that clears */
+const INSET_FITS = [1, 0.92, 0.84, 0.76];
+const INSET_SHIFTS: [number, number][] = [[0, 0], [-4, 0], [0, 4], [4, 0], [0, -4], [-4, 4], [4, -4], [-8, 0], [0, 8], [8, 0], [0, -8]];
 /** px: the column's room from the box's east edge (the view buttons' own), and from the top (under the buttons) */
 const INSET_SIDE = 16, INSET_TOP = 62, INSET_TOP_NARROW = 10;
 /**
  * a country's own shape: its middle and larger side in map units, its path on TINY's grid where e is 100 (unit) or
- * in map units, and its bounds in the path's own units
+ * in map units
  */
-type Own = { x: number; y: number; e: number; d: string; unit: boolean; box: [number, number, number, number] };
+type Own = { x: number; y: number; e: number; d: string; unit: boolean };
 /** an outline's rings as absolute points, from its path (absolute M and L, relative m and l, z) */
 function ringsOf(d: string): number[][] {
   let x = 0, y = 0, sx = 0, sy = 0, cmd = "M";
@@ -212,30 +223,24 @@ function ringsOf(d: string): number[][] {
   }
   return rings;
 }
-/**
- * an outline as a window draws it: each ring's corners cut twice (Chaikin), so the few straight sides a small
- * country's outline keeps read as a coast at the window's scale; it moves no point by more than a quarter of a side
- */
-function smooth(d: string): string {
-  const f = (v: number) => String(+v.toFixed(2));
-  return ringsOf(d).map((r) => {
-    let p = r;
-    for (let n = 0; n < 2 && p.length >= 6; n++) {
-      const q: number[] = [];
-      for (let i = 0; i < p.length; i += 2) {
-        const j = (i + 2) % p.length;
-        q.push(0.75 * p[i] + 0.25 * p[j], 0.75 * p[i + 1] + 0.25 * p[j + 1], 0.25 * p[i] + 0.75 * p[j], 0.25 * p[i + 1] + 0.75 * p[j + 1]);
-      }
-      p = q;
-    }
-    return `M${f(p[0])} ${f(p[1])}L${p.slice(2).map(f).join(" ")}Z`;
-  }).join("");
-}
 const bounds = (p: number[]): [number, number, number, number] => {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (let i = 0; i < p.length; i += 2) { x0 = Math.min(x0, p[i]); y0 = Math.min(y0, p[i + 1]); x1 = Math.max(x1, p[i]); y1 = Math.max(y1, p[i + 1]); }
   return [x0, y0, x1, y1];
 };
+const area = (p: number[]) => {
+  let a = 0;
+  for (let i = 0, j = p.length - 2; i < p.length; j = i, i += 2) a += (p[j] + p[i]) * (p[j + 1] - p[i + 1]);
+  return Math.abs(a / 2);
+};
+/** an outline's points without its specks: the rings of at least 5% of its largest one's area (as TINY keeps) */
+function mainPoints(d: string): number[] {
+  const rs = ringsOf(d), as = rs.map(area), big = Math.max(0, ...as);
+  return rs.filter((_, i) => as[i] >= big * 0.05).flat();
+}
+/** the world's outlines with their bounds, for a window drawn from them; read when the first one is */
+let worldBoxes: { cc: string; d: string; box: [number, number, number, number] }[] | null = null;
+const worldOutlines = () => (worldBoxes ??= COUNTRIES.map(([cc, d]) => ({ cc, d, box: bounds(ringsOf(d).flat()) })));
 /**
  * each country's size and its rings (each one's size and points) in map units, and its own shape: its 1:10m
  * outline from TINY, else its largest ring, so far islands (the Azores, Marion Island) neither move its middle
@@ -255,28 +260,61 @@ const SHAPES: Map<string, Shape> = (() => {
     const rs = rings.map((pts) => ({ ...extent(pts), pts }));
     const big = rs.reduce((p, q) => (q.e > p.e ? q : p)), tiny = TINY[cc];
     const own: Own = tiny
-      ? { x: tiny[0], y: tiny[1], e: tiny[2], d: tiny[3], unit: true, box: bounds(ringsOf(tiny[3]).flat()) }
-      : { x: big.x, y: big.y, e: big.e, d: `M${big.pts.slice(0, 2).join(" ")}L${big.pts.slice(2).join(" ")}Z`, unit: false, box: bounds(big.pts) };
+      ? { x: tiny[0], y: tiny[1], e: tiny[2], d: tiny[3], unit: true }
+      : { x: big.x, y: big.y, e: big.e, d: `M${big.pts.slice(0, 2).join(" ")}L${big.pts.slice(2).join(" ")}Z`, unit: false };
     out.set(cc, { e: extent(rings.flat()).e, rings: rs.map(({ e, pts }) => ({ e, pts })), own });
   }
   return out;
 })();
 
 /**
+ * Where a window draws its country (pts, its outline's points in the window's units; box, their bounds): the scale
+ * that fits the box in the window less its padding, from the box's middle shifted by dx, dy px, the largest and
+ * least moved that keeps every point inside the window and clear of the badge in the top-right corner (badge: its
+ * width and height) and of the name in the bottom-left (name: its width); within a coast patch's reach (units from
+ * the patch's middle, across and down), so the window never shows past the patch's land. Where none clears, the one
+ * that leaves the fewest points in the way.
+ */
+function placeIn(pts: number[], box: [number, number, number, number], w: number, h: number, padX: number, padY: number,
+  badge: [number, number], name: number, reach: [number, number] | null): { k: number; cx: number; cy: number; dx: number; dy: number } {
+  const [x0, y0, x1, y1] = box, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const k0 = Math.min((w - 2 * padX) / Math.max(1e-6, x1 - x0), (h - 2 * padY) / Math.max(1e-6, y1 - y0));
+  // the corners' rooms, in px from the window's top-left: the badge's right and top edges, the name's left and foot
+  const bx = w - INSET_EDGE - badge[0] - 4, by = INSET_EDGE + badge[1] + 4;
+  const nx = INSET_EDGE + name + 4, ny = h - INSET_EDGE - INSET_LINE - 4;
+  let best = { k: k0, cx, cy, dx: 0, dy: 0 }, fewest = Infinity;
+  for (const f of INSET_FITS) {
+    const k = k0 * f;
+    for (const [dx, dy] of INSET_SHIFTS) {
+      if (reach && (Math.abs(cx - dx / k) + w / 2 / k > reach[0] || Math.abs(cy - dy / k) + h / 2 / k > reach[1])) continue;
+      let hit = 0;
+      for (let i = 0; i < pts.length; i += 2) {
+        const X = w / 2 + dx + (pts[i] - cx) * k, Y = h / 2 + dy + (pts[i + 1] - cy) * k;
+        if (X < 4 || X > w - 4 || Y < 4 || Y > h - 4 || (X > bx && Y < by) || (X < nx && Y > ny)) hit++;
+      }
+      if (!hit) return { k, cx, cy, dx, dy };
+      if (hit < fewest) { fewest = hit; best = { k, cx, cy, dx, dy }; }
+    }
+  }
+  return best;
+}
+
+/**
  * The detail windows of the small hosted countries at the home view (view, scale s px per unit), in one column at
  * the box's east edge: each as level with its own places as the others allow, from under the view buttons to
- * above the bar. A window that would meet a badge of the world is left out.
+ * above the bar. A window that would meet a badge of the world is left out; one of a TINY country waits for the
+ * coast patches (coast).
  */
 function layInsets(small: { cc: string; own: Own }[], hosts: Host[], home: View, s: number, width: number, height: number,
-  bar: [number, number, number, number] | null, badges: Cluster[], narrow: boolean): Inset[] {
+  bar: [number, number, number, number] | null, badges: Cluster[], narrow: boolean, coast: Coast | null): Inset[] {
   if (!small.length || !s) return [];
   const w = narrow ? INSET_W_NARROW : INSET_W, h = narrow ? INSET_H_NARROW : INSET_H;
   const px = narrow ? INSET_PAD_NARROW : INSET_PAD_X, py = narrow ? INSET_PAD_NARROW : INSET_PAD_Y;
-  const step = h + INSET_NAME + INSET_GAP, x = width - INSET_SIDE - w;
-  const top = narrow ? INSET_TOP_NARROW : INSET_TOP, foot = (bar ? bar[1] : height) - 10 - INSET_NAME;
+  const step = h + INSET_GAP, x = width - INSET_SIDE - w;
+  const top = narrow ? INSET_TOP_NARROW : INSET_TOP, foot = (bar ? bar[1] : height) - 10;
   const want = small.flatMap(({ cc, own }) => {
     const hs = hosts.filter((q) => q.cc === cc);
-    if (!hs.length) return [];
+    if (!hs.length || (own.unit && !coast)) return [];
     const uy = hs.reduce((t, q) => t + q.uy, 0) / hs.length;
     return [{ cc, own, hs, y: (uy - home.y) * s - h / 2 }];
   }).sort((a, b) => a.y - b.y);
@@ -303,18 +341,23 @@ function layInsets(small: { cc: string; own: Own }[], hosts: Host[], home: View,
   return want.flatMap(({ cc, own, hs }, i) => {
     const y = ys[i];
     if (y < top - 0.5) return [];
-    if (rooms.some(([bx, by, d]) => bx < x + w && bx + d > x && by < y + h + INSET_NAME && by + d > y)) return [];
-    const [x0, y0, x1, y1] = own.box;
-    const k = Math.min((w - 2 * px) / Math.max(1e-6, x1 - x0), (h - 2 * py) / Math.max(1e-6, y1 - y0));
-    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
-    // a map unit in the window: the outline's own units are TINY's grid (e is 100) or map units
-    const u = own.unit ? (k * 100) / own.e : k;
-    const toOwn = (ux: number, uy: number): [number, number] => (own.unit ? [((ux - own.x) * 100) / own.e, ((uy - own.y) * 100) / own.e] : [ux, uy]);
-    const places = cluster(hs, u, narrow).map((c) => {
-      const [ox, oy] = toOwn(c.ux, c.uy), r = drawn(c.hosts.length, narrow) / 2 + 4;
-      return { c, px: Math.max(-w / 2 + r, Math.min(w / 2 - r, (ox - cx) * k)), py: Math.max(-h / 2 + r, Math.min(h / 2 - r, (oy - cy) * k)) };
-    });
-    return [{ cc, path: smooth(own.d), x, y, w, h, k, cx, cy, places }];
+    if (rooms.some(([bx, by, d]) => bx < x + w && bx + d > x && by < y + h && by + d > y)) return [];
+    const n = hs.length, unreach = hs.filter((q) => q.state === "unreachable").length, none = hs.filter((q) => q.state === "none").length;
+    // the land: a TINY country's coast patch, else (no patch) its own 1:10m outline alone; a larger one the world's
+    // outlines round it, in map units
+    const patch = own.unit ? coast?.patches[cc] : undefined;
+    const mine = patch?.find(([c]) => c === cc)?.[1] ?? own.d;
+    const pts = mainPoints(mine);
+    if (!pts.length) return [];
+    const name = Math.min(w - 2 * INSET_EDGE, countryName(cc).length * 6.2);
+    const at = placeIn(pts, bounds(pts), w, h, px, py, [badgeW(n, narrow), badgeH(n, narrow)], name, patch && coast ? [coast.hx, coast.hy] : null);
+    let land: [string, string][] = patch ?? [[cc, own.d]];
+    if (!own.unit) {
+      const vx = at.cx - at.dx / at.k, vy = at.cy - at.dy / at.k, hw = w / 2 / at.k, hh = h / 2 / at.k;
+      land = worldOutlines().filter(({ box: [x0, y0, x1, y1] }) => x0 < vx + hw && x1 > vx - hw && y0 < vy + hh && y1 > vy - hh)
+        .sort((a, b) => Number(a.cc === cc) - Number(b.cc === cc)).map((o): [string, string] => [o.cc, o.d]);
+    }
+    return [{ cc, x, y, w, h, land, ...at, n, unreach, none }];
   });
 }
 
@@ -636,9 +679,18 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
       && !others.some((o) => o.e * sHome >= shown && o.rings.some((r) => r.e * sHome >= RING && r.d * sHome < near)))
       .sort((a, b) => b.own.e - a.own.e);
   }, [beside, sHome, narrow]);
+  // the coast patches of the TINY ones' windows, fetched once one needs them; failing, those windows draw the country alone
+  const needCoast = small.some((q) => q.own.unit);
+  const [coast, setCoast] = useState<Coast | null>(null);
+  useEffect(() => {
+    if (!needCoast || coast) return;
+    let dead = false;
+    loadCoast().then((c) => { if (!dead) setCoast(c); }, () => { if (!dead) setCoast({ g: 100, hx: 0, hy: 0, patches: {} }); });
+    return () => { dead = true; };
+  }, [needCoast, coast]);
   // their detail windows, at the home view
-  const insets = useMemo(() => layInsets(small, hosts, home, sHome, width, height, barAt, homeClusters, narrow),
-    [small, hosts, home, sHome, width, height, barAt, homeClusters, narrow]);
+  const insets = useMemo(() => layInsets(small, hosts, home, sHome, width, height, barAt, homeClusters, narrow, coast),
+    [small, hosts, home, sHome, width, height, barAt, homeClusters, narrow, coast]);
   /** the world's badge that holds most of a country's hosts: a window opens that one */
   const worldOf = (cc: string) => {
     let best: Cluster | undefined, most = 0;
@@ -681,25 +733,20 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
           <div className={`cm-insets${zoomed || moving ? " off" : ""}`} aria-hidden="true">
             {insets.map((d) => {
               const world = worldOf(d.cc);
+              const bw = badgeW(d.n, narrow), bh = badgeH(d.n, narrow);
+              const tone = d.unreach === d.n ? "hold" : d.none === d.n ? "none" : "ok";
               return (
-                <div key={d.cc} className={`cm-inset${world && open === world.id ? " open" : ""}`} style={{ left: d.x, top: d.y, width: d.w }}
+                <div key={d.cc} className={`cm-inset${world && open === world.id ? " open" : ""}`} style={{ left: d.x, top: d.y, width: d.w, height: d.h }}
                   onMouseEnter={() => world && openNow(world.id)} onMouseLeave={closeSoon} onClick={() => world && openNow(world.id)}>
-                  <div className="cm-inset-map" style={{ height: d.h }}>
-                    <svg viewBox={`${-d.w / 2} ${-d.h / 2} ${d.w} ${d.h}`} width={d.w} height={d.h} focusable="false">
-                      <path d={d.path} className={openCcs.has(d.cc) ? "hi" : undefined} transform={`scale(${d.k}) translate(${-d.cx} ${-d.cy})`} />
-                    </svg>
-                    {d.places.map(({ c, px, py }) => {
-                      const n = c.hosts.length, bw = badgeW(n, narrow), bh = badgeH(n, narrow);
-                      const unreach = c.hosts.filter((h) => h.state === "unreachable").length, none = c.hosts.filter((h) => h.state === "none").length;
-                      const tone = unreach === n ? "hold" : none === n ? "none" : "ok";
-                      return (
-                        <span key={c.id} className={`cm-inset-b${n === 1 ? " one" : ""}`} style={{ left: d.w / 2 + px, top: d.h / 2 + py, width: bw, height: bh }}>
-                          <span className="cm-badge" data-tone={tone} style={{ width: bw, height: bh }}>{n === 1 ? null : n}</span>
-                          {unreach > 0 && tone !== "hold" && <i className="cm-pip hold" style={{ left: bw - 3, top: -2 }} />}
-                        </span>
-                      );
-                    })}
-                  </div>
+                  <svg viewBox={`${-d.w / 2} ${-d.h / 2} ${d.w} ${d.h}`} width={d.w} height={d.h} focusable="false">
+                    <g transform={`translate(${d.dx} ${d.dy}) scale(${d.k}) translate(${-d.cx} ${-d.cy})`}>
+                      {d.land.map(([cc, p], i) => <path key={cc || i} d={p} className={openCcs.has(cc) ? "hi" : hosted.has(cc) ? "on" : undefined} />)}
+                    </g>
+                  </svg>
+                  <span className={`cm-inset-b${d.n === 1 ? " one" : ""}`}>
+                    <span className="cm-badge" data-tone={tone} style={{ width: bw, height: bh }}>{d.n === 1 ? null : d.n}</span>
+                    {d.unreach > 0 && tone !== "hold" && <i className="cm-pip hold" style={{ left: bw - 3, top: -2 }} />}
+                  </span>
                   <span className="cm-inset-name">{countryName(d.cc)}</span>
                 </div>
               );
