@@ -1,7 +1,7 @@
 "use client";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { API_BASE, useApi, notFound, badRequest, throttled, hhmm, ago, type Blob, type Payment, type PublisherNamespace, type RecentBlob, type Tip, type Window, blobFee, bytes, int, nsDisplay, span, tia, utcWord, TIP_MS } from "@/lib/api";
+import { API_BASE, useApi, notFound, badRequest, throttled, hhmm, ago, shortMid, type Blob, type Payment, type PublisherNamespace, type RecentBlob, type Tip, type Window, blobFee, bytes, int, nsDisplay, span, tia, utcWord, TIP_MS } from "@/lib/api";
 import type { Params, PublisherWithQueue, PublisherWithdrawals } from "@/lib/withdrawals";
 import { lane } from "@/lib/status";
 import Ledger, { useLedger, LedgerHead, MoveRow, Signed, decimals, type Move, type Moves, type Placed } from "@/components/Ledger";
@@ -14,6 +14,7 @@ import { nsHex, NsName, NS_ICON } from "@/components/Namespace";
 import { Eye } from "@/components/Metrics";
 import { age, monthDayTime } from "@/components/BlobsDeck";
 import Warn from "@/components/Warn";
+import { publisherAddr } from "@/lib/sitefind";
 
 /** the publisher's figures over one of the periods, with the namespaces of its settlements in it (the most used first, at most 10) */
 type Span = {
@@ -70,7 +71,7 @@ function useFirstBlob(addr: string, total: number | null): Blob | null | undefin
     (async () => {
       for (let t = total!, i = 0; i < 3; i++) {
         if (t - 1 > MAX_OFFSET) return null;
-        const j = await blobsAt(`publisher=${addr}&limit=1&offset=${t - 1}`);
+        const j = await blobsAt(`publisher=${encodeURIComponent(addr)}&limit=1&offset=${t - 1}`);
         if (j.total === t) return j.blobs[0] ?? null;
         t = j.total;
       }
@@ -241,7 +242,7 @@ function Publisher({ addr }: { addr: string }) {
   const setNs = useCallback((v: string) => setView({ ns: v }), [setView]);
 
   // the whole record: every figure on this page is the account's own over all of it, but its escrow, which is now
-  const pub = useApi<Detail>(`/v1/publishers/${addr}?window=all`);
+  const pub = useApi<Detail>(`/v1/publishers/${encodeURIComponent(addr)}?window=all`);
   // the price of a blob, for the low-escrow warning: the parameters' own 5-minute stream (PublishersTop's too), asked
   // again soon after a failure, so one failed first answer does not lose the warning for the life of the page
   const pf = useApi<Params>("/v1/params", 300000).data?.price_formula;
@@ -261,7 +262,7 @@ function Publisher({ addr }: { addr: string }) {
   const statement = wholeMoney && (!posted || kind === "escrow");
   const offset = (Math.min(page, MAX_PAGE) - 1) * SIZE;
   const live = page === 1;
-  const blobsPath = useCallback((o: number) => `/v1/blobs?limit=${SIZE}&offset=${o}&publisher=${addr}${ns ? `&namespace=${encodeURIComponent(ns)}` : ""}`, [addr, ns]);
+  const blobsPath = useCallback((o: number) => `/v1/blobs?limit=${SIZE}&offset=${o}&publisher=${encodeURIComponent(addr)}${ns ? `&namespace=${encodeURIComponent(ns)}` : ""}`, [addr, ns]);
   const feed = useLedger(blobsPath(offset), live && !statement, tip.data?.height, skew);
 
   // Under All, each page of blobs takes the movements of its own stretch of time (placeMoves), by the rows the list
@@ -281,7 +282,7 @@ function Publisher({ addr }: { addr: string }) {
   const apiNs = allSpan?.namespaces;
   const apiRead = pub.data?.publisher.readings ?? null;
   const ask = !!pub.data && (firstAt === undefined || apiNs === undefined || !apiRead);
-  const head = useApi<{ blobs: Blob[]; total: number }>(ask ? `/v1/blobs?publisher=${addr}&limit=${AT_ONCE}` : null, 60000);
+  const head = useApi<{ blobs: Blob[]; total: number }>(ask ? `/v1/blobs?publisher=${encodeURIComponent(addr)}&limit=${AT_ONCE}` : null, 60000);
   const whole = head.data && head.data.blobs.length >= head.data.total ? head.data.blobs : null;
   const oldest = useFirstBlob(addr, firstAt === undefined && head.data && !whole ? head.data.total : null);
   const seen = apiNs === undefined && head.data && !whole ? [...new Set(head.data.blobs.map((b) => b.namespace))] : null;
@@ -507,8 +508,11 @@ function Publisher({ addr }: { addr: string }) {
 }
 
 function Page() {
-  const addr = (useSearchParams().get("addr") ?? "").trim().toLowerCase();
-  if (!addr) return <p className="notice err">No publisher address given.</p>;
+  const asked = (useSearchParams().get("addr") ?? "").trim();
+  if (!asked) return <p className="notice err">No publisher address given.</p>;
+  // a value that is no account address never reaches the API's path
+  const addr = publisherAddr(asked);
+  if (!addr) return <p className="notice"><span className="mono">{shortMid(asked, 16, 6)}</span> is not a publisher account address: one is a <code>celestia1…</code> address.</p>;
   return <Publisher key={addr} addr={addr} />;
 }
 

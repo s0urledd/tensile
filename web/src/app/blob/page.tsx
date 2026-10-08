@@ -266,18 +266,30 @@ function Page() {
       router.replace(`/blobs/?blob=${encodeURIComponent(via.kind === "id" ? via.text : via.key.hex)}`);
     }
   }, [picked, many]); // eslint-disable-line react-hooks/exhaustive-deps
-  const hash = named || picked;
+  // the promise hash the address names, in lower-case hex, or none: a value that is no promise hash never reaches the
+  // API's path
+  const namedKey = blobKey(named);
+  const hash = (namedKey?.kind === "hash" ? namedKey.hex : "") || picked;
   const [table, setTable] = useState(false);
   const { data: meta, error: metaErr } = useApi<Meta>("/v1/meta");
-  const d = useApi<Detail>(hash ? `/v1/blobs/${hash}` : null);
+  const path = hash ? `/v1/blobs/${encodeURIComponent(hash)}` : null;
+  const d = useApi<Detail>(path);
   // every settlement of the same blob ID (its version, 0, and the commitment): the head says so when there is more than
   // this one
-  const same = useApi<{ total: number }>(d.data ? `/v1/blobs?commitment=${d.data.blob.commitment}&limit=1` : null);
+  const same = useApi<{ total: number }>(d.data ? `/v1/blobs?commitment=${encodeURIComponent(d.data.blob.commitment)}&limit=1` : null);
   // a promise hash not on record yet (404) is asked for again as soon as a newer blob is, not at the next 30 s
-  const missing = !!hash && notFound(d);
+  const missing = !!path && notFound(d);
   useEffect(() => {
-    if (missing) askAgain(`/v1/blobs/${hash}`);
+    if (missing && path) askAgain(path);
   }, [newest]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (named.trim() && !hash) {
+    return (
+      <>
+        <div className="head"><div><p className="crumb"><Link href="/blobs/">Blobs</Link> › …</p><h1>Blob</h1></div></div>
+        <p className="notice"><span className="mono">{shortMid(named.trim(), 10, 6)}</span> is not a promise hash: one is 64 hex characters. Open a blob from the <Link href="/blobs/">list</Link>.</p>
+      </>
+    );
+  }
   if (!hash && !via) return <p className="notice">Open a blob from the <Link href="/blobs/">list</Link>, or add <code>?hash=&lt;promise hash&gt;</code>, <code>?id=&lt;blob ID&gt;</code> or <code>?tx=&lt;transaction hash&gt;</code> to the address.</p>;
   if (!hash && via) {
     const name = (via.kind === "bad" ? via.of : via.kind) === "id" ? "blob ID" : "transaction hash";
