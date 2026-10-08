@@ -107,7 +107,7 @@
 #   exposure        Telegram alone is an alert destination; an env file
 #   helpers         others can read is not private; fibre-site@ loads no
 #                   env file with credentials; the README installs the env
-#                   file 0640 root:fibre-observer
+#                   file 0640 root:fibre-observer and reads it only as root
 #   hosting-db      a gzip cut short or failing its CRC, with enough lines
 #                   before the damage, does not replace the good file
 #   snapshot_code   a 503 with "computing": true is asked again until the
