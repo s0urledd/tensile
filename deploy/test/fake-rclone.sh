@@ -9,6 +9,7 @@
 #
 #   copy <src> <dst> [flags]    every file under src that the filters pass
 #                               into dst
+#   copyto <src> <dst>          one file, to that name
 #   cat [--offset N] <path>     the file from byte N
 #   lsf --format s <path>       the file's size
 #
@@ -108,6 +109,12 @@ case $sub in
       passes "$f" || continue
       mkdir -p "$dst/$(dirname "$f")" && cp -p "$src/$f" "$dst/$f" || exit 1
     done < <(cd "$src" && find . -type f)
+    ;;
+  copyto)
+    [ ${#paths[@]} = 2 ] || { echo "fake-rclone: copyto wants <src> <dst>" >&2; exit 2; }
+    src=$(local_path "${paths[0]}"); dst=$(local_path "${paths[1]}")
+    [ -f "$src" ] || missing "${paths[0]}"
+    mkdir -p "$(dirname "$dst")" && cp -p "$src" "$dst" || exit 1
     ;;
   cat)
     [ ${#paths[@]} = 1 ] || { echo "fake-rclone: cat wants one path" >&2; exit 2; }

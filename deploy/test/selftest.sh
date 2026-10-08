@@ -20,7 +20,12 @@
 #                   carries no state cannot accept one past its checkpoint;
 #                   the cut ends on a line boundary while a writer is
 #                   mid-line; a cut that ends inside a line fails verify; a
-#                   line that is not a JSON record is refused at the cut
+#                   line that is not a JSON record is listed in the cut, not
+#                   refused, and a manifest that does not list it fails; a
+#                   name in the manifest that is not a record file's (an
+#                   absolute path, a ".."), a segment name with a directory
+#                   in it, and a file or state.json in the copy that is a
+#                   link out of it are never touched
 #   manifest over   the cut names the archived segments and the live base
 #   an archive      and counts both, and restore.sh expects a rebuild to
 #                   hold both, publications as measurements (the drill once
@@ -41,6 +46,11 @@
 #                   an older build rewrote without the retired record reads
 #                   it from retired.json; another vantage's rotated
 #                   heartbeats are cut, read and verified
+#   manifest over   a copy whose live files were rotated after the cut (a
+#   a rotated copy  file archived before, and one archived for the first
+#                   time) verifies, with the cut's live lines read back from
+#                   the newer segments into the live file's place; a newer
+#                   segment altered or missing fails
 #   remote proof    backup.sh with the fake rclone: the observer's segments
 #                   and each other vantage's go before the live files, with
 #                   their indexes and retired.json, and no lock or master
@@ -55,6 +65,14 @@
 #                   bytes included, is dropped, not closed into a line that
 #                   is not a check; the remote is never printed, rclone's
 #                   own messages from a failed copy included
+#   backup cut      backup.sh with the manifest tool: the manifest goes
+#                   last, on its own; a line that is not a record is
+#                   copied and listed, and the copy verifies; a night whose
+#                   manifest does not land after a rotation fails and
+#                   leaves the last one, which the remote's copy still
+#                   verifies against; a cut that cannot be taken copies
+#                   everything, records the copy, uploads no manifest and
+#                   fails the run
 #   vantage pull    vantage-sync.sh: the pull resumes from the local file's
 #                   logical end, a rotated one included, and a remote file
 #                   shorter than the record fetches nothing and fails; two
@@ -83,7 +101,15 @@
 #                   yesterday's export whose newest line in
 #                   exports/remote.jsonl is ok false, or that has none,
 #                   from 06:00 UTC with BACKUP_REMOTE set; a new host
-#                   with no exports directory yet completes its run
+#                   with no exports directory yet completes its run; the
+#                   webhook and the bot token never reach curl's command
+#                   line
+#   exposure        Telegram alone is an alert destination; an env file
+#   helpers         others can read is not private; fibre-site@ loads no
+#                   env file with credentials; the README installs the env
+#                   file 0640 root:fibre-observer
+#   hosting-db      a gzip cut short or failing its CRC, with enough lines
+#                   before the damage, does not replace the good file
 #   snapshot_code   a 503 with "computing": true is asked again until the
 #                   deadline; a 503 without it and a 200 are final at once
 #
@@ -110,6 +136,34 @@ serve() { # serve <script> <args...>: starts a fake server, sets PORT
   python3 "$HERE/$1" --port "$PORT" "${@:2}" > "$T/$1.$PORT.log" 2>&1 &
   PIDS+=("$!")
   wait_http "http://127.0.0.1:$PORT/status" 10 "200 404 503" >/dev/null || true
+}
+rotate() { # rotate <data-dir> <file> <lines>: observer-archive's rotation by hand:
+  # the live file's first <lines> lines into a new segment, the index given
+  # the segment and the new live file's generation
+  python3 - "$@" <<'PY'
+import gzip, hashlib, json, os, sys
+d, name, k = sys.argv[1], sys.argv[2], int(sys.argv[3])
+p = os.path.join(d, name)
+adir = os.path.join(os.path.dirname(p), "archive", os.path.basename(p))
+os.makedirs(adir, exist_ok=True)
+ip = os.path.join(adir, "index.json")
+idx = json.load(open(ip)) if os.path.exists(ip) else {"version": 1, "file": os.path.basename(p), "time_field": "scheduled_at", "segments": [], "generations": []}
+lines = open(p, "rb").read().splitlines(keepends=True)
+old, rest = b"".join(lines[:k]), b"".join(lines[k:])
+sha = lambda b: hashlib.sha256(b).hexdigest()
+if not idx["generations"]:
+    idx["generations"].append({"base": 0, "head_sha256": sha(lines[0])})
+base = idx["generations"][-1]["base"]
+seg = os.path.join(adir, "%06d-rotated.jsonl.gz" % (len(idx["segments"]) + 1))
+with gzip.open(seg, "wb") as z:
+    z.write(old)
+gz = open(seg, "rb").read()
+idx["segments"].append({"name": os.path.basename(seg), "from": base, "to": base + len(old), "lines": k,
+                        "sha256": sha(old), "gz_sha256": sha(gz), "gz_bytes": len(gz)})
+idx["generations"].append({"base": base + len(old), "head_sha256": sha(lines[k])})
+json.dump(idx, open(ip, "w"))
+open(p, "wb").write(rest)
+PY
 }
 
 echo "== http_code"
@@ -257,10 +311,43 @@ check test ! -e "$T/snap/sampling-master.key"
 check eq "$(wc -l < "$T/snap/publications.jsonl")" 4
 check cmp -s "$T/snap/state.json" "$D/state.json"
 check python3 "$MANIFEST" verify "$T/snap" >/dev/null
-# a line that is not a JSON record is refused at the cut, whatever its length
-printf 'not a record\n' >> "$D/measurements.jsonl"
-check not python3 "$MANIFEST" write "$D" "$T/manifest3.json"
-check test ! -e "$T/manifest3.json"
+# a line that is not a JSON record (a write a full disk cut short, the
+# restart's line glued to it; an empty line) is listed in the cut, not
+# refused: it is in the record's bytes for good, and a refused cut stopped
+# every copy after it. A copy of the same bytes verifies; a manifest that
+# does not list it (an older one, or one altered) does not
+printf '{"vantage":"t","promise_hash":"p1","validator_address":"v6","scheduled_at":"2026-1{"vantage":"t","promise_hash":"p1","validator_address":"v7","scheduled_at":"2026-09-21T00:00:07Z"}\n\n' >> "$D/measurements.jsonl"
+check python3 "$MANIFEST" write "$D" "$T/manifest3.json"
+check eq "$(python3 -c 'import json,sys; f=json.load(open(sys.argv[1]))["files"]["measurements.jsonl"]; print(f["records"], f["bad_lines"], f["bad_count"])' "$T/manifest3.json")" "5 [6, 7] 2"
+copy; check python3 "$MANIFEST" verify "$T/copy" "$T/manifest3.json"
+python3 - "$T/manifest3.json" "$T/manifest3-unlisted.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1])); f = m["files"]["measurements.jsonl"]; f.pop("bad_lines"); f.pop("bad_count")
+json.dump(m, open(sys.argv[2], "w"))
+PY
+copy; check not python3 "$MANIFEST" verify "$T/copy" "$T/manifest3-unlisted.json"
+# The manifest comes back from the remote with the copy, and verify trims
+# and writes the files it names. A name that is not a record file's (an
+# absolute path, a ".."), or a file in the copy that is a link out of it,
+# is not touched: here the live record outside the copy, longer than the
+# cut, would have been cut to it
+{ head -c 4096 /dev/zero | tr '\0' x; echo; } > "$T/victim.jsonl"
+vsize=$(wc -c < "$T/victim.jsonl" | tr -d ' ')
+python3 - "$T/manifest3.json" "$T/victim.jsonl" "$T/manifest-escape.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+for n in (sys.argv[2], "../victim.jsonl", "vantages/../../victim.jsonl"):
+    m["files"][n] = {"bytes": 1, "sha256": "x", "records": 0}
+json.dump(m, open(sys.argv[3], "w"))
+PY
+copy; check not python3 "$MANIFEST" verify "$T/copy" "$T/manifest-escape.json"
+check eq "$(wc -c < "$T/victim.jsonl" | tr -d ' ')" "$vsize"
+copy; rm "$T/copy/measurements.jsonl"; ln -s "$T/victim.jsonl" "$T/copy/measurements.jsonl"
+check not python3 "$MANIFEST" verify "$T/copy" "$T/manifest3.json"
+check eq "$(wc -c < "$T/victim.jsonl" | tr -d ' ')" "$vsize"
+copy; rm "$T/copy/state.json"; ln -s "$T/victim.jsonl" "$T/copy/state.json"
+check not python3 "$MANIFEST" verify "$T/copy" "$T/manifest3.json"
+check eq "$(wc -c < "$T/victim.jsonl" | tr -d ' ')" "$vsize"
 
 echo "== backup manifest over an archive"
 # A file observer-archive rotated: three lines in a gzip segment, two live,
@@ -446,6 +533,50 @@ check eq "$(python3 "$MANIFEST" cat "$RD" vantages/de-1/reachability.jsonl | wc 
 rm -rf "$T/rvsnap"; check python3 "$MANIFEST" snapshot "$RD" "$T/rvsnap"
 check test -f "$T/rvsnap/vantages/de-1/archive/reachability.jsonl/000001-2026-09-11.jsonl.gz"
 check python3 "$MANIFEST" verify "$T/rvsnap"
+# a segment name that is not a file name is never read
+python3 - "$T/rvsnap/manifest.json" "$T/rvsnap-escape.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1])); m["files"]["measurements.jsonl"]["archive"]["segments"][0]["name"] = "../../../victim.jsonl"
+json.dump(m, open(sys.argv[2], "w"))
+PY
+check not python3 "$MANIFEST" verify "$T/rvsnap" "$T/rvsnap-escape.json"
+check grep -q 'is not a file name' "$T/check.log"
+
+echo "== backup manifest over a copy rotated after the cut"
+# A night whose copy stopped part-way, or whose manifest did not reach the
+# remote, leaves the remote's manifest older than its live files, and the
+# rotation since moved the cut's live lines into a new segment. The copy
+# still holds the cut; verify reads it back from there, into the live
+# file's place.
+O="$T/odata"; mkdir -p "$O/vantages/de-1"
+mline() { printf '{"vantage":"t","promise_hash":"p1","validator_address":"v%d","scheduled_at":"2026-10-0%dT00:00:00Z"}\n' "$1" "$1"; }
+vline() { printf '{"vantage":"de-1","validator_address":"v%d","scheduled_at":"2026-10-0%dT00:00:00Z"}\n' "$1" "$1"; }
+for i in 1 2 3 4; do mline "$i" >> "$O/measurements.jsonl"; done
+for i in 1 2 3; do vline "$i" >> "$O/vantages/de-1/reachability.jsonl"; done
+rotate "$O" measurements.jsonl 1   # archived once before the cut: its base is past 0
+check python3 "$MANIFEST" write "$O" "$T/om.json"
+# after the cut: a line more each, then the night's rotation: two of the
+# cut's three live lines into a segment (the third stays live), and the
+# other vantage's first, two of its three
+mline 5 >> "$O/measurements.jsonl"; vline 4 >> "$O/vantages/de-1/reachability.jsonl"
+rotate "$O" measurements.jsonl 2
+rotate "$O" vantages/de-1/reachability.jsonl 2
+ocopy() { rm -rf "$T/ocopy"; cp -r "$O" "$T/ocopy"; }
+ocopy; check python3 "$MANIFEST" verify "$T/ocopy" "$T/om.json"
+# the copy is the cut again: each live file holds the cut's live lines, and
+# the whole record reads up to the cut
+check eq "$(wc -l < "$T/ocopy/measurements.jsonl" | tr -d ' ')" 3
+check eq "$(python3 "$MANIFEST" cat "$T/ocopy" measurements.jsonl | grep -c '"vantage"')" 4
+check eq "$(wc -l < "$T/ocopy/vantages/de-1/reachability.jsonl" | tr -d ' ')" 3
+check eq "$(python3 "$MANIFEST" cat "$T/ocopy" vantages/de-1/reachability.jsonl | grep -c '"vantage"')" 3
+# a newer segment that is not the bytes the cut had fails, and so does one
+# missing; the copy's live file is left as it was
+ocopy; python3 -c 'import gzip, sys; gzip.open(sys.argv[1], "wb").write(open(sys.argv[2], "rb").read())' \
+  "$T/ocopy/archive/measurements.jsonl/000002-rotated.jsonl.gz" "$T/ocopy/measurements.jsonl"
+check not python3 "$MANIFEST" verify "$T/ocopy" "$T/om.json"
+check cmp -s "$O/measurements.jsonl" "$T/ocopy/measurements.jsonl"
+ocopy; rm "$T/ocopy/archive/measurements.jsonl/000002-rotated.jsonl.gz"
+check not python3 "$MANIFEST" verify "$T/ocopy" "$T/om.json"
 
 echo "== backup remote proof"
 # backup.sh against fake-rclone.sh, which serves a local directory as the
@@ -573,6 +704,67 @@ check backup BACKUP_REMOTE=fake:moved/sekret-token
 check not grep -q '^cat ' "$T/rclone.log"
 check python3 -c 'import json, sys; [json.loads(l) for l in open(sys.argv[1])]' "$B/exports/remote.jsonl"
 check eq "$(tail -c 1 "$B/exports/remote.jsonl" | od -An -tx1 | tr -d ' \n')" 0a
+
+echo "== backup: the cut and the manifest"
+# backup.sh with the manifest tool itself, against the fake rclone
+C="$T/cdata"; CR="$T/cremote"; CRT="$CR/bucket/t"; mkdir -p "$C/exports" "$C/vantages/de-1" "$CR"
+printf '{"promise_hash":"c1"}\n' > "$C/publications.jsonl"
+for i in 1 2 3; do mline "$i" >> "$C/measurements.jsonl"; done
+for i in 1 2; do vline "$i" >> "$C/vantages/de-1/reachability.jsonl"; done
+printf '{"last_scanned_height":7}\n' > "$C/state.json"
+cbackup() { # cbackup [VAR=value ...]: one night, its output in $T/cbackup.out
+  env DATA_DIR="$C" BACKUP_REMOTE="fake:bucket" RCLONE="$HERE/fake-rclone.sh" FAKE_RCLONE_ROOT="$CR" \
+    FAKE_RCLONE_LOG="$T/crclone.log" FIBRE_BACKUP_MANIFEST="$MANIFEST" "$@" bash "$HERE/../backup.sh" t > "$T/cbackup.out" 2>&1
+}
+crestore() { # the remote's copy pulled whole, as restore.sh pulls it, and verified against its own manifest
+  rm -rf "$T/crestore"; cp -r "$CRT" "$T/crestore"
+  python3 "$MANIFEST" verify "$T/crestore" "$T/crestore/backup-manifest.json"
+}
+# the manifest goes last, on its own, after every file it describes
+: > "$T/crclone.log"
+check cbackup
+check eq "$(cut -d' ' -f1 "$T/crclone.log" | tr '\n' ' ')" "copy copy copy copyto "
+check cmp -s "$C/backup-manifest.json" "$CRT/backup-manifest.json"
+check crestore
+# a line that is not a record no longer stops every copy: it is listed in
+# the manifest and copied as it is, and the copy verifies; the drill counts
+# the records, not the lines
+printf '{"promise_hash":"c2"}\n{"promise_ha{"promise_hash":"c3"}\n' >> "$C/publications.jsonl"
+check cbackup
+check eq "$(python3 -c 'import json,sys; f=json.load(open(sys.argv[1]))["files"]["publications.jsonl"]; print(f["records"], f["bad_lines"])' "$CRT/backup-manifest.json")" "2 [3]"
+check cmp -s "$C/publications.jsonl" "$CRT/publications.jsonl"
+check crestore
+check eq "$(record_promises "$MANIFEST" "$T/crestore")" "2 2"
+cp "$CRT/backup-manifest.json" "$T/cm2.json"
+# the rotation, then a night whose manifest does not reach the remote: the
+# run fails, the remote keeps the last manifest beside the rotated live
+# files, and its copy still verifies against it (the manifest, uploaded
+# with the files, used to land first and leave no cut that verified)
+mline 4 >> "$C/measurements.jsonl"; vline 3 >> "$C/vantages/de-1/reachability.jsonl"
+rotate "$C" measurements.jsonl 3
+rotate "$C" vantages/de-1/reachability.jsonl 2
+check not cbackup FAKE_RCLONE_FAIL=copyto
+check cmp -s "$C/measurements.jsonl" "$CRT/measurements.jsonl"
+check cmp -s "$T/cm2.json" "$CRT/backup-manifest.json"
+check crestore
+check eq "$(wc -l < "$T/crestore/measurements.jsonl" | tr -d ' ')" 3
+# a cut that cannot be taken (a live file the archive index does not place)
+# does not stop the copy either: the files go, the finished copy is
+# recorded, the remote keeps the last manifest, and the run fails at the end
+cp "$C/measurements.jsonl" "$T/clive.bak"
+printf '{"promise_hash":"stranger"}\n' > "$C/measurements.jsonl"
+printf '{"promise_hash":"c4"}\n' >> "$C/publications.jsonl"
+rm -f "$C/exports/remote-copy.json"
+check not cbackup
+check grep -q 'the cut failed' "$T/cbackup.out"
+check cmp -s "$C/publications.jsonl" "$CRT/publications.jsonl"
+check test -f "$C/exports/remote-copy.json"
+check cmp -s "$T/cm2.json" "$CRT/backup-manifest.json"
+cp "$T/clive.bak" "$C/measurements.jsonl"
+# the next night that cuts uploads its manifest, and the copy verifies
+check cbackup
+check not cmp -s "$T/cm2.json" "$CRT/backup-manifest.json"
+check crestore
 
 echo "== vantage pull"
 # deploy/vantage-pull.sh against the fake rclone, with util-linux's flock
@@ -805,6 +997,77 @@ check contains "$(tail -n 1 "$T/tg.log")" "alert delivery check"
 if out=$(tgtest "$tgbad"); then check eq "a refused post passed" refused; else check eq refused refused; fi
 check contains "$out" "telegram post failed (HTTP 404)"
 check not contains "$out" sekret
+# The URL (the bot token inside Telegram's, the webhook) reaches curl
+# through its config on stdin, never its command line, which every account
+# on the host can read in the process list while a post is in flight. A
+# curl in front of the real one writes down every command line it is given.
+mkdir -p "$T/curlspy"
+cat > "$T/curlspy/curl" <<SH
+#!/bin/sh
+printf '%s\n' "\$*" >> "$T/curl-argv.log"
+exec $(command -v curl) "\$@"
+SH
+chmod +x "$T/curlspy/curl"; : > "$T/curl-argv.log"
+check env PATH="$T/curlspy:$PATH" API_LISTEN="127.0.0.1:$p200" DATA_DIR="$T/hw2" NETWORK=t TELEGRAM_BOT_TOKEN=123:sekret \
+  TELEGRAM_CHAT_ID=-1001 TELEGRAM_API="http://127.0.0.1:$tgok" bash "$HW" t --test
+check contains "$(tail -n 1 "$T/tg.log")" "/bot123:sekret/sendMessage"
+n=$(posts)
+check env PATH="$T/curlspy:$PATH" API_LISTEN="127.0.0.1:$p200" DATA_DIR="$T/hw2" NETWORK=t \
+  ALERT_WEBHOOK="http://127.0.0.1:$hook/hook-sekret" bash "$HW" t --test
+check eq "$(posts)" $((n + 1))
+check grep -q -- '-K -' "$T/curl-argv.log"
+check not grep -q sekret "$T/curl-argv.log"
+
+echo "== exposure helpers"
+# where healthwatch posts, by its own rule: Telegram alone is a destination
+# (exposure.sh took ALERT_WEBHOOK alone for one, and never sent the test)
+printf 'TELEGRAM_BOT_TOKEN=123:abc\nTELEGRAM_CHAT_ID=-1001\n' > "$T/tg.env"
+check eq "$(alert_destinations "$T/tg.env")" telegram
+printf 'ALERT_WEBHOOK=https://hooks.example.org/x\nTELEGRAM_BOT_TOKEN=123:abc\nTELEGRAM_CHAT_ID=-1001\n' > "$T/both.env"
+check eq "$(alert_destinations "$T/both.env")" "webhook telegram"
+printf 'ALERT_WEBHOOK=\nTELEGRAM_BOT_TOKEN=123:abc\nTELEGRAM_CHAT_ID=\n' > "$T/half.env"
+check eq "$(alert_destinations "$T/half.env")" ""
+check eq "$(alert_destinations "$T/test.env")" webhook
+# an env file other accounts can read is not private; 0640 and 0600 are
+printf 'x\n' > "$T/p.env"
+chmod 0644 "$T/p.env"; check not private_file "$T/p.env"
+chmod 0640 "$T/p.env"; check private_file "$T/p.env"
+chmod 0600 "$T/p.env"; check private_file "$T/p.env"
+# the internet-facing site-server gets its own two settings, not the env
+# file that holds the alert and backup credentials; and the README never
+# puts an env file in place with root's umask (0644)
+check not grep -q '^EnvironmentFile=/etc/fibre-observer/%i\.env' "$HERE/../systemd/fibre-site@.service"
+check grep -q '^EnvironmentFile=/etc/fibre-observer/site-%i\.env' "$HERE/../systemd/fibre-site@.service"
+check not grep -qE 'cp deploy/observer\.env\.example /etc/' "$HERE/../README.md"
+check grep -q 'install -m 0640 -o root -g fibre-observer deploy/observer.env.example /etc/fibre-observer/mocha.env' "$HERE/../README.md"
+
+echo "== hosting-db"
+# deploy/hosting-db.sh against a curl that serves one file, whatever the
+# URL. A gzip cut short, or failing its CRC, that still gives the old check
+# its hundred thousand lines and its first line is refused, and the good
+# file stays
+HD="$T/hosting"; mkdir -p "$T/fakecurl"
+cat > "$T/fakecurl/curl" <<'SH'
+#!/bin/sh
+out=""
+while [ $# -gt 0 ]; do case $1 in -o) out=$2; shift 2 ;; *) shift ;; esac; done
+cp "$FAKE_CURL_FILE" "$out"
+SH
+chmod +x "$T/fakecurl/curl"
+awk 'BEGIN { for (i = 0; i < 200000; i++) printf "1.%d.%d.0\t1.%d.%d.255\t13335\tUS\tCLOUDFLARENET\n", int(i / 256) % 256, i % 256, int(i / 256) % 256, i % 256 }' | gzip -c > "$T/asn-good.gz"
+gzsize=$(wc -c < "$T/asn-good.gz" | tr -d ' ')
+head -c $((gzsize * 9 / 10)) "$T/asn-good.gz" > "$T/asn-cut.gz"
+cp "$T/asn-good.gz" "$T/asn-crc.gz"
+printf '\0\0\0\0' | dd of="$T/asn-crc.gz" bs=1 seek=$((gzsize - 8)) conv=notrunc 2>/dev/null
+check test "$(gzip -dc "$T/asn-cut.gz" 2>/dev/null | wc -l)" -ge 100000
+check test "$(gzip -dc "$T/asn-crc.gz" 2>/dev/null | wc -l)" -ge 100000
+hdb() { env PATH="$T/fakecurl:$PATH" FAKE_CURL_FILE="$1" HOSTING_SKIP_COUNTRY=1 HOSTING_SKIP_CITY=1 sh "$HERE/../hosting-db.sh" "$HD"; }
+check hdb "$T/asn-good.gz"
+check cmp -s "$T/asn-good.gz" "$HD/ip2asn-combined.tsv.gz"
+check not hdb "$T/asn-cut.gz"
+check cmp -s "$T/asn-good.gz" "$HD/ip2asn-combined.tsv.gz"
+check not hdb "$T/asn-crc.gz"
+check cmp -s "$T/asn-good.gz" "$HD/ip2asn-combined.tsv.gz"
 
 echo
 echo "selftest: $ok passed, $bad failed"

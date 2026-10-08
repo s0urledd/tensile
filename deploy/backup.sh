@@ -88,11 +88,25 @@ done
 # exactly those bytes. The files keep growing while rclone reads them, so
 # the copy is at least the cut; deploy/test/restore.sh trims a restored copy
 # back to the cut, checks every hash and puts the cut's state.json beside
-# it. Missing, short, different or unparseable is a failed restore — and a
-# record that is not a sequence of JSON lines fails the cut here, before
-# anything is copied, so the timer unit shows it.
+# it. Missing, short, different or unparseable is a failed restore. A line
+# that is not a JSON record (a writer that died mid-line on a full disk) is
+# listed in the manifest and stays in the record's bytes; it does not stop
+# the cut.
+#
+# A cut that cannot be taken (an archive index that does not place a live
+# file, say) does not stop the copy either: the copy is the only one off
+# the host, and a cut that fails every night would freeze it at the last
+# good one. The files are copied without a new manifest, the remote keeps
+# the last one (which verify still accepts, below), and the unit fails
+# once everything else is done, so the health watch says so.
+manifest_new=0 cut_failed=0
 if [ -x "$manifest_tool" ]; then
-  "$manifest_tool" write "$data" "$data/backup-manifest.json"
+  if "$manifest_tool" write "$data" "$data/backup-manifest.json"; then
+    manifest_new=1
+  else
+    cut_failed=1
+    echo "fibre-backup[$instance]: the cut failed (above); copying without a new manifest, and the unit fails at the end" >&2
+  fi
 else
   echo "fibre-backup[$instance]: backup-manifest tool not found; copying without a manifest (restore.sh will refuse to verify this copy)" >&2
 fi
@@ -127,10 +141,23 @@ for a in "$data"/vantages/*/archive; do
     --transfers 4 --checkers 8 --stats-one-line --stats 0 --log-level NOTICE
 done
 quiet_remote "$rclone" copy "$data" "$dest" \
-  --include '*.jsonl' --include 'state.json' --include 'backup-manifest.json' --include 'exports/**' \
+  --include '*.jsonl' --include 'state.json' --include 'exports/**' \
   --exclude 'sampling-master.key' --exclude 'observer.db*' --exclude 'snapshots/**' \
   --local-no-check-updated \
   --transfers 4 --checkers 8 --stats-one-line --stats 0 --log-level NOTICE
+# The manifest last, on its own, once every file it describes is on the
+# remote. In the pass above it was the smallest file and landed first, so a
+# pass that stopped part-way (a reboot, a link down, a full bucket) left the
+# new manifest beside the older files, and no cut on the remote verified
+# until a later night finished. Now a night that stops before this line
+# leaves the previous manifest, and its files are all still there: grown
+# since (verify trims them back), or rotated since, with the lines the cut
+# had in the segments that rotation wrote, which the first pass sent before
+# anything else (verify reads them back from there).
+if [ "$manifest_new" = 1 ] && [ -f "$data/backup-manifest.json" ]; then
+  quiet_remote "$rclone" copyto "$data/backup-manifest.json" "$dest/backup-manifest.json" \
+    --stats-one-line --stats 0 --log-level NOTICE
+fi
 # The status files are replaced (written beside, renamed over) every few
 # seconds, so one can be another file by the time rclone opens the name it
 # listed, and rclone calls the size it then reads a corrupted transfer and
@@ -239,5 +266,9 @@ prove_remote() {
 }
 if [ -d "$data/exports" ]; then
   prove_remote || echo "fibre-backup[$instance]: the remote proof did not finish; the copy stands" >&2
+fi
+if [ "$cut_failed" = 1 ]; then
+  echo "fibre-backup[$instance]: copied, but the cut failed: the remote keeps the last manifest taken; see the cut's message above" >&2
+  exit 1
 fi
 echo "fibre-backup[$instance]: done"

@@ -17,7 +17,11 @@ takes one cut, in this order:
      refer to, each cut back to the end of its last complete line — a
      writer may be in the middle of a line at that instant.
   3. the SHA-256 of exactly those bytes, with every line in them parsed as
-     a JSON record and counted. A line that is not one fails the cut.
+     a JSON record and counted. A line that is not one (a writer that died
+     mid-line on a full disk, its restart's line glued to the fragment) is
+     counted and its number listed (bad_lines, bad_count), not refused:
+     the file is append-only, the line stays in it for good, and a cut
+     that failed on it would stop every copy after it.
 
 The manifest carries the hashes, the counts, the checkpoint, and the bytes
 of state.json as they were. The copy may then be taken at leisure and may
@@ -28,7 +32,21 @@ copy's. The copy's state.json was taken later and points past the records
 the cut holds; a scanner resuming from it would skip the blocks in between
 for good, and pulling only its height back would leave every other field
 (gaps, param history, host history, reconcile cursors) from a later
-moment. Anything missing, shorter, different or unparseable fails.
+moment. Anything missing, shorter, different or unparseable fails, and so
+does a line that is not a record where the cut has none.
+
+A copy whose live file observer-archive rotated after the cut (a night
+whose copy stopped part-way, or whose manifest did not reach the remote,
+leaves the remote's manifest older than its live files) still holds the
+cut: its live bytes are in the segments that rotation wrote and the start
+of the newer live file. `verify` reads them back from there into the live
+file's place, checked against the cut's hash like any other.
+
+The manifest comes back from the remote with the copy, so `verify` acts
+only on the names a cut can hold (RECORD_FILES, and
+vantages/<name>/reachability.jsonl under a name vantage-pull accepts), on
+segment and export names with no directory part, and on nothing a link
+in the copy leads out of it to: it trims and writes the files it names.
 
 The sampling master key must never be in a copy; `verify` fails if it is.
 
@@ -80,6 +98,7 @@ import gzip
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tarfile
@@ -108,17 +127,57 @@ STATE = "state.json"
 FORBIDDEN = ["sampling-master.key"]
 MANIFEST = "manifest.json"
 # 4: a segment may carry "retired", and other vantages' heartbeats are cut
-VERSION = 4
+# 5: a file may carry bad_lines and bad_count
+VERSION = 5
 CHUNK = 1 << 20
 ARCHIVE = "archive"
 VANTAGES = "vantages"
 EXPORTS_INDEX = "index.json"
 # beside an archive's index.json: the second copy of its retired records
 RETIRED = "retired.json"
+# the vantage names vantage-pull accepts, and so the only ones a cut holds
+VANTAGE_NAME = re.compile(r"[a-z0-9-]+")
+# the lines that are not a record, listed by number up to this many per
+# file (bad_count counts them all), so a file of garbage keeps a small
+# manifest
+BAD_LINES_LISTED = 100
 
 
 class RecordError(Exception):
-    """A record file that is not a sequence of complete JSON lines."""
+    """A record file whose cut cannot be taken or checked: shorter than
+    the cut, cut inside a line, or an archive that does not add up."""
+
+
+def record_name(name):
+    """Whether name is one a cut lists: a file of RECORD_FILES, or another
+    vantage's heartbeats under a name vantage-pull accepts. verify takes
+    the names from a manifest that came back from the remote, and trims and
+    writes the files they name: any other name could lead out of the copy
+    (an absolute path, a "..")."""
+    if name in RECORD_FILES:
+        return True
+    parts = name.split("/") if isinstance(name, str) else []
+    return (len(parts) == 3 and parts[0] == VANTAGES and parts[2] == "reachability.jsonl"
+            and VANTAGE_NAME.fullmatch(parts[1]) is not None)
+
+
+def plain_name(x):
+    """A file name with no directory part: a segment's, an export's."""
+    return isinstance(x, str) and x not in ("", ".", "..") and not any(c in x for c in "/\\\0")
+
+
+def inside(root, p):
+    """Whether p, every link on its way followed, is under root."""
+    r = os.path.realpath(root)
+    return os.path.commonpath([os.path.realpath(p), r]) == r
+
+
+def is_record(line):
+    """A line (newline excluded) that parses as a JSON object."""
+    try:
+        return isinstance(json.loads(line), dict)
+    except (ValueError, RecursionError):
+        return False
 
 
 def complete_length(path):
@@ -140,11 +199,16 @@ def complete_length(path):
 
 
 def sha_records(name, path, length):
-    """SHA-256 of the first `length` bytes, and the number of JSON records
-    in them. Every line must parse as a JSON object and the cut must end
-    on a line boundary; anything else raises RecordError."""
+    """SHA-256 of the first `length` bytes, the number of JSON records in
+    them, and the lines that are not one: (digest, records, bad, bad_count),
+    bad being the first BAD_LINES_LISTED of their line numbers (from 1). A
+    line that does not parse as a JSON object (empty, cut short, glued to
+    the next) is counted there, not refused: it is in the record's bytes for
+    good. The cut must end on a line boundary, and the file must hold
+    `length` bytes; anything else raises RecordError."""
     h = hashlib.sha256()
     n = 0
+    bad, nbad = [], 0
     left = length
     rest = b""
     with open(path, "rb") as f:
@@ -158,19 +222,38 @@ def sha_records(name, path, length):
             rest = lines.pop()
             for line in lines:
                 n += 1
-                if not line.strip():
-                    raise RecordError(f"{name}: line {n} is empty, not a record")
-                try:
-                    rec = json.loads(line)
-                except ValueError:
-                    raise RecordError(f"{name}: line {n} is not a complete JSON record")
-                if not isinstance(rec, dict):
-                    raise RecordError(f"{name}: line {n} is not a JSON object")
+                if not is_record(line):
+                    nbad += 1
+                    if len(bad) < BAD_LINES_LISTED:
+                        bad.append(n)
     if left > 0:
         raise RecordError(f"{name}: wanted {length} bytes, file is {length - left}")
     if rest:
         raise RecordError(f"{name}: the cut ends inside record {n + 1}, not on a line boundary")
-    return h.hexdigest(), n
+    return h.hexdigest(), n - nbad, bad, nbad
+
+
+def bad_label(bad, nbad):
+    """The lines that are not records, for a message."""
+    if not nbad:
+        return "none"
+    more = f" and {nbad - len(bad)} more" if nbad > len(bad) else ""
+    return f"{nbad} (line {', '.join(str(x) for x in bad)}{more})"
+
+
+def check_cut(name, info, digest, records, bad, nbad):
+    """The problems with one file's bytes read back against its cut: the
+    digest, the records, and the lines that are not records, which must be
+    the cut's own (none, for a manifest from before they were listed)."""
+    if digest != info["sha256"]:
+        return [f"{name}: sha256 differs over the first {info['bytes']} bytes (content changed or not this backup)"]
+    if records != info["records"]:
+        return [f"{name}: {records} records, manifest says {info['records']}"]
+    want = info.get("bad_lines") or []
+    wantn = info.get("bad_count", len(want))
+    if nbad != wantn or bad != want:
+        return [f"{name}: lines that are not a JSON record: {bad_label(bad, nbad)}; the manifest says {bad_label(want, wantn)}"]
+    return []
 
 
 def read_state(path):
@@ -223,8 +306,10 @@ def vantage_files(data_dir):
         names = sorted(os.listdir(d))
     except (FileNotFoundError, NotADirectoryError):
         return []
+    # only the names vantage-pull pulls to (VANTAGE_NAME), which are the
+    # names verify accepts back
     return [f"{VANTAGES}/{n}/reachability.jsonl" for n in names
-            if os.path.isfile(os.path.join(d, n, "reachability.jsonl"))]
+            if VANTAGE_NAME.fullmatch(n) and os.path.isfile(os.path.join(d, n, "reachability.jsonl"))]
 
 
 def record_files(data_dir):
@@ -307,6 +392,8 @@ def archive_cut(data_dir, name):
     for s in sorted(idx.get("segments") or [], key=lambda s: s["from"]):
         if s["to"] > base:
             continue  # written by a run that never swapped; the next run drops it
+        if not plain_name(s.get("name")):
+            raise RecordError(f"{name}: archive segment {s.get('name')!r} in {index_label(name)} is not a file name")
         if s["from"] != at:
             raise RecordError(f"{name}: archive segments leave a gap at logical byte {at}")
         at = s["to"]
@@ -615,6 +702,99 @@ def iter_record(data_dir, name, live_length=None):
             yield b
 
 
+def gz_blocks(p):
+    """A gzip file's bytes, CHUNK at a time."""
+    with gzip.open(p, "rb") as z:
+        while True:
+            b = z.read(CHUNK)
+            if not b:
+                return
+            yield b
+
+
+def iter_range(data_dir, name, lo, hi):
+    """Logical bytes [lo, hi) of one file's record, from where they are:
+    the archived segments below the live file's base (a retired one's from
+    the exports), then the live file. Nothing below lo is read. Raises
+    RecordError when the record does not hold all of them."""
+    a = archive_cut(data_dir, name)
+    base = a["base"] if a else 0
+    at, cache = lo, {}
+    for s in (a or {}).get("segments", []):
+        if at >= hi:
+            break
+        if s["to"] <= at:
+            continue
+        p = os.path.join(archive_dir(data_dir, name), s["name"])
+        if os.path.exists(p):
+            src = gz_blocks(p)
+        elif s.get("retired"):
+            src = iter_retired(data_dir, name, s, cache)
+        else:
+            raise RecordError(f"{name}: archive segment {s['name']} is gone and was never retired")
+        pos = s["from"]
+        try:
+            for b in src:
+                lo2, hi2 = max(at, pos), min(hi, pos + len(b))
+                if lo2 < hi2:
+                    yield b[lo2 - pos:hi2 - pos]
+                    at = hi2
+                pos += len(b)
+                if pos >= hi:
+                    break
+        finally:
+            src.close()
+        if at < min(hi, s["to"]):
+            raise RecordError(f"{name}: archive segment {s['name']} ends at logical byte {pos}, the index says {s['to']}")
+    if at < hi and at >= base:
+        with open(os.path.join(data_dir, name), "rb") as f:
+            f.seek(at - base)
+            while at < hi:
+                b = f.read(min(CHUNK, hi - at))
+                if not b:
+                    break
+                at += len(b)
+                yield b
+    if at < hi:
+        raise RecordError(f"{name}: the record ends at logical byte {at}, the cut at {hi}")
+
+
+def cut_from_rotated(restored, name, info):
+    """The cut's live file put back in a copy whose live file is a later
+    generation. observer-archive rotated the file after the cut, and the
+    copy took the rotated one: a night whose copy stopped part-way, or
+    whose manifest did not reach the remote, leaves the remote's manifest
+    older than its live files. The cut's live bytes are logical bytes
+    [base, base + bytes) of the copy's record, in the segments that rotation
+    wrote and the start of the newer live file; they are read back, checked
+    against the cut, and put in the live file's place, so the copy is the
+    cut again. The copy's index lists the cut's generation (generations are
+    only ever added), so it places the file at the cut's base, and the
+    newer segments, above that base, are not read. Returns the problems."""
+    a = info.get("archive")
+    lo, n = (a["base"] if a else 0), info["bytes"]
+    p = os.path.join(restored, name)
+    tmp = p + ".cut.tmp"
+    try:
+        try:
+            with open(tmp, "wb") as o:
+                for b in iter_range(restored, name, lo, lo + n):
+                    o.write(b)
+        except (RecordError, OSError, EOFError, zlib.error) as e:
+            return [f"{name}: the copy's live file was rotated after the cut, and the copy's record does not give the cut's bytes back: {e}"]
+        try:
+            digest, records, bad, nbad = sha_records(name, tmp, n)
+        except RecordError as e:
+            return [str(e)]
+        problems = check_cut(name, info, digest, records, bad, nbad)
+        if not problems:
+            os.replace(tmp, p)
+        return problems
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def verify_archive(restored, name, info):
     """Every segment the cut names is in the copy, whole: the gzip file's
     digest and size, and what it decompresses to (digest, length, lines);
@@ -628,10 +808,20 @@ def verify_archive(restored, name, info):
     problems = []
     cache = {}
     for s in a["segments"]:
+        if not plain_name(s.get("name")):
+            problems.append(f"{name}: archive segment {s.get('name')!r} is not a file name; not read")
+            continue
         p = os.path.join(archive_dir(restored, name), s["name"])
+        if not inside(restored, p):
+            problems.append(f"{name}: archive segment {s['name']} is a link out of the copy; not read")
+            continue
         if not os.path.exists(p):
             if s.get("retired"):
                 try:
+                    # the exports it is read from, as the manifest names
+                    # them, must be the copy's own
+                    if not inside(restored, exports_dir_of(restored, name, s["retired"])):
+                        raise RecordError(f"{retired_label(name, s)}: exports_dir {s['retired'].get('exports_dir')!r} leads out of the copy")
                     check_retired(restored, name, s, cache)
                 except RecordError as e:
                     problems.append(str(e))
@@ -684,8 +874,11 @@ def cut_locked(data_dir):
             lengths.append((name, complete_length(p)))
     files = {}
     for name, length in lengths:
-        digest, records = sha_records(name, os.path.join(data_dir, name), length)
+        digest, records, bad, nbad = sha_records(name, os.path.join(data_dir, name), length)
         files[name] = {"bytes": length, "sha256": digest, "records": records}
+        if nbad:
+            files[name]["bad_lines"] = bad
+            files[name]["bad_count"] = nbad
         a = archive_cut(data_dir, name)
         if a:
             files[name]["archive"] = a
@@ -802,14 +995,44 @@ def verify(restored, manifest_path=None):
         m = json.load(open(manifest_path))
     except Exception as e:
         return [f"manifest {manifest_path}: {e}"], None
+    if not isinstance(m, dict) or not isinstance(m.get("files"), dict):
+        return [f"manifest {manifest_path}: not a manifest (no files)"], None
     for bad in FORBIDDEN:
         if os.path.exists(os.path.join(restored, bad)):
             problems.append(f"{bad} is in the copy: it must never leave the host")
     trimmed = 0
     for name, info in sorted(m["files"].items()):
+        # The manifest came back from the remote with the copy, and the
+        # files it names are trimmed and replaced below: only a name a cut
+        # can hold, at a path that stays in the copy, is touched.
+        if not record_name(name):
+            problems.append(f"{name!r}: not the name of a record file; nothing is done with it")
+            continue
+        if not isinstance(info, dict) or not isinstance(info.get("bytes"), int) or info["bytes"] < 0:
+            problems.append(f"{name}: the manifest gives no length for it")
+            continue
         p = os.path.join(restored, name)
+        if os.path.islink(p) or not inside(restored, p):
+            problems.append(f"{name}: a link in the copy, not the file; not touched")
+            continue
         if not os.path.exists(p):
             problems.append(f"{name}: missing (manifest has {info['bytes']} bytes, {info['records']} records)")
+            continue
+        # A live file observer-archive rotated after the cut: the copy's
+        # index places it past the cut's base, and the cut's live bytes are
+        # in the copy's newer segments (cut_from_rotated).
+        a = info.get("archive")
+        try:
+            copy_base = live_base(restored, name)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            copy_base = None
+        if copy_base is not None and copy_base > (a["base"] if a else 0):
+            got = cut_from_rotated(restored, name, info)
+            if got:
+                problems.extend(got)
+                continue
+            notes.append(f"{name}: the copy's live file was rotated after the cut; the cut's {info['bytes']} bytes were read back from the copy's archive and put in its place")
+            problems.extend(verify_archive(restored, name, info))
             continue
         size = os.path.getsize(p)
         if size < info["bytes"]:
@@ -821,19 +1044,20 @@ def verify(restored, manifest_path=None):
                 f.truncate(info["bytes"])
             trimmed += size - info["bytes"]
         try:
-            digest, records = sha_records(name, p, info["bytes"])
+            digest, records, bad, nbad = sha_records(name, p, info["bytes"])
         except RecordError as e:
             problems.append(str(e))
             continue
-        if digest != info["sha256"]:
-            problems.append(f"{name}: sha256 differs over the first {info['bytes']} bytes (content changed or not this backup)")
-        elif records != info["records"]:
-            problems.append(f"{name}: {records} records, manifest says {info['records']}")
+        got = check_cut(name, info, digest, records, bad, nbad)
+        if got:
+            problems.extend(got)
         else:
             problems.extend(verify_archive(restored, name, info))
     cp = m.get("checkpoint")
     sp = os.path.join(restored, STATE)
-    if m.get("state_raw") is not None:
+    if m.get("state_raw") is not None and (os.path.islink(sp) or not inside(restored, sp)):
+        problems.append(f"{STATE}: a link in the copy, not the file; not touched")
+    elif m.get("state_raw") is not None:
         # The cut's own state.json goes beside the cut's records, whatever
         # the copy carried: the copy's was read later and points past
         # them, and only the whole file is consistent with the cut.
@@ -873,13 +1097,18 @@ def show(m):
         carried = f", {st['bytes']} bytes carried" if st else ""
         print(f"  checkpoint: height {m['checkpoint']['last_scanned_height']} ({m['checkpoint'].get('last_scanned_time')}), {m['checkpoint']['gaps']} gap(s){carried}")
     for name, info in sorted(m["files"].items()):
+        if not record_name(name) or not isinstance(info, dict):
+            continue  # verify says what is wrong with it
         archived = ""
         if info.get("archive"):
             a = info["archive"]
             retired = sum(1 for s in a["segments"] if s.get("retired"))
             retired = f", {retired} retired to the exports" if retired else ""
             archived = f" + {a['records']} archived in {len(a['segments'])} segment(s){retired} (base {a['base']})"
-        print(f"  {name:<24} {info['bytes']:>12} bytes {info['records']:>9} records {info['sha256'][:16]}{archived}")
+        print(f"  {name:<24} {info.get('bytes', '?'):>12} bytes {info.get('records', '?'):>9} records {str(info.get('sha256', ''))[:16]}{archived}")
+        if info.get("bad_count"):
+            # kept in the record's bytes for good, and in every copy
+            print(f"  {'':<24} lines that are not a JSON record: {bad_label(info.get('bad_lines') or [], info['bad_count'])}")
 
 
 def main(argv):
@@ -930,7 +1159,7 @@ def main(argv):
             return 2
     except RecordError as e:
         print(f"  FAIL {e}")
-        print(f"{cmd}: the record is not a sequence of complete JSON lines; nothing written")
+        print(f"{cmd}: no cut of the record could be taken; nothing written")
         return 1
     return 0
 

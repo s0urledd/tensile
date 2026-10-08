@@ -88,15 +88,25 @@ Everything is per network. The examples below set up `mocha`; repeat with
 `mainnet` (and its own RPC, data directory and API port) for the second.
 
 ```bash
+sudo useradd --system --home /var/lib/fibre-observer --create-home fibre-observer   # the service user
 sudo install -d -m 0755 /etc/fibre-observer
-sudo cp deploy/observer.env.example /etc/fibre-observer/mocha.env
+sudo install -m 0640 -o root -g fibre-observer deploy/observer.env.example /etc/fibre-observer/mocha.env
 sudo cp deploy/publishers.yaml.example /etc/fibre-observer/publishers-mocha.yaml                  # publisher labels; optional, the API runs without it
 ```
 
-Edit `mocha.env`: set `NETWORK`, `RPC`, `VANTAGE`, `DATA_DIR`
+Edit `mocha.env` (`sudo -e /etc/fibre-observer/mocha.env`, which keeps
+its mode): set `NETWORK`, `RPC`, `VANTAGE`, `DATA_DIR`
 (`/var/lib/fibre-observer/mocha`), `API_LISTEN` (a port of its
-own), and, when you have them, `ALERT_WEBHOOK` and `BACKUP_REMOTE`.
-Leave `POLICY` empty.
+own), and, when you have them, `ALERT_WEBHOOK` or `TELEGRAM_BOT_TOKEN`
+and `TELEGRAM_CHAT_ID`, and `BACKUP_REMOTE`. Leave `POLICY` empty.
+
+The env file holds the alert token, the webhook and the backup remote,
+so no other account on the host may read it: `0640 root:fibre-observer`.
+A plain `cp` under root's umask leaves it `0644`, readable by every
+account on a host it may share with a validator. systemd reads
+`EnvironmentFile=` as root, the commands below that source it run under
+`sudo`, and `deploy/test/exposure.sh` fails a file other accounts can
+read. `rclone.conf` (section 7) is installed the same way.
 
 The prober reads every blob; nothing is sampled or budgeted. `POLICY` is
 left over from the earlier sampling, and the prober's unit no longer
@@ -216,8 +226,9 @@ attempt's own verifier, about 4 MiB at K = 4096, is charged to it.
 
 ## 4. systemd
 
+With the service user from section 3:
+
 ```bash
-sudo useradd --system --home /var/lib/fibre-observer --create-home fibre-observer
 sudo install -d -o fibre-observer -m 0750 /var/lib/fibre-observer/mocha
 sudo install -m 0755 fibre-sentinel/bin/* /usr/local/bin/
 sudo install -m 0755 deploy/vantage-pull.sh /usr/local/bin/fibre-vantage-pull  # when the script changed
@@ -351,7 +362,10 @@ bot is in) are set in the env file, whichever are set. After setting them,
 sends one message and says whether each destination took it. With none
 set it only logs; an external uptime monitor pointed at
 `https://<site>/api/v1/health` is the same signal with somebody else's
-timer.
+timer. The webhook and the bot token are never printed, and never on
+curl's command line either, where every account on the host could read
+them in the process list while a post is in flight: curl reads the URL
+from a config on its stdin.
 
 ### Upgrading a running observer
 
@@ -379,6 +393,24 @@ scripts and units beside it, as the build that retires local copies does,
 is installed with the archive timer stopped, and its writers restarted
 before the timer runs again ("Archive: bounded live files", upgrade
 order).
+
+**The env files and the site's own settings** (the build that gave
+`fibre-site@` a file of its own). A host set up before it has its env
+files as `cp` left them, `0644`; close them, then give site-server its two
+settings *before* the new `fibre-site@.service` is installed, since the
+unit no longer reads the network's env file and does not start without its
+own:
+
+```bash
+sudo chown root:fibre-observer /etc/fibre-observer/*.env /etc/fibre-observer/rclone.conf
+sudo chmod 0640 /etc/fibre-observer/*.env /etc/fibre-observer/rclone.conf
+grep -E '^(SITE_LISTEN|API_LISTEN)=' /etc/fibre-observer/mocha.env | sudo tee /etc/fibre-observer/site-mocha.env >/dev/null
+sudo cp deploy/systemd/fibre-site@.service /etc/systemd/system/ && sudo systemctl daemon-reload
+sudo systemctl restart fibre-site@mocha
+```
+
+`SITE_LISTEN` can stay in `mocha.env`, where nothing reads it any more.
+`deploy/test/exposure.sh` checks the modes from then on.
 
 The API also refuses a database **newer** than itself, so an API left on an
 old build after the collector moved on says so rather than serving columns
@@ -798,10 +830,31 @@ sudo systemctl enable --now fibre-site@mocha
 
 The unit reads `SITE_LISTEN` (a port of its own per network, for example
 `127.0.0.1:3112` for mocha and `127.0.0.1:3113` for mainnet) and
-`API_LISTEN` from the network's env file, and the site from
-`/srv/fibre-site/<network>`. Point the front proxy's site for that network
-at `SITE_LISTEN`. A new build is copied over the directory; the server
-picks up the changed files without a restart.
+`API_LISTEN` (that network's API, as in its env file) from
+`/etc/fibre-observer/site-<network>.env`, which holds those two lines and
+nothing else, and the site from `/srv/fibre-site/<network>`. It does not
+load the network's env file: that one holds the alert and backup
+credentials, and site-server faces the internet and needs none of them.
+
+```bash
+printf 'SITE_LISTEN=127.0.0.1:3112\nAPI_LISTEN=127.0.0.1:8081\n' | sudo tee /etc/fibre-observer/site-mocha.env >/dev/null
+```
+
+Point the front proxy's site for that network at `SITE_LISTEN`. A new
+build is copied over the directory; the server picks up the changed files
+without a restart.
+
+site-server rations the API for the visitors. Each client, an IPv4
+address or an IPv6 /64 (one host is given a whole /64), has a token bucket
+(a burst of 120 requests, 10 a second; `/v1/tip` 60 and 30 a second) and
+at most 16 requests in flight; the site as a whole has at most 48 requests
+at the API at once. A request holds its place in those 48 only until the
+API's answer begins, so a client reading an answer slowly (a day's export)
+costs only its own 16. An answer with no byte moving for 60 s is given up,
+and a client that goes away cancels its request to the API. Past 50,000
+clients in ten minutes, new ones share one allowance, so the table of
+clients stays bounded. An answer refused by these limits is a 429 with
+`retry-after: 5`.
 
 ### Two networks
 
@@ -907,7 +960,39 @@ copy back to the cut, checks every hash, parses every line, and puts the
 cut's own `state.json` in place of the copy's, which was read later and
 points past the records the cut holds. A copy that came back missing,
 short, altered or unparseable is a failed restore, not a surprise. The
-master key is never in it. A segment retired on the host is listed in the
+master key is never in it.
+
+A line in a record file that is not a JSON record (a writer that died
+mid-line on a full disk, and its restart's first line glued to the
+fragment; another vantage's line pulled as it was) stays in the file for
+good, since the files are append-only and the collector steps over it. The
+cut lists it by its line number (`bad_lines`, `bad_count`; `show` prints
+them), copies it as it is, and `verify` requires exactly those lines and no
+other. It no longer fails the cut: a cut that failed on it stopped every
+copy from then on. A cut that cannot be taken at all (an archive index
+that places no live file) does not stop the copy either: the files are
+copied without a new manifest, the remote keeps the last one, and
+`fibre-backup@` fails at the end, which the health watch reports.
+
+The manifest is uploaded last, on its own, once every file it describes is
+on the remote: a night that stops part-way (a reboot, the link, a full
+bucket) leaves the previous manifest, never a new one beside older files.
+The files it describes are all still there: grown since, which `verify`
+trims back, or rotated since by `observer-archive` (below), the cut's
+live lines then in the segments that rotation wrote, which go to the
+remote before any live file. `verify` reads them back from there into the
+live file's place and checks them against the cut, so a remote's copy
+verifies after a failed night too.
+
+`verify` takes the names from a manifest that came back from the remote
+with the copy, and trims and writes the files they name; it touches only
+the names a cut holds (the record files, and
+`vantages/<name>/reachability.jsonl` under a name `vantage-pull` accepts),
+segment and export names with no directory part, and nothing a link in
+the copy leads out of it. A manifest altered on the remote cannot make the
+restore drill, which runs as root, cut a file outside its copy.
+
+A segment retired on the host is listed in the
 cut with its `retired` record; `verify` checks it by its file when the
 copy has one (the remote has every retired segment's file: a segment is
 retired only after a backup has copied it) and otherwise reads it back
@@ -934,7 +1019,10 @@ own files.
   each `vantages/<name>/reachability.jsonl`), the archived
   segments under `archive/` and `vantages/<name>/archive/` (first, see "Archive" below), `state.json`, the status files
   and the daily exports to `BACKUP_REMOTE/<network>` nightly (`deploy/backup.sh`),
-  with the rclone remote configured once in `/etc/fibre-observer/rclone.conf`.
+  then `backup-manifest.json`, last,
+  with the rclone remote configured once in `/etc/fibre-observer/rclone.conf`
+  (`0640 root:fibre-observer`, like the env file: it holds the remote's
+  credentials, and the backup reads it as the service user).
   It copies rather than mirrors, so moving old files off a full disk, or
   retiring a segment, can never delete them from the remote, and a
   segment is retired only after a backup has copied its file.
@@ -1538,8 +1626,11 @@ sudo -u fibre-observer fibre-hosting-db /var/lib/fibre-observer/mocha/hosting
 ```
 
 (the path is `<DATA_DIR>/hosting`; the script downloads to a temp name,
-checks the format and line count, and renames, so a failed download never
-replaces a good file). Within one endpoint poll (a minute) the collector
+checks that it gunzips whole (`gzip -t`), its format and its line count,
+and renames, so a failed download never replaces a good file, nor does
+one the server sent complete but whose gzip stream is cut short or fails
+its CRC, which would pass the line count and then fail every lookup until
+the next month's refresh). Within one endpoint poll (a minute) the collector
 logs `hosting: N open endpoint(s), N resolved, N with an origin AS`, and
 `/v1/hosting` answers `"enabled": true`. No restart, no unit change. To keep
 the files elsewhere, set `HOSTING_ASN_DB=` and `HOSTING_COUNTRY_DB=` in the
@@ -1706,14 +1797,17 @@ differ from Mocha's, in order.
    node cannot serve, and a scan from the tip waits for the 1000 blocks it
    needs (section 3).
 3. **The env file.** `/etc/fibre-observer/mainnet.env` from
-   `deploy/observer.env.example`: `NETWORK=mainnet`, `RPC` (the mainnet
+   `deploy/observer.env.example`, installed as in section 3
+   (`sudo install -m 0640 -o root -g fibre-observer deploy/observer.env.example /etc/fibre-observer/mainnet.env`):
+   `NETWORK=mainnet`, `RPC` (the mainnet
    node), a `VANTAGE` name of its own,
    `DATA_DIR=/var/lib/fibre-observer/mainnet`, `POLICY=` empty,
-   `API_LISTEN=127.0.0.1:8080`, `SITE_LISTEN` (with site-server, a port of
-   its own), `START_HEIGHT=0` or a height the node holds,
+   `API_LISTEN=127.0.0.1:8080`, `START_HEIGHT=0` or a height the node holds,
    `END_READ_SINCE=` empty, `VANTAGE_LOCATION`, `VANTAGE_PROVIDER`, the
-   alert settings and `BACKUP_REMOTE`. `publishers-mainnet.yaml` only if
-   you label publishers.
+   alert settings and `BACKUP_REMOTE`. With site-server,
+   `/etc/fibre-observer/site-mainnet.env` with `SITE_LISTEN` (a port of
+   its own) and `API_LISTEN=127.0.0.1:8080` (section 5).
+   `publishers-mainnet.yaml` only if you label publishers.
 4. **The units.** Section 4 with `mainnet`: the data directory
    `/var/lib/fibre-observer/mainnet`, then
    `sudo deploy/test/smoke.sh "$RPC" mainnet`, then
@@ -1799,9 +1893,9 @@ minutes and touch the running services, the last one takes a day.
 | script | question | touches | time |
 |---|---|---|---|
 | `rpc-check.sh <rpc> [rpc2]` | is the RPC node on the expected chain (`RPC_CHAIN_ID`, default `mocha-5`; `celestia` on mainnet), in sync, and keeping `block_results`, the validator set and historical state as far back as the observer reads (6000 blocks)? With a second node, do the two agree on a block hash? | nothing | seconds |
-| `exposure.sh` | is only ssh/http/https reachable from outside, is every unit enabled for a reboot, does HTTPS reach the API through Caddy, does a test alert actually arrive, is a sampling master key, if one is left, `600`? | posts one test message | seconds |
+| `exposure.sh` | is only ssh/http/https reachable from outside, is every unit enabled for a reboot, does HTTPS reach the API through Caddy, does a test alert actually arrive at every destination set (the webhook, the Telegram chat; neither set fails), are the env file, `rclone.conf` and litestream's env file closed to other accounts, is a sampling master key, if one is left, `600`? | posts one test message | seconds |
 | `persistence.sh` | live: do the checkpoints survive a restart, is the database sound? On one consistent cut of the record: no duplicate line, a rebuild from the cut alone holds exactly its records, and `sentinel-recompute` agrees with a second API serving that same cut, both as of the cut's timestamp | restarts collector + scanner; rebuilds into a temp dir; a throwaway API on `:18082` | minutes |
-| `restore.sh` | does the nightly copy verify against its manifest (every file present, at least the cut, hash and record count equal, every line a JSON record, the cut's own `state.json` put in place of the copy's, no master key), rebuild to exactly the cut's records, and serve them from a second API on a spare port? | starts a throwaway API on `:18081` | minutes |
+| `restore.sh` | does the nightly copy verify against its manifest (every file present, at least the cut, hash and record count equal, every line a JSON record but the ones the cut lists, a live file rotated since read back from the copy's segments, the cut's own `state.json` put in place of the copy's, no master key), rebuild to exactly the cut's records, and serve them from a second API on a spare port? | starts a throwaway API on `:18081` | minutes |
 | `outage.sh` | when the chain source is cut, does the site say so within twelve minutes and keep serving its last figures; when it returns, does the scanner catch up with no gap, no lost row and no duplicate; when every process is stopped and started, is nothing lost? | edits the env file (restored on every exit path), restarts and stops units | ~30 min |
 | `resource-watch.sh run` / `summarize` | over a day, what grows (memory per unit, data directory), what lags (scanner behind the chain, newest block age, collector behind `measurements.jsonl`, snapshot compute time) and what fails (RPC-shaped journal errors, health)? | nothing | 24 h |
 
@@ -1821,9 +1915,12 @@ The scripts have regression tests of their own: `deploy/test/selftest.sh`
 (also `make test-deploy`, and CI) runs them against fake API and RPC servers
 on loopback and a fake rclone over a local directory — a closed port,
 healthy and degraded answers, env values with spaces and quotes, a backup
-that grew, was truncated, altered or lost a file, a retired segment read
-back from its exports, the remote proof of the exports, and app version
-9/10 against the x/fibre query — with no root, no systemd and no rclone.
+that grew, was truncated, altered or lost a file, a line that is not a
+record, a copy rotated after its cut, a manifest that names a file outside
+its copy, a retired segment read back from its exports, the remote proof
+of the exports, the manifest uploaded last, alert URLs kept off curl's
+command line, a hosting database cut short, and app version 9/10 against
+the x/fibre query — with no root, no systemd and no rclone.
 
 `rpc-check` is the one to run before anything else, and against any public
 endpoint you consider: a node started with `storage.discard_abci_responses =

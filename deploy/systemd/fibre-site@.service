@@ -6,9 +6,14 @@ Wants=network-online.target
 # Only for hosts whose front proxy cannot serve the site itself (see the top of
 # deploy/site-server.cjs). The export is copied to /srv/fibre-site/%i so the
 # unit reads nothing from a checkout or a home directory.
+#
+# site-server reads SITE_LISTEN and API_LISTEN and nothing else, so it gets
+# a file of its own holding those two lines (deploy/README.md, 5), not the
+# network's env file: that one holds the alert token, the webhook and the
+# backup remote, which an internet-facing process has no use for.
 [Service]
 DynamicUser=true
-EnvironmentFile=/etc/fibre-observer/%i.env
+EnvironmentFile=/etc/fibre-observer/site-%i.env
 Environment=SITE_ROOT=/srv/fibre-site/%i
 ExecStart=/usr/bin/node /usr/local/lib/fibre-observer/site-server.cjs
 Restart=always
