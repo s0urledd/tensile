@@ -34,6 +34,8 @@ const KINDS: [string, string][] = [
 const ICON = <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.75" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="m10.5 10.5 3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>;
 /** a blob: its rows, stacked */
 const BLOB = <svg className="hs-glyph" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="M5 6h6M5 8h6M5 10h4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></svg>;
+/** a transaction that failed in a block: a circled x */
+const FAILED = <svg className="hs-glyph" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="m6 6 4 4m0-4-4 4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></svg>;
 
 /** a key pressed in a field or an editor types there; "/" only opens the search from the page itself */
 const typing = (t: EventTarget | null) =>
@@ -83,9 +85,10 @@ function useRecord<T>(path: string | null, again: number): Got<T> | null {
 
 /**
  * one record the search found, as a row of its panel that opens the record's page: what it is, in one word, and which;
- * a blob also says when it settled, so the several settlements of one blob ID tell apart
+ * a blob also says when it settled, so the several settlements of one blob ID tell apart (atWord: what happened at,
+ * "Settled" unless given)
  */
-type Item = { href: string; glyph: ReactNode; kind: string; title: ReactNode; label: string; at?: string; hash?: string };
+type Item = { href: string; glyph: ReactNode; kind: string; title: ReactNode; label: string; at?: string; atWord?: string; hash?: string };
 
 const short = (s: string, head = 8, tail = 4) => (s.length > head + tail + 1 ? `${s.slice(0, head)}…${s.slice(-tail)}` : s);
 /** an address as the lists print it: its prefix, then its last four */
@@ -163,6 +166,10 @@ export default function HeaderSearch() {
   if (asked?.kind === "blob") {
     if (!hit) note = <span className="hs-wait">Looking it up…</span>;
     else if (hit.error && hit.rows.length === 0) note = <>The observer did not answer ({hit.error}). Try again in a moment.</>;
+    // a Fibre transaction that failed in a block: its page says why
+    else if (hit.rows.length === 0 && hit.failedTx) items = [{ href: `/blob/?tx=${blob!.hex}`, glyph: FAILED, kind: "Failed tx",
+      label: `Failed transaction ${blob!.hex.slice(0, 10)}, block ${int(hit.failedTx.height)}`, at: hit.failedTx.time, atWord: "Failed",
+      hash: blob!.hex.toUpperCase(), title: <span className="hs-ht">#{int(hit.failedTx.height)}</span> }];
     else if (hit.total === 0) note = blob?.kind === "id"
       ? <>Tensile has not indexed a blob with this blob ID yet. A blob appears once Tensile has read the block that settled it.</>
       : <>Tensile has not indexed a blob with this hash yet, or the transaction carries no Fibre blob.</>;
@@ -270,7 +277,7 @@ export default function HeaderSearch() {
                           <span className="hs-top">
                             <span className="hs-k">{it.kind}</span>
                             {it.title}
-                            {it.at && <span className="hs-at" title={`Settled ${utcWord(it.at)}`}>{at(it.at)}</span>}
+                            {it.at && <span className="hs-at" title={`${it.atWord ?? "Settled"} ${utcWord(it.at)}`}>{at(it.at)}</span>}
                           </span>
                           {it.hash && <span className="hs-hash mono" title={it.hash}>{short(it.hash, 18, 10)}</span>}
                         </span>

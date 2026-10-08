@@ -150,6 +150,15 @@ the tip, which the scan needs anyway (a block the node cannot serve is a
 recorded gap, and a registration inside a gap makes the hosts of later
 settlements unknown until the gap is re-scanned).
 
+The same pass records every transaction that failed in a block while
+carrying a Fibre message (a settlement, an escrow deposit, a withdrawal
+request, a timeout or a host registration, on its own or inside a
+MsgExec) in `failed_txs.jsonl`, with the code, log, gas and fee the node
+returned; `/v1/blobs?tx=` answers it for that hash, and it is in no figure.
+The node the scanner reads must not run with `--trace`. With it, every log
+starts with a stack trace, the message index cannot be read, and only the
+8 KiB cut bounds the log.
+
 The prober asks a validator only for a blob it endorsed, in window, for its
 own rows, as the client asks for a shard, and asks it again, up to twice,
 only when its answer did not serve. The
@@ -594,6 +603,80 @@ The upgrade to schema 29, in order:
 6. `sudo rm /var/lib/fibre-observer/mocha/sampling-master.key`;
 7. with the hosting lookup on, `sudo systemctl enable --now fibre-hosting-db@mocha.timer` (7b);
 8. build the site for the network and copy it in place (section 5).
+
+**The upgrade to schema 30** (failed Fibre transactions). Migration 30 is
+pure DDL: the table `failed_txs` and its index. It moves no row, and not
+`meta.migration_rewrites`, so the day partials are kept; it does move the
+schema version, so the endorsement ledger, which is keyed on it, is built
+again once. Every binary that opens the store (the collector, the API,
+`observer-archive`, `record-verify`) refuses one at another schema, so the
+whole `bin/` set is installed together, with `deploy/backup-manifest.py`,
+whose cut lists the new file. It takes the additive path below (the old
+API serves from the migrated store during the warm-up), with the archive
+timer off from the install until the migration, and the store read for the
+ledger once. Run it after 06:45 UTC and well before 03:00 UTC, clear of the
+export, the backup, the archive run and the hosting refresh on the 3rd, as
+the window's one heavy job, and keep the previous build's directory (its
+`bin/` and `deploy/`) for the way back:
+
+1. keep the schema-29 ledger for the way back:
+   `sudo -u fibre-observer cp -p /var/lib/fibre-observer/mocha/snapshots/endorsement-ledger.json /var/lib/fibre-observer/mocha/endorsement-ledger-v29.json`;
+2. `sudo systemctl stop fibre-archive@mocha.timer` (the new `observer-archive`
+   refuses the schema-29 store until the migration);
+3. install every binary and the manifest tool:
+   `sudo install -m 0755 fibre-sentinel/bin/* /usr/local/bin/` and
+   `sudo install -m 0755 deploy/backup-manifest.py /usr/local/bin/fibre-backup-manifest`;
+4. `sudo systemctl restart fibre-collector@mocha`, and wait until
+   `SELECT MAX(version) FROM schema_migrations` reads 30 (seconds);
+5. let the old API build its ledger again once: at its next save it finds
+   the store at schema 30, drops the ledger and builds it from the store.
+   Wait, up to 15 minutes, for `endorsement ledger: built from the store
+   again: the store moved from schema version 29 to 30` in its journal and
+   for `snapshots/endorsement-ledger.json` to carry `"schema":30` in its
+   header (`head -c 600`). With no new assignment in those minutes, go on:
+   the warm-up builds it instead;
+6. seed, warm up and switch as below (the `-warm-only` run and the copy of
+   `snapshots.next`, with any drop-in flags the unit has). The warm-up says
+   `endorsement ledger: loaded …` and loads the day partials without sealing
+   them again; the started API says `endorsement ledger: loaded …`, never
+   `built from the store`;
+7. `sudo systemctl restart fibre-scan@mocha` (the prober and the heartbeat
+   did not change);
+8. `sudo systemctl start fibre-archive@mocha.timer`;
+9. build the site for the network and copy it in place (section 5).
+
+`failed_txs.jsonl` is absent until the first failure, and so is its
+`ingest_cursors` row; every export from then on carries the member, empty
+until then. `-include-failed` is retired: the scanner keeps the flag, so
+`runs.jsonl` still says `"include-failed":"false"`, and stops at start if it
+is true.
+
+**Going back past schema 30.** Migration 30 only added a table and an
+index the older build never reads, so the way back is the one-row delete,
+not a copy of the store. `observer-archive` and `record-verify` refuse a
+store at another schema too, so they go back with the rest:
+
+1. `sudo systemctl stop fibre-archive@mocha.timer`;
+2. install the previous build's whole `bin/` set and its
+   `deploy/backup-manifest.py` (as `/usr/local/bin/fibre-backup-manifest`),
+   as in step 3 above: the older manifest tool refuses a cut that names
+   the new file only until the next cut;
+3. `sudo systemctl restart fibre-scan@mocha`: the older scanner writes no
+   more failure lines;
+4. stop `fibre-api@mocha` and `fibre-collector@mocha`;
+5. `sudo -u fibre-observer sqlite3 /var/lib/fibre-observer/mocha/observer.db 'DELETE FROM schema_migrations WHERE version > 29'`;
+6. put the schema-29 ledger back:
+   `sudo -u fibre-observer cp -p /var/lib/fibre-observer/mocha/endorsement-ledger-v29.json /var/lib/fibre-observer/mocha/snapshots/endorsement-ledger.json`.
+   The older API then catches it up from its mark instead of building it
+   again; without the copy it builds it once;
+7. start the collector, wait for its cursors to move, then start the API;
+8. `sudo systemctl start fibre-archive@mocha.timer`.
+
+The table, the index and the `failed_txs.jsonl` cursor row stay, unread;
+the older scanner does not grow the file, so the health check does not
+flag the row. A later upgrade runs migration 30 again over them and reads
+on from the cursor. The new site works against the older API, which never
+answers `failed_tx`, so it may stay.
 
 **Once anything is retired.** A collector that reads a retired range
 ("Retiring local copies" below) reads it from the exports; one from before
@@ -1062,7 +1145,7 @@ own files.
 - **fibre-backup** for the record: `fibre-backup@mocha.timer` runs
   `rclone copy` of every `.jsonl` (the record, `registry.jsonl`,
   `runs.jsonl`, `sampling_decisions.jsonl`, `sampling-secrets.jsonl`, `amendments.jsonl`,
-  each `vantages/<name>/reachability.jsonl`), the archived
+  `failed_txs.jsonl`, each `vantages/<name>/reachability.jsonl`), the archived
   segments under `archive/` and `vantages/<name>/archive/` (first, see "Archive" below), `state.json`, the status files
   and the daily exports to `BACKUP_REMOTE/<network>` nightly (`deploy/backup.sh`),
   then `backup-manifest.json`, last,
@@ -1110,7 +1193,9 @@ back from `runs.jsonl`, which every component appends its starts, stops
 and flags to, the revealed sampling secrets from
 `sampling-secrets.jsonl`, and the late shadow verdicts from
 `amendments.jsonl`, the collector's own log of them (replayed before
-anything is re-judged, so a rebuild never draws a verdict twice). What a rebuild does **not** bring back, because
+anything is re-judged, so a rebuild never draws a verdict twice), and the
+failed Fibre transactions from `failed_txs.jsonl`, the scanner's (a line
+repeated by a manual re-scan is kept once). What a rebuild does **not** bring back, because
 it has no JSONL source: the collector's own run row, the escrow balances
 and validator identities (re-polled within minutes), the validators'
 Keybase pictures (re-fetched within the hour, see below), and the
@@ -1257,9 +1342,12 @@ fibre-backup-manifest cat /var/lib/fibre-observer/mocha measurements.jsonl | wc 
 `-keep 336h` in `ARCHIVE_ARGS` in the env file keeps two weeks live. The
 backup copies `archive/` and each `vantages/<name>/archive/` before the live
 files, and its manifest names every segment and the live base; `restore.sh`
-and `verify` check each segment. The small record files (host history, the
-collector's own logs, runs) are not archived: their writers hold them open
-without the lock. `vantage-pull` resumes each vantage's file from its
+and `verify` check each segment. The small record files (host history,
+failed transactions, the collector's own logs, runs) are not archived:
+their writers hold them open without the lock. `failed_txs.jsonl` is
+bounded by the chain's limits, at most about 80 KiB a line (600 messages
+and an 8 KiB log) and 800 lines a block; past 1 MiB a day or 64 MiB in
+all it is to be archived as `payments.jsonl` is. `vantage-pull` resumes each vantage's file from its
 logical end (`observer-archive -logical-end vantages/<name>/reachability.jsonl`,
 the live file's base plus its size), not from its size, so a rotated file
 goes on where the record ends. Do not run `observer-archive` on the second
@@ -1388,6 +1476,8 @@ Never retired:
   keep them line by line, so nothing shows their exported lines to be the
   record a second way (sampling decisions are archived; their segments
   stay);
+- `failed_txs.jsonl`: not archived, and its exported lines are held to
+  their digest only (the record check lists the member as not checked);
 - the exports, `state.json` and the store: a retired segment is read back
   from the exports, which the backup copies and never deletes.
 
