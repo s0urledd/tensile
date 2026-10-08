@@ -5,7 +5,10 @@ import Copy from "@/components/Copy";
 import Warn from "@/components/Warn";
 import { monthDayTime } from "@/components/BlobsDeck";
 
-/** past this many messages, only those that carry Fibre and the one that failed are listed */
+/**
+ * past this many messages, only the one that failed and the first this many that carry Fibre are listed; past this
+ * many inside a MsgExec, its name gives the first this many Fibre ones and counts the rest
+ */
 const LISTED = 12;
 
 /** a message's name: its type URL after the last dot */
@@ -14,14 +17,23 @@ const nameOf = (url: string) => url.slice(url.lastIndexOf(".") + 1);
 /** a message, or a MsgExec with a message inside it, that carries Fibre */
 const carries = (m: FailedTxMsg) => m.fibre || !!m.inner?.some((i) => i.fibre);
 
+/** a MsgExec's messages inside the brackets of its name, each as `as` gives it, and how many more there are */
+function within(inner: FailedTxMsg[], as: (url: string) => string) {
+  const shown = inner.length > LISTED ? inner.filter((i) => i.fibre).slice(0, LISTED) : inner;
+  const rest = inner.length - shown.length;
+  const names = shown.map((i) => as(i.type_url));
+  if (rest > 0) names.push(shown.length > 0 ? `+${int(rest)} more` : `${int(rest)} messages`);
+  return names.join(", ");
+}
+
 /**
  * One message of the transaction, by its name: a MsgExec with the names of the messages inside it, in order. The one
  * the error names is marked failed; one that carries no Fibre is quieter. The hover gives the full type URLs.
  */
 function Msg({ m, failed }: { m: FailedTxMsg; failed: boolean }) {
   const inner = m.inner && m.inner.length > 0 ? m.inner : null;
-  const label = inner ? `${nameOf(m.type_url)} (${inner.map((i) => nameOf(i.type_url)).join(", ")})` : nameOf(m.type_url);
-  const title = inner ? `${m.type_url} (${inner.map((i) => i.type_url).join(", ")})` : m.type_url;
+  const label = inner ? `${nameOf(m.type_url)} (${within(inner, nameOf)})` : nameOf(m.type_url);
+  const title = inner ? `${m.type_url} (${within(inner, (url) => url)})` : m.type_url;
   if (failed) return <span title={title}><b className="bad">{label}</b> <em>failed</em></span>;
   return <span className={carries(m) ? undefined : "u"} title={title}>{label}</span>;
 }
@@ -35,7 +47,9 @@ export default function FailedTx({ hex, f, meta, metaErr, at }: { hex: string; f
   // the hash in upper case, as the client and the chain's tools print it
   const HEX = hex.toUpperCase();
   const failedAt = f.failed_msg_index;
-  const listed = f.messages.length > LISTED ? f.messages.filter((m) => carries(m) || m.index === failedAt) : f.messages;
+  // past LISTED messages: the one that failed and the first LISTED that carry Fibre, in order
+  const carrying = new Set(f.messages.filter(carries).slice(0, LISTED).map((m) => m.index));
+  const listed = f.messages.length > LISTED ? f.messages.filter((m) => m.index === failedAt || carrying.has(m.index)) : f.messages;
   const msgs: ReactNode[] = [];
   listed.forEach((m, i) => {
     if (i > 0) msgs.push(" · ");
@@ -53,8 +67,8 @@ export default function FailedTx({ hex, f, meta, metaErr, at }: { hex: string; f
       </section>
       <StatusLine meta={meta} metaError={metaErr} snap={null} client={{ error: null, fetchedAt: at }} />
 
-      {/* why it failed and what it carried, in the blob page's light frame of facts */}
-      <div className="bd-top">
+      {/* why it failed and what it carried, in the blob page's light frame of facts, at the page width as the error is */}
+      <div className="bd-top bd-one">
         <dl className="pb-meta bd-meta">
           {f.reason && <><dt>Reason</dt><dd>{f.reason}</dd></>}
           <dt>Code</dt><dd><span className="mono">{f.codespace ? `${f.codespace} ${f.code}` : f.code}</span></dd>

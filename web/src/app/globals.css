@@ -2654,8 +2654,10 @@ button.warn:focus-visible { outline-offset: 0; }
 .bd-tile.fault .mk { background: var(--fault); }
 .bd-none { margin: 0; padding: 14px 16px 16px; color: var(--text-2); }
 
-/* a transaction that failed in a block (components/FailedTx): the message the error names in red in the facts, and
-   the error itself in the endorsements' frame, as the node returned it, scrolling past a few lines */
+/* a transaction that failed in a block (components/FailedTx): its one frame of facts at the page width, as the error
+   under it is, the message the error names in red in it, and the error itself in the endorsements' frame, as the node
+   returned it, scrolling past a few lines */
+.bd-top.bd-one { grid-template-columns: minmax(0, 1fr); }
 .bd-meta b.bad { color: var(--fault); }
 .bd-err-a { display: inline-flex; align-items: center; gap: 8px; }
 .bd-log { margin: 0; padding: 12px 16px; font-family: var(--mono); font-size: var(--t-cell); line-height: 18px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 16em; overflow: auto; }
