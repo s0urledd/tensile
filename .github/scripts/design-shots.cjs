@@ -54,6 +54,13 @@ const server = http.createServer((req, res) => {
       // Southeast and East Asia, where the smallest hosted places are
       const b = await atlas.boundingBox();
       if (b) await page.screenshot({ path: path.join(out, `asia-${tag}.png`), animations: "disabled", clip: { x: b.x + b.width * 0.58, y: b.y + b.height * 0.12, width: b.width * 0.3, height: b.height * 0.62 } });
+      // the popover, open on Singapore's badge
+      const sg = page.locator('.cm-b[aria-label*="Singapore"]').first();
+      if (b && await sg.count()) {
+        await sg.hover();
+        await page.waitForTimeout(500);
+        await page.screenshot({ path: path.join(out, `pop-${tag}.png`), animations: "disabled", clip: { x: b.x + b.width * 0.4, y: b.y, width: b.width * 0.6, height: b.height } });
+      } else notes.push(`${width} ${theme}: no Singapore badge to open`);
       await ctx.close();
     }
   }

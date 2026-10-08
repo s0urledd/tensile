@@ -996,9 +996,9 @@ body { background: var(--canvas); }
    band of sea under a faint graticule, the land one calm solid tone lighter
    than the sea, with no borders and no country marked. Places are rounded
    squares in the accent with their count, the map's only colour; a lone host
-   is a small square with none. Names
-   only on hover, focus or tap. One floating bar straddles the map's foot: the
-   newest event, then the three counts. Under it a row of three instruments:
+   is a small square with none. Names only on hover, focus or tap. One bar
+   straddles the map's foot: the newest event, then the three counts, in flat
+   pills. Under it a row of three instruments:
    the current Fibre providers' share of voting power over a strip of the
    validators themselves, open on the panel; the recent blobs (newest first, a
    tape that moves once per read) in a window of their own; the latest blob's
@@ -1046,7 +1046,7 @@ body { background: var(--canvas); }
   position: relative; isolation: isolate; margin: 16px 0 18px; border-radius: var(--r-panel);
   background: var(--paper); border: 1px solid var(--border); box-shadow: var(--shadow);
 }
-/* flat: not lit from its corners as the other pages' chain panels are, the map's sea is its top */
+/* not lit from its corners as the other pages' chain panels are: the map over it is flat, its sea the panel's top */
 :root[data-theme="dark"] .deck {
   --cm-sea: #0b0f12;
   --cm-grid: rgb(255 255 255 / .045);
@@ -1105,8 +1105,8 @@ body { background: var(--canvas); }
   position: absolute; right: 16px; top: 14px; z-index: 6; display: inline-flex; gap: 2px; padding: 3px; border-radius: 999px;
   background: var(--cm-chrome); box-shadow: 0 0 0 1px var(--cm-chrome-edge);
 }
-.cm-tools button { display: grid; place-items: center; width: 28px; height: 26px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--text-2); cursor: pointer; transition: background var(--dur), color var(--dur), box-shadow var(--dur); }
-.cm-tools button:hover:not(:disabled) { background: var(--seg-on); color: var(--seg-on-ink); box-shadow: var(--seg-on-shadow); }
+.cm-tools button { display: grid; place-items: center; width: 28px; height: 26px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--text-2); cursor: pointer; transition: background var(--dur), color var(--dur); }
+.cm-tools button:hover:not(:disabled) { background: var(--accent-tint); color: var(--accent-ink); }
 .cm-tools button:disabled { opacity: .38; cursor: default; }
 .cm-tools button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
@@ -1141,11 +1141,10 @@ body { background: var(--canvas); }
 .cm-pin.one.live .cm-badge::after { border-radius: 5px; }
 @keyframes cm-pulse { 0% { transform: scale(1); opacity: .55; } 100% { transform: scale(2); opacity: 0; } }
 
-/* a place's hosts: the charts' tooltip surface */
+/* a place's hosts: a flat card on the map, as the pills are (solid, a hairline, no shadow and no blur) */
 .cm-pop {
   position: absolute; display: flex; flex-direction: column; padding: 12px 14px 10px; border-radius: 12px; text-align: left; font-size: var(--t-cell); cursor: auto;
-  background: color-mix(in srgb, var(--paper) 94%, transparent); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
-  border: 1px solid var(--border); box-shadow: var(--shadow-pop); animation: cm-in var(--dur) ease-out;
+  background: var(--cm-chrome); border: 1px solid var(--cm-chrome-edge); animation: cm-in var(--dur) ease-out;
 }
 .cm-pop-h { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 0 0 8px; }
 .cm-pop-h b { font-weight: 600; color: var(--text); }
