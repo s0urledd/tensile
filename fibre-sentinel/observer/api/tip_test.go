@@ -119,6 +119,43 @@ func TestTipAsksTheNode(t *testing.T) {
 	}
 }
 
+// A node that hangs until its ask times out (tipRPCTimeout), with no scanner
+// file, leaves the collector's meta row to answer, read within a timeout of
+// its own. It was read within the one the reads before the node were given,
+// which had run out by then, and the tip answered height 0 with no block
+// time from an idle store.
+func TestTipFallsBackToTheCollectorPastAHungNode(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	bt := time.Date(2026, 10, 8, 6, 0, 0, 0, time.UTC)
+	_ = st.SetMeta("fibre_active", "yes", time.Now())
+	_ = st.SetMeta("chain_height", "1065000", time.Now())
+	_ = st.SetMeta("chain_tip_time", store.TS(bt), time.Now())
+	release := make(chan struct{})
+	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer node.Close()
+	defer close(release)
+	srv := api.NewWithVantage(st, api.VantageInfo{Name: "test"}, nil, api.WithDataDir(dir), api.WithTipRPC(node.URL))
+	defer srv.Close()
+	start := time.Now()
+	b, _ := getTip(t, srv)
+	if took := time.Since(start); took < 500*time.Millisecond {
+		t.Fatalf("the node was not waited for past the store's timeout (%v)", took)
+	}
+	if b.Height != 1065000 || b.BlockTime == nil || !b.BlockTime.Equal(bt) || !b.FibreActive {
+		t.Errorf("past a hung node the collector's row should answer: %+v", b)
+	}
+}
+
 // The tip names the newest blob the store holds, in /v1/blobs' own order
 // (height, then position in the block), so a page can read the list only when
 // a blob arrives; with none stored the field is left out, which is what a
@@ -188,5 +225,49 @@ func TestTipNamesTheNewestBlob(t *testing.T) {
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil || len(page.Blobs) != 1 || page.Blobs[0].PromiseHash != hash(4) {
 		t.Fatalf("/v1/blobs' newest is not the tip's: %s", rec.Body.String())
+	}
+}
+
+// /v1/tip reads the store with its cache's lock held, and every open page
+// asks it every second. While every connection of the store's pool is held
+// by reads ahead of it, it answers within tipStoreTimeout all the same,
+// without the store's figures for that answer, and Fibre's state and the
+// block the collector's row named are the last answer's. It used to read
+// through Store.Meta, which takes no context: it waited for a connection
+// for as long as those reads ran, and every reader of the route waited
+// behind it.
+func TestTipAnswersWhileEveryConnectionIsHeld(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "observer.db")) // a pool of one connection
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	_ = st.SetMeta("fibre_active", "yes", time.Now())
+	_ = st.SetMeta("chain_height", "1000", time.Now())
+	srv := api.NewWithVantage(st, api.VantageInfo{Name: "test"}, nil)
+	defer srv.Close()
+	if b, _ := getTip(t, srv); !b.FibreActive || b.Height != 1000 {
+		t.Fatalf("tip %+v", b)
+	}
+	tx, err := st.DB().Begin() // holds the one connection
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	time.Sleep(300 * time.Millisecond) // past the answer kept
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/tip", nil))
+		done <- rec
+	}()
+	select {
+	case rec := <-done:
+		var b tipBody
+		if err := json.Unmarshal(rec.Body.Bytes(), &b); err != nil || rec.Code != http.StatusOK || !b.FibreActive || b.Height != 1000 {
+			t.Errorf("with every connection held: %d %s", rec.Code, rec.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("/v1/tip waited for a connection of the store")
 	}
 }

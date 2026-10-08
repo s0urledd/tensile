@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/verdict"
@@ -53,8 +56,34 @@ type paramUncertainty struct {
 	ResolvedAt           string `json:"resolved_at,omitempty"`
 	CorrectedAt          string `json:"corrected_at,omitempty"`
 	HeightsRead          int64  `json:"heights_read,omitempty"`
-	ResolveError         string `json:"resolve_error,omitempty"`
-	LastError            string `json:"last_error,omitempty"`
+	// ResolveError is why the range could not be closed, as publicResolveError
+	// words it. A check_skipped range's last error, the scanner's RPC error
+	// as it came, is not published, as a scan gap's is not (publicGaps).
+	ResolveError string `json:"resolve_error,omitempty"`
+}
+
+// resolveReadFailed is what /v1/meta says of a range whose params could not
+// be read at one of its heights. The scanner records the RPC error as it
+// came ("params at height N: abci query params h=N: post failed: Post
+// \"http://<node>:26657\": ..."): the node's address and the client's own
+// text, which stay in the record and the scanner's journal.
+const resolveReadFailed = "the params could not be read at a height in the range; nothing is proven"
+
+// publicResolveError is a range's resolve error as /v1/meta publishes it:
+// the scanner's own fixed words as they are (a range too long to read in one
+// pass), the height a read failed at, and never the error that read met.
+func publicResolveError(e string) string {
+	if e == "" || strings.HasPrefix(e, "the range is ") {
+		return e
+	}
+	if rest, ok := strings.CutPrefix(e, "params at height "); ok {
+		if h, _, ok := strings.Cut(rest, ":"); ok {
+			if n, err := strconv.ParseInt(h, 10, 64); err == nil && n > 0 {
+				return fmt.Sprintf("the params could not be read at height %d; nothing is proven", n)
+			}
+		}
+	}
+	return resolveReadFailed
 }
 
 // retentionUncertainty is the one-line summary beside every rate that is
@@ -79,7 +108,7 @@ func paramUncertaintyOf(r store.ParamRange) paramUncertainty {
 		Direction: u.Direction, WindowBeforeS: u.WindowBeforeS, WindowAfterS: u.WindowAfterS,
 		Holds: r.Holds, CorrectedAt: r.CorrectedAt, PublicationsAffected: u.PublicationsAffected, AffectedIsFloor: u.IsFloor,
 		DetectedAt: u.DetectedAt.UTC().Format(store.TimeLayout), Resolution: u.Resolution,
-		HeightsRead: u.HeightsRead, ResolveError: u.ResolveError, LastError: u.LastError,
+		HeightsRead: u.HeightsRead, ResolveError: publicResolveError(u.ResolveError),
 	}
 	if u.ToTime != nil {
 		out.ToTime = u.ToTime.UTC().Format(store.TimeLayout)

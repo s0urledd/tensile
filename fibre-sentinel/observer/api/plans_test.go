@@ -175,6 +175,19 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 	// block's rows, never a walk of publications.
 	cases = append(cases, c{"tip's newest blob", latestBlobSQL, nil,
 		[]string{"SEARCH publications USING INDEX publications_settlement (settlement_height=?)", "COVERING INDEX publications_settlement"}})
+	// /v1/probes by a class alone: the stored class beside the published
+	// one, sought newest first through probes_class_time, never the table
+	// walked for a class few rows carry (probeClassConds); served=no alone
+	// over its span (probeScanSpan), never the whole table.
+	byClass, classArgs := probeClassConds("IDENTITY_MISMATCH", false)
+	cases = append(cases,
+		c{"probes by class", probeRowsSQL(strings.Join(byClass, " AND "), 100, false), classArgs,
+			[]string{"probes_class_time (classification=?)"}},
+		c{"probes by class since", probeRowsSQL(strings.Join(append([]string{`started_at >= ?`}, byClass...), " AND "), 100, false),
+			append([]any{lo}, classArgs...), []string{"probes_class_time (classification=? AND started_at>?)"}},
+		c{"probes not served", probeRowsSQL(rollup.NotServedSQL("probes")+` AND started_at >= ?`, 100, false), []any{lo},
+			[]string{"probes_started (started_at>?)"}},
+	)
 	for _, tc := range cases {
 		plan, err := st.QueryPlan(ctx, tc.q, tc.args...)
 		if err != nil {

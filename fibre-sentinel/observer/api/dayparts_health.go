@@ -49,7 +49,10 @@ type dayPartsHealth struct {
 	// State is on, off (-day-partials=false), loading (before the kept
 	// partials are loaded or built) or raw-fallback (an audit found a
 	// difference: every window is read raw); Why says why it is the last,
-	// or why it is still loading when the load failed.
+	// or, when the load failed, how many times, in a fixed phrase: its
+	// error names the files' path under the data directory and carries the
+	// store's own text (the API's journal has it: "day partials: load
+	// failed: ...").
 	State string `json:"state"`
 	Why   string `json:"why,omitempty"`
 	// Origin is loaded (from the files kept) or built (from the store).
@@ -66,7 +69,8 @@ type dayPartsHealth struct {
 	OldestDue      string     `json:"oldest_unsealed_due,omitempty"`
 	OldestDueSince *time.Time `json:"oldest_unsealed_due_since,omitempty"`
 	RawDays        int        `json:"raw_days,omitempty"`
-	// The last hourly audit, and what it found.
+	// The last hourly audit, and what it found; an audit that failed is
+	// said in a fixed phrase, as a failed load is (partsAuditFailed).
 	LastAuditAt *time.Time `json:"last_audit_at,omitempty"`
 	LastAudit   string     `json:"last_audit,omitempty"`
 	// Rebuilds is how many times the partials were begun again since the
@@ -84,6 +88,17 @@ type dayPartsHealth struct {
 // failed (dayPartsHealth.LastSaveError).
 const partsSaveFailed = "writing the partials failed; the error is in the API's journal"
 
+// partsLoadFailed is what /v1/health says of a load of the partials that
+// failed, n times in a row (dayPartsHealth.Why): the error itself names
+// the file it was loading and is the store's or the system's text.
+func partsLoadFailed(n int) string {
+	return fmt.Sprintf("the load failed %d time(s); the error is in the API's journal", n)
+}
+
+// partsAuditFailed is what /v1/health says of an hourly audit that failed
+// (dayPartsHealth.LastAudit), for the same reason.
+const partsAuditFailed = "failed; the error is in the API's journal"
+
 // health is the partials' state at now, and the check /v1/health runs on
 // it: failing on a difference an audit found, and on a day due and not
 // sealed for longer than unsealedFor.
@@ -97,7 +112,7 @@ func (dp *dayParts) health(now time.Time) (dayPartsHealth, healthCheck) {
 	case dp.cur == nil:
 		h.State = "loading"
 		if f := dp.failures["load"]; f != nil {
-			h.Why = fmt.Sprintf("the load failed %d time(s), the last: %s", f.n, f.err)
+			h.Why = partsLoadFailed(f.n)
 		}
 	}
 	switch {
@@ -141,6 +156,9 @@ func (dp *dayParts) health(now time.Time) (dayPartsHealth, healthCheck) {
 	if !dp.audited.IsZero() {
 		at := dp.audited
 		h.LastAuditAt, h.LastAudit = &at, dp.auditNote
+		if strings.HasPrefix(dp.auditNote, "failed: ") {
+			h.LastAudit = partsAuditFailed
+		}
 	}
 	if dp.saveErr != "" {
 		at := dp.saveErrAt

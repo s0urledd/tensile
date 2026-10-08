@@ -1,6 +1,7 @@
 package api
 
 import (
+	"container/list"
 	"context"
 	"strconv"
 	"sync"
@@ -57,36 +58,72 @@ type blobVerdict struct {
 // megabytes, and it holds every publication of a busy week.
 const blobCacheMax = 20000
 
+// blobWorkSlots bounds the verdicts /v1/blobs computes at once, across every
+// request: a cold page is up to 501 of them, each the tally and the status's
+// reads of the reference (reconstructable), and deep pages walked one after
+// another (offset up to maxBlobOffset, limit up to 500) were each that, on
+// the request, with nothing bounding how many ran together. Taken per
+// publication, so a page of one blob waits for at most a verdict or two of
+// a crawl's, not for its page.
+const blobWorkSlots = 2
+
+// blobCache keeps the verdicts by their last use: once full, the one used
+// longest ago gives way. It used to start again from nothing once full, so
+// past blobCacheMax publications a walk through the pages emptied it over and
+// over, and dropped the first pages' verdicts, the ones every reader asks
+// for, with the rest.
 type blobCache struct {
-	mu sync.Mutex
-	m  map[string]blobVerdict
+	mu  sync.Mutex
+	max int
+	m   map[string]*list.Element
+	// lru holds the cached verdicts (*blobEntry), the one used last at the
+	// front.
+	lru *list.List
 }
 
-func newBlobCache() *blobCache { return &blobCache{m: map[string]blobVerdict{}} }
+type blobEntry struct {
+	hash string
+	v    blobVerdict
+}
+
+func newBlobCache() *blobCache { return newBlobCacheOf(blobCacheMax) }
+
+// newBlobCacheOf is a cache of at most size verdicts.
+func newBlobCacheOf(size int) *blobCache {
+	return &blobCache{max: size, m: map[string]*list.Element{}, lru: list.New()}
+}
 
 // get returns the cached verdict if it was computed against exactly the probes
 // the publication has now.
 func (c *blobCache) get(hash, fp string) (blobVerdict, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	v, ok := c.m[hash]
-	if !ok || v.fp != fp {
+	e, ok := c.m[hash]
+	if !ok {
 		return blobVerdict{}, false
 	}
+	v := e.Value.(*blobEntry).v
+	if v.fp != fp {
+		return blobVerdict{}, false
+	}
+	c.lru.MoveToFront(e)
 	return v, true
 }
 
 func (c *blobCache) put(hash string, v blobVerdict) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Over the bound, start again rather than evict by age. A verdict costs six
-	// queries to rebuild and the map only reaches this size on a store far
-	// larger than one page, so a rare full rebuild is cheaper to hold in the
-	// head than an eviction policy, and it cannot leak.
-	if len(c.m) >= blobCacheMax {
-		c.m = make(map[string]blobVerdict, blobCacheMax/2)
+	if e, ok := c.m[hash]; ok {
+		e.Value.(*blobEntry).v = v
+		c.lru.MoveToFront(e)
+		return
 	}
-	c.m[hash] = v
+	for c.lru.Len() > 0 && c.lru.Len() >= c.max {
+		old := c.lru.Back()
+		c.lru.Remove(old)
+		delete(c.m, old.Value.(*blobEntry).hash)
+	}
+	c.m[hash] = c.lru.PushFront(&blobEntry{hash: hash, v: v})
 }
 
 // probeFingerprints returns, for every publication in the selection (limit
