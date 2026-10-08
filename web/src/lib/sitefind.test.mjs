@@ -10,7 +10,7 @@ const load = (file) => {
   const js = ts.transpileModule(src, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 } }).outputText;
   return import(`data:text/javascript;base64,${Buffer.from(js).toString("base64")}`);
 };
-const { siteTarget } = await load("./sitefind.ts");
+const { siteTarget, validatorAddr, publisherAddr } = await load("./sitefind.ts");
 const { blobKey } = await load("./blobkey.ts");
 const go = (s) => siteTarget(s, blobKey);
 
@@ -46,4 +46,32 @@ test("names, words and partial identifiers are no identifier", () => {
     ACCOUNT.replace("l", "b"), TX.slice(0, 63), `${TX}0`, ACCOUNT.replace("celestia", "osmo")]) {
     assert.equal(go(s), null, String(s));
   }
+});
+
+// the forms a validator's page, a publisher's and a blob's take from their address, and the hand-made links that put
+// their own query, a dot segment or a fragment into the API's path through them
+const CONS_HEX = "f1450ff2c4d43ba3d35f4d8d01e19a4040b7b4c6";
+const BENT = [
+  `${VALOPER}?as_of=2026-09-20T12:00:00Z&window=7d#`, `${ACCOUNT}?window=24h#`, "../tip", "..", ".", "./", "%2e%2e", `${VALOPER}/`,
+  `${VALOPER}/feed.atom`, `${CONS_HEX}#x`, `${CONS_HEX}0`, ` ${VALOPER} x`,
+];
+
+test("a validator's page takes its consensus, operator or account address, and nothing that bends the API's path", () => {
+  for (const a of [VALOPER, VALCONS, ACCOUNT, CONS_HEX]) assert.equal(validatorAddr(a), a);
+  assert.equal(validatorAddr(` ${VALOPER.toUpperCase()}\n`), VALOPER);
+  assert.equal(validatorAddr(CONS_HEX.toUpperCase()), CONS_HEX);
+  for (const s of [...BENT, "", null, undefined, "celestiavaloper1"]) assert.equal(validatorAddr(s), null, String(s));
+});
+
+test("a publisher's page takes an account address of 20 or 32 bytes, and nothing that bends the API's path", () => {
+  const ACCOUNT32 = "celestia1" + "q".repeat(52) + "sx8a9k";
+  assert.equal(publisherAddr(ACCOUNT), ACCOUNT);
+  assert.equal(publisherAddr(ACCOUNT32), ACCOUNT32);
+  assert.equal(publisherAddr(` ${ACCOUNT.toUpperCase()}`), ACCOUNT);
+  for (const s of [...BENT, VALOPER, VALCONS, CONS_HEX, "", null, undefined]) assert.equal(publisherAddr(s), null, String(s));
+});
+
+test("a blob's page takes a promise hash, and nothing that bends the API's path", () => {
+  assert.deepEqual(blobKey(PROMISE), { kind: "hash", hex: PROMISE });
+  for (const s of ["../tip", "..", `${PROMISE}?rows=1#`, `${PROMISE}/`, `../${PROMISE}`]) assert.notEqual(blobKey(s)?.kind, "hash", s);
 });

@@ -14,6 +14,27 @@ const bech = (prefix: string) => new RegExp(`^${prefix}1[02-9ac-hj-np-z]{38}$`);
 const VALOPER = bech("celestiavaloper");
 const VALCONS = bech("celestiavalcons");
 const ACCOUNT = bech("celestia");
+/** a consensus address in hex, the key the API keeps a validator's rows under */
+const CONS_HEX = /^[0-9a-f]{40}$/;
+/** an account address of any length: a publisher can be an account of 32 bytes as well as 20 */
+const PUBLISHER = /^celestia1[02-9ac-hj-np-z]{38,}$/;
+
+/**
+ * The address a validator's page asks the API for, in lower case: its consensus address (40 hex characters or
+ * celestiavalcons1…), its operator address or the operator's account address. Null for anything else, which the page
+ * says is no validator's address and never puts in the API's path: a value from a link could otherwise carry its own
+ * query or a dot segment into it.
+ */
+export function validatorAddr(s: string | null | undefined): string | null {
+  const a = (s ?? "").trim().toLowerCase();
+  return CONS_HEX.test(a) || VALOPER.test(a) || VALCONS.test(a) || ACCOUNT.test(a) ? a : null;
+}
+
+/** The account address a publisher's page asks the API for, in lower case; null for anything else, as validatorAddr. */
+export function publisherAddr(s: string | null | undefined): string | null {
+  const a = (s ?? "").trim().toLowerCase();
+  return PUBLISHER.test(a) ? a : null;
+}
 
 export function siteTarget(s: string | null | undefined, blobKey: (s: string) => BlobKey | null): SiteTarget | null {
   const t = (s ?? "").trim();
