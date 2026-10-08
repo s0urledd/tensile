@@ -4,7 +4,7 @@ import Link from "next/link";
 import { type Validator, API_BASE, ago, utcWord, int } from "@/lib/api";
 import { validatorHref } from "@/lib/addr";
 import type { Hosting } from "@/lib/hosting";
-import { FRAME, COUNTRIES, TINY, project, countryPoint } from "@/lib/map/project";
+import { FRAME, COUNTRIES, project, countryPoint } from "@/lib/map/project";
 import { countryName } from "@/components/Flag";
 import { Eye } from "@/components/Metrics";
 import { type EndpointState, endpointState, readiness } from "@/components/Readiness";
@@ -13,9 +13,9 @@ import { type EndpointState, endpointState, readiness } from "@/components/Readi
  * The overview's host map: every registered Fibre host of the bonded set,
  * placed by the city its address geolocates to (hosting.lat/lon) or, without
  * one, by its country's label point, over Natural Earth country outlines
- * (Equal Earth) drawn as calm solid land. A country with a host is a shade
- * warmer; one too small to show around its badge is drawn larger, in its own
- * shape; the open place's countries are lit.
+ * (Equal Earth) drawn as one calm land tone on a sea with a faint graticule.
+ * No country is marked: the badges alone say where the hosts are, so a
+ * country too small to see (Singapore, Hong Kong) needs nothing drawn for it.
  *
  * Every place is a rounded square in the accent carrying its count; a lone
  * host is a small square with no figure. Hosts close together on screen share
@@ -59,6 +59,18 @@ const MAX_BACK = 1.4;
 /** the room every badge of the home view keeps from the box's edges, in px: above, beside, and below (or above the bar) */
 const ROOM_TOP = 28, ROOM_SIDE = 12, ROOM_FOOT = 8;
 const ROOM_TOP_NARROW = 14;
+
+/**
+ * the graticule every 30°, under the land: meridians curve, parallels are straight; the meridians at 180° are the
+ * world's own edge. In map units, drawn once
+ */
+const GRID = (() => {
+  const f = (n: number) => n.toFixed(1);
+  let d = "";
+  for (let lon = -180; lon <= 180; lon += 30) for (let lat = -90; lat <= 90; lat += 2) { const [x, y] = project(lon, lat); d += `${lat === -90 ? "M" : "L"}${f(x)} ${f(y)}`; }
+  for (let lat = -60; lat <= 60; lat += 30) { const [x0, y] = project(-180, lat), [x1] = project(180, lat); d += `M${f(x0)} ${f(y)}H${f(x1)}`; }
+  return d;
+})();
 
 /** a view inside the world; one at least as wide as the world (the home view, stepped back) is centred on it */
 function clampView(v: View, a: number, maxW = FRAME.w): View {
@@ -123,10 +135,10 @@ const valLink = (v: Validator) => validatorHref(v.operator_address, v.cons_addre
 const name = (v: Validator) => v.moniker || v.operator_address || v.address;
 const fmtShare = (s: number) => { const p = s * 100; return p >= 0.1 ? `${p.toFixed(1)}%` : p > 0 ? "<0.1%" : "0%"; };
 
-/** a badge's height in px: a little taller for more hosts, so a crowd reads as one; a lone host is a small square */
-const badgeH = (n: number, narrow: boolean) => (n === 1 ? (narrow ? 8 : 10) : narrow ? Math.round(17 + Math.min(6, 1.9 * Math.sqrt(n - 1))) : Math.round(21 + Math.min(8, 2.3 * Math.sqrt(n - 1))));
+/** a badge's height in px: a little taller for more hosts, so a crowd reads as one (24 to 31 px); a lone host is a small square */
+const badgeH = (n: number, narrow: boolean) => (n === 1 ? (narrow ? 8 : 10) : narrow ? Math.round(17 + Math.min(6, 1.9 * Math.sqrt(n - 1))) : Math.round(22 + Math.min(9, 2.4 * Math.sqrt(n - 1))));
 /** its width: square, or wider for a figure of three digits */
-const badgeW = (n: number, narrow: boolean) => (n === 1 ? badgeH(1, narrow) : Math.max(badgeH(n, narrow), Math.round(String(n).length * (narrow ? 6.3 : 7.2) + (narrow ? 9 : 12))));
+const badgeW = (n: number, narrow: boolean) => (n === 1 ? badgeH(1, narrow) : Math.max(badgeH(n, narrow), Math.round(String(n).length * (narrow ? 6.3 : 7.8) + (narrow ? 9 : 12))));
 /** the room a badge takes, for the merging and for keeping clear of the bar */
 const drawn = (n: number, narrow: boolean) => Math.max(badgeH(n, narrow), badgeW(n, narrow));
 
@@ -159,66 +171,6 @@ function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
     return { id: hosts.map((h) => h.v.address).sort().join(","), hosts, ux: c.ux, uy: c.uy, locs: new Set(hosts.map((h) => h.loc)).size, ccs };
   }).sort((x, y) => x.ux - y.ux);
 }
-
-/**
- * A hosted country too small to show around its badge would vanish under it, so it is drawn larger: a
- * copy of its own outline about its middle, flat in the hosted tint as every other hosted country, on
- * top of the land and under the badges. Where a larger hosted country beside it already
- * shows the place blue (Slovenia, the Baltics, South Korea beside Japan), it is left as it is. Which
- * countries are small is decided at the home view, so the set holds through a zoom; each copy keeps its
- * size until its own outline, zoomed in, is as large.
- */
-/** px: the larger side a small hosted country is drawn at: about 2.4 times a two-host badge (23 px, 19 px narrow), so 13-16 px of its land shows past it on its long side */
-const TINY_L = 56, TINY_L_NARROW = 44;
-/** px at the home view: a country at least this wide shows around its badge; a smaller one is hidden by it */
-const SHOWN = 30, SHOWN_NARROW = 24;
-/** px: a shown hosted country whose land comes this close to a small one's middle already makes that place read blue */
-const NEAR = 16, NEAR_NARROW = 12;
-/** px: a neighbour's piece smaller than this does not count as beside (India's Andaman and Nicobar Islands beside Singapore) */
-const RING = 8;
-/**
- * the shape a small country is drawn larger in: its middle and larger side in map units, and its path,
- * on TINY's grid where e is 100 (unit) or in map units
- */
-type Own = { x: number; y: number; e: number; d: string; unit: boolean };
-/**
- * each country's size and its rings (each one's size and points) in map units, from its outline (absolute
- * M, relative m and l, z), and its own shape: its 1:10m outline from TINY, else its largest ring, so far
- * islands (the Azores, Marion Island) neither move its middle nor grow with it
- */
-type Shape = { e: number; rings: { e: number; pts: number[] }[]; own: Own };
-const SHAPES: Map<string, Shape> = (() => {
-  const out = new Map<string, Shape>();
-  const extent = (p: number[]) => {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (let i = 0; i < p.length; i += 2) { x0 = Math.min(x0, p[i]); y0 = Math.min(y0, p[i + 1]); x1 = Math.max(x1, p[i]); y1 = Math.max(y1, p[i + 1]); }
-    return { x: (x0 + x1) / 2, y: (y0 + y1) / 2, e: Math.max(x1 - x0, y1 - y0) };
-  };
-  for (const [cc, d] of COUNTRIES) {
-    if (!cc) continue;
-    let x = 0, y = 0, sx = 0, sy = 0, cmd = "M";
-    const rings: number[][] = [];
-    const t = d.match(/[MmLlZz]|-?\d+(?:\.\d+)?/g) ?? [];
-    for (let i = 0; i < t.length; i++) {
-      const k = t[i];
-      if (/[MmLlZz]/.test(k)) { cmd = k; if (k === "z" || k === "Z") { x = sx; y = sy; } continue; }
-      const a = +k, b = +t[++i];
-      if (cmd === "M") { x = a; y = b; sx = x; sy = y; cmd = "L"; rings.push([]); }
-      else if (cmd === "m") { x += a; y += b; sx = x; sy = y; cmd = "l"; rings.push([]); }
-      else if (cmd === "L") { x = a; y = b; }
-      else { x += a; y += b; }
-      rings[rings.length - 1].push(x, y);
-    }
-    if (!rings.length) continue;
-    const rs = rings.map((pts) => ({ ...extent(pts), pts }));
-    const big = rs.reduce((p, q) => (q.e > p.e ? q : p)), tiny = TINY[cc];
-    const own: Own = tiny
-      ? { x: tiny[0], y: tiny[1], e: tiny[2], d: tiny[3], unit: true }
-      : { x: big.x, y: big.y, e: big.e, d: `M${big.pts.slice(0, 2).join(" ")}L${big.pts.slice(2).join(" ")}Z`, unit: false };
-    out.set(cc, { e: extent(rings.flat()).e, rings: rs.map(({ e, pts }) => ({ e, pts })), own });
-  }
-  return out;
-})();
 
 /** what a badge is called: its city, its country, or its countries */
 function placeLabel(c: Cluster): string {
@@ -501,46 +453,15 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
   const cur = live.length ? live[li % live.length] : null;
   const liveCluster = cur?.host ? clusters.find((c) => c.hosts.includes(cur.host!))?.id : undefined;
 
-  // ---- the land: every country once; hosted ones a shade warmer, the open place's lit ----
+  // ---- the land: the graticule, then every country once, all in one tone ----
   const hosted = useMemo(() => new Set(hosts.map((h) => h.cc)), [hosts]);
   const unchecked = hosts.some((h) => h.state === "none");
-  const openCcs = useMemo(() => new Set(clusters.find((c) => c.id === open)?.ccs ?? []), [clusters, open]);
   const land = useMemo(() => (
     <>
-      {COUNTRIES.map(([cc, d], i) => (
-        <path key={cc || i} d={d} className={openCcs.has(cc) ? "hi" : hosted.has(cc) ? "on" : undefined} />
-      ))}
+      <path className="cm-grid" d={GRID} />
+      {COUNTRIES.map(([cc, d], i) => <path key={cc || i} d={d} />)}
     </>
-  ), [hosted, openCcs]);
-
-  // each hosted country's size and own shape with, for every other hosted one, that one's size and how near each of its rings comes to this one's middle
-  const beside = useMemo(() => [...hosted].flatMap((cc) => {
-    const s = SHAPES.get(cc);
-    if (!s) return [];
-    const { e, own } = s;
-    const others = [...hosted].flatMap((o) => {
-      const q = o === cc ? undefined : SHAPES.get(o);
-      if (!q) return [];
-      return [{ e: q.e, rings: q.rings.map((r) => {
-        let d = Infinity;
-        for (let i = 0; i < r.pts.length; i += 2) d = Math.min(d, Math.hypot(r.pts[i] - own.x, r.pts[i + 1] - own.y));
-        return { e: r.e, d };
-      }) }];
-    });
-    return [{ cc, e, own, others }];
-  }), [hosted]);
-  // the small ones, by the home view's scale: hidden by the badge, with no shown hosted country's land beside; larger first
-  const sHome = width > 0 ? width / home.w : 0;
-  const small = useMemo(() => {
-    if (!sHome) return [];
-    const shown = narrow ? SHOWN_NARROW : SHOWN, near = narrow ? NEAR_NARROW : NEAR;
-    return beside.filter(({ e, others }) => e * sHome < shown
-      && !others.some((o) => o.e * sHome >= shown && o.rings.some((r) => r.e * sHome >= RING && r.d * sHome < near)))
-      .sort((a, b) => b.own.e - a.own.e);
-  }, [beside, sHome, narrow]);
-  // each drawn with its larger side tinyL px, until its own outline is that large
-  const tinyL = narrow ? TINY_L_NARROW : TINY_L;
-  const grown = scale > 0 ? small.filter(({ own }) => own.e * scale < tinyL) : [];
+  ), []);
 
   // ---- badges on screen ----
   const placed = width > 0 ? clusters.map((c) => {
@@ -568,10 +489,6 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
           {width > 0 && (
             <svg className="cm-land" viewBox={`${view.x} ${view.y} ${view.w} ${view.w * aspect}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false">
               {land}
-              {grown.map(({ cc, own: o }) => (
-                <path key={"tiny-" + cc} d={o.d} className={openCcs.has(cc) ? "hi" : "on"}
-                  transform={o.unit ? `translate(${o.x} ${o.y}) scale(${tinyL / scale / 100})` : `translate(${o.x} ${o.y}) scale(${tinyL / (o.e * scale)}) translate(${-o.x} ${-o.y})`} />
-              ))}
             </svg>
           )}
         </div>
