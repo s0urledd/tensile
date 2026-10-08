@@ -1040,6 +1040,12 @@ check not grep -q '^EnvironmentFile=/etc/fibre-observer/%i\.env' "$HERE/../syste
 check grep -q '^EnvironmentFile=/etc/fibre-observer/site-%i\.env' "$HERE/../systemd/fibre-site@.service"
 check not grep -qE 'cp deploy/observer\.env\.example /etc/' "$HERE/../README.md"
 check grep -q 'install -m 0640 -o root -g fibre-observer deploy/observer.env.example /etc/fibre-observer/mocha.env' "$HERE/../README.md"
+# once closed, an env file is read as root: a grep without sudo got
+# "Permission denied", and its tee wrote an empty site-<network>.env that
+# left site-server on mocha's ports whatever the network
+check not grep -qE '^[[:space:]]*(grep|cat|sed|awk|head|tail|cut)[[:space:]].*/etc/fibre-observer/[^ ]*\.env' "$HERE/../README.md"
+check grep -qF "sudo grep -E '^(SITE_LISTEN|API_LISTEN)=' /etc/fibre-observer/mocha.env | sudo tee /etc/fibre-observer/site-mocha.env" "$HERE/../README.md"
+check grep -qF 'sudo cat /etc/fibre-observer/site-mocha.env' "$HERE/../README.md"
 
 echo "== hosting-db"
 # deploy/hosting-db.sh against a curl that serves one file, whatever the

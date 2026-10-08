@@ -440,10 +440,19 @@ own:
 ```bash
 sudo chown root:fibre-observer /etc/fibre-observer/*.env /etc/fibre-observer/rclone.conf
 sudo chmod 0640 /etc/fibre-observer/*.env /etc/fibre-observer/rclone.conf
-grep -E '^(SITE_LISTEN|API_LISTEN)=' /etc/fibre-observer/mocha.env | sudo tee /etc/fibre-observer/site-mocha.env >/dev/null
+sudo grep -E '^(SITE_LISTEN|API_LISTEN)=' /etc/fibre-observer/mocha.env | sudo tee /etc/fibre-observer/site-mocha.env >/dev/null
+sudo cat /etc/fibre-observer/site-mocha.env   # both lines, SITE_LISTEN and API_LISTEN, before going on
 sudo cp deploy/systemd/fibre-site@.service /etc/systemd/system/ && sudo systemctl daemon-reload
 sudo systemctl restart fibre-site@mocha
 ```
+
+Once closed, `mocha.env` is read only by root and the service user, so
+the line that copies the two settings out of it reads it as root too.
+Read the new file back before the restart: with a line missing,
+site-server starts anyway, on its own defaults (`127.0.0.1:3112`, the API
+at `127.0.0.1:8081`), which are mocha's ports and no other network's.
+A `mocha.env` that never had `SITE_LISTEN` gets the file written whole,
+as in section 5.
 
 `SITE_LISTEN` can stay in `mocha.env`, where nothing reads it any more.
 `deploy/test/exposure.sh` checks the modes from then on.
