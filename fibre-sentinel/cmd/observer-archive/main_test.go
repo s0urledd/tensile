@@ -151,3 +151,31 @@ func TestScannerFilesWaitForAScannerThatFollows(t *testing.T) {
 		t.Fatalf("this build's scanner: archived %v\n%s", archived, out)
 	}
 }
+
+// Each file's segment is dated from when the run reaches the file, not from
+// the run's start: the pauses and the files before it can outlast a whole
+// backup copy, and a segment dated before that copy finished would look to
+// -retire as if the copy held it.
+func TestEachFileIsDatedWhenTheRunReachesIt(t *testing.T) {
+	dir := dataDir(t, 12)
+	const took = 50 * time.Millisecond
+	var nows []time.Time
+	archiveFile = func(path string, o record.Options) (record.Result, error) {
+		nows = append(nows, o.Now)
+		time.Sleep(took)
+		return record.Result{File: filepath.Base(path), Skipped: "stand-in"}, nil
+	}
+	t.Cleanup(func() { archiveFile = record.Archive })
+	code, out, errs := runArgs(t, "-data-dir", dir, "-pace-some", "0")
+	if code != 0 || len(nows) != len(Files) {
+		t.Fatalf("%d, %d file(s) archived\n%s%s", code, len(nows), out, errs)
+	}
+	for i, n := range nows {
+		if n.Before(now) {
+			t.Fatalf("file %d dated %s, before the run began at %s", i, n, now)
+		}
+		if i > 0 && n.Sub(nows[i-1]) < took {
+			t.Fatalf("file %d dated %s after the one before it, which took %s: the run's start, not when it reached the file", i, n.Sub(nows[i-1]), took)
+		}
+	}
+}

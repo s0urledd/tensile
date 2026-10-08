@@ -34,7 +34,10 @@ type Options struct {
 	Limit int64
 	// DryRun finds the cut and reports it without writing anything.
 	DryRun bool
-	Now    time.Time
+	// Now is when the call began (time.Now when zero). The segment is dated
+	// Now plus the time the run waited for archive/.lock, so a caller that
+	// paused before calling passes Now moved on by its pause.
+	Now time.Time
 	// hook is called between the steps, for the crash tests.
 	hook func(step string) error
 }
@@ -99,6 +102,7 @@ func Archive(path string, o Options) (Result, error) {
 	if !rotationSupported {
 		return res, ErrUnsupported
 	}
+	began := time.Now()
 	if o.Now.IsZero() {
 		o.Now = time.Now()
 	}
@@ -127,6 +131,13 @@ func Archive(path string, o Options) (Result, error) {
 		return res, fmt.Errorf("archive lock: %w", err)
 	}
 	defer unlock(lk)
+	// The segment is dated from here, not from when the run began. The
+	// backup holds this lock shared until it has recorded its copy's
+	// copied_at, so every copy that did not wait for this run finished
+	// before now, and -retire, which keeps a segment archived after the
+	// last copy for the next one, never takes a segment for copied by a
+	// backup that ran while this run waited.
+	placedAt := o.Now.Add(time.Since(began)).UTC()
 
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
@@ -176,7 +187,7 @@ func Archive(path string, o Options) (Result, error) {
 		To:         base + cut,
 		Lines:      lines,
 		Cutoff:     o.Cutoff.UTC(),
-		ArchivedAt: o.Now.UTC(),
+		ArchivedAt: placedAt,
 	}
 	segPath := filepath.Join(adir, seg.Name)
 	segTmp := segPath + ".tmp"

@@ -251,6 +251,12 @@ func (t *Tables) Stored() [4]int {
 }
 
 // Add loads a stored entry. Entries of a kind must come in their order, each the next number.
+//
+// A body is read as if it could hold anything: a torn page on the disk the store shares, a hand edit, a later build's
+// layout under the same kind. Every count is held to the bytes left to hold it before anything is made for it, every
+// reference to the dictionary to the strings loaded, and an entry that does not read is an error with the tables left
+// as they were. A count taken as it stood asked make() for hundreds of gigabytes, which ends the process with no
+// recover to catch it, and the collector, loading the same entry at each start, never came up again.
 func (t *Tables) Add(e Entry) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -266,11 +272,21 @@ func (t *Tables) Add(e Entry) error {
 		if e.ID != len(t.shapes) {
 			return errors.New("slim: shape entries out of order")
 		}
+		// each key is a dictionary id of at least one byte
 		n := int(r.u())
+		if r.err != nil {
+			return r.err
+		}
+		if n < 0 || n > len(r.b)-r.i {
+			return errShort
+		}
 		keys := make([]string, 0, n)
-		for i := 0; i < n && r.err == nil; i++ {
+		for i := 0; i < n; i++ {
 			id := int(r.u())
-			if id >= len(t.strs) {
+			if r.err != nil {
+				return r.err
+			}
+			if id < 0 || id >= len(t.strs) {
 				return ErrUnknownEntry
 			}
 			keys = append(keys, t.strs[id])
@@ -283,11 +299,14 @@ func (t *Tables) Add(e Entry) error {
 		}
 		// each validator is its address and at least one byte of power
 		n := int(r.u())
-		if r.err == nil && (n < 0 || n > (len(r.b)-r.i)/21) {
+		if r.err != nil {
+			return r.err
+		}
+		if n < 0 || n > (len(r.b)-r.i)/21 {
 			return errShort
 		}
 		s := &valSet{addr: make([][20]byte, 0, n), power: make([]int64, 0, n)}
-		for i := 0; i < n && r.err == nil; i++ {
+		for i := 0; i < n; i++ {
 			if r.i+20 > len(r.b) {
 				return errShort
 			}
@@ -296,6 +315,9 @@ func (t *Tables) Add(e Entry) error {
 			r.i += 20
 			s.addr = append(s.addr, a)
 			s.power = append(s.power, r.s())
+			if r.err != nil {
+				return r.err
+			}
 		}
 		t.sets = append(t.sets, s)
 		t.setID[s.key()] = e.ID
@@ -303,18 +325,30 @@ func (t *Tables) Add(e Entry) error {
 		if e.ID != len(t.hosts) {
 			return errors.New("slim: host entries out of order")
 		}
+		// each entry is two varints of at least one byte each
 		n := int(r.u())
+		if r.err != nil {
+			return r.err
+		}
+		if n < 0 || n > (len(r.b)-r.i)/2 {
+			return errShort
+		}
 		hv := make([]hostEntry, 0, n)
-		for i := 0; i < n && r.err == nil; i++ {
-			hv = append(hv, hostEntry{host: int(r.u()), source: int(r.u())})
+		for i := 0; i < n; i++ {
+			h := hostEntry{host: int(r.u()), source: int(r.u())}
+			if r.err != nil {
+				return r.err
+			}
+			// each a dictionary id + 1, 0 for none
+			if h.host < 0 || h.host > len(t.strs) || h.source < 0 || h.source > len(t.strs) {
+				return ErrUnknownEntry
+			}
+			hv = append(hv, h)
 		}
 		t.hosts = append(t.hosts, hv)
 		t.hostID[hostKey(hv)] = e.ID
 	default:
 		return errors.New("slim: unknown entry kind")
-	}
-	if r.err != nil {
-		return r.err
 	}
 	t.stored[e.Kind] = e.ID + 1
 	return nil

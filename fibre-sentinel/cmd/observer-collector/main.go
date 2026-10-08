@@ -23,6 +23,7 @@ import (
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/pace"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/collect"
@@ -170,37 +171,25 @@ func main() {
 	work := collect.NewWorkErrors(live)
 
 	// The endpoint history has no source but the live polls, so every
-	// opening and closing is appended here as well as written to the
-	// database; on a rebuild the file is replayed before the first poll.
-	regFile, err := os.OpenFile(*regPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	// opening and closing is appended here before it is written to the
+	// database (chainpoll.go); on a rebuild the file is replayed before the
+	// first poll.
+	regFile, err := openOwnLog(*regPath, log.Printf)
 	if err != nil {
 		log.Fatalf("open %s: %v", *regPath, err)
 	}
 	defer regFile.Close()
-	appendRegistry := func(evs []store.EndpointEvent) {
+	appendRegistry := func(evs []store.EndpointEvent) error {
 		if len(evs) == 0 {
-			return
+			return nil
 		}
-		var failed error
-		for _, e := range evs {
-			b, err := json.Marshal(e)
-			if err != nil {
-				continue
-			}
-			if _, err := regFile.Write(append(b, '\n')); err != nil {
-				log.Printf("registry: write: %v", err)
-				live.Error(fmt.Sprintf("registry write: %v", err))
-				failed = fmt.Errorf("write: %w", err)
-				break
-			}
+		err := writeRegistry(regFile, evs)
+		if err != nil {
+			log.Printf("registry: %v", err)
+			live.Error(fmt.Sprintf("registry write: %v", err))
 		}
-		if failed == nil {
-			if err := regFile.Sync(); err != nil {
-				log.Printf("registry: sync: %v", err)
-				failed = fmt.Errorf("sync: %w", err)
-			}
-		}
-		work.Report("registry", failed, time.Now())
+		work.Report("registry", err, time.Now())
+		return err
 	}
 	var exporter *export.Builder
 	if *expHour >= 0 {
@@ -221,12 +210,12 @@ func main() {
 	// endpoint history, have no source but this process: every one is
 	// appended here as well as written to the database, and replayed on a
 	// rebuild before anything is re-judged.
-	amendFile, err := os.OpenFile(*amendPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	amendFile, err := openOwnLog(*amendPath, log.Printf)
 	if err != nil {
 		log.Fatalf("open %s: %v", *amendPath, err)
 	}
 	defer amendFile.Close()
-	corrFile, err := os.OpenFile(*corrPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	corrFile, err := openOwnLog(*corrPath, log.Printf)
 	if err != nil {
 		log.Fatalf("open %s: %v", *corrPath, err)
 	}
@@ -433,6 +422,44 @@ func main() {
 			}
 		}
 	}
+}
+
+// openOwnLog opens one of the logs only this collector appends to
+// (registry.jsonl, amendments.jsonl, corrections.jsonl) for appending, after
+// cutting a torn last line off it: the tail a crash in the middle of a write
+// leaves, which the next line appended would be glued onto, the two lost to
+// every reader of the file. The scanner and the prober repair their files
+// the same way when they start.
+func openOwnLog(path string, logf logf) (*os.File, error) {
+	n, err := record.RepairTail(path)
+	if err != nil {
+		return nil, fmt.Errorf("cut a torn last line: %w", err)
+	}
+	if n > 0 {
+		logf("%s: cut a torn last line of %d byte(s), the start of a write that did not finish", path, n)
+	}
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+}
+
+// writeRegistry appends evs to registry.jsonl in one write and fsyncs it. A
+// write that fails part-way is cut back off (record.WriteWhole), so none of
+// the batch is left behind to be replayed when the store never had it.
+func writeRegistry(f *os.File, evs []store.EndpointEvent) error {
+	var buf []byte
+	for _, e := range evs {
+		b, err := json.Marshal(e)
+		if err != nil {
+			return err
+		}
+		buf = append(append(buf, b...), '\n')
+	}
+	if _, err := record.WriteWhole(f, buf); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("sync: %w", err)
+	}
+	return nil
 }
 
 // exportStep runs the daily export build (run), unless the pass just stopped

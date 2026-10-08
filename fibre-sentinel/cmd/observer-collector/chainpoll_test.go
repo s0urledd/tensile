@@ -84,8 +84,53 @@ func newPoll(t *testing.T, c pollChain) (*chainPoll, *store.Store, *fakeLive, *[
 	live := &fakeLive{}
 	var appended []store.EndpointEvent
 	p := &chainPoll{chain: c, st: st, live: live, logf: quiet,
-		appendRegistry: func(evs []store.EndpointEvent) { appended = append(appended, evs...) }}
+		appendRegistry: func(evs []store.EndpointEvent) error { appended = append(appended, evs...); return nil }}
 	return p, st, live, &appended
+}
+
+// An opening or closing goes to registry.jsonl before the store has it. A
+// write that fails leaves the endpoint rows as they were, so the next poll
+// draws the same change again and puts it on record; it used to be in the
+// store alone, for good, while every export and rebuild went without it.
+func TestEndpointEventsAreOnRecordBeforeTheStore(t *testing.T) {
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	c := &fakePollChain{appVersion: 10, height: 500, tipTime: now,
+		providers: []scan.FibreProvider{{ConsAddressBech32: "celestiavalcons1aa", Host: "a:7980"}, {ConsAddressBech32: "celestiavalcons1bb", Host: "b:7980"}}}
+	p, st, _, appended := newPoll(t, c)
+	p.run(context.Background(), now, true, true)
+	if len(*appended) != 2 {
+		t.Fatalf("first poll put %+v on record", *appended)
+	}
+	// bb leaves and cc arrives while the disk is full.
+	c.providers = []scan.FibreProvider{{ConsAddressBech32: "celestiavalcons1aa", Host: "a:7980"}, {ConsAddressBech32: "celestiavalcons1cc", Host: "c:7980"}}
+	full := errors.New("no space left on device")
+	p.appendRegistry = func([]store.EndpointEvent) error { return full }
+	p.run(context.Background(), now.Add(time.Minute), true, true)
+	open, err := st.CurrentEndpoints(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(open) != 2 || open[0].ValidatorConsAddress != "celestiavalcons1aa" || open[1].ValidatorConsAddress != "celestiavalcons1bb" {
+		t.Fatalf("the store moved on with nothing on record: %+v", open)
+	}
+	if got := meta(t, st, "endpoints_polled_at"); got != store.TS(now) {
+		t.Fatalf("a poll whose change is not on record was dated: %s", got)
+	}
+	// The disk has room again: the same change, on record and in the store.
+	var later []store.EndpointEvent
+	p.appendRegistry = func(evs []store.EndpointEvent) error { later = append(later, evs...); return nil }
+	at := now.Add(2 * time.Minute)
+	p.run(context.Background(), at, true, true)
+	want := []store.EndpointEvent{
+		{Kind: store.EndpointOpened, ConsAddress: "celestiavalcons1cc", Host: "c:7980", Height: 500, At: at},
+		{Kind: store.EndpointClosed, ConsAddress: "celestiavalcons1bb", Host: "b:7980", Height: 500, At: at, Reason: "left_bonded_provider_list"},
+	}
+	if !sameEvents(later, want) {
+		t.Fatalf("on record %+v, want %+v", later, want)
+	}
+	if open, err = st.CurrentEndpoints(context.Background()); err != nil || len(open) != 2 || open[1].ValidatorConsAddress != "celestiavalcons1cc" {
+		t.Fatalf("open endpoints %+v, %v", open, err)
+	}
 }
 
 func meta(t *testing.T, st *store.Store, k string) string {

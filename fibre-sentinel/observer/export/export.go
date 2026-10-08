@@ -118,7 +118,7 @@ type Member struct {
 	LateLines int64  `json:"late_lines"`
 	Bytes     int64  `json:"bytes"`
 	SHA256    string `json:"sha256"`
-	// SkewedLines are records dated more than one day past the export's day:
+	// SkewedLines are records dated after the day the export was built on:
 	// a clock step on the vantage, not a record of the future. They are in
 	// this export, with the day's lines, and named here because the
 	// alternative is a file that never exports again.
@@ -289,12 +289,15 @@ func (b *Builder) build(day string, st *state, now time.Time) error {
 		return err
 	}
 	specs := append(append([]FileSpec(nil), Files...), vantages...)
+	// The day the build runs on, which is what a line's date is judged
+	// against for clock skew: Run builds every due day with the same now.
+	today := dayOf(now).Format("2006-01-02")
 	var tarBuf bytes.Buffer
 	gz := gzip.NewWriter(&tarBuf)
 	tw := tar.NewWriter(gz)
 	for _, f := range specs {
 		from := st.Offsets[f.Name]
-		m, data, to, err := collect(filepath.Join(b.DataDir, filepath.FromSlash(f.Name)), f, day, from)
+		m, data, to, err := collect(filepath.Join(b.DataDir, filepath.FromSlash(f.Name)), f, day, today, from)
 		if err != nil {
 			return err
 		}
@@ -393,10 +396,11 @@ func addMember(tw *tar.Writer, name string, data []byte, now time.Time) error {
 }
 
 // collect reads path from offset `from`, taking every complete line dated
-// on or before day and stopping at the first dated after it. It returns
-// the member description, the bytes taken, and the offset to resume from.
-// A missing file is an empty member.
-func collect(path string, f FileSpec, day string, from int64) (Member, []byte, int64, error) {
+// on or before day and stopping at the first dated after it, unless that
+// line is dated after today, the day the build runs on (see SkewedLines).
+// It returns the member description, the bytes taken, and the offset to
+// resume from. A missing file is an empty member.
+func collect(path string, f FileSpec, day, today string, from int64) (Member, []byte, int64, error) {
 	m := Member{Name: f.Name, TimeField: f.TimeField, From: from, To: from}
 	// Offsets are logical (internal/record): a file whose older lines were
 	// archived keeps every byte at the offset it was written at, so
@@ -446,7 +450,7 @@ func collect(path string, f FileSpec, day string, from int64) (Member, []byte, i
 			d = day
 		}
 		if d > day {
-			// The first record of a later day: tomorrow's export starts
+			// The first record of a later day: that day's export starts
 			// here — unless it is dated so far ahead that no export will
 			// ever reach it. Builds advance one calendar day at a time up
 			// to yesterday, so a single line carrying a forward clock step
@@ -457,7 +461,15 @@ func collect(path string, f FileSpec, day string, from int64) (Member, []byte, i
 			// the day being built, where the record's own rule puts
 			// anything undated, and counted so the manifest says it
 			// happened.
-			if d > nextDay(day) {
+			//
+			// The clock is judged against the day the build runs on, not
+			// the day being built: a catch-up build of several days at
+			// once (the collector down, or the export held, past a
+			// midnight) meets lines dated two or more days after the day
+			// it builds that are not skewed at all, and they wait for
+			// their own day's export, which this same run or the next
+			// one builds.
+			if d > today {
 				m.SkewedLines++
 			} else {
 				break
@@ -475,17 +487,6 @@ func collect(path string, f FileSpec, day string, from int64) (Member, []byte, i
 	m.Bytes = int64(out.Len())
 	m.SHA256 = hex.EncodeToString(h.Sum(nil))
 	return m, out.Bytes(), pos, nil
-}
-
-// nextDay is the calendar day after a YYYY-MM-DD string. An unparseable day
-// yields itself, which makes the look-ahead test above false and keeps the
-// old behaviour for anything this cannot reason about.
-func nextDay(day string) string {
-	t, err := time.Parse("2006-01-02", day)
-	if err != nil {
-		return day
-	}
-	return t.AddDate(0, 0, 1).Format("2006-01-02")
 }
 
 // emptySHA is SHA-256 of nothing, the digest of an empty member.

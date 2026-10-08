@@ -448,6 +448,13 @@ func checkLines(ctx context.Context, st *store.Store, name string, k kind, src i
 				back, err = st.Record(ctx, st.DB(), raw)
 			}
 			if err != nil {
+				if !errors.Is(err, store.ErrUndecodable) {
+					// The database's own failure (busy, a read that failed, the run's context ended) says nothing
+					// about the row. Counted as a different line, it put the day in the ledger as not reproducible,
+					// which the ledger keeps for as long as the tarball's digest stays, so the day's segments were
+					// kept for good; as the check's error, nothing is recorded and the next run checks the day again.
+					return fr, err
+				}
 				fr.Different++
 				note("different (the slim row does not decode: "+err.Error()+")", key)
 				continue

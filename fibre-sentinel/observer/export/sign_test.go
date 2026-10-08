@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,13 +145,47 @@ func TestSignedExportVerifies(t *testing.T) {
 func TestCheckMembersCatchesTampering(t *testing.T) {
 	dir, name := buildOne(t, newTestSigner(t))
 	tarball, _ := os.ReadFile(filepath.Join(dir, name))
-	a, err := ReadArchive(tarball)
+	// The same tarball with one byte of a member flipped and a member added.
+	gz, err := gzip.NewReader(bytes.NewReader(tarball))
 	if err != nil {
 		t.Fatal(err)
 	}
-	a.Members["measurements.jsonl"] = append([]byte(nil), a.Members["measurements.jsonl"]...)
-	a.Members["measurements.jsonl"][2] ^= 1
-	a.Members["extra.jsonl"] = []byte("{}\n")
+	tr := tar.NewReader(gz)
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(zw)
+	for {
+		h, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Name == "measurements.jsonl" {
+			b[2] ^= 1
+		}
+		if err := addMember(tw, h.Name, b, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := addMember(tw, "extra.jsonl", []byte("{}\n"), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	a, err := ReadArchive(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := a.CheckMembers()
 	if len(p) != 2 || !strings.Contains(p[0]+p[1], "measurements.jsonl: sha256") || !strings.Contains(p[0]+p[1], "extra.jsonl") {
 		t.Fatalf("problems = %v", p)

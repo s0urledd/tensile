@@ -430,6 +430,57 @@ func TestArchiveSkipsATornTail(t *testing.T) {
 	}
 }
 
+// A run that waits for archive/.lock, which the nightly backup holds shared
+// until it has recorded its copy, dates its segment from when it got the
+// lock, not from when it began: a segment dated from the run's start would
+// look to -retire as if the backup that finished while the run waited had
+// copied it.
+func TestArchiveDatesTheSegmentWhenItHasTheLock(t *testing.T) {
+	skipUnsupported(t)
+	path := filepath.Join(t.TempDir(), "measurements.jsonl")
+	for d := 0; d < 4; d++ {
+		appendLines(t, path, lineAt(t0.Add(time.Duration(d)*24*time.Hour), "a", d))
+	}
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(path), Dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := os.OpenFile(filepath.Join(filepath.Dir(path), Dir, LockFile), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backup.Close()
+	if err := lockShared(backup); err != nil {
+		t.Fatal(err)
+	}
+	const held = 400 * time.Millisecond
+	done := make(chan error, 1)
+	go func() {
+		_, err := Archive(path, Options{Cutoff: t0.Add(2 * 24 * time.Hour), TimeField: "scheduled_at", Limit: -1, Now: t0})
+		done <- err
+	}()
+	time.Sleep(held)
+	select {
+	case err := <-done:
+		t.Fatalf("the run did not wait for the backup's lock: %v", err)
+	default:
+	}
+	if err := unlock(backup); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	idx, err := LoadIndex(path)
+	if err != nil || len(idx.Segments) != 1 {
+		t.Fatalf("index: %+v %v", idx, err)
+	}
+	// Half the hold: the run may have started a little after the lock was
+	// taken, never after it was let go.
+	if waited := idx.Segments[0].ArchivedAt.Sub(t0); waited < held/2 {
+		t.Fatalf("the segment is dated %s after the run began, though it waited about %s for the lock", waited, held)
+	}
+}
+
 // A live file replaced outside the archiver is not cut, and reads as a file
 // of its own (base 0, not placed) rather than at an offset that is not its
 // own.
@@ -487,6 +538,61 @@ func TestRepairTail(t *testing.T) {
 	}
 	if n, err := RepairTail(filepath.Join(t.TempDir(), "none")); err != nil || n != 0 {
 		t.Fatalf("missing file: %d %v", n, err)
+	}
+}
+
+// A write that fails part-way, as one does when the disk fills inside a
+// line, is cut back off: the file still ends on its last whole line, and
+// the next line written is a line of its own, not glued onto a fragment.
+func TestAFailedWriteLeavesNoFragment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reachability.jsonl")
+	first := lineAt(t0, "a", 0)
+	appendLines(t, path, first)
+	full := errors.New("no space left on device")
+	fileWrite = func(f *os.File, b []byte) (int, error) {
+		n, _ := f.Write(b[:len(b)/2])
+		return n, full
+	}
+	t.Cleanup(func() { fileWrite = (*os.File).Write })
+	a, err := OpenAppender(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if n, err := a.Write([]byte(lineAt(t0.Add(time.Hour), "a", 1))); !errors.Is(err, full) || n != 0 {
+		t.Fatalf("a write that failed part-way: %d %v", n, err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != first {
+		t.Fatalf("the file after a failed write: %q", got)
+	}
+	fileWrite = (*os.File).Write
+	next := lineAt(t0.Add(2*time.Hour), "a", 2)
+	if _, err := a.Write([]byte(next)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != first+next {
+		t.Fatalf("the next line was not a line of its own: %q", got)
+	}
+
+	// A plain file of the collector's own, the same.
+	own := filepath.Join(t.TempDir(), "amendments.jsonl")
+	f, err := os.OpenFile(own, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := WriteWhole(f, []byte(first)); err != nil {
+		t.Fatal(err)
+	}
+	fileWrite = func(f *os.File, b []byte) (int, error) {
+		n, _ := f.Write(b[:3])
+		return n, full
+	}
+	if n, err := WriteWhole(f, []byte(next)); !errors.Is(err, full) || n != 0 {
+		t.Fatalf("WriteWhole failing part-way: %d %v", n, err)
+	}
+	if got, _ := os.ReadFile(own); string(got) != first {
+		t.Fatalf("WriteWhole left %q", got)
 	}
 }
 

@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/correct"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/ingest"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/rollup"
@@ -77,6 +78,10 @@ type Collector struct {
 	lastRetention time.Time
 	// registryReplayed: the last pass read registry.jsonl to its end.
 	registryReplayed bool
+	// amendmentsReplayed: this pass read amendments.jsonl to its end, so
+	// every late verdict on record is in the store; amendWaiting: the late
+	// verdicts wait for that, and the log has said so.
+	amendmentsReplayed, amendWaiting bool
 	// otherChain: the vantage files the last pass stopped at a row from
 	// another chain (ingest.ErrOtherChain), by vantage directory name.
 	otherChain []string
@@ -332,10 +337,16 @@ func (c *Collector) Pass(ctx context.Context, now time.Time) []string {
 	} else if r.Inserted > 0 {
 		c.logf("host history: +%d registration(s) (read %d, line %d)", r.Inserted, r.Read, r.Line)
 	}
+	c.amendmentsReplayed = false
 	if r, err := ingest.Amendments(st, c.Paths.Amendments, now); err != nil {
 		fail("amendments", err)
-	} else if r.Inserted > 0 {
-		c.logf("amendments: +%d late verdict(s) replayed (read %d, line %d)", r.Inserted, r.Read, r.Line)
+	} else {
+		// A line deferred for a row not ingested yet leaves the lines
+		// after it unread too.
+		c.amendmentsReplayed = r.Deferred == ""
+		if r.Inserted > 0 {
+			c.logf("amendments: +%d late verdict(s) replayed (read %d, line %d)", r.Inserted, r.Read, r.Line)
+		}
 	}
 	// Copy the write-ahead log back and truncate it while nothing is
 	// reading. A pass that ingested a backlog can leave hundreds of
@@ -356,7 +367,17 @@ func (c *Collector) Pass(ctx context.Context, now time.Time) []string {
 	// overlapping ranges keeps its hold until the second one closes
 	// too, because SyncParamHolds recomputes the flag from the ranges
 	// rather than clearing it per range.
-	n, err := c.Corrector.Run(ctx, now)
+	//
+	// The corrector writes corrections.jsonl through a file of its own and
+	// stops at the first line it cannot write, which a full disk leaves
+	// written in part; that part is cut off before it writes again, or its
+	// next line would be glued onto it, both lost to every reader.
+	var n int
+	if _, err = record.RepairTail(c.Paths.Corrections); err != nil {
+		err = fmt.Errorf("cut a torn last line of %s: %w", c.Paths.Corrections, err)
+	} else {
+		n, err = c.Corrector.Run(ctx, now)
+	}
 	if err != nil {
 		c.logf("corrections: %v", err)
 		c.liveError(fmt.Sprintf("corrections: %v", err))
@@ -409,9 +430,27 @@ func (c *Collector) Pass(ctx context.Context, now time.Time) []string {
 // judgeLate draws the deferred shadow verdicts the scanner's frontier now
 // allows, and records each in amendments.jsonl before the store. It returns
 // the first failure of its own work for the work list; a frontier not on
-// record yet is waiting, not failing.
+// record yet is waiting, not failing, and so is an amendments.jsonl this
+// pass did not replay to its end.
 func (c *Collector) judgeLate(ctx context.Context, now time.Time) error {
 	st := c.St
+	if !c.amendmentsReplayed {
+		// A line on record that is not in the store yet (its apply failed,
+		// or the replay stopped before it) is applied by a later pass's
+		// replay. A verdict drawn now for its row would be a second line
+		// for the row, drawn at another time against another frontier: the
+		// store would take whichever is applied first, live this one and
+		// on a rebuild the older one, and the two would disagree for good.
+		if !c.amendWaiting {
+			c.logf("late verdicts: amendments.jsonl did not replay to its end this pass; no verdict is drawn until it has")
+			c.amendWaiting = true
+		}
+		return nil
+	}
+	if c.amendWaiting {
+		c.logf("late verdicts: amendments.jsonl replayed; drawing them again")
+		c.amendWaiting = false
+	}
 	v, err := st.Meta("last_scanned_time")
 	if err != nil {
 		c.logf("late verdicts: %v", err)
@@ -435,16 +474,29 @@ func (c *Collector) judgeLate(ctx context.Context, now time.Time) error {
 		c.liveError(fmt.Sprintf("late verdicts: %v", err))
 		return err
 	}
+	if len(ams) > 0 {
+		// The part of a line a write that failed could not take back
+		// (record.WriteWhole says so) is cut before another is appended.
+		if _, err := record.RepairTail(c.Paths.Amendments); err != nil {
+			c.logf("late verdicts: %v", err)
+			c.liveError(fmt.Sprintf("amendments: %v", err))
+			return fmt.Errorf("cut a torn last line of %s: %w", c.Paths.Amendments, err)
+		}
+	}
 	var failed error
 	applied := 0
 	for _, a := range ams {
 		// The line is appended and fsynced BEFORE the amendment is
 		// applied. The two can only fail in one direction: a line whose
-		// amendment did not apply replays as a no-op, because
-		// ApplyAmendment is idempotent on (dedupe_key, judged_at) and a
-		// rebuild replays this file before anything is re-judged. An
-		// applied amendment with no line is the other way round, and it
-		// is permanent: the store would carry a verdict that changed
+		// amendment did not apply is applied by the next pass's replay of
+		// this file, which runs before anything is re-judged (above), as
+		// a rebuild's does. ApplyAmendment keys a row's amendment on its
+		// dedupe_key alone: it takes the first and leaves the row alone
+		// after it, not one per judged_at. So a row must never have a
+		// second line drawn while its first waits, and with the replay
+		// first it does not: live and rebuilt stores take the same line.
+		// An applied amendment with no line is the other way round, and
+		// it is permanent: the store would carry a verdict that changed
 		// with nothing on record saying why, and the export would no
 		// longer reproduce it. That is the state this ordering exists to
 		// prevent, and it is the same ordering the store uses for its own
@@ -454,13 +506,17 @@ func (c *Collector) judgeLate(ctx context.Context, now time.Time) error {
 			c.logf("amendments: marshal %s: %v", a.DedupeKey, err)
 			continue
 		}
-		if _, err := c.AmendFile.Write(append(b, '\n')); err != nil {
+		// A write that fails part-way is cut back off (record.WriteWhole):
+		// the start of a line left at the end of the file would have the
+		// next one glued onto it. The rest wait for the next pass: a disk
+		// that refused this line refuses the next.
+		if _, err := record.WriteWhole(c.AmendFile, append(b, '\n')); err != nil {
 			c.logf("amendments: write: %v", err)
 			c.liveError(fmt.Sprintf("amendments write: %v", err))
 			if failed == nil {
 				failed = fmt.Errorf("amendments write: %w", err)
 			}
-			continue
+			break
 		}
 		if err := c.AmendFile.Sync(); err != nil {
 			c.logf("amendments: sync: %v", err)
