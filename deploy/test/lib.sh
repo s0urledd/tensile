@@ -32,6 +32,12 @@
 #                the lines, while the store keeps one row per promise: a
 #                publication appended again by a re-scan would have failed a
 #                good backup.
+#   alert_destinations exposure.sh took ALERT_WEBHOOK alone for "somebody
+#                is told": a host that alerts through Telegram only failed
+#                the check for a false reason and never sent its test.
+#   private_file the README copied the env file under root's umask, 0644:
+#                the bot token, the webhook and the backup remote readable
+#                by every account on a host shared with a validator.
 
 : "${FAILED:=0}"
 pass() { echo "  ok   $*"; }
@@ -53,6 +59,29 @@ strip_quotes() {
     \'*\') v=${v#\'}; v=${v%\'} ;;
   esac
   printf '%s' "$v"
+}
+
+# alert_destinations <envfile>: where healthwatch posts with this env file,
+# by its own rule: "webhook" for ALERT_WEBHOOK, "telegram" for
+# TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID both set, space-separated. Empty
+# when none is: then it only logs.
+alert_destinations() {
+  local d=""
+  if [ -n "$(envval "$1" ALERT_WEBHOOK)" ]; then d="webhook"; fi
+  if [ -n "$(envval "$1" TELEGRAM_BOT_TOKEN)" ] && [ -n "$(envval "$1" TELEGRAM_CHAT_ID)" ]; then d="${d:+$d }telegram"; fi
+  printf '%s' "$d"
+}
+
+# private_file <path>: prints "<mode> <owner>:<group>" of the file, and
+# exits 0 only when other accounts have no access to it at all (no bit set
+# for others). The env files and rclone.conf hold the alert and backup
+# credentials; systemd reads EnvironmentFile= as root, so nothing needs them
+# open to others.
+private_file() {
+  local m
+  m=$(stat -c '%a %U:%G' "$1") || return 1
+  printf '%s\n' "$m"
+  [ $(( 8#${m%% *} & 7 )) = 0 ]
 }
 
 # parse_envfile <file>: KEY=VALUE per line for every assignment in the file,
@@ -179,26 +208,29 @@ f = json.load(open(sys.argv[1]))["files"].get(sys.argv[2], {})
 print(f.get("records", 0) + f.get("archived_records", 0))' "$1" "$2"
 }
 
-# record_promises <manifest-tool> <dir>: "<lines> <distinct promises>" of
+# record_promises <manifest-tool> <dir>: "<records> <distinct promises>" of
 # publications.jsonl's whole record under dir (archived segments, a retired
 # one read back from the exports, then the live file), read with the
 # manifest tool's cat as a rebuild reads it. The store keeps one row per
 # promise (ON CONFLICT DO NOTHING): a publication appended again, which a
 # re-scan of heights older than the scanner's dedupe window (its live file)
-# can do, is a line and not a row.
+# can do, is a line and not a row. A line that is not a JSON object (a
+# write a full disk cut short) is not a record, as the manifest counts
+# records, and the rebuild skips it.
 record_promises() {
   python3 - "$1" "$2" <<'PY'
 import json, subprocess, sys
 cat = subprocess.Popen([sys.argv[1], "cat", sys.argv[2], "publications.jsonl"], stdout=subprocess.PIPE)
 n, seen = 0, set()
 for line in cat.stdout:
-    if not line.strip():
+    try:
+        r = json.loads(line)
+    except (ValueError, RecursionError):
+        continue
+    if not isinstance(r, dict):
         continue
     n += 1
-    try:
-        seen.add(json.loads(line).get("promise_hash"))
-    except ValueError:
-        pass
+    seen.add(r.get("promise_hash"))
 if cat.wait() != 0:
     raise SystemExit("publications.jsonl: the manifest tool could not read the record")
 print(n, len(seen))

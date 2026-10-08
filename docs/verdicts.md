@@ -255,7 +255,7 @@ One sentence each, and what a reader should conclude.
 |---|---|---|
 | `HEALTHY` | assigned validator returned `SERVED_OK` in window or in grace | the validator kept its promise at this point in time |
 | `FAULT` | an identity-verified endpoint, for a shard the chain proves it stored, **said it has no such shard** (`NOT_FOUND` in window) or **returned bytes that do not verify against the commitment** (`INVALID_ROWS`, any phase). A third arm, rows outside this promise's assignment that verify against nothing (`WRONG_ROWS`/`PARTIAL` without `commitment_verified`, in window or grace), exists in the code as a guard but cannot be produced by the prober, which files rows that fail the commitment as `INVALID_ROWS` | the validator did not serve a shard the chain records it as obliged to hold, at a moment inside that obligation. That is what the row says, and it is the most it says: `x/fibre` calls this parameter a *minimum local retention* — upstream's own words are "the minimum local duration validators keep uploaded shards" (`x/fibre/types/params.go`) and "the on-chain local retention floor for uploaded shards" (`celestia/fibre/v1/query.proto`) — and the chain neither checks it nor penalises missing it. "Broke its promise" is a heavier sentence than the protocol supports; this row is the observation, not a verdict about intent. It counts against the validator when it is the validator's last answer at a full reading (see "When a failure counts"); at a reading before full readings, only when the blob could not be reconstructed. Two conditions, each reproducible by anyone who repeats the probe. At the reading, an answer no client can use (an empty shard, an RLC vector of the wrong length, a reply over the protocol's message bound) is `MALFORMED_SHARD`, filed `SERVER_ERROR`: the client skips such a shard, so it is the validator's rows not coming back. On rows of the earlier schedule the same parse failure was the observer's gap (`PROBE_ERROR`, `shard shape:` on the row). Neither is `INVALID_ROWS`: the commitment check is the only thing that turns bytes into that fault. Every request of a reading carries the phase the reading started in, so a request this observer's own limits held back is judged as if it had been made at once. One margin: a `NOT_FOUND` whose answer arrives within 30 s of `must_serve_until` is graded as grace (`TOLERATED`, counted neither way) and the row says `phase_note: not_found_at_deadline`, because the server prunes on a minute tick against its own clock; only a request held back to the deadline itself can meet it. The count beside a validator's name is `obligations.broken`: one per shard signed for and not handed over, at the reading and each time it was asked again (before full readings: from a blob that could not be reconstructed) |
-| `UNREACHABLE` | assigned and attested, in window, and the observer could not complete a conversation at all: `DNS_FAIL`, `TCP_REFUSED`, `TCP_TIMEOUT`, `TCP_UNREACHABLE`, `TLS_HANDSHAKE_FAIL`, `RPC_UNAVAILABLE`, `RPC_TIMEOUT`, `RPC_ERROR` | no answer within the client's 15 s (connect and TLS included), dialled twice at the reading's own request (the client's re-dial) and once at a later attempt. It is not served, as a reader using the client meets it, when it is the validator's last answer and none of its requests was this observer's gap (before full readings: only on a blob that could not be reconstructed). At the reading, "no route to host" is that validator's host not answering (`TCP_UNREACHABLE`); only a failure that never left this machine (no route out, no local address, a local socket error) is filed as the observer's own, `PROBE_ERROR`, and at a full reading so is a connect that timed out or found no route while this observer reached no server and the other validators' endpoints it tried did not answer either, and so is a timeout after this observer's own resolver took more than 5 s of the request |
+| `UNREACHABLE` | assigned and attested, in window, and the observer could not complete a conversation at all: `DNS_FAIL`, `TCP_REFUSED`, `TCP_TIMEOUT`, `TCP_UNREACHABLE`, `TLS_HANDSHAKE_FAIL`, `RPC_UNAVAILABLE`, `RPC_TIMEOUT`, `RPC_ERROR` | no answer within the client's 15 s (connect and TLS included), dialled twice at the reading's own request (the client's re-dial) and once at a later attempt. It is not served, as a reader using the client meets it, when it is the validator's last answer and none of its requests was this observer's gap (before full readings: only on a blob that could not be reconstructed). At the reading, an ICMP unreachable from the path ("no route to host", "network is unreachable" while this machine has a route out, "host is down") is that validator's host not answering (`TCP_UNREACHABLE`); only a failure that never left this machine (no route out, no local address, a local socket error) is filed as the observer's own, `PROBE_ERROR`. At a full reading so is a connect that timed out while this observer reached no server and the other validators' endpoints it tried did not answer either, an ICMP unreachable while its connections over the same IP version were not shown reaching other servers, a lookup that failed other than with "no such host" while its resolver was not shown working, and a timeout after its own resolver took more than 5 s of the request while the resolver was not shown working ("When a failure counts") |
 | `NOT_REGISTERED` | assigned validator with no Fibre host in `x/valaddr` at the time of the probe (`NO_REGISTERED_HOST`) | a registry state, not a refusal. Jailing and unbonding remove a provider from `AllBondedFibreProviders` while the chain keeps the entry: it is garbage-collected only once the validator is gone from staking state, or jailed and unbonded for longer than the unbonding time plus seven days |
 | `SHADOWED_SHARD` | assigned validator returned rows that **verify against the blob commitment**, are not this promise's assignment (`WRONG_ROWS` or `PARTIAL` with `commitment_verified`), and are **exactly the row set another settled promise over the same commitment assigns to this validator** (`shadowed_by` names it) | that promise answered in this one's place. `DownloadShard` is addressed by the commitment alone; the Fibre store keeps every promise's shard side by side (`Put` "stored independently without deduplication") and `Get(commitment)` returns the first readable one in promise-hash order, so the validator has no way to tell the two apart. Its rows came back verified, so at the reading it is served. Without a matching promise the same wire result is `UNMATCHED_GENUINE`, and that verdict is drawn late (see "Deferred verdicts"): the order is by hash, not by time, so a promise settled after the probe can be the one that answered |
 | `UNMATCHED_GENUINE` | assigned validator returned rows that verify against the blob commitment but match no settled promise's assignment for it, judged once every promise that could own them is on record | a shard uploaded for a promise that never settled is on disk until its prune and never on chain, and answers whenever its hash sorts first; the validator is serving genuine data of the blob. Before full readings its rows came back verified, so it was served, indices on the row. At a full reading only the validator's own rows serve: a short shard whose rows are all its own (`PARTIAL`, `rows_subset_of_assignment`) is not served, and other rows (`WRONG_ROWS`, or a `PARTIAL` that is not all its own) are this observer's gap, counted neither way, because under hash-order serving they show neither that it holds its rows nor that it does not |
@@ -523,7 +523,7 @@ validator's last answer:
 | a rate limit instead of the shard | `THROTTLED` | the server declined this request; like every answer without rows it counts as not served when it persists each time the validator is asked |
 | an outcome the taxonomy does not recognise | `PROBE_ERROR` | "we have not taught the observer about this" is not evidence |
 | a local socket error, a probe this observer cancelled, a verification that timed out | `PROBE_ERROR` | the packets never left this machine |
-| at a full reading: a connect that timed out or found no route while this observer reached no server and the other validators' endpoints it tried did not answer either; a timeout after its own resolver took more than 5 s of the 15; a certificate read as outside its validity when the edge lies within the measured clock offset and a minute of the request | `PROBE_ERROR` (the wire outcome in `raw_error`) | the failure rests on this observer's own network, resolver or clock, and is not shown to be the validator's |
+| at a full reading: a connect that timed out while this observer reached no server and the other validators' endpoints it tried did not answer either; an ICMP unreachable while its connections over the same IP version were not shown reaching other servers; a lookup that failed other than with "no such host", or a timeout after its own resolver took more than 5 s of the 15, while its resolver was not shown working; a certificate read as outside its validity when the edge lies within the measured clock offset and a minute of the request | `PROBE_ERROR` (the wire outcome in `raw_error`) | the failure rests on this observer's own network, resolver or clock, and is not shown to be the validator's |
 | a `CANCELLED` status the server sends while the request is still live | `SERVER_ERROR` | the client takes it as the server's error and skips the shard; like every answer without rows it counts as not served when it persists each time the validator is asked |
 
 ### When a failure counts
@@ -556,20 +556,41 @@ judged on its own answers, whatever the blob came to:
   the cutoff, or a day's export read without the next day), and when not a
   single request of the reading reached a server.
 
-This observer's own side is checked at a full reading only, and the answer
-is rewritten to `PROBE_ERROR` with the wire outcome kept in `raw_error`
-(`internal/probe/ownside.go`):
+This observer's own side is checked at a full reading only. A failure
+that reads the same on the wire whichever side caused it is kept as the
+validator's only when this observer's own side is shown working in its
+minutes; otherwise the answer is rewritten to `PROBE_ERROR` with the wire
+outcome kept in `raw_error`, and why in the reason
+(`internal/probe/ownside.go`). One kept as the validator's says why in its
+`raw_error`:
 
-- **its network**: a connect that timed out or found no route, when no
-  request of this observer reached any server from 30 s before the request
-  began until it ended, and none of up to three endpoints of other
-  validators it reached most recently accepts a connect now (the check is
-  reused for 10 s);
-- **its resolver**: a timeout after a lookup that took more than 5 s of the
-  request's 15 s;
+- **its network**: a connect that timed out, when no request of this
+  observer reached any server from 30 s before the request began until it
+  ended, and none of up to three endpoints of other validators it reached
+  most recently accepts a connect now (the check is reused for 10 s);
+- **its path**: a connect an ICMP unreachable turned away
+  (`TCP_UNREACHABLE`) is the validator's only when this observer's
+  connections over the same IP version reached other servers in those
+  minutes, or the servers it reached last over it accept a connect now: a
+  vantage whose IPv6 is broken does not fault an IPv6-only validator;
+- **its resolver**: a lookup of the validator's host name that failed
+  other than with "no such host" is the validator's (`DNS_FAIL`) only when
+  this observer's resolver answered for other validators' host names in
+  those minutes, its connections reached servers in them, and it answers a
+  name no cache can hold after the request: a lame or broken zone of the
+  validator's then fails its lookups and no one else's. A timeout after a
+  lookup that took more than 5 s of the request's 15 s is the resolver's
+  unless it is shown working the same way;
 - **its clock**: a certificate read as outside its signed window, when the
   window's edge lies within the measured clock offset plus a minute of the
   request.
+
+The path and resolver rules, and the race of a host's addresses ("One
+address per probe" below), came with a new `MethodologyVersion`: they
+apply to readings made from then on. A row recorded before keeps the class
+the earlier rules gave it, under which a failed lookup other than "no such
+host", and a "network is unreachable", were this observer's whatever else
+answered.
 
 A validator whose answer did not serve is asked again, up to two more
 times, 90 s after its last answer, when that is more than a minute before
@@ -632,8 +653,13 @@ what the measurement cannot separate.
   which is a machine event rather than a retention policy; the rows carry the
   time and the promise hashes, so an operator can point at it on the dispute
   route and the amendment is on the record beside the original.
-- **One address per probe.** Every resolved address is tried at the TCP layer
-  and the first that connects is the endpoint every later layer talks to. If
+- **One address per probe.** Every resolved address is tried at the TCP
+  layer and the first that connects is the endpoint every later layer talks
+  to. Under the client's rules they are raced as the client's `pick_first`
+  races them: IPv4 first and the two families taking turns, the next
+  address 250 ms after the one before unless that one has connected or
+  failed, so one dead address in a validator's DNS costs a quarter of a
+  second, as it does the client, and not the whole request. If
   that address accepts TCP and then fails at the RPC layer, the probe does not
   fall back to the next one, so a host whose backends differ can be recorded
   as unreachable on the strength of one of them. The alternative, letting

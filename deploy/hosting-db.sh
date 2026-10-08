@@ -38,7 +38,8 @@
 #   sudo -u fibre-observer fibre-hosting-db /var/lib/fibre-observer/mocha/hosting
 #
 # Needs curl and gzip. Exits non-zero, leaving the previous files in place,
-# when a download fails or does not look like the expected format.
+# when a download fails, does not gunzip whole, or does not look like the
+# expected format.
 set -eu
 
 dest=${1:-./hosting}
@@ -50,10 +51,19 @@ fetch() { # url out
 	curl -fsSL --retry 3 --max-time 300 -A "tensile-hosting-db/1 (+https://github.com/s0urledd/tensile)" -o "$2" "$1"
 }
 
-# check_lines file min_lines pattern: the file gunzips, has at least
+# check file min_lines pattern: the file gunzips whole, has at least
 # min_lines lines, and its first line matches pattern. A captive portal or
 # an error page fails here instead of replacing a good database.
+#
+# "Whole" is gzip -t's: a stream cut short or failing its CRC (an object
+# served mid-write upstream, a CDN caching part of one) comes back from curl
+# as a success, and the counts below read a pipe whose status is wc's and
+# head's, not gzip's, so it would pass them with its first hundred thousand
+# lines and replace the good file, and the collector's lookup, which reads
+# the stream to its end, would then fail every pass until the next month's
+# refresh.
 check() {
+	if ! gzip -t "$1" 2>/dev/null; then echo "hosting-db: $1: not a whole gzip file (cut short or corrupt)" >&2; return 1; fi
 	n=$(gzip -dc "$1" | wc -l)
 	first=$(gzip -dc "$1" | head -n 1)
 	if [ "$n" -lt "$2" ]; then echo "hosting-db: $1: only $n lines" >&2; return 1; fi
