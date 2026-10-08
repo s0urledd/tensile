@@ -166,6 +166,7 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer, now time.Time) int {
+	began := time.Now()
 	fs := flag.NewFlagSet("observer-archive", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
@@ -295,8 +296,11 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 			failed = true
 			continue
 		}
+		// Now as it is after the pauses, not the run's start: the segment is
+		// dated from it, and a backup that copied while the run paused must
+		// not look as if it had copied the segment.
 		res, err := archiveFile(filePath(*dataDir, f.Name), record.Options{
-			Cutoff: cutoff, TimeField: f.TimeField, Limit: limit, DryRun: *dryRun, Now: now,
+			Cutoff: cutoff, TimeField: f.TimeField, Limit: limit, DryRun: *dryRun, Now: now.Add(time.Since(began)),
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "%s: FAILED: %v\n", f.Name, err)

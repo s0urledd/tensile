@@ -430,6 +430,57 @@ func TestArchiveSkipsATornTail(t *testing.T) {
 	}
 }
 
+// A run that waits for archive/.lock, which the nightly backup holds shared
+// until it has recorded its copy, dates its segment from when it got the
+// lock, not from when it began: a segment dated from the run's start would
+// look to -retire as if the backup that finished while the run waited had
+// copied it.
+func TestArchiveDatesTheSegmentWhenItHasTheLock(t *testing.T) {
+	skipUnsupported(t)
+	path := filepath.Join(t.TempDir(), "measurements.jsonl")
+	for d := 0; d < 4; d++ {
+		appendLines(t, path, lineAt(t0.Add(time.Duration(d)*24*time.Hour), "a", d))
+	}
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(path), Dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := os.OpenFile(filepath.Join(filepath.Dir(path), Dir, LockFile), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backup.Close()
+	if err := lockShared(backup); err != nil {
+		t.Fatal(err)
+	}
+	const held = 400 * time.Millisecond
+	done := make(chan error, 1)
+	go func() {
+		_, err := Archive(path, Options{Cutoff: t0.Add(2 * 24 * time.Hour), TimeField: "scheduled_at", Limit: -1, Now: t0})
+		done <- err
+	}()
+	time.Sleep(held)
+	select {
+	case err := <-done:
+		t.Fatalf("the run did not wait for the backup's lock: %v", err)
+	default:
+	}
+	if err := unlock(backup); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	idx, err := LoadIndex(path)
+	if err != nil || len(idx.Segments) != 1 {
+		t.Fatalf("index: %+v %v", idx, err)
+	}
+	// Half the hold: the run may have started a little after the lock was
+	// taken, never after it was let go.
+	if waited := idx.Segments[0].ArchivedAt.Sub(t0); waited < held/2 {
+		t.Fatalf("the segment is dated %s after the run began, though it waited about %s for the lock", waited, held)
+	}
+}
+
 // A live file replaced outside the archiver is not cut, and reads as a file
 // of its own (base 0, not placed) rather than at an offset that is not its
 // own.
