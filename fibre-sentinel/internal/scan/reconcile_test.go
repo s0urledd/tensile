@@ -3,6 +3,7 @@ package scan
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -342,5 +343,85 @@ func TestAFailedCheckSkippedRecordIsRetriedRatherThanLatched(t *testing.T) {
 	}
 	if got := readUncertainty(t, path); len(got) != 1 || got[0].ToHeight != 240 {
 		t.Fatalf("records = %+v", got)
+	}
+}
+
+// Governance executes a passed proposal in EndBlock, and the handler's
+// EventUpdateFibreParams comes out with the block's FinalizeBlock events,
+// in force from the next block. When that block was a check height, the
+// check compared the state after it (the new values) with the history at
+// the end of it (the old ones) and reported the announced change as a
+// silent one: a public silent_change record holding every verdict in the
+// interval, and a "verified" value placed a block early. A change made in
+// a block with no event is still found.
+func TestAGovernanceChangeOnACheckHeightIsNotASilentChange(t *testing.T) {
+	old := params(10*time.Minute, 4*time.Hour, 13*time.Hour)
+	shorter := params(10*time.Minute, time.Hour, 13*time.Hour)
+	s := &Scanner{log: NewLogger(10), chainID: "mocha-5", startHeight: 100, params: NewParamHistory(100, old), lastReconcile: 120}
+	_, path := storeFor(t, s)
+	s.store.SetSettledCoverFrom(100)
+
+	// block 180's FinalizeBlock events, as processBlock reads them
+	if !s.params.AddFinalizeEvent(180, shorter) {
+		t.Fatal("finalize event not added")
+	}
+	readAt := func(at int64) (fibretypes.Params, error) {
+		if at >= 180 {
+			return shorter, nil
+		}
+		return old, nil
+	}
+	s.reconcileParamsWith(180, func() (fibretypes.Params, error) { return shorter, nil }, readAt)
+	if got := readUncertainty(t, path); len(got) != 0 {
+		t.Fatalf("an announced change was recorded as a silent one: %+v", got)
+	}
+	if s.lastReconcile != 180 {
+		t.Fatalf("lastReconcile = %d, want 180", s.lastReconcile)
+	}
+	if e := s.params.at(180, 1<<30); e == nil || e.Params.ShardRetention != 4*time.Hour {
+		t.Fatalf("block 180 itself = %+v, want the old value: the change is in force from 181", e)
+	}
+	if e := s.params.at(181, -1); e == nil || e.Params.ShardRetention != time.Hour || e.Source != "finalize" {
+		t.Fatalf("from 181 = %+v, want the finalize entry", e)
+	}
+
+	// Block 240 changes them back with no event: that is a silent change.
+	s.reconcileParamsWith(240, func() (fibretypes.Params, error) { return old, nil }, func(at int64) (fibretypes.Params, error) {
+		if at >= 240 {
+			return old, nil
+		}
+		return shorter, nil
+	})
+	got := readUncertainty(t, path)
+	if len(got) != 1 || got[0].Kind != UncertaintySilentChange || got[0].FromHeight != 181 || got[0].ToHeight != 240 {
+		t.Fatalf("records = %+v, want one silent_change 181-240", got)
+	}
+}
+
+// A stop in the middle of reading a range closes nothing and proves
+// nothing: written then, the range was unresolvable only because of the
+// stop, and held as such. Nothing is written and nothing moves, so the
+// next process's first check finds the difference and reads it again.
+func TestAStopWhileARangeIsReadLeavesItForTheNextCheck(t *testing.T) {
+	old := params(10*time.Minute, 4*time.Hour, 13*time.Hour)
+	shorter := params(10*time.Minute, time.Hour, 13*time.Hour)
+	s := &Scanner{log: NewLogger(10), chainID: "mocha-5", startHeight: 100, params: NewParamHistory(100, old), lastReconcile: 120}
+	_, path := storeFor(t, s)
+	s.store.SetSettledCoverFrom(100)
+
+	s.reconcileParamsWith(180, func() (fibretypes.Params, error) { return shorter, nil }, func(at int64) (fibretypes.Params, error) {
+		if at > 140 {
+			return fibretypes.Params{}, fmt.Errorf("%w (abci query: context canceled)", errStopped)
+		}
+		return old, nil
+	})
+	if got := readUncertainty(t, path); len(got) != 0 {
+		t.Fatalf("a stop mid-read wrote %+v", got)
+	}
+	if s.lastReconcile != 120 {
+		t.Fatalf("lastReconcile = %d, want 120", s.lastReconcile)
+	}
+	if e := s.params.at(181, -1); e == nil || e.Params.ShardRetention != 4*time.Hour {
+		t.Fatalf("the history moved past a range nothing recorded: %+v", e)
 	}
 }

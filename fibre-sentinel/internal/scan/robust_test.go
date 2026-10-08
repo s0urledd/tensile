@@ -2,9 +2,12 @@ package scan
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -154,5 +157,113 @@ func TestIsHeightUnavailable_PrunedValidatorSet(t *testing.T) {
 		if IsHeightUnavailable(errors.New(s)) {
 			t.Errorf("%q was read as an unavailable height; it is not one", s)
 		}
+	}
+}
+
+// wholeLines decodes every line of a JSONL file, failing on one that does
+// not decode, and returns how many there are.
+func wholeLines(t *testing.T, path string) int {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, line := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
+		var v map[string]any
+		if err := json.Unmarshal([]byte(line), &v); err != nil {
+			t.Fatalf("%s line %d does not decode: %q", filepath.Base(path), n+1, line)
+		}
+		n++
+	}
+	return n
+}
+
+// host_history.jsonl and param_uncertainty.jsonl are repaired before the
+// first append, as publications.jsonl and payments.jsonl are at open. A
+// crash or a full disk in the middle of a write leaves a partial last line;
+// the next record used to be written straight after it, and the two came
+// out as one line the collector cannot decode and skips: a range or a
+// registration the scanner never writes again.
+func TestTheSideRecordsAreRepairedBeforeTheFirstAppend(t *testing.T) {
+	dir := t.TempDir()
+	unc := filepath.Join(dir, "param_uncertainty.jsonl")
+	hosts := filepath.Join(dir, "host_history.jsonl")
+	if err := os.WriteFile(unc, []byte(`{"schema_version":1,"id":"t:check_skipped:1-2"}`+"\n"+`{"schema_version":1,"id":"t:silent_chan`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hosts, []byte(`{"cons_address":"aa","source":"seed"}`+"\n"+`{"cons_addr`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.AppendParamUncertainty(ParamUncertainty{ID: "t:silent_change:3-4", Kind: UncertaintySilentChange, FromHeight: 3, ToHeight: 4}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendHostEvent(HostEvent{HostEntry: HostEntry{FromHeight: 5, ConsAddress: "bb", Host: "b.example:7980", Source: HostFromEvent}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{unc, hosts} {
+		if n := wholeLines(t, path); n != 2 {
+			t.Fatalf("%s: %d lines, want the whole one before and the new one", filepath.Base(path), n)
+		}
+	}
+}
+
+// An append that fails leaves nothing for the retry to be glued onto: the
+// file is cut back to where the line began and the handle is dropped, so
+// the retry opens the file again through the repair. Here the write cannot
+// be made (the handle is closed under the store) and a partial line sits
+// at the end of the file, as a write that failed partway leaves it; the
+// retry still writes a whole line. Before, the dead handle was kept and
+// every later append failed, or, with a live one, landed on the partial
+// bytes.
+func TestAFailedSideRecordAppendIsRetriedOntoAWholeLine(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		handle func(*Store) *os.File
+		append func(*Store, int) error
+	}{
+		{"param_uncertainty.jsonl", func(st *Store) *os.File { return st.uncFile }, func(st *Store, i int) error {
+			return st.AppendParamUncertainty(ParamUncertainty{ID: fmt.Sprintf("t:check_skipped:%d-%d", i, i), Kind: UncertaintyCheckSkipped, FromHeight: int64(i), ToHeight: int64(i)})
+		}},
+		{"host_history.jsonl", func(st *Store) *os.File { return st.hostFile }, func(st *Store, i int) error {
+			return st.AppendHostEvent(HostEvent{HostEntry: HostEntry{FromHeight: int64(i), ConsAddress: "aa", Host: "a.example:7980", Source: HostFromEvent}})
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, c.name)
+			st, err := OpenStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			if err := c.append(st, 1); err != nil {
+				t.Fatal(err)
+			}
+			_ = c.handle(st).Close()
+			f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.WriteString(`{"schema_version":1,"from_hei`); err != nil {
+				t.Fatal(err)
+			}
+			f.Close()
+
+			if err := c.append(st, 2); err == nil {
+				t.Fatal("an append on a closed handle reported success")
+			}
+			if err := c.append(st, 2); err != nil {
+				t.Fatalf("the retry failed: %v", err)
+			}
+			if n := wholeLines(t, path); n != 2 {
+				t.Fatalf("%d lines, want 2", n)
+			}
+		})
 	}
 }

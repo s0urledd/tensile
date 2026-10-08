@@ -82,21 +82,11 @@ func (s *Store) AppendParamUncertainty(u ParamUncertainty) error {
 	if s.uncSeen[k] {
 		return nil
 	}
-	if s.uncFile == nil {
-		f, err := os.OpenFile(filepath.Join(s.dir, "param_uncertainty.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			return fmt.Errorf("open param_uncertainty.jsonl: %w", err)
-		}
-		s.uncFile = f
-	}
 	b, err := json.Marshal(u)
 	if err != nil {
 		return err
 	}
-	if _, err := s.uncFile.Write(append(b, '\n')); err != nil {
-		return err
-	}
-	if err := s.uncFile.Sync(); err != nil {
+	if err := appendLine(&s.uncFile, filepath.Join(s.dir, "param_uncertainty.jsonl"), b); err != nil {
 		return err
 	}
 	if s.uncSeen == nil {
@@ -374,21 +364,58 @@ func (s *Store) AppendPublication(p Publication) error {
 // read; the collector ingests it and the export carries it, so a verifier
 // can derive host_at_settlement for every assignment from the record.
 func (s *Store) AppendHostEvent(e HostEvent) error {
-	if s.hostFile == nil {
-		f, err := os.OpenFile(filepath.Join(s.dir, "host_history.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			return fmt.Errorf("open host_history.jsonl: %w", err)
-		}
-		s.hostFile = f
-	}
 	b, err := json.Marshal(e)
 	if err != nil {
 		return err
 	}
-	if _, err := s.hostFile.Write(append(b, '\n')); err != nil {
-		return err
+	return appendLine(&s.hostFile, filepath.Join(s.dir, "host_history.jsonl"), b)
+}
+
+// appendLine appends b and a newline to the record file at path through
+// *fp, and fsyncs it. host_history.jsonl and param_uncertainty.jsonl are
+// written this way; the collector reads them line by line and skips a line
+// that does not decode.
+//
+// A line is never written onto a partial one. The file is opened on first
+// use, after record.RepairTail has cut a torn final line (a crash or a full
+// disk in the middle of an earlier write) off it. A write or fsync that
+// fails cuts the file back to where the line began, and the handle is
+// dropped either way, so the next append opens the file again through the
+// same repair. Before, a write that failed partway (ENOSPC on the shared
+// disk) left a partial line, the caller's retry wrote the record straight
+// after it, and the two came out as one line the collector could not
+// decode: the range or registration in it never reached the store, while
+// the scanner, which had written it, never wrote it again.
+func appendLine(fp **os.File, path string, b []byte) error {
+	name := filepath.Base(path)
+	if *fp == nil {
+		if cut, err := record.RepairTail(path); err != nil {
+			return fmt.Errorf("repair %s: %w", name, err)
+		} else if cut > 0 {
+			fmt.Fprintf(os.Stderr, "%s: truncated %d bytes of a torn final line in %s\n", name, cut, path)
+		}
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return fmt.Errorf("open %s: %w", name, err)
+		}
+		*fp = f
 	}
-	return s.hostFile.Sync()
+	f := *fp
+	info, err := f.Stat()
+	if err == nil {
+		if _, err = f.Write(append(b, '\n')); err == nil {
+			err = f.Sync()
+		}
+		if err != nil {
+			_ = f.Truncate(info.Size())
+		}
+	}
+	if err != nil {
+		_ = f.Close()
+		*fp = nil
+		return fmt.Errorf("append to %s: %w", name, err)
+	}
+	return nil
 }
 
 // AppendPayment writes one escrow movement (skipping an already-seen one)
