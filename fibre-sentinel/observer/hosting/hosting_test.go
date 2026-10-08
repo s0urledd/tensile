@@ -153,6 +153,11 @@ func TestAddressesFromMeasurement(t *testing.T) {
 		{"", "", nil, ""},
 		// private addresses are never returned, even if a row carried one
 		{"192.168.1.1,127.0.0.1", "", nil, ""},
+		// nor shared (carrier-grade NAT, an overlay network) or other
+		// special-purpose ones, connected or not
+		{"100.64.1.1,5.9.1.1", "failed 100.64.1.1:7980: timeout; -> 5.9.1.1:7980", []string{"5.9.1.1"}, "5.9.1.1"},
+		{"100.112.84.18", "-> 100.112.84.18:22", nil, ""},
+		{"198.18.0.1,2001:db8::1,64:ff9b::a00:1", "", nil, ""},
 	}
 	for i, c := range cases {
 		got, conn := AddressesFromMeasurement(mk(c.dns, c.tcp))
@@ -271,11 +276,11 @@ func TestRefresherEndToEnd(t *testing.T) {
 	}
 	beat(t, st, h1, "fibre.one.example:7980", now.Add(-10*time.Minute), "5.9.1.1", "-> 5.9.1.1:7980")
 	// an older resolution of another host for the same validator is ignored
-	beat(t, st, h1, "old.example:7980", now.Add(-20*time.Minute), "203.0.113.1", "")
+	beat(t, st, h1, "old.example:7980", now.Add(-20*time.Minute), "51.68.1.1", "")
 	// resolved long ago: outside the lookback, so unresolved now
 	beat(t, st, h3, "gone.example:7980", now.Add(-48*time.Hour), "5.9.9.9", "")
 	// two networks behind one name; the connected one is primary
-	beat(t, st, h4, "multi.example:7980", now.Add(-5*time.Minute), "203.0.113.7,2a01:4f8::7", "failed 203.0.113.7:7980: timeout; -> [2a01:4f8::7]:7980")
+	beat(t, st, h4, "multi.example:7980", now.Add(-5*time.Minute), "51.68.7.7,2a01:4f8::7", "failed 51.68.7.7:7980: timeout; -> [2a01:4f8::7]:7980")
 	_ = h2
 
 	var logs []string

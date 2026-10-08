@@ -595,7 +595,7 @@ func TestClassifyDownloadError_StatusCodes(t *testing.T) {
 
 func TestOrderAddrsAndDownloadDeadline(t *testing.T) {
 	got := orderAddrs([]string{"2001:db8::1", "10.0.0.1", "::1", "192.0.2.7"})
-	want := []string{"10.0.0.1", "192.0.2.7", "2001:db8::1", "::1"}
+	want := []string{"10.0.0.1", "2001:db8::1", "192.0.2.7", "::1"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("orderAddrs = %v, want %v", got, want)

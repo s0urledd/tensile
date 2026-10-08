@@ -106,8 +106,10 @@ type Config struct {
 	// InFlightBytes bounds the shard bytes being downloaded at once, which
 	// the request count alone does not: DownloadShard is a unary RPC, so an
 	// in-flight request holds its whole shard, twice. Each request is
-	// charged what its shard should weigh. A request larger than the whole
-	// budget still runs, alone. Zero takes the default.
+	// charged the most it may receive (recvLimitFor: what its shard should
+	// weigh, a tenth to spare, a mebibyte at least), so a server sending more
+	// than its shard cannot hold more than the budget. A request larger than
+	// the whole budget still runs, alone. Zero takes the default.
 	InFlightBytes int64
 	// LinkMbps is this observer's measured receive rate, megabits a second
 	// (0: not set). When set, InFlightBytes is held to what the link moves
@@ -266,9 +268,13 @@ type Prober struct {
 	counters   readCounters
 	// retries are the later attempts of full readings (retry.go).
 	retries *retryQueue
-	// reach is when this observer's requests last reached a server, for
-	// telling its own network's failure from a validator's (ownside.go).
+	// reach is when this observer's requests last reached a server and its
+	// resolver last answered, for telling its own network's or resolver's
+	// failure from a validator's (ownside.go).
 	reach reachLog
+	// lookupHost is the resolver the check of this observer's own resolver
+	// asks (resolverUp); nil is this machine's own. Tests only.
+	lookupHost func(ctx context.Context, host string) ([]string, error)
 }
 
 // New builds a Prober.

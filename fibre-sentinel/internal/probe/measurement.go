@@ -170,6 +170,14 @@ type Measurement struct {
 	// novel is how many of the returned rows the blob's reading had not
 	// already seen. Not recorded.
 	novel int
+	// resolverFailed: under the client's rules, the lookup of the
+	// validator's host name failed other than with "no such host", and Run
+	// filed it as this observer's gap; ownSide judges it again at a full
+	// reading. unreachFamilies are the IP versions ("IPv4", "IPv6") whose
+	// connects an ICMP unreachable from the path turned away (Input.ClientRules).
+	// Neither is recorded: the row's text says what was decided and why.
+	resolverFailed  bool
+	unreachFamilies []string
 }
 
 // LoadInfo is this observer's load at the moment a request was let go

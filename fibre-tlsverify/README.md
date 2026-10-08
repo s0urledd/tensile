@@ -95,6 +95,13 @@ tlsverify.VerifyAndInspectAt(cert, expected, chainID, instant)  // + *Identity o
 tlsverify.Inspect(cert)                                          // parse only, no verdict
 ```
 
+A nil error from these says the certificate carries a valid endorsement of
+its TLS key by the validator's consensus key. It does not say the peer holds
+that key: anyone can present a validator's genuine certificate. Only a TLS
+handshake that completes proves it, and TLS 1.3 checks the peer's
+`CertificateVerify` after `VerifyConnection` has run, so count the identity
+as verified only once the handshake has succeeded.
+
 ## Error classification
 
 Every failure is a `*VerificationError` with a stable `Reason` string; extract it
