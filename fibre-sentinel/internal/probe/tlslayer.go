@@ -86,18 +86,29 @@ func (h *handshake) run(ctx context.Context, conn net.Conn) (*tls.Conn, error) {
 	}
 	if h.verifyErr == nil {
 		// The handshake failed before or after the identity check, on the
-		// wire: no certificate was judged.
+		// wire. Before it, no certificate was judged. After it, the
+		// certificate's endorsement verified but the peer never proved it
+		// holds the certificate's key (its CertificateVerify, which TLS 1.3
+		// checks after this callback, failed, or the handshake did not get
+		// that far): anyone can present a validator's genuine certificate,
+		// so the identity is not verified either.
 		h.tls.OK = false
 		h.tls.DurationMS = sinceMS(h.started)
 		h.tls.Error = err.Error()
+		if h.id.OK {
+			h.id.OK = false
+			h.id.Error = "the certificate's endorsement verified, but the handshake did not finish, so the peer did not prove it holds the certificate's key: " + err.Error()
+		}
 	}
 	return nil, err
 }
 
-// verify is the VerifyConnection callback. It runs once the peer's
-// certificate has been received and its CertificateVerify checked, which is
-// when the handshake has, as far as the transport is concerned, succeeded:
-// the TLS step is recorded OK here and the identity step judged.
+// verify is the VerifyConnection callback. Go's TLS 1.3 client calls it
+// once the peer's certificate has been received and before the peer's
+// CertificateVerify is checked: the certificate is judged here, but the
+// peer has not yet proved it holds its key. The TLS step is recorded OK and
+// the identity judged here; run takes both back if the handshake then
+// fails.
 func (h *handshake) verify(cs tls.ConnectionState) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()

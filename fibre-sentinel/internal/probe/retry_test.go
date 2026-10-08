@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	tlsverify "github.com/plsgiveup/fibre/fibre-tlsverify"
+
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 )
 
@@ -253,14 +255,17 @@ func TestAFailureOnThisObserversSideIsItsOwnGap(t *testing.T) {
 		{"a window that ended within the clock's reach", nil, func() Measurement {
 			m := row(FullReadLabel, OutcomeIdentityFail)
 			m.TCP.OK, m.ClockOffsetMS = true, -20000
-			m.Identity = IdentityResult{Attempted: true, Stale: true, ClaimedNotAfter: m.StartedAt.Add(-70 * time.Second).Format(time.RFC3339)}
+			// the check turns ClockSkew after the signed edge: 70 s before the request
+			m.Identity = IdentityResult{Attempted: true, Stale: true, Reason: string(tlsverify.ReasonCertExpired),
+				ClaimedNotAfter: m.StartedAt.Add(-tlsverify.ClockSkew - 70*time.Second).Format(time.RFC3339)}
 			classifyRow(&m)
 			return m
 		}, true},
 		{"a window that ended long before", nil, func() Measurement {
 			m := row(FullReadLabel, OutcomeIdentityFail)
 			m.TCP.OK = true
-			m.Identity = IdentityResult{Attempted: true, Stale: true, ClaimedNotAfter: m.StartedAt.Add(-2 * time.Hour).Format(time.RFC3339)}
+			m.Identity = IdentityResult{Attempted: true, Stale: true, Reason: string(tlsverify.ReasonCertExpired),
+				ClaimedNotAfter: m.StartedAt.Add(-2 * time.Hour).Format(time.RFC3339)}
 			classifyRow(&m)
 			return m
 		}, false},

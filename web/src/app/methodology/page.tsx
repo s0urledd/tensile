@@ -7,7 +7,7 @@ import { H2, H3 } from "@/components/RefHeading";
 // The rules version, as verdict.MethodologyVersion in the Go code and
 // methodology_version in /v1/meta and every export manifest. Bumped in the
 // same change as any rule that can move a figure.
-const METHODOLOGY_VERSION = "2026-10-02";
+const METHODOLOGY_VERSION = "2026-10-08";
 
 export const metadata = { title: "Methodology · Tensile · Celestia Fibre" };
 
@@ -196,6 +196,12 @@ export default function Methodology() {
                 <li>an answer that cannot be judged: an unrecognised outcome, or a chain version whose row assignment the pinned code cannot compute.</li>
               </ul>
               <p>Nor is anyone not served on a reading in which no request reached any server. In each case the validator counts neither way on that blob.</p>
+              <p id="own-side">Two failures look the same whichever side caused them, so they count as the validator&rsquo;s only when Tensile&rsquo;s own side is shown working in the same minutes:</p>
+              <ul>
+                <li>a lookup of the validator&rsquo;s host name that fails other than with &ldquo;no such host&rdquo;: Tensile&rsquo;s resolver must have answered other validators&rsquo; names and a fresh test name, and its connections must have reached other servers;</li>
+                <li>a connection turned away as unreachable: Tensile&rsquo;s connections over the same IP version must have reached other servers.</li>
+              </ul>
+              <p>Otherwise the failure is Tensile&rsquo;s gap.</p>
             </div>
             <Rules rows={[
               ["Provisional", "A not-served reading younger than 30 minutes: counted, and still open to withdrawal until then.", "provisional"],
@@ -252,6 +258,7 @@ export default function Methodology() {
 
           <Def id="reading" aliases={["probe", "schedule"]} name="When a blob is read" say="Once, 10 minutes before its retention window ends.">
             <p>Every validator that endorsed the blob is asked for its own rows the way celestia-app&rsquo;s Fibre client asks for a shard: in the client&rsquo;s order, 15 s per request with one re-dial. Every row that comes back is verified against the blob commitment. Validators that did not endorse owe nothing and are not asked. Every request stays on record.</p>
+            <p>A host name with several addresses is connected to as the client connects: the next address is tried 250 ms after the last, or at once when it fails, and the first to connect is used. One dead address does not fail the request.</p>
             <More summary="Timing limits">
               <p>A blob whose window, counted from its settlement, is 10 minutes or shorter is read half way through it. No request starts later than a minute before <code>must_serve_until</code>.</p>
             </More>

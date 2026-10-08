@@ -58,16 +58,24 @@ func main() {
 	}
 	// Appended through record.Appender: observer-archive may rotate the file,
 	// and the appender follows it to the new one without losing a line.
-	out, err := record.OpenAppender(filepath.Join(*dataDir, "reachability.jsonl"))
+	out, cut, err := openOutput(filepath.Join(*dataDir, "reachability.jsonl"))
 	if err != nil {
 		log.Fatalf("open output: %v", err)
 	}
 	defer out.Close()
+	if cut > 0 {
+		log.Printf("reachability.jsonl: cut %d bytes of a torn final line", cut)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	timeouts := probe.StepTimeouts{DNS: *dnsTO, TCP: *tcpTO, TLS: *tlsTO}
+	// Run bounds every step of a request, the connect as a whole too; this
+	// bounds the request, so that no endpoint can hold a round past it. A
+	// request it cuts short is recorded as this observer's own gap
+	// (PROBE_ERROR, "probe abandoned").
+	perRequest := requestBound(timeouts)
 
 	st := status.New(*dataDir, "heartbeat", *vantage, status.BuildRevision())
 	cfg := map[string]any{}
@@ -130,8 +138,9 @@ func main() {
 		// a round over eighty endpoints with a third of them timing out took
 		// longer than the interval, the ticker dropped ticks, and the "every
 		// five minutes" on the dashboard was not true. Writes stay serialised
-		// so a crash never leaves a half record for the next round to append
-		// after.
+		// so this run never leaves a half record for its next write to land
+		// after; a half record a crash or a full disk left is cut when the
+		// next run opens the file (openOutput).
 		var (
 			mu    sync.Mutex
 			wg    sync.WaitGroup
@@ -161,7 +170,9 @@ func main() {
 			go func(in probe.Input, who, host string) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				m := probe.Run(ctx, in, nil, timeouts)
+				rctx, cancel := context.WithTimeout(ctx, perRequest)
+				m := probe.Run(rctx, in, nil, timeouts)
+				cancel()
 				m.ValidatorSetHeight = tip
 				b, err := json.Marshal(m)
 				if err != nil {
@@ -208,6 +219,41 @@ func main() {
 			round()
 		}
 	}
+}
+
+// openOutput opens the heartbeat's file for append, after cutting off it a
+// final line a crash or a full disk left half written (record.RepairTail),
+// as the prober and the scanner do with theirs. Left in place, the first
+// record of this run would be glued onto the fragment, and the collector
+// would step over the line and lose the record with it. cut is how many
+// bytes went.
+func openOutput(path string) (out *record.Appender, cut int64, err error) {
+	cut, err = record.RepairTail(path)
+	if err != nil {
+		return nil, 0, fmt.Errorf("repair %s: %w", path, err)
+	}
+	out, err = record.OpenAppender(path)
+	if err != nil {
+		return nil, cut, err
+	}
+	return out, cut, nil
+}
+
+// requestBound is the most one heartbeat request may take: its lookup, its
+// connect and its handshake with the identity check inside it, each at its
+// bound (probe.DefaultStepTimeouts' where to sets none, as probe.Run takes
+// it), and five seconds more.
+func requestBound(to probe.StepTimeouts) time.Duration {
+	d := probe.DefaultStepTimeouts()
+	sum := 5 * time.Second
+	for _, s := range [][2]time.Duration{{to.DNS, d.DNS}, {to.TCP, d.TCP}, {to.TLS, d.TLS}, {to.Identity, d.Identity}} {
+		if s[0] > 0 {
+			sum += s[0]
+		} else {
+			sum += s[1]
+		}
+	}
+	return sum
 }
 
 var _ = fmt.Sprintf

@@ -170,6 +170,14 @@ type Measurement struct {
 	// novel is how many of the returned rows the blob's reading had not
 	// already seen. Not recorded.
 	novel int
+	// resolverFailed: under the client's rules, the lookup of the
+	// validator's host name failed other than with "no such host", and Run
+	// filed it as this observer's gap; ownSide judges it again at a full
+	// reading. unreachFamilies are the IP versions ("IPv4", "IPv6") whose
+	// connects an ICMP unreachable from the path turned away (Input.ClientRules).
+	// Neither is recorded: the row's text says what was decided and why.
+	resolverFailed  bool
+	unreachFamilies []string
 }
 
 // LoadInfo is this observer's load at the moment a request was let go
@@ -335,7 +343,9 @@ type DownloadResult struct {
 	RPCCode string `json:"rpc_code,omitempty"`
 	// RecvLimit is the receive bound this probe ran with, so a
 	// PROBE_ERROR from "received message larger than max" is checkable
-	// against the shard's size.
+	// against the shard's size. Under the client's rules, an answer over
+	// this shard's bound that was asked for again under the bound of the
+	// largest shard of the blob carries that one.
 	RecvLimit int `json:"recv_limit,omitempty"`
 	// RPC is the read method the probe called: DownloadShard today; the
 	// streaming read once upstream ships it and the prober tries both.
