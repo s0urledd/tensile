@@ -4,7 +4,7 @@ import Link from "next/link";
 import { type Validator, API_BASE, ago, utcWord, int } from "@/lib/api";
 import { validatorHref } from "@/lib/addr";
 import type { Hosting } from "@/lib/hosting";
-import { FRAME, COUNTRIES, TINY, project, countryPoint } from "@/lib/map/project";
+import { FRAME, COUNTRIES, project, countryPoint } from "@/lib/map/project";
 import { countryName } from "@/components/Flag";
 import { Eye } from "@/components/Metrics";
 import { type EndpointState, endpointState, readiness } from "@/components/Readiness";
@@ -12,15 +12,17 @@ import { type EndpointState, endpointState, readiness } from "@/components/Readi
 /**
  * The overview's host map: every registered Fibre host of the bonded set,
  * placed by the city its address geolocates to (hosting.lat/lon) or, without
- * one, by its country's label point, over Natural Earth country outlines
- * (Equal Earth) drawn as calm solid land. A country with a host is a shade
- * warmer; one too small to show around its badge is drawn larger, in its own
- * shape; the open place's countries are lit.
+ * one, by its country's label point, over the land of Natural Earth's
+ * country outlines (Equal Earth) drawn as a board of small squares, the
+ * recent blobs' own shape: one tone for every country, none marked, so a
+ * place as small as Singapore reads as every other.
  *
- * Every place is a rounded square in the accent carrying its count; a lone
- * host is a small square with no figure. Hosts close together on screen share
- * one badge (badges never touch). A badge with an unreachable host carries an
- * amber pip, and one whose hosts all stopped answering turns amber; the map
+ * Every place is a rounded square in the accent carrying its count, set on
+ * the same board: at the home view it covers a block of the board's cells,
+ * edge to edge; a lone host is a small square with no figure. Hosts close
+ * together on screen share one badge (badges never touch). A badge with an
+ * unreachable host carries an amber pip, and one whose hosts all stopped
+ * answering turns amber; the map
  * shows reachability only, what was served is on each validator's page. Names
  * appear only on hover, focus or tap, in the place's popover (its unreachable
  * hosts first), and the other badges step back
@@ -123,12 +125,62 @@ const valLink = (v: Validator) => validatorHref(v.operator_address, v.cons_addre
 const name = (v: Validator) => v.moniker || v.operator_address || v.address;
 const fmtShare = (s: number) => { const p = s * 100; return p >= 0.1 ? `${p.toFixed(1)}%` : p > 0 ? "<0.1%" : "0%"; };
 
-/** a badge's height in px: a little taller for more hosts, so a crowd reads as one; a lone host is a small square */
-const badgeH = (n: number, narrow: boolean) => (n === 1 ? (narrow ? 8 : 10) : narrow ? Math.round(17 + Math.min(6, 1.9 * Math.sqrt(n - 1))) : Math.round(21 + Math.min(8, 2.3 * Math.sqrt(n - 1))));
+/**
+ * The land is a board of small squares: one in every cell of a lattice that is mostly land, PITCH px apart at the
+ * home view and SQUARE px each, on whole pixels there, so every square is crisp. No coast is drawn and no country
+ * marked. Zoomed in, the lattice halves at each doubling, so the squares keep about their size on screen. The board
+ * is cut in tiles of TILE by TILE cells, each read once from the outlines (filled on a small canvas, a cell lit by
+ * its coverage) and drawn as one path of squares.
+ */
+const PITCH = 4, SQUARE = 2, TILE = 64;
+/** a cell is land where at least this much of it is (of 255) */
+const LIT = 102;
+/** the halvings of the lattice: at the deepest zoom the squares are some 8 px apart */
+const LEVELS = 3;
+/** a lattice in map units: the middle of its cell (0, 0), and the step between two cells */
+type Lattice = { x: number; y: number; p: number };
+let LAND: Path2D | null = null, RASTER: CanvasRenderingContext2D | null = null;
+/** the land cells of one tile, as squares in cells from the tile's corner: the cell (i, j) is the lattice's (ti * TILE + i, tj * TILE + j) */
+function boardTile(o: Lattice, ti: number, tj: number): string {
+  if (!RASTER) {
+    const c = document.createElement("canvas");
+    c.width = c.height = TILE;
+    RASTER = c.getContext("2d", { willReadFrequently: true });
+    LAND = new Path2D(COUNTRIES.map(([, d]) => d).join(""));
+  }
+  const g = RASTER, land = LAND;
+  if (!g || !land) return "";
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, TILE, TILE);
+  // a cell is the canvas's pixel, the lattice point at its middle; the pixel's alpha is how much of the cell is land
+  g.setTransform(1 / o.p, 0, 0, 1 / o.p, 0.5 - ti * TILE - o.x / o.p, 0.5 - tj * TILE - o.y / o.p);
+  g.fill(land);
+  const a = g.getImageData(0, 0, TILE, TILE).data;
+  let d = "";
+  const s = SQUARE / PITCH;
+  for (let j = 0; j < TILE; j++) for (let i = 0; i < TILE; i++) if (a[(j * TILE + i) * 4 + 3] >= LIT) d += `M${i} ${j}h${s}v${s}h${-s}z`;
+  return d;
+}
+
+/**
+ * a badge's size in the board's cells: a lone host 3, a place 6, ten hosts or more 7 (a figure of three digits 9
+ * wide), so at the home view it covers that block of cells edge to edge and the board's gap around it is its edge
+ */
+const CELLS = (n: number) => (n === 1 ? 3 : n < 10 ? 6 : 7);
+const span = (cells: number) => cells * PITCH - (PITCH - SQUARE);
+/** a badge's height in px: a little taller for a crowd, so it reads as one; a lone host is a small square */
+const badgeH = (n: number, narrow: boolean) => (!narrow ? span(CELLS(n)) : n === 1 ? 8 : Math.round(17 + Math.min(6, 1.9 * Math.sqrt(n - 1))));
 /** its width: square, or wider for a figure of three digits */
-const badgeW = (n: number, narrow: boolean) => (n === 1 ? badgeH(1, narrow) : Math.max(badgeH(n, narrow), Math.round(String(n).length * (narrow ? 6.3 : 7.2) + (narrow ? 9 : 12))));
+const badgeW = (n: number, narrow: boolean) => (!narrow ? span(n < 100 ? CELLS(n) : 9) : n === 1 ? 8 : Math.max(badgeH(n, narrow), Math.round(String(n).length * 6.3 + 9)));
 /** the room a badge takes, for the merging and for keeping clear of the bar */
 const drawn = (n: number, narrow: boolean) => Math.max(badgeH(n, narrow), badgeW(n, narrow));
+/** px between two badges' edges at least; a wide box's badges then keep a gap after each is set on the board */
+const APART = (narrow: boolean) => (narrow ? 5 : 8);
+/**
+ * a badge's middle set on the board, in px, where the board's cells are PITCH px and a cell's middle is at a (px from
+ * the box's corner): a block of odd cells is centred on a cell, an even one between two
+ */
+const onBoard = (v: number, cells: number, a: number) => a + (cells % 2 ? Math.round((v - a) / PITCH) : Math.round((v - a) / PITCH - 0.5) + 0.5) * PITCH;
 
 /** hosts -> clusters: one per place (city, else country), then merged while two badges would touch on screen */
 function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
@@ -141,7 +193,7 @@ function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
     let best: [number, number, number] | null = null;
     for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) {
       const d = Math.hypot(cs[i].ux - cs[j].ux, cs[i].uy - cs[j].uy) * pxPerUnit;
-      const need = (drawn(cs[i].hosts.length, narrow) + drawn(cs[j].hosts.length, narrow)) / 2 + 5;
+      const need = (drawn(cs[i].hosts.length, narrow) + drawn(cs[j].hosts.length, narrow)) / 2 + APART(narrow);
       if (d < need && (!best || d - need < best[2])) best = [i, j, d - need];
     }
     if (!best) break;
@@ -159,66 +211,6 @@ function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
     return { id: hosts.map((h) => h.v.address).sort().join(","), hosts, ux: c.ux, uy: c.uy, locs: new Set(hosts.map((h) => h.loc)).size, ccs };
   }).sort((x, y) => x.ux - y.ux);
 }
-
-/**
- * A hosted country too small to show around its badge would vanish under it, so it is drawn larger: a
- * copy of its own outline about its middle, flat in the hosted tint as every other hosted country, on
- * top of the land and under the badges. Where a larger hosted country beside it already
- * shows the place blue (Slovenia, the Baltics, South Korea beside Japan), it is left as it is. Which
- * countries are small is decided at the home view, so the set holds through a zoom; each copy keeps its
- * size until its own outline, zoomed in, is as large.
- */
-/** px: the larger side a small hosted country is drawn at: about 2.4 times a two-host badge (23 px, 19 px narrow), so 13-16 px of its land shows past it on its long side */
-const TINY_L = 56, TINY_L_NARROW = 44;
-/** px at the home view: a country at least this wide shows around its badge; a smaller one is hidden by it */
-const SHOWN = 30, SHOWN_NARROW = 24;
-/** px: a shown hosted country whose land comes this close to a small one's middle already makes that place read blue */
-const NEAR = 16, NEAR_NARROW = 12;
-/** px: a neighbour's piece smaller than this does not count as beside (India's Andaman and Nicobar Islands beside Singapore) */
-const RING = 8;
-/**
- * the shape a small country is drawn larger in: its middle and larger side in map units, and its path,
- * on TINY's grid where e is 100 (unit) or in map units
- */
-type Own = { x: number; y: number; e: number; d: string; unit: boolean };
-/**
- * each country's size and its rings (each one's size and points) in map units, from its outline (absolute
- * M, relative m and l, z), and its own shape: its 1:10m outline from TINY, else its largest ring, so far
- * islands (the Azores, Marion Island) neither move its middle nor grow with it
- */
-type Shape = { e: number; rings: { e: number; pts: number[] }[]; own: Own };
-const SHAPES: Map<string, Shape> = (() => {
-  const out = new Map<string, Shape>();
-  const extent = (p: number[]) => {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (let i = 0; i < p.length; i += 2) { x0 = Math.min(x0, p[i]); y0 = Math.min(y0, p[i + 1]); x1 = Math.max(x1, p[i]); y1 = Math.max(y1, p[i + 1]); }
-    return { x: (x0 + x1) / 2, y: (y0 + y1) / 2, e: Math.max(x1 - x0, y1 - y0) };
-  };
-  for (const [cc, d] of COUNTRIES) {
-    if (!cc) continue;
-    let x = 0, y = 0, sx = 0, sy = 0, cmd = "M";
-    const rings: number[][] = [];
-    const t = d.match(/[MmLlZz]|-?\d+(?:\.\d+)?/g) ?? [];
-    for (let i = 0; i < t.length; i++) {
-      const k = t[i];
-      if (/[MmLlZz]/.test(k)) { cmd = k; if (k === "z" || k === "Z") { x = sx; y = sy; } continue; }
-      const a = +k, b = +t[++i];
-      if (cmd === "M") { x = a; y = b; sx = x; sy = y; cmd = "L"; rings.push([]); }
-      else if (cmd === "m") { x += a; y += b; sx = x; sy = y; cmd = "l"; rings.push([]); }
-      else if (cmd === "L") { x = a; y = b; }
-      else { x += a; y += b; }
-      rings[rings.length - 1].push(x, y);
-    }
-    if (!rings.length) continue;
-    const rs = rings.map((pts) => ({ ...extent(pts), pts }));
-    const big = rs.reduce((p, q) => (q.e > p.e ? q : p)), tiny = TINY[cc];
-    const own: Own = tiny
-      ? { x: tiny[0], y: tiny[1], e: tiny[2], d: tiny[3], unit: true }
-      : { x: big.x, y: big.y, e: big.e, d: `M${big.pts.slice(0, 2).join(" ")}L${big.pts.slice(2).join(" ")}Z`, unit: false };
-    out.set(cc, { e: extent(rings.flat()).e, rings: rs.map(({ e, pts }) => ({ e, pts })), own });
-  }
-  return out;
-})();
 
 /** what a badge is called: its city, its country, or its countries */
 function placeLabel(c: Cluster): string {
@@ -501,51 +493,41 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
   const cur = live.length ? live[li % live.length] : null;
   const liveCluster = cur?.host ? clusters.find((c) => c.hosts.includes(cur.host!))?.id : undefined;
 
-  // ---- the land: every country once; hosted ones a shade warmer, the open place's lit ----
+  // ---- the land: the board's tiles that the view shows, on the lattice of its zoom ----
   const hosted = useMemo(() => new Set(hosts.map((h) => h.cc)), [hosts]);
   const unchecked = hosts.some((h) => h.state === "none");
-  const openCcs = useMemo(() => new Set(clusters.find((c) => c.id === open)?.ccs ?? []), [clusters, open]);
-  const land = useMemo(() => (
-    <>
-      {COUNTRIES.map(([cc, d], i) => (
-        <path key={cc || i} d={d} className={openCcs.has(cc) ? "hi" : hosted.has(cc) ? "on" : undefined} />
-      ))}
-    </>
-  ), [hosted, openCcs]);
+  // at the home view a cell is PITCH px and its middle PITCH / 2 px from the box's corner, so the squares sit on whole
+  // pixels; each doubling of the zoom past it halves the cell
+  const p0 = width > 0 ? (PITCH * home.w) / width : 0;
+  const lat: Lattice = { x: 0, y: 0, p: p0 / 2 ** Math.max(0, Math.min(LEVELS, Math.round(Math.log2(home.w / view.w)))) };
+  lat.x = home.x + lat.p / 2;
+  lat.y = home.y + lat.p / 2;
+  // a tile is read once per lattice; a new home view (another width) starts the board again
+  const tiles = useRef<{ base: string; d: Map<string, string> }>({ base: "", d: new Map() });
+  const board: React.ReactNode[] = [];
+  if (width > 0) {
+    const base = `${p0}|${home.x}|${home.y}`;
+    if (tiles.current.base !== base) tiles.current = { base, d: new Map() };
+    const cache = tiles.current.d, p = lat.p;
+    const tile = (v: number, o: number) => Math.floor(Math.floor((v - o) / p + 0.5) / TILE);
+    for (let tj = tile(view.y, lat.y); tj <= tile(view.y + view.w * aspect, lat.y); tj++) {
+      for (let ti = tile(view.x, lat.x); ti <= tile(view.x + view.w, lat.x); ti++) {
+        const key = `${p}|${ti}|${tj}`;
+        let d = cache.get(key);
+        if (d === undefined) { d = boardTile(lat, ti, tj); cache.set(key, d); }
+        // each square SQUARE / PITCH of a cell, centred on its lattice point
+        if (d) board.push(<path key={key} d={d} transform={`translate(${lat.x + (ti * TILE - SQUARE / PITCH / 2) * p} ${lat.y + (tj * TILE - SQUARE / PITCH / 2) * p}) scale(${p})`} />);
+      }
+    }
+  }
 
-  // each hosted country's size and own shape with, for every other hosted one, that one's size and how near each of its rings comes to this one's middle
-  const beside = useMemo(() => [...hosted].flatMap((cc) => {
-    const s = SHAPES.get(cc);
-    if (!s) return [];
-    const { e, own } = s;
-    const others = [...hosted].flatMap((o) => {
-      const q = o === cc ? undefined : SHAPES.get(o);
-      if (!q) return [];
-      return [{ e: q.e, rings: q.rings.map((r) => {
-        let d = Infinity;
-        for (let i = 0; i < r.pts.length; i += 2) d = Math.min(d, Math.hypot(r.pts[i] - own.x, r.pts[i + 1] - own.y));
-        return { e: r.e, d };
-      }) }];
-    });
-    return [{ cc, e, own, others }];
-  }), [hosted]);
-  // the small ones, by the home view's scale: hidden by the badge, with no shown hosted country's land beside; larger first
-  const sHome = width > 0 ? width / home.w : 0;
-  const small = useMemo(() => {
-    if (!sHome) return [];
-    const shown = narrow ? SHOWN_NARROW : SHOWN, near = narrow ? NEAR_NARROW : NEAR;
-    return beside.filter(({ e, others }) => e * sHome < shown
-      && !others.some((o) => o.e * sHome >= shown && o.rings.some((r) => r.e * sHome >= RING && r.d * sHome < near)))
-      .sort((a, b) => b.own.e - a.own.e);
-  }, [beside, sHome, narrow]);
-  // each drawn with its larger side tinyL px, until its own outline is that large
-  const tinyL = narrow ? TINY_L_NARROW : TINY_L;
-  const grown = scale > 0 ? small.filter(({ own }) => own.e * scale < tinyL) : [];
-
-  // ---- badges on screen ----
+  // ---- badges on screen: at rest on a cell of PITCH px (the home view, or a zoom by whole doublings) each set on the board ----
+  const settled = !narrow && !moving && Math.abs(lat.p * scale - PITCH) < 0.01;
+  const ax = (lat.x - view.x) * scale, ay = (lat.y - view.y) * scale;
   const placed = width > 0 ? clusters.map((c) => {
-    const [x, y] = toPx(c.ux, c.uy);
+    const [ux, uy] = toPx(c.ux, c.uy);
     const n = c.hosts.length, bw = badgeW(n, narrow), bh = badgeH(n, narrow);
+    const x = settled ? onBoard(ux, n < 100 ? CELLS(n) : 9, ax) : ux, y = settled ? onBoard(uy, CELLS(n), ay) : uy;
     return { c, x, y, bw, bh, hit: Math.max(24, bw + 4, bh + 4) };
   }).filter((p) => p.x >= p.bw / 2 - 2 && p.x <= width - p.bw / 2 + 2 && p.y >= p.bh / 2 - 2 && p.y <= height - p.bh / 2 + 2) : [];
 
@@ -564,14 +546,10 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
         onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
         onDoubleClick={onDoubleClick}>
         <div className="cm-vp">
-          {/* drawn once the box is measured: the prerendered page holds the box, not the 100 kB of outlines */}
+          {/* drawn once the box is measured: the prerendered page holds the box, not the board */}
           {width > 0 && (
             <svg className="cm-land" viewBox={`${view.x} ${view.y} ${view.w} ${view.w * aspect}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false">
-              {land}
-              {grown.map(({ cc, own: o }) => (
-                <path key={"tiny-" + cc} d={o.d} className={openCcs.has(cc) ? "hi" : "on"}
-                  transform={o.unit ? `translate(${o.x} ${o.y}) scale(${tinyL / scale / 100})` : `translate(${o.x} ${o.y}) scale(${tinyL / (o.e * scale)}) translate(${-o.x} ${-o.y})`} />
-              ))}
+              {board}
             </svg>
           )}
         </div>
