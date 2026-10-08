@@ -53,6 +53,17 @@ port, behind one Caddy with a site per network (see "Two networks").
   sets no `ClientAuth`, so it never asks for a client certificate
   (`fibre/server.go`). This observer is an ordinary client and can watch every
   validator that registers a Fibre endpoint, not only its operator's own.
+- The prober and the heartbeat dial public addresses only. A registered
+  host that is, or resolves only to, an address no client on the internet
+  could reach is recorded as `UNROUTABLE_HOST` (the validator's
+  `NOT_REGISTERED`) with no connection made: loopback, the private and
+  link-local ranges, and the special-purpose ranges, among them
+  `100.64.0.0/10` (carrier-grade NAT, and the addresses an overlay such as
+  Tailscale hands out), `0.0.0.0/8`, `192.0.0.0/24`, `198.18.0.0/15`,
+  `240.0.0.0/4`, the documentation ranges, `fec0::/10` and the NAT64 prefix
+  `64:ff9b::/96` when the IPv4 address in it is one of these. An observer
+  host on such an overlay therefore cannot be pointed into it from the
+  chain.
 - If the same host also runs your own validator and Fibre server: celestia-app
   main (#7848, 15 Sep 2026) recommends separate disks for Fibre shards and
   the node's data; the observer's data directory should not share the Fibre
@@ -146,6 +157,31 @@ read-path rate limiting Celestia is designing (forum
 topic 2295) treats requests for shards a validator was never assigned as
 illegitimate; reading only real, in-window, assigned commitments keeps the
 observer's traffic on the right side of it.
+
+**When the host is the validator's fault** (the methodology's own rule
+is that this observer's trouble never counts against a validator). Under
+the client's rules a host's addresses are tried as the client tries them,
+the next one 250 ms after the one before unless that one has connected or
+failed, IPv4 and IPv6 taking turns, so one dead address in a validator's
+DNS is no longer a counted "not served". A DNS failure other than "no such
+host", and an ICMP network or host unreachable, count against the validator only
+when this observer's own resolver and network are shown working in the
+same minutes; otherwise they stay this observer's gap, as before, and the
+row says which way it went. The change moved the methodology version
+(`methodology_version` on `/v1/meta`), so it applies to readings made from
+the upgrade on, never to past ones, and the API's snapshot and day-partial
+files are computed again: warm them before switching (`observer-api
+-warm-only`, "Upgrading a running observer").
+
+Text a row keeps from the wire or the resolver (a server's gRPC error
+message, the addresses a name resolved to) is cut at 4 KiB, at a
+character boundary, and ends with how long it was (`… (N bytes in all)`),
+in `raw_error` and in each step's error and detail; the headers a server
+may send on the download connection are bounded at 64 KiB, and its answer
+by what that validator's shard of the blob can weigh. No validator can
+fill the disk the record shares with the node, write a line too long for
+the prober's restart to read back, or make the prober hold more than its
+byte budget says.
 
 **What the prober sustains.** On 28 September mocha settled about 20 blobs
 a minute (1,200 an hour from 14:00 to 20:00 UTC, 22 in the busiest minute),
