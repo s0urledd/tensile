@@ -4,7 +4,9 @@
 // It walks the chain height by height, finds transactions whose sole message is
 // MsgPayForFibre, decodes the full PaymentPromise, tracks the fibre module
 // params from EventUpdateFibreParams, and writes one JSON record per publication
-// to <data-dir>/publications.jsonl. It never probes a validator.
+// to <data-dir>/publications.jsonl. A transaction that failed in a block while
+// carrying a Fibre message is recorded in <data-dir>/failed_txs.jsonl, never as
+// a publication. It never probes a validator.
 //
 // Every RPC call is timeout-bounded. Follow mode gives up (non-zero exit, with a
 // dump of the last log lines) if the chain stops producing blocks — it never
@@ -21,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/failedtx"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
 )
@@ -38,7 +41,7 @@ func main() {
 		subPoll     = flag.Duration("subscribed-poll", 5*time.Second, "follow-mode tip poll interval while the block subscription is up: the safety net for an announcement the node did not deliver (never shorter than -poll)")
 		rpcTO       = flag.Duration("rpc-timeout", 15*time.Second, "per-RPC-call timeout")
 		deadline    = flag.Duration("deadline", 0, "whole-run wall-clock cap (0 = none)")
-		includeFail = flag.Bool("include-failed", false, "also record MsgPayForFibre txs that failed on chain")
+		includeFail = flag.Bool("include-failed", false, "retired: must stay false; failed Fibre transactions are recorded in failed_txs.jsonl")
 		storeRows   = flag.Bool("rows", true, "include full per-validator row-index lists in each record")
 		checkpoint  = flag.Int("checkpoint-every", 20, "fsync + persist cursor every N heights")
 		logLines    = flag.Int("log-ring", 300, "log lines kept in memory for the crash dump")
@@ -47,6 +50,11 @@ func main() {
 	flag.Parse()
 
 	log := scan.NewLogger(*logLines)
+	// No configuration turns a failed Fibre transaction into a publication.
+	// The flag stays registered so runs.jsonl keeps recording it as false.
+	if *includeFail {
+		log.Fatalf("-include-failed is retired: a failed Fibre transaction is recorded in %s, never as a publication", failedtx.FileName)
+	}
 	if !*storeRows {
 		log.Printf("WARNING: -rows=false omits the per-validator row lists, so the observer cannot compute which distinct rows were served; the dashboard's reconstructability verdict will read \"unknown\" for every blob recorded in this run")
 	}
@@ -84,7 +92,6 @@ func main() {
 		SubscribedPoll:  *subPoll,
 		RPCTimeout:      *rpcTO,
 		Deadline:        *deadline,
-		IncludeFailed:   *includeFail,
 		StoreRows:       *storeRows,
 		CheckpointEvery: *checkpoint,
 		SkipHeights:     skips,

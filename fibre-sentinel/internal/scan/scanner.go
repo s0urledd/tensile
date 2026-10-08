@@ -13,6 +13,7 @@ import (
 	fibretypes "github.com/celestiaorg/celestia-app/v10/x/fibre/types"
 	cmttypes "github.com/cometbft/cometbft/types"
 	assign "github.com/plsgiveup/fibre/fibre-assign"
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/failedtx"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
 )
 
@@ -59,8 +60,7 @@ type Config struct {
 	RPCTimeout time.Duration // per-RPC-call timeout
 	Deadline   time.Duration // whole-run wall-clock cap (0 = none)
 
-	IncludeFailed bool // also record MsgPayForFibre txs that failed (code != 0)
-	StoreRows     bool // include full per-validator row index lists in records
+	StoreRows bool // include full per-validator row index lists in records
 
 	CheckpointEvery int // Sync+SaveState every N processed heights (default 20)
 
@@ -1563,8 +1563,8 @@ func (s *Scanner) processBlock(ctx context.Context, h int64) int {
 			s.log.Printf("h=%d tx=%d (%s): malformed fibre tx, skipped: %v", h, i, txHash[:12], perr)
 			continue
 		}
-		if code != 0 && !s.cfg.IncludeFailed {
-			s.log.Printf("h=%d tx=%d (%s): MsgPayForFibre failed code=%d, skipped (use -include-failed to record)", h, i, txHash[:12], code)
+		if code != 0 {
+			s.log.Printf("h=%d tx=%d (%s): MsgPayForFibre failed code=%d: not a publication (recorded in %s)", h, i, txHash[:12], code, failedtx.FileName)
 			continue
 		}
 		if s.store.Seen(txHash) {
@@ -1629,6 +1629,10 @@ func (s *Scanner) processBlock(ctx context.Context, h int64) int {
 	//    charged. Recorded whether or not x/fibre params could be read; they
 	//    need only the tx bytes.
 	recorded += s.recordEconomy(blk, res, h)
+
+	// 4) Failed transactions that carried a Fibre message: failed_txs.jsonl,
+	//    for the transaction lookup only. Nothing above reads them.
+	s.recordFailedTxs(blk, res, h)
 	return recorded
 }
 
