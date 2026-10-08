@@ -343,9 +343,14 @@ than the RPC's, is skipped with one log line.
 The gRPC receive limit is what the validator's shard of the blob should
 weigh, a tenth to spare and a mebibyte at least, never above the
 protocol's message bound (`ProtocolParams.MaxMessageSize()`, about 139 MB,
-the client's); an answer over it, which no honest server sends, or one the
-client cannot parse, is `MALFORMED_SHARD`, and the in-flight byte budget is
-charged that limit. A host's resolved addresses are raced as the client's
+the client's), and the in-flight byte budget is charged that limit. An
+answer over it can still be a genuine shard of the blob held under another
+promise over the same commitment, so it is asked for again under the limit
+of the largest shard any validator can hold of the blob (all its original
+rows), the budget charged the difference, when the budget has that room
+free at once; without it the answer is `PROBE_ERROR`. An answer over that
+limit too, which no shard of the blob can be, or one the client cannot
+parse, is `MALFORMED_SHARD`. A host's resolved addresses are raced as the client's
 pick_first races them, IPv4 first and the families taking turns, the next
 250 ms after the one before it (or at once when it fails); the download
 talks to the address that connected first, the one the TLS check passed

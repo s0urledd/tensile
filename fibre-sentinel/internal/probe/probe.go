@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/netip"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -149,6 +150,13 @@ type Input struct {
 	// ExpectedShardBytes is the estimated wire size of this validator's shard
 	// (ShardBytes); it scales the download deadline. 0 = base deadline only.
 	ExpectedShardBytes int64
+	// LargestShardBytes is the estimated wire size of the largest shard of
+	// this blob any validator can hold under any promise over its
+	// commitment: ShardBytes at OriginalRows rows, as the assignment gives
+	// no validator more. Under the client's rules an answer over this
+	// shard's receive bound is asked for again under this one's
+	// (widerRecvLimit). 0 = the protocol's message bound.
+	LargestShardBytes int64
 
 	// MaxMessageSize is the receive bound for this publication's protocol
 	// params, not the observer's compile-time defaults. A blob whose params
@@ -198,9 +206,14 @@ type Input struct {
 	//     is the endpoint;
 	//   - the receive bound is what this validator's shard of this blob can
 	//     weigh, a tenth to spare and a mebibyte at least, never above the
-	//     protocol's message bound, which is the client's (recvLimitFor); an
-	//     answer over it, which no honest server sends, or one the client
-	//     cannot parse, is the validator's (MALFORMED_SHARD);
+	//     protocol's message bound, which is the client's (recvLimitFor). An
+	//     answer over it may still be a genuine shard of this blob held
+	//     under another promise over the commitment, so it is asked for
+	//     again under the bound of the largest shard any validator can hold
+	//     of this blob (widerRecvLimit) when the byte budget has room for it
+	//     (widen), and is this observer's gap when it has none. An answer
+	//     over that bound too, which no shard of this blob can be, or one the
+	//     client cannot parse, is the validator's (MALFORMED_SHARD);
 	//   - an InvalidArgument or Unimplemented answer is the server's error;
 	//   - an ICMP unreachable ("no route to host", "host is down", "network
 	//     is unreachable" while this machine has a route out to the
@@ -226,6 +239,14 @@ type Input struct {
 	// across every validator it asks (the blob's Reconstructor), as the
 	// client does; nil builds one for this request alone.
 	Verifier ShardVerifier
+
+	// widen, when set, takes extra bytes of the byte budget for this
+	// request, already let go and with its time running, without waiting
+	// for them: an answer over the receive bound is asked for again under a
+	// wider one only when it gives them (downloadAndVerify). The prober sets
+	// it (Prober.widen); nil, a request outside the prober, which keeps no
+	// budget, takes them at once.
+	widen func(extra int64) (release func(), ok bool)
 
 	// hooks stand in for this machine's resolver, connect and route lookup;
 	// nil is the machine's own. Tests only.
@@ -270,6 +291,16 @@ func (in Input) routedOut(addr string) bool {
 	}
 	_ = c.Close()
 	return true
+}
+
+// widenBy takes extra bytes of the byte budget for this request
+// (Input.widen); a request outside the prober keeps no budget and takes
+// them at once.
+func (in Input) widenBy(extra int64) (release func(), ok bool) {
+	if in.widen == nil {
+		return func() {}, true
+	}
+	return in.widen(extra)
 }
 
 // ShardVerifier checks a shard's rows against the blob commitment and keeps
@@ -473,10 +504,11 @@ func Run(ctx context.Context, in Input, coder *Coder, to StepTimeouts) (m Measur
 				// this observer's gap unless, at a full reading, its
 				// resolver is shown working in the same minutes (ownSide).
 				// A lookup that failed on this machine itself (no socket,
-				// no buffer) stays its gap whatever else answered.
+				// no buffer) or could not reach its resolver stays its gap
+				// whatever else answered (localResolverFault).
 				m.Outcome = OutcomeProbeError
 				m.RawError = "resolver: " + derr.Error()
-				m.resolverFailed = !localDialFault(derr)
+				m.resolverFailed = !localResolverFault(derr)
 			}
 			return m
 		}
@@ -723,25 +755,50 @@ const downloadRPCUnary = "DownloadShard"
 // which still parses and verifies) took sixteen times the budget at once,
 // and the link the reading-rate ceiling protects. The bound is the
 // expectation now, and the prober charges its byte budget the bound
-// (blobReading.ask, Prober.attempt), so the budget holds whatever a server
-// sends.
+// (blobReading.ask, Prober.attempt), and an answer asked for again under a
+// wider one the difference (Prober.widen), so the budget holds whatever a
+// server sends.
 //
-// An honest shard cannot exceed it: the estimate is the shard's own rows,
-// proofs and RLC vector, and the slack covers a row rounded up to the code's
-// row size and a deeper proof many times over. Under the client's rules an
-// answer over it is the validator's (MALFORMED_SHARD: clientRulesOutcome),
-// an answer no honest server sends; under the earlier rules it is this
+// This validator's honest shard of this promise cannot exceed it: the
+// estimate is the shard's own rows, proofs and RLC vector, and the slack
+// covers a row rounded up to the code's row size and a deeper proof many
+// times over. But the store serves one shard per commitment, and a genuine
+// shard of this blob held under another promise over it (SHADOWED_SHARD, or
+// an upload that never settled: FullForeign) can carry more rows, when that
+// promise's validator set gave this validator a larger share. The client
+// takes such an answer. So under the client's rules an answer over this
+// bound is asked for again under widerRecvLimit's, when the byte budget has
+// room for it (downloadAndVerify), and only an answer over that one too,
+// which no shard of this blob can be, is the validator's (MALFORMED_SHARD:
+// clientRulesOutcome). Under the earlier rules an answer over it is this
 // observer's gap (classifyDownloadError,
 // TestRun_SizeBoundsAreToldApartFromAThrottle).
 func recvLimitFor(in Input) int {
+	return recvBound(in, in.ExpectedShardBytes)
+}
+
+// widerRecvLimit is the bound an answer over recvLimitFor's is asked for
+// again under: what the largest shard of this blob any validator can hold
+// weighs (Input.LargestShardBytes), with the same slack, never above the
+// protocol's message bound; that bound itself when the largest is not known.
+func widerRecvLimit(in Input) int {
+	return recvBound(in, in.LargestShardBytes)
+}
+
+// recvBound is a receive bound for an answer of shard bytes: a tenth for
+// framing and room for the promise, never less than minRecvMsgSize; the
+// protocol's message bound (the publication's own, or the pinned defaults)
+// when there is no size to work from, and under the client's rules never
+// above it, the most the client accepts.
+func recvBound(in Input, shard int64) int {
 	protocol := defaultMaxRecvMsgSize
 	if in.MaxMessageSize > 0 {
 		protocol = in.MaxMessageSize
 	}
-	if in.ExpectedShardBytes <= 0 {
+	if shard <= 0 {
 		return protocol
 	}
-	limit := int(in.ExpectedShardBytes+in.ExpectedShardBytes/10) + celfibre.MaxPaymentPromiseSize
+	limit := int(shard+shard/10) + celfibre.MaxPaymentPromiseSize
 	if limit < minRecvMsgSize {
 		limit = minRecvMsgSize
 	}
@@ -749,6 +806,15 @@ func recvLimitFor(in Input) int {
 		limit = protocol
 	}
 	return limit
+}
+
+// overRecvBound reports an answer this side refused at its receive bound:
+// grpc-go reads the message's length first and refuses it before its bytes
+// come over (or after decompressing it).
+func overRecvBound(err error) bool {
+	ls := strings.ToLower(err.Error())
+	return status.Code(err) == codes.ResourceExhausted &&
+		(strings.Contains(ls, "received message larger than max") || strings.Contains(ls, "after decompression larger than max"))
 }
 
 // minRecvMsgSize keeps a tiny blob's bound above the fixed cost of an answer
@@ -843,7 +909,31 @@ func downloadAndVerify(ctx context.Context, in Input, coder *Coder, conn net.Con
 	}
 	dctx = metadata.AppendToOutgoingContext(dctx, "x-fibre-observer", in.Vantage)
 	blobID := celfibre.NewBlobID(uint8(in.BlobVersion), celfibre.Commitment(in.Commitment))
-	resp, err := fibretypes.NewFibreClient(cc).DownloadShard(dctx, &fibretypes.DownloadShardRequest{BlobId: blobID})
+	client := fibretypes.NewFibreClient(cc)
+	req := &fibretypes.DownloadShardRequest{BlobId: blobID}
+	resp, err := client.DownloadShard(dctx, req)
+	if wider := widerRecvLimit(in); err != nil && in.ClientRules && overRecvBound(err) && wider > recvLimit {
+		// An answer over this shard's bound may be a genuine shard of this
+		// blob held under another promise over the commitment, which the
+		// client takes (recvLimitFor). It is asked for again on this
+		// connection under the bound of the largest shard of this blob, when
+		// the byte budget has room for the difference now: waiting for it
+		// would spend the request's time on this observer's own limits.
+		// Without room the answer is this observer's gap.
+		release, ok := in.widenBy(int64(wider - recvLimit))
+		if !ok {
+			r.DurationMS = sinceMS(t0)
+			r.Error = wireText(err)
+			r.RPCCode = rpcCodeOf(err)
+			r.outcome = OutcomeProbeError
+			r.rawErr = clip(fmt.Sprintf("an answer over this shard's receive bound of %d bytes, which a genuine shard of this blob held under another promise can be, and no room in this observer's byte budget to take it under the bound of the largest shard of this blob, %d bytes (this observer's own gap); on the wire: %s",
+				recvLimit, wider, r.Error))
+			return r
+		}
+		defer release()
+		r.RecvLimit = wider
+		resp, err = client.DownloadShard(dctx, req, grpc.MaxCallRecvMsgSize(wider))
+	}
 	r.DurationMS = sinceMS(t0)
 	if err != nil {
 		if _, _, failed := hs.failure(); failed {
@@ -851,8 +941,8 @@ func downloadAndVerify(ctx context.Context, in Input, coder *Coder, conn net.Con
 			// made, and the verdict is the handshake's (Run reads it).
 			return dlResult{}
 		}
-		// The server writes this text: kept to maxRecordedText (clip).
-		r.Error = clip(err.Error())
+		// The server writes this text: kept to maxRecordedText (wireText).
+		r.Error = wireText(err)
 		r.RPCCode = rpcCodeOf(err)
 		r.outcome, r.rawErr = classifyDownloadError(err), r.Error
 		if in.ClientRules {
@@ -1128,19 +1218,48 @@ func splitRoutable(got []string) (routable, dropped []string) {
 // validator, and the default arm of a string switch is the wrong place to put
 // an error nobody recognised.
 func localDialFault(err error) bool {
-	for _, e := range []syscall.Errno{
-		syscall.EAFNOSUPPORT, // this host has no stack for that address family
-		syscall.EMFILE,       // out of file descriptors
-		syscall.ENFILE,
-		syscall.ENOMEM,
-		syscall.ENOBUFS,
-		syscall.EADDRINUSE,    // local port exhaustion
-		syscall.EADDRNOTAVAIL, // no local source address
-		syscall.EACCES,        // local policy refused the socket
-		syscall.EPERM,
-		syscall.EINVAL,
-	} {
+	for _, e := range localErrnos {
 		if errors.Is(err, e) {
+			return true
+		}
+	}
+	return false
+}
+
+// localErrnos are the socket errors that never leave this machine
+// (localDialFault).
+var localErrnos = []syscall.Errno{
+	syscall.EAFNOSUPPORT, // this host has no stack for that address family
+	syscall.EMFILE,       // out of file descriptors
+	syscall.ENFILE,
+	syscall.ENOMEM,
+	syscall.ENOBUFS,
+	syscall.EADDRINUSE,    // local port exhaustion
+	syscall.EADDRNOTAVAIL, // no local source address
+	syscall.EACCES,        // local policy refused the socket
+	syscall.EPERM,
+	syscall.EINVAL,
+}
+
+// localResolverFault reports a lookup that failed on this observer's side
+// of its resolver: a socket this machine could not open or use
+// (localErrnos), or its resolver's own address refusing it or out of
+// reach, which nothing in a validator's zone can cause. Go's resolver keeps
+// only the text of such an error (net.DNSError.Err: it wraps context errors
+// alone), so the text is what is read. A timeout is not among them: a lame
+// zone of the validator's makes the resolver slow, and that is for ownSide
+// to judge.
+func localResolverFault(err error) bool {
+	if localDialFault(err) {
+		return true
+	}
+	var dnsErr *net.DNSError
+	if !errors.As(err, &dnsErr) {
+		return false
+	}
+	text := strings.ToLower(dnsErr.Err)
+	for _, e := range append(localErrnos[:len(localErrnos):len(localErrnos)], syscall.ECONNREFUSED, syscall.ENETUNREACH, syscall.EHOSTUNREACH) {
+		if strings.Contains(text, strings.ToLower(e.Error())) {
 			return true
 		}
 	}
@@ -1185,14 +1304,17 @@ func rpcCodeOf(err error) string {
 // clientRulesOutcome re-reads a download error the way the Fibre client
 // meets it (Input.ClientRules): running out of the request's time after
 // connecting is the validator's slowness, a refusal as malformed or
-// unimplemented is the server's error, and a reply over the protocol's
-// message bound is one no client accepts. A CANCELLED status while the
-// request's own context is still alive (alive) was sent by the server: the
-// client meets it as a failed shard and skips it, so it is the server's
-// error too. Everything else keeps its earlier reading; the caller's own
-// cancel stays a gap (Run reads it from the caller's context).
+// unimplemented is the server's error, and a reply over the receive bound
+// it was last asked for under (downloadAndVerify: the bound of the largest
+// shard of this blob any validator can hold, a tenth to spare and a
+// mebibyte at least, or the protocol's message bound, the client's) is one
+// no honest server sends: no shard of this blob weighs that much
+// (MALFORMED_SHARD). A CANCELLED status while the request's own context is
+// still alive (alive) was sent by the server: the client meets it as a
+// failed shard and skips it, so it is the server's error too. Everything
+// else keeps its earlier reading; the caller's own cancel stays a gap (Run
+// reads it from the caller's context).
 func clientRulesOutcome(err error, o Outcome, alive bool) Outcome {
-	ls := strings.ToLower(err.Error())
 	switch {
 	case o == OutcomeRPCDeadline:
 		return OutcomeRPCTimeout
@@ -1200,7 +1322,7 @@ func clientRulesOutcome(err error, o Outcome, alive bool) Outcome {
 		return OutcomeServerError
 	case status.Code(err) == codes.Canceled && alive:
 		return OutcomeServerError
-	case strings.Contains(ls, "received message larger than max"), strings.Contains(ls, "after decompression larger than max"):
+	case overRecvBound(err):
 		return OutcomeMalformedShard
 	}
 	return o
@@ -1559,17 +1681,65 @@ const maxRecordedText = 4 << 10
 // download connection: a Fibre server's take a few hundred bytes.
 const maxHeaderListSize = 64 << 10
 
-// clip cuts s to maxRecordedText bytes, at a character boundary, and says
-// how long it was.
+// clip cuts s to at most maxRecordedText bytes, at a character boundary,
+// and says how long it was: "… (N bytes in all)", the mark within the
+// bound. A text that ends in that mark already, this observer's words put
+// before a text cut earlier (ownSide, sharedRow, an abandoned request),
+// keeps it and is cut before it: N stays how much came over the wire, not
+// how long the words made it. clip of clip's result is that result.
 func clip(s string) string {
-	if len(s) <= maxRecordedText {
+	return clipTo(s, maxRecordedText, true)
+}
+
+// clipTo cuts s to at most bound bytes, as clip does. keepMark honours a
+// mark s ends in; text as it came over the wire is cut without it, as a
+// mark there is the sender's own words, not a count.
+func clipTo(s string, bound int, keepMark bool) string {
+	if len(s) <= bound {
 		return s
 	}
-	cut := maxRecordedText
-	for i := 0; i < utf8.UTFMax && cut > 0 && !utf8.RuneStart(s[cut]); i++ {
+	body, mark := s, ""
+	if at := clipMarkAt(s); keepMark && at >= 0 {
+		body, mark = s[:at], s[at:]
+	} else {
+		mark = clipMarkHead + strconv.Itoa(len(s)) + clipMarkTail
+	}
+	cut := max(bound-len(mark), 0)
+	for i := 0; i < utf8.UTFMax && cut > 0 && !utf8.RuneStart(body[cut]); i++ {
 		cut--
 	}
-	return s[:cut] + fmt.Sprintf("… (%d bytes in all)", len(s))
+	return body[:cut] + mark
+}
+
+// clipMarkHead and clipMarkTail frame the length clip puts on a text it cut.
+const clipMarkHead, clipMarkTail = "… (", " bytes in all)"
+
+// clipMarkAt is where the mark clip puts on a text it cut begins in s, or
+// -1 when s does not end in one.
+func clipMarkAt(s string) int {
+	if !strings.HasSuffix(s, clipMarkTail) {
+		return -1
+	}
+	at := strings.LastIndex(s, clipMarkHead)
+	if at < 0 {
+		return -1
+	}
+	digits := s[at+len(clipMarkHead) : len(s)-len(clipMarkTail)]
+	if n, err := strconv.Atoi(digits); err != nil || n <= 0 || strconv.Itoa(n) != digits {
+		return -1
+	}
+	return at
+}
+
+// wireText is a download error's text kept to maxRecordedText. Of a gRPC
+// status the server's own message (grpc-message) is what is cut, so the
+// length on the mark is how much the server sent.
+func wireText(err error) string {
+	if st, ok := status.FromError(err); ok && err != nil {
+		head := "rpc error: code = " + st.Code().String() + " desc = "
+		return head + clipTo(st.Message(), maxRecordedText-len(head), false)
+	}
+	return clipTo(err.Error(), maxRecordedText, false)
 }
 
 // clipText bounds the text of a row (clip). TCP.Detail is built bounded,

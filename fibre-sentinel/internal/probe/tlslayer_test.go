@@ -362,8 +362,8 @@ func TestRun_UnroutableRegisteredHostIsNotDialled(t *testing.T) {
 
 	for _, addr := range []string{"127.0.0.1:9000", "10.0.0.5:443", "192.168.1.1:443", "169.254.1.1:443", "[::1]:443", "0.0.0.0:443",
 		// shared address space: carrier-grade NAT, and overlay networks
-		// such as Tailscale that this observer's own hosts may be on
-		"100.64.0.1:7980", "100.112.84.18:22",
+		// such as Tailscale
+		"100.64.0.1:7980", "100.100.1.1:7980",
 		// benchmarking, documentation, reserved, a NAT64 address of a
 		// private one, IPv6 documentation
 		"198.18.0.1:443", "203.0.113.9:7980", "240.0.0.1:443", "[64:ff9b::a00:1]:443", "[2001:db8::1]:443"} {

@@ -2,6 +2,7 @@ package probe
 
 import (
 	"context"
+	"crypto/ed25519"
 	"net"
 	"strings"
 	"sync"
@@ -110,6 +111,52 @@ func TestALookupThatFailedIsTheValidatorsOnlyWhileTheResolverWorks(t *testing.T)
 			p.ownSide(context.Background(), &m)
 			if m.RawError != before {
 				t.Fatalf("judged twice: %q", m.RawError)
+			}
+		})
+	}
+}
+
+// A lookup that failed on this machine's side of its resolver (no socket,
+// no buffer, its resolver's own address refusing) stays this observer's
+// gap at a full reading, whatever else the resolver answered in its
+// minutes: Go's resolver keeps only the text of such an error, and that is
+// what is read. A lame zone's failure in the same minutes is the
+// validator's.
+func TestALookupThatFailedOnThisMachineStaysItsGap(t *testing.T) {
+	for _, c := range []struct {
+		err    string
+		theirs bool
+	}{
+		{"dial udp 127.0.0.53:53: socket: too many open files", false},
+		{"dial udp 127.0.0.53:53: socket: no buffer space available", false},
+		{"read udp 127.0.0.1:40000->127.0.0.53:53: read: connection refused", false},
+		{"server misbehaving", true},
+	} {
+		t.Run(c.err, func(t *testing.T) {
+			p := testProber(t)
+			p.lookupHost = func(_ context.Context, host string) ([]string, error) {
+				return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+			}
+			p.reach.note(answered("v1", "fibre.ok.example:7980", time.Now().UTC().Add(-10*time.Second), "192.0.2.50:7980", true))
+			in := probeInput("fibre.lame.example:7980", make(ed25519.PublicKey, ed25519.PublicKeySize))
+			in.SchedulePoint.Label = FullReadLabel
+			in.ClientRules, in.RequestTimeout = true, 5*time.Second
+			in.hooks = &netHooks{lookup: func(_ context.Context, host string) ([]string, error) {
+				return nil, &net.DNSError{Err: c.err, Name: host, Server: "127.0.0.53:53"}
+			}}
+			m := Run(context.Background(), in, mustCoder(t), StepTimeouts{})
+			if m.Outcome != OutcomeProbeError || m.resolverFailed != c.theirs {
+				t.Fatalf("%s (%s), judged again %v", m.Outcome, m.RawError, m.resolverFailed)
+			}
+			p.ownSide(context.Background(), &m)
+			if c.theirs {
+				if m.Outcome != OutcomeDNSFail || m.fullGap() {
+					t.Fatalf("%s / %s %q, want the validator's DNS_FAIL", m.Outcome, m.Classification, m.RawError)
+				}
+				return
+			}
+			if m.Outcome != OutcomeProbeError || !m.fullGap() || !strings.HasPrefix(m.RawError, "resolver: ") {
+				t.Fatalf("%s / %s %q, want this observer's gap", m.Outcome, m.Classification, m.RawError)
 			}
 		})
 	}

@@ -984,6 +984,7 @@ func (p *Prober) inputFor(pub scan.Publication, t Target, pt SchedulePoint, comm
 		SchedulePoint:       pt,
 		PruneTolerance:      p.schedCfg().PruneTolerance,
 		ExpectedShardBytes:  ShardBytes(pub.Promise.BlobSize, pub.Assignment.ProtocolParams.OriginalRows, t.RowCount),
+		LargestShardBytes:   ShardBytes(pub.Promise.BlobSize, pub.Assignment.ProtocolParams.OriginalRows, pub.Assignment.ProtocolParams.OriginalRows),
 		MaxMessageSize:      maxMessageSizeFor(pub.Assignment.ProtocolParams),
 		ClockOffsetMS:       p.clockOffsetMS(),
 		Shadowers:           p.feed.shadowersFor(pub.PromiseHash, pub.Promise.Commitment, t.AddressHex),
@@ -992,7 +993,24 @@ func (p *Prober) inputFor(pub scan.Publication, t Target, pt SchedulePoint, comm
 		ClientRules:         true,
 		RequestTimeout:      p.cfg.Timeouts.Download,
 		Verifier:            rec,
+		widen:               p.widen,
 	}
+}
+
+// widen takes extra bytes of the byte budget for a request already let go
+// whose answer came over its receive bound (Input.widen), only when they
+// are free now. They are not charged to the reading-rate ceiling, which
+// would make the request wait inside its own time: such an answer is rare,
+// and the budget bounds what it can bring in.
+func (p *Prober) widen(extra int64) (release func(), ok bool) {
+	if p.bytes == nil {
+		// a Prober built by hand without its limits keeps no budget
+		return func() {}, true
+	}
+	if !p.bytes.tryAcquire(extra) {
+		return nil, false
+	}
+	return func() { p.bytes.release(extra) }, true
 }
 
 // admitBy waits for room for one request under this observer's limits, in
@@ -1216,6 +1234,23 @@ func (b *byteSem) acquireBy(ctx context.Context, nBytes int64, by time.Time) boo
 	b.held += nBytes
 	// the next in line may fit too
 	b.cond.Broadcast()
+	return true
+}
+
+// tryAcquire takes nBytes now if they fit beside what is held, and never
+// waits. It is for a request already let go, whose time is running
+// (Prober.widen), so it goes ahead of the waiters: what it takes from them
+// comes back when that request ends, within its time.
+func (b *byteSem) tryAcquire(nBytes int64) bool {
+	if nBytes <= 0 {
+		nBytes = 1
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.held+nBytes > b.limit {
+		return false
+	}
+	b.held += nBytes
 	return true
 }
 

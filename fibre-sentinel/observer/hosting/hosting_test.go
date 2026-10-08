@@ -156,7 +156,7 @@ func TestAddressesFromMeasurement(t *testing.T) {
 		// nor shared (carrier-grade NAT, an overlay network) or other
 		// special-purpose ones, connected or not
 		{"100.64.1.1,5.9.1.1", "failed 100.64.1.1:7980: timeout; -> 5.9.1.1:7980", []string{"5.9.1.1"}, "5.9.1.1"},
-		{"100.112.84.18", "-> 100.112.84.18:22", nil, ""},
+		{"100.100.1.1", "-> 100.100.1.1:7980", nil, ""},
 		{"198.18.0.1,2001:db8::1,64:ff9b::a00:1", "", nil, ""},
 	}
 	for i, c := range cases {

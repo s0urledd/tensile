@@ -74,3 +74,27 @@ func TestAWaiterThatGivesUpLeavesTheLine(t *testing.T) {
 		t.Fatalf("held %d with %d in line, want 70 and none", b.inFlight(), b.queued())
 	}
 }
+
+// A request already let go takes more of the budget, for an answer over its
+// receive bound, only when it is free now (Prober.widen): it never waits,
+// it goes ahead of a waiter, and what it took comes back when it ends.
+func TestARequestTakesMoreBudgetOnlyWhenItIsFree(t *testing.T) {
+	p := &Prober{cfg: Config{Concurrency: 4, InFlightBytes: 100}}
+	p.initPace()
+	p.bytes.acquire(60)
+	waiting := make(chan bool, 1)
+	go func() { waiting <- p.bytes.acquireBy(context.Background(), 50, time.Now().Add(5*time.Second)) }()
+	waitFor(t, 5*time.Second, func() bool { return p.bytes.queued() == 1 })
+	release, ok := p.widen(30)
+	if !ok || p.bytes.inFlight() != 90 {
+		t.Fatalf("widen by 30 beside 60 of 100: ok %v, held %d", ok, p.bytes.inFlight())
+	}
+	if _, ok := p.widen(20); ok {
+		t.Fatalf("widen by 20 with 10 free was let go")
+	}
+	release()
+	p.bytes.release(60)
+	if !<-waiting || p.bytes.inFlight() != 50 {
+		t.Fatalf("the waiter did not go once the room came back: held %d", p.bytes.inFlight())
+	}
+}

@@ -583,8 +583,9 @@ func (p *Prober) attempt(ctx context.Context, j *retryJob) (Measurement, bool) {
 	in := p.inputFor(j.pub, j.target, j.point, commitment, nil, p.shadowBlindness(j.pub))
 	// The verifier is charged to the byte budget, not to the reading-rate
 	// ceiling: it is memory, not bytes on the wire. The budget is charged
-	// the most the request may receive, the ceiling what its shard should
-	// weigh (blobReading.ask).
+	// the most the request may receive (and the rest of a wider bound when
+	// it asks for an answer again under one: Prober.widen), the ceiling
+	// what its shard should weigh (blobReading.ask).
 	release, load, err := p.admitBy(ctx, j.cutoff, int64(recvLimitFor(in))+verifierBytes(pp.OriginalRows, pp.TotalRows), in.ExpectedShardBytes)
 	if err != nil {
 		if ctx.Err() != nil {

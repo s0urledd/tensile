@@ -210,7 +210,7 @@ func TestSpecialPurposeAddressesAreNotDialled(t *testing.T) {
 	for addr, want := range map[string]bool{
 		"1.1.1.1": true, "5.9.1.1": true, "100.63.255.255": true, "100.128.0.1": true, "2a01:4f8::1": true,
 		"::ffff:5.9.1.1": true, "64:ff9b::505:101": true,
-		"100.64.0.1": false, "100.112.84.18": false, "100.127.255.254": false,
+		"100.64.0.1": false, "100.100.1.1": false, "100.127.255.254": false,
 		"10.0.0.1": false, "127.0.0.1": false, "169.254.1.1": false, "0.1.2.3": false, "0.0.0.0": false,
 		"192.0.0.8": false, "192.0.2.1": false, "198.18.0.1": false, "198.19.255.1": false, "198.51.100.7": false,
 		"203.0.113.9": false, "240.0.0.1": false, "255.255.255.255": false, "224.0.0.1": false,

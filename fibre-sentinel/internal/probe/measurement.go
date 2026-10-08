@@ -343,7 +343,9 @@ type DownloadResult struct {
 	RPCCode string `json:"rpc_code,omitempty"`
 	// RecvLimit is the receive bound this probe ran with, so a
 	// PROBE_ERROR from "received message larger than max" is checkable
-	// against the shard's size.
+	// against the shard's size. Under the client's rules, an answer over
+	// this shard's bound that was asked for again under the bound of the
+	// largest shard of the blob carries that one.
 	RecvLimit int `json:"recv_limit,omitempty"`
 	// RPC is the read method the probe called: DownloadShard today; the
 	// streaming read once upstream ships it and the prober tries both.

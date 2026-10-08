@@ -294,9 +294,11 @@ func (b *blobReading) ask(ctx context.Context, v readTarget) *answer {
 	if b.full {
 		by = b.startBy
 	}
-	// The byte budget is charged the most the request may receive, the
-	// reading-rate ceiling what its shard should weigh: the budget bounds
-	// memory whatever a server sends, the ceiling paces honest traffic.
+	// The byte budget is charged the most the request may receive (and,
+	// for an answer asked for again under a wider bound, the rest when it
+	// is: Prober.widen), the reading-rate ceiling what its shard should
+	// weigh: the budget bounds memory whatever a server sends, the ceiling
+	// paces honest traffic.
 	release, load, err := p.admitBy(ctx, by, int64(recvLimitFor(in)), in.ExpectedShardBytes)
 	if err != nil {
 		// Only a stopped run ends the wait of a reading without a cutoff;
