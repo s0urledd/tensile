@@ -12,6 +12,49 @@ export const FRAME = { w: world.w, h: world.h };
 /** every country as [ISO alpha-2 or "", SVG path in map units] */
 export const COUNTRIES = world.countries as [string, string][];
 
+/**
+ * every country as its parts, each island, exclave or hole one ring with its area in map units², so the map can tell
+ * the parts too small to see at a zoom. Each ring starts with its own absolute M, so any of them stands alone
+ */
+export const PARTS: [string, [string, number][]][] = COUNTRIES.map(([cc, d]) => [cc, partsOf(d)]);
+
+/** an outline as written above (an absolute M, then relative l, m and z) as its rings; in any other form it stays whole */
+function partsOf(d: string): [string, number][] {
+  const out: [string, number][] = [];
+  let cmd = "", x = 0, y = 0, sx = 0, sy = 0, ring = "", n = 0, a = 0;
+  // the shoelace sum, closed from the last point back to the first
+  const close = () => {
+    if (n) out.push([`${ring}z`, Math.abs(a + x * sy - sx * y) / 2]);
+    ring = ""; n = 0; a = 0;
+  };
+  const tok = d.match(/[a-zA-Z]|-?[\d.]+/g) ?? [];
+  for (let i = 0; i < tok.length;) {
+    const t = tok[i];
+    if (/[a-zA-Z]/.test(t)) {
+      i++; cmd = t;
+      if (t === "z" || t === "Z") { close(); x = sx; y = sy; }
+      else if (!"MmLl".includes(t)) return [[d, Infinity]];
+      continue;
+    }
+    const u = +t, v = +tok[i + 1];
+    i += 2;
+    if (cmd === "M" || cmd === "m") {
+      close();
+      x = cmd === "M" ? u : x + u; y = cmd === "M" ? v : y + v; sx = x; sy = y;
+      ring = `M${x} ${y}l`;
+      // the pairs after a move are lines
+      cmd = cmd === "M" ? "L" : "l";
+    } else if (cmd === "L" || cmd === "l") {
+      const nx = cmd === "L" ? u : x + u, ny = cmd === "L" ? v : y + v;
+      ring += `${n ? " " : ""}${nx - x} ${ny - y}`;
+      a += x * ny - nx * y; n++;
+      x = nx; y = ny;
+    } else return [[d, Infinity]];
+  }
+  close();
+  return out;
+}
+
 /** small countries' 1:10m outlines: middle x, y and larger side e in map units, the path on a grid where e is 100 */
 export const TINY = world.tiny as unknown as Record<string, [number, number, number, string]>;
 

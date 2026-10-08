@@ -4,7 +4,7 @@ import Link from "next/link";
 import { type Validator, API_BASE, ago, utcWord, int } from "@/lib/api";
 import { validatorHref } from "@/lib/addr";
 import type { Hosting } from "@/lib/hosting";
-import { FRAME, COUNTRIES, project, countryPoint } from "@/lib/map/project";
+import { FRAME, PARTS, project, countryPoint } from "@/lib/map/project";
 import { countryName } from "@/components/Flag";
 import { Eye } from "@/components/Metrics";
 import { type EndpointState, endpointState, readiness } from "@/components/Readiness";
@@ -13,11 +13,13 @@ import { type EndpointState, endpointState, readiness } from "@/components/Readi
  * The overview's host map: every registered Fibre host of the bonded set,
  * placed by the city its address geolocates to (hosting.lat/lon) or, without
  * one, by its country's label point, over Natural Earth country outlines
- * (Equal Earth) drawn as a line atlas: a fine coastline around land a breath
- * lighter than the sea, the borders fainter still, a graticule under the land
- * and the world's edge closed along the map's foot. No country is marked for
- * its hosts, so nothing is drawn for the smallest (Singapore, Hong Kong): a
- * badge sits on its place at the world's own scale. The open place's
+ * (Equal Earth) drawn as a line atlas: a fine coastline around land a shade
+ * off the sea, the borders only once zoomed in, a graticule under the land and
+ * the world's edge closed by a parallel near the box's top and along its foot.
+ * A part of the land too small to see at the zoom shown (an islet) is filled
+ * without a coastline, so the open sea holds no specks. No country is marked
+ * for its hosts, so nothing is drawn for the smallest (Singapore, Hong Kong):
+ * a badge sits on its place at the world's own scale. The open place's
  * countries are lit.
  *
  * Every place is a rounded square in the accent carrying its count; a lone
@@ -163,23 +165,27 @@ function cluster(hosts: Host[], pxPerUnit: number, narrow: boolean): Cluster[] {
   }).sort((x, y) => x.ux - y.ux);
 }
 
-/** the graticule's step in degrees; px a parallel keeps from the home view's top and foot, or it is left out */
-const STEP = 15, CLEAR = 14;
+/** the graticule's step in degrees; px a parallel keeps from the sheet's top and foot, or it is left out; px from the box's top to the sheet's */
+const STEP = 15, CLEAR = 14, HEAD = 12;
+/** px²: a part of the land smaller than this at the zoom shown (an islet, a microstate) is filled without a coastline */
+const SPECK = 2;
 /**
- * The sheet the world is drawn on, in map units: the graticule, every STEP degrees down to foot, and the
- * world's edge (the meridians at ±180°, closed along foot by the parallel there). A parallel within clear of
- * top or foot is left out, so no line runs along the top of the box or beside the edge's foot.
+ * The sheet the world is drawn on, in map units: the graticule, every STEP degrees from top down to foot, and
+ * the world's edge (the meridians at ±180°, closed along top and foot by the parallels there). A parallel within
+ * clear of top or foot is left out, so no line runs beside the edge's top or foot.
  */
 function sheetOf(top: number, foot: number, clear: number): { grid: string; edge: string } {
-  // a meridian from the pole to the foot, its last step cut where it crosses it
+  // a meridian from the top to the foot, its first and last steps cut where it crosses them
   const meridian = (lon: number) => {
     const pts: [number, number][] = [];
+    let q: [number, number] | null = null;
     for (let lat = 90; lat >= -90; lat -= 2) {
-      const p = project(lon, lat);
-      if (p[1] < foot) { pts.push(p); continue; }
-      const q = pts[pts.length - 1];
-      pts.push([q[0] + ((p[0] - q[0]) * (foot - q[1])) / (p[1] - q[1]), foot]);
-      break;
+      const p = project(lon, lat), from = q;
+      const at = (y: number): [number, number] => [from![0] + ((p[0] - from![0]) * (y - from![1])) / (p[1] - from![1]), y];
+      if (p[1] > top && !pts.length && from) pts.push(at(top));
+      if (p[1] >= foot) { pts.push(at(foot)); break; }
+      if (p[1] > top) pts.push(p);
+      q = p;
     }
     return pts;
   };
@@ -475,15 +481,31 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
   const liveCluster = cur?.host ? clusters.find((c) => c.hosts.includes(cur.host!))?.id : undefined;
 
   // ---- the land: every country twice, first stroked wide in the coast's colour, then filled over it, so only the
-  // coastline's outer half shows and a border is the fill's own faint hairline; the open place's countries lit ----
+  // coastline's outer half shows and a border is the fill's own hairline (once zoomed in); the open place's countries
+  // lit. A part under SPECK px² at the zoom shown is only filled: no coastline makes it a speck on the sea, and a
+  // microstate keeps its land, so no hole opens between its neighbours. The zoom is taken in quarter steps, so a
+  // flight redraws the coastline a few times only ----
   const hosted = useMemo(() => new Set(hosts.map((h) => h.cc)), [hosts]);
   const unchecked = hosts.some((h) => h.state === "none");
   const openCcs = useMemo(() => new Set(clusters.find((c) => c.id === open)?.ccs ?? []), [clusters, open]);
-  const coast = useMemo(() => COUNTRIES.map(([cc, d], i) => <path key={cc || i} d={d} />), []);
-  const land = useMemo(() => COUNTRIES.map(([cc, d], i) => <path key={cc || i} d={d} className={openCcs.has(cc) ? "hi" : undefined} />), [openCcs]);
-  // the sheet closes along the home view's foot, half a px up so its line shows whole; the land is cut there too
+  const fine = scale > 0 ? Math.round(Math.log2(scale) * 4) / 4 : 0;
+  const parts = useMemo(() => {
+    const min = SPECK / 4 ** fine;
+    return PARTS.map(([cc, ps]) => {
+      let big = "", small = "";
+      for (const [p, a] of ps) if (a >= min) big += p; else small += p;
+      return [cc, big, small] as const;
+    });
+  }, [fine]);
+  const coast = useMemo(() => parts.map(([, big], i) => (big ? <path key={i} d={big} /> : null)), [parts]);
+  const land = useMemo(() => parts.flatMap(([cc, big, small], i) => {
+    const hi = openCcs.has(cc);
+    return [big ? <path key={i} d={big} className={hi ? "hi" : undefined} /> : null, small ? <path key={`${i}s`} d={small} className={hi ? "s hi" : "s"} /> : null];
+  }), [parts, openCcs]);
+  // the sheet closes HEAD px under the home view's top and along its foot, half a px up so its line shows whole; the
+  // land is cut there too
   const sHome = width > 0 ? width / home.w : 0;
-  const sheet = useMemo(() => (sHome ? sheetOf(home.y, home.y + home.w * aspect - 0.5 / sHome, CLEAR / sHome) : null), [home, aspect, sHome]);
+  const sheet = useMemo(() => (sHome ? sheetOf(home.y + HEAD / sHome, home.y + home.w * aspect - 0.5 / sHome, CLEAR / sHome) : null), [home, aspect, sHome]);
 
   // ---- badges on screen ----
   const placed = width > 0 ? clusters.map((c) => {

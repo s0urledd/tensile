@@ -994,8 +994,9 @@ body { background: var(--canvas); }
 
    The map of Fibre providers sits full-bleed at the top of the panel, drawn
    as a line atlas on the panel's flat paper: a fine coastline around land a
-   breath lighter than the sea, borders fainter still, a graticule under the
-   land and the world's edge closed along the map's foot, where the bar sits.
+   shade off the sea, the borders only once zoomed in, a graticule under the
+   land and the world's edge closed near the top and along the map's foot,
+   where the bar sits.
    No country is tinted for its hosts. Places are rounded squares in the
    accent with their count; a lone host is a small square with none. Names
    only on hover, focus or tap. One bar of two pills straddles the map's foot:
@@ -1014,8 +1015,8 @@ body { background: var(--canvas); }
 .deck {
   /* the sea is the panel; the atlas's lines, land and badges are tokens so the two themes are a handful of lines. All
      opaque, so a line crossing another never darkens */
-  --cm-land: #f2f5f6;
-  --cm-land-hi: #d8ebed;
+  --cm-land: #ecf1f2;
+  --cm-land-hi: #c6e2e5;
   --cm-coast: #97a7ac;
   --cm-border: #dbe1e3;
   --cm-grid: #e8edef;
@@ -1024,6 +1025,11 @@ body { background: var(--canvas); }
   --cm-badge: var(--accent);
   --cm-badge-ink: #ffffff;
   --cm-badge-hold-ink: #ffffff;
+  /* a badge stepping back while another place is open: solid, so no line shows through it */
+  --cm-badge-dim: #b9d6d9;
+  --cm-badge-dim-ink: #ffffff;
+  --cm-hold-dim: #dfcba6;
+  --cm-hold-dim-ink: #ffffff;
   --cp-rest: rgb(var(--ink) / .13);
   --cp-on: var(--accent);
   --cp-on-hover: #008b97;
@@ -1049,7 +1055,7 @@ body { background: var(--canvas); }
 }
 :root[data-theme="dark"] .deck {
   --cm-land: #172024;
-  --cm-land-hi: #1d383d;
+  --cm-land-hi: #21474d;
   --cm-coast: #4c646a;
   --cm-border: #242f34;
   --cm-grid: #1d262a;
@@ -1057,6 +1063,10 @@ body { background: var(--canvas); }
   --cm-badge: #33b3bf;
   --cm-badge-ink: #04171a;
   --cm-badge-hold-ink: #1f1500;
+  --cm-badge-dim: #205d64;
+  --cm-badge-dim-ink: #a8dde1;
+  --cm-hold-dim: #685530;
+  --cm-hold-dim-ink: #ecd3a0;
   --cp-rest: rgb(255 255 255 / .11);
   --cp-on: #2ea4af;
   --cp-on-hover: #5fd0da;
@@ -1087,13 +1097,16 @@ body { background: var(--canvas); }
 .cm-vp { position: absolute; inset: 0; overflow: hidden; border-radius: var(--r-panel) var(--r-panel) 0 0; }
 .cm-land { display: block; width: 100%; height: 100%; }
 /* hairlines at a constant width through a zoom. The coast layer is stroked 2px under the land, so 1px of it shows
-   past the land's edge, less the border's quarter px over it */
+   past the land's edge, less the land's own quarter px over it. At the world's scale the land is stroked in its own
+   fill, so the coastline and the graticule are the only lines; the borders come in with the first zoom step. A part
+   too small for a coastline (.s) keeps its fill's stroke at every zoom */
 .cm-land path { fill: none; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .cm-land .cm-grid { stroke: var(--cm-grid); stroke-width: .6; }
 .cm-land .cm-edge { stroke: var(--cm-edge); stroke-width: .8; }
 .cm-coast path { fill: var(--cm-coast); stroke: var(--cm-coast); stroke-width: 2; }
-.cm-ground path { fill: var(--cm-land); stroke: var(--cm-border); stroke-width: .5; transition: fill 220ms ease-out; }
-.cm-ground path.hi { fill: var(--cm-land-hi); }
+.cm-ground path { fill: var(--cm-land); stroke: var(--cm-land); stroke-width: .5; transition: fill 220ms ease-out, stroke 220ms ease-out; }
+.cm-ground path.hi { fill: var(--cm-land-hi); stroke: var(--cm-land-hi); }
+.cm-atlas.zoomed .cm-ground path:not(.s) { stroke: var(--cm-border); }
 
 /* the map's name and the key of Tensile's check, in its top-left corner; the view buttons in the other */
 .cm-title { position: absolute; left: 24px; top: 18px; z-index: 6; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px; pointer-events: none; }
@@ -1113,28 +1126,32 @@ body { background: var(--canvas); }
 .cm-tools button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* the badges: flat squares in the accent with tight corners, cut out of the lines by a ring of the panel's colour (no
-   glow, no shadow); the open one ringed and the others stepping back */
+   glow, no shadow); the open one ringed and the others stepping back to solid paler fills, so no line of the atlas
+   ever shows through one */
 .cm-pins { list-style: none; margin: 0; padding: 0; position: absolute; inset: 0; z-index: 5; pointer-events: none; }
-.cm-pin { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 1; pointer-events: auto; transition: opacity 180ms ease-out; }
+.cm-pin { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 1; pointer-events: auto; }
 .cm-pin:not(.one) { z-index: 2; }
 .cm-pin.open, .cm-pin:focus-within { z-index: 20; }
-.cm-atlas.has-open .cm-pin:not(.open) { opacity: .42; }
 .cm-b { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%); display: grid; place-items: center; padding: 0; border: 0; border-radius: 8px; background: none; cursor: pointer; }
 .cm-b:focus-visible { outline: none; }
 .cm-badge {
   position: relative; display: grid; place-items: center; border-radius: 5px; background: var(--cm-badge); color: var(--cm-badge-ink);
   font-size: 12px; font-weight: 600; line-height: 1; letter-spacing: -.01em; font-variant-numeric: tabular-nums lining-nums;
-  box-shadow: 0 0 0 2px var(--cm-halo); transition: transform 180ms ease-out, outline-color 180ms;
+  box-shadow: 0 0 0 2px var(--cm-halo); transition: transform 180ms ease-out, outline-color 180ms, background-color 180ms ease-out, color 180ms ease-out;
   outline: 2px solid transparent; outline-offset: 3px;
 }
 .cm-pin.one .cm-badge { border-radius: 2px; }
 .cm-badge[data-tone="hold"] { background: var(--hold); color: var(--cm-badge-hold-ink); }
 .cm-badge[data-tone="none"] { background: var(--surface-2); color: var(--text-2); box-shadow: inset 0 0 0 1px var(--line), 0 0 0 2px var(--cm-halo); }
+.cm-atlas.has-open .cm-pin:not(.open) .cm-badge { background: var(--cm-badge-dim); color: var(--cm-badge-dim-ink); }
+.cm-atlas.has-open .cm-pin:not(.open) .cm-badge[data-tone="hold"] { background: var(--cm-hold-dim); color: var(--cm-hold-dim-ink); }
+.cm-atlas.has-open .cm-pin:not(.open) .cm-badge[data-tone="none"] { background: var(--surface-2); color: var(--text-3); }
 .cm-b:hover .cm-badge, .cm-pin.open .cm-badge { transform: scale(1.1); }
 .cm-pin.open .cm-badge, .cm-b:focus-visible .cm-badge { outline-color: var(--accent); }
 .cm-pin.one.open .cm-badge, .cm-pin.one .cm-b:focus-visible .cm-badge { outline-offset: 4px; transform: scale(1.3); }
 .cm-pip { position: absolute; width: 7px; height: 7px; border-radius: 50%; box-shadow: 0 0 0 2px var(--cm-halo); pointer-events: none; }
-.cm-pip.hold { background: var(--hold); }
+.cm-pip.hold { background: var(--hold); transition: background-color 180ms ease-out; }
+.cm-atlas.has-open .cm-pin:not(.open) .cm-pip.hold { background: var(--cm-hold-dim); }
 /* the bar's validator: one soft ring outwards from its place, twice, then still */
 .cm-pin.live .cm-badge::after {
   content: ""; position: absolute; inset: -3px; border-radius: 7px; border: 1.5px solid var(--accent);
@@ -1482,7 +1499,7 @@ a.rb-c:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-
   .deck-row > .rb { padding: 16px 10px 18px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .cm-ground path, .cm-badge, .cm-pin, .cm-tools button, .rb-c, .ov-links a span { transition: none; }
+  .cm-ground path, .cm-badge, .cm-pip, .cm-tools button, .rb-c, .ov-links a span { transition: none; }
   .cm-pop, .cm-ev { animation: none; }
   .cm-pin.live .cm-badge::after { animation: none; opacity: .7; transform: scale(1.35); }
   .cp-strip svg, .rb-glow, .bt-dot.beat, .bt-ic.beat, .rn-roll .rn-in, .rn-roll .rn-out { animation: none; }
