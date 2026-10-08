@@ -276,13 +276,15 @@ export default function HostMap({ rows }: { rows: Validator[] | null }) {
   const aspect = narrow ? TALL : WIDE;
   const height = width * aspect;
 
-  // the floating bar, where it lies over the map: measured, so no badge is left under it
+  // the floating bar, where it lies over the map: measured, so no badge is left under it. Its pills end with the
+  // counts (the column after them is empty), so it is measured to there and a badge beyond them may sit lower
   const bar = useRef<HTMLDivElement>(null);
   const [barAt, setBarAt] = useState<[number, number, number, number] | null>(null);
   useLayoutEffect(() => {
     const a = box.current?.getBoundingClientRect(), b = bar.current?.getBoundingClientRect();
+    const end = bar.current?.querySelector(".cm-counts")?.getBoundingClientRect().right ?? b?.right ?? 0;
     let at: [number, number, number, number] | null = null;
-    if (a && b && b.top < a.bottom && b.bottom > a.top) at = [Math.round(b.left - a.left), Math.round(b.top - a.top), Math.round(b.width), Math.round(Math.min(b.bottom, a.bottom) - b.top)];
+    if (a && b && b.top < a.bottom && b.bottom > a.top) at = [Math.round(b.left - a.left), Math.round(b.top - a.top), Math.round(end - b.left), Math.round(Math.min(b.bottom, a.bottom) - b.top)];
     if (JSON.stringify(at) !== JSON.stringify(barAt)) setBarAt(at);
   });
 
