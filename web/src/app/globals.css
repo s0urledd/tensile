@@ -1052,8 +1052,8 @@ body { background: var(--canvas); }
   --cm-land-hi: #1d383d;
   --cm-coast: #4c646a;
   --cm-border: #242f34;
-  --cm-grid: #1b2327;
-  --cm-edge: #2d3a40;
+  --cm-grid: #1d262a;
+  --cm-edge: #313f45;
   --cm-badge: #33b3bf;
   --cm-badge-ink: #04171a;
   --cm-badge-hold-ink: #1f1500;

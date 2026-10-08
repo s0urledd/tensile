@@ -54,6 +54,13 @@ const server = http.createServer((req, res) => {
       // Southeast and East Asia, where the smallest hosted places are
       const b = await atlas.boundingBox();
       if (b) await page.screenshot({ path: path.join(out, `asia-${tag}.png`), animations: "disabled", clip: { x: b.x + b.width * 0.58, y: b.y + b.height * 0.12, width: b.width * 0.3, height: b.height * 0.62 } });
+      // a place opened by hover: its popover and its lit country
+      const pin = page.locator('.cm-b[aria-label*="India"]').first();
+      if (await pin.count()) {
+        await pin.hover();
+        await page.waitForTimeout(700);
+        await atlas.screenshot({ path: path.join(out, `hover-${tag}.png`), animations: "disabled" });
+      }
       await ctx.close();
     }
   }
