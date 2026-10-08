@@ -16,19 +16,50 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
-// maxMember bounds one member read from an untrusted tarball, so a
-// decompression bomb cannot take the verifier's memory. A day's
-// measurements file is tens of megabytes; this is far above that.
+// maxMember bounds one member read from an untrusted tarball. Members are
+// read as a stream, so this bounds the time a member takes to check, not
+// memory. A day's measurements file is tens of megabytes; this is far
+// above that.
 const maxMember = 4 << 30
+
+// maxManifest bounds manifest.json, the one member always held: a manifest
+// is a few kilobytes.
+const maxManifest = 16 << 20
+
+// maxHeld bounds the bytes of the other members ReadArchive keeps for its
+// caller, all of them together (a var, so a test can lower it). Each member
+// is checked from its digest, byte count and line count, taken as it
+// streams by; a tarball whose members come to more is checked all the same
+// and keeps none of their bytes, so neither a large export nor a
+// decompression bomb, any number of members of zeros, can take the
+// verifier's memory.
+var maxHeld int64 = 256 << 20
+
+// MemberSum is what CheckMembers needs of one member: its digest, its byte
+// count and the lines the builder counts in it.
+type MemberSum struct {
+	SHA256 string
+	Bytes  int64
+	Lines  int64
+}
 
 // Archive is a parsed export tarball.
 type Archive struct {
-	SHA256         string            // of the tarball bytes
-	Members        map[string][]byte // by name, manifest.json included
+	SHA256 string // of the tarball bytes
+	// Sums is every member's MemberSum, manifest.json included.
+	Sums map[string]MemberSum
+	// Members is every member by name, manifest.json included, with its
+	// bytes while Held: while all of them come to at most maxHeld. Past
+	// that, every member but manifest.json is named with nil bytes.
+	Members        map[string][]byte
+	Held           bool
 	ManifestRaw    []byte
 	Manifest       Manifest
 	ManifestSHA256 string
@@ -37,12 +68,13 @@ type Archive struct {
 // ReadArchive parses an export tarball and digests its manifest.
 func ReadArchive(tarball []byte) (*Archive, error) {
 	sum := sha256.Sum256(tarball)
-	a := &Archive{SHA256: hex.EncodeToString(sum[:]), Members: map[string][]byte{}}
+	a := &Archive{SHA256: hex.EncodeToString(sum[:]), Sums: map[string]MemberSum{}, Members: map[string][]byte{}, Held: true}
 	gz, err := gzip.NewReader(bytes.NewReader(tarball))
 	if err != nil {
 		return nil, fmt.Errorf("not gzip: %w", err)
 	}
 	tr := tar.NewReader(gz)
+	var held int64
 	for {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -56,27 +88,57 @@ func ReadArchive(tarball []byte) (*Archive, error) {
 		if h.Typeflag != tar.TypeReg && h.Typeflag != '\x00' {
 			return nil, fmt.Errorf("tar member %q is not a regular file", h.Name)
 		}
-		if _, dup := a.Members[h.Name]; dup {
+		if _, dup := a.Sums[h.Name]; dup {
 			// Two members under one name would let a verifier and a tool
 			// that extracts to disk read different bytes for the same file.
 			return nil, fmt.Errorf("tar member %q appears twice", h.Name)
 		}
-		b, err := io.ReadAll(io.LimitReader(tr, maxMember+1))
+		limit := int64(maxMember)
+		if h.Name == "manifest.json" {
+			limit = maxManifest
+		}
+		// The header's size is the member's (the reader holds a regular
+		// file to it), so a member is held only when it fits what is left.
+		keep := h.Name == "manifest.json" || a.Held && h.Size >= 0 && held+h.Size <= maxHeld
+		s := newSummer()
+		var body bytes.Buffer
+		w := io.Writer(s)
+		if keep {
+			body.Grow(int(min(max(h.Size, 0), limit)))
+			w = io.MultiWriter(s, &body)
+		}
+		n, err := io.Copy(w, io.LimitReader(tr, limit+1))
 		if err != nil {
 			return nil, fmt.Errorf("tar member %q: %w", h.Name, err)
 		}
-		if len(b) > maxMember {
-			return nil, fmt.Errorf("tar member %q is larger than %d bytes", h.Name, maxMember)
+		if n > limit {
+			return nil, fmt.Errorf("tar member %q is larger than %d bytes", h.Name, limit)
 		}
-		a.Members[h.Name] = b
+		a.Sums[h.Name] = s.sum()
+		switch {
+		case h.Name == "manifest.json":
+			a.Members[h.Name] = body.Bytes()
+		case keep:
+			a.Members[h.Name] = body.Bytes()
+			held += n
+		default:
+			if a.Held {
+				a.Held = false
+				for name := range a.Members {
+					if name != "manifest.json" {
+						a.Members[name] = nil
+					}
+				}
+			}
+			a.Members[h.Name] = nil
+		}
 	}
 	raw, ok := a.Members["manifest.json"]
 	if !ok {
 		return nil, errors.New("no manifest.json in the tarball")
 	}
 	a.ManifestRaw = raw
-	ms := sha256.Sum256(raw)
-	a.ManifestSHA256 = hex.EncodeToString(ms[:])
+	a.ManifestSHA256 = a.Sums["manifest.json"].SHA256
 	if err := json.Unmarshal(raw, &a.Manifest); err != nil {
 		return nil, fmt.Errorf("manifest.json: %w", err)
 	}
@@ -92,22 +154,19 @@ func (a *Archive) CheckMembers() []string {
 	named := map[string]bool{"manifest.json": true}
 	check := func(m Member) {
 		named[m.Name] = true
-		b, ok := a.Members[m.Name]
+		s, ok := a.Sums[m.Name]
 		if !ok {
 			problems = append(problems, fmt.Sprintf("%s: in the manifest, not in the tarball", m.Name))
 			return
 		}
-		sum := sha256.Sum256(b)
-		if got := hex.EncodeToString(sum[:]); got != m.SHA256 {
-			problems = append(problems, fmt.Sprintf("%s: sha256 %s, manifest says %s", m.Name, got, m.SHA256))
+		if s.SHA256 != m.SHA256 {
+			problems = append(problems, fmt.Sprintf("%s: sha256 %s, manifest says %s", m.Name, s.SHA256, m.SHA256))
 		}
-		if int64(len(b)) != m.Bytes {
-			problems = append(problems, fmt.Sprintf("%s: %d bytes, manifest says %d", m.Name, len(b), m.Bytes))
+		if s.Bytes != m.Bytes {
+			problems = append(problems, fmt.Sprintf("%s: %d bytes, manifest says %d", m.Name, s.Bytes, m.Bytes))
 		}
-		if m.Name != StateFile {
-			if n := countLines(b); n != m.Lines {
-				problems = append(problems, fmt.Sprintf("%s: %d lines, manifest says %d", m.Name, n, m.Lines))
-			}
+		if m.Name != StateFile && s.Lines != m.Lines {
+			problems = append(problems, fmt.Sprintf("%s: %d lines, manifest says %d", m.Name, s.Lines, m.Lines))
 		}
 	}
 	for _, m := range a.Manifest.Files {
@@ -116,7 +175,7 @@ func (a *Archive) CheckMembers() []string {
 	if a.Manifest.State != nil {
 		check(*a.Manifest.State)
 	}
-	for name := range a.Members {
+	for name := range a.Sums {
 		if !named[name] {
 			problems = append(problems, fmt.Sprintf("%s: in the tarball, not in the manifest", name))
 		}
@@ -124,16 +183,76 @@ func (a *Archive) CheckMembers() []string {
 	return problems
 }
 
-// countLines counts the non-blank lines the builder counts: collect skips
-// whitespace-only lines without counting them but keeps their bytes.
-func countLines(b []byte) int64 {
-	var n int64
-	for _, l := range bytes.Split(b, []byte{'\n'}) {
-		if len(bytes.TrimSpace(l)) > 0 {
-			n++
+// summer takes a member's MemberSum as it streams by. Its line count is the
+// builder's: collect skips whitespace-only lines without counting them but
+// keeps their bytes, so a line counts when it holds a rune that is not
+// white space (bytes.TrimSpace leaves something of it).
+type summer struct {
+	h     hash.Hash
+	bytes int64
+	lines int64
+	// text: the line being read holds a rune that is not white space;
+	// carry: the start of a rune the last write ended inside.
+	text  bool
+	carry []byte
+}
+
+func newSummer() *summer { return &summer{h: sha256.New()} }
+
+func (s *summer) Write(p []byte) (int, error) {
+	s.h.Write(p)
+	s.bytes += int64(len(p))
+	b := p
+	if len(s.carry) > 0 {
+		b = append(s.carry, p...)
+		s.carry = nil
+	}
+	for i := 0; i < len(b); {
+		c := b[i]
+		switch {
+		case c == '\n':
+			if s.text {
+				s.lines++
+			}
+			s.text = false
+			i++
+		case s.text:
+			// The rest of the line counts for nothing more.
+			j := bytes.IndexByte(b[i:], '\n')
+			if j < 0 {
+				return len(p), nil
+			}
+			i += j
+		case c < utf8.RuneSelf:
+			s.text = !asciiSpace(c)
+			i++
+		case !utf8.FullRune(b[i:]):
+			s.carry = append([]byte(nil), b[i:]...)
+			return len(p), nil
+		default:
+			r, size := utf8.DecodeRune(b[i:])
+			s.text = !unicode.IsSpace(r)
+			i += size
 		}
 	}
-	return n
+	return len(p), nil
+}
+
+func asciiSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r'
+}
+
+// sum ends the member: bytes that end inside a rune are not white space,
+// and a last line without a newline counts like any other.
+func (s *summer) sum() MemberSum {
+	if len(s.carry) > 0 {
+		s.text = true
+	}
+	n := s.lines
+	if s.text {
+		n++
+	}
+	return MemberSum{SHA256: hex.EncodeToString(s.h.Sum(nil)), Bytes: s.bytes, Lines: n}
 }
 
 // CheckSidecar compares the tarball digest with a .sha256 sidecar
