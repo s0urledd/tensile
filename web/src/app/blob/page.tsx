@@ -411,7 +411,7 @@ function Page() {
           transaction that settled it */}
       {txHash && blobId && <>
         <dt title={`The ID the Fibre client returns for this blob: version ${b.blob_version ?? 0} and the commitment, in base64`}>Blob ID</dt>
-        <dd className="bd-tx"><span className="mono" title={blobId}>{shortMid(blobId, 10, 6)}</span><Copy text={blobId} label="the blob ID" /></dd>
+        <dd className="bd-tx"><span className="mono" title={blobId}>{shortMid(blobId, 10, 6)}</span><Copy text={blobId} label="the blob ID" />{(same.data?.total ?? 0) > 1 && <Link className="bd-many" href={`/blobs/?blob=${encodeURIComponent(blobId)}`} title="Every settlement of this blob ID">settled {int(same.data!.total)} times →</Link>}</dd>
       </>}
       {b.assignment_error && <><dt>Assignment</dt><dd>{b.assignment_error}</dd></>}
     </dl>
@@ -468,8 +468,7 @@ function Page() {
             ? <><span className="bd-idl" title="The transaction that settled this blob">Transaction hash</span>
               <span className="mono">{txHash}</span><Copy text={txHash} label="the transaction hash" /></>
             : <><span className="bd-idl" title={`The ID the Fibre client returns for this blob: version ${b.blob_version ?? 0} and the commitment, in base64`}>Blob ID</span>
-              <span className="mono">{blobId}</span><Copy text={blobId} label="the blob ID" /></>}
-          {(same.data?.total ?? 0) > 1 && <Link className="bd-many" href={`/blobs/?blob=${encodeURIComponent(blobId)}`} title="Every settlement of this blob ID">settled {int(same.data!.total)} times →</Link>}
+              <span className="mono">{blobId}</span><Copy text={blobId} label="the blob ID" />{(same.data?.total ?? 0) > 1 && <Link className="bd-many" href={`/blobs/?blob=${encodeURIComponent(blobId)}`} title="Every settlement of this blob ID">settled {int(same.data!.total)} times →</Link>}</>}
         </div>
         <div className="chips bd-chips">
           {/* Tensile's reading, with its eye as its figures carry it: the chips after it are the chain's settlement */}

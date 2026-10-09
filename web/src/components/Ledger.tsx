@@ -344,7 +344,7 @@ const Row = memo(function Row({ b, age: ag, fresh, one, dec, onNs, onOpen }: Row
         <span className="ht">#{int(b.settlement_height)}</span>
       </td>
       <td className="c-ns"><button type="button" className="nsb" onClick={() => onNs(b.namespace)} title={`${b.namespace} · show only this namespace`}>{name}</button></td>
-      {!one && <td className="c-p">{who ? <Who addr={who} /> : "—"}</td>}
+      {!one && <td className="c-p">{who ? <><Who addr={who} /><CopyMark text={who} label="the publisher's address" /></> : "—"}</td>}
       <td className="c-sz num">{unit(bytes(b.blob_size))}</td>
       {/* one publisher's list is its escrow's statement: the fee went out of it */}
       <td className="c-fee num">{!b.charge ? "—" : one ? <Signed sign="−" utia={b.charge.fee_utia} dec={dec} /> : unit(tia(b.charge.fee_utia))}</td>
