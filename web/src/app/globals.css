@@ -2813,14 +2813,14 @@ button.warn:focus-visible { outline-offset: 0; }
 .tx-m td.c-s .cp { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: 4px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--text-3); vertical-align: -3px; cursor: pointer; }
 .tx-m td.c-s .lg-who .hd { font-size: var(--t-cell); }
 /* a phone: the frames already stack and the mast's hash wraps (.pb-addr .mono), a word's room after its label; the
-   index column narrows, a message's name wraps between its words with "failed" under it when it must, and a signer's
+   index column narrows, a message's name wraps between its words with "failed" after its last, and a signer's
    chip ends its name in an ellipsis (a publisher's without the address's prefix, as the lists show it) */
 @media (max-width: 720px) {
   .bd-mast .pb-addr .bd-idl { margin-right: 8px; }
   .tx-m th.c-i { width: 56px; }
   .tx-m td.c-n { white-space: normal; }
-  .tx-m td.c-n .cl { flex-wrap: wrap; column-gap: 8px; }
-  .tx-m td.c-n em { margin-left: 0; }
+  .tx-m td.c-n .cl { display: inline; }
+  .tx-m td.c-n em { margin-left: 6px; }
   .tx-m td.c-s { overflow: hidden; }
   .tx-m td.c-s .cl { max-width: 100%; }
   .tx-m td.c-s .tx-val { min-width: 0; }
