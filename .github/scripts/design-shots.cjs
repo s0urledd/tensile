@@ -219,10 +219,10 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
         if (dk) { await top(page); await full(page, `p1-full-${theme}.png`, "Publisher page, whole (B), for context"); }
         await reveal(page, ["#list .list-head", row("#list", 5)]);
         await tip(page, `${row("#list", 2)} .xs`, theme);
-        await crop(page, `p3-tip-failed-${theme}.png`, ["#list thead", row("#list", 4), ".shot-tip"], "Hover on \"Failed\" in a failed row: the failed page's own words", 20);
+        await crop(page, `p3-tip-failed-${theme}.png`, ["#list thead", row("#list", 4), ".shot-tip"], "Hover on \"Failed\" in a failed row: the failed page's own words", { t: 20, r: 20, b: 0, l: 20 });
         await untip(page);
         await tip(page, `${row("#list", 2)} td.c-fee .xd`, theme);
-        await crop(page, `p3-tip-dash-${theme}.png`, ["#list thead", row("#list", 4), ".shot-tip"], "Hover on the Amount dash of a failed row (B): nothing moved, the escrow is as it was", 20);
+        await crop(page, `p3-tip-dash-${theme}.png`, ["#list thead", row("#list", 4), ".shot-tip"], "Hover on the Amount dash of a failed row (B): nothing moved, the escrow is as it was", { t: 20, r: 20, b: 0, l: 20 });
         await untip(page);
         await reveal(page, ["#list .pager"], 140);
         await tip(page, "#list .pager .count span[title]", theme);
@@ -231,7 +231,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       } else {
         await reveal(page, ["#list .list-head", row("#list", 5)]);
         await tip(page, `${row("#list", 2)} td.c-fee s`, theme);
-        await crop(page, `p3-tip-struck-${theme}.png`, ["#list thead", row("#list", 4), ".shot-tip"], "Hover on the struck request (A): requested, not moved", 20);
+        await crop(page, `p3-tip-struck-${theme}.png`, ["#list thead", row("#list", 4), ".shot-tip"], "Hover on the struck request (A): requested, not moved", { t: 20, r: 20, b: 0, l: 20 });
         await untip(page);
       }
       await ctx.close();

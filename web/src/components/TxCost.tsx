@@ -18,8 +18,8 @@ export function GasValue({ c }: { c: Cost }) {
 /**
  * The transaction fee, in the failed page's format: what its fee payer paid from its bank balance, never from the
  * escrow. owner: the account of the page (a validator's operator address is its account under another prefix); a fee
- * another account paid names it, whole on hover. One fee covers every
- * message of the transaction, which it says when there was more than one.
+ * another account paid names it, whole on hover. One fee covers every message of the transaction, which it says when
+ * there was more than one.
  */
 export function FeeValue({ c, owner }: { c: Cost; owner?: string }) {
   const other = !!c.fee_payer && !!owner && (bech32Hex(c.fee_payer) ?? c.fee_payer) !== (bech32Hex(owner) ?? owner);
