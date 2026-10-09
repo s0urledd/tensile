@@ -276,3 +276,36 @@ func TestEndpointHistoryOnBothPathsAndCached(t *testing.T) {
 		t.Errorf("the history after the new registration: %s", got)
 	}
 }
+
+// A registration whose transaction's cost was not on record has no hash; a
+// backfill (cmd/sentinel-txbackfill) puts its cost line on record later, of
+// a height below lines stored before it, and the walk's join gives the row
+// the transaction's hash from then on, on the next answer computed.
+func TestEndpointHistoryGivesTheHashOnceTheCostLineIsOnRecord(t *testing.T) {
+	f := tqFixture(t)
+	ctx := context.Background()
+	before := "changed 68/0 " + tqHostB4 + "<-" + tqHostB3
+	rows, _, err := f.srv.endpointHistory(ctx, tqValB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ehRows(rows); !strings.Contains(got, before+" | ") {
+		t.Fatalf("before the cost line: %s", got)
+	}
+	hash := tqHash("B's registration at 68, its cost backfilled")
+	r := tqCost(hash, 68, 0, tqBech("celestia", 0xb1), tqMsg(0, failedtx.KindSetHost, tqOpB))
+	raw, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := f.st.InsertTxCost(r, raw); err != nil || !ok {
+		t.Fatalf("the backfilled cost line: %v %v", ok, err)
+	}
+	rows, _, err = f.srv.endpointHistory(ctx, tqValB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ehRows(rows); !strings.Contains(got, before+" #"+hash+" | ") {
+		t.Fatalf("after the cost line: %s", got)
+	}
+}

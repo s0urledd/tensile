@@ -211,35 +211,49 @@ func anteFee(evs []abci.Event) (passed bool, fee string) {
 	return found, fee
 }
 
-// recordFailedTxs is step 4 of processBlock: every failed tx of the block
-// that carries a Fibre message, appended to failed_txs.jsonl. A decode
-// problem is logged and never fatal; a failed write is Fatalf (D14), so the
-// cursor never passes an unrecorded failure. It adds nothing to
-// processBlock's count.
-func (s *Scanner) recordFailedTxs(blk *Block, res *BlockResults, h int64) {
-	now := time.Now().UTC()
+// TxProblem is a message of one of a block's txs that did not decode
+// (failedTxMsgs): the line keeps the tx without what could not be read, and
+// the caller logs it.
+type TxProblem struct {
+	TxIndex int
+	Err     error
+}
+
+// FailedTxRecords is what step 4 writes for one block, a pure function of
+// the block and its results: the failed_txs.jsonl line of every tx that
+// failed in it while carrying a Fibre message, in tx order, each with
+// recordedAt as its recorded_at, and the decode problems met on the way.
+// skip, when not nil, names a key already on record: its tx is passed over
+// before it is decoded, as the scanner passes over a key its seen-set
+// holds.
+//
+// The scanner writes these lines as it reads each block (recordFailedTxs),
+// and sentinel-txbackfill writes the same lines, from this same function,
+// for blocks from before the scanner's record began.
+func FailedTxRecords(blk *Block, res *BlockResults, recordedAt time.Time, skip func(key string) bool) ([]failedtx.Record, []TxProblem) {
+	var recs []failedtx.Record
+	var problems []TxProblem
 	for i, raw := range blk.Txs {
 		code := res.TxCodes[i]
-		if code == 0 || s.store.FailedTxSeen(failedtx.Key(blk.Height, i)) {
+		if code == 0 || (skip != nil && skip(failedtx.Key(blk.Height, i))) {
 			continue
 		}
-		msgs, problems, ok := failedTxMsgs(raw)
-		for _, p := range problems {
-			s.log.Printf("h=%d tx=%d: failed tx: %v", h, i, p)
+		msgs, errs, ok := failedTxMsgs(raw)
+		for _, err := range errs {
+			problems = append(problems, TxProblem{TxIndex: i, Err: err})
 		}
 		if !ok || !failedtx.Carries(msgs) {
 			continue
 		}
-		txHash := hexstr(cmttypes.Tx(raw).Hash())
 		logText, cut := failedtx.CutLog(res.TxCodespace[i], code, res.TxLog[i])
 		passed, fee := anteFee(res.TxEvents[i])
-		rec := failedtx.Record{
+		recs = append(recs, failedtx.Record{
 			SchemaVersion: failedtx.SchemaVersion,
 			DedupeKey:     failedtx.Key(blk.Height, i),
 			Height:        blk.Height,
 			Time:          blk.Time.UTC(),
 			AppVersion:    blk.AppVersion,
-			TxHash:        txHash,
+			TxHash:        hexstr(cmttypes.Tx(raw).Hash()),
 			TxIndex:       i,
 			Code:          code,
 			Codespace:     res.TxCodespace[i],
@@ -250,12 +264,27 @@ func (s *Scanner) recordFailedTxs(blk *Block, res *BlockResults, h int64) {
 			AntePassed:    passed,
 			Fee:           fee,
 			Messages:      msgs,
-			RecordedAt:    now,
-		}
+			RecordedAt:    recordedAt,
+		})
+	}
+	return recs, problems
+}
+
+// recordFailedTxs is step 4 of processBlock: every failed tx of the block
+// that carries a Fibre message (FailedTxRecords), appended to
+// failed_txs.jsonl. A decode problem is logged and never fatal; a failed
+// write is Fatalf (D14), so the cursor never passes an unrecorded failure.
+// It adds nothing to processBlock's count.
+func (s *Scanner) recordFailedTxs(blk *Block, res *BlockResults, h int64) {
+	recs, problems := FailedTxRecords(blk, res, time.Now().UTC(), s.store.FailedTxSeen)
+	for _, p := range problems {
+		s.log.Printf("h=%d tx=%d: failed tx: %v", h, p.TxIndex, p.Err)
+	}
+	for _, rec := range recs {
 		if err := s.store.AppendFailedTx(rec); err != nil {
-			s.log.Fatalf("h=%d tx=%d: append failed tx: %v", h, i, err)
+			s.log.Fatalf("h=%d tx=%d: append failed tx: %v", h, rec.TxIndex, err)
 		}
 		s.log.Printf("FAILED TX h=%d tx=%d (%s) %s/%d gas=%d/%d ante_passed=%v msgs=%d",
-			h, i, txHash[:12], rec.Codespace, code, rec.GasUsed, rec.GasWanted, rec.AntePassed, len(msgs))
+			h, rec.TxIndex, rec.TxHash[:12], rec.Codespace, rec.Code, rec.GasUsed, rec.GasWanted, rec.AntePassed, len(rec.Messages))
 	}
 }

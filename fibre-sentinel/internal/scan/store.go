@@ -560,6 +560,25 @@ func (s *Store) AppendFailedTx(r failedtx.Record) error {
 	if err != nil {
 		return fmt.Errorf("marshal failed tx %s: %w", r.DedupeKey, err)
 	}
+	return s.AppendFailedTxLine(r, b)
+}
+
+// AppendFailedTxLine is AppendFailedTx for a line already written out:
+// line, without its newline, is the line r was marshalled to, and it is
+// appended as it is, by the same path. sentinel-txbackfill -merge appends
+// its staged lines through it, so a line the merge appends is byte for byte
+// the one it staged, and is written under the same rules as the scanner's
+// own: a torn final line cut first, fsynced, cut back on a failed write.
+func (s *Store) AppendFailedTxLine(r failedtx.Record, line []byte) error {
+	if r.DedupeKey == "" {
+		return fmt.Errorf("failed tx without a dedupe key (h=%d tx=%d)", r.Height, r.TxIndex)
+	}
+	if _, ok := s.failSeen[r.DedupeKey]; ok {
+		return nil
+	}
+	// capped at its length: the newline appendLine adds must never land in
+	// the caller's array after the line
+	b := line[:len(line):len(line)]
 	if err := appendLine(&s.failFile, filepath.Join(s.dir, failedtx.FileName), b); err != nil {
 		return err
 	}
@@ -594,6 +613,24 @@ func (s *Store) AppendTxCost(r txcost.Record) error {
 	if err != nil {
 		return fmt.Errorf("marshal tx cost %s: %w", r.DedupeKey, err)
 	}
+	return s.AppendTxCostLine(r, b)
+}
+
+// AppendTxCostLine is AppendTxCost for a line already written out: line,
+// without its newline, is the line r was marshalled to, and it is appended
+// as it is, by the same path (not fsynced: Sync does that). sentinel-txbackfill
+// -merge appends its staged lines through it, so a line the merge appends
+// is byte for byte the one it staged.
+func (s *Store) AppendTxCostLine(r txcost.Record, line []byte) error {
+	if r.DedupeKey == "" {
+		return fmt.Errorf("tx cost without a dedupe key (h=%d tx=%d)", r.Height, r.TxIndex)
+	}
+	if _, ok := s.costSeen[r.DedupeKey]; ok {
+		return nil
+	}
+	// capped at its length: the newline must never land in the caller's
+	// array after the line
+	b := line[:len(line):len(line)]
 	if s.costFile == nil {
 		f, err := record.OpenAppender(s.costPath)
 		if err != nil {

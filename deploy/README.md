@@ -1648,6 +1648,83 @@ tail -n 3 /var/lib/fibre-observer/mocha/exports/remote.jsonl                # th
 cat /var/lib/fibre-observer/mocha/exports/remote-copy.json                  # the backup's last finished copy
 ```
 
+### Backfilling failed transactions and costs
+
+The scanner writes `failed_txs.jsonl` and `tx_costs.jsonl` from the build
+that added each, not before it. `sentinel-txbackfill` writes the lines of
+the heights before, back to Fibre's activation, so that the transaction
+page, the failed-transaction lookup and a validator's endpoint history
+(whose transaction hashes come from the cost lines) reach back that far.
+Each line is built by the scanner's own code from the block and its
+results, so it is the line the scanner would have written, but for
+`recorded_at`, the time of the backfill. It is done once per network, in
+two steps: a staging, which reads the chain and writes only into its own
+directory, and a merge, with the scanner stopped. A network whose scanner
+wrote both files from activation needs neither.
+
+The ranges: `-from` is Fibre's activation height, `-failed-to` and
+`-costs-to` the height before the first line of each live file
+(`head -n 1 /var/lib/fibre-observer/mocha/failed_txs.jsonl | jq .height`,
+and the same for `tx_costs.jsonl`). On Mocha they are 1082619, 1509441 and
+1525315.
+
+**1. Stage**, as the service user, into a directory beside the data
+directory (never inside it: nothing there may hold a staged file). The
+local node (`-local-rpc`) is asked for the heights it holds, its oldest
+block read at the start, and the archive nodes in `-rpc` for the older
+ones, in turn, at
+most four requests at once each. A height's results are always read, its
+block only when they show a failure or a Fibre success, a few blocks in a
+hundred. Mocha's history takes a few hours, most of it on the archives;
+the journal has a progress line every 10000 heights.
+
+```bash
+sudo install -d -o fibre-observer -m 0750 /var/lib/fibre-observer/mocha-txbackfill
+sudo systemd-run --unit=fibre-txbackfill-mocha --collect -p User=fibre-observer -p Nice=10 \
+  /usr/local/bin/sentinel-txbackfill \
+  -rpc https://rpc-1.testnet.celestia.nodes.guru,https://rpc-2.testnet.celestia.nodes.guru,https://celestia-testnet-rpc.itrocket.net,https://rpc.celestia-mocha.com \
+  -local-rpc http://127.0.0.1:26657 \
+  -from 1082619 -failed-to 1509441 -costs-to 1525315 \
+  -out-dir /var/lib/fibre-observer/mocha-txbackfill -data-dir /var/lib/fibre-observer/mocha
+journalctl -u fibre-txbackfill-mocha -f          # ends with "staging complete: …"
+```
+
+A staging that stops (a height no node would serve after eight tries, a
+restart, `systemctl stop fibre-txbackfill-mocha`) says where; the same
+command run again goes on from there, and run over a finished staging it
+does nothing. The archives must keep `block_results` from activation: a
+public node that prunes them, or keeps no finalize-block responses, fails
+every height below its history and is not one to list.
+
+**2. Merge**, with the scanner stopped; the merge refuses while a
+`sentinel-scan` of the data directory runs. It checks every staged line
+first, then appends those whose key the live file does not hold, through
+the scanner's own store (a torn final line cut first, each line whole and
+synced), and prints what it did per file. Run again, it appends nothing.
+
+```bash
+sudo systemctl stop fibre-scan@mocha
+sudo -u fibre-observer /usr/local/bin/sentinel-txbackfill -merge \
+  -out-dir /var/lib/fibre-observer/mocha-txbackfill -data-dir /var/lib/fibre-observer/mocha
+sudo systemctl start fibre-scan@mocha
+sudo -u fibre-observer rm -f /var/lib/fibre-observer/mocha/status/healthwatch.sizes
+```
+
+The last line is for the health watch: the merged lines (a few MiB of
+cost lines on Mocha) would read as a day's growth of `tx_costs.jsonl`, an
+`archive-due` alert for a day; without its sample it takes a new one from
+the merged size.
+
+Nothing else changes. The scanner's seen-sets hold only the keys above
+its checkpoint, so the older lines after the newer ones change nothing at
+its start. Dated by their blocks, the merged lines go into the next daily
+export as late lines (its manifest counts them in `late_lines`), and every
+export built before stays byte for byte what it was; the collector
+ingests them on its next pass, and the transaction page and the endpoint
+history show them from then on; the nightly backup copies the two files
+as always. Once the merge has printed its counts, the staging directory
+can go: `sudo rm -r /var/lib/fibre-observer/mocha-txbackfill`.
+
 ### Runbook
 
 - **Health is 503.** Read the `checks` list: it names the process or

@@ -148,7 +148,11 @@ The log is the node's, but for a panic's stack trace and anything past
 `tx_costs.jsonl` holds one line per successful transaction that carried a
 Fibre message (the same rule as `failed_txs.jsonl`: a top-level message, or
 one inside a MsgExec, of the five Fibre types), written from the scanner's
-first build that has it on, with no backfill. It is read only by the
+first build that has it on. The heights before the first line of either
+file, back to Fibre's activation, are filled once by `sentinel-txbackfill`
+with the lines the scanner's own code builds, appended after the newer
+ones and exported late (`deploy/README.md`, "Backfilling failed
+transactions and costs"). `tx_costs.jsonl` is read only by the
 transaction page (`/v1/txs/{hash}`), the blob page (`tx_cost` on
 `/v1/blobs/{hash}`) and a validator's endpoint history (each registration's
 transaction hash), and is in no count, rollup or figure. A line keeps the
