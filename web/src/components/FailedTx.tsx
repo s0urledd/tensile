@@ -18,6 +18,16 @@ const nameOf = (url: string) => url.slice(url.lastIndexOf(".") + 1);
 const coins = (fee: string) =>
   fee.split(",").map((c) => c.replace(/^(\d+)(\D.*)$/, (_, n: string, d: string) => `${n.length <= 15 ? int(Number(n)) : n} ${d}`)).join(", ");
 
+/**
+ * the fee in TIA, as the site writes amounts, down to the utia ("800utia" is 0.0008 TIA: tia() would print a
+ * transaction fee in utia, being under 0.001 TIA); another denomination as coins() prints it
+ */
+const feeTia = (fee: string) =>
+  fee.split(",").map((c) => {
+    const m = /^(\d{1,15})utia$/.exec(c.trim());
+    return m ? `${(Number(m[1]) / 1e6).toFixed(6).replace(/\.?0+$/, "")} TIA` : coins(c);
+  }).join(", ");
+
 /** a message, or a MsgExec with a message inside it, that carries Fibre */
 const carries = (m: FailedTxMsg) => m.fibre || !!m.inner?.some((i) => i.fibre);
 
@@ -80,7 +90,7 @@ export default function FailedTx({ hex, f, meta, metaErr, at }: { hex: string; f
           <dt>Gas</dt><dd><b>{int(f.gas_used)}</b><em>used of {int(f.gas_wanted)}</em></dd>
           <dt>Transaction fee</dt>
           <dd>{f.ante_passed
-            ? <><b>{f.fee ? `Paid ${coins(f.fee)}` : "None"}</b><em>this transaction cannot run again</em></>
+            ? <><b title={f.fee ? coins(f.fee) : undefined}>{f.fee ? `Paid ${feeTia(f.fee)}` : "None"}</b><em>this transaction cannot run again</em></>
             : <><b>Not taken</b><em>the chain stopped it before running it, so the same transaction could still be included in a later block</em></>}</dd>
         </dl>
       </div>
