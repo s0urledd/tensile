@@ -407,10 +407,11 @@ function Page() {
       <dd title={b.commitment}><span className="mono">{shortMid(b.commitment, 10, 6)}</span><Copy text={b.commitment} label="commitment" /></dd>
       <dt title="This settlement's payment promise. A blob settled again has another promise hash.">Promise hash</dt>
       <dd title={b.promise_hash}><span className="mono">{shortMid(b.promise_hash, 10, 6)}</span><Copy text={b.promise_hash} label="the promise hash" /></dd>
-      {/* the transaction that settled it; its height and time are in the chip under the title */}
-      {txHash && <>
-        <dt title="The transaction that settled this blob">Transaction</dt>
-        <dd className="bd-tx"><span className="mono" title={txHash}>{shortMid(txHash, 10, 6)}</span><Copy text={txHash} label="transaction hash" /></dd>
+      {/* the blob as the client names it, as fibre.Submit returns it and Download takes it; the title above names the
+          transaction that settled it */}
+      {txHash && blobId && <>
+        <dt title={`The ID the Fibre client returns for this blob: version ${b.blob_version ?? 0} and the commitment, in base64`}>Blob ID</dt>
+        <dd className="bd-tx"><span className="mono" title={blobId}>{shortMid(blobId, 10, 6)}</span><Copy text={blobId} label="the blob ID" /></dd>
       </>}
       {b.assignment_error && <><dt>Assignment</dt><dd>{b.assignment_error}</dd></>}
     </dl>
@@ -459,11 +460,15 @@ function Page() {
     <>
       <section className="pb-mast bd-mast">
         <h1 className="bd-title">Blob</h1>
-        {/* the blob as the client names it: its blob ID, as fibre.Submit returns it and Download takes it; the page itself
-            is one settlement of it, by its promise hash, with its height and time in the chips under it */}
+        {/* the settlement as people pass it around: its transaction hash (the blob ID is in the facts below; a blob
+            settled before the transaction was recorded keeps its blob ID here); the page itself is one settlement, by its
+            promise hash, with its height and time in the chips under it */}
         <div className="pb-addr">
-          <span className="bd-idl" title={`The ID the Fibre client returns for this blob: version ${b.blob_version ?? 0} and the commitment, in base64`}>Blob ID</span>
-          <span className="mono">{blobId}</span><Copy text={blobId} label="the blob ID" />
+          {txHash
+            ? <><span className="bd-idl" title="The transaction that settled this blob">Transaction hash</span>
+              <span className="mono">{txHash}</span><Copy text={txHash} label="the transaction hash" /></>
+            : <><span className="bd-idl" title={`The ID the Fibre client returns for this blob: version ${b.blob_version ?? 0} and the commitment, in base64`}>Blob ID</span>
+              <span className="mono">{blobId}</span><Copy text={blobId} label="the blob ID" /></>}
           {(same.data?.total ?? 0) > 1 && <Link className="bd-many" href={`/blobs/?blob=${encodeURIComponent(blobId)}`} title="Every settlement of this blob ID">settled {int(same.data!.total)} times →</Link>}
         </div>
         <div className="chips bd-chips">
