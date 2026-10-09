@@ -429,6 +429,10 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
 }
 /* the period after a heading keeps its own case: "(24h)", not "(24H)" */
 .vt th .per { text-transform: none; letter-spacing: .03em; }
+/* the period in a box as wide as the widest period's name: every name is laid in the same cell, the unseen ones only to size it, so a switch of period never moves the heading */
+.vt th .per { display: inline-grid; justify-items: start; vertical-align: baseline; }
+.vt th .per > span { grid-area: 1 / 1; }
+.vt th .per .per-w { visibility: hidden; }
 /* Below the fixed layout a column is only as wide as its heading, and the (i),
    which hangs outside the label, would run into the next heading: the heading
    keeps room for it on either side, so the label stays centred over its cells. */

@@ -3,7 +3,7 @@ import Link from "next/link";
 import { useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { type Validator, int, pctOf, bytes, ago, utcWord, shortMid, failedWords } from "@/lib/api";
-import { periodName } from "@/lib/window";
+import { WINDOWS, periodName } from "@/lib/window";
 import Avatar from "./Avatar";
 import Info from "./Info";
 import { HostingCell } from "./Hosting";
@@ -139,13 +139,22 @@ export default function Validators({ rows, window: win, notLive, loading, failed
   // A heading with a definition carries it behind an (i), opened by a click:
   // nothing appears on hover. The (i) sits outside the label's box so the
   // label stays centred over its column. A heading that counts the selected
-  // period names it after the label, in its own case: "Shard data (24h)".
+  // period names it after the label, in its own case: "Shard data (24h)". The
+  // period sits in a box as wide as the widest period's name (every name is laid
+  // over it, unseen), so switching periods never moves a heading or, where the
+  // columns follow their headings, the table.
   const period = periodName(win);
+  const perLabel = (
+    <span className="per">
+      <span>({period})</span>
+      {WINDOWS.map((w) => <span key={w} className="per-w" aria-hidden="true">({periodName(w)})</span>)}
+    </span>
+  );
   const Th = ({ k, dflt, label, title, info, col, per }: { k: SortKey; dflt: 1 | -1; label: string; title?: string; info?: string; col: string; per?: boolean }) => (
     <th className={"num " + col + (info ? " has-i" : "")} title={title}>
       <span className="thi">
         <button type="button" className="sort" aria-pressed={sort.key === k} onClick={() => clickSort(k, dflt)}>
-          {label}{per && <> <span className="per">({period})</span></>}{sort.key === k && <span className="arrow" aria-hidden="true">{sort.dir === -1 ? "↓" : "↑"}</span>}
+          {label}{per && <> {perLabel}</>}{sort.key === k && <span className="arrow" aria-hidden="true">{sort.dir === -1 ? "↓" : "↑"}</span>}
         </button>
         {info && <span className="thi-i"><Info label={label}><p>{info}</p></Info></span>}
       </span>
