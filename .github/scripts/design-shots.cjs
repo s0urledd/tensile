@@ -1,7 +1,8 @@
 // design-shots.cjs <out dir> <shots dir>: serves the static site from <out dir>, passes /api/* through to the live API,
-// and photographs the failed-transaction follow-ups at 1440 in both themes. The browser's own requests to /api/v1/ are
-// read live and given the keys the proposal adds (mock data, real Mocha values except rows marked STUB or MOCK) before
-// the page sees them. Runs only in the Design shots workflow.
+// and photographs round 2 of the failed-transaction follow-ups at 1440 in both themes. The browser's requests to the
+// two new routes (/v1/publishers/{addr}/txs, /v1/txs/{hash}) are answered from the mock; the validator and blob answers
+// are read live and given the keys the proposal adds. Real Mocha values, except rows marked STUB or MOCK. Runs only in
+// the Design shots workflow.
 const http = require("http");
 const https = require("https");
 const fs = require("fs");
@@ -31,83 +32,156 @@ const server = http.createServer((req, res) => {
   fs.createReadStream(f).pipe(res);
 });
 
-// ---------------------------------------------------------------- the mock data (proposal §6.3)
+/** one live answer, as JSON */
+async function live(p) {
+  const r = await fetch(`https://${LIVE}/api${p}`, { headers: { "user-agent": "tensile-design-shots" } });
+  if (!r.ok) throw new Error(`${p}: ${r.status}`);
+  return r.json();
+}
+
+// ---------------------------------------------------------------- the mock data (proposal-v2 §8.4)
 const PUB = "celestia1jw8afsj3j0c23fxs09nu8pq5asxwes5e3kkxdx";
 const VAL = "celestiavaloper1l0smvx0aaguy64zg8kz9hf0keqptngmp5qrrvj";
+const OPER = "celestia1l0smvx0aaguy64zg8kz9hf0keqptngmp3lp665";
 const BLOB = "ba80a76e14c028e71ed777aa85b6f6ba3a3ca52916ededd5a9a8a61671c6c496";
-const FAILED_TX = "A4BD0B1855044D09C2F84AE43F6504D9365A470810B6F67D30A6EC11D2AFDB92";
+const NS = "00000000000000000000000000000000000000000074656e73696c6500";
 
-const FAILED_DEPOSIT = { kind: "deposit", failed: true, height: 1509598, tx_index: 0, msg_index: 0, time: "2026-10-08T23:17:45.331354Z", tx_hash: "f5ac69d972e0d707e6f535e92912c8ee6a6ddbf8c56ce920c6751764cbb1581b", requested: "1utia", requested_utia: 1, reason: "Out of gas" };
-const FAILED_WITHDRAWAL = { kind: "withdrawal_request", failed: true, height: 1509587, tx_index: 0, msg_index: 0, time: "2026-10-08T23:17:14.030516Z", tx_hash: "a4bd0b1855044d09c2f84ae43f6504d9365a470810b6f67d30a6ec11d2afdb92", requested: "1000000000000000utia", requested_utia: 1000000000000000, reason: "Insufficient funds" };
+// STUB: a successful deposit on page 1, beside the failures, so a signed amount stands next to their dashes (All only)
+const STUB_DEPOSIT = { kind: "deposit", status: "success", height: 1509603, tx_index: 0, msg_index: 0, time: "2026-10-08T23:18:16.912442Z", tx_hash: "c41d9e07a3b5f2861e0d4c7a9b3f5e2d8a6c1b4f7e0a3d9c5b8f2e1a6d4c7b30", amount_utia: 1000000000 };
+const F_DEPOSIT = { kind: "deposit", status: "failed", height: 1509598, tx_index: 0, msg_index: 0, time: "2026-10-08T23:17:45.331354784Z", tx_hash: "f5ac69d972e0d707e6f535e92912c8ee6a6ddbf8c56ce920c6751764cbb1581b", reason: "Out of gas" };
+const F_WITHDRAWAL = { kind: "withdrawal_request", status: "failed", height: 1509587, tx_index: 0, msg_index: 0, time: "2026-10-08T23:17:14.030516463Z", tx_hash: "a4bd0b1855044d09c2f84ae43f6504d9365a470810b6f67d30a6ec11d2afdb92", reason: "Insufficient funds" };
 // STUB: a failed blob payment between the blobs at #1,497,140 and #1,497,108
-const FAILED_PFF = { kind: "settlement", failed: true, height: 1497121, tx_index: 1, msg_index: 0, time: "2026-10-08T13:25:05.700Z", tx_hash: "9b3e7a41d0c25f86e4a7b1d9c03f5e2a8d6b4c1f7e9a0d3b5c8f2e6a1d4b7c90", promise_hash: "4f0a9c2e7b1d5a83c6e9f2b4d7a0c3e5f8b1d4a7c0e3f6b9d2a5c8e1f4b7a0d3", namespace: "00000000000000000000000000000000000000000074656e73696c6500", blob_size: 4456448, reason: "Invalid request" };
-// STUB: a successful deposit on page 1, beside the failed one, so All shows a signed amount next to a dash. It stands in
-// the All feed alone: the statement (Escrow) and its foot stay the real ones, which close on the live balance.
-const STUB_DEPOSIT = { kind: "deposit", height: 1509603, tx_index: 0, msg_index: 0, time: "2026-10-08T23:18:16.912442Z", tx_hash: "c41d9e07a3b5f2861e0d4c7a9b3f5e2d8a6c1b4f7e0a3d9c5b8f2e1a6d4c7b30", amount_utia: 1000000000,
-  tx_cost: { gas_wanted: 200000, gas_used: 74102, fee: "4000utia", fee_payer: PUB, messages: 1 } };
-const RECENT_MOVES = [
-  { kind: "deposit", height: 1366494, tx_index: 0, msg_index: 0, time: "2026-10-04T05:51:46.491278Z", tx_hash: "7f7e66d16ec7337c82ffc65148bf3e42bef39b2adef3f930862455494ddc3d89", amount_utia: 1000000000,
-    tx_cost: { gas_wanted: 200000, gas_used: 74215, fee: "4000utia", fee_payer: PUB, messages: 1 } },
-  { kind: "deposit", height: 1107337, tx_index: 0, msg_index: 0, time: "2026-09-25T16:10:56.562358Z", tx_hash: "b241a96f9f221d4e9f03205ada95a5587b3f702c5345ad7b16c3c62da16d8f4c", amount_utia: 4000000,
-    tx_cost: { gas_wanted: 200000, gas_used: 86844, fee: "4000utia", fee_payer: PUB, messages: 1 } },
-];
-const OPERATOR_ACCOUNT = "celestia1l0smvx0aaguy64zg8kz9hf0keqptngmp3lp665";
-// MOCK failed row: built from the real failed set-host FB27DDA8…, whose signer is not a validator
-const EH_FAILED = { outcome: "failed", height: 1509592, tx_index: 0, time: "2026-10-08T23:17:28.23537Z", tx_hash: "fb27dda8abf009db6512800b74898bc60410e1139a7fbb8f49e4ff30d3226cdb", host: "203.0.113.10:7980", reason: "Invalid validator" };
-const EH_CHANGED_2 = { outcome: "changed", height: 1496499, tx_index: 0, time: "2026-10-08T12:55:34.318488Z", tx_hash: "e59c8ec3e5538f64f442e968795dd2c1159636ecf9f90d4698317f946374adcf", host: "89.40.226.218:7980", previous_host: "89.40.226.146:7980",
-  tx_cost: { gas_wanted: 200000, gas_used: 54455, fee: "2000utia", fee_payer: OPERATOR_ACCOUNT, messages: 1 } };
-const EH_CHANGED_1 = { outcome: "changed", height: 1253828, tx_index: 0, time: "2026-09-30T12:17:39.784839Z", tx_hash: "ed68446c853e334de84e6fe95873a6d9de16f2bfdc10d96481464093e8254c52", host: "89.40.226.146:7980", previous_host: "149.86.227.11:7980",
-  tx_cost: { gas_wanted: 78351, gas_used: 54455, fee: "5000utia", fee_payer: OPERATOR_ACCOUNT, messages: 1 } };
-const EH_REAL = [EH_FAILED, EH_CHANGED_2, EH_CHANGED_1, { outcome: "before_record", host: "149.86.227.11:7980" }];
-// the state sheet: STUB rows around the real ones, seven in all
-const EH_SHEET = [
-  EH_FAILED,
-  { outcome: "same", height: 1503210, tx_index: 1, time: "2026-10-08T18:40:11.204117Z", tx_hash: "3c81f0a9d27e45b6c90d1e8a7f3b2c4d5e6f708192a3b4c5d6e7f8091a2b3c4d", host: "89.40.226.218:7980",
-    tx_cost: { gas_wanted: 200000, gas_used: 54455, fee: "2000utia", fee_payer: OPERATOR_ACCOUNT, messages: 1 } },
-  EH_CHANGED_2,
-  { outcome: "failed", height: 1401877, tx_index: 3, time: "2026-10-05T09:02:51.660021Z", tx_hash: "77d0e2b94c1a3f5e6d8b0a2c4e6f8a1b3c5d7e9f0a2b4c6d8e0f1a3b5c7d9e1f", host: "89.40.226.146:7981", reason: "Insufficient funds", other_message_failed: true },
-  EH_CHANGED_1,
-  { outcome: "after_gap", height: 1180402, host: "149.86.227.11:7980", previous_host: "149.86.227.9:7980" },
-  { outcome: "before_record", host: "149.86.227.9:7980" },
+const F_PFF = { kind: "settlement", status: "failed", height: 1497121, tx_index: 1, msg_index: 0, time: "2026-10-08T13:25:05.700Z", tx_hash: "9b3e7a41d0c25f86e4a7b1d9c03f5e2a8d6b4c1f7e9a0d3b5c8f2e6a1d4b7c90", reason: "Invalid request" };
+const DEP_1 = { kind: "deposit", status: "success", height: 1366494, tx_index: 0, msg_index: 0, time: "2026-10-04T05:51:46.491278Z", tx_hash: "7f7e66d16ec7337c82ffc65148bf3e42bef39b2adef3f930862455494ddc3d89", amount_utia: 1000000000 };
+const DEP_2 = { kind: "deposit", status: "success", height: 1107337, tx_index: 0, msg_index: 0, time: "2026-09-25T16:10:56.562358Z", tx_hash: "b241a96f9f221d4e9f03205ada95a5587b3f702c5345ad7b16c3c62da16d8f4c", amount_utia: 4000000 };
+const ESCROW = [F_DEPOSIT, F_WITHDRAWAL, DEP_1, DEP_2];
+const SUMS = { deposited_utia: 1004000000, withdrawn_utia: 0, charged_utia: 0 };
+
+// the validator's endpoint history: its real changes and the host before Tensile's record; the failed row is MOCK (the
+// real failed set-host FB27DDA8…, placed under Unity Nodes; its real signer is not a validator)
+const EH = [
+  { outcome: "failed", height: 1509592, tx_index: 0, time: "2026-10-08T23:17:28.23537Z", tx_hash: "fb27dda8abf009db6512800b74898bc60410e1139a7fbb8f49e4ff30d3226cdb", host: "203.0.113.10:7980", attempted: "change", reason: "Invalid validator" },
+  { outcome: "changed", height: 1496499, tx_index: 0, time: "2026-10-08T12:55:34.318488Z", tx_hash: "e59c8ec3e5538f64f442e968795dd2c1159636ecf9f90d4698317f946374adcf", host: "89.40.226.218:7980", previous_host: "89.40.226.146:7980" },
+  { outcome: "changed", height: 1253828, tx_index: 0, time: "2026-09-30T12:17:39.784839Z", tx_hash: "ed68446c853e334de84e6fe95873a6d9de16f2bfdc10d96481464093e8254c52", host: "89.40.226.146:7980", previous_host: "149.86.227.11:7980" },
+  { outcome: "before_record", host: "149.86.227.11:7980" },
 ];
 const BLOB_COST = { gas_wanted: 400000, gas_used: 219118, fee: "8000utia", fee_payer: PUB, messages: 1 };
-const STUB_PAYER = "celestia1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzzzzzz";
 
-/** the live answer with the proposal's keys added; mode picks the state a shot shows */
-function mock(pathname, q, j, mode) {
-  if (pathname === "/api/v1/blobs" && q.get("publisher") === PUB && q.get("with_escrow") === "1" && !q.get("namespace")) {
-    const first = (Number(q.get("offset")) || 0) === 0;
-    // escrow_total 6: the STUB deposit, the three failed rows, and the two real deposits on later pages
-    return { ...j, escrow: first ? [STUB_DEPOSIT, FAILED_DEPOSIT, FAILED_WITHDRAWAL, FAILED_PFF] : [], escrow_newer: first ? 0 : 4, escrow_total: 6, escrow_failed: 3, escrow_more: 0 };
+const MSG = (type, signer) => ({ index: 0, type_url: type, fibre: true, signer });
+/** the five transaction pages, by hash; avatar is filled from the live validator answer */
+const TXS = {
+  // T1 blob payment, success (real; its cost from round 1)
+  "5da67b2a8865c75a572f5abb3070a2d3377a23baf371f705e1db1b312e21754e": {
+    tx_hash: "5da67b2a8865c75a572f5abb3070a2d3377a23baf371f705e1db1b312e21754e", status: "success", height: 1497140, tx_index: 2, time: "2026-10-08T13:25:59.888800317Z", kind: "settlement",
+    messages: [MSG("/celestia.fibre.v1.MsgPayForFibre", PUB)],
+    cost: { gas_wanted: 400000, gas_used: 219118, fee: "8000utia", fee_payer: PUB },
+    effect: { promise_hash: BLOB, commitment: "e188951e6e2e1ac6b145782e6dc2f6ec95dacdeb1fe9a785861562b80daddff7", blob_version: 0, namespace: NS, blob_size: 17039360, fee_paid_utia: 3575000, settled: true, timed_out: false },
+    related: { publisher: PUB, blob: { promise_hash: BLOB, commitment: "e188951e6e2e1ac6b145782e6dc2f6ec95dacdeb1fe9a785861562b80daddff7", blob_version: 0 } },
+  },
+  // T2 deposit, success (real)
+  "7f7e66d16ec7337c82ffc65148bf3e42bef39b2adef3f930862455494ddc3d89": {
+    tx_hash: "7f7e66d16ec7337c82ffc65148bf3e42bef39b2adef3f930862455494ddc3d89", status: "success", height: 1366494, tx_index: 0, time: "2026-10-04T05:51:46.491278Z", kind: "deposit",
+    messages: [MSG("/celestia.fibre.v1.MsgDepositToEscrow", PUB)],
+    cost: { gas_wanted: 200000, gas_used: 74215, fee: "4000utia", fee_payer: PUB },
+    effect: { amount_utia: 1000000000 }, related: { publisher: PUB },
+  },
+  // T3 withdrawal request, failed (real: the live failed record of A4BD0B18…; its signer from the record)
+  "a4bd0b1855044d09c2f84ae43f6504d9365a470810b6f67d30a6ec11d2afdb92": {
+    tx_hash: "a4bd0b1855044d09c2f84ae43f6504d9365a470810b6f67d30a6ec11d2afdb92", status: "failed", final: true, height: 1509587, tx_index: 0, time: "2026-10-08T23:17:14.030516463Z", kind: "withdrawal_request",
+    messages: [MSG("/celestia.fibre.v1.MsgRequestWithdrawal", PUB)],
+    cost: { gas_wanted: 200000, gas_used: 50219, fee: "800utia" },
+    failure: { code: 5, codespace: "sdk", reason: "Insufficient funds", failed_msg_index: 0, log: "failed to execute message; message index: 0: insufficient available balance: have 458805000utia, need 1000000000000000utia: insufficient funds" },
+    effect: { requested: "1000000000000000utia", requested_utia: 1000000000000000 }, related: { publisher: PUB },
+  },
+  // T4 endpoint registration, success (real)
+  "e59c8ec3e5538f64f442e968795dd2c1159636ecf9f90d4698317f946374adcf": {
+    tx_hash: "e59c8ec3e5538f64f442e968795dd2c1159636ecf9f90d4698317f946374adcf", status: "success", height: 1496499, tx_index: 0, time: "2026-10-08T12:55:34.318488Z", kind: "set_host",
+    messages: [MSG("/celestia.valaddr.v1.MsgSetFibreProviderInfo", OPER)],
+    cost: { gas_wanted: 200000, gas_used: 54455, fee: "2000utia", fee_payer: OPER },
+    effect: { action: "changed", host: "89.40.226.218:7980", previous_host: "89.40.226.146:7980" },
+    related: { validator: { operator_address: VAL, moniker: "Unity Nodes" } },
+  },
+  // T5 endpoint registration, failed (MOCK: FB27DDA8…'s real failure, gas, fee and error, its signer set to Unity Nodes')
+  "fb27dda8abf009db6512800b74898bc60410e1139a7fbb8f49e4ff30d3226cdb": {
+    tx_hash: "fb27dda8abf009db6512800b74898bc60410e1139a7fbb8f49e4ff30d3226cdb", status: "failed", final: true, height: 1509592, tx_index: 0, time: "2026-10-08T23:17:28.235370721Z", kind: "set_host",
+    messages: [MSG("/celestia.valaddr.v1.MsgSetFibreProviderInfo", OPER)],
+    cost: { gas_wanted: 200000, gas_used: 49930, fee: "800utia" },
+    failure: { code: 2, codespace: "valaddr", reason: "Invalid validator", failed_msg_index: 0, log: "failed to execute message; message index: 0: validator not found: validator does not exist: invalid validator" },
+    effect: { requested_host: "203.0.113.10:7980", attempted: "change", host_at_block: "89.40.226.218:7980" },
+    related: { validator: { operator_address: VAL, moniker: "Unity Nodes" } },
+  },
+};
+
+const notes = [];
+/** every row of the account's All view, newest first: its real settlements and deposits, the STUB rows, the failures */
+let ALL = [];
+async function prepare() {
+  const blobs = [];
+  for (let o = 0; o < 1000; o += 100) {
+    const j = await live(`/v1/blobs?publisher=${PUB}&limit=100&offset=${o}`);
+    blobs.push(...j.blobs);
+    if (blobs.length >= j.total || j.blobs.length === 0) break;
   }
-  if (pathname === `/api/v1/publishers/${PUB}`) return { ...j, recent_moves: RECENT_MOVES, recent_failed: [FAILED_DEPOSIT, FAILED_WITHDRAWAL, FAILED_PFF] };
-  if (pathname.startsWith("/api/v1/validators/") && j && j.validator && j.validator.operator_address === VAL) {
-    return { ...j, endpoint_history: mode.eh === "sheet" ? EH_SHEET : EH_REAL };
+  const settled = blobs.map((b) => ({ kind: "settlement", status: "success", height: b.settlement_height, tx_index: b.settlement_tx_index ?? 0, msg_index: 0, time: b.settlement_time,
+    tx_hash: b.settlement_tx_hash, promise_hash: b.promise_hash, amount_utia: b.charge ? b.charge.fee_utia : 0 }));
+  ALL = [STUB_DEPOSIT, F_DEPOSIT, F_WITHDRAWAL, F_PFF, DEP_1, DEP_2, ...settled]
+    .sort((a, b) => b.height - a.height || b.tx_index - a.tx_index || b.msg_index - a.msg_index);
+  notes.push(`All: ${ALL.length} rows (${settled.length} live settlements, 2 real deposits, 1 STUB deposit, 3 failed)`);
+  try {
+    const v = await live(`/v1/validators/${VAL}?window=24h`);
+    for (const t of Object.values(TXS)) if (t.related.validator) t.related.validator.avatar_url = v.validator.avatar_url;
+  } catch (e) { notes.push(`validator avatar not read: ${e.message}`); }
+  try {
+    const p = await live(`/v1/publishers/${PUB}?window=all`);
+    const all = p.windows.find((w) => w.window.name === "all");
+    const bal = p.publisher.escrow && p.publisher.escrow.balance_utia;
+    if (SUMS.deposited_utia - all.fees_utia - SUMS.charged_utia - SUMS.withdrawn_utia !== bal) notes.push(`Escrow foot does not close on the live balance (${bal} utia, fees ${all.fees_utia}): the shot shows no foot`);
+  } catch (e) { notes.push(`publisher not read: ${e.message}`); }
+}
+
+/** an answer of the two new routes, from the mock; null for every other path (read live) */
+function own(pathname, q) {
+  if (pathname === `/api/v1/publishers/${PUB}/txs`) {
+    const view = q.get("view") === "escrow" ? "escrow" : "all";
+    const limit = Math.min(100, Number(q.get("limit")) || 25), offset = Number(q.get("offset")) || 0;
+    const list = view === "escrow" ? ESCROW : ALL;
+    const body = { publisher: PUB, view, limit, offset, total: list.length, failed: list.filter((t) => t.status === "failed").length, txs: list.slice(offset, offset + limit) };
+    if (view === "escrow") body.sums = SUMS;
+    return { status: 200, body };
   }
-  if (pathname === `/api/v1/blobs/${BLOB}`) {
-    if (mode.cost === "none") return j;
-    return { ...j, tx_cost: mode.cost === "other" ? { ...BLOB_COST, fee_payer: STUB_PAYER } : BLOB_COST };
+  const m = /^\/api\/v1\/txs\/([0-9a-fA-F]{64})$/.exec(pathname);
+  if (m) {
+    const t = TXS[m[1].toLowerCase()];
+    return t ? { status: 200, body: t } : { status: 404, body: { error: "no Fibre transaction with this hash on record" } };
   }
+  return null;
+}
+
+/** a live answer with the proposal's keys added */
+function mock(pathname, j) {
+  if (pathname.startsWith("/api/v1/validators/") && j && j.validator && j.validator.operator_address === VAL) return { ...j, endpoint_history: EH };
+  if (pathname === `/api/v1/blobs/${BLOB}`) return { ...j, tx_cost: BLOB_COST };
   return j;
 }
 
 // ---------------------------------------------------------------- photographing
-const notes = [];
 const shots = [];
 const W = 1440, H = 1300;
 
-async function open(browser, theme, mode = {}) {
+async function open(browser, theme) {
   const ctx = await browser.newContext({ viewport: { width: W, height: H }, deviceScaleFactor: 2, colorScheme: theme });
   await ctx.addInitScript((t) => { try { localStorage.setItem("theme", t); } catch {} }, theme);
   await ctx.route("**/api/v1/**", async (route) => {
     const u = new URL(route.request().url());
+    const o = own(u.pathname, u.searchParams);
+    if (o) return route.fulfill({ status: o.status, contentType: "application/json", headers: { "access-control-allow-origin": "*" }, body: JSON.stringify(o.body) });
     let res;
     try { res = await route.fetch(); } catch (e) { return route.abort(); }
     const type = res.headers()["content-type"] || "";
     if (!res.ok() || !type.includes("json")) return route.fulfill({ response: res });
     let j;
     try { j = await res.json(); } catch { return route.fulfill({ response: res }); }
-    return route.fulfill({ response: res, json: mock(u.pathname, u.searchParams, j, mode) });
+    return route.fulfill({ response: res, json: mock(u.pathname, j) });
   });
   const page = await ctx.newPage();
   page.on("pageerror", (e) => notes.push(`${theme} page error: ${e.message}`));
@@ -131,7 +205,7 @@ async function box(page, sels) {
       const b = el.getBoundingClientRect();
       return { x: b.left, y: b.top, r: b.right, b: b.bottom };
     }, s);
-    if (r) rs.push(r);
+    if (r) rs.push(r); else notes.push(`no element for ${s}`);
   }
   if (!rs.length) return null;
   return { x: Math.min(...rs.map((r) => r.x)), y: Math.min(...rs.map((r) => r.y)), r: Math.max(...rs.map((r) => r.r)), b: Math.max(...rs.map((r) => r.b)) };
@@ -150,10 +224,7 @@ async function reveal(page, sels, pad = 24) {
   await page.waitForTimeout(200);
 }
 
-/**
- * the elements' area, with some room around it, from the window as it is (a card or a tip that is open stays open:
- * nothing scrolls while one is; the steps that open one reveal the area first)
- */
+/** the elements' area, with some room around it, from the window as it is (a tip that is open stays: nothing scrolls) */
 async function crop(page, file, sels, shows, pad = 24) {
   const popped = await page.evaluate(() => !!document.querySelector(".info-pop, .warn-tip, .shot-tip"));
   if (!popped) await reveal(page, sels, pad);
@@ -168,6 +239,8 @@ async function crop(page, file, sels, shows, pad = 24) {
 }
 
 async function full(page, file, shows) {
+  await page.evaluate(() => scrollTo(0, 0));
+  await page.waitForTimeout(200);
   await page.screenshot({ path: path.join(out, file), fullPage: true, animations: "disabled" });
   shots.push({ file, shows });
 }
@@ -178,6 +251,7 @@ async function full(page, file, shows) {
  */
 async function tip(page, sel, theme, at = "pointer") {
   const el = page.locator(sel).first();
+  if (!(await el.count())) { notes.push(`tip: no element for ${sel}`); return; }
   await el.hover();
   await page.waitForTimeout(250);
   await page.evaluate(({ sel, dark, at }) => {
@@ -197,144 +271,123 @@ async function tip(page, sel, theme, at = "pointer") {
     document.body.appendChild(d);
   }, { sel, dark: theme === "dark", at });
 }
-const untip = (page) => page.evaluate(() => document.querySelectorAll(".shot-tip").forEach((d) => d.remove()));
+const untip = async (page) => { await page.evaluate(() => document.querySelectorAll(".shot-tip").forEach((d) => d.remove())); await page.mouse.move(5, 5); await page.waitForTimeout(150); };
 
-/** the n-th row of the list's body (1-based) as a selector */
+/** the n-th row of a table's body (1-based) as a selector */
 const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
 
 (async () => {
+  await prepare();
   await new Promise((ok) => server.listen(4173, "127.0.0.1", ok));
   fs.mkdirSync(out, { recursive: true });
   const browser = await chromium.launch({ executablePath: process.env.CHROME || "/usr/bin/google-chrome", args: ["--hide-scrollbars"] });
-  const top = (page) => page.evaluate(() => scrollTo(0, 0));
-  const shut = async (page) => { await page.keyboard.press("Escape"); await page.evaluate(() => document.activeElement && document.activeElement.blur()); await page.mouse.move(5, 5); await page.waitForTimeout(200); };
-  const card = async (page, sel, what) => {
-    await page.locator(sel).first().click();
-    await page.waitForSelector(".info-pop .txc", { timeout: 5000 }).catch(() => notes.push(`${what}: the card did not open`));
-    await page.waitForTimeout(300);
-  };
 
   for (const theme of ["dark", "light"]) {
     const dk = theme === "dark";
 
-    // ---- P1, P3. publisher, All, page 1: a successful deposit (STUB) beside the failed deposit and withdrawal request,
-    // then the STUB failed blob payment between two blobs; the hovers; the card on the successful deposit's kind
+    // ---- P1. publisher, All: the transaction table, its hovers, its pager
     {
       const { ctx, page } = await open(browser, theme);
-      await go(page, `/publisher/?addr=${PUB}`, "#list tr.xf");
-      // cut at a row's own line, never through the next row
-      await crop(page, `p1-all-${theme}.png`, ["#list .list-head", row("#list", 9)],
-        "Publisher, All, page 1: the STUB successful deposit (+1,000.000 TIA, its kind dotted: it opens the card) beside the failed deposit and withdrawal request (Amount a dash, the request in words under the reason, the kind dotted: it opens the failed page); the STUB failed blob payment between #1,497,140 and #1,497,108", { b: 0 });
-      if (dk) { await top(page); await full(page, `p1-full-${theme}.png`, "Publisher page, whole, for context"); }
-      await reveal(page, ["#list .list-head", row("#list", 6)]);
-      await tip(page, `${row("#list", 2)} .xs`, theme);
-      await crop(page, `p3-tip-failed-${theme}.png`, ["#list thead", row("#list", 5), ".shot-tip"], "Hover on \"Failed\" in a failed row: the failed page's own words", { t: 20, r: 20, b: 0, l: 20 });
+      await go(page, `/publisher/?addr=${PUB}`, ".tx-t tbody tr.row:not(.sk)");
+      await crop(page, `p1-all-${theme}.png`, ["#list .list-head", row("#list .tx-t", 12)],
+        "Publisher, All: one transaction table, TX hash · Type · Time (UTC) · Block · Status · Amount. The STUB deposit's +1,000.000 TIA beside the failed deposit and withdrawal request (Failed, Amount —); the STUB failed blob payment between two blob payments", { b: 0 });
+      if (dk) await full(page, `p1-full-${theme}.png`, "Publisher page, whole, All open, for context");
+      await reveal(page, ["#list .list-head", row("#list .tx-t", 6)]);
+      await tip(page, `${row("#list .tx-t", 3)} .st.f`, theme);
+      await crop(page, `p1-tip-failed-${theme}.png`, ["#list .tx-t thead", row("#list .tx-t", 5), ".shot-tip"], "Hover on Failed: \"Failed: Insufficient funds. None of its messages took effect.\"", { t: 20, r: 20, b: 0, l: 20 });
       await untip(page);
-      await tip(page, `${row("#list", 2)} td.c-fee .xd`, theme);
-      await crop(page, `p3-tip-dash-${theme}.png`, ["#list thead", row("#list", 5), ".shot-tip"], "Hover on the Amount dash of a failed row: nothing moved, the escrow is as it was", { t: 20, r: 20, b: 0, l: 20 });
+      await tip(page, `${row("#list .tx-t", 2)} td.c-am .xd`, theme);
+      await crop(page, `p1-tip-dash-${theme}.png`, ["#list .tx-t thead", row("#list .tx-t", 5), ".shot-tip"], "Hover on a failed row's Amount dash: \"Nothing moved: the escrow is as it was.\"", { t: 20, r: 20, b: 0, l: 20 });
       await untip(page);
-      await page.locator(`${row("#list", 3)} .c-b a.txw`).hover();
-      await page.waitForTimeout(300);
-      await crop(page, `p3-open-failed-${theme}.png`, ["#list thead", row("#list", 5)], "Pointer on a failed row's kind (\"Withdrawal request\"): the same dotted line as a success's kind, lit on hover; it opens the failed page /blob/?tx=A4BD0B18…", { t: 20, r: 20, b: 0, l: 20 });
-      await page.mouse.move(5, 5);
-      await card(page, `${row("#list", 1)} button.txw`, `${theme} All deposit`);
-      await crop(page, `p3-card-all-${theme}.png`, ["#list thead", row("#list", 5), ".info-pop"], "The card on the successful deposit's kind in All (STUB): Transaction · Hash C41D9E…7B30 · Gas 74,102 used of 200,000 · Transaction fee 4,000 utia from the bank balance, beside the failed rows' dashes", { t: 20, r: 20, b: 0, l: 20 });
-      await shut(page);
-      await reveal(page, ["#list .pager"], 140);
+      await reveal(page, ["#list .pager"], 160);
       await tip(page, "#list .pager .count span[title]", theme);
-      await crop(page, `p1-pager-${theme}.png`, ["#list .pager", ".shot-tip"], "Publisher, All: the pager counts blobs and escrow rows together; its hover splits them (109 blob settlements, 3 escrow movements and 3 failed transactions)", 20);
+      await crop(page, `p1-pager-${theme}.png`, [row("#list .tx-t", 24), "#list .pager", ".shot-tip"], "The pager: Showing 1–25 of 115 transactions; its hover \"3 of them failed\"", 20);
       await untip(page);
       await ctx.close();
     }
 
-    // ---- P2, P3. publisher, Escrow: the statement with its failed rows and its foot; the card on "Deposit"
+    // ---- P2. publisher, Blobs: today's blob table, the namespace picker here only
     {
       const { ctx, page } = await open(browser, theme);
-      await go(page, `/publisher/?addr=${PUB}&kind=escrow`, "#list .pb-st tr.xf");
-      await crop(page, `p2-escrow-${theme}.png`, ["#list .list-head", "#list .pb-st", "#list .pager"],
-        "Publisher, Escrow: the failed deposit and withdrawal request, then the two real deposits; the foot unchanged (Deposited +1,004 · Fees paid for 109 settlements −545.195 · Escrow now 458.805 TIA)");
-      await reveal(page, ["#list .list-head", "#list .pb-st"]);
-      await card(page, "#list .pb-st button.txw", `${theme} Escrow deposit`);
-      await crop(page, `p3-card-deposit-${theme}.png`, ["#list .pb-st thead", row("#list .pb-st", 4), ".info-pop"], "The card on a real Deposit's kind: Transaction · Hash 7F7E66…3D89 (copyable) · Gas 74,215 used of 200,000 · Transaction fee 4,000 utia from the bank balance", 20);
-      await shut(page);
+      await go(page, `/publisher/?addr=${PUB}&kind=blobs`, "#list .lg-t tbody tr.row:not(.sk)");
+      await crop(page, `p2-blobs-${theme}.png`, ["#list .list-head", row("#list .lg-t", 9)], "Publisher, Blobs: today's blob table unchanged (Blob ID, Namespace, Blob size, Amount, Endorsed, Tensile); the Namespace picker shows under Blobs only", { b: 0 });
       await ctx.close();
     }
 
-    // ---- V1, V2. validator: Endpoint history between the figures and the latest checks (recommended), its hovers
+    // ---- P3. publisher, Escrow: the same five columns, the statement's foot
     {
       const { ctx, page } = await open(browser, theme);
-      await go(page, `/validator/?addr=${VAL}`, ".eh-t tbody tr");
-      await crop(page, `v1-history-${theme}.png`, [".vd-stat", "#endpoints", "#evidence .list-head"],
-        "Validator Unity Nodes, Endpoint history between the stat panel and Latest checks (recommended): the MOCK failed row (from the real failed set-host FB27DDA8…, whose signer is no validator), its two real changes and the host before Tensile's record");
-      await crop(page, `v1-rows-${theme}.png`, ["#endpoints"], "Endpoint history alone: When · verb · old → new (or Requested · reason · Endpoint unchanged) · hash ⧉, a line each, the hash right after its change; the count is of transactions (3): the host before Tensile's record is none", 20);
-      if (dk) { await top(page); await full(page, `v1-full-${theme}.png`, "Validator page, whole, Endpoint history between the panel and Latest checks, for context"); }
-      await reveal(page, ["#endpoints"], 60);
-      await card(page, "#endpoints button.txw", `${theme} Changed`);
-      await crop(page, `v2-card-changed-${theme}.png`, ["#endpoints .lg-tw", ".info-pop"], "The card on \"Changed\": Transaction · Gas 54,455 used of 200,000 · Transaction fee 2,000 utia from the bank balance (the operator's own account); no hash row, as the row shows its hash", 20);
-      await shut(page);
-      await tip(page, "#endpoints tr.xf a.txw", theme);
-      await crop(page, `v2-tip-failed-${theme}.png`, ["#endpoints .lg-tw", ".shot-tip"], "Pointer on \"Failed\" (dotted: it opens the failed page): the failed page's own words", 20);
-      await untip(page);
-      await page.mouse.move(5, 5);
-      await tip(page, `${row("#endpoints", 1)} td.c-t span[title]`, theme);
-      await crop(page, `v2-tip-when-${theme}.png`, ["#endpoints .lg-tw", ".shot-tip"], "Hover on When: the time in full and the block (#1,509,592), now that the Block column is gone", 20);
-      await untip(page);
-      await tip(page, `${row("#endpoints", 2)} .cp`, theme);
-      await crop(page, `v2-tip-copy-${theme}.png`, ["#endpoints .lg-tw", ".shot-tip"], "Hover on the copy mark after a transaction hash: \"Copy the transaction hash\" (it copies the full upper-case hash)", 20);
-      await untip(page);
-      await ctx.close();
-    }
-    // the alternative placement, at the page's end
-    if (dk) {
-      const { ctx, page } = await open(browser, theme);
-      await go(page, `/validator/?addr=${VAL}&variant=end`, ".eh-t tbody tr");
-      await crop(page, `v1-end-${theme}.png`, ["#evidence tbody tr:nth-last-child(3)", "#endpoints"], "Alternative placement: Endpoint history at the page's end, under the 50 rows of Latest checks (their last three shown)", 24);
-      await top(page);
-      await full(page, `v1-end-full-${theme}.png`, "Validator page, whole, Endpoint history at the end (alternative), for context");
-      await ctx.close();
-    }
-    // V3. the state sheet: a same-address registration, a failure whose failing message was another, a record gap (amber)
-    {
-      const { ctx, page } = await open(browser, theme, { eh: "sheet" });
-      await go(page, `/validator/?addr=${VAL}`, ".eh-t tbody tr");
-      await crop(page, `v3-sheet-${theme}.png`, ["#endpoints"], "State sheet (STUB rows around the real ones): Registered again · same address, a failure whose failing message was another one, \"Show all 6\" (six transactions)", 20);
-      await page.locator("#endpoints .eh-more button").click();
-      await page.waitForTimeout(300);
-      await reveal(page, ["#endpoints"], 20);
-      await page.locator("#endpoints .eh-pre button.warn").first().hover();
-      await page.waitForTimeout(300);
-      await crop(page, `v3-sheet-all-${theme}.png`, ["#endpoints", ".warn-tip"], "State sheet opened: the six transactions and the host before Tensile's record, the change made in a record gap with its amber dot and its words, \"Show fewer\"", 20);
+      await go(page, `/publisher/?addr=${PUB}&kind=escrow`, ".tx-t tbody tr.row:not(.sk)");
+      await page.waitForSelector(".tx-t tfoot", { timeout: 15000 }).catch(() => notes.push(`${theme} escrow: no foot`));
+      await crop(page, `p3-escrow-${theme}.png`, ["#list .list-head", "#list .lg-tw", "#list .pager"], "Publisher, Escrow: All's five columns; the failed deposit and withdrawal request (Failed, —), the two real deposits; the statement foot unchanged and closing (Deposited +1,004 · Fees paid for 109 settlements −545.195 · Escrow now 458.805 TIA)");
       await ctx.close();
     }
 
-    // ---- G1, G2. blob page: Gas; Fee paid from escrow; Transaction fee from the bank balance
-    for (const cost of ["own", "other", "none"]) {
-      const { ctx, page } = await open(browser, theme, { cost });
-      await go(page, `/blob/?hash=${BLOB}`, ".bd-figs");
-      const what = {
-        own: "Blob page: Gas 219,118 used of 400,000 under the settlement's transaction; Fee paid 3.575 TIA from escrow · settled, and under it Transaction fee 8,000 utia from the bank balance",
-        other: "Blob page with a STUB fee payer: Transaction fee 8,000 utia by celestia1…zzzz (the whole address on hover)",
-        none: "Blob page with no cost on record (anything before the deploy): Gas and Transaction fee read not recorded",
-      }[cost];
-      await crop(page, `g${cost === "own" ? 1 : 2}-blob-${cost}-${theme}.png`, [".bd-title", ".bd-top"], what, { t: 24, b: 14 });
-      if (cost === "own" && dk) { await top(page); await full(page, `g1-full-${theme}.png`, "Blob page, whole, for context"); }
-      if (cost === "other") {
-        await tip(page, ".bd-figs em span[title]", theme);
-        await crop(page, `g2-tip-payer-${theme}.png`, [".bd-figs", ".shot-tip"], "Hover on \"by celestia1…zzzz\": the fee payer's whole address", 20);
+    // ---- V1. validator: the panels unchanged, the history area's tabs, Endpoint history open
+    {
+      const { ctx, page } = await open(browser, theme);
+      await go(page, `/validator/?addr=${VAL}&tab=endpoints`, ".eh-t tbody tr");
+      await crop(page, `v1-history-${theme}.png`, [".vd-stat", "#evidence .list-head", "#evidence .vd-pager"],
+        "Validator Unity Nodes: the panels unchanged; under them the tabs Latest checks | Endpoint history 3, Endpoint history open: Time (UTC) · Block · TX hash · Action · Status · Endpoint. The MOCK failed row (Change requested · Failed · 203.0.113.10:7980 quiet), two real Changed rows (the newer marked current) and the host before Tensile's record");
+      if (dk) await full(page, `v1-full-${theme}.png`, "Validator page, whole, Endpoint history open, for context");
+      await reveal(page, ["#evidence .list-head", "#evidence .vd-pager"]);
+      await tip(page, ".eh-t tr.xf .st.f", theme);
+      await crop(page, `v1-tip-failed-${theme}.png`, ["#evidence .lg-tw", ".shot-tip"], "Hover on Failed: \"Failed: Invalid validator. The endpoint did not change.\"", 20);
+      await untip(page);
+      await tip(page, ".eh-t tr.xf .rq", theme);
+      await crop(page, `v1-tip-req-${theme}.png`, ["#evidence .lg-tw", ".shot-tip"], "Hover on the requested address: \"Requested; the endpoint did not change.\"", 20);
+      await untip(page);
+      await ctx.close();
+    }
+    // the tabs as the page opens: Latest checks picked, Endpoint history beside it
+    {
+      const { ctx, page } = await open(browser, theme);
+      await go(page, `/validator/?addr=${VAL}`, ".vr-t tbody tr.row");
+      await crop(page, `v1-tabs-checks-${theme}.png`, ["#evidence .list-head", row("#evidence .vr-t", 4)], "The history area as the page opens: Latest checks picked (its filter beside it, its table unchanged), Endpoint history 3 beside it, quieter", { b: 0 });
+      await ctx.close();
+    }
+
+    // ---- T1–T6. the transaction page
+    const T = [
+      ["t1-blob-payment", "5da67b2a8865c75a572f5abb3070a2d3377a23baf371f705e1db1b312e21754e", "Blob payment, success: Publisher, Blob and Namespace links, Gas 219,118 used of 400,000; Blob size, Fee paid 3.575 TIA from escrow · settled, Transaction fee 0.008 TIA; its message"],
+      ["t2-deposit", "7f7e66d16ec7337c82ffc65148bf3e42bef39b2adef3f930862455494ddc3d89", "Deposit, success: Amount +1,000 TIA into the escrow; Transaction fee 0.004 TIA"],
+      ["t3-withdrawal-failed", "a4bd0b1855044d09c2f84ae43f6504d9365a470810b6f67d30a6ec11d2afdb92", "Withdrawal request, failed: Requested 1,000,000,000 TIA (not bold) not withdrawn · Escrow Unchanged · Transaction fee 0.0008 TIA; the error (Insufficient funds, sdk 5, the raw log); MsgRequestWithdrawal failed"],
+      ["t4-endpoint", "e59c8ec3e5538f64f442e968795dd2c1159636ecf9f90d4698317f946374adcf", "Endpoint registration, success: Validator Unity Nodes; Action Changed; Endpoint 89.40.226.146:7980 → 89.40.226.218:7980; Transaction fee 0.002 TIA"],
+      ["t5-endpoint-failed", "fb27dda8abf009db6512800b74898bc60410e1139a7fbb8f49e4ff30d3226cdb", "Endpoint registration, failed (MOCK signer): Requested 203.0.113.10:7980 (quiet) · Endpoint Unchanged, 89.40.226.218:7980 stayed registered; Invalid validator and its raw error"],
+    ];
+    for (const [name, hash, shows] of T) {
+      const { ctx, page } = await open(browser, theme);
+      await go(page, `/tx/?hash=${hash}`, ".tx-m tbody tr");
+      await crop(page, `${name}-${theme}.png`, [".bd-title", ".tx-ms"], shows);
+      if (name === "t3-withdrawal-failed") {
+        if (dk) await full(page, `t3-full-${theme}.png`, "Transaction page, whole (a failed withdrawal request), for context");
+        await reveal(page, [".bd-title", ".tx-top"]);
+        await tip(page, ".tx-top .bd-figs dd:last-of-type b[title]", theme);
+        await crop(page, `t3-tip-fee-${theme}.png`, [".tx-top", ".shot-tip"], "Hover on the transaction fee's figure: the chain's own, \"800 utia\"", { t: 16, r: 20, b: 20, l: 20 });
+        await untip(page);
+        await tip(page, ".tx-top .bd-figs dt:last-of-type", theme, "start");
+        await crop(page, `t3-tip-label-${theme}.png`, [".tx-top", ".shot-tip"], "Hover on Transaction fee: paid from the fee payer's bank balance, never the escrow; it was taken, so this transaction cannot run again", { t: 16, r: 20, b: 20, l: 20 });
         await untip(page);
       }
       await ctx.close();
     }
-
-    // ---- G3. the failed page: the fee in the same format as the success details, "cannot run again" on its label's hover
     {
       const { ctx, page } = await open(browser, theme);
-      await go(page, `/blob/?tx=${FAILED_TX}`, ".bd-err");
-      await crop(page, `g3-failed-${theme}.png`, [".bd-title", ".bd-top"], "Failed page A4BD0B18…: Gas 50,219 used of 200,000; Transaction fee 800 utia from the bank balance, the format the success details share", { t: 24, b: 14 });
-      await tip(page, ".bd-top dt[title*=\"cannot run again\"]", theme, "start");
-      await crop(page, `g3-tip-fee-${theme}.png`, [".bd-top dt:nth-of-type(4)", ".bd-top dd:last-of-type em", ".shot-tip"], "Hover on the failed page's \"Transaction fee\": paid from the fee payer's bank balance, never the escrow; it was taken, so this transaction cannot run again", { t: 4, r: 16, b: 14, l: 12 });
+      await go(page, `/blob/?tx=A4BD0B1855044D09C2F84AE43F6504D9365A470810B6F67D30A6EC11D2AFDB92`, ".tx-m tbody tr");
+      await crop(page, `t6-blob-tx-${theme}.png`, [".bd-title", ".tx-ms"], "The old failed address /blob/?tx=A4BD0B18… renders the same transaction page");
+      await ctx.close();
+    }
+
+    // ---- G1. the blob page, kept: Gas left, both fees right, every amount in TIA; the transaction hash now a link
+    {
+      const { ctx, page } = await open(browser, theme);
+      await go(page, `/blob/?hash=${BLOB}`, ".bd-figs");
+      await crop(page, `g1-blob-${theme}.png`, [".bd-title", ".bd-top"], "Blob page as round 1's: Gas 219,118 used of 400,000 under the Transaction (its hash now opens the transaction page); Fee paid 3.575 TIA from escrow · settled, and under it Transaction fee 0.008 TIA from the bank balance", { t: 24, b: 14 });
+      if (dk) await full(page, `g1-full-${theme}.png`, "Blob page, whole, for context");
+      await reveal(page, [".bd-title", ".bd-top"]);
+      await tip(page, ".bd-figs dd b[title]", theme);
+      await crop(page, `g1-tip-fee-${theme}.png`, [".bd-top", ".shot-tip"], "Hover on the transaction fee's figure: \"8,000 utia\"", { t: 16, r: 20, b: 20, l: 20 });
       await untip(page);
-      if (dk) { await top(page); await full(page, `g3-full-${theme}.png`, "Failed page, whole, for context"); }
       await ctx.close();
     }
   }
