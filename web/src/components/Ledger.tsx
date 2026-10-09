@@ -2,7 +2,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { API_BASE, type Blob, int, bytes, tia, pctOf, nsDisplay, utcWord } from "@/lib/api";
+import { API_BASE, type Blob, type EscrowRow, type TxCost as Cost, int, bytes, tia, pctOf, nsDisplay, utcWord } from "@/lib/api";
 import { lane } from "@/lib/status";
 import { openRow } from "@/lib/row";
 import { unit } from "@/components/Unit";
@@ -11,6 +11,7 @@ import { Frac } from "@/components/CurrentProviders";
 import Ident from "@/components/Ident";
 import Info from "@/components/Info";
 import { blobIdOf } from "@/lib/blobkey";
+import TxCost from "@/components/TxCost";
 
 /** how many of the blob ID's first and last characters the Blob column shows */
 const ID_ENDS = 6;
@@ -59,15 +60,22 @@ export type Feed = {
   refused: boolean;
   /** when the newest row arrived, on the observer's clock (when it settled, on the first read) */
   lastNewAt: number;
+  /** one publisher's list asked with_escrow=1: its escrow rows that stand among this page, and their counts */
+  escrow: Escrow | null;
 };
-const empty = (path: string): Feed => ({ path, rows: [], total: 0, loaded: false, error: null, refused: false, lastNewAt: 0 });
+/**
+ * the escrow rows the API placed among a page of one publisher's blobs, newest first in chain order: rows, how many are
+ * newer than the page (newer), all of them (total), and how many past its cap the page leaves out (more)
+ */
+export type Escrow = { rows: EscrowRow[]; newer: number; total: number; more: number };
+const empty = (path: string): Feed => ({ path, rows: [], total: 0, loaded: false, error: null, refused: false, lastNewAt: 0, escrow: null });
 
 /** a failed read, with the status the API answered (0: no answer) */
 class ReadError extends Error {
   constructor(message: string, readonly status: number) { super(message); }
 }
 
-async function readPage(path: string): Promise<{ blobs: Blob[]; total: number }> {
+async function readPage(path: string): Promise<{ blobs: Blob[]; total: number; escrow: Escrow | null }> {
   const ctl = new AbortController();
   const t = window.setTimeout(() => ctl.abort(), 15000);
   try {
@@ -78,7 +86,10 @@ async function readPage(path: string): Promise<{ blobs: Blob[]; total: number }>
       throw new ReadError(msg, r.status);
     }
     const j = await r.json();
-    return { blobs: Array.isArray(j.blobs) ? j.blobs : [], total: typeof j.total === "number" ? j.total : 0 };
+    const escrow: Escrow | null = Array.isArray(j.escrow)
+      ? { rows: j.escrow, newer: j.escrow_newer ?? 0, total: j.escrow_total ?? j.escrow.length, more: j.escrow_more ?? 0 }
+      : null;
+    return { blobs: Array.isArray(j.blobs) ? j.blobs : [], total: typeof j.total === "number" ? j.total : 0, escrow };
   } finally {
     window.clearTimeout(t);
   }
@@ -121,7 +132,7 @@ export function useLedger(path: string, live: boolean, height: number | undefine
       const known = new Set(before?.rows.map((b) => b.promise_hash));
       const came = !!before && page.blobs.some((b) => !known.has(b.promise_hash));
       const lastNewAt = !before ? (page.blobs[0] ? Date.parse(page.blobs[0].settlement_time) : 0) : came ? Date.now() + skewRef.current : before.lastNewAt;
-      apply({ path: p, rows: page.blobs, total: page.total, loaded: true, error: null, refused: false, lastNewAt });
+      apply({ path: p, rows: page.blobs, total: page.total, loaded: true, error: null, refused: false, lastNewAt, escrow: page.escrow });
     } catch (e) {
       if (p !== pathRef.current) return;
       const f = cur.current.path === p ? cur.current : empty(p);
@@ -169,15 +180,15 @@ export function useLedger(path: string, live: boolean, height: number | undefine
 // ---- what the table shows ----
 
 /** the rows on screen: the feed's, unless the reader holds them; move is the last arrival into them */
-type Shown = { path: string; rows: Blob[]; total: number; loaded: boolean; move: { id: number; fresh: Set<string> } | null };
+type Shown = { path: string; rows: Blob[]; total: number; loaded: boolean; escrow: Escrow | null; move: { id: number; fresh: Set<string> } | null };
 
 /** the feed onto the screen; the rows it did not show before are the move's */
 function take(v: Shown, f: Feed): Shown {
-  if (f.path !== v.path || !v.loaded) return { path: f.path, rows: f.rows, total: f.total, loaded: f.loaded, move: null };
-  if (f.rows === v.rows && f.total === v.total) return v;
+  if (f.path !== v.path || !v.loaded) return { path: f.path, rows: f.rows, total: f.total, loaded: f.loaded, escrow: f.escrow, move: null };
+  if (f.rows === v.rows && f.total === v.total && f.escrow === v.escrow) return v;
   const known = new Set(v.rows.map((b) => b.promise_hash));
   const fresh = new Set(f.rows.filter((b) => !known.has(b.promise_hash)).map((b) => b.promise_hash));
-  return { path: f.path, rows: f.rows, total: f.total, loaded: true, move: fresh.size ? { id: (v.move?.id ?? 0) + 1, fresh } : v.move };
+  return { path: f.path, rows: f.rows, total: f.total, loaded: true, escrow: f.escrow, move: fresh.size ? { id: (v.move?.id ?? 0) + 1, fresh } : v.move };
 }
 
 /** the publisher of a row: who paid, else who submitted it */
@@ -198,6 +209,9 @@ export function Signed({ sign, utia, dec }: { sign: string; utia: number; dec: n
 export type Move = {
   key: string;
   height: number;
+  /** its place in its block, where the API gives it: a payout's is −1, the chain paid it before the block's transactions */
+  txIndex?: number;
+  msgIndex?: number;
   time: string;
   /** what it is, where a blob's hash stands: "Deposit" */
   word: string;
@@ -212,15 +226,31 @@ export type Move = {
   note?: string;
   /** its place among the account's payments, newest first, which keeps a block's own order */
   idx: number;
+  /** its transaction and what it cost, for the card its kind opens (none for a payout, which no transaction made) */
+  hash?: string;
+  cost?: Cost;
+  /** a transaction that failed: it moved nothing, so it has no amount (utia 0, no sign) */
+  fail?: Fail;
 };
-/** the movements that stand among a page's rows, and the rows and movements that page shows, counted from the list's first */
-export type Placed = { list: Move[]; range: [number, number] };
 /**
- * One publisher's movements against the rows on screen: place sets them by those rows (the page's path, its rows and
- * the count of all of them, as one read gave them), so a page that holds still keeps its movements in step with its
- * rows; rank is each blob's place among the same payments, which keeps a block's own order.
+ * What a failed row says: why (the chain's reason, when Tensile has one), and what it asked for, exact and in words
+ * ("requested 1,000,000,000 TIA"; a blob payment's blob size, its namespace on hover); amount: the request alone, for
+ * the struck alternative. Its whole row opens the failed page.
  */
-export type Moves = { place: (path: string, rows: Blob[], total: number) => Placed; rank: Map<string, number> };
+export type Fail = { reason?: string; ask: string; askTitle?: string; amount?: string; href: string; aria: string };
+/** how a failed row's request reads: B, in words under its reason, the Amount a dash; A, struck in the Amount column */
+export type FailStyle = "words" | "struck";
+/** the movements that stand among a page's rows, and the rows and movements that page shows, counted from the list's first */
+export type Placed = { list: Move[]; range: [number, number]; more?: number; count?: number };
+/** what a page shows, as one read gave it: the path, its blobs, the count of all of them, and any escrow rows the API placed among them */
+export type PageRead = { path: string; rows: Blob[]; total: number; escrow: Escrow | null };
+/**
+ * One publisher's movements against the rows on screen: place sets them by those rows (the page's path, its rows, the
+ * count of all of them and, from an API that places them, its escrow rows, as one read gave them), so a page that holds
+ * still keeps its movements in step with its rows; rank is each blob's place among the same payments, which keeps a
+ * block's own order.
+ */
+export type Moves = { place: (page: PageRead) => Placed; rank: Map<string, number> };
 
 /**
  * the columns' heads; one publisher's list names no publisher, its rows are its transactions, and its fee column is the
@@ -237,7 +267,7 @@ export function LedgerHead({ one, escrow = false }: { one: boolean; escrow?: boo
           <th className="c-b">Type</th>
           <th className="c-ns" aria-hidden="true" />
           <th className="c-sz num" aria-hidden="true" />
-          <th className="c-fee num" title="What each movement put into the escrow (+) or took out of it (−).">Amount</th>
+          <th className="c-fee num" title="What each movement put into the escrow (+) or took out of it (−). A failed one moved nothing.">Amount</th>
           <th className="c-e num" aria-hidden="true" />
           <th className="gap" aria-hidden="true" />
           <th className="tn" aria-hidden="true" />
@@ -255,7 +285,7 @@ export function LedgerHead({ one, escrow = false }: { one: boolean; escrow?: boo
         {!one && <th className="c-p">Publisher</th>}
         <th className="c-sz num">Blob size</th>
         {one
-          ? <th className="c-fee num" title="What each transaction moved into the escrow (+) or out of it (−): a blob's fee, a deposit, a withdrawal paid out.">Amount</th>
+          ? <th className="c-fee num" title="What each transaction moved into the escrow (+) or out of it (−): a blob's fee, a deposit, a withdrawal paid out. A failed one moved nothing.">Amount</th>
           : <th className="c-fee num">Fee paid</th>}
         <th className="c-e num" title="Share of voting power whose signature on the settlement verified. A settlement needs ⅔.">Endorsed <Frac /></th>
         <th className="gap" aria-hidden="true" />
@@ -265,17 +295,24 @@ export function LedgerHead({ one, escrow = false }: { one: boolean; escrow?: boo
   );
 }
 
+/** the failed page's own words for a failure, on its mark */
+const FAILED_TITLE = "This transaction failed in this block: none of its messages took effect.";
+
 /**
  * An escrow movement as a row: its height and time as a blob's, its kind where the blob is, what qualifies it over the
  * namespace and the size, its amount signed; no endorsement, nothing for Tensile to read. In the list's two lines, its
- * qualifier and its amount close the second line, as a blob's fee closes its own.
+ * qualifier and its amount close the second line, as a blob's fee closes its own. Its kind opens its transaction's gas
+ * and fee, where they are on record. A failed one is a row of its own (FailRow).
  */
-export const MoveRow = memo(function MoveRow({ m, age: ag, dec }: { m: Move; age: string | null; dec: number }) {
+export const MoveRow = memo(function MoveRow({ m, age: ag, dec, owner, failStyle = "words" }: { m: Move; age: string | null; dec: number; owner?: string; failStyle?: FailStyle }) {
+  if (m.fail) return <FailRow m={m} f={m.fail} age={ag} style={failStyle} />;
   return (
     <tr className={`row mv${m.tone ? ` ${m.tone}` : ""}`} data-m={m.key}>
       <td className="c-h">{int(m.height)}</td>
       <td className="c-t"><span title={utcWord(m.time)}><span className="tm">{monthDayTime(m.time)}</span>{ag && <span className="ag">{ag}</span>}</span></td>
-      <td className="c-b"><span className="k" title={m.word}>{m.word}</span><span className="ht">#{int(m.height)}</span></td>
+      <td className="c-b">{m.cost
+        ? <TxCost word={m.word} label={m.word} cost={m.cost} hash={m.hash} owner={owner} className="k" />
+        : <span className="k" title={m.word}>{m.word}</span>}<span className="ht">#{int(m.height)}</span></td>
       <td className="c-q" colSpan={2} title={m.qual || undefined}>{m.qual}</td>
       <td className="c-fee num" title={m.note}><Signed sign={m.sign} utia={m.utia} dec={dec} /></td>
       <td className="c-e" /><td className="gap" aria-hidden="true" /><td className="tn" />
@@ -286,6 +323,42 @@ export const MoveRow = memo(function MoveRow({ m, age: ag, dec }: { m: Move; age
     </tr>
   );
 });
+
+/**
+ * A transaction that failed, among the movements: its height and time, its kind in the quieter grey ("Withdrawal
+ * request": it never happened), the red mark and why over the namespace and the size, with what it asked for under
+ * them; its Amount a dash, since nothing moved. The struck alternative keeps the qualifier to the reason and strikes
+ * the request in the Amount column, unsigned. The whole row opens the failed page, where its gas, fee and error are.
+ */
+function FailRow({ m, f, age: ag, style }: { m: Move; f: Fail; age: string | null; style: FailStyle }) {
+  const router = useRouter();
+  const go = (e: React.MouseEvent, href: string) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    router.push(href);
+  };
+  const words = style === "words";
+  const mark = <span className="xs" title={FAILED_TITLE}><i className="dot fault" aria-hidden="true" />Failed</span>;
+  return (
+    <tr className={`row mv xf${words ? " xw" : ""}`} data-f={m.key} aria-label={f.aria}
+      onClick={(e) => openRow(e, f.href, go)} onAuxClick={(e) => openRow(e, f.href, go)}>
+      <td className="c-h">{int(m.height)}</td>
+      <td className="c-t"><span title={utcWord(m.time)}><span className="tm">{monthDayTime(m.time)}</span>{ag && <span className="ag">{ag}</span>}</span></td>
+      <td className="c-b"><span className="k">{m.word}</span><span className="ht">#{int(m.height)}</span></td>
+      <td className="c-q" colSpan={2}>
+        <span className="xl">{mark}{f.reason && <><span className="sep">·</span><span className="xy">{f.reason}</span></>}</span>
+        {words && <span className="xa" title={f.askTitle}>{f.ask}</span>}
+      </td>
+      <td className="c-fee num">{words || !f.amount
+        ? <span className="xd" title="Nothing moved: the escrow is as it was.">—</span>
+        : <s className="xk" title="Requested, not moved: the escrow is as it was.">{unit(f.amount)}</s>}</td>
+      <td className="c-e" /><td className="gap" aria-hidden="true" /><td className="tn" />
+      <td className="c-m">
+        <span className="q">{mark}{f.reason && <><span className="sep">·</span>{f.reason}</>}</span><span className="sep">·</span>
+        <span className="xd" title="Nothing moved: the escrow is as it was.">—</span>
+      </td>
+    </tr>
+  );
+}
 
 /** a publisher as a chip: its mark, the address's prefix quietly, its last four characters */
 export function Who({ addr }: { addr: string }) {
@@ -385,7 +458,7 @@ function Placeholders({ rows, one }: { rows: number; one: boolean }) {
   );
 }
 
-export default function Ledger({ feed, size, live, skew, onePublisher = false, moves, emptyText, onNs, children }: {
+export default function Ledger({ feed, size, live, skew, onePublisher = false, moves, owner, failStyle, emptyText, onNs, children }: {
   feed: Feed;
   /** the rows a page holds: as many places are kept while the first one loads */
   size: number;
@@ -397,6 +470,10 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
   onePublisher?: boolean;
   /** one publisher's escrow movements, set between its blobs by time */
   moves?: Moves;
+  /** the publisher whose list it is, for whose fee a movement's card names: its own, or another account's */
+  owner?: string;
+  /** how a failed row's request reads (the gallery's two alternatives) */
+  failStyle?: FailStyle;
   /** what the empty list says, in place of "No blob recorded" */
   emptyText?: React.ReactNode;
   onNs: (ns: string) => void;
@@ -428,7 +505,7 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
   }, [feed, focusIn]);
   const hold = live && (pointerIn || focusIn || away);
 
-  const [shown, setShown] = useState<Shown>(() => ({ path: feed.path, rows: feed.rows, total: feed.total, loaded: feed.loaded, move: null }));
+  const [shown, setShown] = useState<Shown>(() => ({ path: feed.path, rows: feed.rows, total: feed.total, loaded: feed.loaded, escrow: feed.escrow, move: null }));
   useEffect(() => {
     setShown((v) => {
       // a new page or filter: the rows on screen stay, quieted, until its answer (or its error) comes, so the list keeps its size
@@ -450,7 +527,7 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
     const tb = bodyRef.current, mv = shown.move;
     if (!tb || !mv || !motion) return;
     const trs = [...tb.children] as HTMLElement[];
-    const firstOld = trs.find((tr) => (tr.dataset.h && !mv.fresh.has(tr.dataset.h)) || tr.dataset.m);
+    const firstOld = trs.find((tr) => (tr.dataset.h && !mv.fresh.has(tr.dataset.h)) || tr.dataset.m || tr.dataset.f);
     if (!firstOld) return;
     const shift = firstOld.offsetTop - trs[0].offsetTop;
     if (shift <= 0) return;
@@ -500,15 +577,18 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
 
   // the rows on screen with the movements of their own stretch of time between them, newest first; a block's own order
   // breaks a tie. They are placed by the rows on screen, so rows held still keep the movements that stand among them.
-  const placed = useMemo(() => (moves && shown.loaded ? moves.place(shown.path, shown.rows, shown.total) : undefined), [moves, shown]);
+  const placed = useMemo(() => (moves && shown.loaded ? moves.place({ path: shown.path, rows: shown.rows, total: shown.total, escrow: shown.escrow }) : undefined), [moves, shown]);
   const between = placed?.list;
   const items = useMemo(() => {
-    const blobs = shown.rows.map((b) => ({ b, m: null, t: Date.parse(b.settlement_time), i: moves?.rank.get(b.promise_hash) ?? -1 }));
+    const blobs = shown.rows.map((b) => ({ b, m: null, t: Date.parse(b.settlement_time), h: b.settlement_height, x: b.settlement_tx_index as number | undefined, g: undefined as number | undefined, i: moves?.rank.get(b.promise_hash) ?? -1 }));
     if (!between?.length) return blobs;
-    return [...blobs, ...between.map((m) => ({ b: null, m, t: Date.parse(m.time), i: m.idx }))].sort((x, y) => y.t - x.t || x.i - y.i);
+    // chain order, newest first: the block, then the place in it where both have one (a payout's −1 before the block's
+    // transactions), then the message; else, as before, the place among the payments
+    return [...blobs, ...between.map((m) => ({ b: null, m, t: Date.parse(m.time), h: m.height, x: m.txIndex, g: m.msgIndex, i: m.idx }))]
+      .sort((p, q) => q.h - p.h || (p.x != null && q.x != null && q.x - p.x) || (p.g != null && q.g != null && q.g - p.g) || q.t - p.t || p.i - q.i);
   }, [shown.rows, between, moves?.rank]);
   // the amounts' one precision, over the page
-  const dec = onePublisher ? decimals([...shown.rows.map((b) => b.charge?.fee_utia ?? 0), ...(between ?? []).map((m) => m.utia)]) : 3;
+  const dec = onePublisher ? decimals([...shown.rows.map((b) => b.charge?.fee_utia ?? 0), ...(between ?? []).filter((m) => !m.fail).map((m) => m.utia)]) : 3;
 
   const fresh = motion ? shown.move?.fresh : undefined;
   const cols = onePublisher ? 9 : 10;
@@ -538,7 +618,7 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
               {shown.loaded && shown.rows.length === 0 && <tr className="lg-empty"><td colSpan={cols}>{emptyText ?? <>No blob recorded{shown.path.includes("&namespace=") || (!onePublisher && shown.path.includes("&publisher=")) ? " with this filter" : ""}.</>}</td></tr>}
               {items.map(({ b, m, t }) => b
                 ? <Row key={b.promise_hash} b={b} age={now ? age(now - t) : null} fresh={!!fresh?.has(b.promise_hash)} one={onePublisher} dec={dec} onNs={onNs} onOpen={onOpen} />
-                : <MoveRow key={m!.key} m={m!} age={now ? age(now - t) : null} dec={dec} />)}
+                : <MoveRow key={m!.key} m={m!} age={now ? age(now - t) : null} dec={dec} owner={owner} failStyle={failStyle} />)}
             </tbody>
           </table>
         </div>

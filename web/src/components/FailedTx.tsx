@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { type FailedTx as Failed, type FailedTxMsg, type Meta, int, utcWord } from "@/lib/api";
+import { type FailedTx as Failed, type FailedTxMsg, type Meta, int, utcWord, coins } from "@/lib/api";
 import StatusLine from "@/components/StatusLine";
 import Copy from "@/components/Copy";
 import Warn from "@/components/Warn";
@@ -13,10 +13,6 @@ const LISTED = 12;
 
 /** a message's name: its type URL after the last dot */
 const nameOf = (url: string) => url.slice(url.lastIndexOf(".") + 1);
-
-/** the fee as the chain printed it ("800utia", coins joined by commas), with each amount's digits grouped and a space before its denomination */
-const coins = (fee: string) =>
-  fee.split(",").map((c) => c.replace(/^(\d+)(\D.*)$/, (_, n: string, d: string) => `${n.length <= 15 ? int(Number(n)) : n} ${d}`)).join(", ");
 
 /** a message, or a MsgExec with a message inside it, that carries Fibre */
 const carries = (m: FailedTxMsg) => m.fibre || !!m.inner?.some((i) => i.fibre);

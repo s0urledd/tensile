@@ -2,7 +2,7 @@
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useApi, askAgain, useNewestBlob, type Blob, type BlobReading, type Meta, int, bytes, tia, utcWord, hhmm, shortMid, nsDisplay, notFound, pctOf, API_BASE,
+import { useApi, askAgain, useNewestBlob, type Blob, type BlobReading, type Meta, type TxCost as Cost, int, bytes, tia, utcWord, hhmm, shortMid, nsDisplay, notFound, pctOf, API_BASE,
   endOfWindow, fullReading, ownGap, ownSide, sharedAnswer, rawErrorWords, foreignRows, asksAgain, attemptsOf, judged as judgedBy, askedTimes, FULL_READ_SINCE } from "@/lib/api";
 import StatusLine from "@/components/StatusLine";
 import { Eye } from "@/components/Metrics";
@@ -11,6 +11,7 @@ import Warn from "@/components/Warn";
 import FailedTx from "@/components/FailedTx";
 import { unit } from "@/components/Unit";
 import { Who } from "@/components/Ledger";
+import { GasValue, FeeValue, GAS_TITLE, FEE_TITLE } from "@/components/TxCost";
 import { monthDayTime } from "@/components/BlobsDeck";
 import { validatorHref } from "@/lib/addr";
 import { blobKey, blobIdOf, type BlobKey } from "@/lib/blobkey";
@@ -32,6 +33,8 @@ type Detail = {
   params: { shard_retention_s: number; payment_promise_timeout_s: number };
   assignments: Assignment[] | null;
   probes: BlobReading[] | null;
+  /** the settlement transaction's gas and fee, from the record of what successful Fibre transactions cost; absent before it was kept */
+  tx_cost?: Cost;
 };
 
 /**
@@ -412,6 +415,9 @@ function Page() {
         <dt title="The transaction that settled this blob">Transaction</dt>
         <dd className="bd-tx"><span className="mono" title={txHash}>{shortMid(txHash, 10, 6)}</span><Copy text={txHash} label="transaction hash" /></dd>
       </>}
+      {/* the settlement transaction's own gas, in the failed page's format */}
+      <dt title={GAS_TITLE}>Gas</dt>
+      <dd>{data.tx_cost ? <GasValue c={data.tx_cost} /> : <em>not recorded</em>}</dd>
       {b.assignment_error && <><dt>Assignment</dt><dd>{b.assignment_error}</dd></>}
     </dl>
   );
@@ -430,7 +436,12 @@ function Page() {
   const figs = (
     <dl className="pb-meta bd-meta bd-figs">
       <dt>Blob size</dt><dd title="The size the blob paid for: Celestia's upload size, with header and padding, without parity."><b>{unit(bytes(b.blob_size))}</b></dd>
-      <dt>Fee paid</dt><dd title="Charged to the publisher's escrow; not the settlement transaction's own fee.">{b.charge ? <><b>{unit(tia(b.charge.fee_utia))}</b><em>{b.charge.timed_out ? "timed out" : b.charge.settled ? "settled" : "not settled yet"}</em></> : <em>not recorded</em>}</dd>
+      {/* the two fees one under the other, under their two labels: the blob's, from the escrow, and the transaction's own,
+          from its fee payer's bank balance */}
+      <dt title="Charged to the publisher's escrow for this blob. The transaction fee is separate.">Blob fee</dt>
+      <dd>{b.charge ? <><b>{unit(tia(b.charge.fee_utia))}</b><em>from escrow · {b.charge.timed_out ? "timed out" : b.charge.settled ? "settled" : "not settled yet"}</em></> : <em>not recorded</em>}</dd>
+      <dt title={FEE_TITLE}>Transaction fee</dt>
+      <dd>{data.tx_cost ? <FeeValue c={data.tx_cost} owner={pub} /> : <em>not recorded</em>}</dd>
       <dt>Endorsed</dt><dd title="Voting power whose signature on the settlement verified. A settlement needs ⅔.">{stake != null ? <><b>{pctOf(b.attested_voting_power ?? 0, b.total_voting_power ?? 0)}</b><em>of voting power</em></> : <em>not recorded</em>}</dd>
       <dt className="tz" title={readTitle}><Eye />Rows back</dt><dd title={shown ? `Distinct rows that came back and verified against the commitment; ${int(rc!.needed_rows)} reconstruct the blob.` : undefined}>{shown ? <><b>{int(rc!.served_distinct_rows)}</b><em>of {int(rc!.total_rows)} · {int(rc!.needed_rows)} needed</em></> : <><span className="u">—</span><em>{!over ? `not read yet · read before ${hhmm(b.must_serve_until)}` : "no reading"}</em></>}</dd>
       {/* served and not served in one row: how many of those asked served, how many did not (red, with the dot for

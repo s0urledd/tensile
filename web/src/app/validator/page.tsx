@@ -3,7 +3,8 @@ import { Fragment, Suspense, useCallback, useEffect, useRef, useState, type CSSP
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useApi, type ValidatorDetail, type ValidatorReading, type Window, type RecordThrough, type Obligations, type Meta, type EndpointCheck, int, pctOf, bytes, utcWord, dateUTC, whenUTC, shortMid, notFound, rateTone, notCountedText, badRequest, MIN_RATED, API_BASE, provisionalNow, type ProvisionalFaults, type NetworkReference,
-  endOfWindow, fullReading, ownGap, foreignRows, attemptsOf, judged, askedTimes, FULL_READ_SINCE_WORDS, ago } from "@/lib/api";
+  endOfWindow, fullReading, ownGap, foreignRows, attemptsOf, judged, askedTimes, FULL_READ_SINCE_WORDS, ago, type EndpointEvent } from "@/lib/api";
+import TxCost, { shortTx } from "@/components/TxCost";
 import { useWindow, WindowSwitch, periodName } from "@/lib/window";
 import StatusLine from "@/components/StatusLine";
 import { Eye } from "@/components/Metrics";
@@ -39,6 +40,9 @@ type Detail = {
   network_reference?: NetworkReference;
   /** endorsed shards whose retention window has not ended, from the chain's record */
   in_retention_window?: number;
+  /** its Fibre endpoint registrations on chain, newest first, failed ones signed by its operator key among them; absent when none */
+  endpoint_history?: EndpointEvent[];
+  endpoint_history_truncated?: boolean;
 };
 
 /** a fraction as the site prints a share */
@@ -303,8 +307,99 @@ function Strip({ cells, slots }: { cells: Cell[]; slots: number }) {
   );
 }
 
+/** the endpoint registrations shown before "Show all" */
+const EH_SHOWN = 5;
+/** each outcome's verb, in a slot of its own so the addresses after it line up */
+const EH_VERB: Record<EndpointEvent["outcome"], string> = {
+  registered: "Registered", changed: "Changed", same: "Registered again", failed: "Failed", before_record: "Registered", after_gap: "Changed",
+};
+
+/**
+ * One registration: when, what changed (old → new; a first one, the new alone; a failed one, what it asked for, why,
+ * and that the endpoint did not change, its requested host never bold, so it never reads as the endpoint), its block
+ * and its transaction, copyable. A success's verb opens its gas and fee; a failed one opens the failed page, which
+ * says them.
+ */
+function EndpointRow({ r, now, owner, onOpen }: { r: EndpointEvent; now: number; owner?: string; onOpen: (e: React.MouseEvent, href: string) => void }) {
+  const failed = r.outcome === "failed";
+  const href = failed && r.tx_hash ? `/blob/?tx=${r.tx_hash}` : null;
+  const onRecord = r.outcome !== "before_record" && r.outcome !== "after_gap";
+  const verb = EH_VERB[r.outcome];
+  const why = failed && r.reason ? (r.other_message_failed ? `Another message failed: ${r.reason}` : r.reason) : "";
+  return (
+    <tr className={`row eh-r${failed ? " xf" : ""}`} aria-label={failed ? `Failed endpoint registration, block ${int(r.height)}` : undefined}
+      onClick={href ? (e) => openRow(e, href, onOpen) : undefined} onAuxClick={href ? (e) => openRow(e, href, onOpen) : undefined}>
+      <td className="c-t">{r.outcome === "before_record" ? <em className="eh-pre">Before Tensile’s record</em>
+        : r.outcome === "after_gap" ? <span className="eh-pre"><em>In a record gap</em><Warn text={`Changed while Tensile’s record had a gap, before block #${int(r.height)}. Its transaction is not on record.`} /></span>
+        : r.time ? <span title={utcWord(r.time)}><span className="tm">{monthDayTime(r.time).slice(0, -3)}</span><span className="ag">{age(now - Date.parse(r.time))}</span></span> : "—"}</td>
+      <td className="c-c">
+        <span className="eh-vs">{failed
+          ? <span className="eh-v f" title="This transaction failed in this block: none of its messages took effect."><i className="dot fault" aria-hidden="true" />Failed</span>
+          : r.tx_cost ? <TxCost word={verb} label={verb} cost={r.tx_cost} owner={owner} className="eh-v" />
+          : <span className="eh-v">{verb}</span>}</span>
+        {failed
+          ? <span className="eh-q">Requested <span className="mono">{r.host}</span>{why && <><span className="sep">·</span>{why}</>}<span className="sep">·</span>Endpoint unchanged</span>
+          : r.previous_host && r.outcome !== "same"
+            ? <><span className="mono eh-o">{r.previous_host}</span><span className="eh-ar" aria-label="to">→</span><b className="mono eh-n">{r.host}</b></>
+            : <><b className="mono eh-n">{r.host}</b>{r.outcome === "same" && <span className="eh-q"><span className="sep">·</span>same address</span>}</>}
+      </td>
+      <td className="c-k">{onRecord && r.height ? `#${int(r.height)}` : <span className="u">—</span>}</td>
+      <td className="c-x">{r.tx_hash
+        ? <>{href ? <Link className="mono" href={href} title={r.tx_hash.toUpperCase()}>{shortTx(r.tx_hash)}</Link> : <span className="mono" title={r.tx_hash.toUpperCase()}>{shortTx(r.tx_hash)}</span>}
+          <CopyMark text={r.tx_hash.toUpperCase()} label="the transaction hash" /></>
+        : <span className="u" title={onRecord ? "Not on record" : undefined}>—</span>}</td>
+    </tr>
+  );
+}
+
+/**
+ * The validator's Fibre endpoint registrations on chain, newest first, in the Latest checks' own rows: what each
+ * changed, failed ones beside them (signed by its operator key, and changing nothing), each with its block and its
+ * transaction. The newest five, then all of them on a click. Hidden when there are none.
+ */
+function EndpointHistory({ rows, truncated, owner, now, onOpen, apiHref }: {
+  rows: EndpointEvent[]; truncated: boolean; owner?: string; now: number; onOpen: (e: React.MouseEvent, href: string) => void; apiHref: string;
+}) {
+  const [all, setAll] = useState(false);
+  if (rows.length === 0) return null;
+  const shown = all ? rows : rows.slice(0, EH_SHOWN);
+  return (
+    <section id="endpoints" className="listing lg-list vd-list vd-eh" aria-labelledby="vd-eh">
+      <div className="list-head">
+        <div className="pb-lh">
+          <h2 className="pb-th" id="vd-eh" title="Fibre endpoint registrations on chain, newest first. A failed one changed nothing.">Endpoint history<span className="n">{int(rows.length)}</span></h2>
+        </div>
+      </div>
+      <div className="lg-tw">
+        <table className="lg-t eh-t">
+          <thead>
+            <tr>
+              <th className="c-t">When <span className="per">(UTC)</span></th>
+              <th className="c-c">Change</th>
+              <th className="c-k">Block</th>
+              <th className="c-x">Transaction</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((r, i) => <EndpointRow key={`${r.outcome}-${r.height ?? ""}-${r.tx_index ?? ""}-${i}`} r={r} now={now} owner={owner} onOpen={onOpen} />)}
+          </tbody>
+        </table>
+      </div>
+      {(rows.length > EH_SHOWN || truncated) && (
+        <div className="pager vd-pager eh-more">
+          <span className="count">{truncated && all && <>Older ones are <a href={apiHref}>in the API →</a></>}</span>
+          {rows.length > EH_SHOWN && <span className="ctl"><button type="button" className="btn" aria-expanded={all} onClick={() => setAll((v) => !v)}>{all ? "Show fewer" : `Show all ${int(rows.length)}`}</button></span>}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function Page() {
-  const asked = useSearchParams().get("addr") ?? "";
+  const sp = useSearchParams();
+  const asked = sp.get("addr") ?? "";
+  // the gallery's two places for the endpoint history: between the figures and the latest checks, or at the page's end
+  const ehAtEnd = sp.get("variant") === "end";
   // the address as the API takes it, or none: a value that is no validator's address never reaches the API's path
   const addr = validatorAddr(asked) ?? "";
   const [win, setWin] = useWindow("24h");
@@ -462,6 +557,8 @@ function Page() {
     : `${int(o.served)} of ${int(decided)} counted readings served.`)
     + (data.rolled_up ? ` Before ${data.rolled_up.raw_from}, from the daily rollup.` : "");
   const visible = shown;
+  // its endpoint registrations on chain, in the Latest checks' rows (placement A, before them, or B, at the page's end)
+  const history = <EndpointHistory key={addr} rows={data.endpoint_history ?? []} truncated={!!data.endpoint_history_truncated} owner={v.operator_address || undefined} now={now} onOpen={onOpen} apiHref={`${API_BASE}/v1/validators/${own}`} />;
 
   return (
     <>
@@ -630,6 +727,8 @@ function Page() {
       </section>
       </div>
 
+      {!ehAtEnd && history}
+
       {/* the latest checks in the Blobs list's own rows, newest first, whatever the period: the whole row opens the blob,
           and what Tensile found sits in its lane at the end */}
       <section id="evidence" className="listing lg-list vd-list">
@@ -712,6 +811,8 @@ function Page() {
           </span>
         </div>
       </section>
+
+      {ehAtEnd && history}
     </>
   );
 }

@@ -494,6 +494,75 @@ export type FailedTx = {
   log: string; log_cut?: boolean;
 };
 
+/**
+ * What a successful Fibre transaction cost, from the ante handler's own record: its gas, what it used of the limit it
+ * set, and the fee its fee payer paid from its bank balance (never from the escrow), as the chain printed it ("8000utia",
+ * absent for none). messages: its top-level messages, which the one fee covers together.
+ */
+export type TxCost = { gas_wanted: number; gas_used: number; fee?: string; fee_payer?: string; messages: number };
+
+/**
+ * One row of a publisher's escrow among a page of its blobs (/v1/blobs?publisher=…&with_escrow=1), or of its statement
+ * (/v1/publishers/{addr}: recent_moves, recent_failed), in chain order. A failed one (failed: true) never carries
+ * amount_utia, so no figure can sum it: what it asked for is `requested`, as the chain printed it, and requested_utia
+ * when that is utia and exact in a number. A payout's tx_index is −1: the chain paid it at the start of its block.
+ */
+export type EscrowRow = {
+  kind: Payment["kind"];
+  failed?: boolean;
+  height: number;
+  tx_index: number;
+  msg_index: number;
+  time: string;
+  tx_hash?: string;
+  amount_utia?: number;
+  available_at?: string;
+  requested?: string;
+  requested_utia?: number;
+  reason?: string;
+  /** a failed blob payment: the promise it carried */
+  promise_hash?: string;
+  namespace?: string;
+  blob_size?: number;
+  tx_cost?: TxCost;
+};
+
+/**
+ * One Fibre endpoint registration of a validator on chain, newest first (/v1/validators/{addr}: endpoint_history).
+ * before_record: the host it had when Tensile's record began; after_gap: a change made while the record had a gap,
+ * before block `height`, whose transaction is not on record. A failed one changed nothing.
+ */
+export type EndpointEvent = {
+  outcome: "registered" | "changed" | "same" | "failed" | "before_record" | "after_gap";
+  height?: number;
+  tx_index?: number;
+  time?: string;
+  tx_hash?: string;
+  host: string;
+  previous_host?: string;
+  reason?: string;
+  /** a failed one whose failing message was another message of the same transaction */
+  other_message_failed?: boolean;
+  tx_cost?: TxCost;
+};
+
+/** the fee as the chain printed it ("800utia", coins joined by commas), with each amount's digits grouped and a space before its denomination */
+export const coins = (fee: string) =>
+  fee.split(",").map((c) => c.replace(/^(\d+)(\D.*)$/, (_, n: string, d: string) => `${n.length <= 15 ? int(Number(n)) : n} ${d}`)).join(", ");
+
+/**
+ * an amount the chain printed, exact, its trailing zeros trimmed: "1,000,000,000 TIA", "0.000001 TIA"; never rounded to a
+ * page's precision, so a request of 1 utia never reads "0.000 TIA". A coin that is not utia stays as coins() gives it.
+ */
+export function exactCoin(c: string): string {
+  const m = /^(\d+)utia$/.exec(c.trim());
+  if (!m) return coins(c);
+  const s = m[1].replace(/^0+(?=\d)/, "");
+  const whole = s.length > 6 ? s.slice(0, -6) : "0";
+  const frac = s.padStart(6, "0").slice(-6).replace(/0+$/, "");
+  return `${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}${frac ? `.${frac}` : ""} TIA`;
+}
+
 /** one validator's reading of a blob, as the blob page lists them */
 export type BlobReading = {
   validator_address: string;

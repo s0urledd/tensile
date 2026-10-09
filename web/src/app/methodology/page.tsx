@@ -145,7 +145,7 @@ export default function Methodology() {
           <dl className="ref-terms">
             <Term id="blob-id" term="Blob ID">The version byte and commitment the Fibre client returns, in base64. Search also takes it in hex.</Term>
             <Term id="hashes" term="Transaction and promise hash">Each settlement is a <code>MsgPayForFibre</code> transaction carrying one payment promise, which validators endorse. A blob&rsquo;s page is addressed by its promise hash; search takes the transaction hash too.</Term>
-            <Term id="failed-tx" term="Failed transactions">A Fibre transaction that failed in a block (a settlement, an escrow deposit, withdrawal request or timeout, or a host registration) is shown when you look up its hash. It is in no figure. The reason is the chain&rsquo;s error code in plain words, given only where Tensile has checked that code against the chain version the block ran under. The error is shown as the node returned it (a panic&rsquo;s stack trace and anything past 8 KiB are left out).</Term>
+            <Term id="failed-tx" term="Failed transactions">A Fibre transaction that failed in a block (a settlement, an escrow deposit, withdrawal request or timeout, or a host registration) is shown when you look up its hash. It is in no figure. The reason is the chain&rsquo;s error code in plain words, given only where Tensile has checked that code against the chain version the block ran under. The error is shown as the node returned it (a panic&rsquo;s stack trace and anything past 8 KiB are left out). A failed blob payment, deposit or withdrawal request is also listed among its publisher&rsquo;s transactions, and a failed host registration in its validator&rsquo;s Endpoint history. It moved nothing and is in no figure.</Term>
             <Term id="settled-twice" term="Settled more than once">A blob paid for twice is one blob and two settlements, each with its own promise, its own endorsements and its own reading. Blob counts count it once; settlement counts count both.</Term>
             <Term id="blob-size" term="Blob size">The size the blob paid for: Celestia&rsquo;s upload size, with header and padding, without parity.</Term>
             <Term id="namespaces" term="Namespace">Shown as text when its bytes are text, as a name and its trailing tag in hex when a client numbers its namespaces (<code>tensile·04</code>), and in hex otherwise.</Term>
@@ -309,8 +309,9 @@ export default function Methodology() {
           <p>Those carry Tensile&rsquo;s eye: <strong>Available</strong> on a publisher&rsquo;s page, and the <strong>Tensile</strong> column beside its blobs, as defined under <a href="#available">Available</a>.</p>
           <dl className="ref-terms">
             <Term id="fees" term="Fees">
-              The module&rsquo;s charge for a blob, taken from the publisher&rsquo;s escrow; not the settlement transaction&rsquo;s own fee. No event carries the amount, so it is recomputed with the module&rsquo;s formula, at one utia per gas:
+              The module&rsquo;s charge for a blob, taken from the publisher&rsquo;s escrow: the blob fee. No event carries the amount, so it is recomputed with the module&rsquo;s formula, at one utia per gas:
               <Formula note="the same charge when a promise times out">650,000 + 45,000 × ceil(blob size / 256 KiB) gas</Formula>
+              A transaction&rsquo;s own fee is separate: its fee payer pays it from its bank balance, and it is in no figure.
             </Term>
             <Term id="escrow" term="Escrow available">What the account can spend from its escrow now: its balance less what is queued to withdraw. An amber dot marks an account that cannot pay for one more blob of its usual size, or one whose queued withdrawal was partly spent by settlements.</Term>
             <Term id="timeouts" term="Timeouts">A payment promise not settled in time, charged as a blob. A floor: only the timeouts someone submitted are on chain.</Term>

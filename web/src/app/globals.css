@@ -576,6 +576,20 @@ dl.kv dd { margin: 0; word-break: break-all; }
 .info-pop .label { display: block; margin-bottom: 6px; color: var(--text); }
 .info-pop p { margin: 0 0 8px; }
 .info-pop p:last-child { margin-bottom: 0; }
+/* a transaction's card (TxCost): label and value, the blob page's light rows of facts, a hairline between them */
+.info-pop:has(.txc) { width: 344px; padding: 12px 16px 6px; }
+.info-pop:has(.txc) .label { margin-bottom: 2px; font-weight: 600; }
+.txc { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 18px; margin: 0; font-size: var(--t-cell); line-height: 18px; }
+.txc dt, .txc dd { padding: 8px 0; border-top: 1px solid var(--line-soft); }
+.txc dt:first-of-type, .txc dt:first-of-type + dd { border-top: 0; }
+.txc dt { color: var(--text-3); white-space: nowrap; }
+.txc dd { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; margin: 0; min-width: 0; color: var(--text-2); }
+.txc b { font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums lining-nums; }
+.txc em { font-style: normal; color: var(--text-3); }
+.txc .mono { font-size: 12.5px; font-weight: 500; color: var(--text); }
+.txc .cp, .eh-t .cp { display: inline-grid; place-items: center; align-self: center; width: 18px; height: 18px; margin-left: 2px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--text-3); vertical-align: -4px; cursor: pointer; transition: color var(--dur), background var(--dur); }
+.txc .cp:hover, .eh-t .cp:hover { color: var(--accent-ink); background: var(--accent-tint); }
+.txc .cp.done, .eh-t .cp.done { color: var(--ok-ink); }
 .info-pop ul { margin: 0 0 8px; padding-left: 1.2em; }
 
 /* ------------------------------------------------ charts (Chart.tsx) --- */
@@ -2245,6 +2259,27 @@ button.warn:focus-visible { outline-offset: 0; }
 .lg-t tr.req td.c-fee { color: var(--text-2); font-weight: 400; }
 .lg-t tr.hold td.c-q { color: var(--hold-ink); }
 .lg-t tr.fault .c-b .k, .lg-t tr.fault td.c-fee { color: var(--fault); }
+/* a successful movement's kind opens its transaction's gas and fee: the word itself, a dotted line under it as the only
+   sign, the accent on hover */
+.lg-t button.txw { appearance: none; margin: 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; text-decoration: underline dotted color-mix(in srgb, var(--text-3) 70%, transparent); text-decoration-thickness: 1px; text-underline-offset: 4px; transition: color var(--dur), text-decoration-color var(--dur); }
+.lg-t button.txw:hover, .lg-t button.txw[aria-expanded="true"] { color: var(--accent-ink); text-decoration-color: currentColor; }
+/* a failed transaction among them: its kind in the quieter grey, unweighted (it never happened); the failed page's red
+   mark and why over the namespace and the size; what it asked for, under them in words (B) or struck in the Amount
+   column (A); the Amount a dash. Its whole row opens the failed page */
+.lg-t tr.xf { cursor: pointer; }
+.lg-t tr.xf .c-b .k { font-weight: 400; color: var(--text-2); }
+.lg-t .xs { display: inline-flex; align-items: center; font-weight: 500; color: var(--text-2); }
+.lg-t .xs .dot { width: 7px; height: 7px; margin-right: 6px; }
+.lg-t td.c-q .sep { margin: 0 6px; color: var(--text-3); }
+.lg-t .xd { font-weight: 400; color: var(--text-3); }
+.lg-t s.xk { font-weight: 400; color: var(--text-3); text-decoration-thickness: 1px; }
+.lg-t s.xk .u { color: inherit; }
+/* A: the request is the Amount column's widest figure; it may reach past the cell's own padding into the qualifier's room */
+.lg-t tr.xf td.c-fee { overflow: visible; text-overflow: clip; }
+/* B: the reason, then what it asked for, a line each, in the row's own height */
+.lg-t tr.xw td.c-q { padding-top: 5px; padding-bottom: 5px; line-height: 16px; }
+.lg-t tr.xw td.c-q .xl, .lg-t tr.xw td.c-q .xa { display: block; overflow: hidden; text-overflow: ellipsis; }
+.lg-t tr.xw td.c-q .xl { display: flex; align-items: center; }
 /* a long account's escrow movements are not all here: where they are, in one quiet line under its blobs */
 .pb-more { margin: 12px 0 0; font-size: var(--t-cell); color: var(--text-2); }
 .pb-more a { font-weight: 500; color: var(--accent-ink); }
@@ -2544,6 +2579,40 @@ button.warn:focus-visible { outline-offset: 0; }
 .vr-t .c-m .rs.hold::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--hold); vertical-align: 1px; }
 .vr-t .c-m .rs.quiet { color: var(--text-3); }
 .vr-t .c-m .u { margin-left: 0; }
+
+/* ---- the endpoint history: the latest checks' own rows, one per registration. Each verb in a slot of its own, so the
+   addresses after it line up; the old address quiet, the new one in the mono's weight; a failure's request never bold,
+   so it never reads as the endpoint ---- */
+.eh-t th.c-t { width: 170px; } .eh-t th.c-k { width: 130px; } .eh-t th.c-x { width: 190px; }
+.lg-t.eh-t th.c-t, .lg-t.eh-t td.c-t { text-align: left; }
+.eh-t th.c-k, .eh-t td.c-k { text-align: right; padding-right: 28px; }
+.eh-t td.c-t .tm { font-weight: 500; }
+.eh-t td.c-t .ag { margin-left: 9px; font-size: var(--t-small); color: var(--text-3); }
+.eh-t tr.row { cursor: default; }
+.eh-t tr.row.xf { cursor: pointer; }
+.eh-t td.c-c { font-family: var(--sans); }
+.eh-vs { display: inline-block; width: 130px; vertical-align: top; }
+.eh-v { font-weight: 500; color: var(--text); }
+.eh-v.f { display: inline-flex; align-items: center; }
+.eh-v.f .dot { width: 7px; height: 7px; margin-right: 7px; }
+.lg-t button.eh-v { appearance: none; margin: 0; padding: 0; border: 0; background: none; font: inherit; font-weight: 500; color: var(--text); cursor: pointer; text-decoration: underline dotted color-mix(in srgb, var(--text-3) 70%, transparent); text-decoration-thickness: 1px; text-underline-offset: 4px; transition: color var(--dur), text-decoration-color var(--dur); }
+.lg-t button.eh-v:hover, .lg-t button.eh-v[aria-expanded="true"] { color: var(--accent-ink); text-decoration-color: currentColor; }
+.eh-t .mono { font-size: 12.5px; letter-spacing: -.01em; }
+.eh-o { color: var(--text-3); }
+.eh-n { font-weight: 600; color: var(--text); }
+.eh-ar { margin: 0 10px; color: var(--text-3); }
+.eh-q { color: var(--text-3); }
+.eh-q .mono { color: var(--text-2); }
+.eh-q .sep, .eh-t .sep { margin: 0 7px; color: var(--text-3); }
+.eh-pre { display: inline-flex; align-items: center; font-style: normal; color: var(--text-3); }
+.eh-pre em { font-style: normal; }
+.eh-pre button.warn { margin-left: 3px; }
+.eh-t td.c-k { color: var(--text-2); }
+.eh-t td.c-x .mono { font-weight: 500; color: var(--text); }
+.eh-t td.c-x a.mono:hover, .eh-t tr.xf:hover td.c-x a.mono { color: var(--accent-ink); text-decoration: none; }
+.eh-t .u { color: var(--text-3); }
+.eh-more { justify-content: flex-end; }
+.eh-more .count:empty { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .vd-c { transition: none; }
