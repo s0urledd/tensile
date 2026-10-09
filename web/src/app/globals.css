@@ -234,9 +234,10 @@ button { font: inherit; color: inherit; }
 .hs-kinds li { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 28px; }
 .hs-kinds code { padding: 0; background: none; font-size: 12px; color: var(--text-3); white-space: nowrap; }
 /* what a search found: one row per record, saying what it is, the whole row a link to its page. The panel holds the
-   longest kind ("Endpoint registration"), its block and its time on one line; a blob is two lines, its block and
+   longest kind ("Endpoint registration", 150px), its block and its time ("Sep 24, 21:28 UTC", 109px with its inset) on
+   one line, 349px of a 354px row; a blob is two lines, its block and
    settlement time over its promise hash; a transaction looked up by its hash says Success or Failed beside its hash. */
-.hs-dd.res { width: 412px; padding: 6px; }
+.hs-dd.res { width: 424px; padding: 6px; }
 .hs-items { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; max-height: min(60vh, 520px); overflow-y: auto; overscroll-behavior: contain; }
 .hs-item { display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 9px 10px; border-radius: 8px; color: var(--text); }
 .hs-item:hover, .hs-item.on { text-decoration: none; background: var(--wash); }
@@ -266,7 +267,7 @@ button { font: inherit; color: inherit; }
   .top .hs { order: 4; flex-basis: 100%; margin: 0; padding: 2px 0 12px; }
   .hs-box { max-width: none; }
   .hs-dd { left: 0; transform: none; }
-  .hs-dd.res { width: min(412px, 100%); }
+  .hs-dd.res { width: min(424px, 100%); }
 }
 .net.menu { position: relative; }
 .net.menu summary { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; }
