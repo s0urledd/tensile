@@ -2429,21 +2429,24 @@ button.warn:focus-visible { outline-offset: 0; }
   .lg-t.ptx-t tr.row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "k st" "am tm" "bh x"; column-gap: 14px; row-gap: 4px; padding: 11px 16px 12px; }
   .lg-t.ptx-t tr.row td { display: flex; align-items: center; min-width: 0; min-height: 20px; height: auto; text-align: left; white-space: normal; }
   .lg-t.ptx-t tr.row td.c-st, .lg-t.ptx-t tr.row td.c-tm, .lg-t.ptx-t tr.row td.c-x { justify-content: flex-end; }
-  .lg-t.ptx-t td.c-k { grid-area: k; font-weight: 500; }
-  .lg-t.ptx-t td.c-st { grid-area: st; align-self: start; }
-  .lg-t.ptx-t td.c-am { grid-area: am; }
-  .lg-t.ptx-t td.c-tm { grid-area: tm; }
-  .lg-t.ptx-t td.c-bh { grid-area: bh; font-weight: 400; color: var(--text-3); }
-  .lg-t.ptx-t td.c-x { grid-area: x; }
+  .lg-t.ptx-t tr.row td.c-k { grid-area: k; font-weight: 500; }
+  .lg-t.ptx-t tr.row td.c-st { grid-area: st; align-self: start; }
+  .lg-t.ptx-t tr.row td.c-am { grid-area: am; }
+  .lg-t.ptx-t tr.row td.c-tm { grid-area: tm; }
+  .lg-t.ptx-t tr.row td.c-bh { grid-area: bh; font-weight: 400; color: var(--text-3); }
+  .lg-t.ptx-t tr.row td.c-x { grid-area: x; }
   /* the time and its age on one line; a request's type over its payout, at the line's start; the amount at its own */
   .lg-t.ptx-t .tw { flex-direction: row; align-items: baseline; gap: 6px; min-height: 0; }
   .lg-t.ptx-t .kw { align-items: flex-start; min-height: 0; }
-  .lg-t.ptx-t tbody .amb { min-width: 0; text-align: left; }
+  .lg-t.ptx-t .amb { min-width: 0; }
+  .lg-t.ptx-t tbody .amb { text-align: left; }
   .lg-t.ptx-t .c-x .cp { margin-right: 0; }
   /* the dot no longer hangs: the word ends the line */
   .lg-t.ptx-t .st .dot { margin: 0 7px 0 0; }
   .lg-t.ptx-t.pb-st tfoot tr { grid-template-columns: minmax(0, 1fr) auto; padding-left: 16px; padding-right: 16px; }
   .lg-t.ptx-t.pb-st tfoot tr td.c-st { display: none; }
+  /* the label at the line's start, on a second line of its own rather than cut where a long one meets its figure */
+  .lg-t.ptx-t.pb-st tfoot td.fl { text-align: left; white-space: normal; }
   .lg-t.ptx-t.pb-st tfoot tr.tot { background: var(--surface-2); }
 }
 /* a small phone: the time without its age (the day and the second stay), as the blob lists show it */
