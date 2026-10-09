@@ -1853,20 +1853,28 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
 /* ---- STUB (design/failed-blobs, never merged): a failed blob payment in the Blobs list, three variants (?fv=) ----
    a failed row's figures and its Tensile lane: a quiet dash, nothing moved, nothing to read */
 .lg-t tr.xf .na { font-weight: 400; color: var(--text-3); }
-/* A and B: a Status column after Fee paid, its room taken from the columns' slack and the Endorsed meter's track */
-.lg-t.fv-a, .lg-t.fv-b { --st-w: 88px; }
-.lg-t.fv-a th.c-st, .lg-t.fv-b th.c-st { width: var(--st-w); }
-.lg-t.fv-a th.c-h, .lg-t.fv-b th.c-h { width: 94px; }
-.lg-t.fv-a th.c-t, .lg-t.fv-b th.c-t { width: 200px; }
-.lg-t.fv-a th.c-b, .lg-t.fv-b th.c-b { width: 125px; }
-.lg-t.fv-a th.c-p, .lg-t.fv-b th.c-p { width: 162px; }
-.lg-t.fv-a th.c-sz, .lg-t.fv-b th.c-sz { width: 86px; }
-.lg-t.fv-a th.c-fee, .lg-t.fv-b th.c-fee { width: 84px; }
-.lg-t.fv-a th.c-e, .lg-t.fv-b th.c-e { width: 108px; }
-.lg-t.fv-a th.tn, .lg-t.fv-b th.tn { width: 112px; }
-.lg-t.fv-a .em, .lg-t.fv-b .em { width: 24px; }
-/* A: the dot and the word, the dot hung in the cell's padding so every word starts on one line under the head */
-.lg-t.fv-a th.c-st, .lg-t.fv-a td.c-st { padding-left: 27px; }
+/* A and B: a Status column of 83px after Fee paid. Today's columns hold only ~11px beyond their widest content (measured
+   in the design shots), so the room comes from (1) that slack, each column down to its widest content + its padding,
+   (2) the Endorsed meter's track, 44 -> 30px, and (3) the gutters, 12 -> 8px a side (24 -> 16px between columns); the
+   first column's 18px inset and Tensile's lane (10px a side, 114px) as today. Widths at the page's 1118px:
+   Height 88 (96) · Settled 197 (206) · TX hash 118 (126) · Namespace the rest, 90 (99) · Publisher 157 (165) ·
+   Blob size 80 (88) · Fee paid 77 (86) · Status 83 (new) · Endorsed 104 (128) · gap 10 · Tensile 114 */
+.lg-t.fv-a th, .lg-t.fv-a td, .lg-t.fv-b th, .lg-t.fv-b td { padding-left: 8px; padding-right: 8px; }
+.lg-t.fv-a th:first-child, .lg-t.fv-a td:first-child, .lg-t.fv-b th:first-child, .lg-t.fv-b td:first-child { padding-left: 18px; }
+.lg-t.fv-a .gap, .lg-t.fv-b .gap { padding: 0; }
+.lg-t.fv-a .tn, .lg-t.fv-b .tn { padding-left: 10px; padding-right: 10px; }
+.lg-t.fv-a th.c-st, .lg-t.fv-b th.c-st { width: 83px; }
+.lg-t.fv-a th.c-h, .lg-t.fv-b th.c-h { width: 88px; }
+.lg-t.fv-a th.c-t, .lg-t.fv-b th.c-t { width: 197px; }
+.lg-t.fv-a th.c-b, .lg-t.fv-b th.c-b { width: 118px; }
+.lg-t.fv-a th.c-p, .lg-t.fv-b th.c-p { width: 157px; }
+.lg-t.fv-a th.c-sz, .lg-t.fv-b th.c-sz { width: 80px; }
+.lg-t.fv-a th.c-fee, .lg-t.fv-b th.c-fee { width: 77px; }
+.lg-t.fv-a th.c-e, .lg-t.fv-b th.c-e { width: 104px; }
+.lg-t.fv-a .em, .lg-t.fv-b .em { width: 30px; }
+/* A: the dot and the word, the dot hung in the cell's padding (8px + the dot's 15) so every word starts on one line
+   under the head */
+.lg-t.fv-a th.c-st, .lg-t.fv-a td.c-st { padding-left: 23px; }
 /* B: a pill, in the Tensile lane's own pill language, centred under its head */
 .lg-t.fv-b th.c-st, .lg-t.fv-b td.c-st { text-align: center; }
 .lg-t .sp { display: inline-flex; align-items: center; height: 20px; padding: 0 5px; border-radius: 999px; border: 1px solid var(--border); background: var(--wash); font-family: var(--sans); font-size: 10px; font-weight: 500; line-height: normal; color: var(--text-2); vertical-align: middle; }

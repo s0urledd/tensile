@@ -56,7 +56,7 @@ function stub(rows) {
   if (a.namespace !== b.namespace || (a.publisher || a.signer) !== (b.publisher || b.signer)) notes.push("stub: the first two live rows differ in namespace or publisher; the stub takes the first row's");
   FAILED = {
     status: "failed", reason: "Out of gas",
-    settlement_tx_hash: FAILED_TX, settlement_height: h, settlement_tx_index: 0, settlement_time: new Date(t).toISOString().replace(/\.000Z$/, "Z"),
+    settlement_tx_hash: FAILED_TX, settlement_height: h, settlement_tx_index: 0, settlement_time: new Date(Math.floor(t / 1000) * 1000).toISOString().replace(/\.000Z$/, "Z"),
     namespace: a.namespace, publisher: a.publisher, signer: a.signer,
   };
   notes.push(`stub: failed blob payment at #${h} (${FAILED.settlement_time}) between #${ha} and #${hb}, tx ${FAILED_TX}`);
@@ -190,7 +190,7 @@ const untip = async (page) => { await page.evaluate(() => document.querySelector
  * (the failed stub left out), and the content a column is sized for at its widest, set in a copy of the first row and
  * measured: the slack is what a column holds beyond the widest of them
  */
-async function slack(page) {
+async function slack(page, label) {
   const r = await page.evaluate(() => {
     const t = document.querySelector("#list .lg-t");
     const pad = (el) => { const s = getComputedStyle(el); return parseFloat(s.paddingLeft) + parseFloat(s.paddingRight); };
@@ -231,7 +231,7 @@ async function slack(page) {
     const table = t.getBoundingClientRect().width;
     return { cols, probes, table };
   });
-  notes.push(`--- today's table, ${Math.round(r.table)}px: column · width · padding (head / cell) · head's words · widest live cell ("its words") · slack against it`);
+  notes.push(`--- ${label}, ${Math.round(r.table)}px: column · width · padding (head / cell) · head's words · widest live cell ("its words") · slack against it`);
   for (const c of r.cols) notes.push(`${c.col.padEnd(6)} ${c.w.toFixed(1).padStart(6)}  pad ${c.pad}/${c.padTd}  head ${c.head.toFixed(1).padStart(6)}  cells ${c.cells.toFixed(1).padStart(6)} ("${c.at.slice(0, 40)}")  slack ${(c.w - c.padTd - Math.max(c.cells, c.head + c.pad - c.padTd)).toFixed(1)}`);
   notes.push("--- the widest contents, set in a copy of the first row: column · content · its width · the cell's inner width · slack");
   for (const p of r.probes) notes.push(`${p.col.padEnd(6)} ${p.label.padEnd(30)} ${p.cells.toFixed(1).padStart(6)}  inner ${(+p.inner).toFixed(1).padStart(6)}  slack ${(p.inner - p.cells).toFixed(1)}${p.pcText != null ? `  (.pc box ${p.pc.toFixed(1)}, its words ${p.pcText.toFixed(1)})` : ""}${p.scroll > p.client ? `  CLIPS ${p.scroll}>${p.client}` : ""}`);
@@ -274,10 +274,29 @@ async function layout(page, label) {
     const words = [...t.querySelectorAll("tbody td.c-st .st")].map(textLeft);
     const pills = [...t.querySelectorAll("tbody td.c-st .sp")].map(C);
     const col = st ? C(st) : null;
-    return { widths, head, dots: [...new Set(dots)], words: [...new Set(words)], pills: [...new Set(pills)], col };
+    // the status cell: its edges, its padding, its widest content (a word's own text, or a pill's box) and the room left
+    // at its right before the padding; the dot's room at its left
+    let room = null;
+    const cell = t.querySelector("tbody tr.row:not(.xf) td.c-st");
+    if (cell) {
+      const s = getComputedStyle(cell), cb = cell.getBoundingClientRect();
+      const pl = parseFloat(s.paddingLeft), pr = parseFloat(s.paddingRight);
+      const ws = [...t.querySelectorAll("tbody td.c-st .st, tbody td.c-st .sp")].map((el) => {
+        const tn = [...el.childNodes].find((n) => n.nodeType === 3 && n.nodeValue.trim());
+        const g = document.createRange();
+        if (tn) g.selectNodeContents(tn); else g.selectNodeContents(el);
+        const b = el.classList.contains("sp") ? el.getBoundingClientRect() : g.getBoundingClientRect();
+        return { w: b.width, right: b.right, text: el.textContent };
+      });
+      const widest = ws.reduce((a, b) => (b.w > a.w ? b : a), { w: 0, right: 0, text: "" });
+      const dot = cell.querySelector(".dot");
+      room = { w: cb.width, pl, pr, widest: `${widest.text} ${widest.w.toFixed(1)}`, right: (cb.right - pr - Math.max(...ws.map((x) => x.right))).toFixed(1), dotLeft: dot ? (dot.getBoundingClientRect().left - cb.left).toFixed(1) : "-" };
+    }
+    return { widths, head, dots: [...new Set(dots)], words: [...new Set(words)], pills: [...new Set(pills)], col, room };
   });
   notes.push(`${label} columns: ${r.widths}`);
   if (r.head) notes.push(`${label} status: head words left ${r.head.l} centre ${r.head.c}; column centre ${r.col}; dots' left ${r.dots.join(", ") || "-"}; words' left ${r.words.join(", ") || "-"}; pills' centres ${r.pills.join(", ") || "-"}`);
+  if (r.room) notes.push(`${label} status cell: ${r.room.w}px, padding ${r.room.pl}/${r.room.pr}; widest "${r.room.widest}"; room at its right before the padding ${r.room.right}; the dot ${r.room.dotLeft}px from the cell's left edge`);
 }
 
 // ---------------------------------------------------------------- the shots
@@ -296,14 +315,14 @@ const rowSel = (n) => `#list .lg-t tbody tr:nth-child(${n})`;
     const { ctx, page } = await open(browser, theme);
     if (theme === "dark") {
       await go(page, "/blobs/", "#list .lg-t tbody tr.row:not(.sk) td.c-p .lg-who");
-      await slack(page);
+      await slack(page, "today's table");
       await clips(page, "today");
     }
     for (const { v, fail } of VARIANTS) {
       await go(page, `/blobs/?fv=${v}`, "#list .lg-t tbody tr.xf");
       await reveal(page);
       await clips(page, `${v} ${theme}`);
-      if (theme === "dark") await layout(page, v);
+      if (theme === "dark") { await layout(page, v); if (v !== "c") await slack(page, `variant ${v}`); }
       await crop(page, `${v}-${theme}.png`, ["#list .list-head", rowSel(6)]);
       await tip(page, fail, theme);
       await crop(page, `${v}-hover-${theme}.png`, ["#list .list-head", rowSel(6), ".shot-tip"]);
