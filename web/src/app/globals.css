@@ -2367,6 +2367,90 @@ button.warn:focus-visible { outline-offset: 0; }
   .pb-kinds button, .pb-kinds button:first-child { padding: 0 11px; }
 }
 
+/* ---- its blobs under Blobs, with the Blobs list's Status column (.pst: one publisher's room for it; .lg-st is the
+   Blobs list's). No movement stands in the TX hash column any more (126px, as on the Blobs list), the amounts are fees
+   alone (104px holds "−23.690 TIA"), Endorsed as on the Blobs list (128px); Status as wide as its head or "Success"
+   (92px), its dot hung in the cell's padding (the 12px gutter and its 15), so every word starts on one line under the
+   head; the time, centred, keeps the rest ---- */
+@media (min-width: 1081px) {
+  .lg-one.pst th.c-b { width: 126px; }
+  .lg-one.pst th.c-fee { width: 104px; }
+  .lg-one.pst th.c-e { width: 128px; }
+  .lg-one.pst th.c-st { width: 92px; }
+  .lg-one.pst th.c-st, .lg-one.pst td.c-st { padding-left: 27px; }
+}
+/* a phone's card of a failed payment, as on the Blobs list: Failed where a blob's endorsement stands, its dot beside
+   it, no longer hung */
+@media (max-width: 1080px) {
+  .lg-t.pst tr.row.xf td.c-e { display: none; }
+  .lg-t.pst tr.row.xf td.c-st { display: flex; align-items: center; height: 20px; grid-area: e; justify-self: end; padding: 0; }
+  .lg-t.pst td.c-st .st .dot { margin: 0 7px 0 0; }
+}
+
+/* ---- its transactions under All and Escrow (components/PubTxs.tsx): one transaction a row, successful or failed,
+   every row opening its transaction's page, as a validator's endpoint history draws its own: six even tracks, the
+   height at the inset as every table's first column, the other five centred under their heads ---- */
+.ptx-t th { width: calc(100% / 6); }
+.ptx-t th, .ptx-t td { text-align: center; }
+.ptx-t th.c-bh, .ptx-t td.c-bh { text-align: left; }
+.ptx-t td.c-k { color: var(--text); }
+.ptx-t td.c-bh, .ptx-t td.c-am { font-weight: 500; }
+.ptx-t .c-tm .tm { font-weight: 500; }
+.ptx-t .c-tm .ag { font-size: var(--t-small); color: var(--text-3); }
+/* a withdrawal request only moves money from available into the queue: its amount unsigned and quieter, as the
+   statement draws it; a timed-out promise's charge red */
+.ptx-t tr.wr td.c-am { color: var(--text-2); font-weight: 400; }
+.ptx-t tr.to td.c-am { color: var(--fault); }
+/* the amounts right-aligned in one box as wide as the widest on the page, the box centred: the digits stack; a failed
+   one's dash is no figure, centred under the head */
+.ptx-t .amb { display: inline-block; min-width: var(--am-w, 0px); text-align: right; }
+.ptx-t .amb.nil { text-align: center; }
+/* each status word in a box as wide as "Success", centred, its dot hung to its left: both words start on one line and
+   both dots stand in one column */
+.ptx-t td.c-st .st { min-width: 53px; }
+/* the copy mark hangs to the hash's right, as on the validator page, so the hash itself stands centred */
+.ptx-t .c-x .cp { margin-right: -20px; }
+/* two lines where a fact has a quiet note: the time over how long ago; a withdrawal request's type over its payout,
+   which says amber when the account's settlements used the request up */
+.ptx-t .tw, .ptx-t .kw { display: inline-flex; flex-direction: column; align-items: center; justify-content: center; min-height: 36px; vertical-align: middle; }
+.ptx-t .tw .tm, .ptx-t .kw > span:first-child { line-height: 20px; }
+.ptx-t .tw .ag, .ptx-t .kw .k2 { font-size: var(--t-small); line-height: 16px; color: var(--text-3); }
+.ptx-t .kw .k2.hold { color: var(--hold-ink); }
+/* Escrow's statement (.pb-st, above): the labels up to the Amount column, the figures in it, the total's rule as wide as
+   its figures */
+.ptx-t tfoot td.fl { text-align: right; }
+.pb-st.ptx-t tfoot tr.tot td.c-am { font-weight: 600; }
+.ptx-t tfoot tr.tot .amb { position: relative; }
+.ptx-t tfoot tr.tot .amb::before { content: ""; position: absolute; left: 0; right: 0; top: -10px; height: 1px; background: var(--line); }
+/* on a phone, as a validator's endpoint history: three lines a transaction, what it was (a request's payout under it)
+   beside how it came out, what it moved beside when, the block beside its transaction; the statement's lines under
+   them, the label and its figure. Written .lg-t.ptx-t, so it outranks the lists' own rules at 1080px and 720px */
+@media (max-width: 1080px) {
+  .lg-t.ptx-t tr.row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "k st" "am tm" "bh x"; column-gap: 14px; row-gap: 4px; padding: 11px 16px 12px; }
+  .lg-t.ptx-t tr.row td { display: flex; align-items: center; min-width: 0; min-height: 20px; height: auto; text-align: left; white-space: normal; }
+  .lg-t.ptx-t tr.row td.c-st, .lg-t.ptx-t tr.row td.c-tm, .lg-t.ptx-t tr.row td.c-x { justify-content: flex-end; }
+  .lg-t.ptx-t td.c-k { grid-area: k; font-weight: 500; }
+  .lg-t.ptx-t td.c-st { grid-area: st; align-self: start; }
+  .lg-t.ptx-t td.c-am { grid-area: am; }
+  .lg-t.ptx-t td.c-tm { grid-area: tm; }
+  .lg-t.ptx-t td.c-bh { grid-area: bh; font-weight: 400; color: var(--text-3); }
+  .lg-t.ptx-t td.c-x { grid-area: x; }
+  /* the time and its age on one line; a request's type over its payout, at the line's start; the amount at its own */
+  .lg-t.ptx-t .tw { flex-direction: row; align-items: baseline; gap: 6px; min-height: 0; }
+  .lg-t.ptx-t .kw { align-items: flex-start; min-height: 0; }
+  .lg-t.ptx-t tbody .amb { min-width: 0; text-align: left; }
+  .lg-t.ptx-t .c-x .cp { margin-right: 0; }
+  /* the dot no longer hangs: the word ends the line */
+  .lg-t.ptx-t .st .dot { margin: 0 7px 0 0; }
+  .lg-t.ptx-t.pb-st tfoot tr { grid-template-columns: minmax(0, 1fr) auto; padding-left: 16px; padding-right: 16px; }
+  .lg-t.ptx-t.pb-st tfoot tr td.c-st { display: none; }
+  .lg-t.ptx-t.pb-st tfoot tr.tot { background: var(--surface-2); }
+}
+/* a small phone: the time without its age (the day and the second stay), as the blob lists show it */
+@media (max-width: 440px) {
+  .lg-t.ptx-t .tw .ag { display: none; }
+}
+
 /* =============================================================================
    A validator (app/validator), in the order an operator asks: who it is and where it serves from (one frame: a title
    bar with the name, its state beside it and its valoper address under it, then the endpoint, its hosting and the

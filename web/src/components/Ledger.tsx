@@ -385,14 +385,15 @@ const Row = memo(function Row({ b, age: ag, fresh, one, dec, status, onNs, onOpe
   );
 });
 
-type FailedProps = { f: FailedPayment; age: string | null; fresh: boolean; status: boolean; onNs: (ns: string) => void; onOpen: (e: React.MouseEvent, href: string) => void };
+type FailedProps = { f: FailedPayment; age: string | null; fresh: boolean; one: boolean; status: boolean; onNs: (ns: string) => void; onOpen: (e: React.MouseEvent, href: string) => void };
 /**
  * a blob payment that failed in its block: its height, time, transaction, namespace and publisher as a blob's; Failed
  * where the list says how a payment came out (the Status column, or without one the endorsement), its reason on hover;
  * a quiet dash for its size, fee and endorsement and in Tensile's lane, since it moved nothing and there is nothing to
- * read. The whole row opens its transaction. On a phone, Failed stands where a blob's endorsement does
+ * read. The whole row opens its transaction. On a phone, Failed stands where a blob's endorsement does. One
+ * publisher's list names no publisher, as its blobs do not
  */
-const FailedRow = memo(function FailedRow({ f, age: ag, fresh, status, onNs, onOpen }: FailedProps) {
+const FailedRow = memo(function FailedRow({ f, age: ag, fresh, one, status, onNs, onOpen }: FailedProps) {
   const href = `/tx/?hash=${f.settlement_tx_hash}`;
   const tx = f.settlement_tx_hash.toUpperCase();
   const ns = f.namespace;
@@ -412,7 +413,7 @@ const FailedRow = memo(function FailedRow({ f, age: ag, fresh, status, onNs, onO
         <span className="ht">#{int(f.settlement_height)}</span>
       </td>
       <td className="c-ns">{ns ? <button type="button" className="nsb" onClick={() => onNs(ns)} title={`${ns} · show only this namespace`}>{name}</button> : dash}</td>
-      <td className="c-p">{who ? <><Who addr={who} /><CopyMark text={who} label="the publisher's address" /></> : dash}</td>
+      {!one && <td className="c-p">{who ? <><Who addr={who} /><CopyMark text={who} label="the publisher's address" /></> : dash}</td>}
       <td className="c-sz num">{dash}</td>
       <td className="c-fee num">{dash}</td>
       {status && <td className="c-st">{failed}</td>}
@@ -421,7 +422,7 @@ const FailedRow = memo(function FailedRow({ f, age: ag, fresh, status, onNs, onO
       <td className="tn">{dash}</td>
       <td className="c-m">
         {name && <span className="nm">{name}</span>}
-        {who && <>{name && <span className="sep">·</span>}<Who addr={who} /></>}
+        {who && !one && <>{name && <span className="sep">·</span>}<Who addr={who} /></>}
       </td>
     </tr>
   );
@@ -461,7 +462,7 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, s
   skew: number;
   /** the list is one publisher's, on its page: no Publisher column, which would name it on every row */
   onePublisher?: boolean;
-  /** the Blobs list: a Status column, how each payment came out on chain, with the failed ones its feed holds among the blobs */
+  /** the Blobs list, or a publisher's Blobs: a Status column, how each payment came out on chain, with the failed ones its feed holds among the blobs */
   status?: boolean;
   /** one publisher's escrow movements, set between its blobs by time */
   moves?: Moves;
@@ -598,7 +599,8 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, s
         </div>
         <div className={`lg-tw${waiting ? " is-waiting" : ""}`} aria-busy={waiting || !shown.loaded}>
           {!shown.loaded && !feed.error && <span className="sr-only">Loading…</span>}
-          <table ref={tableRef} className={`lg-t${onePublisher ? " lg-one" : ""}${status ? " lg-st" : ""}`}>
+          {/* the Status column's room: the Blobs list's (lg-st), or one publisher's list's own (pst) */}
+          <table ref={tableRef} className={`lg-t${onePublisher ? " lg-one" : ""}${status ? (onePublisher ? " pst" : " lg-st") : ""}`}>
             <LedgerHead one={onePublisher} status={status} />
             <tbody ref={bodyRef}>
               {!shown.loaded && (feed.error
@@ -607,7 +609,7 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, s
               {shown.loaded && shown.rows.length === 0 && <tr className="lg-empty"><td colSpan={cols}>{emptyText ?? <>No blob recorded{shown.path.includes("&namespace=") || (!onePublisher && shown.path.includes("&publisher=")) ? " with this filter" : ""}.</>}</td></tr>}
               {items.map(({ b, m, t }) => b
                 ? isFailed(b)
-                  ? <FailedRow key={keyOf(b)} f={b} age={now ? age(now - t) : null} fresh={!!fresh?.has(keyOf(b))} status={status} onNs={onNs} onOpen={onOpen} />
+                  ? <FailedRow key={keyOf(b)} f={b} age={now ? age(now - t) : null} fresh={!!fresh?.has(keyOf(b))} one={onePublisher} status={status} onNs={onNs} onOpen={onOpen} />
                   : <Row key={b.promise_hash} b={b} age={now ? age(now - t) : null} fresh={!!fresh?.has(b.promise_hash)} one={onePublisher} dec={dec} status={status} onNs={onNs} onOpen={onOpen} />
                 : <MoveRow key={m!.key} m={m!} age={now ? age(now - t) : null} dec={dec} />)}
             </tbody>

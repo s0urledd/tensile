@@ -1,10 +1,11 @@
 "use client";
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { API_BASE, useApi, notFound, badRequest, throttled, hhmm, ago, shortMid, type Blob, type Payment, type PublisherNamespace, type RecentBlob, type Tip, type Window, blobFee, bytes, int, nsDisplay, span, tia, utcWord, TIP_MS } from "@/lib/api";
+import { API_BASE, useApi, notFound, badRequest, throttled, hhmm, ago, shortMid, type Blob, type Payment, type PublisherNamespace, type RecentBlob, type Tip, type Window, blobFee, bytes, int, isBlob, nsDisplay, tia, utcWord, TIP_MS } from "@/lib/api";
 import type { Params, PublisherWithQueue, PublisherWithdrawals } from "@/lib/withdrawals";
 import { lane } from "@/lib/status";
-import Ledger, { useLedger, LedgerHead, MoveRow, Signed, decimals, type Move, type Moves, type Placed } from "@/components/Ledger";
+import Ledger, { useLedger } from "@/components/Ledger";
+import TxList, { type Foot, type PubTxs } from "@/components/PubTxs";
 import Pager, { usePage } from "@/components/Pager";
 import Picker, { type Choice } from "@/components/Picker";
 import Ident from "@/components/Ident";
@@ -33,17 +34,15 @@ type Detail = {
   recent_blobs: RecentBlob[];
 };
 
-/** rows per page of the blobs, and of the escrow's statement */
+/** rows per page of every tab */
 const SIZE = 25;
 /** the last page /v1/blobs serves: its offset stops at 100,000 */
 const MAX_OFFSET = 100000;
 const MAX_PAGE = Math.floor(MAX_OFFSET / SIZE) + 1;
-/** recent_payments stops at this many: a history that long may be missing its oldest movements */
-const PAYMENTS_CAP = 100;
 /** a publisher's blobs read at once to say things of every one of them, where the API does not say them */
 const AT_ONCE = 100;
 
-/** what the list shows: every transaction, the blobs alone, or the escrow's movements alone */
+/** what the list shows: every transaction of the account, its blob payments alone, or its escrow's transactions alone */
 type Kind = "all" | "blobs" | "escrow";
 const KINDS: [Kind, string][] = [["all", "All"], ["blobs", "Blobs"], ["escrow", "Escrow"]];
 
@@ -84,142 +83,22 @@ function useFirstBlob(addr: string, total: number | null): Blob | null | undefin
 
 const plural = (n: number, w: string) => `${int(n)} ${w}${n === 1 ? "" : "s"}`;
 
-/** "Oct 2 06:42": the minute is enough in a line; the second and UTC are on hover */
-const monthDayMin = (s: string) => monthDayTime(s).slice(0, -3);
-
-/** a payment's place in time: when, and in the same second its place among the payments, newest first */
-type At = { t: number; i: number };
-const olderThan = (a: At, b: At) => a.t < b.t || (a.t === b.t && a.i > b.i);
-const atOf = (m: Move): At => ({ t: Date.parse(m.time), i: m.idx });
-
-type Money = {
-  /** the movements, newest first */
-  list: Move[];
-  /** each settlement's place among the payments, by its promise hash */
-  rank: Map<string, number>;
-  /** for each settlement, by its promise hash, the settlement just newer than it (null: none is) */
-  prev: Map<string, At | null>;
-};
-
-/**
- * The account's escrow movements, newest first, each in plain words with a quiet qualifier (when a request becomes
- * payable, how long a payout took). The fee settlements are the blob rows and are not among them; rank is each one's
- * place among the payments, by its promise hash, so a movement in the same block as a blob keeps the chain's order,
- * and prev the settlement before each, which bounds the movements a page of blobs takes from above.
- */
-function movesOf(d: Detail): Money {
-  const left = d.withdrawals?.left_queue ?? [];
-  const queue = [...left, ...(d.withdrawals?.pending ?? [])];
-  const list: Move[] = [];
-  const rank = new Map<string, number>();
-  const prev = new Map<string, At | null>();
-  let before: At | null = null;
-  d.recent_payments.forEach((x, idx) => {
-    if (x.kind === "settlement") {
-      if (x.promise_hash) { rank.set(x.promise_hash, idx); prev.set(x.promise_hash, before); }
-      before = { t: Date.parse(x.time), i: idx };
-      return;
-    }
-    const t = Date.parse(x.time);
-    let word: string = x.kind, qual = "", short = "", sign: Move["sign"] = "", tone = "", note: string | undefined;
-    if (x.kind === "deposit") { word = "Deposit"; sign = "+"; }
-    else if (x.kind === "withdrawal_request") {
-      const w = queue.find((q) => Date.parse(q.requested_at) === t);
-      const at = w?.available_at ?? x.available_at;
-      word = "Withdrawal requested"; tone = "req";
-      note = "Moved from available to the withdrawal queue; the balance changes when it is paid out.";
-      if (at) { qual = `payable from ${monthDayTime(at)}`; short = `payable ${monthDayMin(at)}`; }
-      // a request the account's own settlements used up, whole or in part, before it could be paid out
-      if (w?.outcome === "consumed") { qual = "used by settlements, not paid out"; short = "used by settlements"; tone = "req hold"; }
-      else if (w && w.reduced_utia > 0) qual = [qual, `${tia(w.reduced_utia)} of it used by settlements`].filter(Boolean).join(" · ");
-    } else if (x.kind === "withdrawal_executed") {
-      const w = left.find((q) => q.paid_height === x.height);
-      word = "Withdrawal paid out"; sign = "−";
-      if (w?.payout_delay_s != null) { qual = `${span(w.payout_delay_s)} after the request`; short = `${span(w.payout_delay_s)} after request`; }
-    } else if (x.kind === "timeout") { word = "Timed-out promise"; sign = "−"; tone = "fault"; }
-    list.push({ key: `${x.height}-${x.tx_hash ?? ""}-${idx}`, height: x.height, time: x.time, word, qual, short, sign, utia: x.amount_utia, tone, note, idx });
-  });
-  return { list, rank, prev };
-}
-
-/**
- * The movements a page of blobs takes, by the rows on it: those older than the settlement just before its first row
- * (the page before's oldest; the first page has none above it) and newer than its own oldest, the page that holds the
- * last row every older one. range: the rows and movements the page shows, counted from the list's first.
- */
-function placeMoves(money: Money, path: string, rows: Blob[], total: number): Placed {
-  const offset = Number(new URLSearchParams(path.slice(path.indexOf("?") + 1)).get("offset")) || 0;
-  const at = (b: Blob): At => ({ t: Date.parse(b.settlement_time), i: money.rank.get(b.promise_hash) ?? -1 });
-  // a first row the payments do not place (a blob newer than them) stands as its own bound
-  const top = offset > 0 && rows.length > 0 ? money.prev.get(rows[0].promise_hash) ?? at(rows[0]) : null;
-  const bottom = rows.length > 0 && offset + rows.length < total ? at(rows[rows.length - 1]) : null;
-  const list = money.list.filter((m) => (!top || olderThan(atOf(m), top)) && (!bottom || !olderThan(atOf(m), bottom)));
-  const before = top ? money.list.filter((m) => !olderThan(atOf(m), top)).length : 0;
-  const from = offset + before + 1;
-  return { list, range: [from, from + rows.length + list.length - 1] };
-}
-
-/**
- * The escrow's own statement: its movements alone, newest first, a page at a time, in the list's own columns, so
- * nothing moves when the kind changes; then what went in, what the blobs and any timed-out promise cost, what went
- * out, and the escrow that leaves, the labels up to the Amount column and the figures in it.
- */
-function Statement({ d, moves, page, onPage, now }: { d: Detail; moves: Move[]; page: number; onPage: (p: number) => void; now: number }) {
-  const e = d.publisher.escrow?.found ? d.publisher.escrow : null;
-  const all = d.windows.find((w) => w.window.name === "all");
-
-  // shown only when it closes exactly on the balance, a line only when something moved
-  const foot: { label: string; utia: number; sign: string; tot?: boolean }[] = [];
-  if (e && all) {
-    const sum = (k: Payment["kind"]) => d.recent_payments.filter((x) => x.kind === k).reduce((s, x) => s + x.amount_utia, 0);
-    const dep = sum("deposit"), out = sum("withdrawal_executed"), charged = sum("timeout");
-    if (dep - all.fees_utia - charged - out === e.balance_utia) {
-      foot.push({ label: "Deposited", utia: dep, sign: "+" });
-      if (all.fees_utia) foot.push({ label: `Fees paid for ${plural(all.settlements, "settlement")}`, utia: all.fees_utia, sign: "−" });
-      if (charged) foot.push({ label: "Charged for timed-out promises", utia: charged, sign: "−" });
-      if (out) foot.push({ label: "Withdrawn", utia: out, sign: "−" });
-      foot.push({ label: "Escrow now", utia: e.balance_utia, sign: "", tot: true });
-    }
-  }
-  const dec = decimals([...moves.map((m) => m.utia), ...foot.map((f) => f.utia)]);
-  const shown = moves.slice((page - 1) * SIZE, page * SIZE);
-  return (
-    <>
-      <div className="lg-tw">
-        <table className="lg-t lg-one pb-st">
-          <LedgerHead one escrow />
-          <tbody>
-            {moves.length === 0 && <tr className="lg-empty"><td colSpan={9}>No escrow movement on record.</td></tr>}
-            {shown.map((m) => <MoveRow key={m.key} m={m} age={age(now - Date.parse(m.time))} dec={dec} />)}
-          </tbody>
-          {foot.length > 0 && page === Math.ceil(moves.length / SIZE) && (
-            <tfoot>
-              {foot.map((f) => (
-                <tr key={f.label} className={f.tot ? "tot" : undefined}>
-                  <td colSpan={5} className="fl">{f.label}</td>
-                  <td className="c-fee num"><Signed sign={f.sign} utia={f.utia} dec={dec} /></td>
-                  <td className="c-e" /><td className="gap" aria-hidden="true" /><td className="tn" />
-                </tr>
-              ))}
-            </tfoot>
-          )}
-        </table>
-      </div>
-      {moves.length > 0 && <Pager total={moves.length} page={page} size={SIZE} onPage={onPage} noun={moves.length === 1 ? "escrow movement" : "escrow movements"} />}
-    </>
-  );
-}
-
 /**
  * One publisher: whose account it is; under it, on the left, its four figures in one frame, a row each (the escrow it
  * has left now, and over its whole record its blobs, what it paid, and how many of its blobs Tensile found available);
  * on the right, in a frame of the same make, when it last and first posted and where; then its transactions, newest
- * first: its blobs as the Blobs list draws them, and its escrow movements between them.
+ * first, under three tabs: All, every Fibre transaction of the account, successful and failed; Blobs, its blob
+ * payments as the Blobs list draws them, the failed ones among them; Escrow, its deposits and withdrawal requests, and
+ * the escrow's statement under them. No figure above counts a failed transaction: it moved nothing.
  */
 function Publisher({ addr }: { addr: string }) {
   const params = useSearchParams();
   const [page, setPageRaw] = usePage();
-  const [kindPick, setKindPick] = useState<Kind>(() => { const k = params.get("kind"); return k === "blobs" || k === "escrow" ? k : "all"; });
+  // the tab, from the address; a namespace is a filter of the blobs, so a link with one and no tab opens Blobs
+  const [kindPick, setKindPick] = useState<Kind>(() => {
+    const k = params.get("kind");
+    return k === "blobs" || k === "escrow" ? k : (params.get("namespace") ?? "").trim() ? "blobs" : "all";
+  });
   const [ns, setNsRaw] = useState((params.get("namespace") ?? "").trim().toLowerCase());
   // a new page opens at the list's top when the reader had scrolled past it
   const setPage = useCallback((p: number) => {
@@ -250,27 +129,20 @@ function Publisher({ addr }: { addr: string }) {
   const skew = tip.data?.server_time && tip.fetchedAt ? Date.parse(tip.data.server_time) - Date.parse(tip.fetchedAt) : 0;
   const now = Date.now() + skew;
 
-  // The escrow's history is whole while the API did not stop it at its cap: a busy account's deposits can fall out of
-  // that cap, and a part of a history is never shown, so its list is its blobs, with a line to the API under them.
-  const wholeMoney = !!pub.data && pub.data.recent_payments.length < PAYMENTS_CAP;
+  // An account that posted has the three tabs; one that never posted has only its escrow's transactions and statement.
   const posted = !!pub.data?.windows.find((w) => w.window.name === "all")?.settlements;
-  const money = useMemo(() => (pub.data && wholeMoney ? movesOf(pub.data) : null), [pub.data, wholeMoney]);
-  const moveN = money?.list.length ?? 0;
-  // the kind can be picked when there is some of each; an account that never posted has only its statement
-  const split = posted && moveN > 0;
-  const kind: Kind = split ? kindPick : "all";
-  const statement = wholeMoney && (!posted || kind === "escrow");
+  const kind: Kind = posted ? kindPick : "escrow";
+  const blobs = kind === "blobs";
   const offset = (Math.min(page, MAX_PAGE) - 1) * SIZE;
   const live = page === 1;
-  const blobsPath = useCallback((o: number) => `/v1/blobs?limit=${SIZE}&offset=${o}&publisher=${encodeURIComponent(addr)}${ns ? `&namespace=${encodeURIComponent(ns)}` : ""}`, [addr, ns]);
-  const feed = useLedger(blobsPath(offset), live && !statement, tip.data?.height, skew);
-
-  // Under All, each page of blobs takes the movements of its own stretch of time (placeMoves), by the rows the list
-  // shows. A namespace is a filter of blobs: the movements step aside while one is set.
-  const merging = kind === "all" && !ns && posted && moveN > 0;
-  const moves = useMemo<Moves | undefined>(() => (merging && money
-    ? { place: (path, rows, total) => placeMoves(money, path, rows, total), rank: money.rank }
-    : undefined), [merging, money]);
+  // Blobs: a page of the account's blobs with its failed blob payments among them (the Blobs list's own rows), the
+  // first page live. Under the other tabs the first page, unfiltered, is read once, for the newest blob in the frame
+  // above: the page Blobs opens on.
+  const blobsPath = (o: number, n: string) => `/v1/blobs?limit=${SIZE}&offset=${o}&publisher=${encodeURIComponent(addr)}&include_failed=1${n ? `&namespace=${encodeURIComponent(n)}` : ""}`;
+  const feed = useLedger(blobs ? blobsPath(offset, ns) : blobsPath(0, ""), blobs && live, tip.data?.height, skew);
+  // All and Escrow: the account's transactions, successful and failed, a page at a time over the whole record; the
+  // first page asked again as often as the API's own cache turns
+  const txs = useApi<PubTxs>(pub.data && !blobs ? `/v1/publishers/${encodeURIComponent(addr)}/txs?view=${kind}&limit=${SIZE}&offset=${offset}` : null, live ? 15000 : 30000);
 
   // What the API says of all its blobs, whatever the period: its first and last blob, the namespaces of the whole
   // record (the "all" span's), and Tensile's reading of every one. An API from before them, or one that has not counted
@@ -297,8 +169,9 @@ function Publisher({ addr }: { addr: string }) {
 
   const p = data.publisher;
   const all = data.windows.find((w) => w.window.name === "all");
-  // the newest blob: the ledger's, while it shows a newer one than the API's last settlement (or the last read of all of them)
-  const newest = [feed.loaded && !ns ? feed.rows[0]?.settlement_time : undefined, head.data?.blobs[0]?.settlement_time, p.last_settlement_at ?? undefined]
+  // the newest blob: the ledger's, while it shows a newer one than the API's last settlement (or the last read of all of
+  // them); a failed blob payment among its rows settled no blob
+  const newest = [feed.loaded && !ns ? feed.rows.find(isBlob)?.settlement_time : undefined, head.data?.blobs[0]?.settlement_time, p.last_settlement_at ?? undefined]
     .filter((t): t is string => !!t).sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
   // the first blob: its time, and the height where the blob itself was read
   const firstBlob = firstAt !== undefined ? null : whole ? whole[whole.length - 1] ?? null : oldest ?? null;
@@ -355,14 +228,22 @@ function Publisher({ addr }: { addr: string }) {
   const liveWord = !live || feed.refused ? null : feed.error ? "Not answering" : feed.loaded ? "Live" : "Connecting";
   const i = addr.indexOf("1");
 
-  // the list's count: what it holds under the kind and the namespace picked, as its pager counts it
-  const blobTotal = feed.loaded ? feed.total : ns ? null : p.settlements;
-  const listN = statement ? moveN : blobTotal == null ? null : blobTotal + (merging ? moveN : 0);
-  // a long account's escrow history is not whole here: where to find it, quietly, under its blobs
-  const someMoves = data.recent_payments.some((x) => x.kind !== "settlement");
-  const elsewhere = !wholeMoney && posted && (
-    <p className="pb-more">{someMoves ? "Escrow movements" : "Older escrow movements"} are <a href={`${API_BASE}/v1/exports`} title="Every account's payments, deposits and withdrawals included, day by day">in the API →</a></p>
-  );
+  // the list's count: what the tab holds, as its pager counts it (Blobs: under the namespace picked)
+  const txsHere = txs.data && txs.data.view === kind ? txs.data : null;
+  const listN = blobs ? (feed.loaded ? feed.total : ns ? null : p.settlements) : txsHere ? txsHere.total : null;
+
+  // Escrow's statement under its last page: what went in, what the blobs and any timed-out promise cost, what was paid
+  // out, and the escrow that leaves, over the whole record; shown only when it closes exactly on the balance, a line
+  // only when something moved
+  const foot: Foot = [];
+  const sums = txsHere?.sums;
+  if (e && sums && sums.deposited_utia - sums.fees_utia - sums.charged_utia - sums.withdrawn_utia === e.balance_utia) {
+    foot.push({ label: "Deposited", utia: sums.deposited_utia, sign: "+" });
+    if (sums.fees_utia) foot.push({ label: `Fees paid for ${plural(sums.settlements, "settlement")}`, utia: sums.fees_utia, sign: "−" });
+    if (sums.charged_utia) foot.push({ label: "Charged for timed-out promises", utia: sums.charged_utia, sign: "−" });
+    if (sums.withdrawn_utia) foot.push({ label: "Withdrawn", utia: sums.withdrawn_utia, sign: "−" });
+    foot.push({ label: "Escrow now", utia: e.balance_utia, sign: "", tot: true });
+  }
 
   // The account's four figures, each a label and a value, what qualifies it on hover: the escrow it has left now (an
   // amber dot when it cannot pay for one more blob of its usual size, or settlements took part of a queued
@@ -391,8 +272,8 @@ function Publisher({ addr }: { addr: string }) {
   // what Tensile read: "none yet" when it has read none, a placeholder while the count is on its way
   const readState: "some" | "none" | "wait" | "na" = read ? (readDone > 0 ? "some" : "none") : readWait ? "wait" : "na";
 
-  // its namespaces, the most used first: each one shows its blobs alone in the list below
-  const pickNs = (x: string) => { setView({ ns: x, ...(kind === "escrow" ? { kind: "all" as const } : {}) }); document.getElementById("list")?.scrollIntoView({ block: "start" }); };
+  // its namespaces, the most used first: each one shows its blobs alone under Blobs
+  const pickNs = (x: string) => { setView({ ns: x, kind: "blobs" }); document.getElementById("list")?.scrollIntoView({ block: "start" }); };
   const nsLinks = nss && nss.length > 0 && <>
     {nss.map((x) => (
       <button key={x.ns} type="button" className="nsb" title={`${x.ns} · ${int(x.n)} settlement${x.n === 1 ? "" : "s"} · show only these`} onClick={() => pickNs(x.ns)}>{nsDisplay(x.ns)}</button>
@@ -457,15 +338,16 @@ function Publisher({ addr }: { addr: string }) {
         <div className="list-head">
           <div className="pb-lh">
             <h2 className="pb-th">Transactions{listN != null && <span className="n">{int(listN)}</span>}</h2>
-            {split && (
+            {posted && (
               <div className="seg pb-kinds" role="group" aria-label="kind">
                 {KINDS.map(([k, label]) => (
-                  <button key={k} type="button" aria-pressed={kind === k} onClick={() => setView(k === "escrow" ? { kind: k, ns: "" } : { kind: k })}>{label}</button>
+                  <button key={k} type="button" aria-pressed={kind === k} onClick={() => setView(k === "blobs" ? { kind: k } : { kind: k, ns: "" })}>{label}</button>
                 ))}
               </div>
             )}
           </div>
-          {posted && !statement && (
+          {/* the namespace and the live word are the blobs' */}
+          {blobs && (
             <div className="lg-tools">
               <Picker name="Namespace" icon={NS_ICON} value={ns} text={ns ? <NsName ns={ns} /> : null} choices={nsChoices}
                 accept={(s) => (/^[0-9a-f]{58}$/.test(s) ? s : null)} placeholder="Name or hex" onPick={setNs} />
@@ -474,27 +356,16 @@ function Publisher({ addr }: { addr: string }) {
           )}
         </div>
 
-        {statement
-          ? <Statement d={data} moves={money?.list ?? []} page={page} onPage={setPage} now={now} />
-          : (
-            <Ledger feed={feed} size={SIZE} live={live} skew={skew} onePublisher moves={moves} onNs={setNs}>
-              {(n, placed) => {
-                // under All, the pages follow the blobs' and each counts its blobs and the movements between them, of
-                // every transaction; what they are on hover
-                const all = n + moveN;
-                return (
-                  <>
-                    {elsewhere}
-                    {n === 0 && page === 1 ? null : <Pager total={n} page={page} size={SIZE} maxPages={MAX_PAGE} onPage={setPage}
-                      range={merging ? placed?.range : undefined} of={merging ? all : undefined}
-                      noun={ns ? (n === 1 ? "settlement with this filter" : "settlements with this filter")
-                        : merging ? <span title={`${plural(n, "blob settlement")} and ${plural(moveN, "escrow movement")}`}>{all === 1 ? "transaction" : "transactions"}</span>
-                        : n === 1 ? "settlement" : "settlements"} />}
-                  </>
-                );
-              }}
+        {blobs
+          ? (
+            // its blobs as the Blobs list draws them, a failed blob payment among them in its place; the pager names its
+            // rows blob payments once a failed one is among them, as the Blobs list does
+            <Ledger feed={feed} size={SIZE} live={live} skew={skew} onePublisher status onNs={setNs}>
+              {(n, _, failed = 0) => (n === 0 && page === 1 ? null : <Pager total={n} page={page} size={SIZE} maxPages={MAX_PAGE} onPage={setPage}
+                noun={`${failed === 0 ? "settlement" : "blob payment"}${n === 1 ? "" : "s"}${ns ? " with this filter" : ""}`} />)}
             </Ledger>
-          )}
+          )
+          : <TxList view={kind === "escrow" ? "escrow" : "all"} offset={offset} data={txs.data} error={txs.error} page={page} size={SIZE} onPage={setPage} now={now} foot={foot} />}
       </section>
     </>
   );

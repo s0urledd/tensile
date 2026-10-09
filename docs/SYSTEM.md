@@ -132,7 +132,8 @@ derived index of them.
 
 `failed_txs.jsonl` is read only by the transaction lookups (`/v1/blobs?tx=`
 and `/v1/txs/{hash}`, section 9), the Blobs list's failed blob payments
-(`/v1/blobs?include_failed=1`) and a validator's endpoint history (a
+(`/v1/blobs?include_failed=1`), a publisher's transactions
+(`/v1/publishers/{addr}/txs`) and a validator's endpoint history (a
 final failed registration signed by its current operator address): a
 transaction that failed in a block settled nothing, so it is
 in no count, rollup or figure, and `publications.jsonl` and
@@ -739,6 +740,9 @@ GET /v1/tip                   the newest block read, and the newest blob stored 
 GET /v1/market                the publisher side, and the network's reading totals over the whole
                               record (readings: available, unavailable, not_read)
 GET /v1/publishers[/{addr}]   incl. the escrow withdrawal queue read from state
+GET /v1/publishers/{addr}/txs one account's Fibre transactions, successful and failed, newest first,
+                              paged over its whole record (?view=all|escrow, ?limit=, ?offset=):
+                              a withdrawal request with its payout, escrow with its statement (sums)
 GET /v1/params                x/fibre params + change log (heights, block times), pinned protocol
                               constants, the fee formula (price_formula)
 GET /v1/signing               endorsements per settled promise against the ⅔ quorum
@@ -757,8 +761,34 @@ transaction can never be in a block again and the answer cannot change.
 Any other failed answer is `no-store`. `/v1/txs/{hash}` keeps the default
 for a success and a final failure, and is `no-store` for a failure that was
 not final (its bytes could still take effect in a later block) and for a
-404; `/v1/blobs?include_failed=1` is `no-store` for a page holding such a
-failure.
+404; `/v1/blobs?include_failed=1` and `/v1/publishers/{addr}/txs` are
+`no-store` for a page holding such a failure.
+
+**A publisher's transactions.** `/v1/publishers/{addr}/txs` lists an
+account's successes from `payments` (its blob payments, deposits,
+withdrawal requests and the timeouts of its promises, one row per message;
+a payout is no transaction and stands on the request it paid) and its
+failures one row per transaction, under the lists' rules: a failed blob
+payment as `/v1/blobs?include_failed=1&publisher=` lists it (by its
+promise's publisher, final or not, MsgExec included), a failed deposit or
+withdrawal request by `failed_tx_msgs` (a final failure's top-level
+message, by its signer), a failed timeout under no account. Newest first by
+height, transaction and message, paged by `limit` and `offset` over the
+whole record: the failures are placed among the successes by counting the
+successes before each (bounded ranges of `payments_publisher_time`), as
+the Blobs list places its failures. A withdrawal request's `payout` is
+its `withdrawal_queue` row, sought by its primary key: x/fibre keys a
+withdrawal by its signer and the block time of its request, which is the
+request's own payments time, so the link is exact. It is `paid` only when
+the queue history attributed a payout on record to it (`executed`), with
+that payout's height, time and amount; `pending` while it is queued or its
+outcome is not settled yet, whatever the time; `consumed` or
+`unattributed` as the history says; absent when the history never saw the
+withdrawal. `view=escrow` carries `sums`, the successful movements over
+the whole record (deposited, fees, timed-out charges, every payout), which
+close on the escrow's balance once the escrow read and the scanner stand at
+the same block. No schema change: every statement seeks an index the store
+already has.
 
 **Validator addresses.** Every row is keyed by the consensus address in
 lower-case hex, and the answers keep naming validators by it (`address`,
@@ -785,8 +815,9 @@ with, so a feed reader never sees an entry twice.
 
 The public documentation is the site's API page (`web/src/app/api`, served at `/api/`):
 every documented route in order, with its parameters, a Try it and an
-example answer (`endpoints.ts`; `/v1/txs/{hash}`'s is taken from a real
-answer once the route is deployed), then what every route shares. `/v1/meta`
+example answer (`endpoints.ts`; `/v1/txs/{hash}`'s and
+`/v1/publishers/{addr}/txs`'s are taken from real answers once the routes
+are deployed), then what every route shares. `/v1/meta`
 and `/v1/avatars` are the site's own and are not on it. A
 response carries what some reader uses: a field nothing reads is dropped
 from the answer, never from the store (the snapshot rows keep their
@@ -959,7 +990,7 @@ without that second request.
 | `/blob/?hash=`, `?id=`, `?tx=` | `/v1/blobs/{hash}`; a blob ID (`?id=`) or a settlement transaction (`?tx=`) is found first with `/v1/blobs?commitment=` or `?tx=`, and several matches open the Blobs list of them; a blob not on record yet is asked for again each time `/v1/tip`'s `latest_blob` changes, and every 30 s. A `?tx=` answer with a `failed_tx` renders the transaction page (`/v1/txs/{hash}`, below; with an API before that route, the `failed_tx` itself) and stops asking: it is the answer, final or not. The blob's Gas and Transaction fee are its `tx_cost`, and the transaction hash in its mast opens `/tx/` |
 | `/tx/?hash=` | `/v1/txs/{hash}`: one Fibre transaction, successful or failed, its block, messages, gas and fee, what it did or asked for, the error, and the blob, publisher or validator it touches |
 | `/publishers/` | `/v1/market`, `/v1/publishers` |
-| `/publisher/?addr=` | `/v1/publishers/{addr}` |
+| `/publisher/?addr=` | `/v1/publishers/{addr}` (the account's figures; none counts a failed transaction); its tabs: All and Escrow `/v1/publishers/{addr}/txs?view=all` and `?view=escrow` (a row opens `/tx/`; a withdrawal request's payout under its type; Escrow's statement under its last page, shown when it closes on the balance), Blobs `/v1/blobs?publisher=&include_failed=1` (the first page live, the namespace picker) |
 | `/methodology/` | `/v1/params` (the protocol-parameters section; the rest is static) |
 | `/api/` | `/v1/health` once a minute, only to say when the API does not answer (a 429 reads busy, not down; the observer's own checks are not shown), and each route when its Try it is sent; its example answers are fixed text (`endpoints.ts`) |
 
