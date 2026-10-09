@@ -15,6 +15,8 @@ import { Eye } from "@/components/Metrics";
 import { age, monthDayTime } from "@/components/BlobsDeck";
 import Warn from "@/components/Warn";
 import { publisherAddr } from "@/lib/sitefind";
+// STUB (design/publisher-txs, never merged): the lower tables in three alternatives, ?pv=1|2|3
+import TxList, { pvOf, stWord, type PubTxs, type Foot } from "@/components/PubTxs";
 
 /** the publisher's figures over one of the periods, with the namespaces of its settlements in it (the most used first, at most 10) */
 type Span = {
@@ -221,6 +223,8 @@ function Publisher({ addr }: { addr: string }) {
   const [page, setPageRaw] = usePage();
   const [kindPick, setKindPick] = useState<Kind>(() => { const k = params.get("kind"); return k === "blobs" || k === "escrow" ? k : "all"; });
   const [ns, setNsRaw] = useState((params.get("namespace") ?? "").trim().toLowerCase());
+  // STUB (design/publisher-txs): the alternative; 0 is today's page
+  const pv = pvOf(params.get("pv"));
   // a new page opens at the list's top when the reader had scrolled past it
   const setPage = useCallback((p: number) => {
     setPageRaw(p);
@@ -257,17 +261,20 @@ function Publisher({ addr }: { addr: string }) {
   const money = useMemo(() => (pub.data && wholeMoney ? movesOf(pub.data) : null), [pub.data, wholeMoney]);
   const moveN = money?.list.length ?? 0;
   // the kind can be picked when there is some of each; an account that never posted has only its statement
-  const split = posted && moveN > 0;
+  // STUB (design/publisher-txs): under ?pv= the tabs stand for any account that posted, each its own table
+  const split = posted && (pv > 0 || moveN > 0);
   const kind: Kind = split ? kindPick : "all";
-  const statement = wholeMoney && (!posted || kind === "escrow");
+  const statement = !pv && wholeMoney && (!posted || kind === "escrow");
   const offset = (Math.min(page, MAX_PAGE) - 1) * SIZE;
   const live = page === 1;
   const blobsPath = useCallback((o: number) => `/v1/blobs?limit=${SIZE}&offset=${o}&publisher=${encodeURIComponent(addr)}${ns ? `&namespace=${encodeURIComponent(ns)}` : ""}`, [addr, ns]);
-  const feed = useLedger(blobsPath(offset), live && !statement, tip.data?.height, skew);
+  const feed = useLedger(blobsPath(offset), live && !statement && (!pv || kind === "blobs"), tip.data?.height, skew);
+  // STUB (design/publisher-txs): All and Escrow from the route the API would add (the design shots' mock)
+  const txs = useApi<PubTxs>(pv && kind !== "blobs" ? `/v1/publishers/${encodeURIComponent(addr)}/txs?view=${kind}&limit=${SIZE}&offset=${offset}` : null, 30000);
 
   // Under All, each page of blobs takes the movements of its own stretch of time (placeMoves), by the rows the list
   // shows. A namespace is a filter of blobs: the movements step aside while one is set.
-  const merging = kind === "all" && !ns && posted && moveN > 0;
+  const merging = !pv && kind === "all" && !ns && posted && moveN > 0;
   const moves = useMemo<Moves | undefined>(() => (merging && money
     ? { place: (path, rows, total) => placeMoves(money, path, rows, total), rank: money.rank }
     : undefined), [merging, money]);
@@ -298,7 +305,7 @@ function Publisher({ addr }: { addr: string }) {
   const p = data.publisher;
   const all = data.windows.find((w) => w.window.name === "all");
   // the newest blob: the ledger's, while it shows a newer one than the API's last settlement (or the last read of all of them)
-  const newest = [feed.loaded && !ns ? feed.rows[0]?.settlement_time : undefined, head.data?.blobs[0]?.settlement_time, p.last_settlement_at ?? undefined]
+  const newest = [feed.loaded && !ns ? feed.rows.find((b) => b.status !== "failed")?.settlement_time : undefined, head.data?.blobs[0]?.settlement_time, p.last_settlement_at ?? undefined]
     .filter((t): t is string => !!t).sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
   // the first blob: its time, and the height where the blob itself was read
   const firstBlob = firstAt !== undefined ? null : whole ? whole[whole.length - 1] ?? null : oldest ?? null;
@@ -357,7 +364,8 @@ function Publisher({ addr }: { addr: string }) {
 
   // the list's count: what it holds under the kind and the namespace picked, as its pager counts it
   const blobTotal = feed.loaded ? feed.total : ns ? null : p.settlements;
-  const listN = statement ? moveN : blobTotal == null ? null : blobTotal + (merging ? moveN : 0);
+  const listN = pv && kind !== "blobs" ? txs.data?.total ?? null
+    : statement ? moveN : blobTotal == null ? null : blobTotal + (merging ? moveN : 0);
   // a long account's escrow history is not whole here: where to find it, quietly, under its blobs
   const someMoves = data.recent_payments.some((x) => x.kind !== "settlement");
   const elsewhere = !wholeMoney && posted && (
@@ -392,7 +400,7 @@ function Publisher({ addr }: { addr: string }) {
   const readState: "some" | "none" | "wait" | "na" = read ? (readDone > 0 ? "some" : "none") : readWait ? "wait" : "na";
 
   // its namespaces, the most used first: each one shows its blobs alone in the list below
-  const pickNs = (x: string) => { setView({ ns: x, ...(kind === "escrow" ? { kind: "all" as const } : {}) }); document.getElementById("list")?.scrollIntoView({ block: "start" }); };
+  const pickNs = (x: string) => { setView({ ns: x, ...(pv ? { kind: "blobs" as const } : kind === "escrow" ? { kind: "all" as const } : {}) }); document.getElementById("list")?.scrollIntoView({ block: "start" }); };
   const nsLinks = nss && nss.length > 0 && <>
     {nss.map((x) => (
       <button key={x.ns} type="button" className="nsb" title={`${x.ns} · ${int(x.n)} settlement${x.n === 1 ? "" : "s"} · show only these`} onClick={() => pickNs(x.ns)}>{nsDisplay(x.ns)}</button>
@@ -401,6 +409,18 @@ function Publisher({ addr }: { addr: string }) {
   </>;
   const nsWord = `Namespace${nss && nss.length + nsMore === 1 ? "" : "s"}`;
   const showFacts = posted && (!!newest || reading);
+
+  // STUB (design/publisher-txs): Escrow's statement lines, from the route's sums of its successful transactions, shown
+  // only when they close exactly on the balance
+  const escFoot: Foot = [];
+  const sums = txs.data?.sums;
+  if (pv && e && all && sums && sums.deposited_utia - all.fees_utia - sums.charged_utia - sums.withdrawn_utia === e.balance_utia) {
+    escFoot.push({ label: "Deposited", utia: sums.deposited_utia, sign: "+" });
+    if (all.fees_utia) escFoot.push({ label: `Fees paid for ${plural(all.settlements, "settlement")}`, utia: all.fees_utia, sign: "−" });
+    if (sums.charged_utia) escFoot.push({ label: "Charged for timed-out promises", utia: sums.charged_utia, sign: "−" });
+    if (sums.withdrawn_utia) escFoot.push({ label: "Withdrawn", utia: sums.withdrawn_utia, sign: "−" });
+    escFoot.push({ label: "Escrow now", utia: e.balance_utia, sign: "", tot: true });
+  }
 
   return (
     <>
@@ -460,12 +480,12 @@ function Publisher({ addr }: { addr: string }) {
             {split && (
               <div className="seg pb-kinds" role="group" aria-label="kind">
                 {KINDS.map(([k, label]) => (
-                  <button key={k} type="button" aria-pressed={kind === k} onClick={() => setView(k === "escrow" ? { kind: k, ns: "" } : { kind: k })}>{label}</button>
+                  <button key={k} type="button" aria-pressed={kind === k} onClick={() => setView(k === "escrow" || (pv && k !== "blobs") ? { kind: k, ns: "" } : { kind: k })}>{label}</button>
                 ))}
               </div>
             )}
           </div>
-          {posted && !statement && (
+          {posted && !statement && (!pv || kind === "blobs") && (
             <div className="lg-tools">
               <Picker name="Namespace" icon={NS_ICON} value={ns} text={ns ? <NsName ns={ns} /> : null} choices={nsChoices}
                 accept={(s) => (/^[0-9a-f]{58}$/.test(s) ? s : null)} placeholder="Name or hex" onPick={setNs} />
@@ -474,7 +494,19 @@ function Publisher({ addr }: { addr: string }) {
           )}
         </div>
 
-        {statement
+        {pv && kind !== "blobs"
+          ? <TxList pv={pv} view={kind === "escrow" ? "escrow" : "all"} data={txs.data} error={txs.error} page={page} size={SIZE} onPage={setPage} now={now} foot={escFoot} />
+          : pv
+          ? (
+            // STUB (design/publisher-txs): Blobs, the Blobs list's own table with its Status column (variant A)
+            <Ledger feed={feed} size={SIZE} live={live} skew={skew} onePublisher status={stWord(pv)} onNs={setNs}>
+              {(n) => (n === 0 && page === 1 ? null : (
+                <Pager total={n} page={page} size={SIZE} maxPages={MAX_PAGE} onPage={setPage}
+                  noun={ns ? (n === 1 ? "blob payment with this filter" : "blob payments with this filter") : n === 1 ? "blob payment" : "blob payments"} />
+              ))}
+            </Ledger>
+          )
+          : statement
           ? <Statement d={data} moves={money?.list ?? []} page={page} onPage={setPage} now={now} />
           : (
             <Ledger feed={feed} size={SIZE} live={live} skew={skew} onePublisher moves={moves} onNs={setNs}>

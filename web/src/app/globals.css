@@ -1887,6 +1887,62 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
 .lg-t .xw b { font-weight: 500; color: var(--text); }
 .lg-t .xw .sep { margin: 0 7px; color: var(--text-3); }
 
+/* ---- STUB (design/publisher-txs, never merged): a publisher's transactions, successful and failed, under its page's
+   All | Blobs | Escrow tabs, in three alternatives (?pv=; components/PubTxs.tsx) ----
+   Blobs: the publisher's blob table with the Blobs list's Status column (variant A), the dot hung in the cell's padding
+   (the 12px gutter + the dot's 15), so every word starts on one line under the head. Its room: no movement stands in
+   the TX hash column any more (126px, as on the Blobs list), the amounts are fees alone (104px holds "−23.690 TIA"),
+   Endorsed as on the Blobs list (128px); Status as wide as its head or "Success" (TX STATUS 106px, STATUS 92px); the
+   time, centred, keeps the rest */
+.lg-one.pst th.c-b { width: 126px; }
+.lg-one.pst th.c-fee { width: 104px; }
+.lg-one.pst th.c-e { width: 128px; }
+.lg-one.pst th.c-st { width: 92px; }
+.lg-one.pst.pst-tx th.c-st { width: 106px; }
+.lg-one.pst th.c-st, .lg-one.pst td.c-st { padding-left: 27px; }
+
+/* All and Escrow: one transaction a row, every row opening its transaction's page */
+.ptx-t td.c-k { color: var(--text); }
+.ptx-t td.c-bh, .ptx-t td.c-am { font-weight: 500; }
+.ptx-t .c-tm .tm { font-weight: 500; }
+.ptx-t .c-tm .ag { font-size: var(--t-small); color: var(--text-3); }
+/* a withdrawal request only moves money from available into the queue: its amount unsigned and quieter, as today's
+   statement draws it; a timed-out promise's charge red */
+.ptx-t tr.wr td.c-am { color: var(--text-2); font-weight: 400; }
+.ptx-t tr.to td.c-am { color: var(--fault); }
+/* Payout: Pending quiet, Paid in the text's own colour, a request settlements used up in amber */
+.ptx-t .po { color: var(--text-2); }
+.ptx-t .po.paid { color: var(--text); font-weight: 500; }
+.ptx-t .po.hold, .ptx-t .k2.hold { color: var(--hold-ink); }
+.pb-st tfoot tr.tot td.c-am { font-weight: 600; box-shadow: inset 0 1px 0 var(--line); }
+
+/* 1: the Blobs list's ledger: the hash first at the table's inset, the type, the time centred in what is left, the
+   height and the amount right-aligned on their digits, the status as Blobs' (its dot hung) */
+.ptx-1 th.c-x { width: 150px; } .ptx-1 th.c-k { width: 200px; } .ptx-1 th.c-bh { width: 120px; } .ptx-1 th.c-am { width: 170px; }
+.ptx-1 th.c-st { width: 130px; } .ptx-1 th.c-po { width: 120px; }
+.ptx-1 th.c-tm, .ptx-1 td.c-tm { text-align: center; }
+.ptx-1 .c-tm .ag { margin-left: 9px; }
+.ptx-1 th.c-st, .ptx-1 td.c-st { padding-left: 27px; }
+
+/* 2, 3: the validator's Endpoint history: equal tracks, the height left-aligned as every table's first column, the rest
+   centred under their heads */
+.ptx-2 th, .ptx-3 th { width: calc(100% / 6); }
+.ptx-2.ptx-esc th { width: calc(100% / 7); }
+.ptx-2 th, .ptx-2 td, .ptx-3 th, .ptx-3 td { text-align: center; }
+.ptx-2 th.c-bh, .ptx-2 td.c-bh, .ptx-3 th.c-bh, .ptx-3 td.c-bh { text-align: left; }
+.ptx-2 tfoot td.fl, .ptx-3 tfoot td.fl { text-align: right; }
+/* the amounts right-aligned in one box as wide as the widest on the page, the box centred: the digits stack */
+.ptx-t .amb { display: inline-block; min-width: var(--am-w, 0px); text-align: right; }
+/* each status word in a box as wide as "Success", centred, its dot hung to the left: both words start on one line and
+   both dots stand in one column */
+.ptx-2 td.c-st .st, .ptx-3 td.c-st .st { min-width: 53px; }
+/* the copy mark hangs to the hash's right, as on the validator page, so the hash itself stands centred */
+.ptx-2 .c-x .cp, .ptx-3 .c-x .cp { margin-right: -20px; }
+/* two lines where a fact has a quiet note: the time over how long ago; in 3, a withdrawal request's type over its payout */
+.ptx-2 .tw, .ptx-3 .tw, .ptx-3 .kw { display: inline-flex; flex-direction: column; align-items: center; justify-content: center; min-height: 36px; vertical-align: middle; }
+.ptx-2 .tw .tm, .ptx-3 .tw .tm, .ptx-3 .kw > span:first-child { line-height: 20px; }
+.ptx-2 .tw .ag, .ptx-3 .tw .ag, .ptx-3 .kw .k2 { font-size: var(--t-small); line-height: 16px; color: var(--text-3); }
+
 /* the namespaces view */
 .lg-nss th.n-nm { width: 26%; } .lg-nss th.n-pub { width: 10%; } .lg-nss th.n-n { width: 11%; } .lg-nss th.n-sz { width: 12%; } .lg-nss th.n-24 { width: 13%; } .lg-nss th.n-first { width: 14%; }
 .lg-nss th.n-first, .lg-nss td.n-first { padding-left: 28px; }

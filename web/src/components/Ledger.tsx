@@ -242,7 +242,7 @@ export type Moves = { place: (path: string, rows: Blob[], total: number) => Plac
  * escrow's statement. The statement alone (escrow) heads what its rows hold: the kind of movement and its amount, the
  * blobs' columns left unnamed (they stay, so nothing moves when the kind changes)
  */
-export function LedgerHead({ one, escrow = false, fv = "" }: { one: boolean; escrow?: boolean; fv?: Fv }) {
+export function LedgerHead({ one, escrow = false, fv = "", stHead = "Status" }: { one: boolean; escrow?: boolean; fv?: Fv; stHead?: string }) {
   if (escrow) {
     return (
       <thead>
@@ -273,7 +273,7 @@ export function LedgerHead({ one, escrow = false, fv = "" }: { one: boolean; esc
           ? <th className="c-fee num" title="What each transaction moved into the escrow (+) or out of it (−): a blob's fee, a deposit, a withdrawal paid out.">Amount</th>
           : <th className="c-fee num">Fee paid</th>}
         {/* STUB (design/failed-blobs): the transaction's outcome on chain, Success or Failed */}
-        {statusCol(fv) && <th className="c-st">Status</th>}
+        {statusCol(fv) && <th className="c-st">{stHead}</th>}
         <th className="c-e num" title="Share of voting power whose signature on the settlement verified. A settlement needs ⅔.">Endorsed <Frac /></th>
         <th className="gap" aria-hidden="true" />
         <th className="tn" title="Tensile's own reading of each blob, once, near the end of its retention window."><span><Eye />Tensile</span></th>
@@ -341,7 +341,7 @@ type RowProps = { b: Blob; age: string | null; fresh: boolean; one: boolean; dec
  *   a / b: in the Status column, a red dot and the word (a), or a pill (b); the figures each "—";
  *   c: no Status column; the size, fee and endorsement cells are one cell that reads "● Failed · <reason>".
  */
-const FailedRow = memo(function FailedRow({ b, age: ag, fresh, fv, onNs, onOpen }: RowProps) {
+const FailedRow = memo(function FailedRow({ b, age: ag, fresh, one, fv, onNs, onOpen }: RowProps) {
   const tx = b.settlement_tx_hash?.toUpperCase() ?? "";
   const href = `/tx/?hash=${b.settlement_tx_hash ?? ""}`;
   const who = payer(b);
@@ -359,7 +359,8 @@ const FailedRow = memo(function FailedRow({ b, age: ag, fresh, fv, onNs, onOpen 
         <span className="ht">#{int(b.settlement_height)}</span>
       </td>
       <td className="c-ns"><button type="button" className="nsb" onClick={() => onNs(b.namespace)} title={`${b.namespace} · show only this namespace`}>{name}</button></td>
-      <td className="c-p">{who ? <><Who addr={who} /><CopyMark text={who} label="the publisher's address" /></> : "—"}</td>
+      {/* STUB (design/publisher-txs): one publisher's list names no publisher */}
+      {!one && <td className="c-p">{who ? <><Who addr={who} /><CopyMark text={who} label="the publisher's address" /></> : "—"}</td>}
       {statusCol(fv)
         ? <>
           <td className="c-sz num">{dash}</td>
@@ -455,7 +456,7 @@ function Placeholders({ rows, one, fv }: { rows: number; one: boolean; fv: Fv })
   );
 }
 
-export default function Ledger({ feed, size, live, skew, onePublisher = false, moves, emptyText, onNs, children }: {
+export default function Ledger({ feed, size, live, skew, onePublisher = false, moves, emptyText, status, onNs, children }: {
   feed: Feed;
   /** the rows a page holds: as many places are kept while the first one loads */
   size: number;
@@ -469,6 +470,8 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
   moves?: Moves;
   /** what the empty list says, in place of "No blob recorded" */
   emptyText?: React.ReactNode;
+  /** STUB (design/publisher-txs): one publisher's list with the Status column of the Blobs list's variant A, under this head */
+  status?: string;
   onNs: (ns: string) => void;
   /** the pager, under the table; it counts what the table shows: its rows, and any movements placed among them */
   children?: (total: number, placed?: Placed) => React.ReactNode;
@@ -478,7 +481,8 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
   // STUB (design/failed-blobs): the variant, from ?fv=; the Blobs list's only, never one publisher's
   const [fvRead, setFv] = useState<Fv>("");
   useEffect(() => { setFv(readFv()); }, []);
-  const fv: Fv = onePublisher ? "" : fvRead;
+  // STUB (design/publisher-txs): one publisher's list takes variant A's Status column when its page asks for it
+  const fv: Fv = onePublisher ? (status ? "a" : "") : fvRead;
 
   // ---- holding: while the reader is in the list, what is on screen stays ----
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -603,8 +607,8 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
         </div>
         <div className={`lg-tw${waiting ? " is-waiting" : ""}`} aria-busy={waiting || !shown.loaded}>
           {!shown.loaded && !feed.error && <span className="sr-only">Loading…</span>}
-          <table ref={tableRef} className={`lg-t${onePublisher ? " lg-one" : ""}${fv ? ` fv-${fv}` : ""}`}>
-            <LedgerHead one={onePublisher} fv={fv} />
+          <table ref={tableRef} className={`lg-t${onePublisher ? (status ? ` lg-one pst${status === "Status" ? "" : " pst-tx"}` : " lg-one") : ""}${fv && !onePublisher ? ` fv-${fv}` : ""}`}>
+            <LedgerHead one={onePublisher} fv={fv} stHead={status} />
             <tbody ref={bodyRef}>
               {!shown.loaded && (feed.error
                 ? <tr className="lg-empty"><td colSpan={cols}>{feed.refused ? `${feed.error.charAt(0).toUpperCase()}${feed.error.slice(1)}.` : `The observer API is not answering (${feed.error}).`}</td></tr>
