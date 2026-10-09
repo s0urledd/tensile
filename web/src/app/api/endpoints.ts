@@ -589,6 +589,7 @@ export const GROUPS: Group[] = [
           { name: "before_height", in: "query", type: "integer", desc: "Blobs settled before this height: pass `next_before_height`." },
           { name: "before_tx_index", in: "query", type: "integer", range: "0 or more", default: "0", desc: "With `before_height`: pass `next_before_tx_index`." },
           { name: "offset", in: "query", type: "integer", range: "0–100000", default: "0", desc: "Blobs to skip, for numbered pages." },
+          { name: "include_failed", in: "query", type: "string", values: ["0", "1"], default: "0", desc: "1 lists the blob payments that failed in a block among the blobs, in the same order and pages, each with `status` failed: its place in the blobs' fields, the promise's `namespace`, `publisher` and `promise_hash`, the chain's `code`, `codespace` and `reason`, and `final`. Blobs then carry `status` success; `total` counts both, `failed_total` the failed ones. Ignored with `commitment` or `tx`; a page holding a failure that is not `final` is not cached." },
         ],
         example: EX_BLOBS,
       },

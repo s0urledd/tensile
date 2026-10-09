@@ -2,14 +2,11 @@
 import { useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { type EndpointEvent, int, utcWord } from "@/lib/api";
+import { type EndpointEvent, int, utcWord, failedTitle } from "@/lib/api";
 import { CopyMark } from "@/components/Ledger";
 import Warn from "@/components/Warn";
 import { age, monthDayTime } from "@/components/BlobsDeck";
 import { openRow } from "@/lib/row";
-
-/** a failed transaction's hover: the reason in plain words, when Tensile has one */
-export const failedTitle = (reason?: string) => (reason ? `Transaction failed · ${reason}` : "Transaction failed");
 
 /**
  * the transactions among a validator's endpoint rows: every registration that took effect or failed, with or without

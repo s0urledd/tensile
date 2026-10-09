@@ -447,6 +447,8 @@ export type Reconstruct = {
 };
 
 export type Blob = {
+  /** "success" where the list carries its failed blob payments among the blobs (/v1/blobs?include_failed=1); absent elsewhere */
+  status?: "success";
   charge?: Charge | null;
   /** voting power whose signature over the promise verified, over the set's total at the promise height */
   attested_voting_power?: number;
@@ -476,6 +478,38 @@ export type Blob = {
   assignment_error?: string;
   reconstructable: Reconstruct | null;
 };
+
+/**
+ * A blob payment that failed in its block (a MsgPayForFibre transaction the chain ran and refused), as
+ * /v1/blobs?include_failed=1 lists it among the blobs: where it stood, with a blob's own names for it; what its promise
+ * named; the chain's error. It settled nothing: no blob, size, fee, endorsement or reading.
+ */
+export type FailedPayment = {
+  status: "failed";
+  promise_hash?: string;
+  namespace?: string;
+  /** as the message names it; absent when its strings were cut */
+  publisher?: string;
+  settlement_height: number;
+  settlement_tx_index: number;
+  /** the transaction that failed, in lower-case hex */
+  settlement_tx_hash: string;
+  /** its block's time */
+  settlement_time: string;
+  code: number;
+  codespace: string;
+  /** plain words for the chain's error code; absent when Tensile has none that rests on exact information */
+  reason?: string;
+  /** the fee and sequence were taken, so the same transaction can never be in a block again */
+  final: boolean;
+};
+/** a row of the Blobs list: a blob, or with include_failed=1 a failed blob payment */
+export type ListRow = Blob | FailedPayment;
+export const isFailed = (r: ListRow): r is FailedPayment => r.status === "failed";
+export const isBlob = (r: ListRow): r is Blob => r.status !== "failed";
+
+/** a failed transaction's hover: the reason in plain words, when Tensile has one */
+export const failedTitle = (reason?: string) => (reason ? `Transaction failed · ${reason}` : "Transaction failed");
 
 /** one message of a failed transaction, in its order */
 export type FailedTxMsg = { index: number; type_url: string; fibre: boolean; inner?: FailedTxMsg[] };

@@ -3,7 +3,7 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import PreLive from "@/components/PreLive";
-import { useApi, type Meta, type Market, type Blob, type NamespaceRow, type Publisher, type Tip, int, bytes, failedWords, hhmm, nsDisplay, nsName, shortMid, utcWord, TIP_MS } from "@/lib/api";
+import { useApi, type Meta, type Market, type Blob, type NamespaceRow, type Publisher, type Tip, int, bytes, failedWords, hhmm, isBlob, nsDisplay, nsName, shortMid, utcWord, TIP_MS } from "@/lib/api";
 import Pager, { usePage } from "@/components/Pager";
 import { useWindow, WindowSwitch } from "@/lib/window";
 import BlobsDeck, { age, dayTime } from "@/components/BlobsDeck";
@@ -17,6 +17,9 @@ import { useFind, type Found } from "@/lib/blobfind";
 
 /** rows per page of the blob list */
 const SIZE = 25;
+
+/** what the list's rows are: settlements, or blob payments once some that failed stand among them */
+const rowsNoun = (total: number, failed: number) => (failed === 0 ? "settlement" : "blob payment") + (total === 1 ? "" : "s");
 
 /** the last page /v1/blobs serves: its offset stops at 100,000 */
 const MAX_PAGE = Math.floor(100000 / SIZE) + 1;
@@ -234,12 +237,15 @@ function Page() {
   const live = page === 1;
   const tip = useApi<Tip>("/v1/tip", TIP_MS); // the header's stream: no request of its own
   const skew = tip.data?.server_time && tip.fetchedAt ? Date.parse(tip.data.server_time) - Date.parse(tip.fetchedAt) : 0;
-  const feed = useLedger(`/v1/blobs?limit=${SIZE}&offset=${offset}${q}`, live, tip.data?.height, skew);
-  // the chain's newest blobs, for the deck's rate and last blob: the list's own while it shows them, else a read of their own;
-  // the last ones read stand while another page or filter loads, so the deck does not blank
-  const plain = live && !q;
+  // the list holds the blob payments that failed in their block among the blobs, each in its place
+  const feed = useLedger(`/v1/blobs?limit=${SIZE}&offset=${offset}&include_failed=1${q}`, live, tip.data?.height, skew);
+  // the chain's newest blobs, for the deck's rate and last blob: the list's own while it shows them (its failed payments
+  // left out), else a read of their own; the last ones read stand while another page or filter loads, so the deck does
+  // not blank. A first page of failed payments alone shows none of the blobs: they are read on their own then
+  const listBlobs = live && !q && feed.loaded ? feed.rows.filter(isBlob) : null;
+  const plain = live && !q && !(listBlobs && listBlobs.length === 0 && feed.total > feed.failed);
   const head = useApi<{ blobs: Blob[] }>(plain ? null : `/v1/blobs?limit=${SIZE}`);
-  const newestRead = plain ? (feed.loaded ? feed.rows : null) : head.data?.blobs ?? null;
+  const newestRead = plain ? listBlobs : head.data?.blobs ?? null;
   const newestKept = useRef<Blob[] | null>(null);
   if (newestRead) newestKept.current = newestRead;
   const newest = newestRead ?? newestKept.current;
@@ -277,7 +283,7 @@ function Page() {
   const tx = !!hit && ((hit.by.length === 1 && hit.by[0] === "tx") || (hit.rows.length === 0 && !!hit.failedTx));
   const foundLabel = key?.kind === "id" ? "Blob ID" : tx ? "Tx" : !hit?.by.length || hit.by.length > 1 ? "Search" : hit.by[0] === "commitment" ? "Commitment" : "Blob";
   const foundFeed: Feed | null = key
-    ? { path: `find:${found}`, rows: hit?.rows ?? [], total: hit?.rows.length ?? 0, loaded: !!hit && !hit.error, error: hit?.error ?? null, refused: false, lastNewAt: 0 }
+    ? { path: `find:${found}`, rows: hit?.rows ?? [], total: hit?.rows.length ?? 0, failed: 0, loaded: !!hit && !hit.error, error: hit?.error ?? null, refused: false, lastNewAt: 0 }
     : null;
   // nothing matched: the transaction failed in a block, as the chain recorded it (its page says why); or Tensile has not
   // indexed it yet, or the transaction carries no blob
@@ -334,15 +340,15 @@ function Page() {
             ? (
               <>
                 {matched && <p className="lg-matched">{matched}</p>}
-                <Ledger feed={foundFeed} size={SIZE} live={false} skew={skew} emptyText={none || undefined} onNs={(v) => { setFound(""); setNs(v); }}>
+                <Ledger feed={foundFeed} size={SIZE} live={false} skew={skew} status emptyText={none || undefined} onNs={(v) => { setFound(""); setNs(v); }}>
                   {() => null}
                 </Ledger>
               </>
             )
             : (
-              <Ledger feed={feed} size={SIZE} live={live} skew={skew} onNs={setNs}>
-                {(total) => (total === 0 && page === 1 ? null : <Pager total={total} page={page} size={SIZE} maxPages={MAX_PAGE} onPage={setPage}
-                  noun={q ? (total === 1 ? "settlement with this filter" : "settlements with this filter") : total === 1 ? "settlement on record" : "settlements on record"} />)}
+              <Ledger feed={feed} size={SIZE} live={live} skew={skew} status onNs={setNs}>
+                {(total, _, failed = 0) => (total === 0 && page === 1 ? null : <Pager total={total} page={page} size={SIZE} maxPages={MAX_PAGE} onPage={setPage}
+                  noun={`${rowsNoun(total, failed)} ${q ? "with this filter" : "on record"}`} />)}
               </Ledger>
             ))
           : <Namespaces rows={nss.data?.namespaces ?? null} truncated={!!nss.data?.truncated} failed={!nss.data && nss.error ? nss : null} onPick={showNs} />}
