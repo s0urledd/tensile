@@ -233,9 +233,10 @@ button { font: inherit; color: inherit; }
 .hs-kinds { margin: 0; padding: 0; list-style: none; }
 .hs-kinds li { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 28px; }
 .hs-kinds code { padding: 0; background: none; font-size: 12px; color: var(--text-3); white-space: nowrap; }
-/* what a search found: one row per record, saying what it is, the whole row a link to its page. The panel is as wide
-   as the field; a blob is two lines, its block and settlement time over its promise hash. */
-.hs-dd.res { width: 360px; padding: 6px; }
+/* what a search found: one row per record, saying what it is, the whole row a link to its page. The panel holds the
+   longest kind ("Endpoint registration"), its block and its time on one line; a blob is two lines, its block and
+   settlement time over its promise hash; a transaction looked up by its hash says Success or Failed beside its hash. */
+.hs-dd.res { width: 412px; padding: 6px; }
 .hs-items { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; max-height: min(60vh, 520px); overflow-y: auto; overscroll-behavior: contain; }
 .hs-item { display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 9px 10px; border-radius: 8px; color: var(--text); }
 .hs-item:hover, .hs-item.on { text-decoration: none; background: var(--wash); }
@@ -243,12 +244,17 @@ button { font: inherit; color: inherit; }
 .hs-ic { flex: none; display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 7px; background: var(--wash); color: var(--accent-ink); }
 .hs-item:hover .hs-ic, .hs-item.on .hs-ic { background: var(--paper); }
 .hs-bd { display: grid; gap: 3px; flex: 1; min-width: 0; align-self: center; }
-.hs-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 13.5px; font-weight: 500; }
+.hs-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; min-width: 0; font-size: 13.5px; font-weight: 500; }
 .hs-k { flex: none; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--text-3); }
 .hs-ht { flex: none; font-weight: 600; font-variant-numeric: tabular-nums; }
 .hs-top .hs-nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hs-at { flex: none; margin-left: auto; padding-left: 8px; font-size: 12px; font-weight: 400; color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .hs-hash { font-size: 12px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hs-sub { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.hs-sub .hs-hash { flex: 1; min-width: 0; }
+.hs-st { flex: none; display: inline-flex; align-items: center; font-size: 12px; font-weight: 500; color: var(--text-2); white-space: nowrap; }
+.hs-st .dot { width: 7px; height: 7px; margin-right: 6px; }
+.hs-st.f { color: var(--text); }
 .hs-dd .hs-note { margin: 6px 10px 4px; font-size: 12.5px; line-height: 18px; color: var(--text-2); }
 .hs-wait { color: var(--text-3); }
 @media (hover: none) { .hs-key { display: none; } }
@@ -260,7 +266,7 @@ button { font: inherit; color: inherit; }
   .top .hs { order: 4; flex-basis: 100%; margin: 0; padding: 2px 0 12px; }
   .hs-box { max-width: none; }
   .hs-dd { left: 0; transform: none; }
-  .hs-dd.res { width: min(360px, 100%); }
+  .hs-dd.res { width: min(412px, 100%); }
 }
 .net.menu { position: relative; }
 .net.menu summary { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; }

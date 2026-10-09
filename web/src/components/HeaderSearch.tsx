@@ -2,12 +2,12 @@
 import Link from "next/link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { API_BASE, useNewestBlob, type Blob, type Validator, type Publisher, type TxAnswer, int, utcWord } from "@/lib/api";
+import { API_BASE, useNewestBlob, type Blob, type Validator, type Publisher, type TxAnswer, type TxKind, type FailedTx, int, utcWord } from "@/lib/api";
 import { blobKey } from "@/lib/blobkey";
 import { useFind } from "@/lib/blobfind";
 import { siteTarget, type SiteTarget } from "@/lib/sitefind";
 import Ident from "@/components/Ident";
-import { KIND_WORD } from "@/lib/txkind";
+import { KIND_WORD, KIND_OF } from "@/lib/txkind";
 
 /** the full placeholder needs about 300 px of field; a narrower one says only "Search" */
 const WORDS = "Search tx hash, blob ID or address";
@@ -107,9 +107,9 @@ function useRecord<T>(path: string | null, again: number, retryOn: string | null
 /**
  * one record the search found, as a row of its panel that opens the record's page: what it is, in one word, and which;
  * a blob also says when it settled, so the several settlements of one blob ID tell apart (atWord: what happened at,
- * "Settled" unless given)
+ * "Settled" unless given); a transaction, looked up by its hash, also says whether it took effect (ok) or failed
  */
-type Item = { href: string; glyph: ReactNode; kind: string; title: ReactNode; label: string; at?: string; atWord?: string; hash?: string };
+type Item = { href: string; glyph: ReactNode; kind: string; title: ReactNode; label: string; at?: string; atWord?: string; hash?: string; ok?: boolean };
 
 const short = (s: string, head = 8, tail = 4) => (s.length > head + tail + 1 ? `${s.slice(0, head)}…${s.slice(-tail)}` : s);
 /** an address as the lists print it: its prefix, then its last four */
@@ -121,20 +121,31 @@ const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct
 /** "Oct 2, 18:23 UTC": the day always, since the settlements of one blob ID may fall on different days */
 const at = (s: string) => { const d = new Date(s); return isNaN(d.getTime()) ? s : `${MON[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.toISOString().slice(11, 16)} UTC`; };
 
+/** a failure's kind in words from its Fibre messages, top level and one level inside a MsgExec, as the transaction page names it */
+const failedKind = (f: FailedTx) => {
+  const kinds = [...new Set(f.messages.map((m) => KIND_OF[m.fibre ? m.type_url : m.inner?.find((i) => i.fibre)?.type_url ?? ""])
+    .filter((k): k is Exclude<TxKind, "several"> => !!k))];
+  return kinds.length === 1 ? KIND_WORD[kinds[0]] : "Transaction";
+};
+
 /** a Fibre transaction that failed in a block, as the blob lookup found it, opening at href */
-const failedItem = (href: string, hex: string, f: { height: number; time: string }): Item => ({
-  href, glyph: FAILED, kind: "Failed tx",
+const failedItem = (href: string, hex: string, f: FailedTx): Item => ({
+  href, glyph: FAILED, kind: failedKind(f), ok: false,
   label: `Failed transaction ${hex.slice(0, 10)}, block ${int(f.height)}`, at: f.time, atWord: "Failed",
   hash: hex.toUpperCase(), title: <span className="hs-ht">#{int(f.height)}</span>,
 });
 
-/** a blob as two lines: its block and settlement time over its promise hash */
-const blobItem = (b: Blob): Item => ({
-  href: `/blob/?hash=${b.promise_hash}`,
-  label: `Blob ${b.promise_hash.slice(0, 10)}, block ${int(b.settlement_height)}`,
-  glyph: BLOB, kind: "Blob", at: b.settlement_time, hash: b.promise_hash,
-  title: <span className="hs-ht">#{int(b.settlement_height)}</span>,
-});
+/** a blob as two lines: its block and settlement time over its promise hash; found by the hash of the transaction that
+ * settled it (tx), the transaction took effect */
+const blobItem = (b: Blob, tx?: string): Item => {
+  const ok = tx && b.settlement_tx_hash?.toLowerCase() === tx.toLowerCase() ? true : undefined;
+  return {
+    href: `/blob/?hash=${b.promise_hash}`,
+    label: `Blob ${b.promise_hash.slice(0, 10)}, block ${int(b.settlement_height)}${ok ? ", its transaction succeeded" : ""}`,
+    glyph: BLOB, kind: "Blob", at: b.settlement_time, hash: b.promise_hash, ok,
+    title: <span className="hs-ht">#{int(b.settlement_height)}</span>,
+  };
+};
 
 /**
  * The site's search, in the header between the nav and the block. An identifier pasted, typed whole or entered is
@@ -208,8 +219,8 @@ export default function HeaderSearch() {
       if (!tx) note = <span className="hs-wait">Looking it up…</span>;
       else if (t) {
         const kind = t.kind === "several" ? "Transaction" : KIND_WORD[t.kind];
-        items = [{ href: `/tx/?hash=${blob!.hex}`, glyph: t.status === "failed" ? FAILED : TX, kind,
-          label: `${kind} ${blob!.hex.slice(0, 10)}, block ${int(t.height)}`, at: t.time, atWord: t.status === "failed" ? "Failed" : "Took effect",
+        items = [{ href: `/tx/?hash=${blob!.hex}`, glyph: t.status === "failed" ? FAILED : TX, kind, ok: t.status !== "failed",
+          label: `${kind} ${blob!.hex.slice(0, 10)}, block ${int(t.height)}, ${t.status === "failed" ? "failed" : "succeeded"}`, at: t.time, atWord: t.status === "failed" ? "Failed" : "Took effect",
           hash: blob!.hex.toUpperCase(), title: <span className="hs-ht">#{int(t.height)}</span> }];
       }
       // an API without the transaction lookup: the failure the blob lookup found opens on the blob page's address
@@ -221,7 +232,7 @@ export default function HeaderSearch() {
       ? <>Tensile has not indexed a blob with this blob ID yet. A blob appears once Tensile has read the block that settled it.</>
       : <>Tensile has not indexed a blob with this hash yet, or the transaction carries no Fibre blob.</>;
     else {
-      items = hit.rows.slice(0, SHOWN).map(blobItem);
+      items = hit.rows.slice(0, SHOWN).map((b) => blobItem(b, blob?.kind === "hash" ? blob.hex : undefined));
       if (hit.partial) note = <>The observer did not answer every lookup, so there may be more.</>;
       else if (hit.total > items.length) note = <>The newest {int(items.length)} of {int(hit.total)}.</>;
     }
@@ -326,7 +337,12 @@ export default function HeaderSearch() {
                             {it.title}
                             {it.at && <span className="hs-at" title={`${it.atWord ?? "Settled"} ${utcWord(it.at)}`}>{at(it.at)}</span>}
                           </span>
-                          {it.hash && <span className="hs-hash mono" title={it.hash}>{short(it.hash, 18, 10)}</span>}
+                          {it.ok === undefined
+                            ? it.hash && <span className="hs-hash mono" title={it.hash}>{short(it.hash, 18, 10)}</span>
+                            : <span className="hs-sub">
+                                {it.hash && <span className="hs-hash mono" title={it.hash}>{short(it.hash, 18, 10)}</span>}
+                                <span className={`hs-st${it.ok ? "" : " f"}`}><i className={`dot ${it.ok ? "ok" : "fault"}`} />{it.ok ? "Success" : "Failed"}</span>
+                              </span>}
                         </span>
                       </Link>
                     </li>
