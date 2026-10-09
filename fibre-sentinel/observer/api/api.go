@@ -274,6 +274,7 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 	s.mux.HandleFunc("GET /v1/blobs", s.handleBlobs)
 	s.mux.HandleFunc("GET /v1/namespaces", s.handleNamespaces)
 	s.mux.HandleFunc("GET /v1/blobs/{hash}", s.handleBlob)
+	s.mux.HandleFunc("GET /v1/txs/{hash}", s.handleTx) // txs.go
 	s.mux.HandleFunc("GET /v1/probes", s.handleProbes)
 	s.mux.HandleFunc("GET /v1/exports", s.handleExports)
 	s.mux.HandleFunc("GET /v1/exports/pubkey", s.handleExportPubkey) // exports_signing.go; more specific than {name}
@@ -3422,6 +3423,21 @@ func (s *Server) detailReadings(ctx context.Context, addr string, win Window, sp
 	if _, label, err := s.rolledFor(ctx, win, addr); err == nil && label != nil {
 		out["rolled_up"] = label
 	}
+	// Its Fibre endpoint registrations on chain, failed ones signed by its
+	// current operator address among them (endpoint_history.go): not on a
+	// pinned window, which is a rewound answer the page does not ask.
+	if !win.AsOf {
+		rows, more, err := s.endpointHistory(ctx, addr)
+		if err != nil {
+			return err
+		}
+		if len(rows) > 0 {
+			out["endpoint_history"] = rows
+			if more {
+				out["endpoint_history_truncated"] = true
+			}
+		}
+	}
 	return nil
 }
 
@@ -4283,8 +4299,20 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		PaymentPromiseTimeoutS int64 `json:"payment_promise_timeout_s"`
 	}
 	_ = s.st.DB().QueryRowContext(ctx, `SELECT shard_retention_s, payment_promise_timeout_s FROM publications WHERE promise_hash = ?`, hash).Scan(&params.ShardRetentionS, &params.PaymentPromiseTimeoutS)
-	writeJSON(w, 200, map[string]any{"blob": blobs[0], "params": params, "assignments": assigns,
-		"probes": blobReadings(probes), "probes_truncated": moreProbes})
+	out := map[string]any{"blob": blobs[0], "params": params, "assignments": assigns,
+		"probes": blobReadings(probes), "probes_truncated": moreProbes}
+	// The settlement transaction's own gas and fee, from the scanner's record
+	// of what successful Fibre transactions cost; absent for a settlement
+	// before the record began. Read by the blob page only.
+	c, err := s.txCostAt(ctx, blobs[0].SettlementHeight, blobs[0].SettlementTxIndex, blobs[0].SettlementTxHash)
+	if err != nil {
+		s.writeInternal(w, r.URL.Path, err)
+		return
+	}
+	if c != nil {
+		out["tx_cost"] = c
+	}
+	writeJSON(w, 200, out)
 }
 
 // blobService fills each assignment's Service from the obligation buckets

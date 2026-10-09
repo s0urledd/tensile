@@ -174,6 +174,23 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 	// hash no publication carries: the hash sought in migration 30's index,
 	// which gives the order too (no sort, checked below).
 	cases = append(cases, c{"failed tx by hash", failedTxByHashSQL, []any{"ab"}, []string{"failed_txs_tx (tx_hash=?)"}})
+	// The transaction page, the blob page's tx_cost and a validator's
+	// endpoint history (txs.go, endpoint_history.go): each a seek of
+	// migration 31's indexes or a primary key, the order read from the
+	// index, never a walk and never a sort (checked below).
+	noSort := map[string]bool{"failed tx by hash": true}
+	for _, tc := range []c{
+		{"tx cost by hash", txCostByHashSQL, []any{"ab"}, []string{"USING INDEX tx_costs_tx (tx_hash=?)"}},
+		{"tx cost at a settlement", txCostAtSQL, []any{1, 0}, []string{"USING INDEX sqlite_autoindex_tx_costs_1 (height=? AND tx_index=?)"}},
+		{"payments by tx", paymentsByTxSQL, []any{"ab"}, []string{"USING INDEX payments_tx (tx_hash=?)"}},
+		{"host events at a tx", hostEventsAtSQL, []any{1, 1}, []string{"USING INDEX host_events_at (from_height=? AND from_tx_index=?)"}},
+		{"host walk", hostWalkSQL, []any{"ab"},
+			[]string{"USING INDEX sqlite_autoindex_host_events_1 (cons_address=?)", "USING INDEX sqlite_autoindex_tx_costs_1 (height=? AND tx_index=?)"}},
+		{"failed set-hosts of an operator", failedSetHostsSQL, []any{"celestiavaloper1x"},
+			[]string{"USING PRIMARY KEY (account=?)", "USING INDEX sqlite_autoindex_failed_txs_1 (dedupe_key=?)"}},
+	} {
+		cases, noSort[tc.name] = append(cases, tc), true
+	}
 	// The tip's newest blob, asked up to four times a second whoever is
 	// reading: the highest height from the index's last entry, then that
 	// block's rows, never a walk of publications.
@@ -208,7 +225,7 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 				t.Errorf("%s: plan does not use %q\nplan:\n%s", tc.name, w, joined)
 			}
 		}
-		if strings.Contains(joined, "TEMP B-TREE FOR ORDER BY") && (strings.HasPrefix(tc.name, "latest answer") || tc.name == "failed tx by hash") {
+		if strings.Contains(joined, "TEMP B-TREE FOR ORDER BY") && (strings.HasPrefix(tc.name, "latest answer") || noSort[tc.name]) {
 			t.Errorf("%s sorts instead of reading the index in rowid order\nplan:\n%s", tc.name, joined)
 		}
 	}
