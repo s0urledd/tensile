@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
-import { type FailedTx as Failed, type FailedTxMsg, type Meta, int, utcWord, coins } from "@/lib/api";
+import { type FailedTx as Failed, type FailedTxMsg, type Meta, int, utcWord } from "@/lib/api";
 import StatusLine from "@/components/StatusLine";
 import Copy from "@/components/Copy";
 import Warn from "@/components/Warn";
 import { monthDayTime } from "@/components/BlobsDeck";
+import { GasValue, FeeValue, GAS_TITLE, FEE_TITLE } from "@/components/TxCost";
 
 /**
  * past this many messages, only the one that failed and the first this many that carry Fibre are listed; past this
@@ -73,10 +74,12 @@ export default function FailedTx({ hex, f, meta, metaErr, at }: { hex: string; f
           {f.reason && <><dt>Reason</dt><dd>{f.reason}</dd></>}
           <dt>Code</dt><dd><span className="mono">{f.codespace ? `${f.codespace} ${f.code}` : f.code}</span></dd>
           <dt>Messages</dt><dd>{msgs}{listed.length < f.messages.length && <em>of {int(f.messages.length)} messages</em>}</dd>
-          <dt>Gas</dt><dd><b>{int(f.gas_used)}</b><em>used of {int(f.gas_wanted)}</em></dd>
-          <dt>Transaction fee</dt>
+          {/* gas and the fee in the format a successful transaction's details share: the fee's figure bold, its unit light,
+              where it came from; that it cannot run again is on the label's hover */}
+          <dt title={GAS_TITLE}>Gas</dt><dd><GasValue c={f} /></dd>
+          <dt title={f.ante_passed ? `${FEE_TITLE} It was taken, so this transaction cannot run again.` : FEE_TITLE}>Transaction fee</dt>
           <dd>{f.ante_passed
-            ? <><b>{f.fee ? `Paid ${coins(f.fee)}` : "None"}</b><em>this transaction cannot run again</em></>
+            ? <FeeValue c={{ fee: f.fee, messages: 1 }} />
             : <><b>Not taken</b><em>the chain stopped it before running it, so the same transaction could still be included in a later block</em></>}</dd>
         </dl>
       </div>

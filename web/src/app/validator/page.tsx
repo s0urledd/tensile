@@ -313,34 +313,36 @@ const EH_SHOWN = 5;
 const EH_VERB: Record<EndpointEvent["outcome"], string> = {
   registered: "Registered", changed: "Changed", same: "Registered again", failed: "Failed", before_record: "Registered", after_gap: "Changed",
 };
+/** the failed page's own words for a failure */
+const EH_FAILED_TITLE = "This transaction failed in this block: none of its messages took effect.";
 
 /**
- * One registration: when, what changed (old → new; a first one, the new alone; a failed one, what it asked for, why,
- * and that the endpoint did not change, its requested host never bold, so it never reads as the endpoint), its block
- * and its transaction, copyable. A success's verb opens its gas and fee; a failed one opens the failed page, which
- * says them.
+ * One registration, on one compact line: when (its block on hover), its verb, what changed (old → new; a first one,
+ * the new alone; a failed one, what it asked for, why, and that the endpoint did not change, its requested host never
+ * bold, so it never reads as the endpoint), and its transaction, copyable. The verb opens the details, with the dotted
+ * line every such word has: a success's card (gas and fee), a failure's page, which says them. The row opens nothing.
  */
-function EndpointRow({ r, now, owner, onOpen }: { r: EndpointEvent; now: number; owner?: string; onOpen: (e: React.MouseEvent, href: string) => void }) {
+function EndpointRow({ r, now, owner }: { r: EndpointEvent; now: number; owner?: string }) {
   const failed = r.outcome === "failed";
-  const href = failed && r.tx_hash ? `/blob/?tx=${r.tx_hash}` : null;
-  const onRecord = r.outcome !== "before_record" && r.outcome !== "after_gap";
   const verb = EH_VERB[r.outcome];
   // when the failing message was another one, the row says so and its hover gives the reason: the whole sentence does
   // not fit beside the request and "Endpoint unchanged" at the page's width
   const why = failed && r.reason ? (r.other_message_failed ? "Another message failed" : r.reason) : "";
   const whyTitle = failed && r.reason ? (r.other_message_failed ? `Another message failed: ${r.reason}` : r.reason) : undefined;
+  const onRecord = r.outcome !== "before_record" && r.outcome !== "after_gap";
   return (
-    <tr className={`row eh-r${failed ? " xf" : ""}`} aria-label={failed ? `Failed endpoint registration, block ${int(r.height)}` : undefined}
-      onClick={href ? (e) => openRow(e, href, onOpen) : undefined} onAuxClick={href ? (e) => openRow(e, href, onOpen) : undefined}>
+    <tr className={`row eh-r${failed ? " xf" : ""}`}>
       <td className="c-t">{r.outcome === "before_record" ? <em className="eh-pre">Before Tensile’s record</em>
         : r.outcome === "after_gap" ? <span className="eh-pre"><em>In a record gap</em><Warn text={`Changed while Tensile’s record had a gap, before block #${int(r.height)}. Its transaction is not on record.`} /></span>
-        : r.time ? <span title={utcWord(r.time)}><span className="tm">{monthDayTime(r.time).slice(0, -3)}</span><span className="ag">{age(now - Date.parse(r.time))}</span></span> : "—"}</td>
+        : r.time ? <span title={`${utcWord(r.time)}${r.height ? ` · block #${int(r.height)}` : ""}`}><span className="tm">{monthDayTime(r.time).slice(0, -3)}</span><span className="ag">{age(now - Date.parse(r.time))}</span></span> : "—"}</td>
       <td className="c-c">
-        {/* one line: the verb in its slot, then what it changed; a long reason gives way first, never "Endpoint unchanged" */}
+        {/* the verb in its slot, then what it changed; a long reason gives way first, never "Endpoint unchanged" */}
         <div className="eh-c">
           <span className="eh-vs">{failed
-            ? <span className="eh-v f" title="This transaction failed in this block: none of its messages took effect."><i className="dot fault" aria-hidden="true" />Failed</span>
-            : r.tx_cost ? <TxCost word={verb} label={verb} cost={r.tx_cost} owner={owner} className="eh-v" />
+            ? <span className="eh-v f"><i className="dot fault" aria-hidden="true" />{r.tx_hash
+              ? <Link className="txw" href={`/blob/?tx=${r.tx_hash}`} title={EH_FAILED_TITLE} aria-label={`Failed endpoint registration, block ${int(r.height)}`}>Failed</Link>
+              : <span title={EH_FAILED_TITLE}>Failed</span>}</span>
+            : r.tx_cost ? <TxCost word={verb} cost={r.tx_cost} owner={owner} className="eh-v" />
             : <span className="eh-v">{verb}</span>}</span>
           {failed
             ? <span className="eh-q"><span>Requested</span><span className="mono">{r.host}</span>{why && <><span className="sep">·</span><span className="eh-y" title={whyTitle}>{why}</span></>}<span className="sep">·</span><span>Endpoint unchanged</span></span>
@@ -349,31 +351,33 @@ function EndpointRow({ r, now, owner, onOpen }: { r: EndpointEvent; now: number;
               : <><b className="mono eh-n">{r.host}</b>{r.outcome === "same" && <span className="eh-q"><span className="sep">·</span><span>same address</span></span>}</>}
         </div>
       </td>
-      <td className="c-k">{onRecord && r.height ? `#${int(r.height)}` : <span className="u">—</span>}</td>
       <td className="c-x">{r.tx_hash
-        ? <>{href ? <Link className="mono" href={href} title={r.tx_hash.toUpperCase()}>{shortTx(r.tx_hash)}</Link> : <span className="mono" title={r.tx_hash.toUpperCase()}>{shortTx(r.tx_hash)}</span>}
-          <CopyMark text={r.tx_hash.toUpperCase()} label="the transaction hash" /></>
+        ? <><span className="mono" title={r.tx_hash.toUpperCase()}>{shortTx(r.tx_hash)}</span><CopyMark text={r.tx_hash.toUpperCase()} label="the transaction hash" /></>
         : <span className="u" title={onRecord ? "Not on record" : undefined}>—</span>}</td>
+      <td className="c-f" />
     </tr>
   );
 }
 
 /**
- * The validator's Fibre endpoint registrations on chain, newest first, in the Latest checks' own rows: what each
- * changed, failed ones beside them (signed by its operator key, and changing nothing), each with its block and its
- * transaction. The newest five, then all of them on a click. Hidden when there are none.
+ * The validator's Fibre endpoint registrations on chain, newest first, in a compact listing: what each changed, failed
+ * ones beside them (signed by its operator key, and changing nothing), each with its transaction. Its count is of
+ * transactions: the host Tensile's record began with is none. The newest five, then all of them on a click. Hidden when
+ * there are none.
  */
-function EndpointHistory({ rows, truncated, owner, now, onOpen, apiHref }: {
-  rows: EndpointEvent[]; truncated: boolean; owner?: string; now: number; onOpen: (e: React.MouseEvent, href: string) => void; apiHref: string;
+function EndpointHistory({ rows, truncated, owner, now, apiHref }: {
+  rows: EndpointEvent[]; truncated: boolean; owner?: string; now: number; apiHref: string;
 }) {
   const [all, setAll] = useState(false);
   if (rows.length === 0) return null;
-  const shown = all ? rows : rows.slice(0, EH_SHOWN);
+  const count = rows.filter((r) => r.outcome !== "before_record").length;
+  const more = count > EH_SHOWN;
+  const shown = all || !more ? rows : rows.slice(0, EH_SHOWN);
   return (
     <section id="endpoints" className="listing lg-list vd-list vd-eh" aria-labelledby="vd-eh">
       <div className="list-head">
         <div className="pb-lh">
-          <h2 className="pb-th" id="vd-eh" title="Fibre endpoint registrations on chain, newest first. A failed one changed nothing.">Endpoint history<span className="n">{int(rows.length)}</span></h2>
+          <h2 className="pb-th" id="vd-eh" title="Fibre endpoint registrations on chain, newest first. A failed one changed nothing.">Endpoint history{count > 0 && <span className="n">{int(count)}</span>}</h2>
         </div>
       </div>
       <div className="lg-tw">
@@ -382,19 +386,19 @@ function EndpointHistory({ rows, truncated, owner, now, onOpen, apiHref }: {
             <tr>
               <th className="c-t">When <span className="per">(UTC)</span></th>
               <th className="c-c">Change</th>
-              <th className="c-k">Block</th>
               <th className="c-x">Transaction</th>
+              <th className="c-f" aria-hidden="true" />
             </tr>
           </thead>
           <tbody>
-            {shown.map((r, i) => <EndpointRow key={`${r.outcome}-${r.height ?? ""}-${r.tx_index ?? ""}-${i}`} r={r} now={now} owner={owner} onOpen={onOpen} />)}
+            {shown.map((r, i) => <EndpointRow key={`${r.outcome}-${r.height ?? ""}-${r.tx_index ?? ""}-${i}`} r={r} now={now} owner={owner} />)}
           </tbody>
         </table>
       </div>
-      {(rows.length > EH_SHOWN || truncated) && (
+      {(more || truncated) && (
         <div className="pager vd-pager eh-more">
-          <span className="count">{truncated && all && <>Older ones are <a href={apiHref}>in the API →</a></>}</span>
-          {rows.length > EH_SHOWN && <span className="ctl"><button type="button" className="btn" aria-expanded={all} onClick={() => setAll((v) => !v)}>{all ? "Show fewer" : `Show all ${int(rows.length)}`}</button></span>}
+          <span className="count">{truncated && (all || !more) && <>Older ones are <a href={apiHref}>in the API →</a></>}</span>
+          {more && <span className="ctl"><button type="button" className="btn" aria-expanded={all} onClick={() => setAll((v) => !v)}>{all ? "Show fewer" : `Show all ${int(count)}`}</button></span>}
         </div>
       )}
     </section>
@@ -564,7 +568,7 @@ function Page() {
     + (data.rolled_up ? ` Before ${data.rolled_up.raw_from}, from the daily rollup.` : "");
   const visible = shown;
   // its endpoint registrations on chain, in the Latest checks' rows (placement A, before them, or B, at the page's end)
-  const history = <EndpointHistory key={addr} rows={data.endpoint_history ?? []} truncated={!!data.endpoint_history_truncated} owner={v.operator_address || undefined} now={now} onOpen={onOpen} apiHref={`${API_BASE}/v1/validators/${own}`} />;
+  const history = <EndpointHistory key={addr} rows={data.endpoint_history ?? []} truncated={!!data.endpoint_history_truncated} owner={v.operator_address || undefined} now={now} apiHref={`${API_BASE}/v1/validators/${own}`} />;
 
   return (
     <>

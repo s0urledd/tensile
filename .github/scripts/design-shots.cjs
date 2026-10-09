@@ -41,6 +41,10 @@ const FAILED_DEPOSIT = { kind: "deposit", failed: true, height: 1509598, tx_inde
 const FAILED_WITHDRAWAL = { kind: "withdrawal_request", failed: true, height: 1509587, tx_index: 0, msg_index: 0, time: "2026-10-08T23:17:14.030516Z", tx_hash: "a4bd0b1855044d09c2f84ae43f6504d9365a470810b6f67d30a6ec11d2afdb92", requested: "1000000000000000utia", requested_utia: 1000000000000000, reason: "Insufficient funds" };
 // STUB: a failed blob payment between the blobs at #1,497,140 and #1,497,108
 const FAILED_PFF = { kind: "settlement", failed: true, height: 1497121, tx_index: 1, msg_index: 0, time: "2026-10-08T13:25:05.700Z", tx_hash: "9b3e7a41d0c25f86e4a7b1d9c03f5e2a8d6b4c1f7e9a0d3b5c8f2e6a1d4b7c90", promise_hash: "4f0a9c2e7b1d5a83c6e9f2b4d7a0c3e5f8b1d4a7c0e3f6b9d2a5c8e1f4b7a0d3", namespace: "00000000000000000000000000000000000000000074656e73696c6500", blob_size: 4456448, reason: "Invalid request" };
+// STUB: a successful deposit on page 1, beside the failed one, so All shows a signed amount next to a dash. It stands in
+// the All feed alone: the statement (Escrow) and its foot stay the real ones, which close on the live balance.
+const STUB_DEPOSIT = { kind: "deposit", height: 1509603, tx_index: 0, msg_index: 0, time: "2026-10-08T23:18:16.912442Z", tx_hash: "c41d9e07a3b5f2861e0d4c7a9b3f5e2d8a6c1b4f7e0a3d9c5b8f2e1a6d4c7b30", amount_utia: 1000000000,
+  tx_cost: { gas_wanted: 200000, gas_used: 74102, fee: "4000utia", fee_payer: PUB, messages: 1 } };
 const RECENT_MOVES = [
   { kind: "deposit", height: 1366494, tx_index: 0, msg_index: 0, time: "2026-10-04T05:51:46.491278Z", tx_hash: "7f7e66d16ec7337c82ffc65148bf3e42bef39b2adef3f930862455494ddc3d89", amount_utia: 1000000000,
     tx_cost: { gas_wanted: 200000, gas_used: 74215, fee: "4000utia", fee_payer: PUB, messages: 1 } },
@@ -73,9 +77,10 @@ const STUB_PAYER = "celestia1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzzzzzz";
 function mock(pathname, q, j, mode) {
   if (pathname === "/api/v1/blobs" && q.get("publisher") === PUB && q.get("with_escrow") === "1" && !q.get("namespace")) {
     const first = (Number(q.get("offset")) || 0) === 0;
-    return { ...j, escrow: first ? [FAILED_DEPOSIT, FAILED_WITHDRAWAL, FAILED_PFF] : [], escrow_newer: first ? 0 : 3, escrow_total: 5, escrow_more: 0 };
+    // escrow_total 6: the STUB deposit, the three failed rows, and the two real deposits on later pages
+    return { ...j, escrow: first ? [STUB_DEPOSIT, FAILED_DEPOSIT, FAILED_WITHDRAWAL, FAILED_PFF] : [], escrow_newer: first ? 0 : 4, escrow_total: 6, escrow_failed: 3, escrow_more: 0 };
   }
-  if (pathname === `/api/v1/publishers/${PUB}`) return { ...j, recent_moves: RECENT_MOVES, recent_failed: [FAILED_DEPOSIT, FAILED_WITHDRAWAL] };
+  if (pathname === `/api/v1/publishers/${PUB}`) return { ...j, recent_moves: RECENT_MOVES, recent_failed: [FAILED_DEPOSIT, FAILED_WITHDRAWAL, FAILED_PFF] };
   if (pathname.startsWith("/api/v1/validators/") && j && j.validator && j.validator.operator_address === VAL) {
     return { ...j, endpoint_history: mode.eh === "sheet" ? EH_SHEET : EH_REAL };
   }
@@ -202,55 +207,56 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
   fs.mkdirSync(out, { recursive: true });
   const browser = await chromium.launch({ executablePath: process.env.CHROME || "/usr/bin/google-chrome", args: ["--hide-scrollbars"] });
   const top = (page) => page.evaluate(() => scrollTo(0, 0));
+  const shut = async (page) => { await page.keyboard.press("Escape"); await page.evaluate(() => document.activeElement && document.activeElement.blur()); await page.mouse.move(5, 5); await page.waitForTimeout(200); };
+  const card = async (page, sel, what) => {
+    await page.locator(sel).first().click();
+    await page.waitForSelector(".info-pop .txc", { timeout: 5000 }).catch(() => notes.push(`${what}: the card did not open`));
+    await page.waitForTimeout(300);
+  };
 
   for (const theme of ["dark", "light"]) {
     const dk = theme === "dark";
 
-    // ---- P1, P3. publisher: All, page 1, the failed rows among the blobs (B, recommended, then A), and their hovers
-    for (const v of ["b", "a"]) {
+    // ---- P1, P3. publisher, All, page 1: a successful deposit (STUB) beside the failed deposit and withdrawal request,
+    // then the STUB failed blob payment between two blobs; the hovers; the card on the successful deposit's kind
+    {
       const { ctx, page } = await open(browser, theme);
-      await go(page, `/publisher/?addr=${PUB}${v === "a" ? "&variant=a" : ""}`, "#list tr.xf");
+      await go(page, `/publisher/?addr=${PUB}`, "#list tr.xf");
       // cut at a row's own line, never through the next row
-      await crop(page, `p1-all-${v}-${theme}.png`, ["#list .list-head", row("#list", 8)],
-        v === "b"
-          ? "Publisher, All, page 1, B (recommended): the failed deposit and withdrawal request above the newest blob, the STUB failed blob payment between #1,497,140 and #1,497,108; Amount a dash, the request in words under the reason"
-          : "Publisher, All, page 1, A (alternative): the same rows, the qualifier ends at the reason and the request is struck in the Amount column, unsigned", { b: 0 });
-      if (v === "b") {
-        if (dk) { await top(page); await full(page, `p1-full-${theme}.png`, "Publisher page, whole (B), for context"); }
-        await reveal(page, ["#list .list-head", row("#list", 5)]);
-        await tip(page, `${row("#list", 2)} .xs`, theme);
-        await crop(page, `p3-tip-failed-${theme}.png`, ["#list thead", row("#list", 4), ".shot-tip"], "Hover on \"Failed\" in a failed row: the failed page's own words", { t: 20, r: 20, b: 0, l: 20 });
-        await untip(page);
-        await tip(page, `${row("#list", 2)} td.c-fee .xd`, theme);
-        await crop(page, `p3-tip-dash-${theme}.png`, ["#list thead", row("#list", 4), ".shot-tip"], "Hover on the Amount dash of a failed row (B): nothing moved, the escrow is as it was", { t: 20, r: 20, b: 0, l: 20 });
-        await untip(page);
-        await reveal(page, ["#list .pager"], 140);
-        await tip(page, "#list .pager .count span[title]", theme);
-        await crop(page, `p1-pager-${theme}.png`, ["#list .pager", ".shot-tip"], "Publisher, All: the pager counts blobs and escrow rows together; its hover splits them (109 blob settlements, 2 escrow movements and 3 failed transactions)", 20);
-        await untip(page);
-      } else {
-        await reveal(page, ["#list .list-head", row("#list", 5)]);
-        await tip(page, `${row("#list", 2)} td.c-fee s`, theme);
-        await crop(page, `p3-tip-struck-${theme}.png`, ["#list thead", row("#list", 4), ".shot-tip"], "Hover on the struck request (A): requested, not moved", { t: 20, r: 20, b: 0, l: 20 });
-        await untip(page);
-      }
+      await crop(page, `p1-all-${theme}.png`, ["#list .list-head", row("#list", 9)],
+        "Publisher, All, page 1: the STUB successful deposit (+1,000.000 TIA, its kind dotted: it opens the card) beside the failed deposit and withdrawal request (Amount a dash, the request in words under the reason, the kind dotted: it opens the failed page); the STUB failed blob payment between #1,497,140 and #1,497,108", { b: 0 });
+      if (dk) { await top(page); await full(page, `p1-full-${theme}.png`, "Publisher page, whole, for context"); }
+      await reveal(page, ["#list .list-head", row("#list", 6)]);
+      await tip(page, `${row("#list", 2)} .xs`, theme);
+      await crop(page, `p3-tip-failed-${theme}.png`, ["#list thead", row("#list", 5), ".shot-tip"], "Hover on \"Failed\" in a failed row: the failed page's own words", { t: 20, r: 20, b: 0, l: 20 });
+      await untip(page);
+      await tip(page, `${row("#list", 2)} td.c-fee .xd`, theme);
+      await crop(page, `p3-tip-dash-${theme}.png`, ["#list thead", row("#list", 5), ".shot-tip"], "Hover on the Amount dash of a failed row: nothing moved, the escrow is as it was", { t: 20, r: 20, b: 0, l: 20 });
+      await untip(page);
+      await page.locator(`${row("#list", 3)} .c-b a.txw`).hover();
+      await page.waitForTimeout(300);
+      await crop(page, `p3-open-failed-${theme}.png`, ["#list thead", row("#list", 5)], "Pointer on a failed row's kind (\"Withdrawal request\"): the same dotted line as a success's kind, lit on hover; it opens the failed page /blob/?tx=A4BD0B18…", { t: 20, r: 20, b: 0, l: 20 });
+      await page.mouse.move(5, 5);
+      await card(page, `${row("#list", 1)} button.txw`, `${theme} All deposit`);
+      await crop(page, `p3-card-all-${theme}.png`, ["#list thead", row("#list", 5), ".info-pop"], "The card on the successful deposit's kind in All (STUB): Transaction · Hash C41D9E…7B30 · Gas 74,102 used of 200,000 · Transaction fee 4,000 utia from the bank balance, beside the failed rows' dashes", 20);
+      await shut(page);
+      await reveal(page, ["#list .pager"], 140);
+      await tip(page, "#list .pager .count span[title]", theme);
+      await crop(page, `p1-pager-${theme}.png`, ["#list .pager", ".shot-tip"], "Publisher, All: the pager counts blobs and escrow rows together; its hover splits them (109 blob settlements, 3 escrow movements and 3 failed transactions)", 20);
+      await untip(page);
       await ctx.close();
     }
 
-    // ---- P2, P3. publisher: Escrow, the statement with its failed rows and its foot (B, then A); the card on "Deposit"
-    for (const v of ["b", "a"]) {
+    // ---- P2, P3. publisher, Escrow: the statement with its failed rows and its foot; the card on "Deposit"
+    {
       const { ctx, page } = await open(browser, theme);
-      await go(page, `/publisher/?addr=${PUB}&kind=escrow${v === "a" ? "&variant=a" : ""}`, "#list .pb-st tr.xf");
-      await crop(page, `p2-escrow-${v}-${theme}.png`, ["#list .list-head", "#list .pb-st", "#list .pager"],
-        `Publisher, Escrow, ${v === "b" ? "B" : "A"}: the failed deposit and withdrawal request, then the two deposits; the foot unchanged (Deposited +1,004 · Fees paid for 109 settlements −545.195 · Escrow now 458.805 TIA)`);
-      if (v === "b") {
-        await reveal(page, ["#list .list-head", "#list .pb-st"]);
-        await page.locator("#list .pb-st button.txw").first().click();
-        await page.waitForSelector(".info-pop .txc", { timeout: 5000 }).catch(() => notes.push(`${theme}: the Deposit card did not open`));
-        await page.waitForTimeout(300);
-        await crop(page, `p3-card-deposit-${theme}.png`, ["#list .pb-st thead", row("#list .pb-st", 4), ".info-pop"], "The card on a successful Deposit's kind: its transaction (copyable), Gas 74,215 used of 200,000, Transaction fee Paid 4,000 utia from the bank balance", 20);
-        await page.keyboard.press("Escape"); await page.evaluate(() => document.activeElement && document.activeElement.blur());
-      }
+      await go(page, `/publisher/?addr=${PUB}&kind=escrow`, "#list .pb-st tr.xf");
+      await crop(page, `p2-escrow-${theme}.png`, ["#list .list-head", "#list .pb-st", "#list .pager"],
+        "Publisher, Escrow: the failed deposit and withdrawal request, then the two real deposits; the foot unchanged (Deposited +1,004 · Fees paid for 109 settlements −545.195 · Escrow now 458.805 TIA)");
+      await reveal(page, ["#list .list-head", "#list .pb-st"]);
+      await card(page, "#list .pb-st button.txw", `${theme} Escrow deposit`);
+      await crop(page, `p3-card-deposit-${theme}.png`, ["#list .pb-st thead", row("#list .pb-st", 4), ".info-pop"], "The card on a real Deposit's kind: Transaction · Hash 7F7E66…3D89 (copyable) · Gas 74,215 used of 200,000 · Transaction fee 4,000 utia from the bank balance", 20);
+      await shut(page);
       await ctx.close();
     }
 
@@ -260,17 +266,18 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       await go(page, `/validator/?addr=${VAL}`, ".eh-t tbody tr");
       await crop(page, `v1-history-${theme}.png`, [".vd-stat", "#endpoints", "#evidence .list-head"],
         "Validator Unity Nodes, Endpoint history between the stat panel and Latest checks (recommended): the MOCK failed row (from the real failed set-host FB27DDA8…, whose signer is no validator), its two real changes and the host before Tensile's record");
-      await crop(page, `v1-rows-${theme}.png`, ["#endpoints"], "Endpoint history alone: each verb in one slot so the addresses line up; the old address quiet, the new one in weight; the failure's request never bold", 20);
+      await crop(page, `v1-rows-${theme}.png`, ["#endpoints"], "Endpoint history alone: When · verb · old → new (or Requested · reason · Endpoint unchanged) · hash ⧉, a line each; the count is of transactions (3): the host before Tensile's record is none", 20);
       if (dk) { await top(page); await full(page, `v1-full-${theme}.png`, "Validator page, whole, Endpoint history between the panel and Latest checks, for context"); }
       await reveal(page, ["#endpoints"], 60);
-      await page.locator("#endpoints button.eh-v").first().click();
-      await page.waitForSelector(".info-pop .txc", { timeout: 5000 }).catch(() => notes.push(`${theme}: the Changed card did not open`));
-      await page.waitForTimeout(300);
-      await crop(page, `v2-card-changed-${theme}.png`, ["#endpoints .lg-tw", ".info-pop"], "The card on \"Changed\": Gas 54,455 used of 200,000, Transaction fee Paid 2,000 utia from the bank balance (the operator's own account)", 20);
-      await page.keyboard.press("Escape"); await page.evaluate(() => document.activeElement && document.activeElement.blur());
+      await card(page, "#endpoints button.txw", `${theme} Changed`);
+      await crop(page, `v2-card-changed-${theme}.png`, ["#endpoints .lg-tw", ".info-pop"], "The card on \"Changed\": Transaction · Gas 54,455 used of 200,000 · Transaction fee 2,000 utia from the bank balance (the operator's own account); no hash row, as the row shows its hash", 20);
+      await shut(page);
+      await tip(page, "#endpoints tr.xf a.txw", theme);
+      await crop(page, `v2-tip-failed-${theme}.png`, ["#endpoints .lg-tw", ".shot-tip"], "Pointer on \"Failed\" (dotted: it opens the failed page): the failed page's own words", 20);
+      await untip(page);
       await page.mouse.move(5, 5);
-      await tip(page, "#endpoints tr.xf .eh-v.f", theme);
-      await crop(page, `v2-tip-failed-${theme}.png`, ["#endpoints .lg-tw", ".shot-tip"], "Hover on \"Failed\" in the Endpoint history: the failed page's own words", 20);
+      await tip(page, `${row("#endpoints", 1)} td.c-t span[title]`, theme);
+      await crop(page, `v2-tip-when-${theme}.png`, ["#endpoints .lg-tw", ".shot-tip"], "Hover on When: the time in full and the block (#1,509,592), now that the Block column is gone", 20);
       await untip(page);
       await tip(page, `${row("#endpoints", 2)} .cp`, theme);
       await crop(page, `v2-tip-copy-${theme}.png`, ["#endpoints .lg-tw", ".shot-tip"], "Hover on the copy mark after a transaction hash: \"Copy the transaction hash\" (it copies the full upper-case hash)", 20);
@@ -290,35 +297,43 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
     {
       const { ctx, page } = await open(browser, theme, { eh: "sheet" });
       await go(page, `/validator/?addr=${VAL}`, ".eh-t tbody tr");
-      await crop(page, `v3-sheet-${theme}.png`, ["#endpoints"], "State sheet (STUB rows around the real ones): Registered again · same address, a failure whose failing message was another one, \"Show all 7\"", 20);
+      await crop(page, `v3-sheet-${theme}.png`, ["#endpoints"], "State sheet (STUB rows around the real ones): Registered again · same address, a failure whose failing message was another one, \"Show all 6\" (six transactions)", 20);
       await page.locator("#endpoints .eh-more button").click();
       await page.waitForTimeout(300);
       await reveal(page, ["#endpoints"], 20);
       await page.locator("#endpoints .eh-pre button.warn").first().hover();
       await page.waitForTimeout(300);
-      await crop(page, `v3-sheet-all-${theme}.png`, ["#endpoints", ".warn-tip"], "State sheet opened: all seven, the change made in a record gap with its amber dot and its words, the host before Tensile's record, \"Show fewer\"", 20);
+      await crop(page, `v3-sheet-all-${theme}.png`, ["#endpoints", ".warn-tip"], "State sheet opened: the six transactions and the host before Tensile's record, the change made in a record gap with its amber dot and its words, \"Show fewer\"", 20);
       await ctx.close();
     }
 
-    // ---- G1, G2. blob page: Gas, Blob fee from escrow, Transaction fee from the bank balance
+    // ---- G1, G2. blob page: Gas; Fee paid from escrow; Transaction fee from the bank balance
     for (const cost of ["own", "other", "none"]) {
       const { ctx, page } = await open(browser, theme, { cost });
       await go(page, `/blob/?hash=${BLOB}`, ".bd-figs");
       const what = {
-        own: "Blob page: Gas 219,118 used of 400,000 under the settlement's transaction; Blob fee 3.575 TIA from escrow · settled, and under it Transaction fee Paid 8,000 utia from the bank balance",
-        other: "Blob page with a STUB fee payer: Transaction fee Paid 8,000 utia, paid by celestia1…zzzz (the whole address on hover)",
+        own: "Blob page: Gas 219,118 used of 400,000 under the settlement's transaction; Fee paid 3.575 TIA from escrow · settled, and under it Transaction fee 8,000 utia from the bank balance",
+        other: "Blob page with a STUB fee payer: Transaction fee 8,000 utia by celestia1…zzzz (the whole address on hover)",
         none: "Blob page with no cost on record (anything before the deploy): Gas and Transaction fee read not recorded",
       }[cost];
       await crop(page, `g${cost === "own" ? 1 : 2}-blob-${cost}-${theme}.png`, [".bd-title", ".bd-top"], what, { t: 24, b: 14 });
       if (cost === "own" && dk) { await top(page); await full(page, `g1-full-${theme}.png`, "Blob page, whole, for context"); }
+      if (cost === "other") {
+        await tip(page, ".bd-figs em span[title]", theme);
+        await crop(page, `g2-tip-payer-${theme}.png`, [".bd-figs", ".shot-tip"], "Hover on \"by celestia1…zzzz\": the fee payer's whole address", 20);
+        await untip(page);
+      }
       await ctx.close();
     }
 
-    // ---- G3. the failed page, as live: the format the success details share
+    // ---- G3. the failed page: the fee in the same format as the success details, "cannot run again" on its label's hover
     {
       const { ctx, page } = await open(browser, theme);
       await go(page, `/blob/?tx=${FAILED_TX}`, ".bd-err");
-      await crop(page, `g3-failed-${theme}.png`, [".bd-title", ".bd-top"], "Failed page A4BD0B18… as live: Gas 50,219 used of 200,000; Transaction fee Paid 800 utia, the format the success details share", { t: 24, b: 14 });
+      await crop(page, `g3-failed-${theme}.png`, [".bd-title", ".bd-top"], "Failed page A4BD0B18…: Gas 50,219 used of 200,000; Transaction fee 800 utia from the bank balance, the format the success details share", { t: 24, b: 14 });
+      await tip(page, ".bd-top dt[title*=\"cannot run again\"]", theme);
+      await crop(page, `g3-tip-fee-${theme}.png`, [".bd-top", ".shot-tip"], "Hover on the failed page's \"Transaction fee\": paid from the fee payer's bank balance, never the escrow; it was taken, so this transaction cannot run again", 20);
+      await untip(page);
       if (dk) { await top(page); await full(page, `g3-full-${theme}.png`, "Failed page, whole, for context"); }
       await ctx.close();
     }

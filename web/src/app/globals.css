@@ -577,7 +577,7 @@ dl.kv dd { margin: 0; word-break: break-all; }
 .info-pop p { margin: 0 0 8px; }
 .info-pop p:last-child { margin-bottom: 0; }
 /* a transaction's card (TxCost): label and value, the blob page's light rows of facts, a hairline between them */
-.info-pop:has(.txc) { width: 400px; padding: 12px 16px 6px; }
+.info-pop:has(.txc) { width: 360px; padding: 12px 16px 6px; }
 .info-pop:has(.txc) .label { margin-bottom: 2px; font-weight: 600; }
 .txc { display: grid; grid-template-columns: auto minmax(0, 1fr); margin: 0; font-size: var(--t-cell); line-height: 18px; }
 .txc dt, .txc dd { padding: 8px 0; border-top: 1px solid var(--line-soft); }
@@ -2259,25 +2259,21 @@ button.warn:focus-visible { outline-offset: 0; }
 .lg-t tr.req td.c-fee { color: var(--text-2); font-weight: 400; }
 .lg-t tr.hold td.c-q { color: var(--hold-ink); }
 .lg-t tr.fault .c-b .k, .lg-t tr.fault td.c-fee { color: var(--fault); }
-/* a successful movement's kind opens its transaction's gas and fee: the word itself, a dotted line under it as the only
-   sign, the accent on hover */
-.lg-t button.txw { appearance: none; margin: 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; text-decoration: underline dotted color-mix(in srgb, var(--text-3) 70%, transparent); text-decoration-thickness: 1px; text-underline-offset: 4px; transition: color var(--dur), text-decoration-color var(--dur); }
-.lg-t button.txw:hover, .lg-t button.txw[aria-expanded="true"] { color: var(--accent-ink); text-decoration-color: currentColor; }
+/* the word that opens a row's details, the one rule everywhere: a successful transaction's kind or verb opens its card
+   (gas and fee), a failed one's kind or "Failed" its page. The word itself, a dotted line under it as the only sign, the
+   accent on hover */
+.lg-t .txw { appearance: none; margin: 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; text-decoration: underline dotted color-mix(in srgb, var(--text-3) 70%, transparent); text-decoration-thickness: 1px; text-underline-offset: 4px; transition: color var(--dur), text-decoration-color var(--dur); }
+/* a failed row's kind is a link where a blob's hash stands: not in the hash's face, and not lit by the row's hover */
+.lg-t .c-b a.txw, .lg-t tr.row:hover .c-b a.txw { font-family: inherit; font-size: inherit; letter-spacing: normal; color: var(--text-2); text-decoration: underline dotted color-mix(in srgb, var(--text-3) 70%, transparent); text-decoration-thickness: 1px; text-underline-offset: 4px; }
+.lg-t .txw:hover, .lg-t .txw:focus-visible, .lg-t .txw[aria-expanded="true"], .lg-t .c-b a.txw:hover, .lg-t tr.row:hover .c-b a.txw:hover { color: var(--accent-ink); text-decoration-color: currentColor; }
 /* a failed transaction among them: its kind in the quieter grey, unweighted (it never happened); the failed page's red
-   mark and why over the namespace and the size; what it asked for, under them in words (B) or struck in the Amount
-   column (A); the Amount a dash. Its whole row opens the failed page */
-.lg-t tr.xf { cursor: pointer; }
+   mark and why over the namespace and the size, what it asked for in words under them; the Amount a dash */
 .lg-t tr.xf .c-b .k { font-weight: 400; color: var(--text-2); }
 .lg-t .xs { display: inline-flex; align-items: center; font-weight: 500; color: var(--text-2); }
 .lg-t .xs .dot { width: 7px; height: 7px; margin-right: 6px; }
 .lg-t td.c-q .sep { margin: 0 6px; color: var(--text-3); }
 .lg-t .xd { font-weight: 400; color: var(--text-3); }
-.lg-t s.xk { font-weight: 400; color: var(--text-3); text-decoration-thickness: 1px; }
-.lg-t s.xk .u { color: inherit; }
-/* A: the request is the Amount column's widest figure; it may reach past the cell's own padding into the qualifier's room */
-.lg-t tr.xf td.c-fee { position: relative; overflow: visible; text-overflow: clip; }
-.lg-t tr.xf td.c-fee s.xk { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); white-space: nowrap; }
-/* B: the reason, then what it asked for, a line each, in the row's own height */
+/* the reason, then what it asked for, a line each, in the row's own height */
 .lg-t tr.xw td.c-q { padding-top: 5px; padding-bottom: 5px; line-height: 16px; }
 .lg-t tr.xw td.c-q .xl, .lg-t tr.xw td.c-q .xa { display: block; overflow: hidden; text-overflow: ellipsis; }
 .lg-t tr.xw td.c-q .xl { display: flex; align-items: center; }
@@ -2581,27 +2577,34 @@ button.warn:focus-visible { outline-offset: 0; }
 .vr-t .c-m .rs.quiet { color: var(--text-3); }
 .vr-t .c-m .u { margin-left: 0; }
 
-/* ---- the endpoint history: the latest checks' own rows, one per registration. Each verb in a slot of its own, so the
-   addresses after it line up; the old address quiet, the new one in the mono's weight; a failure's request never bold,
-   so it never reads as the endpoint ---- */
-.eh-t th.c-t { width: 190px; } .eh-t th.c-k { width: 112px; } .eh-t th.c-x { width: 150px; }
-.lg-t.eh-t th.c-t, .lg-t.eh-t td.c-t { text-align: left; }
-.eh-t th.c-k, .eh-t td.c-k { text-align: right; padding-right: 28px; }
+/* ---- the endpoint history: a compact listing, one hairline row per registration, a line each. Its columns are as wide
+   as what they hold (the change at its widest, never past 720px, where a long reason gives way first), so each
+   transaction stands just after its change and the room left falls at the row's end. Each verb in a slot of its own,
+   so the addresses after it line up; the old address quiet, the new one in the mono's weight; a failure's request never
+   bold, so it never reads as the endpoint. The rows open nothing: the verb does ---- */
+.lg-t.eh-t { table-layout: auto; }
+.lg-t.eh-t th { padding-top: 10px; padding-bottom: 8px; }
+.lg-t.eh-t td { padding-top: 5px; padding-bottom: 5px; }
+.lg-t.eh-t th.c-t, .lg-t.eh-t td.c-t { width: 176px; text-align: left; }
+.lg-t.eh-t th.c-c, .lg-t.eh-t td.c-c, .lg-t.eh-t th.c-x, .lg-t.eh-t td.c-x { width: 1%; }
+.lg-t.eh-t td.c-c { padding-right: 28px; }
+.lg-t.eh-t th.c-f, .lg-t.eh-t td.c-f { width: auto; padding: 0; }
 .eh-t td.c-t .tm { font-weight: 500; }
 .eh-t td.c-t .ag { margin-left: 9px; font-size: var(--t-small); color: var(--text-3); }
 .eh-t tr.row { cursor: default; }
-.eh-t tr.row.xf { cursor: pointer; }
+.lg-t.eh-t tr.row:hover td { background: none; }
 .eh-t td.c-c { font-family: var(--sans); }
-.eh-c { display: flex; align-items: center; min-width: 0; height: 20px; }
-.eh-vs { flex: none; width: 130px; }
+.eh-c { display: flex; align-items: center; min-width: 0; max-width: 720px; height: 20px; }
+.eh-vs { flex: none; width: 120px; }
 .eh-c > .mono, .eh-c > .eh-ar { flex: none; }
 .eh-q { display: flex; align-items: center; min-width: 0; }
 .eh-q > * { flex: none; }
 .eh-q > .eh-y { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .eh-v { font-weight: 500; color: var(--text); }
-.eh-v.f .dot { width: 7px; height: 7px; margin-right: 7px; vertical-align: 1px; }
-.lg-t button.eh-v { appearance: none; margin: 0; padding: 0; border: 0; background: none; font: inherit; font-weight: 500; color: var(--text); cursor: pointer; text-decoration: underline dotted color-mix(in srgb, var(--text-3) 70%, transparent); text-decoration-thickness: 1px; text-underline-offset: 4px; transition: color var(--dur), text-decoration-color var(--dur); }
-.lg-t button.eh-v:hover, .lg-t button.eh-v[aria-expanded="true"] { color: var(--accent-ink); text-decoration-color: currentColor; }
+.lg-t .txw.eh-v { font-weight: 500; color: var(--text); }
+.lg-t .txw.eh-v:hover, .lg-t .txw.eh-v[aria-expanded="true"], .lg-t .txw.eh-v:focus-visible { color: var(--accent-ink); }
+.eh-v.f { display: inline-flex; align-items: center; }
+.eh-v.f .dot { width: 7px; height: 7px; margin-right: 7px; }
 .eh-t .mono { font-size: 12.5px; letter-spacing: -.01em; }
 .eh-o { color: var(--text-3); }
 .eh-n { font-weight: 600; color: var(--text); }
@@ -2613,9 +2616,7 @@ button.warn:focus-visible { outline-offset: 0; }
 .eh-pre { display: inline-flex; align-items: center; font-style: normal; color: var(--text-3); }
 .eh-pre em { font-style: normal; }
 .eh-pre button.warn { margin-left: 3px; }
-.eh-t td.c-k { color: var(--text-2); }
 .eh-t td.c-x .mono { font-weight: 500; color: var(--text); }
-.eh-t td.c-x a.mono:hover, .eh-t tr.xf:hover td.c-x a.mono { color: var(--accent-ink); text-decoration: none; }
 .eh-t .u { color: var(--text-3); }
 .eh-more { justify-content: flex-end; }
 .eh-more .count:empty { display: none; }

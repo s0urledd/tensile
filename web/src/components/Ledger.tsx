@@ -65,9 +65,10 @@ export type Feed = {
 };
 /**
  * the escrow rows the API placed among a page of one publisher's blobs, newest first in chain order: rows, how many are
- * newer than the page (newer), all of them (total), and how many past its cap the page leaves out (more)
+ * newer than the page (newer), all of them (total) and the failed ones among those (failed), and how many past its cap
+ * the page leaves out (more)
  */
-export type Escrow = { rows: EscrowRow[]; newer: number; total: number; more: number };
+export type Escrow = { rows: EscrowRow[]; newer: number; total: number; failed: number; more: number };
 const empty = (path: string): Feed => ({ path, rows: [], total: 0, loaded: false, error: null, refused: false, lastNewAt: 0, escrow: null });
 
 /** a failed read, with the status the API answered (0: no answer) */
@@ -87,7 +88,7 @@ async function readPage(path: string): Promise<{ blobs: Blob[]; total: number; e
     }
     const j = await r.json();
     const escrow: Escrow | null = Array.isArray(j.escrow)
-      ? { rows: j.escrow, newer: j.escrow_newer ?? 0, total: j.escrow_total ?? j.escrow.length, more: j.escrow_more ?? 0 }
+      ? { rows: j.escrow, newer: j.escrow_newer ?? 0, total: j.escrow_total ?? j.escrow.length, failed: j.escrow_failed ?? 0, more: j.escrow_more ?? 0 }
       : null;
     return { blobs: Array.isArray(j.blobs) ? j.blobs : [], total: typeof j.total === "number" ? j.total : 0, escrow };
   } finally {
@@ -234,14 +235,14 @@ export type Move = {
 };
 /**
  * What a failed row says: why (the chain's reason, when Tensile has one), and what it asked for, exact and in words
- * ("Requested 1,000,000,000 TIA"; a blob payment's blob size, its namespace on hover); amount: the request alone, for
- * the struck alternative. Its whole row opens the failed page.
+ * ("Requested 1,000,000,000 TIA"; a blob payment's blob size, its namespace on hover). Its kind opens the failed page.
  */
-export type Fail = { reason?: string; ask: string; askTitle?: string; amount?: string; href: string; aria: string };
-/** how a failed row's request reads: B, in words under its reason, the Amount a dash; A, struck in the Amount column */
-export type FailStyle = "words" | "struck";
-/** the movements that stand among a page's rows, and the rows and movements that page shows, counted from the list's first */
-export type Placed = { list: Move[]; range: [number, number]; more?: number; count?: number };
+export type Fail = { reason?: string; ask: string; askTitle?: string; href: string; aria: string };
+/**
+ * the movements that stand among a page's rows, and the rows and movements that page shows, counted from the list's
+ * first; from an API that places them, the escrow rows of the whole list (count) and the failed ones among them (failed)
+ */
+export type Placed = { list: Move[]; range: [number, number]; more?: number; count?: number; failed?: number };
 /** what a page shows, as one read gave it: the path, its blobs, the count of all of them, and any escrow rows the API placed among them */
 export type PageRead = { path: string; rows: Blob[]; total: number; escrow: Escrow | null };
 /**
@@ -304,14 +305,14 @@ const FAILED_TITLE = "This transaction failed in this block: none of its message
  * qualifier and its amount close the second line, as a blob's fee closes its own. Its kind opens its transaction's gas
  * and fee, where they are on record. A failed one is a row of its own (FailRow).
  */
-export const MoveRow = memo(function MoveRow({ m, age: ag, dec, owner, failStyle = "words" }: { m: Move; age: string | null; dec: number; owner?: string; failStyle?: FailStyle }) {
-  if (m.fail) return <FailRow m={m} f={m.fail} age={ag} style={failStyle} />;
+export const MoveRow = memo(function MoveRow({ m, age: ag, dec, owner }: { m: Move; age: string | null; dec: number; owner?: string }) {
+  if (m.fail) return <FailRow m={m} f={m.fail} age={ag} />;
   return (
     <tr className={`row mv${m.tone ? ` ${m.tone}` : ""}`} data-m={m.key}>
       <td className="c-h">{int(m.height)}</td>
       <td className="c-t"><span title={utcWord(m.time)}><span className="tm">{monthDayTime(m.time)}</span>{ag && <span className="ag">{ag}</span>}</span></td>
       <td className="c-b">{m.cost
-        ? <TxCost word={m.word} label={m.word} cost={m.cost} hash={m.hash} owner={owner} className="k" />
+        ? <TxCost word={m.word} cost={m.cost} hash={m.hash} owner={owner} className="k" />
         : <span className="k" title={m.word}>{m.word}</span>}<span className="ht">#{int(m.height)}</span></td>
       <td className="c-q" colSpan={2} title={m.qual || undefined}>{m.qual}</td>
       <td className="c-fee num" title={m.note}><Signed sign={m.sign} utia={m.utia} dec={dec} /></td>
@@ -327,30 +328,21 @@ export const MoveRow = memo(function MoveRow({ m, age: ag, dec, owner, failStyle
 /**
  * A transaction that failed, among the movements: its height and time, its kind in the quieter grey ("Withdrawal
  * request": it never happened), the red mark and why over the namespace and the size, with what it asked for under
- * them; its Amount a dash, since nothing moved. The struck alternative keeps the qualifier to the reason and strikes
- * the request in the Amount column, unsigned. The whole row opens the failed page, where its gas, fee and error are.
+ * them; its Amount a dash, since nothing moved. Its kind opens the failed page, where its gas, fee and error are, with
+ * the dotted line a successful movement's kind has for its card: the row itself opens nothing.
  */
-function FailRow({ m, f, age: ag, style }: { m: Move; f: Fail; age: string | null; style: FailStyle }) {
-  const router = useRouter();
-  const go = (e: React.MouseEvent, href: string) => {
-    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-    router.push(href);
-  };
-  const words = style === "words";
+function FailRow({ m, f, age: ag }: { m: Move; f: Fail; age: string | null }) {
   const mark = <span className="xs" title={FAILED_TITLE}><i className="dot fault" aria-hidden="true" />Failed</span>;
   return (
-    <tr className={`row mv xf${words ? " xw" : ""}`} data-f={m.key} aria-label={f.aria}
-      onClick={(e) => openRow(e, f.href, go)} onAuxClick={(e) => openRow(e, f.href, go)}>
+    <tr className="row mv xf xw" data-f={m.key}>
       <td className="c-h">{int(m.height)}</td>
       <td className="c-t"><span title={utcWord(m.time)}><span className="tm">{monthDayTime(m.time)}</span>{ag && <span className="ag">{ag}</span>}</span></td>
-      <td className="c-b"><span className="k">{m.word}</span><span className="ht">#{int(m.height)}</span></td>
+      <td className="c-b"><Link className="k txw" href={f.href} aria-label={f.aria}>{m.word}</Link><span className="ht">#{int(m.height)}</span></td>
       <td className="c-q" colSpan={2}>
         <span className="xl">{mark}{f.reason && <><span className="sep">·</span><span className="xy">{f.reason}</span></>}</span>
-        {words && <span className="xa" title={f.askTitle}>{f.ask}</span>}
+        <span className="xa" title={f.askTitle}>{f.ask}</span>
       </td>
-      <td className="c-fee num">{words || !f.amount
-        ? <span className="xd" title="Nothing moved: the escrow is as it was.">—</span>
-        : <s className="xk" title="Requested, not moved: the escrow is as it was.">{unit(f.amount)}</s>}</td>
+      <td className="c-fee num"><span className="xd" title="Nothing moved: the escrow is as it was.">—</span></td>
       <td className="c-e" /><td className="gap" aria-hidden="true" /><td className="tn" />
       <td className="c-m">
         <span className="q">{mark}{f.reason && <><span className="sep">·</span>{f.reason}</>}</span><span className="sep">·</span>
@@ -458,7 +450,7 @@ function Placeholders({ rows, one }: { rows: number; one: boolean }) {
   );
 }
 
-export default function Ledger({ feed, size, live, skew, onePublisher = false, moves, owner, failStyle, emptyText, onNs, children }: {
+export default function Ledger({ feed, size, live, skew, onePublisher = false, moves, owner, emptyText, onNs, children }: {
   feed: Feed;
   /** the rows a page holds: as many places are kept while the first one loads */
   size: number;
@@ -472,8 +464,6 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
   moves?: Moves;
   /** the publisher whose list it is, for whose fee a movement's card names: its own, or another account's */
   owner?: string;
-  /** how a failed row's request reads (the gallery's two alternatives) */
-  failStyle?: FailStyle;
   /** what the empty list says, in place of "No blob recorded" */
   emptyText?: React.ReactNode;
   onNs: (ns: string) => void;
@@ -618,7 +608,7 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
               {shown.loaded && shown.rows.length === 0 && <tr className="lg-empty"><td colSpan={cols}>{emptyText ?? <>No blob recorded{shown.path.includes("&namespace=") || (!onePublisher && shown.path.includes("&publisher=")) ? " with this filter" : ""}.</>}</td></tr>}
               {items.map(({ b, m, t }) => b
                 ? <Row key={b.promise_hash} b={b} age={now ? age(now - t) : null} fresh={!!fresh?.has(b.promise_hash)} one={onePublisher} dec={dec} onNs={onNs} onOpen={onOpen} />
-                : <MoveRow key={m!.key} m={m!} age={now ? age(now - t) : null} dec={dec} owner={owner} failStyle={failStyle} />)}
+                : <MoveRow key={m!.key} m={m!} age={now ? age(now - t) : null} dec={dec} owner={owner} />)}
             </tbody>
           </table>
         </div>

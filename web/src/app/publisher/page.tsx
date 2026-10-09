@@ -4,7 +4,7 @@ import { useSearchParams } from "next/navigation";
 import { API_BASE, useApi, notFound, badRequest, throttled, hhmm, ago, shortMid, type Blob, type EscrowRow, type Payment, type PublisherNamespace, type RecentBlob, type Tip, type Window, blobFee, bytes, exactCoin, int, nsDisplay, span, tia, utcWord, TIP_MS } from "@/lib/api";
 import type { Params, PublisherWithQueue, PublisherWithdrawals } from "@/lib/withdrawals";
 import { lane } from "@/lib/status";
-import Ledger, { useLedger, LedgerHead, MoveRow, Signed, decimals, type FailStyle, type Move, type Moves, type PageRead, type Placed } from "@/components/Ledger";
+import Ledger, { useLedger, LedgerHead, MoveRow, Signed, decimals, type Move, type Moves, type PageRead, type Placed } from "@/components/Ledger";
 import Pager, { usePage } from "@/components/Pager";
 import Picker, { type Choice } from "@/components/Picker";
 import Ident from "@/components/Ident";
@@ -160,7 +160,7 @@ const FAILED_WORD: Partial<Record<Payment["kind"], string>> = { settlement: "Blo
 /**
  * One escrow row as the API placed it (with_escrow, recent_moves, recent_failed): a successful movement in the words
  * above, with its transaction for the card its kind opens; or a failed one, which moved nothing: no amount, no sign,
- * why it failed and what it asked for (a blob payment its blob), and its row opens the failed page.
+ * why it failed and what it asked for (a blob payment its blob), and its kind opens the failed page.
  */
 function escrowMove(x: EscrowRow, d: Detail, idx: number): Move {
   const base = { key: `${x.failed ? "f" : "m"}${x.height}-${x.tx_index}-${x.msg_index}`, height: x.height, txIndex: x.tx_index, msgIndex: x.msg_index, time: x.time, idx };
@@ -174,7 +174,6 @@ function escrowMove(x: EscrowRow, d: Detail, idx: number): Move {
       reason: x.reason,
       ask: blob ? `${x.blob_size != null ? bytes(x.blob_size) : "—"} blob` : amount ? `Requested ${amount}` : "",
       askTitle: blob && x.namespace ? `Namespace ${nsDisplay(x.namespace)} · ${x.namespace}` : undefined,
-      amount: blob ? undefined : amount,
       href: `/blob/?tx=${x.tx_hash ?? ""}`,
       aria: `Failed ${word.toLowerCase()}, block ${int(x.height)}`,
     },
@@ -213,7 +212,7 @@ function placeEscrow(d: Detail, { path, rows, escrow }: PageRead): Placed {
   if (!escrow) return { list: [], range: [offset + 1, offset + rows.length] };
   const list = escrow.rows.map((x, i) => escrowMove(x, d, i));
   const from = offset + escrow.newer + 1;
-  return { list, range: [from, from + rows.length + list.length - 1], more: escrow.more, count: escrow.total };
+  return { list, range: [from, from + rows.length + list.length - 1], more: escrow.more, count: escrow.total, failed: escrow.failed };
 }
 
 /**
@@ -221,7 +220,7 @@ function placeEscrow(d: Detail, { path, rows, escrow }: PageRead): Placed {
  * nothing moves when the kind changes; then what went in, what the blobs and any timed-out promise cost, what went
  * out, and the escrow that leaves, the labels up to the Amount column and the figures in it.
  */
-function Statement({ d, moves, page, onPage, now, owner, failStyle }: { d: Detail; moves: Move[]; page: number; onPage: (p: number) => void; now: number; owner: string; failStyle: FailStyle }) {
+function Statement({ d, moves, page, onPage, now, owner }: { d: Detail; moves: Move[]; page: number; onPage: (p: number) => void; now: number; owner: string }) {
   const e = d.publisher.escrow?.found ? d.publisher.escrow : null;
   const all = d.windows.find((w) => w.window.name === "all");
 
@@ -250,7 +249,7 @@ function Statement({ d, moves, page, onPage, now, owner, failStyle }: { d: Detai
           <LedgerHead one escrow />
           <tbody>
             {moves.length === 0 && <tr className="lg-empty"><td colSpan={9}>No escrow movement on record.</td></tr>}
-            {shown.map((m) => <MoveRow key={m.key} m={m} age={age(now - Date.parse(m.time))} dec={dec} owner={owner} failStyle={failStyle} />)}
+            {shown.map((m) => <MoveRow key={m.key} m={m} age={age(now - Date.parse(m.time))} dec={dec} owner={owner} />)}
           </tbody>
           {foot.length > 0 && page === Math.ceil(moves.length / SIZE) && (
             <tfoot>
@@ -335,8 +334,6 @@ function Publisher({ addr }: { addr: string }) {
   const withEscrow = !ns && kindPick !== "blobs";
   const blobsPath = useCallback((o: number) => `/v1/blobs?limit=${SIZE}&offset=${o}&publisher=${encodeURIComponent(addr)}${ns ? `&namespace=${encodeURIComponent(ns)}` : ""}${withEscrow ? "&with_escrow=1" : ""}`, [addr, ns, withEscrow]);
   const feed = useLedger(blobsPath(offset), live && !statement, tip.data?.height, skew);
-  // the gallery's two ways of saying what a failed row asked for
-  const failStyle: FailStyle = params.get("variant") === "a" ? "struck" : "words";
 
   // Under All, each page of blobs takes the movements of its own stretch of time, by the rows the list shows: the API's
   // own placing, or from an API before it, placeMoves. A namespace is a filter of blobs: the movements step aside while
@@ -551,14 +548,14 @@ function Publisher({ addr }: { addr: string }) {
         </div>
 
         {statement
-          ? <Statement d={data} moves={stated} page={page} onPage={setPage} now={now} owner={addr} failStyle={failStyle} />
+          ? <Statement d={data} moves={stated} page={page} onPage={setPage} now={now} owner={addr} />
           : (
-            <Ledger feed={feed} size={SIZE} live={live} skew={skew} onePublisher moves={moves} owner={addr} failStyle={failStyle} onNs={setNs}>
+            <Ledger feed={feed} size={SIZE} live={live} skew={skew} onePublisher moves={moves} owner={addr} onNs={setNs}>
               {(n, placed) => {
                 // under All, the pages follow the blobs' and each counts its blobs and the escrow rows between them, of
                 // every transaction; what they are on hover, each part only when it has any
                 const rows = placing ? placed?.count ?? escrowN : moveN;
-                const failed = placing ? Math.max(0, rows - moveN) : 0;
+                const failed = placing ? Math.min(rows, placed?.failed ?? failN) : 0;
                 const all = n + rows;
                 const parts = [plural(n, "blob settlement"), rows - failed > 0 ? plural(rows - failed, "escrow movement") : "", failed > 0 ? plural(failed, "failed transaction") : ""].filter(Boolean);
                 const what = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts[0];

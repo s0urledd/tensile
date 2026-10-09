@@ -436,10 +436,10 @@ function Page() {
   const figs = (
     <dl className="pb-meta bd-meta bd-figs">
       <dt>Blob size</dt><dd title="The size the blob paid for: Celestia's upload size, with header and padding, without parity."><b>{unit(bytes(b.blob_size))}</b></dd>
-      {/* the two fees one under the other, under their two labels: the blob's, from the escrow, and the transaction's own,
-          from its fee payer's bank balance */}
-      <dt title="Charged to the publisher's escrow for this blob. The transaction fee is separate.">Blob fee</dt>
-      <dd>{b.charge ? <><b>{unit(tia(b.charge.fee_utia))}</b><em>from escrow · {b.charge.timed_out ? "timed out" : b.charge.settled ? "settled" : "not settled yet"}</em></> : <em>not recorded</em>}</dd>
+      {/* the two fees one under the other, under their two labels: the blob's (Fee paid, its one name on every page), from
+          the escrow, and the transaction's own, from its fee payer's bank balance */}
+      <dt>Fee paid</dt>
+      <dd title="Charged to the publisher's escrow; not the settlement transaction's own fee.">{b.charge ? <><b>{unit(tia(b.charge.fee_utia))}</b><em>from escrow · {b.charge.timed_out ? "timed out" : b.charge.settled ? "settled" : "not settled yet"}</em></> : <em>not recorded</em>}</dd>
       <dt title={FEE_TITLE}>Transaction fee</dt>
       <dd>{data.tx_cost ? <FeeValue c={data.tx_cost} owner={pub} /> : <em>not recorded</em>}</dd>
       <dt>Endorsed</dt><dd title="Voting power whose signature on the settlement verified. A settlement needs ⅔.">{stake != null ? <><b>{pctOf(b.attested_voting_power ?? 0, b.total_voting_power ?? 0)}</b><em>of voting power</em></> : <em>not recorded</em>}</dd>

@@ -309,9 +309,9 @@ export default function Methodology() {
           <p>Those carry Tensile&rsquo;s eye: <strong>Available</strong> on a publisher&rsquo;s page, and the <strong>Tensile</strong> column beside its blobs, as defined under <a href="#available">Available</a>.</p>
           <dl className="ref-terms">
             <Term id="fees" term="Fees">
-              The module&rsquo;s charge for a blob, taken from the publisher&rsquo;s escrow: the blob fee. No event carries the amount, so it is recomputed with the module&rsquo;s formula, at one utia per gas:
+              The module&rsquo;s charge for a blob, taken from the publisher&rsquo;s escrow; not the settlement transaction&rsquo;s own fee. No event carries the amount, so it is recomputed with the module&rsquo;s formula, at one utia per gas:
               <Formula note="the same charge when a promise times out">650,000 + 45,000 × ceil(blob size / 256 KiB) gas</Formula>
-              A transaction&rsquo;s own fee is separate: its fee payer pays it from its bank balance, and it is in no figure.
+              The transaction fee is separate: the fee payer pays it from its bank balance, and it is in no figure.
             </Term>
             <Term id="escrow" term="Escrow available">What the account can spend from its escrow now: its balance less what is queued to withdraw. An amber dot marks an account that cannot pay for one more blob of its usual size, or one whose queued withdrawal was partly spent by settlements.</Term>
             <Term id="timeouts" term="Timeouts">A payment promise not settled in time, charged as a blob. A floor: only the timeouts someone submitted are on chain.</Term>
