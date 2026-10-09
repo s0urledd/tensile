@@ -1916,13 +1916,17 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
 .ptx-t .po.hold, .ptx-t .k2.hold { color: var(--hold-ink); }
 .pb-st tfoot tr.tot td.c-am { font-weight: 600; box-shadow: inset 0 1px 0 var(--line); }
 
-/* 1: the Blobs list's ledger: the hash first at the table's inset, the type, the time centred in what is left, the
-   height and the amount right-aligned on their digits, the status as Blobs' (its dot hung) */
-.ptx-1 th.c-x { width: 150px; } .ptx-1 th.c-k { width: 200px; } .ptx-1 th.c-bh { width: 120px; } .ptx-1 th.c-am { width: 170px; }
-.ptx-1 th.c-st { width: 130px; } .ptx-1 th.c-po { width: 120px; }
+/* 1: the Blobs list's ledger: the hash first at the table's inset, the type, the time centred, the height and the
+   amount right-aligned on their digits, the status as Blobs' (its dot hung). Six columns hold ~610px of words in a
+   1118px frame: the widths set the same room (~95px) between every two columns' words at their widest ("May 28
+   20:48:38 23 h 59 min", "+1,000.000 TIA"), so no gap opens wider than the rest; the status's words start 84px into
+   their cell, the dot hung in that room. The hash, the type and the time stand in the same place in All and Escrow */
+.ptx-1 th.c-x { width: 202px; } .ptx-1 th.c-k { width: 178px; } .ptx-1 th.c-bh { width: 111px; } .ptx-1 th.c-am { width: 190px; }
+.ptx-1 th.c-st { width: 153px; }
+.ptx-1.ptx-esc th.c-am { width: 151px; } .ptx-1.ptx-esc th.c-st { width: 220px; } .ptx-1 th.c-po { width: 83px; }
 .ptx-1 th.c-tm, .ptx-1 td.c-tm { text-align: center; }
 .ptx-1 .c-tm .ag { margin-left: 9px; }
-.ptx-1 th.c-st, .ptx-1 td.c-st { padding-left: 27px; }
+.ptx-1 th.c-st, .ptx-1 td.c-st { padding-left: 84px; }
 
 /* 2, 3: the validator's Endpoint history: equal tracks, the height left-aligned as every table's first column, the rest
    centred under their heads */
@@ -1933,6 +1937,12 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
 .ptx-2 tfoot td.fl, .ptx-3 tfoot td.fl { text-align: right; }
 /* the amounts right-aligned in one box as wide as the widest on the page, the box centred: the digits stack */
 .ptx-t .amb { display: inline-block; min-width: var(--am-w, 0px); text-align: right; }
+/* a failed one's dash is no figure: centred under the head */
+.ptx-t .amb.nil { text-align: center; }
+/* the total's rule as wide as the figures, not the whole cell */
+.ptx-2 tfoot tr.tot td.c-am, .ptx-3 tfoot tr.tot td.c-am { box-shadow: none; }
+.ptx-2 tfoot tr.tot .amb, .ptx-3 tfoot tr.tot .amb { position: relative; }
+.ptx-2 tfoot tr.tot .amb::before, .ptx-3 tfoot tr.tot .amb::before { content: ""; position: absolute; left: 0; right: 0; top: -10px; height: 1px; background: var(--line); }
 /* each status word in a box as wide as "Success", centred, its dot hung to the left: both words start on one line and
    both dots stand in one column */
 .ptx-2 td.c-st .st, .ptx-3 td.c-st .st { min-width: 53px; }

@@ -124,7 +124,7 @@ const Row = memo(function Row({ t, cols, pv, dec, now, onOpen }: { t: PubTx; col
           : pv === 3 ? <span className="kw"><span>{word}</span></span> : word}</td>
       );
       case "am": return (
-        <td key={c} className={`c-am${pv === 1 ? " num" : ""}`} title={!failed && t.kind === "withdrawal_request" ? QUEUED : undefined}>{pv === 1 ? amount : <span className="amb">{amount}</span>}</td>
+        <td key={c} className={`c-am${pv === 1 ? " num" : ""}`} title={!failed && t.kind === "withdrawal_request" ? QUEUED : undefined}>{pv === 1 ? amount : <span className={`amb${failed || t.amount_utia == null ? " nil" : ""}`}>{amount}</span>}</td>
       );
       case "st": return (
         <td key={c} className="c-st">{failed

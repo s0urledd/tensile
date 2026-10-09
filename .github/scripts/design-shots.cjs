@@ -203,11 +203,12 @@ async function reveal(page, sel) {
   await page.waitForTimeout(300);
 }
 
-/** the elements' area with room around it, from the window as it is */
+/** the elements' area with room around it, from the window as it is; never over the site's header, which stays at the window's top */
 async function crop(page, file, sels, pad = 24) {
   const b = await box(page, sels);
   if (!b) { notes.push(`${file}: nothing to crop`); return; }
-  const x = Math.max(0, Math.floor(b.x - pad)), y = Math.max(0, Math.floor(b.y - pad));
+  const head = await page.evaluate(() => { const h = document.querySelector("header.top"); return h ? Math.ceil(h.getBoundingClientRect().bottom) : 0; });
+  const x = Math.max(0, Math.floor(b.x - pad)), y = Math.max(0, head, Math.floor(b.y - pad));
   const width = Math.min(W - x, Math.ceil(b.r + pad) - x), height = Math.min(H - y, Math.ceil(b.b + 16) - y);
   if (b.b + 16 > H) notes.push(`${file}: taller than the window, cut at its foot`);
   await page.screenshot({ path: path.join(out, file), animations: "disabled", clip: { x, y, width, height } });
@@ -339,7 +340,17 @@ async function layout(page, label) {
     const amRight = [...new Set([...t.querySelectorAll(`tbody ${amSel}, tfoot ${amSel}`)].map((td) => words(td)).filter(Boolean).map((w) => R1(w.r)))];
     const failed = [...t.querySelectorAll("tbody tr.xf")].map((tr) => (tr.querySelector(amSel) || {}).textContent);
     const heights = [...new Set(rows.map((tr) => R1(tr.getBoundingClientRect().height)))];
-    return { table: R1(t.getBoundingClientRect().width), cls: t.className, cols, dots, stWords, stHead: stHead ? `${R1(stHead.l)}–${R1(stHead.r)}` : "-", amRight, failed, heights };
+    // the room between two neighbouring columns' words, over the rows: its least and its most
+    const gaps = ths.slice(0, -1).map((th, i) => {
+      let lo = Infinity, hi = -Infinity;
+      for (const tr of rows) {
+        const a = tr.children[i] && words(tr.children[i]), b = tr.children[i + 1] && words(tr.children[i + 1]);
+        if (!a || !b) continue;
+        lo = Math.min(lo, b.l - a.r); hi = Math.max(hi, b.l - a.r);
+      }
+      return isFinite(lo) ? `${th.className.split(" ")[0]}→${ths[i + 1].className.split(" ")[0]} ${Math.round(lo)}–${Math.round(hi)}` : null;
+    }).filter(Boolean);
+    return { table: R1(t.getBoundingClientRect().width), cls: t.className, cols, dots, stWords, stHead: stHead ? `${R1(stHead.l)}–${R1(stHead.r)}` : "-", amRight, failed, heights, gaps };
   });
   notes.push(`--- ${label}: table ${r.table}px (${r.cls})`);
   notes.push(`${label} columns (width, alignment, largest gap of the cells' words from the head's): ${r.cols.join(" · ")}`);
@@ -347,6 +358,7 @@ async function layout(page, label) {
   notes.push(`${label} amounts' right edges: ${r.amRight.join(", ") || "-"}${r.amRight.length > 1 ? "  NOT STACKED" : ""}`);
   notes.push(`${label} failed rows' amounts: ${r.failed.map((s) => JSON.stringify(s)).join(", ") || "-"}${r.failed.some((s) => s !== "—") ? "  A FAILED ROW SHOWS AN AMOUNT" : ""}`);
   notes.push(`${label} rows' heights: ${r.heights.join(", ")}`);
+  notes.push(`${label} room between the columns' words (least–most over the rows): ${r.gaps.join(" · ")}`);
 }
 
 /** the top's words, for the check that the design leaves it as today's page draws it */
