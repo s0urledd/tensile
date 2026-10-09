@@ -206,7 +206,7 @@ function Page({ t, HEX, meta, metaErr, at }: { t: TxAnswer; HEX: string; meta: M
           : <><span className="mono eh-n">{x.host}</span>{x.action === "same" && <em>same address</em>}</>);
       } else {
         if (x.requested_host) add("rq", "Requested", <span className="mono rq">{x.requested_host}</span>, "Requested; the endpoint did not change.");
-        add("ep", "Endpoint", <><b>Unchanged</b>{x.host_at_block && <em>{x.host_at_block} stayed registered</em>}</>);
+        add("ep", "Endpoint", <><b>Unchanged</b>{x.host_at_block && <em><span className="mono">{x.host_at_block}</span> stayed registered</em>}</>);
       }
       break;
   }
@@ -288,15 +288,15 @@ function MsgRows({ m, failed, r }: { m: TxMsg; failed: boolean; r: TxAnswer["rel
   return (
     <>
       <tr className={failed ? "bad" : carries(m) ? undefined : "u"}>
-        <td className="c-i">{m.index}</td>
-        <td className="c-n"><span title={m.type_url}>{nameOf(m.type_url)}</span>{failed && <em>failed</em>}</td>
-        <td className="c-s"><Signer s={m.signer} r={r} /></td>
+        <td className="c-i"><span className="cl">{m.index}</span></td>
+        <td className="c-n"><span className="cl"><span className="nm" title={m.type_url}>{nameOf(m.type_url)}</span>{failed && <em>failed</em>}</span></td>
+        <td className="c-s"><span className="cl"><Signer s={m.signer} r={r} /></span></td>
       </tr>
       {m.inner?.slice(0, LISTED).map((i) => (
         <tr key={`${m.index}.${i.index}`} className={i.fibre ? "in" : "in u"}>
           <td className="c-i" />
-          <td className="c-n"><span className="ar" aria-hidden="true">↳</span><span title={i.type_url}>{nameOf(i.type_url)}</span></td>
-          <td className="c-s"><Signer s={i.signer} r={r} /></td>
+          <td className="c-n"><span className="cl"><span className="ar" aria-hidden="true">↳</span><span className="nm" title={i.type_url}>{nameOf(i.type_url)}</span></span></td>
+          <td className="c-s"><span className="cl"><Signer s={i.signer} r={r} /></span></td>
         </tr>
       ))}
     </>

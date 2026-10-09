@@ -269,8 +269,12 @@ async function tip(page, sel, theme, at = "pointer") {
       borderRadius: "3px", boxShadow: "0 2px 6px rgba(0,0,0,.22)", whiteSpace: "normal", pointerEvents: "none",
     });
     document.body.appendChild(d);
+    // a figure at a table's right edge: the tip ends under it, as a browser keeps a tooltip on the screen
+    if (at === "end") d.style.left = `${Math.round(r.right - d.offsetWidth + 4)}px`;
   }, { sel, dark: theme === "dark", at });
 }
+/** hides what stands under a hover shot's area (the site's foot, the sections under a frame), so the crop holds only what it shows */
+const hide = (page, sel, on = true) => page.evaluate(({ sel, on }) => document.querySelectorAll(sel).forEach((e) => { e.style.visibility = on ? "hidden" : ""; }), { sel, on });
 const untip = async (page) => { await page.evaluate(() => document.querySelectorAll(".shot-tip").forEach((d) => d.remove())); await page.mouse.move(5, 5); await page.waitForTimeout(150); };
 
 /** the n-th row of a table's body (1-based) as a selector */
@@ -296,12 +300,14 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       await tip(page, `${row("#list .tx-t", 3)} .st.f`, theme);
       await crop(page, `p1-tip-failed-${theme}.png`, ["#list .tx-t thead", row("#list .tx-t", 5), ".shot-tip"], "Hover on Failed: \"Failed: Insufficient funds. None of its messages took effect.\"", { t: 20, r: 20, b: 0, l: 20 });
       await untip(page);
-      await tip(page, `${row("#list .tx-t", 2)} td.c-am .xd`, theme);
+      await tip(page, `${row("#list .tx-t", 2)} td.c-am .xd`, theme, "end");
       await crop(page, `p1-tip-dash-${theme}.png`, ["#list .tx-t thead", row("#list .tx-t", 5), ".shot-tip"], "Hover on a failed row's Amount dash: \"Nothing moved: the escrow is as it was.\"", { t: 20, r: 20, b: 0, l: 20 });
       await untip(page);
       await reveal(page, ["#list .pager"], 160);
       await tip(page, "#list .pager .count span[title]", theme);
-      await crop(page, `p1-pager-${theme}.png`, [row("#list .tx-t", 24), "#list .pager", ".shot-tip"], "The pager: Showing 1–25 of 115 transactions; its hover \"3 of them failed\"", 20);
+      await hide(page, "footer");
+      await crop(page, `p1-pager-${theme}.png`, [row("#list .tx-t", 24), "#list .pager", ".shot-tip"], "The pager: Showing 1–25 of 115 transactions; its hover \"3 of them failed\"", { t: 0, r: 20, b: 16, l: 20 });
+      await hide(page, "footer", false);
       await untip(page);
       await ctx.close();
     }
@@ -328,14 +334,14 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       const { ctx, page } = await open(browser, theme);
       await go(page, `/validator/?addr=${VAL}&tab=endpoints`, ".eh-t tbody tr");
       await crop(page, `v1-history-${theme}.png`, [".vd-stat", "#evidence .list-head", "#evidence .vd-pager"],
-        "Validator Unity Nodes: the panels unchanged; under them the tabs Latest checks | Endpoint history 3, Endpoint history open: Time (UTC) · Block · TX hash · Action · Status · Endpoint. The MOCK failed row (Change requested · Failed · 203.0.113.10:7980 quiet), two real Changed rows (the newer marked current) and the host before Tensile's record");
+        "Validator Unity Nodes: the panels unchanged; under them the tabs Latest checks | Endpoint history 3, Endpoint history open: Time (UTC) · Block · TX hash · Action · Status · Endpoint. The MOCK failed row (Change requested · Failed · 203.0.113.10:7980 quiet), two real Changed rows (the newer marked current) and the host before Tensile's record", { t: 12 });
       if (dk) await full(page, `v1-full-${theme}.png`, "Validator page, whole, Endpoint history open, for context");
       await reveal(page, ["#evidence .list-head", "#evidence .vd-pager"]);
       await tip(page, ".eh-t tr.xf .st.f", theme);
-      await crop(page, `v1-tip-failed-${theme}.png`, ["#evidence .lg-tw", ".shot-tip"], "Hover on Failed: \"Failed: Invalid validator. The endpoint did not change.\"", 20);
+      await crop(page, `v1-tip-failed-${theme}.png`, ["#evidence .lg-tw", ".shot-tip"], "Hover on Failed: \"Failed: Invalid validator. The endpoint did not change.\"", { t: 8, r: 20, b: 8, l: 20 });
       await untip(page);
       await tip(page, ".eh-t tr.xf .rq", theme);
-      await crop(page, `v1-tip-req-${theme}.png`, ["#evidence .lg-tw", ".shot-tip"], "Hover on the requested address: \"Requested; the endpoint did not change.\"", 20);
+      await crop(page, `v1-tip-req-${theme}.png`, ["#evidence .lg-tw", ".shot-tip"], "Hover on the requested address: \"Requested; the endpoint did not change.\"", { t: 8, r: 20, b: 8, l: 20 });
       await untip(page);
       await ctx.close();
     }
@@ -362,11 +368,13 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       if (name === "t3-withdrawal-failed") {
         if (dk) await full(page, `t3-full-${theme}.png`, "Transaction page, whole (a failed withdrawal request), for context");
         await reveal(page, [".bd-title", ".tx-top"]);
+        await hide(page, ".tx-err, .tx-ms, footer");
         await tip(page, ".tx-top .bd-figs dd:last-of-type b[title]", theme);
         await crop(page, `t3-tip-fee-${theme}.png`, [".tx-top", ".shot-tip"], "Hover on the transaction fee's figure: the chain's own, \"800 utia\"", { t: 16, r: 20, b: 20, l: 20 });
         await untip(page);
         await tip(page, ".tx-top .bd-figs dt:last-of-type", theme, "start");
         await crop(page, `t3-tip-label-${theme}.png`, [".tx-top", ".shot-tip"], "Hover on Transaction fee: paid from the fee payer's bank balance, never the escrow; it was taken, so this transaction cannot run again", { t: 16, r: 20, b: 20, l: 20 });
+        await hide(page, ".tx-err, .tx-ms, footer", false);
         await untip(page);
       }
       await ctx.close();
@@ -385,8 +393,10 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       await crop(page, `g1-blob-${theme}.png`, [".bd-title", ".bd-top"], "Blob page as round 1's: Gas 219,118 used of 400,000 under the Transaction (its hash now opens the transaction page); Fee paid 3.575 TIA from escrow · settled, and under it Transaction fee 0.008 TIA from the bank balance", { t: 24, b: 14 });
       if (dk) await full(page, `g1-full-${theme}.png`, "Blob page, whole, for context");
       await reveal(page, [".bd-title", ".bd-top"]);
+      await hide(page, ".bd-under, .bd-full, footer");
       await tip(page, ".bd-figs dd b[title]", theme);
       await crop(page, `g1-tip-fee-${theme}.png`, [".bd-top", ".shot-tip"], "Hover on the transaction fee's figure: \"8,000 utia\"", { t: 16, r: 20, b: 20, l: 20 });
+      await hide(page, ".bd-under, .bd-full, footer", false);
       await untip(page);
       await ctx.close();
     }

@@ -2690,14 +2690,15 @@ button.warn:focus-visible { outline-offset: 0; }
 .lg-t .c-tb .ag { font-size: var(--t-small); color: var(--text-3); }
 .lg-t .c-tb .bk { font-size: var(--t-cell); color: var(--text-3); }
 /* whether it took effect: a dot and a word; a failure in the text's own weight, so the red dot and "Failed" are found */
-.lg-t .st { display: inline-flex; align-items: center; color: var(--text-2); }
-.lg-t .st .dot { width: 7px; height: 7px; margin-right: 8px; }
+.lg-t .st { display: inline-flex; align-items: baseline; color: var(--text-2); }
+.lg-t .st .dot { align-self: center; width: 7px; height: 7px; margin-right: 8px; }
 .lg-t .st.f { font-weight: 500; color: var(--text); }
 .tx-t td.c-am { font-weight: 500; }
 /* a withdrawal request only moves money into the queue: its amount quieter; a failure's dash quieter still */
 .tx-t tr.req td.c-am { font-weight: 400; color: var(--text-2); }
 .tx-t .xd { font-weight: 400; color: var(--text-3); }
-.pb-st tfoot tr.tot td.c-am { font-weight: 600; box-shadow: inset 0 1px 0 var(--line); }
+/* the total under a rule as wide as the figures, as a statement draws it */
+.pb-st tfoot tr.tot td.c-am { font-weight: 600; background: linear-gradient(var(--line), var(--line)) 12px 0 / calc(100% - 30px) 1px no-repeat, var(--surface-2); }
 /* an endpoint registration: what it did in words; the address it registered in the mono face's weight, the one
    registered now marked so; a failure's requested address quiet, never bold */
 .eh-t td.c-ac { color: var(--text); }
@@ -2728,9 +2729,13 @@ button.warn:focus-visible { outline-offset: 0; }
 .bd-meta .eh-n { font-weight: 600; color: var(--text); }
 .bd-meta .eh-ar { margin: 0 4px; color: var(--text-3); }
 /* a validator as a chip: its picture, its name; the blob page's link look */
-.tx-val { display: inline-flex; align-items: center; gap: 8px; font-weight: 500; color: var(--text); }
+.tx-val { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; font-weight: 500; color: var(--text); vertical-align: middle; }
 .tx-val:hover { color: var(--accent-ink); text-decoration: none; }
-.tx-val .avatar { width: 20px; height: 20px; border-radius: 5px; font-size: 9px; }
+.tx-val .avatar { width: 18px; height: 18px; border-radius: 5px; font-size: 8px; }
+/* a validator's chip in a row of facts stands on the row's line */
+.bd-meta dd > .tx-val { align-self: center; }
+.bd-meta em .mono { color: inherit; }
+.bd-sh .bd-err-a { margin-top: 0; }
 .bd-meta .bd-tx a.mono { color: var(--text); }
 .bd-meta .bd-tx a.mono:hover { color: var(--accent-ink); text-decoration: none; }
 /* the error's reason in plain words with the chain's code, over the error as the node returned it */
@@ -2742,13 +2747,15 @@ button.warn:focus-visible { outline-offset: 0; }
 /* its messages: a small ledger, index, name and signer; the one that failed red, one that carries no Fibre quiet, a
    MsgExec's own messages on indented rows */
 .tx-m { min-width: 0; table-layout: fixed; }
-.tx-m th, .tx-m td { text-align: left; }
-.tx-m th.c-i { width: 96px; } .tx-m th.c-n { width: 42%; }
+.bd-t.tx-m th, .bd-t.tx-m td { text-align: left; vertical-align: middle; }
+/* every cell's content on one centred line of one height, so a chip's name and a message's stand level */
+.tx-m .cl { display: inline-flex; align-items: center; min-height: 20px; vertical-align: middle; }
+.tx-m th.c-i { width: 120px; } .tx-m th.c-n { width: 46%; }
 .tx-m td.c-i { color: var(--text-2); }
-.tx-m td.c-n span { font-weight: 500; }
-.tx-m tr.bad td.c-n span { font-weight: 600; color: var(--fault); }
+.tx-m td.c-n .nm { font-weight: 500; }
+.tx-m tr.bad td.c-n .nm { font-weight: 600; color: var(--fault); }
 .tx-m td.c-n em { margin-left: 8px; font-style: normal; color: var(--text-3); }
-.tx-m tr.u td.c-n span { font-weight: 400; color: var(--text-3); }
+.tx-m tr.u td.c-n .nm { font-weight: 400; color: var(--text-3); }
 .tx-m tr.in td.c-n .ar { margin: 0 8px 0 2px; font-weight: 400; color: var(--text-3); }
 .tx-m td.c-s .mono { font-family: var(--mono); font-size: 12.5px; color: var(--text-2); }
 .tx-m td.c-s .cp { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: 4px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--text-3); vertical-align: -3px; cursor: pointer; }
