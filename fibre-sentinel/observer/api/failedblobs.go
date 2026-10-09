@@ -62,6 +62,9 @@ type failedPayRow struct {
 	// fee and every signer's sequence were taken, so the same transaction
 	// can never be in a block again.
 	Final bool `json:"final"`
+	// msgIndex is where its MsgPayForFibre stands in its transaction: its
+	// own index, or the MsgExec's that carries it (pubtxs.go lists it so)
+	msgIndex int
 }
 
 // failedPayOf is r as a failed blob payment, ok false when it carries no
@@ -71,7 +74,8 @@ func failedPayOf(r failedtx.Record) (failedPayRow, bool) {
 	if m == nil {
 		return failedPayRow{}, false
 	}
-	row := failedPayRow{Status: "failed", Code: r.Code, Codespace: r.Codespace, Reason: failedtx.Explain(r).Reason, Final: r.AntePassed}
+	row := failedPayRow{Status: "failed", Code: r.Code, Codespace: r.Codespace, Reason: failedtx.Explain(r).Reason, Final: r.AntePassed,
+		msgIndex: topIndexOf(r.Messages, m)}
 	if d := m.Detail; d != nil {
 		row.PromiseHash, row.Namespace = d.PromiseHash, d.Namespace
 		if !m.Cut {

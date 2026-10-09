@@ -202,6 +202,29 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 		c{"blobs before a failed payment in a namespace", blobsBeforeSQL(blobInNamespaceSQL), []any{"ns", 1, 1, 0, 25}, []string{"SEARCH publications USING INDEX"}},
 	)
 	noSort["failed payments since"] = true
+	// A publisher's transactions (pubtxs.go): its counts and sums, a page of
+	// its successes and the successes before a failure, each a range of
+	// payments_publisher_time whose order gives the page's (only one
+	// block's rows are sorted among themselves, never the whole range); its
+	// failed deposits and withdrawal requests from failed_tx_msgs' primary
+	// key in its order; a request's queue row by its primary key.
+	cases = append(cases,
+		c{"publisher txs sums", pubTxSumsSQL, []any{"celestia1x"}, []string{"SEARCH payments USING INDEX payments_publisher_time (publisher=?)"}},
+		c{"publisher failed escrow txs", pubTxFailedMsgsSQL, []any{"celestia1x", "a", "b"},
+			[]string{"USING PRIMARY KEY (account=?)", "USING INDEX sqlite_autoindex_failed_txs_1 (dedupe_key=?)"}},
+		c{"a withdrawal request's queue row", pubTxQueueSQL, []any{"celestia1x", lo},
+			[]string{"USING INDEX sqlite_autoindex_withdrawal_queue_1 (publisher=? AND requested_at=?)"}},
+	)
+	noSort["publisher failed escrow txs"] = true
+	for _, v := range []struct{ name, kinds string }{{"all", pubTxKindsAll}, {"escrow", pubTxKindsEscrow}} {
+		cases = append(cases,
+			c{"publisher txs page " + v.name, pubTxPageSQL(v.kinds), []any{"celestia1x", 25, 0},
+				[]string{"SEARCH payments USING INDEX payments_publisher_time (publisher=?)"}},
+			c{"publisher txs before a failure " + v.name, pubTxBeforeSQL(v.kinds), []any{"celestia1x", lo, 1, 1, 0, 25},
+				[]string{"SEARCH payments USING INDEX payments_publisher_time (publisher=? AND time>?)"}},
+		)
+		noSort["publisher txs page "+v.name] = true
+	}
 	// The tip's newest blob, asked up to four times a second whoever is
 	// reading: the highest height from the index's last entry, then that
 	// block's rows, never a walk of publications.

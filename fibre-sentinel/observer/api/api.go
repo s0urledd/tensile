@@ -293,6 +293,7 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 	s.mux.HandleFunc("GET /v1/market", s.handleMarket)
 	s.mux.HandleFunc("GET /v1/publishers", s.handlePublishers)
 	s.mux.HandleFunc("GET /v1/publishers/{addr}", s.handlePublisher)
+	s.mux.HandleFunc("GET /v1/publishers/{addr}/txs", s.handlePublisherTxs) // pubtxs.go
 	s.mux.HandleFunc("GET /v1/params", s.handleParams)
 	s.mux.HandleFunc("GET /v1/signing", s.handleSigning)
 	s.registerExtraRoutes()
