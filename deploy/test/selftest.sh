@@ -112,7 +112,10 @@
 #                   for 10 min each fail a check of their own; so does
 #                   yesterday's export whose newest line in
 #                   exports/remote.jsonl is ok false, or that has none,
-#                   from 06:00 UTC with BACKUP_REMOTE set; a new host
+#                   from 06:00 UTC with BACKUP_REMOTE set; so does a record
+#                   file not archived yet past 64 MiB, or grown over 1 MiB
+#                   in a day from its day-old size sample, until it holds
+#                   again; a new host
 #                   with no exports directory yet completes its run; the
 #                   webhook and the bot token never reach curl's command
 #                   line
@@ -1071,6 +1074,39 @@ check contains "$(lastpost)" "nothing new from vantage de-2 for 40m"
 rm -rf "$T/hw/vantages/de-2/archive"
 hwx "$p200" HEALTHWATCH_NOW="$noon" VANTAGE_PULL_NAMES="de-1 de-2" >/dev/null
 check contains "$(lastpost)" recovered
+# The record files not archived yet: the first run only samples a file's
+# size, a sample under a day old is kept, and from a day-old one a growth
+# over 1 MiB a day is archive-due until a day's growth is under it again;
+# past 64 MiB is archive-due at once, and a file shorter than its sample
+# (archived) grew nothing
+hw5="$T/hw5"; mkdir -p "$hw5"
+hw5state="$hw5/status/healthwatch.state"; hw5sizes="$hw5/status/healthwatch.sizes"
+truncate -s 1000 "$hw5/tx_costs.jsonl"
+check eq "$(hwx "$p200" HEALTHWATCH_NOW="$noon" DATA_DIR="$hw5")" 0
+check eq "$(sed -n 1p "$hw5state")" ok
+check eq "$(cat "$hw5sizes")" "tx_costs.jsonl $noon 1000 0"
+truncate -s $((1000 + 2 * 1048576)) "$hw5/tx_costs.jsonl"
+hwx "$p200" HEALTHWATCH_NOW="$((noon + 43200))" DATA_DIR="$hw5" >/dev/null
+check eq "$(sed -n 1p "$hw5state")" ok
+check eq "$(cat "$hw5sizes")" "tx_costs.jsonl $noon 1000 0"
+hwx "$p200" HEALTHWATCH_NOW="$((noon + 86400))" DATA_DIR="$hw5" >/dev/null
+check eq "$(sed -n 3p "$hw5state")" archive-due
+check contains "$(lastpost)" "tx_costs.jsonl grew 2.0 MiB in the last day, past the 1 MiB a day"
+check eq "$(cat "$hw5sizes")" "tx_costs.jsonl $((noon + 86400)) $((1000 + 2 * 1048576)) 2097152"
+hwx "$p200" HEALTHWATCH_NOW="$((noon + 90000))" DATA_DIR="$hw5" >/dev/null
+check eq "$(sed -n 3p "$hw5state")" archive-due
+truncate -s $((1000 + 2 * 1048576 + 102400)) "$hw5/tx_costs.jsonl"
+hwx "$p200" HEALTHWATCH_NOW="$((noon + 2 * 86400))" DATA_DIR="$hw5" >/dev/null
+check contains "$(lastpost)" recovered
+truncate -s $((65 * 1048576)) "$hw5/failed_txs.jsonl"
+hwx "$p200" HEALTHWATCH_NOW="$((noon + 2 * 86400 + 300))" DATA_DIR="$hw5" >/dev/null
+check eq "$(sed -n 3p "$hw5state")" archive-due
+check contains "$(lastpost)" "failed_txs.jsonl is 65.0 MiB, past the 64 MiB"
+check not contains "$(lastpost)" tx_costs.jsonl
+truncate -s 500 "$hw5/failed_txs.jsonl"
+hwx "$p200" HEALTHWATCH_NOW="$((noon + 3 * 86400 + 300))" DATA_DIR="$hw5" >/dev/null
+check contains "$(lastpost)" recovered
+rm -rf "$hw5"
 # a new host: BACKUP_REMOTE set, no copy and no exports directory yet; the
 # run completes (a find over the missing directory used to end it under
 # pipefail, before any alert or state) and finds nothing wrong

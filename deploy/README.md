@@ -393,7 +393,12 @@ failing checks under its own name until it holds again:
   vantage for 30 minutes;
 - `fibre-vantage-pull@<network>`: its last run failed and nothing new
   came from a vantage for 10 minutes. One failed run that the next one
-  fixes is not reported.
+  fixes is not reported;
+- `archive-due`: `failed_txs.jsonl` or `tx_costs.jsonl`, which are not
+  archived yet, is past 64 MiB, or grew more than 1 MiB in a day, measured
+  from a size sample taken again each day (`status/healthwatch.sizes`):
+  the mark past which it is to be archived ("Archive: bounded live
+  files" below).
 
 A vantage that never sent anything is not judged: before Fibre is live
 there is nothing for it to check.
@@ -1443,7 +1448,10 @@ all it is to be archived as `payments.jsonl` is. So is `tx_costs.jsonl`,
 about 450 bytes a line for a one-message transaction and well under
 200 KiB at most (a successful transaction's strings passed the chain's own
 checks, and each is cut at 256 bytes), one line per Fibre success, so on
-mainnet at the publications' rate. `vantage-pull` resumes each vantage's file from its
+mainnet at the publications' rate. The health watch says when either
+passes that mark (`archive-due`, "Health and alerting" above), since
+until it is archived the scanner reads each whole at every start and the
+backup copies each whole every night. `vantage-pull` resumes each vantage's file from its
 logical end (`observer-archive -logical-end vantages/<name>/reachability.jsonl`,
 the live file's base plus its size), not from its size, so a rotated file
 goes on where the record ends. Do not run `observer-archive` on the second

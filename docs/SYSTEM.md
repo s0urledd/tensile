@@ -209,7 +209,9 @@ bytes for a one-message transaction, and a successful transaction's strings
 passed the chain's own checks and are cut at 256 bytes, which keeps a line
 well under 200 KiB; on mainnet a blob payment gives one line, so it grows
 at the publications' rate, and it is archived later, as payments are, past
-1 MiB a day or 64 MiB in all.
+1 MiB a day or 64 MiB in all. The health watch measures both files against
+that mark and alerts past it (`archive-due`, `deploy/README.md`, "Health
+and alerting").
 
 **Retiring a local copy.** `observer-archive -retire -db observer.db`, the
 second step of `fibre-archive@`, removes an archived segment's gzip file,
@@ -1017,8 +1019,10 @@ read back from the newer segments). 04:40:
 pausing between files, days and segments while the disk is busy (section 4,
 "Pacing"). `fibre-healthwatch` reports what `/v1/health` cannot see, by
 what the jobs left behind: either unit's last run failed, no backup copy
-has finished for 26 hours, yesterday's export is missing after 04:00, or a
-second vantage has sent nothing for 30 minutes. It sends an alert first
+has finished for 26 hours, yesterday's export is missing after 04:00, a
+second vantage has sent nothing for 30 minutes, or a record file not
+archived yet (`failed_txs.jsonl`, `tx_costs.jsonl`) is past 64 MiB or grew
+more than 1 MiB in a day. It sends an alert first
 and records it as sent only once a destination took it, so a refused one
 is sent again on the next run. It exits 0 for a run that did its job,
 whatever it found, and 1 when an alert was refused or its state could not

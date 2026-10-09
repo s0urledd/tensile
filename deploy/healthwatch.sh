@@ -20,8 +20,9 @@
 # see, judged by what they left behind rather than by their unit's state
 # alone (a timer never enabled leaves a unit that never failed): the
 # nightly backup and archive units, the backup's last finished copy, the
-# day's export and its proof on the remote, and the second vantages'
-# pulls. Each that is wrong is a failing check of its own (below).
+# day's export and its proof on the remote, the second vantages' pulls,
+# and the record files not archived yet, by their size and a day's
+# growth. Each that is wrong is a failing check of its own (below).
 #
 # With neither set it only logs, which journalctl -u
 # fibre-healthwatch@<instance> shows; point any external uptime monitor at
@@ -270,6 +271,51 @@ if [ -n "$pull_names" ]; then
   done
 fi
 
+# The record files not archived yet: failed_txs.jsonl and tx_costs.jsonl are
+# to be archived as payments.jsonl is once one passes 64 MiB, or grows more
+# than 1 MiB in a day (deploy/README.md, "Archive: bounded live files").
+# Until then the scanner reads each whole at every start and the nightly
+# backup copies each whole, and nothing else measures them, so past either
+# mark is a failing check, archive-due, for as long as it holds. A day's
+# growth is measured from a sample of each file's size, taken again once it
+# is a day old, in status/healthwatch.sizes: one line a file, its name, the
+# sample's epoch and size, and the growth a day the last two samples
+# measured. A file shorter than its sample (replaced) grew nothing. A sample
+# that cannot be written is said, and fails the run; the next run takes it.
+rc=0
+sizes="$data/status/healthwatch.sizes"
+mib=1048576
+num() { case $1 in ''|*[!0-9]*) return 1 ;; esac; }
+mibs() { awk -v b="$1" 'BEGIN { printf "%.1f", b / 1048576 }'; }
+sizes_new=""; resample=0
+for n in failed_txs.jsonl tx_costs.jsonl; do
+  size=$(stat -c %s "$data/$n" 2>/dev/null || true)
+  num "$size" || continue
+  # "epoch size growth", or "  " with no sample; split without a here-string,
+  # which a full disk can refuse
+  prev=$(awk -v n="$n" '$1 == n { print $2, $3, $4; exit }' "$sizes" 2>/dev/null || true)
+  s_at=${prev%% *}; rest=${prev#* }; s_size=${rest%% *}; s_grew=${rest#* }
+  if ! num "$s_at" || ! num "$s_size" || ! num "$s_grew"; then
+    s_at=$epoch; s_size=$size; s_grew=0; resample=1
+  elif [ $((epoch - s_at)) -ge 86400 ]; then
+    s_grew=0
+    if [ "$size" -gt "$s_size" ]; then s_grew=$(((size - s_size) * 86400 / (epoch - s_at))); fi
+    s_at=$epoch; s_size=$size; resample=1
+  fi
+  sizes_new="$sizes_new$n $s_at $s_size $s_grew"$'\n'
+  if [ "$size" -gt $((64 * mib)) ]; then
+    fail_check archive-due "$n is $(mibs "$size") MiB, past the 64 MiB it is to be archived at"
+  elif [ "$s_grew" -gt "$mib" ]; then
+    fail_check archive-due "$n grew $(mibs "$s_grew") MiB in the last day, past the 1 MiB a day it is to be archived at"
+  fi
+done
+if [ "$resample" = 1 ]; then
+  if ! { mkdir -p "$(dirname "$sizes")" && printf '%s' "$sizes_new" > "$sizes.tmp" && mv -f "$sizes.tmp" "$sizes"; } 2>/dev/null; then
+    echo "healthwatch[$name]: could not write $sizes; the next run samples again" >&2
+    rc=1
+  fi
+fi
+
 # The state file: line 1 the state (ok, degraded, down), line 2 the epoch of
 # the last alert, line 3 the failing check names at that alert. Line 3 is
 # new; a file written by an older build has two lines, and its missing set
@@ -299,7 +345,6 @@ fi
 # write_state records the alert just made. One that cannot be written is
 # said, and fails the run, but stops nothing: the alert went out first, and
 # the next run, finding the old state, alerts again.
-rc=0
 write_state() {
   if ! { mkdir -p "$(dirname "$state")" && printf '%s\n%s\n%s\n' "$now" "$epoch" "$failing" > "$state"; } 2>/dev/null; then
     echo "healthwatch[$name]: could not write $state; the next run alerts again" >&2
