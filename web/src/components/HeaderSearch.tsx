@@ -2,11 +2,12 @@
 import Link from "next/link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { API_BASE, useNewestBlob, type Blob, type Validator, type Publisher, int, utcWord } from "@/lib/api";
+import { API_BASE, useNewestBlob, type Blob, type Validator, type Publisher, type TxAnswer, int, utcWord } from "@/lib/api";
 import { blobKey } from "@/lib/blobkey";
 import { useFind } from "@/lib/blobfind";
 import { siteTarget, type SiteTarget } from "@/lib/sitefind";
 import Ident from "@/components/Ident";
+import { KIND_WORD } from "@/components/TxDetail";
 
 /** the full placeholder needs about 300 px of field; a narrower one says only "Search" */
 const WORDS = "Search tx hash, blob ID or address";
@@ -36,6 +37,8 @@ const ICON = <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
 const BLOB = <svg className="hs-glyph" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="M5 6h6M5 8h6M5 10h4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></svg>;
 /** a transaction that failed in a block: a circled x */
 const FAILED = <svg className="hs-glyph" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="m6 6 4 4m0-4-4 4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></svg>;
+/** a Fibre transaction that took effect: two opposed arrows */
+const TX = <svg className="hs-glyph" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5.5h9M9.5 3 12 5.5 9.5 8M13 10.5H4M6.5 8 4 10.5 6.5 13" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>;
 
 /** a key pressed in a field or an editor types there; "/" only opens the search from the page itself */
 const typing = (t: EventTarget | null) =>
@@ -58,11 +61,16 @@ function whole(v: string, pasted: boolean): boolean {
 /**
  * One record from the API, asked once for this path, and again each time `again` changes: null until its own answer
  * is in, so a record asked earlier never stands for the one asked now. missing: the API has no such record (404, 410);
- * invalid: it refused the address (400).
+ * invalid: it refused the address (400). retryOn asks the same path again each time it changes while the answer held
+ * is missing, for RETRY_FOR after the path was first asked: the tip's newest blob, as the blob lookup is asked again,
+ * so a transaction pasted a moment before its block was read is found once Tensile records it. The missing answer
+ * stays shown until the new one is in.
  */
 type Got<T> = { data: T | null; missing: boolean; invalid: boolean; error: string | null };
-function useRecord<T>(path: string | null, again: number): Got<T> | null {
+function useRecord<T>(path: string | null, again: number, retryOn: string | null = null): Got<T> | null {
   const [st, setSt] = useState<{ ask: string; got: Got<T> } | null>(null);
+  // how many times this path was asked again on a new retryOn value
+  const [re, setRe] = useState(0);
   const ask = path ? `${again}|${path}` : null;
   useEffect(() => {
     if (!path) return;
@@ -79,8 +87,21 @@ function useRecord<T>(path: string | null, again: number): Got<T> | null {
       if (live) setSt({ ask: `${again}|${path}`, got });
     })();
     return () => { live = false; };
-  }, [path, again]);
-  return ask && st && st.ask === ask ? st.got : null;
+  }, [path, again, re]);
+  const got = ask && st && st.ask === ask ? st.got : null;
+  // when this path was first asked, and the retryOn value last seen for it: the first one seen is where it started,
+  // not a change
+  const since = useRef<{ ask: string; at: number } | null>(null);
+  const seen = useRef<{ ask: string | null; on: string | null } | null>(null);
+  useEffect(() => {
+    if (ask && since.current?.ask !== ask) since.current = { ask, at: Date.now() };
+    const prev = seen.current;
+    seen.current = { ask, on: retryOn };
+    if (!ask || !retryOn || !prev || prev.ask !== ask || prev.on === retryOn || !got?.missing) return;
+    if (since.current && Date.now() - since.current.at > RETRY_FOR) return;
+    setRe((n) => n + 1);
+  }, [ask, retryOn]); // eslint-disable-line react-hooks/exhaustive-deps
+  return got;
 }
 
 /**
@@ -100,6 +121,13 @@ const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct
 /** "Oct 2, 18:23 UTC": the day always, since the settlements of one blob ID may fall on different days */
 const at = (s: string) => { const d = new Date(s); return isNaN(d.getTime()) ? s : `${MON[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.toISOString().slice(11, 16)} UTC`; };
 
+/** a Fibre transaction that failed in a block, as the blob lookup found it, opening at href */
+const failedItem = (href: string, hex: string, f: { height: number; time: string }): Item => ({
+  href, glyph: FAILED, kind: "Failed tx",
+  label: `Failed transaction ${hex.slice(0, 10)}, block ${int(f.height)}`, at: f.time, atWord: "Failed",
+  hash: hex.toUpperCase(), title: <span className="hs-ht">#{int(f.height)}</span>,
+});
+
 /** a blob as two lines: its block and settlement time over its promise hash */
 const blobItem = (b: Blob): Item => ({
   href: `/blob/?hash=${b.promise_hash}`,
@@ -111,9 +139,10 @@ const blobItem = (b: Blob): Item => ({
 /**
  * The site's search, in the header between the nav and the block. An identifier pasted, typed whole or entered is
  * looked up at once and what it names shows in a panel under the field, one row each, saying what it is: the blob or
- * blobs it matches, the validator, the publisher. Nothing opens until the reader picks a row, by click or by the arrow
- * keys and Enter (a row under a resting pointer is not picked). With nothing to look up, the panel lists what the
- * search takes. "/" anywhere on the page puts the cursor in it.
+ * blobs it matches, or else the Fibre transaction with that hash (its own page); the validator; the publisher. Nothing
+ * opens until the reader picks a row, by click or by the arrow keys and Enter (a row under a resting pointer is not
+ * picked). With nothing to look up, the panel lists what the search takes. "/" anywhere on the page puts the cursor in
+ * it.
  */
 export default function HeaderSearch() {
   const router = useRouter();
@@ -153,10 +182,15 @@ export default function HeaderSearch() {
   const newest = useNewestBlob(); // the header's tip stream: no request of its own
   const blob = asked?.kind === "blob" ? blobKey(asked.id) : null;
   const hit = useFind(blob, { limit: SHOWN, retryOn: on ? newest : null, retryForMs: RETRY_FOR, again });
+  // a hash that names no blob may be another Fibre transaction (a deposit, a withdrawal, a timeout, a registration), or
+  // a failure whose bytes could still take effect: the transaction lookup has its word, success winning. A final
+  // failure took the sequence, so its bytes never take effect later: the blob lookup's record of it is the answer
+  const txPath = blob?.kind === "hash" && hit && !hit.error && hit.rows.length === 0 && !hit.failedTx?.ante_passed ? `/v1/txs/${blob.hex}` : null;
+  const tx = useRecord<TxAnswer>(txPath, again, on ? newest : null);
   const val = useRecord<{ validator: Validator }>(asked?.kind === "validator" ? `/v1/validators/${asked.id}?window=24h` : null, again);
   const pub = useRecord<{ publisher: Publisher }>(asked?.kind === "publisher" ? `/v1/publishers/${asked.id}?window=all` : null, again);
   // the lookup shown ended with the observer not answering
-  const failed = asked?.kind === "blob" ? !!hit?.error && hit.rows.length === 0
+  const failed = asked?.kind === "blob" ? (!!hit?.error && hit.rows.length === 0) || (!!txPath && !!tx?.error && !tx.missing)
     : asked?.kind === "validator" ? !!val?.error && !val.missing && !val.invalid
     : asked?.kind === "publisher" ? !!pub?.error && !pub.missing && !pub.invalid
     : false;
@@ -166,10 +200,23 @@ export default function HeaderSearch() {
   if (asked?.kind === "blob") {
     if (!hit) note = <span className="hs-wait">Looking it up…</span>;
     else if (hit.error && hit.rows.length === 0) note = <>The observer did not answer ({hit.error}). Try again in a moment.</>;
-    // a Fibre transaction that failed in a block: its page says why
-    else if (hit.rows.length === 0 && hit.failedTx) items = [{ href: `/blob/?tx=${blob!.hex}`, glyph: FAILED, kind: "Failed tx",
-      label: `Failed transaction ${blob!.hex.slice(0, 10)}, block ${int(hit.failedTx.height)}`, at: hit.failedTx.time, atWord: "Failed",
-      hash: blob!.hex.toUpperCase(), title: <span className="hs-ht">#{int(hit.failedTx.height)}</span> }];
+    // a Fibre transaction that failed in a block for good: its page says why
+    else if (hit.rows.length === 0 && hit.failedTx?.ante_passed) items = [failedItem(`/tx/?hash=${blob!.hex}`, blob!.hex, hit.failedTx)];
+    // any other Fibre transaction by its hash, as the transaction lookup answers it, a success or a failure alike
+    else if (txPath) {
+      const t = tx?.data;
+      if (!tx) note = <span className="hs-wait">Looking it up…</span>;
+      else if (t) {
+        const kind = t.kind === "several" ? "Transaction" : KIND_WORD[t.kind];
+        items = [{ href: `/tx/?hash=${blob!.hex}`, glyph: t.status === "failed" ? FAILED : TX, kind,
+          label: `${kind} ${blob!.hex.slice(0, 10)}, block ${int(t.height)}`, at: t.time, atWord: t.status === "failed" ? "Failed" : "Took effect",
+          hash: blob!.hex.toUpperCase(), title: <span className="hs-ht">#{int(t.height)}</span> }];
+      }
+      // an API without the transaction lookup: the failure the blob lookup found opens on the blob page's address
+      else if (tx.missing && hit.failedTx) items = [failedItem(`/blob/?tx=${blob!.hex}`, blob!.hex, hit.failedTx)];
+      else if (tx.missing) note = <>Tensile has not indexed a blob with this hash yet, or the transaction carries no Fibre blob.</>;
+      else note = <>The observer did not answer ({tx.error}). Try again in a moment.</>;
+    }
     else if (hit.total === 0) note = blob?.kind === "id"
       ? <>Tensile has not indexed a blob with this blob ID yet. A blob appears once Tensile has read the block that settled it.</>
       : <>Tensile has not indexed a blob with this hash yet, or the transaction carries no Fibre blob.</>;

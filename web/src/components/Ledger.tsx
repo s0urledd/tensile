@@ -12,8 +12,10 @@ import Ident from "@/components/Ident";
 import Info from "@/components/Info";
 import { blobIdOf } from "@/lib/blobkey";
 
-/** how many of the blob ID's first and last characters the Blob column shows */
+/** how many of the settlement transaction hash's first characters the TX hash column shows */
 const ID_ENDS = 6;
+/** a transaction hash keeps four characters at its end, as the hash is printed elsewhere (5DA67B…754E) */
+const TX_END = 4;
 import { reducedMotion } from "@/components/RollNumber";
 import { age, monthDayTime } from "@/components/BlobsDeck";
 
@@ -250,7 +252,7 @@ export function LedgerHead({ one, escrow = false }: { one: boolean; escrow?: boo
       <tr>
         <th className="c-h">Height</th>
         <th className="c-t">{one ? "Time" : "Settled"} <span className="per">(UTC)</span></th>
-        <th className="c-b">Blob ID</th>
+        <th className="c-b">TX hash</th>
         <th className="c-ns">Namespace</th>
         {!one && <th className="c-p">Publisher</th>}
         <th className="c-sz num">Blob size</th>
@@ -320,6 +322,8 @@ type RowProps = { b: Blob; age: string | null; fresh: boolean; one: boolean; dec
 const Row = memo(function Row({ b, age: ag, fresh, one, dec, onNs, onOpen }: RowProps) {
   const href = `/blob/?hash=${b.promise_hash}`;
   const id = blobIdOf(b.commitment, b.blob_version ?? 0);
+  // the settlement transaction, in upper case as an explorer prints it: the reference people pass around
+  const tx = b.settlement_tx_hash?.toUpperCase() ?? "";
   const who = payer(b);
   const name = nsDisplay(b.namespace);
   const ln = lane(b);
@@ -331,14 +335,16 @@ const Row = memo(function Row({ b, age: ag, fresh, one, dec, onNs, onOpen }: Row
       <td className="c-h">{int(b.settlement_height)}</td>
       <td className="c-t"><span title={utcWord(b.settlement_time)}><span className="tm">{monthDayTime(b.settlement_time)}</span>{ag && <span className="ag">{ag}</span>}</span></td>
       <td className="c-b">
-        {/* the blob as the client names it, its blob ID's first and last characters; the row opens this settlement (its
-            promise hash), and the copy is the blob ID */}
-        <Link href={href} title={`Blob ID ${id}\nPromise hash ${b.promise_hash}`} aria-label={`Blob ${id.slice(0, 10)}, height ${int(b.settlement_height)}`}>{id.slice(0, ID_ENDS)}<span className="el">…</span>{id.slice(-ID_ENDS)}</Link>
-        <CopyMark text={id} label="the blob ID" />
+        {/* the settlement transaction, its hash's first and last characters; the row opens this settlement (its promise
+            hash), the copy is the transaction hash, and the blob ID is on hover */}
+        {tx
+          ? <><Link href={href} title={`Transaction ${tx}\nBlob ID ${id}\nPromise hash ${b.promise_hash}`} aria-label={`Transaction ${tx.slice(0, 10)}, height ${int(b.settlement_height)}`}>{tx.slice(0, ID_ENDS)}<span className="el">…</span>{tx.slice(-TX_END)}</Link>
+            <CopyMark text={tx} label="the transaction hash" /></>
+          : <Link href={href} title={`Blob ID ${id}\nPromise hash ${b.promise_hash}`}>—</Link>}
         <span className="ht">#{int(b.settlement_height)}</span>
       </td>
       <td className="c-ns"><button type="button" className="nsb" onClick={() => onNs(b.namespace)} title={`${b.namespace} · show only this namespace`}>{name}</button></td>
-      {!one && <td className="c-p">{who ? <Who addr={who} /> : "—"}</td>}
+      {!one && <td className="c-p">{who ? <><Who addr={who} /><CopyMark text={who} label="the publisher's address" /></> : "—"}</td>}
       <td className="c-sz num">{unit(bytes(b.blob_size))}</td>
       {/* one publisher's list is its escrow's statement: the fee went out of it */}
       <td className="c-fee num">{!b.charge ? "—" : one ? <Signed sign="−" utia={b.charge.fee_utia} dec={dec} /> : unit(tia(b.charge.fee_utia))}</td>

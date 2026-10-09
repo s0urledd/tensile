@@ -2,13 +2,13 @@
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useApi, askAgain, useNewestBlob, type Blob, type BlobReading, type Meta, int, bytes, tia, utcWord, hhmm, shortMid, nsDisplay, notFound, pctOf, API_BASE,
+import { useApi, askAgain, useNewestBlob, type Blob, type BlobReading, type Meta, type TxCost as Cost, int, bytes, tia, utcWord, hhmm, shortMid, nsDisplay, notFound, pctOf, API_BASE,
   endOfWindow, fullReading, ownGap, ownSide, sharedAnswer, rawErrorWords, foreignRows, asksAgain, attemptsOf, judged as judgedBy, askedTimes, FULL_READ_SINCE } from "@/lib/api";
 import StatusLine from "@/components/StatusLine";
 import { Eye } from "@/components/Metrics";
 import Copy from "@/components/Copy";
 import Warn from "@/components/Warn";
-import FailedTx from "@/components/FailedTx";
+import TxDetail, { GasValue, FeeValue, GAS_TITLE, FEE_TITLE } from "@/components/TxDetail";
 import { unit } from "@/components/Unit";
 import { Who } from "@/components/Ledger";
 import { monthDayTime } from "@/components/BlobsDeck";
@@ -32,12 +32,14 @@ type Detail = {
   params: { shard_retention_s: number; payment_promise_timeout_s: number };
   assignments: Assignment[] | null;
   probes: BlobReading[] | null;
+  /** the settlement transaction's gas and fee, from the record of what successful Fibre transactions cost; absent before it was kept */
+  tx_cost?: Cost;
 };
 
 /**
  * A blob opened by an identifier other than its promise hash: ?id= the client's blob ID, which is its commitment behind
  * a version byte, or ?tx= the hash of the transaction that settled it. One settlement opens here; several open the
- * Blobs list of them; a Fibre transaction that failed in a block opens what the chain returned (FailedTx). bad is an
+ * Blobs list of them; a Fibre transaction that failed in a block opens its transaction page in place (TxDetail). bad is an
  * identifier that is none.
  */
 type Via = { kind: "id" | "tx"; text: string; key: BlobKey } | { kind: "bad"; of: "id" | "tx"; text: string };
@@ -295,7 +297,9 @@ function Page() {
   if (!hash && !via) return <p className="notice">Open a blob from the <Link href="/blobs/">list</Link>, or add <code>?hash=&lt;promise hash&gt;</code>, <code>?id=&lt;blob ID&gt;</code> or <code>?tx=&lt;transaction hash&gt;</code> to the address.</p>;
   if (!hash && via) {
     // a transaction that failed in a block settled no blob: what the chain returned, and the lookup asks no more
-    if (via.kind === "tx" && hit?.failedTx) return <FailedTx hex={via.key.hex} f={hit.failedTx} meta={meta} metaErr={metaErr} at={hit.at} />;
+    // the transaction page, the same for every Fibre transaction, so this address keeps working; an API before /v1/txs
+    // leaves it the record this lookup found
+    if (via.kind === "tx" && hit?.failedTx) return <TxDetail hex={via.key.hex} fallback={hit.failedTx} />;
     const name = (via.kind === "bad" ? via.of : via.kind) === "id" ? "blob ID" : "transaction hash";
     // nothing on record: Tensile has not indexed it yet, or the transaction carries no Fibre blob
     const none = !!hit && !hit.error && hit.total === 0;
@@ -407,11 +411,15 @@ function Page() {
       <dd title={b.commitment}><span className="mono">{shortMid(b.commitment, 10, 6)}</span><Copy text={b.commitment} label="commitment" /></dd>
       <dt title="This settlement's payment promise. A blob settled again has another promise hash.">Promise hash</dt>
       <dd title={b.promise_hash}><span className="mono">{shortMid(b.promise_hash, 10, 6)}</span><Copy text={b.promise_hash} label="the promise hash" /></dd>
-      {/* the transaction that settled it; its height and time are in the chip under the title */}
-      {txHash && <>
-        <dt title="The transaction that settled this blob">Transaction</dt>
-        <dd className="bd-tx"><span className="mono" title={txHash}>{shortMid(txHash, 10, 6)}</span><Copy text={txHash} label="transaction hash" /></dd>
+      {/* the blob as the client names it, as fibre.Submit returns it and Download takes it; the title above names the
+          transaction that settled it */}
+      {txHash && blobId && <>
+        <dt title={`The ID the Fibre client returns for this blob: version ${b.blob_version ?? 0} and the commitment, in base64`}>Blob ID</dt>
+        <dd className="bd-tx"><span className="mono" title={blobId}>{shortMid(blobId, 10, 6)}</span><Copy text={blobId} label="the blob ID" />{(same.data?.total ?? 0) > 1 && <Link className="bd-many" href={`/blobs/?blob=${encodeURIComponent(blobId)}`} title="Every settlement of this blob ID">settled {int(same.data!.total)} times →</Link>}</dd>
       </>}
+      {/* the settlement transaction's own gas, in the transaction page's format */}
+      <dt title={GAS_TITLE}>Gas</dt>
+      <dd><GasValue c={data.tx_cost} /></dd>
       {b.assignment_error && <><dt>Assignment</dt><dd>{b.assignment_error}</dd></>}
     </dl>
   );
@@ -430,7 +438,11 @@ function Page() {
   const figs = (
     <dl className="pb-meta bd-meta bd-figs">
       <dt>Blob size</dt><dd title="The size the blob paid for: Celestia's upload size, with header and padding, without parity."><b>{unit(bytes(b.blob_size))}</b></dd>
-      <dt>Fee paid</dt><dd title="Charged to the publisher's escrow; not the settlement transaction's own fee.">{b.charge ? <><b>{unit(tia(b.charge.fee_utia))}</b><em>{b.charge.timed_out ? "timed out" : b.charge.settled ? "settled" : "not settled yet"}</em></> : <em>not recorded</em>}</dd>
+      {/* the two fees one under the other, under their two labels: the blob's (Fee paid, its one name on every page), from
+          the escrow, and the transaction's own, from its fee payer's bank balance */}
+      <dt>Fee paid</dt><dd title="Charged to the publisher's escrow; not the settlement transaction's own fee.">{b.charge ? <><b>{unit(tia(b.charge.fee_utia))}</b><em>from escrow · {b.charge.timed_out ? "timed out" : b.charge.settled ? "settled" : "not settled yet"}</em></> : <em>not recorded</em>}</dd>
+      <dt title={FEE_TITLE}>Transaction fee</dt>
+      <dd>{data.tx_cost ? <FeeValue fee={data.tx_cost.fee} payer={data.tx_cost.fee_payer} owner={pub} messages={data.tx_cost.messages} /> : <em>not recorded</em>}</dd>
       <dt>Endorsed</dt><dd title="Voting power whose signature on the settlement verified. A settlement needs ⅔.">{stake != null ? <><b>{pctOf(b.attested_voting_power ?? 0, b.total_voting_power ?? 0)}</b><em>of voting power</em></> : <em>not recorded</em>}</dd>
       <dt className="tz" title={readTitle}><Eye />Rows back</dt><dd title={shown ? `Distinct rows that came back and verified against the commitment; ${int(rc!.needed_rows)} reconstruct the blob.` : undefined}>{shown ? <><b>{int(rc!.served_distinct_rows)}</b><em>of {int(rc!.total_rows)} · {int(rc!.needed_rows)} needed</em></> : <><span className="u">—</span><em>{!over ? `not read yet · read before ${hhmm(b.must_serve_until)}` : "no reading"}</em></>}</dd>
       {/* served and not served in one row: how many of those asked served, how many did not (red, with the dot for
@@ -459,12 +471,16 @@ function Page() {
     <>
       <section className="pb-mast bd-mast">
         <h1 className="bd-title">Blob</h1>
-        {/* the blob as the client names it: its blob ID, as fibre.Submit returns it and Download takes it; the page itself
-            is one settlement of it, by its promise hash, with its height and time in the chips under it */}
+        {/* the settlement as people pass it around: its transaction hash (the blob ID is in the facts below; a blob
+            settled before the transaction was recorded keeps its blob ID here); the page itself is one settlement, by its
+            promise hash, with its height and time in the chips under it */}
         <div className="pb-addr">
-          <span className="bd-idl" title={`The ID the Fibre client returns for this blob: version ${b.blob_version ?? 0} and the commitment, in base64`}>Blob ID</span>
-          <span className="mono">{blobId}</span><Copy text={blobId} label="the blob ID" />
-          {(same.data?.total ?? 0) > 1 && <Link className="bd-many" href={`/blobs/?blob=${encodeURIComponent(blobId)}`} title="Every settlement of this blob ID">settled {int(same.data!.total)} times →</Link>}
+          {txHash
+            ? <><span className="bd-idl" title="The transaction that settled this blob">Transaction hash</span>
+              {/* the hash opens the transaction's own page, and that page links back here */}
+              <Link className="mono" href={`/tx/?hash=${txHash.toLowerCase()}`} title={`${txHash} · its transaction page`}>{txHash}</Link><Copy text={txHash} label="the transaction hash" /></>
+            : <><span className="bd-idl" title={`The ID the Fibre client returns for this blob: version ${b.blob_version ?? 0} and the commitment, in base64`}>Blob ID</span>
+              <span className="mono">{blobId}</span><Copy text={blobId} label="the blob ID" />{(same.data?.total ?? 0) > 1 && <Link className="bd-many" href={`/blobs/?blob=${encodeURIComponent(blobId)}`} title="Every settlement of this blob ID">settled {int(same.data!.total)} times →</Link>}</>}
         </div>
         <div className="chips bd-chips">
           {/* Tensile's reading, with its eye as its figures carry it: the chips after it are the chain's settlement */}

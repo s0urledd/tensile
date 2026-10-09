@@ -429,6 +429,10 @@ td a.plain:hover, td a.fault:hover { text-decoration: underline; }
 }
 /* the period after a heading keeps its own case: "(24h)", not "(24H)" */
 .vt th .per { text-transform: none; letter-spacing: .03em; }
+/* the period in a box as wide as the widest period's name: every name is laid in the same cell, the unseen ones only to size it, so a switch of period never moves the heading */
+.vt th .per { display: inline-grid; justify-items: start; vertical-align: baseline; }
+.vt th .per > span { grid-area: 1 / 1; }
+.vt th .per .per-w { visibility: hidden; }
 /* Below the fixed layout a column is only as wide as its heading, and the (i),
    which hangs outside the label, would run into the next heading: the heading
    keeps room for it on either side, so the label stays centred over its cells. */
@@ -1764,7 +1768,7 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
    and the publisher's chip); the namespace takes the rest */
 /* the blob column holds the blob ID's first and last six and its copy button; the fee ("23.69 TIA" at most) and
    Tensile's lane ("retention window") at their widest, so the namespace keeps its 102px at the page's width */
-.lg-t th.c-h { width: 96px; } .lg-t th.c-t { width: 206px; } .lg-t th.c-b { width: 140px; } .lg-t th.c-p { width: 148px; } .lg-t th.c-sz { width: 88px; } .lg-t th.c-fee { width: 86px; }
+.lg-t th.c-h { width: 96px; } .lg-t th.c-t { width: 206px; } .lg-t th.c-b { width: 122px; } .lg-t th.c-p { width: 148px; } .lg-t th.c-sz { width: 88px; } .lg-t th.c-fee { width: 86px; }
 .lg-t th.c-e { width: 128px; } .lg-t th.gap { width: 10px; } .lg-t th.tn { width: 114px; }
 .lg-t tr.row { position: relative; cursor: pointer; }
 .lg-t tr.row td { transition: background var(--dur); }
@@ -1786,10 +1790,10 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
 .lg-t .c-b a { font-family: var(--mono); font-size: 12.5px; font-weight: 500; letter-spacing: -.01em; color: var(--text); }
 .lg-t .c-b a:hover, .lg-t tr.row:hover .c-b a { color: var(--accent-ink); text-decoration: none; }
 /* the copy button after the hash: quiet until the row or the button is pointed at */
-.lg-t .c-b .cp { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: 2px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--text-3); opacity: .55; vertical-align: -3px; cursor: pointer; transition: opacity var(--dur), color var(--dur), background var(--dur); }
-.lg-t tr.row:hover .c-b .cp, .lg-t .c-b .cp:focus-visible { opacity: 1; }
-.lg-t .c-b .cp:hover { color: var(--accent-ink); background: var(--accent-tint); }
-.lg-t .c-b .cp.done { opacity: 1; color: var(--ok-ink); }
+.lg-t .c-b .cp, .lg-t .c-p .cp { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: 2px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--text-3); opacity: .55; vertical-align: -3px; cursor: pointer; transition: opacity var(--dur), color var(--dur), background var(--dur); }
+.lg-t tr.row:hover .c-b .cp, .lg-t .c-b .cp:focus-visible, .lg-t tr.row:hover .c-p .cp, .lg-t .c-p .cp:focus-visible { opacity: 1; }
+.lg-t .c-b .cp:hover, .lg-t .c-p .cp:hover { color: var(--accent-ink); background: var(--accent-tint); }
+.lg-t .c-b .cp.done, .lg-t .c-p .cp.done { opacity: 1; color: var(--ok-ink); }
 .lg-t .c-b .el { margin: 0 1px; font-weight: 400; color: var(--text-3); }
 .lg-t .c-b .ht { display: none; }
 .nsb { max-width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; cursor: pointer; }
@@ -1849,7 +1853,7 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
 
 /* a table narrower than the page at its widest: the publisher's chip without the address's prefix */
 @media (max-width: 1220px) {
-  .lg-t th.c-p { width: 92px; }
+  .lg-t th.c-p { width: 110px; }
   .lg-t .lg-who .hd { display: none; }
 }
 /* narrower still: the time without its age (the day and the second stay), so the namespace keeps room for its name */
@@ -2136,7 +2140,7 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
 .pb-addr .mono { font-size: var(--t-cell); color: var(--text-2); letter-spacing: .01em; }
 /* the blob page names what the identifier is, and how many settlements carry it when more than this one */
 .pb-addr .bd-idl { flex: none; font-size: var(--t-small); font-weight: 500; color: var(--text-3); }
-.pb-addr .bd-many { flex: none; font-size: var(--t-small); color: var(--accent-ink); white-space: nowrap; }
+.pb-addr .bd-many, .bd-meta .bd-many { flex: none; font-size: var(--t-small); color: var(--accent-ink); white-space: nowrap; }
 .pb-addr .copy, .bd-err-a .copy { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 24px; margin: 0; padding: 0 9px 0 7px; border-radius: 999px; border: 1px solid var(--border); background: var(--paper); box-shadow: var(--shadow-sm); color: var(--text-2); font: 500 var(--t-small)/1 var(--sans); text-transform: capitalize; transition: color var(--dur), border-color var(--dur); }
 .pb-addr .copy::before, .bd-err-a .copy::before { content: ""; width: 13px; height: 13px; background: var(--text-3); -webkit-mask: var(--copy-mark) center / contain no-repeat; mask: var(--copy-mark) center / contain no-repeat; }
 .pb-addr .copy:hover, .bd-err-a .copy:hover { color: var(--accent-ink); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
@@ -2654,13 +2658,175 @@ button.warn:focus-visible { outline-offset: 0; }
 .bd-tile.fault .mk { background: var(--fault); }
 .bd-none { margin: 0; padding: 14px 16px 16px; color: var(--text-2); }
 
-/* a transaction that failed in a block (components/FailedTx): its one frame of facts at the page width, as the error
-   under it is, the message the error names in red in it, and the error itself in the endorsements' frame, as the node
-   returned it, scrolling past a few lines */
-.bd-top.bd-one { grid-template-columns: minmax(0, 1fr); }
+/* a figure that went wrong, in red in its row of facts; a transaction that failed in a block (components/TxDetail): the
+   error in the endorsements' frame, as the node returned it, scrolling past a few lines */
 .bd-meta b.bad { color: var(--fault); }
 .bd-err-a { display: inline-flex; align-items: center; gap: 8px; }
 .bd-log { margin: 0; padding: 12px 16px; font-family: var(--mono); font-size: var(--t-cell); line-height: 18px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 16em; overflow: auto; }
+
+/* =============================================================================
+   A validator's endpoint registrations as a transaction table (EndpointHistory): every row a transaction, every column
+   one kind of fact all the way down: the block, when, its hash (the link to its page, then its copy mark), what it did,
+   the chain's outcome, and the endpoint. A failure is the red dot and "Failed" in Status and nothing else in its row: no
+   bold address. The whole row opens the transaction's page; a row with no transaction on record opens nothing.
+   ========================================================================== */
+/* six equal tracks across the frame: the height left-aligned, as every table's first column is; the other five centred,
+   the same room on both sides of each */
+.eh-t th { width: calc(100% / 6); }
+.eh-t th, .eh-t td { text-align: center; }
+.eh-t th.c-bh, .eh-t td.c-bh { text-align: left; }
+.eh-t th:first-child, .eh-t td:first-child { padding-left: 12px; }
+.lg-t tr.row.np { cursor: default; }
+/* the hash: the mono face, its middle quiet; the copy mark after it, quiet until the row or the mark is pointed at */
+.lg-t .c-x a { font-family: var(--mono); font-size: 12.5px; font-weight: 500; letter-spacing: -.01em; color: var(--text); }
+.lg-t .c-x a:hover, .lg-t tr.row:hover .c-x a { color: var(--accent-ink); text-decoration: none; }
+.lg-t .c-x .el { margin: 0 1px; font-weight: 400; color: var(--text-3); }
+.lg-t .c-x .cp { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: 4px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--text-3); opacity: .55; vertical-align: -3px; cursor: pointer; transition: opacity var(--dur), color var(--dur), background var(--dur); }
+.lg-t tr.row:hover .c-x .cp, .lg-t .c-x .cp:focus-visible { opacity: 1; }
+.lg-t .c-x .cp:hover { color: var(--accent-ink); background: var(--accent-tint); }
+.lg-t .c-x .cp.done { opacity: 1; color: var(--ok-ink); }
+.lg-t .na { font-weight: 400; color: var(--text-3); }
+/* the chain's outcome: Success with the green dot, Failed in the text's own weight with the red one. Each dot hangs to
+   its word's left, so the two words stand under the head alike */
+.lg-t .st { display: inline-flex; align-items: baseline; color: var(--text-2); }
+.lg-t .st .dot { align-self: center; width: 7px; height: 7px; margin: 0 8px 0 -15px; }
+.lg-t .st.f { font-weight: 500; color: var(--text); }
+/* what it did in words; the address it registered in the mono face's weight, the one registered now marked so; a
+   failure's requested address quiet, never bold */
+.eh-t td.c-ac { color: var(--text); }
+.eh-t .mono { font-family: var(--mono); font-size: 12.5px; letter-spacing: -.01em; }
+.eh-t .c-ep .mono { white-space: normal; overflow-wrap: anywhere; }
+.eh-t .eh-n { font-weight: 600; color: var(--text); }
+.lg-t .rq { font-weight: 400; color: var(--text-3); }
+.eh-t .cur { margin-left: 10px; font-family: var(--sans); font-size: var(--t-small); color: var(--text-3); }
+.eh-pre { display: inline-flex; align-items: center; color: var(--text-3); }
+.eh-pre em { font-style: italic; }
+.eh-pre button.warn { margin-left: 3px; }
+/* centred, each mark hangs outside its words, so the words themselves stand under the head: the copy mark to the
+   hash's right (as the dots hang to their words' left) */
+.eh-t .c-x .cp { margin-right: -20px; }
+.eh-t td.c-bh { font-weight: 500; }
+.eh-t .ph { display: none; }
+/* two lines where a fact has a quiet note: the time over how long ago, the endpoint registered now over "current";
+   a one-line time (the seed, a record gap) keeps the same height, so every row is as tall as the next */
+.eh-t .tw, .eh-t .ew, .eh-t .eh-pre { display: inline-flex; flex-direction: column; align-items: center; justify-content: center; min-height: 36px; vertical-align: middle; }
+.eh-t .eh-pre { flex-direction: row; }
+.eh-t .tw .tm { font-weight: 500; line-height: 20px; }
+.eh-t .tw .ag { font-size: var(--t-small); line-height: 16px; color: var(--text-3); }
+.eh-t .ew .eh-n { line-height: 20px; }
+.eh-t .ew .cur { margin-left: 0; line-height: 16px; }
+/* the newest 50 only: said quietly, with nothing to open */
+.eh-pager .ctl { color: var(--text-3); }
+/* the table becomes a list where every .lg-t does: three lines a registration, what it did beside whether it took
+   effect, the endpoint beside when, the block beside its transaction. Written .lg-t.eh-t, so it outranks the lists'
+   own rules at 1080px and 720px */
+@media (max-width: 1080px) {
+  .lg-t.eh-t tr.row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "ac st" "ep tm" "bh x"; column-gap: 14px; row-gap: 4px; padding: 11px 16px 12px; }
+  .lg-t.eh-t tr.row td { display: flex; align-items: center; min-width: 0; min-height: 20px; height: auto; text-align: left; white-space: normal; }
+  .lg-t.eh-t tr.row td.c-st, .lg-t.eh-t tr.row td.c-tm, .lg-t.eh-t tr.row td.c-x { justify-content: flex-end; }
+  .lg-t.eh-t td.c-ac { grid-area: ac; font-weight: 500; }
+  .lg-t.eh-t td.c-st { grid-area: st; }
+  .lg-t.eh-t td.c-ep { grid-area: ep; }
+  .lg-t.eh-t td.c-tm { grid-area: tm; }
+  .lg-t.eh-t td.c-bh { grid-area: bh; font-weight: 400; color: var(--text-3); }
+  .lg-t.eh-t td.c-x { grid-area: x; }
+  .lg-t.eh-t .ph { display: inline; white-space: pre; }
+  /* the time and its age on one line, as the endpoint and "current" */
+  .lg-t.eh-t .tw, .lg-t.eh-t .ew { flex-direction: row; align-items: baseline; gap: 6px; min-height: 0; }
+  .lg-t.eh-t .eh-pre { min-height: 0; }
+  .lg-t.eh-t .ew .cur { margin-left: 0; }
+  .lg-t.eh-t .c-x .cp { margin-right: 0; }
+  /* the dot no longer hangs: the word ends the line */
+  .lg-t.eh-t .st .dot { margin: 0 7px 0 0; }
+  /* "Before Tensile's record" leans past its box: nothing cuts its last letter */
+  .lg-t.eh-t td.c-tm { overflow: visible; }
+}
+/* a small phone: the time without its age (the day and the second stay), as the blob lists show it, so an endpoint and
+   "current" keep their line whole beside it */
+@media (max-width: 440px) {
+  .lg-t.eh-t .tw .ag { display: none; }
+}
+
+/* ---- a validator's history: two views as tabs in the heading's own type; the one shown carries the accent line, the
+   other is quieter and lights on hover. They wrap under the list head as the heading does ---- */
+.vd-tabs { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.vd-tab { appearance: none; border: 0; background: none; font-family: inherit; cursor: pointer; transition: color var(--dur); }
+.vd-tab[aria-selected="false"] { color: var(--text-3); }
+.vd-tab[aria-selected="false"]::after { background: transparent; transition: background var(--dur); }
+.vd-tab[aria-selected="false"]:hover { color: var(--text); }
+.vd-tab[aria-selected="false"]:hover::after { background: var(--line); }
+.vd-tab[aria-selected="false"] .n { background: var(--seg-track); color: var(--text-3); }
+.vd-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+
+/* ---- a transaction's page (TxDetail): the blob page's mast and frames ---- */
+/* what it asked for: never bold, so it never reads as what happened */
+.bd-meta .rq { font-weight: 400; color: var(--text-2); }
+.bd-meta .mono.rq { color: var(--text-2); }
+.bd-meta .eh-o { color: var(--text-3); }
+.bd-meta .eh-n { font-weight: 600; color: var(--text); }
+.bd-meta .eh-ar { margin: 0 4px; color: var(--text-3); }
+/* a validator as a chip: its picture, its name; the blob page's link look */
+.tx-val { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; font-weight: 500; color: var(--text); vertical-align: middle; }
+.tx-val:hover { color: var(--accent-ink); text-decoration: none; }
+.tx-val .avatar { width: 18px; height: 18px; border-radius: 5px; font-size: 8px; }
+/* several validators' chips in one row of facts, wrapping */
+.tx-vals { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+/* a validator's chip in a row of facts stands on the row's line */
+.bd-meta dd > .tx-val, .bd-meta dd > .tx-vals { align-self: center; }
+.bd-meta em .mono { color: inherit; }
+.bd-sh .bd-err-a { margin-top: 0; }
+/* a page the transaction touches, as a link that reads as one: the accent, and an arrow after it */
+.bd-meta .tx-go { font-weight: 500; color: var(--accent-ink); }
+.bd-meta .tx-go .ar { margin-left: 5px; font-family: var(--sans); font-weight: 400; }
+.bd-meta .tx-go:hover { text-decoration: underline; text-underline-offset: 3px; }
+/* Tensile's own result for a blob payment's blob, beside its link: the Blobs list's Tensile chip, with Tensile's eye */
+.bd-meta .tx-tn { appearance: none; display: inline-flex; align-items: center; gap: 4px; align-self: center; height: 20px; margin: 0 0 0 6px; padding: 0 6px 0 5px; border-radius: 999px; border: 1px solid var(--border); background: var(--wash); font-family: inherit; font-size: 10px; font-weight: 500; line-height: normal; letter-spacing: 0; color: var(--text-2); white-space: nowrap; cursor: pointer; }
+.bd-meta .tx-tn svg { flex: none; width: 11px; height: 11px; color: var(--accent-ink); }
+.bd-meta .tx-tn.ok { border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok-ink); }
+.bd-meta .tx-tn.hold { border-color: color-mix(in srgb, var(--hold) 45%, transparent); background: color-mix(in srgb, var(--hold) 12%, transparent); color: var(--hold-ink); }
+.bd-meta .tx-tn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* the blob page's transaction hash in its mast opens the transaction's page: it keeps the mast's look, the accent only
+   under the pointer */
+.pb-addr a.mono { color: var(--text-2); }
+.pb-addr a.mono:hover { color: var(--accent-ink); text-decoration: none; }
+/* the error's reason in plain words with the chain's code, over the error as the node returned it */
+.bd-why { display: flex; align-items: baseline; gap: 10px; margin: 0; padding: 14px 16px 0; font-size: var(--t-cell); line-height: 18px; }
+.bd-why b { font-weight: 600; color: var(--text); }
+.bd-why .mono { font-size: 12.5px; color: var(--text-3); }
+.bd-err .bd-why + .bd-log { padding-top: 8px; padding-bottom: 14px; }
+.bd-sh h2 .n { padding: 1px 8px; border-radius: 999px; background: var(--seg-track); font-size: var(--t-tiny); font-weight: 600; line-height: 18px; color: var(--text-2); }
+/* its messages: a small ledger, index, name and signer; the one that failed red, one that carries no Fibre quiet, a
+   MsgExec's own messages on indented rows */
+/* as wide as its frame at any width: the endorsements table's 760px floor (.bd-t) would clip its Signer column */
+.bd-t.tx-m { min-width: 0; table-layout: fixed; }
+.bd-t.tx-m th, .bd-t.tx-m td { text-align: left; vertical-align: middle; }
+/* every cell's content on one centred line of one height, so a chip's name and a message's stand level */
+.tx-m .cl { display: inline-flex; align-items: center; min-height: 20px; vertical-align: middle; }
+.tx-m th.c-i { width: 120px; } .tx-m th.c-n { width: 46%; }
+.tx-m td.c-i { color: var(--text-2); }
+.tx-m td.c-n .nm { font-weight: 500; }
+.tx-m tr.bad td.c-n .nm { font-weight: 600; color: var(--fault); }
+.tx-m td.c-n em { margin-left: 8px; font-style: normal; color: var(--text-3); }
+.tx-m tr.u td.c-n .nm { font-weight: 400; color: var(--text-3); }
+.tx-m tr.in td.c-n .ar { margin: 0 8px 0 2px; font-weight: 400; color: var(--text-3); }
+.tx-m td.c-s .mono { font-family: var(--mono); font-size: 12.5px; color: var(--text-2); }
+.tx-m td.c-s .cp { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: 4px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--text-3); vertical-align: -3px; cursor: pointer; }
+.tx-m td.c-s .lg-who .hd { font-size: var(--t-cell); }
+/* a phone: the frames already stack and the mast's hash wraps (.pb-addr .mono), a word's room after its label; the
+   index column narrows, a message's name wraps between its words with "failed" after its last, and a signer's
+   chip ends its name in an ellipsis (a publisher's without the address's prefix, as the lists show it) */
+@media (max-width: 720px) {
+  .bd-mast .pb-addr .bd-idl { margin-right: 8px; }
+  .tx-m th.c-i { width: 56px; }
+  .tx-m td.c-n { white-space: normal; }
+  .tx-m td.c-n .cl { display: inline; }
+  .tx-m td.c-n em { margin-left: 6px; }
+  .tx-m td.c-s { overflow: hidden; }
+  .tx-m td.c-s .cl { max-width: 100%; }
+  .tx-m td.c-s .tx-val { min-width: 0; }
+  .tx-m td.c-s .tx-val > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tx-m td.c-s .lg-who .hd { display: none; }
+}
 
 /* the table one switch away, at the page's full width */
 .bd-full { margin-top: 32px; }

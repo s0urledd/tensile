@@ -1,6 +1,8 @@
 // api.ts's streams (npm test; node --test): when a stream asks the API again after an answer, a failure, a refusal and
 // while the page is hidden. The module imports React for its hooks only, so the test compiles it with the project's own
-// TypeScript with React's two hooks stubbed out, and runs it on mocked timers against a stub of fetch.
+// TypeScript with React's two hooks stubbed out, and runs it on mocked timers against a stub of fetch. It also passes on
+// amounts.ts's formats, which a module loaded from a data: URL cannot import and this test does not use (amounts.test.mjs
+// holds them), so that line is left out.
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -8,7 +10,8 @@ import ts from "typescript";
 
 const load = (file) => {
   const src = readFileSync(new URL(file, import.meta.url), "utf8")
-    .replace(/import \{[^}]*\} from "react";/, "const useEffect = () => {}, useState = (v) => [v, () => {}];");
+    .replace(/import \{[^}]*\} from "react";/, "const useEffect = () => {}, useState = (v) => [v, () => {}];")
+    .replace(/^export \{[^}]*\} from "\.\/amounts";$/m, "");
   const js = ts.transpileModule(src, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 } }).outputText;
   return import(`data:text/javascript;base64,${Buffer.from(js).toString("base64")}`);
 };

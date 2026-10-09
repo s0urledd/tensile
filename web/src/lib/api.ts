@@ -494,6 +494,100 @@ export type FailedTx = {
   log: string; log_cut?: boolean;
 };
 
+/**
+ * What a successful Fibre transaction cost, from the ante handler's own record: its gas, what it used of the limit it
+ * set, and the fee its fee payer paid from its bank balance (never from the escrow), as the chain printed it ("8000utia",
+ * absent for none). messages: its top-level messages, which the one fee covers together.
+ */
+export type TxCost = { gas_wanted: number; gas_used: number; fee?: string; fee_payer?: string; messages: number };
+
+/** what kind of Fibre transaction a page is: the escrow's movement kinds, an endpoint registration, or several */
+export type TxKind = Payment["kind"] | "set_host" | "several";
+
+/** one message of a Fibre transaction, in its order: its signer for a Fibre one; a MsgExec's own messages inside it */
+export type TxMsg = { index: number; type_url: string; fibre: boolean; signer?: string; inner?: TxMsg[] };
+
+/**
+ * a validator a transaction touches: its consensus address always; its operator address, name and picture when the
+ * collector has its identity (a superseded consensus key, or one not read yet, has none)
+ */
+export type TxValidator = { address: string; operator_address?: string; moniker?: string; avatar_url?: string };
+
+/**
+ * One Fibre transaction by its hash (/v1/txs/{hash}), successful or failed: its block, its messages, what it cost (absent
+ * before cost lines were kept), why it failed, what it did or asked for (effect, by kind), and the pages it touches
+ * (related: only what a list would show for a failure).
+ */
+export type TxAnswer = {
+  tx_hash: string;
+  status: "success" | "failed";
+  /** a failure only: the chain took its fee and sequence, so the same transaction can never be in a block again */
+  final?: boolean;
+  height: number;
+  tx_index: number;
+  time: string;
+  kind: TxKind;
+  messages: TxMsg[];
+  /** the messages are its Fibre ones only, from Tensile's record; its other messages, if it had any, are not recorded */
+  messages_partial?: boolean;
+  cost?: { gas_wanted: number; gas_used: number; fee?: string; fee_payer?: string };
+  failure?: { code: number; codespace: string; reason?: string; failed_msg_index?: number; log: string; log_cut?: boolean };
+  effect: {
+    // a blob payment
+    promise_hash?: string; commitment?: string; blob_version?: number; namespace?: string; blob_size?: number;
+    fee_paid_utia?: number; settled?: boolean; timed_out?: boolean;
+    // a movement of the escrow that took effect
+    amount_utia?: number;
+    withdrawal?: { available_at?: string; outcome?: "pending" | "paid" | "consumed"; paid_height?: number; paid_at?: string; payout_delay_s?: number; reduced_utia?: number };
+    // what a failed deposit or withdrawal asked for, as the chain printed it, and in utia when exact in a number
+    requested?: string; requested_utia?: number;
+    // a failure's publisher as the message names it, when no publisher page is linked: plain text, never a link
+    publisher?: string;
+    // an endpoint registration: what it did, or what it asked for and what stayed
+    action?: "registered" | "changed" | "same"; host?: string; previous_host?: string;
+    requested_host?: string; attempted?: "change" | "registration"; host_at_block?: string;
+    // a failed endpoint registration whose signer is no validator
+    not_a_validator?: boolean;
+  };
+  related: {
+    publisher?: string;
+    /**
+     * the blob a blob payment settled: its page, and Tensile's own reading of it (must_serve_until and reconstructable,
+     * as a Blobs list row carries them), for the same Tensile chip as the list's
+     */
+    blob?: { promise_hash: string; commitment: string; blob_version: number; settlement_height?: number;
+      must_serve_until?: string; reconstructable?: Reconstruct | null };
+    /** an endpoint registration for one validator */
+    validator?: TxValidator;
+    /** an endpoint registration for several, by consensus address (never with validator) */
+    validators?: TxValidator[];
+  };
+};
+
+/**
+ * One Fibre endpoint registration of a validator on chain, newest first (/v1/validators/{addr}: endpoint_history).
+ * before_record: the host it had when Tensile's record began; after_gap: a change made while the record had a gap,
+ * before block `height`, whose transaction is not on record (first: it was the validator's first registration). A
+ * failed one changed nothing: host is what it asked for, and attempted says whether the validator had an endpoint at
+ * that block.
+ */
+export type EndpointEvent = {
+  outcome: "registered" | "changed" | "same" | "failed" | "before_record" | "after_gap";
+  height?: number;
+  tx_index?: number;
+  time?: string;
+  tx_hash?: string;
+  host: string;
+  previous_host?: string;
+  /** after_gap only: the validator had no endpoint before the gap */
+  first?: boolean;
+  attempted?: "change" | "registration";
+  /** a failed one's reason, when Tensile has one; which message failed is on its transaction's page */
+  reason?: string;
+};
+
+export { coins, feeTia, exactCoin } from "./amounts";
+
 /** one validator's reading of a blob, as the blob page lists them */
 export type BlobReading = {
   validator_address: string;
