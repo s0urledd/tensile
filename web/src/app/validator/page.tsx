@@ -694,7 +694,7 @@ function Page() {
             <thead>
               <tr>
                 <th className="c-t">Read <span className="per">(UTC)</span></th>
-                <th className="c-b">Blob</th>
+                <th className="c-b">TX hash</th>
                 <th className="c-r">Rows</th>
                 <th className="c-d">Duration</th>
                 <th className="gap" aria-hidden="true" />
@@ -709,6 +709,7 @@ function Page() {
                 const open = isOpen(p);
                 const r = resultOf(open ? { ...p, provisional: false } : p, g);
                 const href = `/blob/?hash=${p.promise_hash}`;
+                const tx = p.settlement_tx_hash?.toUpperCase() ?? "";
                 const t = Date.parse(readAt);
                 const rows = p.rows_expected ? <><b>{int(p.rows_returned)}</b><span className="u"> / {int(p.rows_expected)}</span></> : "—";
                 const ms = <>{int(p.total_duration_ms)}<span className="u"> ms</span></>;
@@ -734,7 +735,11 @@ function Page() {
                   <tr key={`${p.vantage}|${p.promise_hash}|${p.scheduled_at}`} className="row"
                     onClick={(ev) => openRow(ev, href, onOpen)} onAuxClick={(ev) => openRow(ev, href, onOpen)}>
                     <td className="c-t"><span title={utcWord(readAt)}><span className="tm">{monthDayTime(readAt)}</span><span className="ag">{age(now - t)}</span></span></td>
-                    <td className="c-b"><Link href={href} title={p.promise_hash}>{p.promise_hash.slice(0, 6)}<span className="el">…</span>{p.promise_hash.slice(-4)}</Link></td>
+                    {/* the transaction that settled the blob, as the Blobs list shows it; the row still opens the blob */}
+                    <td className="c-b">{tx
+                      ? <><Link href={href} title={`Transaction ${tx}\nPromise hash ${p.promise_hash}`}>{tx.slice(0, 6)}<span className="el">…</span>{tx.slice(-4)}</Link>
+                        <CopyMark text={tx} label="the transaction hash" /></>
+                      : <Link href={href} title={`Promise hash ${p.promise_hash}`}>—</Link>}</td>
                     <td className="c-r">{rows}</td>
                     <td className="c-d">{ms}</td>
                     <td className="gap" aria-hidden="true" />

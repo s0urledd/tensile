@@ -5105,8 +5105,8 @@ func latestAssignmentSQL(only string) (string, []any) {
 		JOIN publications p ON p.promise_hash = a.promise_hash AND p.settlement_height = m.h`, args
 }
 
-// fillSettledAt sets each reading's SettledAt from its publication: one
-// query for the page's (at most fifty) blobs.
+// fillSettledAt sets each reading's SettledAt and SettlementTxHash from its
+// publication: one query for the page's (at most fifty) blobs.
 func (s *Server) fillSettledAt(ctx context.Context, rs []validatorReading) error {
 	if len(rs) == 0 {
 		return nil
@@ -5119,24 +5119,25 @@ func (s *Server) fillSettledAt(ctx context.Context, rs []validatorReading) error
 			args = append(args, r.PromiseHash)
 		}
 	}
-	rows, err := s.q(ctx).QueryContext(ctx, `SELECT promise_hash, settlement_time FROM publications WHERE promise_hash IN (?`+strings.Repeat(", ?", len(args)-1)+`)`, args...)
+	rows, err := s.q(ctx).QueryContext(ctx, `SELECT promise_hash, settlement_time, settlement_tx_hash FROM publications WHERE promise_hash IN (?`+strings.Repeat(", ?", len(args)-1)+`)`, args...)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	at := map[string]string{}
+	at, tx := map[string]string{}, map[string]string{}
 	for rows.Next() {
-		var h, t string
-		if err := rows.Scan(&h, &t); err != nil {
+		var h, t, x string
+		if err := rows.Scan(&h, &t, &x); err != nil {
 			return err
 		}
-		at[h] = t
+		at[h], tx[h] = t, x
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
 	for i := range rs {
 		rs[i].SettledAt = at[rs[i].PromiseHash]
+		rs[i].SettlementTxHash = tx[rs[i].PromiseHash]
 	}
 	return nil
 }
