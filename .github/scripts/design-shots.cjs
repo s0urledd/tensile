@@ -337,7 +337,7 @@ async function layout(page, label) {
     const st = t.querySelector("thead th.c-st");
     const stHead = st ? words(st) : null;
     const amSel = t.classList.contains("ptx-t") ? "td.c-am" : "td.c-fee";
-    const amRight = [...new Set([...t.querySelectorAll(`tbody ${amSel}, tfoot ${amSel}`)].map((td) => words(td)).filter(Boolean).map((w) => R1(w.r)))];
+    const amRight = [...new Set([...t.querySelectorAll(`tbody tr.row:not(.xf) ${amSel}, tfoot ${amSel}`)].map((td) => words(td)).filter(Boolean).map((w) => R1(w.r)))];
     const failed = [...t.querySelectorAll("tbody tr.xf")].map((tr) => (tr.querySelector(amSel) || {}).textContent);
     const heights = [...new Set(rows.map((tr) => R1(tr.getBoundingClientRect().height)))];
     // the room between two neighbouring columns' words, over the rows: its least and its most

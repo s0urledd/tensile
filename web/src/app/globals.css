@@ -1919,14 +1919,15 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
 /* 1: the Blobs list's ledger: the hash first at the table's inset, the type, the time centred, the height and the
    amount right-aligned on their digits, the status as Blobs' (its dot hung). Six columns hold ~610px of words in a
    1118px frame: the widths set the same room (~95px) between every two columns' words at their widest ("May 28
-   20:48:38 23 h 59 min", "+1,000.000 TIA"), so no gap opens wider than the rest; the status's words start 84px into
-   their cell, the dot hung in that room. The hash, the type and the time stand in the same place in All and Escrow */
-.ptx-1 th.c-x { width: 202px; } .ptx-1 th.c-k { width: 178px; } .ptx-1 th.c-bh { width: 111px; } .ptx-1 th.c-am { width: 190px; }
-.ptx-1 th.c-st { width: 153px; }
-.ptx-1.ptx-esc th.c-am { width: 151px; } .ptx-1.ptx-esc th.c-st { width: 220px; } .ptx-1 th.c-po { width: 83px; }
+   20:48:38 23 h 59 min", "+1,000.000 TIA", the head TX STATUS), so no gap opens wider than the rest; the status's
+   words start 82px into their cell, the dot hung in that room. The hash, the type and the time stand in the same
+   place in All and Escrow */
+.ptx-1 th.c-x { width: 200px; } .ptx-1 th.c-k { width: 180px; } .ptx-1 th.c-bh { width: 114px; } .ptx-1 th.c-am { width: 189px; }
+.ptx-1 th.c-st { width: 157px; }
+.ptx-1.ptx-esc th.c-am { width: 154px; } .ptx-1.ptx-esc th.c-st { width: 226px; } .ptx-1 th.c-po { width: 80px; }
 .ptx-1 th.c-tm, .ptx-1 td.c-tm { text-align: center; }
 .ptx-1 .c-tm .ag { margin-left: 9px; }
-.ptx-1 th.c-st, .ptx-1 td.c-st { padding-left: 84px; }
+.ptx-1 th.c-st, .ptx-1 td.c-st { padding-left: 82px; }
 
 /* 2, 3: the validator's Endpoint history: equal tracks, the height left-aligned as every table's first column, the rest
    centred under their heads */
