@@ -28,6 +28,7 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/txcost"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/store"
 )
 
@@ -606,6 +607,26 @@ func FailedTxs(st *store.Store, path string, now time.Time) (Result, error) {
 			return false, fmt.Errorf("%w: failed tx without dedupe_key, tx_hash, code, height, tx_index or time", ErrBadRecord)
 		}
 		return st.InsertFailedTx(r, raw)
+	}, now)
+}
+
+// TxCosts ingests tx_costs.jsonl, the scanner's record of what each successful
+// Fibre transaction cost. Read only by the transaction and blob pages.
+func TxCosts(st *store.Store, path string, now time.Time) (Result, error) {
+	return tail(st, path, func(raw []byte) (bool, error) {
+		var r txcost.Record
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return false, fmt.Errorf("%w: decode tx cost: %v", ErrBadRecord, err)
+		}
+		if r.DedupeKey == "" || len(r.TxHash) != 64 || r.Height <= 0 || r.TxIndex < 0 || r.Time.IsZero() {
+			return false, fmt.Errorf("%w: tx cost without dedupe_key, tx_hash, height, tx_index or time", ErrBadRecord)
+		}
+		// the table is keyed on (height, tx_index) and a restore counts distinct
+		// dedupe_key: the two must name the same line
+		if r.DedupeKey != txcost.Key(r.Height, r.TxIndex) {
+			return false, fmt.Errorf("%w: tx cost dedupe_key %q is not its height and tx_index", ErrBadRecord, r.DedupeKey)
+		}
+		return st.InsertTxCost(r, raw)
 	}, now)
 }
 

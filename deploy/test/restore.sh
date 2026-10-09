@@ -31,12 +31,14 @@
 #   - rebuilds the database from the verified cut and requires it to hold
 #     exactly the cut's records (publications one per promise, as the store
 #     keeps them: a line appended again by a re-scan is said, not failed;
-#     failed transactions one per dedupe_key, the same way);
+#     failed transactions and transaction costs one per dedupe_key, the
+#     same way);
 #   - starts a second observer-api on a spare port against it and reads
 #     /v1/meta, /v1/network and /v1/validators, waiting out the first
 #     computation of each window; the counts it serves must be the rebuilt
 #     ones. With a failed transaction on record, the newest one asked by
-#     its hash must answer it.
+#     its hash must answer it; with a transaction cost on record, the
+#     newest one's transaction must answer as a success.
 #
 # The live host's counts are printed for orientation and compared with
 # nothing: they are a different moment.
@@ -85,6 +87,17 @@ import sqlite3, sys
 con = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
 n = con.execute("SELECT COUNT(*) FROM failed_txs").fetchone()[0]
 newest = con.execute("SELECT tx_hash FROM failed_txs ORDER BY height DESC, tx_index DESC LIMIT 1").fetchone()
+print(n, newest[0] if newest else "")
+PY
+}
+# cost_rows <db>: the transaction costs stored, and the hash of the newest
+# (empty when there is none)
+cost_rows() {
+  python3 - "$1" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+n = con.execute("SELECT COUNT(*) FROM tx_costs").fetchone()[0]
+newest = con.execute("SELECT tx_hash FROM tx_costs ORDER BY height DESC, tx_index DESC LIMIT 1").fetchone()
 print(n, newest[0] if newest else "")
 PY
 }
@@ -155,6 +168,17 @@ if python3 -c 'import json,sys; sys.exit(0 if sys.argv[2] in json.load(open(sys.
     fail "failed_txs.jsonl could not be read through the manifest tool"
   fi
 fi
+# What the successful Fibre transactions cost, once the scanner has
+# recorded one: one row per dedupe_key, the same way.
+cost_hash=""
+if python3 -c 'import json,sys; sys.exit(0 if sys.argv[2] in json.load(open(sys.argv[1]))["files"] else 1)' "$TMP/backup-manifest.json" tx_costs.jsonl; then
+  if read -r cost_lines want_cost <<<"$(record_distinct "$MANIFEST_TOOL" "$TMP" tx_costs.jsonl dedupe_key)" && [ -n "$want_cost" ]; then
+    read -r rcost cost_hash <<<"$(cost_rows "$TMP/observer.db")"
+    [ "$rcost" = "$want_cost" ] && pass "rebuilt transaction costs ($rcost) == distinct keys in the cut ($want_cost, of $cost_lines line(s))" || fail "rebuilt transaction costs $rcost != distinct keys in the cut $want_cost"
+  else
+    fail "tx_costs.jsonl could not be read through the manifest tool"
+  fi
+fi
 
 echo "== 4. serve it on :$PORT"
 /usr/local/bin/observer-api -data-dir "$TMP" -listen "127.0.0.1:$PORT" -vantage "$VANTAGE" > "$TMP/api.log" 2>&1 &
@@ -175,6 +199,16 @@ if [ -n "$fail_hash" ]; then
     pass "/v1/blobs?tx= answers the newest failed transaction (${fail_hash:0:12}) from the restored data"
   else
     fail "/v1/blobs?tx=$fail_hash -> $code with neither a failed_tx nor a blob"
+  fi
+fi
+# The newest successful Fibre transaction with a cost line, asked by its
+# hash as the transaction page asks: it took effect.
+if [ -n "$cost_hash" ]; then
+  code=$(http_code "http://127.0.0.1:$PORT/v1/txs/$cost_hash" "$TMP/tx.json")
+  if [ "$code" = 200 ] && python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("status") == "success" else 1)' "$TMP/tx.json"; then
+    pass "/v1/txs answers the newest transaction with a cost line (${cost_hash:0:12}) from the restored data"
+  else
+    fail "/v1/txs/$cost_hash -> $code without \"status\":\"success\""
   fi
 fi
 # The restored directory has no snapshot files, so this API computes every
