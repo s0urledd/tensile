@@ -2448,6 +2448,8 @@ button.warn:focus-visible { outline-offset: 0; }
   /* the label at the line's start, on a second line of its own rather than cut where a long one meets its figure */
   .lg-t.ptx-t.pb-st tfoot td.fl { text-align: left; white-space: normal; }
   .lg-t.ptx-t.pb-st tfoot tr.tot { background: var(--surface-2); }
+  /* the total's rule over its figure stands in the row's padding, outside the cell */
+  .lg-t.ptx-t.pb-st tfoot td.c-am { overflow: visible; }
 }
 /* a small phone: the time without its age (the day and the second stay), as the blob lists show it */
 @media (max-width: 440px) {
