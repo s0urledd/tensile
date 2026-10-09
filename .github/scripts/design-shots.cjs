@@ -258,7 +258,8 @@ async function full(page, file, shows) {
  * in the platform's plain style. It never stands over another row (Design QA), so where it opens is chosen per shot:
  *   right / left: beside the hovered element, inside its own row, level with the row;
  *   rowend: inside its own row, after the row's last word (a figure in a row of facts);
- *   above: over the hovered cell, its foot on the row's top line (the first row, over the table's head);
+ *   above: over the hovered cell, centred on it, its foot on the row's top line (the first row, over the table's head, whose words
+ *          it covers whole or not at all);
  *   start / pointer: under the element, where nothing stands (the last row of a frame, the pager).
  * What the tip covers is written to the notes, row by row, so a shot that covers another row is caught.
  */
@@ -303,8 +304,17 @@ async function tip(page, sel, theme, at = "pointer") {
       top = mid;
     }
     else if (at === "rowend") { const rg = document.createRange(); rg.selectNodeContents(dd || e); left = rg.getBoundingClientRect().right + 14; top = mid; }
-    // above: from the hovered words, kept inside the table, as a browser keeps a tooltip on the screen
-    else if (at === "above") { left = Math.min(r.left - 4, band.right - 8 - w); top = band.top - 6 - h; }
+    // above: centred over the hovered words and kept inside the table, as a browser keeps a tooltip on the screen; over
+    // the head it covers a head's words whole or not at all, so no head is left cut in two beside it
+    else if (at === "above") {
+      top = band.top - 6 - h;
+      const lo = band.left + 8, hi = band.right - 8 - w, cx = (r.left + r.right) / 2;
+      const heads = [...(e.closest("table")?.querySelectorAll("thead th") || [])].map((th) => { const rg = document.createRange(); rg.selectNodeContents(th); return rg.getBoundingClientRect(); }).filter((q) => q.width > 0);
+      const cuts = (x) => heads.some((q) => [x, x + w].some((edge) => edge > q.left - 4 && edge < q.right + 4));
+      const tries = [cx - w / 2, ...heads.flatMap((q) => [q.left - 8, q.right + 8, q.right + 8 - w, q.left - 8 - w])]
+        .map((x) => Math.min(hi, Math.max(lo, x))).filter((x) => x <= r.right && x + w >= r.left && !cuts(x));
+      left = tries.length ? tries.sort((a, b) => Math.abs(a + w / 2 - cx) - Math.abs(b + w / 2 - cx))[0] : Math.min(hi, Math.max(lo, cx - w / 2));
+    }
     else if (at === "start") { left = r.left - 4; top = r.bottom + 18; }
     else { left = r.left + Math.min(r.width / 2, 14); top = r.bottom + 18; }
     d.style.left = `${Math.round(left)}px`;
