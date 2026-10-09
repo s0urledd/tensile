@@ -286,7 +286,19 @@ async function tip(page, sel, theme, at = "pointer") {
     const mid = band.top + (band.height - h) / 2;
     let left, top;
     if (at === "right") { left = r.right + 10; top = mid; }
-    else if (at === "left") { left = r.left - 10 - w; top = mid; }
+    else if (at === "left") {
+      // centred in the room between the row's words before it and the element, so it stands as clear of both
+      let prev = -Infinity;
+      const ws = document.createTreeWalker(tr || dd || e, NodeFilter.SHOW_TEXT);
+      for (let n = ws.nextNode(); n; n = ws.nextNode()) {
+        if (!n.nodeValue.trim() || e.contains(n)) continue;
+        const rg = document.createRange();
+        rg.selectNodeContents(n);
+        for (const q of rg.getClientRects()) if (q.right <= r.left - 1) prev = Math.max(prev, q.right);
+      }
+      left = isFinite(prev) && r.left - prev > w + 16 ? prev + (r.left - prev - w) / 2 : r.left - 10 - w;
+      top = mid;
+    }
     else if (at === "rowend") { const rg = document.createRange(); rg.selectNodeContents(dd || e); left = rg.getBoundingClientRect().right + 14; top = mid; }
     else if (at === "above") { left = r.left - 4; top = band.top - 6 - h; }
     else if (at === "start") { left = r.left - 4; top = r.bottom + 18; }
