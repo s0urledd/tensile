@@ -2671,8 +2671,10 @@ button.warn:focus-visible { outline-offset: 0; }
    ========================================================================== */
 .tx-t th.c-x { width: 200px; } .tx-t th.c-k { width: 220px; } .tx-t th.c-tb { width: auto; } .tx-t th.c-st { width: 150px; } .tx-t th.c-am { width: 220px; }
 .tx-t th:last-child, .tx-t td:last-child { padding-right: 18px; }
-.eh-t th.c-tb { width: 300px; } .eh-t th.c-x { width: 180px; } .eh-t th.c-ac { width: 200px; } .eh-t th.c-st { width: 140px; } .eh-t th.c-ep { width: auto; }
-.eh-t th:last-child, .eh-t td:last-child { padding-right: 18px; }
+/* Endpoint history: six equal tracks across the frame, every head and cell centred, the same room on both sides of each */
+.eh-t th { width: calc(100% / 6); }
+.eh-t th, .eh-t td { text-align: center; }
+.eh-t th:first-child, .eh-t td:first-child { padding-left: 12px; }
 .lg-t tr.row.np { cursor: default; }
 /* the hash: the mono face, its middle quiet; the copy mark after it, quiet until the row or the mark is pointed at */
 .lg-t .c-x a { font-family: var(--mono); font-size: 12.5px; font-weight: 500; letter-spacing: -.01em; color: var(--text); }
@@ -2692,7 +2694,7 @@ button.warn:focus-visible { outline-offset: 0; }
 /* the chain's outcome (Result in a publisher's tables, Status in Endpoint history): Success in plain words, Failed in
    the text's own weight with the red dot, the column's one mark. The dot hangs in the cell's left padding, so the head,
    "Success" and "Failed" start on one line down the column */
-.tx-t th.c-st, .tx-t td.c-st, .eh-t th.c-st, .eh-t td.c-st { padding-left: 27px; }
+.tx-t th.c-st, .tx-t td.c-st { padding-left: 27px; }
 .lg-t .st { display: inline-flex; align-items: baseline; color: var(--text-2); }
 .lg-t .st .dot { align-self: center; width: 7px; height: 7px; margin: 0 8px 0 -15px; }
 .lg-t .st.f { font-weight: 500; color: var(--text); }
@@ -2712,6 +2714,18 @@ button.warn:focus-visible { outline-offset: 0; }
 .eh-pre { display: inline-flex; align-items: center; color: var(--text-3); }
 .eh-pre em { font-style: italic; }
 .eh-pre button.warn { margin-left: 3px; }
+/* centred, each mark hangs outside its words, so the words themselves stand under the head: the copy mark to the
+   hash's right (as the red dot hangs to Failed's left) */
+.eh-t .c-x .cp { margin-right: -20px; }
+.eh-t td.c-bh { font-weight: 500; }
+/* two lines where a fact has a quiet note: the time over how long ago, the endpoint registered now over "current";
+   a one-line time (the seed, a record gap) keeps the same height, so every row is as tall as the next */
+.eh-t .tw, .eh-t .ew, .eh-t .eh-pre { display: inline-flex; flex-direction: column; align-items: center; justify-content: center; min-height: 36px; vertical-align: middle; }
+.eh-t .eh-pre { flex-direction: row; }
+.eh-t .tw .tm { font-weight: 500; line-height: 20px; }
+.eh-t .tw .ag { font-size: var(--t-small); line-height: 16px; color: var(--text-3); }
+.eh-t .ew .eh-n { line-height: 20px; }
+.eh-t .ew .cur { margin-left: 0; line-height: 16px; }
 
 /* ---- a validator's history: two views as tabs in the heading's own type; the one shown carries the accent line, the
    other is quieter and lights on hover ---- */

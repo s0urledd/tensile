@@ -170,6 +170,9 @@ function mock(pathname, j) {
 }
 
 // ---------------------------------------------------------------- photographing
+// the parts this run photographs: "all", or one of publisher / validator / tx / blob (a round on one part shoots that part)
+const ONLY = "validator";
+const take = (part) => ONLY === "all" || ONLY === part;
 const shots = [];
 const W = 1440, H = 1300;
 
@@ -300,7 +303,8 @@ async function tip(page, sel, theme, at = "pointer") {
       top = mid;
     }
     else if (at === "rowend") { const rg = document.createRange(); rg.selectNodeContents(dd || e); left = rg.getBoundingClientRect().right + 14; top = mid; }
-    else if (at === "above") { left = r.left - 4; top = band.top - 6 - h; }
+    // above: from the hovered words, kept inside the table, as a browser keeps a tooltip on the screen
+    else if (at === "above") { left = Math.min(r.left - 4, band.right - 8 - w); top = band.top - 6 - h; }
     else if (at === "start") { left = r.left - 4; top = r.bottom + 18; }
     else { left = r.left + Math.min(r.width / 2, 14); top = r.bottom + 18; }
     d.style.left = `${Math.round(left)}px`;
@@ -340,7 +344,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
     const dk = theme === "dark";
 
     // ---- P1. publisher, All: the transaction table, its hovers, its pager
-    {
+    if (take("publisher")) {
       const { ctx, page } = await open(browser, theme);
       await go(page, `/publisher/?addr=${PUB}`, ".tx-t tbody tr.row:not(.sk)");
       await crop(page, `p1-all-${theme}.png`, ["#list .list-head", row("#list .tx-t", 12)],
@@ -368,7 +372,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
     }
 
     // ---- P2. publisher, Blobs: today's blob table, its Tensile column, the namespace picker here only
-    {
+    if (take("publisher")) {
       const { ctx, page } = await open(browser, theme);
       await go(page, `/publisher/?addr=${PUB}&kind=blobs`, "#list .lg-t tbody tr.row:not(.sk)");
       await crop(page, `r3-blobs-tensile-${theme}.png`, ["#list .list-head", row("#list .lg-t", 9)],
@@ -377,7 +381,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
     }
 
     // ---- P3. publisher, Escrow: the same five columns, the statement's foot
-    {
+    if (take("publisher")) {
       const { ctx, page } = await open(browser, theme);
       await go(page, `/publisher/?addr=${PUB}&kind=escrow`, ".tx-t tbody tr.row:not(.sk)");
       await page.waitForSelector(".tx-t tfoot", { timeout: 15000 }).catch(() => notes.push(`${theme} escrow: no foot`));
@@ -386,11 +390,11 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
     }
 
     // ---- V1. validator: the panels unchanged, the history area's tabs, Endpoint history open
-    {
+    if (take("validator")) {
       const { ctx, page } = await open(browser, theme);
       await go(page, `/validator/?addr=${VAL}&tab=endpoints`, ".eh-t tbody tr");
       await crop(page, `v1-history-${theme}.png`, [".vd-stat", "#evidence .list-head", "#evidence .vd-pager"],
-        "Validator Unity Nodes: the panels unchanged; under them the tabs Latest checks | Endpoint history 3, Endpoint history open in five columns: Time/Block · TX hash · Action · Status · Endpoint. The MOCK failed row (Change requested · ● Failed · 203.0.113.10:7980 quiet), two real Changed rows (Success; the newer marked current) and the host before Tensile's record", { t: 12 });
+        "Validator Unity Nodes: the panels unchanged; under them the tabs Latest checks | Endpoint history 3, Endpoint history open in six equal columns, each centred under its head: Block height · Time (UTC), how long ago under it · TX hash · Action · Status · Endpoint. The MOCK failed row (Change requested · ● Failed · 203.0.113.10:7980 quiet), two real Changed rows (Success; the newer marked current under its address) and the host before Tensile’s record (Block height and TX hash —)", { t: 12 });
       if (dk) await full(page, `v1-full-${theme}.png`, "Validator page, whole, Endpoint history open, for context");
       await reveal(page, ["#evidence .list-head", "#evidence .vd-pager"]);
       // the failed row is the first: its tips open above it, over the table's head, never over another row
@@ -403,7 +407,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       await ctx.close();
     }
     // the tabs as the page opens: Latest checks picked, Endpoint history beside it
-    {
+    if (take("validator")) {
       const { ctx, page } = await open(browser, theme);
       await go(page, `/validator/?addr=${VAL}`, ".vr-t tbody tr.row");
       await crop(page, `v1-tabs-checks-${theme}.png`, ["#evidence .list-head", row("#evidence .vr-t", 4)], "The history area as the page opens: Latest checks picked (its filter beside it, its table unchanged), Endpoint history 3 beside it, quieter", { b: 0 });
@@ -418,7 +422,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       ["t4-endpoint", "e59c8ec3e5538f64f442e968795dd2c1159636ecf9f90d4698317f946374adcf", "Endpoint registration, success: Validator Unity Nodes; Action Changed; Endpoint 89.40.226.146:7980 → 89.40.226.218:7980; Transaction fee 0.002 TIA"],
       ["t5-endpoint-failed", "fb27dda8abf009db6512800b74898bc60410e1139a7fbb8f49e4ff30d3226cdb", "Endpoint registration, failed (MOCK signer): Action Change requested, the row's own word in Endpoint history (not bold); Requested 203.0.113.10:7980 (quiet) · Endpoint Unchanged, 89.40.226.218:7980 stayed registered; Invalid validator and its raw error"],
     ];
-    for (const [name, hash, shows] of T) {
+    if (take("tx")) for (const [name, hash, shows] of T) {
       const { ctx, page } = await open(browser, theme);
       await go(page, `/tx/?hash=${hash}`, ".tx-m tbody tr");
       await crop(page, `${name}-${theme}.png`, [".bd-title", ".tx-ms"], shows);
@@ -443,7 +447,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       }
       await ctx.close();
     }
-    {
+    if (take("tx")) {
       const { ctx, page } = await open(browser, theme);
       await go(page, `/blob/?tx=A4BD0B1855044D09C2F84AE43F6504D9365A470810B6F67D30A6EC11D2AFDB92`, ".tx-m tbody tr");
       await crop(page, `t6-blob-tx-${theme}.png`, [".bd-title", ".tx-ms"], "The old failed address /blob/?tx=A4BD0B18… renders the same transaction page");
@@ -451,7 +455,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
     }
 
     // ---- G1. the blob page, kept: Gas left, both fees right, every amount in TIA; the transaction hash now a link
-    {
+    if (take("blob")) {
       const { ctx, page } = await open(browser, theme);
       await go(page, `/blob/?hash=${BLOB}`, ".bd-figs");
       await crop(page, `g1-blob-${theme}.png`, [".bd-title", ".bd-top"], "Blob page as round 1's: Gas 219,118 used of 400,000 under the Transaction (its hash now opens the transaction page); Fee paid 3.575 TIA from escrow · settled, and under it Transaction fee 0.008 TIA from the bank balance", { t: 24, b: 14 });
