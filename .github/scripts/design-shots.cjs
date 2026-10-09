@@ -454,6 +454,15 @@ const READY_TX = "#list .ptx-t tbody tr.row:not(.sk)";
     await ctx.close();
   }
 
+  // the narrower desktop widths, measured only: every cell whole at 1100 and 1220
+  for (const w of [1100, 1220]) {
+    const v = await open(browser, "dark", w, 1200);
+    await go(v.page, URL0, READY_TX); await clips(v.page, `all ${w}`);
+    await go(v.page, `${URL0}&kind=blobs`, "#list .lg-t tbody tr.xf"); await clips(v.page, `blobs ${w}`);
+    await go(v.page, `${URL0}&kind=escrow`, READY_TX); await clips(v.page, `escrow ${w}`);
+    await v.ctx.close();
+  }
+
   // a phone: All and Escrow at 375, both themes
   for (const theme of ["dark", "light"]) {
     const v = await open(browser, theme, 375, 2400, true);
