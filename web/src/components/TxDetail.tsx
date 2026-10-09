@@ -46,6 +46,12 @@ export const FEE_TITLE = "Paid for the transaction itself from the fee payer's b
 
 /** a message's name: its type URL after the last dot */
 const nameOf = (url: string) => url.slice(url.lastIndexOf(".") + 1);
+/**
+ * a message's name with a place to wrap before each word in it ("Msg·Set·Fibre·Provider·Info"): a phone's narrow
+ * column wraps it between words, never inside one; a wider one, which keeps every cell on one line, never wraps it
+ */
+const wrapName = (url: string): ReactNode[] =>
+  nameOf(url).split(/(?=[A-Z])/).flatMap<ReactNode>((w, i) => (i > 0 ? [<wbr key={i} />, w] : [w]));
 /** a message, or a MsgExec with a message inside it, that carries Fibre */
 const carries = (m: TxMsg) => m.fibre || !!m.inner?.some((i) => i.fibre);
 /** two spellings of one account (a validator's operator address and its account address) are the same account */
@@ -333,13 +339,13 @@ function MsgRows({ m, failed, r }: { m: TxMsg; failed: boolean; r: TxAnswer["rel
     <>
       <tr className={failed ? "bad" : carries(m) ? undefined : "u"}>
         <td className="c-i"><span className="cl">{m.index}</span></td>
-        <td className="c-n"><span className="cl"><span className="nm" title={m.type_url}>{nameOf(m.type_url)}</span>{failed && <em>failed</em>}</span></td>
+        <td className="c-n"><span className="cl"><span className="nm" title={m.type_url}>{wrapName(m.type_url)}</span>{failed && <em>failed</em>}</span></td>
         <td className="c-s"><span className="cl"><Signer s={m.signer} r={r} /></span></td>
       </tr>
       {m.inner?.slice(0, LISTED).map((i) => (
         <tr key={`${m.index}.${i.index}`} className={i.fibre ? "in" : "in u"}>
           <td className="c-i" />
-          <td className="c-n"><span className="cl"><span className="ar" aria-hidden="true">↳</span><span className="nm" title={i.type_url}>{nameOf(i.type_url)}</span></span></td>
+          <td className="c-n"><span className="cl"><span className="ar" aria-hidden="true">↳</span><span className="nm" title={i.type_url}>{wrapName(i.type_url)}</span></span></td>
           <td className="c-s"><span className="cl"><Signer s={i.signer} r={r} /></span></td>
         </tr>
       ))}
