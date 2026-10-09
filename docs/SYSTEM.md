@@ -29,7 +29,7 @@ The processes share files, not memory, and only one of them writes SQLite.
 
 | process | binary | writes | reads |
 |---|---|---|---|
-| scanner | `sentinel-scan` | `publications.jsonl`, `payments.jsonl`, `host_history.jsonl`, `failed_txs.jsonl`, `state.json` | chain RPC, and its websocket's new block headers |
+| scanner | `sentinel-scan` | `publications.jsonl`, `payments.jsonl`, `host_history.jsonl`, `failed_txs.jsonl`, `tx_costs.jsonl`, `state.json` | chain RPC, and its websocket's new block headers |
 | prober | `sentinel-probe` | `measurements.jsonl` (and `sampling-secrets.jsonl` only with `-policy`, which no network sets now: section 8) | `publications.jsonl`, `state.json`, `registry.jsonl`, chain RPC |
 | heartbeat | `observer-heartbeat` | `reachability.jsonl` | chain RPC (registry) |
 | collector | `observer-collector` | `observer.db`, `registry.jsonl`, `amendments.jsonl`, `exports/` | every `.jsonl`, `state.json`, chain RPC |
@@ -128,9 +128,12 @@ derived index of them.
 | `param_uncertainty.jsonl` | a height range whose `x/fibre` params the observer cannot vouch for, and what came of closing it | `detected_at` |
 | `corrections.jsonl` | a deadline or verdict a verified range moved, and the `range_corrected` line that closes the range | `judged_at` |
 | `failed_txs.jsonl` | failed transaction that carried a Fibre message | `time` |
+| `tx_costs.jsonl` | what a successful Fibre transaction cost | `time` |
 
-`failed_txs.jsonl` is read only by the transaction lookup (`/v1/blobs?tx=`,
-section 9): a transaction that failed in a block settled nothing, so it is
+`failed_txs.jsonl` is read only by the transaction lookups (`/v1/blobs?tx=`
+and `/v1/txs/{hash}`, section 9) and a validator's endpoint history (a
+final failed registration signed by its current operator address): a
+transaction that failed in a block settled nothing, so it is
 in no count, rollup or figure, and `publications.jsonl` and
 `payments.jsonl` never hold one. A line keeps the raw facts the node
 returned: the block's app version, code, codespace, log, gas, whether the
@@ -142,6 +145,23 @@ version whose errors the tests pin, so a correction never rewrites a line.
 The log is the node's, but for a panic's stack trace and anything past
 8 KiB, which are cut (`log_cut`).
 
+`tx_costs.jsonl` holds one line per successful transaction that carried a
+Fibre message (the same rule as `failed_txs.jsonl`: a top-level message, or
+one inside a MsgExec, of the five Fibre types), written from the scanner's
+first build that has it on, with no backfill. It is read only by the
+transaction page (`/v1/txs/{hash}`), the blob page (`tx_cost` on
+`/v1/blobs/{hash}`) and a validator's endpoint history (each registration's
+transaction hash), and is in no count, rollup or figure. A line keeps the
+raw facts: the gas wanted and used, the ante handler's `fee` and
+`fee_payer` as the node returned them, and the messages (a MsgExec's one
+level inside it), each Fibre message with its signer; what the transaction
+did is in `publications.jsonl`, `payments.jsonl` and `host_history.jsonl`,
+which the API joins. It is written through `record.Appender`, as
+publications and payments are, and fsynced at the checkpoint, before
+`state.json` moves; a line lost before the fsync is written again by the
+re-scan, its seen-set bounded above the checkpoint as the failed
+transactions' is.
+
 `state.json` is **not** a record file: it is the scanner's current param
 history, scan gaps, host seed and frontier. Every export carries it as a
 snapshot because `sentinel-recompute` needs all four to redraw a verdict the
@@ -151,9 +171,9 @@ Dedupe keys make re-ingest a no-op: a publication by `settlement_tx_hash`, a
 probe by `(vantage, promise_hash, validator_address, scheduled_at)` (a later
 attempt of a full reading adds its number), a params range by its id
 (`chain:kind:from-to`) plus its resolution, a correction by
-`(target, range id)`, a failed transaction by `(height, tx_index)`; the
-scanner's seen-set of failed transactions covers the heights above its
-checkpoint.
+`(target, range id)`, a failed transaction and a transaction's cost each by
+`(height, tx_index)`; the scanner's seen-sets of both cover the heights
+above its checkpoint.
 
 **Where a line is.** Every byte of a record file keeps one logical offset
 for good (`internal/record`), and a line is held in up to five places:
@@ -184,7 +204,12 @@ about 180 KiB (600 messages, each with what it asked for, and an 8 KiB log)
 and a block gives at most 800 lines; each string copied from a message is
 cut at 256 bytes, which keeps even a line of malformed messages under about
 3 MiB. It is archived later, as payments are, if it passes 1 MiB a day or
-64 MiB in all.
+64 MiB in all. `tx_costs.jsonl` is not rotated either: a line is about 450
+bytes for a one-message transaction, and a successful transaction's strings
+passed the chain's own checks and are cut at 256 bytes, which keeps a line
+well under 200 KiB; on mainnet a blob payment gives one line, so it grows
+at the publications' rate, and it is archived later, as payments are, past
+1 MiB a day or 64 MiB in all.
 
 **Retiring a local copy.** `observer-archive -retire -db observer.db`, the
 second step of `fibre-archive@`, removes an archived segment's gzip file,
@@ -233,8 +258,9 @@ not hold, checked against the store, at most `-check-days` (3) days a run.
 Never retired: the live files; the files the store does not keep line by
 line (`registry`, `runs`, `sampling-secrets`, `sampling_decisions`,
 `amendments`, `host_history`, `param_uncertainty`, `corrections`), whose
-export no second copy can be checked against; `failed_txs`, which is not
-archived (its exported lines are held to their digest only); the exports,
+export no second copy can be checked against; `failed_txs` and
+`tx_costs`, which are not archived (their exported lines are held to their
+digest only); the exports,
 `state.json` and the store, since a retired range is read back from the
 exports. A day the
 store does not give back whole (a sampled-out publication's NOT_PROBED rows,
@@ -301,7 +327,7 @@ needs a full VACUUM, which is why an existing DB has to be deleted). The
 collector owns the schema; the API opens `query_only` and refuses a database
 older *or* newer than the binary expects.
 
-**Schema version 30.** Base tables from `schema.sql`: `schema_migrations`,
+**Schema version 31.** Base tables from `schema.sql`: `schema_migrations`,
 `observer_runs`, `ingest_cursors`, `params_history`, `publications`,
 `assignments`, `endpoints`, `probes`, `meta`, `reachability`. Migrations add:
 
@@ -332,6 +358,7 @@ older *or* newer than the binary expects.
 | 28 | the slim endpoint check record in `reachability.raw_json`; no table change (the version keeps an older build, which would read the column as JSON, off the store) |
 | 29 | what the earlier sampling and the second vantage's confirmations left goes: the indexes `probes_sampling_started` and `probes_cleared`, and the empty table `probe_confirmations` with its indexes (the migration refuses if it holds a row; the columns `probes.cleared_by` and `confirmed_by` stay, unread, since dropping a column rewrites the table). `must_serve_until_ambiguous` is set from the records where they say so, and written on every insert. No row is rewritten but those; an older build refuses the store, and the way back is a copy taken before (`deploy/README.md`, "Going back past schema 29") |
 | 30 | `failed_txs` and its index `failed_txs_tx (tx_hash, height, tx_index)`: one row per failed inclusion from `failed_txs.jsonl`, its line verbatim, read only by the transaction lookup and in no count, rollup, slim encoder or aggregate. Pure DDL: `meta.migration_rewrites` does not move, so the day partials are kept, but the schema version does, so the endorsement ledger, which is keyed on it, is built again once (and on the way back only if the kept schema-29 ledger is not put back). The way back deletes the version row and the file's `ingest_cursors` row (`deploy/README.md`, "Going back past schema 30") |
+| 31 | the transaction page: `tx_costs` and its index `tx_costs_tx (tx_hash, height, tx_index)`, one row per line of `tx_costs.jsonl`, its line verbatim, keyed `(height, tx_index)`; `failed_tx_msgs`, one row per top-level Fibre message of a final failure, by the account a list names it under (a set-host by its operator address); and the indexes `payments_tx (tx_hash, msg_index)` and `host_events_at (from_height, from_tx_index, cons_address)`, by which `/v1/txs/{hash}` seeks a movement and a registration. Read only by `/v1/txs/{hash}`, the blob's `tx_cost` and a validator's `endpoint_history`; in no count, rollup, slim encoder or aggregate. Pure DDL: `meta.migration_rewrites` does not move, so the day partials are kept, but the schema version does, so the endorsement ledger is built again once (and on the way back only if the kept schema-30 ledger is not put back). `failed_tx_msgs` is written with each failure, in the same transaction, from the record `failed_txs` keeps for its key (never from a later line with the same key); the failures stored before 31 was applied get theirs from the collector's first pass (`store.FillFailedTxMsgs`, recorded in meta `failed_tx_msgs_from` as the version-31 row's `applied_at`), and again by itself after any way back and second upgrade, which applies 31 again. The way back deletes the version row and the `tx_costs.jsonl` cursor row (`deploy/README.md`, "Going back past schema 31") |
 
 **The slim record (migration 27, `store/slim.go`, `internal/slim`).** A row this
 build writes keeps in `raw_json` the slim form of its record: every field of the
@@ -662,7 +689,10 @@ GET /v1/network               the window summary
 GET /v1/validators            one row per validator (last_served_at: the newest reading whose rows
                               came back verified, which the overview map names)
 GET /v1/validators/{addr}     one validator, four windows (addr: consensus hex or
-                              valcons1…, operator valoper1…, account address)
+                              valcons1…, operator valoper1…, account address); endpoint_history,
+                              its Fibre endpoint registrations on chain, newest first (the newest
+                              50, then the endpoint it had when the record began), failed ones
+                              signed by its current operator address among them; not on ?as_of=
 GET /v1/validators/{addr}/status
                               the few figures an alert needs, from the same snapshot row
                               (?window=; ?as_of= is refused)
@@ -677,7 +707,12 @@ GET /v1/blobs                 publication list (?limit=, ?offset=, ?before_heigh
                               inclusion, with the reason and failing message where the app
                               version is pinned
 GET /v1/blobs/{hash}          one blob: its reading, each assigned validator's service word, the rows
-                              (?rows=1 adds each reading's row_indices and rows_sha256)
+                              (?rows=1 adds each reading's row_indices and rows_sha256); tx_cost,
+                              the settlement transaction's gas and fee when recorded
+GET /v1/txs/{hash}            one Fibre transaction by its hash, successful or failed: its block,
+                              messages, gas and fee, what it did or asked for (effect, by kind)
+                              and the pages it touches (related); a success wins over a failure
+                              of the same hash
 GET /v1/namespaces            namespaces by newest settlement; one answer computed for every reader
                               and kept for a short while, not one per request
 GET /v1/probes                raw rows (?blob=, ?validator=, ?at=, ?class=, ?served=no, ?since=,
@@ -711,7 +746,10 @@ cache kept would say "not indexed yet" for 15 seconds after the blob was on
 record. A `?tx=` answer that carries a `failed_tx` with `ante_passed` keeps
 the default: the fee and every signer's sequence were taken, so the same
 transaction can never be in a block again and the answer cannot change.
-Any other failed answer is `no-store`.
+Any other failed answer is `no-store`. `/v1/txs/{hash}` keeps the default
+for a success and a final failure, and is `no-store` for a failure that was
+not final (its bytes could still take effect in a later block) and for a
+404.
 
 **Validator addresses.** Every row is keyed by the consensus address in
 lower-case hex, and the answers keep naming validators by it (`address`,
@@ -897,14 +935,19 @@ command to, and `NEXT_PUBLIC_SELF_VALIDATOR` (below).
 Every page's header and footer read `/v1/meta` and `/v1/tip`. The header's
 search asks for a blob identifier that found nothing again each time
 `/v1/tip`'s `latest_blob` changes, while its panel is open, for two minutes
-after the identifier was first asked.
+after the identifier was first asked. A hash that names no blob is then
+asked of `/v1/txs/{hash}` (again on the same tip changes while it is not on
+record), and a Fibre transaction it finds, successful or failed, opens
+`/tx/`; a failure `/v1/blobs?tx=` already gives as final opens `/tx/`
+without that second request.
 
 | route | reads |
 |---|---|
 | `/` | `/v1/validators` (the table, the map, and the notice when the API does not answer; the map's "served last" line is the rows' `last_served_at`), `/v1/market?window=all` (Available: the network's reading totals, `readings`, available over available plus unavailable), `/v1/blobs` (the recent blobs: as soon as `/v1/tip`'s `latest_blob` names a blob the grid does not hold, and every 30 s besides) |
-| `/validator/?addr=` | `/v1/validators/{addr}` |
+| `/validator/?addr=` | `/v1/validators/{addr}`; its history area is two tabs when the answer carries `endpoint_history`, Latest checks and Endpoint history (`?tab=endpoints`), each registration's row opening `/tx/` when its transaction is on record |
 | `/blobs/` | `/v1/blobs` (the first page again as the chain moves), `/v1/namespaces`, `/v1/market` (the period), `/v1/publishers` (once its filter opens); its search (`?blob=`) asks 64 hex as `/v1/blobs/{hash}`, `?commitment=` and `?tx=`, and a blob ID as `?commitment=` |
-| `/blob/?hash=`, `?id=`, `?tx=` | `/v1/blobs/{hash}`; a blob ID (`?id=`) or a settlement transaction (`?tx=`) is found first with `/v1/blobs?commitment=` or `?tx=`, and several matches open the Blobs list of them; a blob not on record yet is asked for again each time `/v1/tip`'s `latest_blob` changes, and every 30 s. A `?tx=` answer with a `failed_tx` shows the failed transaction (its block, reason, code, messages, gas, fee and the error) and stops asking: it is the answer, final or not |
+| `/blob/?hash=`, `?id=`, `?tx=` | `/v1/blobs/{hash}`; a blob ID (`?id=`) or a settlement transaction (`?tx=`) is found first with `/v1/blobs?commitment=` or `?tx=`, and several matches open the Blobs list of them; a blob not on record yet is asked for again each time `/v1/tip`'s `latest_blob` changes, and every 30 s. A `?tx=` answer with a `failed_tx` renders the transaction page (`/v1/txs/{hash}`, below; with an API before that route, the `failed_tx` itself) and stops asking: it is the answer, final or not. The blob's Gas and Transaction fee are its `tx_cost`, and the transaction hash in its mast opens `/tx/` |
+| `/tx/?hash=` | `/v1/txs/{hash}`: one Fibre transaction, successful or failed, its block, messages, gas and fee, what it did or asked for, the error, and the blob, publisher or validator it touches |
 | `/publishers/` | `/v1/market`, `/v1/publishers` |
 | `/publisher/?addr=` | `/v1/publishers/{addr}` |
 | `/methodology/` | `/v1/params` (the protocol-parameters section; the rest is static) |

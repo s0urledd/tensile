@@ -1,6 +1,9 @@
 import { type Blob, int } from "@/lib/api";
 import type { Tier } from "@/components/Verdict";
 
+/** what recon() and lane() read of a blob: a Blobs list row, a blob page, or a transaction page's related blob */
+export type Readable = Pick<Blob, "reconstructable" | "must_serve_until">;
+
 /**
  * A blob's status as Tensile read it, as a mark and a word, in the same
  * channel the verdicts use. It is celestia-app's client's own result:
@@ -10,7 +13,7 @@ import type { Tier } from "@/components/Verdict";
  * its Tensile lane (lane() below); the overview's recent blobs carry no
  * status, since every blob there is still in its retention window.
  */
-export function recon(b: Blob): { word: string; tier: Tier; title: string } {
+export function recon(b: Readable): { word: string; tier: Tier; title: string } {
   const r = b.reconstructable;
   const over = new Date(b.must_serve_until).getTime() <= Date.now();
   if (!r || (r.status !== "yes" && r.status !== "no")) {
@@ -40,7 +43,7 @@ function when(s: string): string {
  * Tensile checked it, or "not read" once the window has closed without a
  * reading.
  */
-export function lane(b: Blob): { word: string; tier: Tier; title: string } {
+export function lane(b: Readable): { word: string; tier: Tier; title: string } {
   const r = b.reconstructable;
   const read = !!r && (r.status === "yes" || r.status === "no");
   const end = new Date(b.must_serve_until).getTime();

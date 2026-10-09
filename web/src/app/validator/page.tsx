@@ -2,7 +2,7 @@
 import { Fragment, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useApi, type ValidatorDetail, type ValidatorReading, type Window, type RecordThrough, type Obligations, type Meta, type EndpointCheck, int, pctOf, bytes, utcWord, dateUTC, whenUTC, shortMid, notFound, rateTone, notCountedText, badRequest, MIN_RATED, API_BASE, provisionalNow, type ProvisionalFaults, type NetworkReference,
+import { useApi, type EndpointEvent, type ValidatorDetail, type ValidatorReading, type Window, type RecordThrough, type Obligations, type Meta, type EndpointCheck, int, pctOf, bytes, utcWord, dateUTC, whenUTC, shortMid, notFound, rateTone, notCountedText, badRequest, MIN_RATED, API_BASE, provisionalNow, type ProvisionalFaults, type NetworkReference,
   endOfWindow, fullReading, ownGap, foreignRows, attemptsOf, judged, askedTimes, FULL_READ_SINCE_WORDS, ago } from "@/lib/api";
 import { useWindow, WindowSwitch, periodName } from "@/lib/window";
 import StatusLine from "@/components/StatusLine";
@@ -13,6 +13,7 @@ import { unit } from "@/components/Unit";
 import { age, monthDayTime } from "@/components/BlobsDeck";
 import { openRow } from "@/lib/row";
 import { CopyMark } from "@/components/Ledger";
+import EndpointHistory, { endpointTxCount } from "@/components/EndpointHistory";
 import Avatar from "@/components/Avatar";
 import { endpoint } from "@/components/Validators";
 import { HostingFact } from "@/components/Hosting";
@@ -39,7 +40,14 @@ type Detail = {
   network_reference?: NetworkReference;
   /** endorsed shards whose retention window has not ended, from the chain's record */
   in_retention_window?: number;
+  /** its Fibre endpoint registrations on chain, newest first, failed ones signed by its operator key among them; absent from an API before it */
+  endpoint_history?: EndpointEvent[];
+  /** more registrations than the answer carries */
+  endpoint_history_truncated?: boolean;
 };
+
+/** the history area's two views: the latest checks of its rows, and its endpoint registrations */
+type Tab = "checks" | "endpoints";
 
 /** a fraction as the site prints a share */
 const pctFrac = (f: number) => (f >= 1 ? "100%" : `${(f * 100).toFixed(1)}%`);
@@ -304,11 +312,22 @@ function Strip({ cells, slots }: { cells: Cell[]; slots: number }) {
 }
 
 function Page() {
-  const asked = useSearchParams().get("addr") ?? "";
+  const params = useSearchParams();
+  const asked = params.get("addr") ?? "";
   // the address as the API takes it, or none: a value that is no validator's address never reaches the API's path
   const addr = validatorAddr(asked) ?? "";
   const [win, setWin] = useWindow("24h");
   const [onlyNotServed, setOnlyNotServed] = useState(false);
+  // the history area's view, kept in the address (?tab=endpoints) so a link opens on it
+  const [tab, setTabRaw] = useState<Tab>(() => (params.get("tab") === "endpoints" ? "endpoints" : "checks"));
+  const setTab = useCallback((t: Tab) => {
+    setTabRaw(t);
+    try {
+      const u = new URL(window.location.href);
+      if (t === "endpoints") u.searchParams.set("tab", t); else u.searchParams.delete("tab");
+      window.history.replaceState(null, "", u.pathname + u.search + u.hash);
+    } catch { /* fine */ }
+  }, []);
   const router = useRouter();
   const onOpen = useCallback((e: React.MouseEvent, href: string) => {
     // a plain click stays in the app; a modified or middle click is the browser's
@@ -462,6 +481,11 @@ function Page() {
     : `${int(o.served)} of ${int(decided)} counted readings served.`)
     + (data.rolled_up ? ` Before ${data.rolled_up.raw_from}, from the daily rollup.` : "");
   const visible = shown;
+  // its endpoint registrations, when the API gives them: the tab counts its transactions (the host before Tensile's
+  // record, or a change in a record gap, is none)
+  const endpoints = data.endpoint_history && data.endpoint_history.length > 0 ? data.endpoint_history : null;
+  const endpointTxs = endpoints ? endpointTxCount(endpoints) : 0;
+  const view: Tab = endpoints ? tab : "checks";
 
   return (
     <>
@@ -635,8 +659,16 @@ function Page() {
       <section id="evidence" className="listing lg-list vd-list">
         <div className="list-head">
           <div className="pb-lh">
-            <h2 className="pb-th">Latest checks</h2>
-            {probes.length > 0 && (
+            {/* two views of its history, as tabs in the heading's own type: the latest checks of its rows, and its endpoint
+                registrations on chain (with an API before them, the checks alone, under their heading) */}
+            {endpoints
+              ? <div className="vd-tabs" role="tablist" aria-label="history">
+                <button type="button" role="tab" id="tab-checks" className="pb-th vd-tab" aria-selected={view === "checks"} aria-controls="history" onClick={() => setTab("checks")}>Latest checks</button>
+                <button type="button" role="tab" id="tab-endpoints" className="pb-th vd-tab" aria-selected={view === "endpoints"} aria-controls="history" onClick={() => setTab("endpoints")}
+                  title="Its Fibre endpoint registrations on chain">Endpoint history<span className="n">{int(endpointTxs)}</span></button>
+              </div>
+              : <h2 className="pb-th">Latest checks</h2>}
+            {view === "checks" && probes.length > 0 && (
               <div className="seg pb-kinds" role="group" aria-label="filter">
                 <button type="button" aria-pressed={!onlyNotServed} onClick={() => setFilter(false)}>All{" "}<span className="n">{int(probes.length)}</span></button>
                 <button type="button" aria-pressed={onlyNotServed} onClick={() => setFilter(true)}>Not served{" "}<span className="n">{int(notServedRows.length)}</span></button>
@@ -644,6 +676,12 @@ function Page() {
             )}
           </div>
         </div>
+        {view === "endpoints" && endpoints
+          ? <div id="history" role="tabpanel" aria-labelledby="tab-endpoints">
+            <p className="vd-scope">Fibre endpoint registrations on chain, newest first. A failed one changed nothing.</p>
+            <EndpointHistory rows={endpoints} current={v.host} truncated={data.endpoint_history_truncated} />
+          </div>
+          : <div id="history" role={endpoints ? "tabpanel" : undefined} aria-labelledby={endpoints ? "tab-checks" : undefined}>
         <p className="vd-scope">The newest checks, whatever the period selected. The period sets the figures above.
           {onlyNotServed && broken > nsInPeriod && <> {int(broken)} not served in the period ({per}), {int(nsInPeriod)} of them among these checks. <a href={notServedHref}>Every one in the API →</a></>}</p>
         <div className="lg-tw">
@@ -711,6 +749,7 @@ function Page() {
               title={data.recent_probes_truncated ? "The newest readings are here; every one is in the API." : "Every reading, in the API."}>Full history →</a>
           </span>
         </div>
+          </div>}
       </section>
     </>
   );

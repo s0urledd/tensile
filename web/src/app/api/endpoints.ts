@@ -524,7 +524,7 @@ export const GROUPS: Group[] = [
         id: "validator",
         path: "/v1/validators/{addr}",
         summary: "One validator's service, endorsements, load and newest readings.",
-        desc: "`windows` repeats the service counts for 24h, 7d, 30d and all. `recent_probes` holds the newest 50 requests, not-probed ones left out; `attempt` 1 or 2 is a request made again after an answer that did not serve.",
+        desc: "`windows` repeats the service counts for 24h, 7d, 30d and all. `recent_probes` holds the newest 50 requests, not-probed ones left out; `attempt` 1 or 2 is a request made again after an answer that did not serve. `endpoint_history` lists its Fibre endpoint registrations on chain, newest first, the newest 50 at most, then the endpoint it had when Tensile's record began; a `failed` one was signed by its operator address and changed nothing.",
         params: [validatorAddr, windowParam, asOf],
         errors: "404 when no validator is on record at the address.",
         example: EX_VALIDATOR,
@@ -592,7 +592,7 @@ export const GROUPS: Group[] = [
         id: "blob",
         path: "/v1/blobs/{hash}",
         summary: "One blob: availability, charge, validators with rows, and readings.",
-        desc: "The blob carries `settlement_tx_hash` and `blob_version`, as on /v1/blobs. `reconstructable.status` is yes (Available), no (Unavailable), pending, not_read or unknown. Each assignment's `service` is served, not_served, in_retention_window (until the window closes; `probes` carry the reading's result once it is in) or deadline_unverified.",
+        desc: "The blob carries `settlement_tx_hash` and `blob_version`, as on /v1/blobs. `reconstructable.status` is yes (Available), no (Unavailable), pending, not_read or unknown. Each assignment's `service` is served, not_served, in_retention_window (until the window closes; `probes` carry the reading's result once it is in) or deadline_unverified. `tx_cost` is the settlement transaction's own gas and fee, when Tensile recorded them.",
         params: [
           { name: "hash", in: "path", type: "string", required: true, desc: "The blob's promise hash, 64 hex characters.", example: BLOB },
           rows,
