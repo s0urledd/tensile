@@ -491,7 +491,7 @@ func TestCandidates(t *testing.T) {
 // A backoff doubles from a second to half a minute, and is at least 10 s
 // after a 429.
 func TestBackoff(t *testing.T) {
-	plain := fmt.Errorf("post failed: connection refused")
+	plain := fmt.Errorf("block_results 1142900: post failed: connection refused")
 	rationed := fmt.Errorf("error in json rpc client, with http response metadata: (Status: 429 Too Many Requests, Protocol HTTP/1.1)")
 	for _, c := range []struct {
 		a    int

@@ -166,7 +166,7 @@ func backoff(a int, err error) time.Duration {
 	if a < 5 {
 		d = time.Second << a
 	}
-	if strings.Contains(err.Error(), "429") && d < 10*time.Second {
+	if strings.Contains(err.Error(), "429 Too Many Requests") && d < 10*time.Second {
 		d = 10 * time.Second
 	}
 	return d
