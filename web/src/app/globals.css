@@ -1768,7 +1768,7 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
    and the publisher's chip); the namespace takes the rest */
 /* the blob column holds the blob ID's first and last six and its copy button; the fee ("23.69 TIA" at most) and
    Tensile's lane ("retention window") at their widest, so the namespace keeps its 102px at the page's width */
-.lg-t th.c-h { width: 96px; } .lg-t th.c-t { width: 206px; } .lg-t th.c-b { width: 140px; } .lg-t th.c-p { width: 166px; } .lg-t th.c-sz { width: 88px; } .lg-t th.c-fee { width: 86px; }
+.lg-t th.c-h { width: 96px; } .lg-t th.c-t { width: 206px; } .lg-t th.c-b { width: 122px; } .lg-t th.c-p { width: 148px; } .lg-t th.c-sz { width: 88px; } .lg-t th.c-fee { width: 86px; }
 .lg-t th.c-e { width: 128px; } .lg-t th.gap { width: 10px; } .lg-t th.tn { width: 114px; }
 .lg-t tr.row { position: relative; cursor: pointer; }
 .lg-t tr.row td { transition: background var(--dur); }
