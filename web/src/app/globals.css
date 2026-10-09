@@ -1869,7 +1869,7 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
   .lg-t.lg-st th.c-st, .lg-t.lg-st td.c-st { padding-left: 23px; }
 }
 /* narrower, as the list without the column narrows (below): the publisher's chip without the address's prefix, then the
-   time without its age, each column keeping today's room for what it still holds */
+   time without its age, each column keeping the room that list gives what it still holds */
 @media (min-width: 1081px) and (max-width: 1220px) {
   .lg-t.lg-st th.c-p { width: 98px; }
 }

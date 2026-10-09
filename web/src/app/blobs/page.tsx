@@ -18,11 +18,8 @@ import { useFind, type Found } from "@/lib/blobfind";
 /** rows per page of the blob list */
 const SIZE = 25;
 
-/** what the list's rows are: settlements, and the blob payments that failed among them when there are any */
-const rowsNoun = (total: number, failed: number) =>
-  failed === 0 ? (total === 1 ? "settlement" : "settlements")
-  : failed === total ? (total === 1 ? "failed payment" : "failed payments")
-  : "settlements and failed payments";
+/** what the list's rows are: settlements, or blob payments once some that failed stand among them */
+const rowsNoun = (total: number, failed: number) => (failed === 0 ? "settlement" : "blob payment") + (total === 1 ? "" : "s");
 
 /** the last page /v1/blobs serves: its offset stops at 100,000 */
 const MAX_PAGE = Math.floor(100000 / SIZE) + 1;
