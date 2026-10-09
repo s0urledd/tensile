@@ -131,7 +131,8 @@ derived index of them.
 | `tx_costs.jsonl` | what a successful Fibre transaction cost | `time` |
 
 `failed_txs.jsonl` is read only by the transaction lookups (`/v1/blobs?tx=`
-and `/v1/txs/{hash}`, section 9) and a validator's endpoint history (a
+and `/v1/txs/{hash}`, section 9), the Blobs list's failed blob payments
+(`/v1/blobs?include_failed=1`) and a validator's endpoint history (a
 final failed registration signed by its current operator address): a
 transaction that failed in a block settled nothing, so it is
 in no count, rollup or figure, and `publications.jsonl` and
@@ -707,7 +708,8 @@ GET /v1/blobs                 publication list (?limit=, ?offset=, ?before_heigh
                               failed Fibre transaction, asked by its hash alone (?tx= with no
                               other filter, and no publication carrying it): its newest failed
                               inclusion, with the reason and failing message where the app
-                              version is pinned
+                              version is pinned; ?include_failed=1 lists the failed blob payments
+                              (status failed, failed_total) among the blobs (status success)
 GET /v1/blobs/{hash}          one blob: its reading, each assigned validator's service word, the rows
                               (?rows=1 adds each reading's row_indices and rows_sha256); tx_cost,
                               the settlement transaction's gas and fee when recorded
@@ -751,7 +753,8 @@ transaction can never be in a block again and the answer cannot change.
 Any other failed answer is `no-store`. `/v1/txs/{hash}` keeps the default
 for a success and a final failure, and is `no-store` for a failure that was
 not final (its bytes could still take effect in a later block) and for a
-404.
+404; `/v1/blobs?include_failed=1` is `no-store` for a page holding such a
+failure.
 
 **Validator addresses.** Every row is keyed by the consensus address in
 lower-case hex, and the answers keep naming validators by it (`address`,
@@ -948,7 +951,7 @@ without that second request.
 |---|---|
 | `/` | `/v1/validators` (the table, the map, and the notice when the API does not answer; the map's "served last" line is the rows' `last_served_at`), `/v1/market?window=all` (Available: the network's reading totals, `readings`, available over available plus unavailable), `/v1/blobs` (the recent blobs: as soon as `/v1/tip`'s `latest_blob` names a blob the grid does not hold, and every 30 s besides) |
 | `/validator/?addr=` | `/v1/validators/{addr}`; its history area is two tabs when the answer carries `endpoint_history`, Latest checks and Endpoint history (`?tab=endpoints`), each registration's row opening `/tx/` when its transaction is on record |
-| `/blobs/` | `/v1/blobs` (the first page again as the chain moves), `/v1/namespaces`, `/v1/market` (the period), `/v1/publishers` (once its filter opens); its search (`?blob=`) asks 64 hex as `/v1/blobs/{hash}`, `?commitment=` and `?tx=`, and a blob ID as `?commitment=` |
+| `/blobs/` | `/v1/blobs?include_failed=1` (the first page again as the chain moves; a failed payment's row opens `/tx/`), `/v1/namespaces`, `/v1/market` (the period), `/v1/publishers` (once its filter opens); its search (`?blob=`) asks 64 hex as `/v1/blobs/{hash}`, `?commitment=` and `?tx=`, and a blob ID as `?commitment=` |
 | `/blob/?hash=`, `?id=`, `?tx=` | `/v1/blobs/{hash}`; a blob ID (`?id=`) or a settlement transaction (`?tx=`) is found first with `/v1/blobs?commitment=` or `?tx=`, and several matches open the Blobs list of them; a blob not on record yet is asked for again each time `/v1/tip`'s `latest_blob` changes, and every 30 s. A `?tx=` answer with a `failed_tx` renders the transaction page (`/v1/txs/{hash}`, below; with an API before that route, the `failed_tx` itself) and stops asking: it is the answer, final or not. The blob's Gas and Transaction fee are its `tx_cost`, and the transaction hash in its mast opens `/tx/` |
 | `/tx/?hash=` | `/v1/txs/{hash}`: one Fibre transaction, successful or failed, its block, messages, gas and fee, what it did or asked for, the error, and the blob, publisher or validator it touches |
 | `/publishers/` | `/v1/market`, `/v1/publishers` |

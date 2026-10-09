@@ -191,6 +191,17 @@ func TestHotQueriesUseIndexes(t *testing.T) {
 	} {
 		cases, noSort[tc.name] = append(cases, tc), true
 	}
+	// The Blobs list's failed blob payments (failedblobs.go): failed_txs
+	// read on from a rowid, sought by the rowid in its order, its top from
+	// the rowid b-tree's last entry; and the blobs before a failure, a
+	// bounded range of publications_settlement, never a walk.
+	cases = append(cases,
+		c{"failed payments' top", failedTxsTopSQL, nil, []string{"SEARCH failed_txs"}},
+		c{"failed payments since", failedTxsSinceSQL, []any{0, 10}, []string{"SEARCH failed_txs USING INTEGER PRIMARY KEY (rowid>? AND rowid<?)"}},
+		c{"blobs before a failed payment", blobsBeforeSQL(""), []any{1, 1, 0, 25}, []string{"SEARCH publications USING INDEX publications_settlement (settlement_height>?)"}},
+		c{"blobs before a failed payment in a namespace", blobsBeforeSQL(blobInNamespaceSQL), []any{"ns", 1, 1, 0, 25}, []string{"SEARCH publications USING INDEX"}},
+	)
+	noSort["failed payments since"] = true
 	// The tip's newest blob, asked up to four times a second whoever is
 	// reading: the highest height from the index's last entry, then that
 	// block's rows, never a walk of publications.

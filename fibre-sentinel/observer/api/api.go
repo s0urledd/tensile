@@ -123,6 +123,9 @@ type Server struct {
 	faults      rowFaults
 	namespaces  namespaceCache
 	exportIndex exportIndexCache
+	// failedPays is the failed blob payments the Blobs list can show among
+	// the blobs (failedblobs.go).
+	failedPays failedPays
 	// lanes is the keepers' pace, and keepers the schedule they run (see
 	// snapshot.go).
 	lanes   lanes
@@ -257,6 +260,11 @@ func NewWithVantage(st *store.Store, info VantageInfo, log *scan.Logger, opts ..
 		defer cancel()
 		if _, err := s.blobRows(ctx, "", blobPageDefault); err != nil && log != nil {
 			log.Printf("warming the blob page: %v", err)
+		}
+		// and the failed blob payments the Blobs list reads among them
+		// (failedblobs.go)
+		if err := s.warmFailedPays(ctx); err != nil && log != nil {
+			log.Printf("reading the failed blob payments: %v", err)
 		}
 	}()
 	// And the day partials, sealed in the background as days end.
@@ -3444,6 +3452,10 @@ func (s *Server) detailReadings(ctx context.Context, addr string, win Window, sp
 // ---- blobs ----
 
 type blobRow struct {
+	// Status is "success" on /v1/blobs?include_failed=1, where the failed
+	// blob payments stand among the blobs (failedblobs.go), and absent
+	// everywhere else.
+	Status      string `json:"status,omitempty"`
 	PromiseHash string `json:"promise_hash"`
 	Commitment  string `json:"commitment"`
 	Namespace   string `json:"namespace"`
@@ -4073,6 +4085,7 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 		conds, args = append(conds, "("+paid+")"), append(args, paidArgs...)
 	}
 	where := strings.Join(conds, " AND ")
+	var cursor *[2]int64
 	if before := q.Get("before_height"); before != "" {
 		// The cursor is (height, tx_index) because a block can carry several
 		// publications: "< height" alone drops the rest of the block the page
@@ -4096,6 +4109,7 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 		}
 		where += `(settlement_height < ? OR (settlement_height = ? AND settlement_tx_index < ?))`
 		args = append(args, h, h, idx)
+		cursor = &[2]int64{h, idx}
 	}
 	// offset: numbered pages over the same order. total counts every
 	// publication the filters select, cursor included, so a page reads
@@ -4108,6 +4122,21 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		offset = o
+	}
+	// include_failed: the failed blob payments among the blobs, in their
+	// order (failedblobs.go). A lookup by commitment or transaction answers
+	// as it does without it.
+	switch q.Get("include_failed") {
+	case "", "0":
+	case "1":
+		if commitment == "" && tx == "" {
+			s.blobsWithFailed(w, r, blobsAsk{where: where, args: args, limit: limit, offset: offset,
+				namespace: strings.ToLower(q.Get("namespace")), publisher: publisher, before: cursor})
+			return
+		}
+	default:
+		writeErr(w, 400, "include_failed must be 0 or 1")
+		return
 	}
 	blobs, err := s.blobRowsAt(r.Context(), where, limit, offset, args...)
 	if err != nil {

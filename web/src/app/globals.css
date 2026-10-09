@@ -1850,6 +1850,39 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
 @keyframes lg-fresh { 0% { background: color-mix(in srgb, var(--accent) 16%, var(--paper)); } 100% { background: var(--paper); } }
 @keyframes lg-fresh-tn { 0% { background: color-mix(in srgb, var(--accent) 16%, var(--paper)); } 100% { background: var(--obs-bg); } }
 
+/* the Blobs list's Status column (.lg-st): how each blob payment came out on chain, Success with the green dot, Failed
+   with the red one (.st, as a validator's endpoint history says it). Its 84px ("Success" 52.3px, its dot hung 15px into
+   the padding, 8px a side) come from the other columns, so nothing is cut or shortened: the gutters, 12 -> 8px a side
+   (24 -> 16px between columns), the Endorsed meter's track, 44 -> 30px, and each column down to its widest content and
+   its padding; the first column's 18px inset and Tensile's lane (10px a side, 114px) as they are. At the page's 1118px:
+   Height 88 · Settled 197 · TX hash 118 · Namespace the rest, 89 · Publisher 157 · Blob size 80 · Fee paid 77 ·
+   Status 84 · Endorsed 104 · gap 10 · Tensile 114. A list without the column (one publisher's) keeps its own widths */
+@media (min-width: 1081px) {
+  .lg-t.lg-st th, .lg-t.lg-st td { padding-left: 8px; padding-right: 8px; }
+  .lg-t.lg-st th:first-child, .lg-t.lg-st td:first-child { padding-left: 18px; }
+  .lg-t.lg-st .gap { padding: 0; }
+  .lg-t.lg-st .tn { padding-left: 10px; padding-right: 10px; }
+  .lg-t.lg-st th.c-h { width: 88px; } .lg-t.lg-st th.c-t { width: 197px; } .lg-t.lg-st th.c-b { width: 118px; } .lg-t.lg-st th.c-p { width: 157px; }
+  .lg-t.lg-st th.c-sz { width: 80px; } .lg-t.lg-st th.c-fee { width: 77px; } .lg-t.lg-st th.c-st { width: 84px; } .lg-t.lg-st th.c-e { width: 104px; }
+  .lg-t.lg-st .em { width: 30px; }
+  /* the dot hangs in the cell's padding (8px and its 15), so every word starts on one line under the head */
+  .lg-t.lg-st th.c-st, .lg-t.lg-st td.c-st { padding-left: 23px; }
+}
+/* narrower, as the list without the column narrows (below): the publisher's chip without the address's prefix, then the
+   time without its age, each column keeping today's room for what it still holds */
+@media (min-width: 1081px) and (max-width: 1220px) {
+  .lg-t.lg-st th.c-p { width: 98px; }
+}
+@media (min-width: 1081px) and (max-width: 1160px) {
+  .lg-t.lg-st th.c-t { width: 124px; }
+}
+/* a phone's card of a failed payment: Failed where a blob's endorsement stands, its dot beside it, no longer hung */
+@media (max-width: 1080px) {
+  .lg-t.lg-st tr.row.xf td.c-e { display: none; }
+  .lg-t.lg-st tr.row.xf td.c-st { display: flex; align-items: center; height: 20px; grid-area: e; justify-self: end; padding: 0; }
+  .lg-t.lg-st td.c-st .st .dot { margin: 0 7px 0 0; }
+}
+
 /* the namespaces view */
 .lg-nss th.n-nm { width: 26%; } .lg-nss th.n-pub { width: 10%; } .lg-nss th.n-n { width: 11%; } .lg-nss th.n-sz { width: 12%; } .lg-nss th.n-24 { width: 13%; } .lg-nss th.n-first { width: 14%; }
 .lg-nss th.n-first, .lg-nss td.n-first { padding-left: 28px; }
