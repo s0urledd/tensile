@@ -1766,9 +1766,10 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
 .lg-t tbody tr:first-child td { border-top: 0; }
 /* a column whose cells are always about as wide is as wide as they are (the time at its widest: "May 28 20:48:38 23 h 59 min",
    and the publisher's chip); the namespace takes the rest */
-/* the blob column holds the blob ID's first and last six and its copy button; the fee ("23.69 TIA" at most) and
-   Tensile's lane ("retention window") at their widest, so the namespace keeps its 102px at the page's width */
-.lg-t th.c-h { width: 96px; } .lg-t th.c-t { width: 206px; } .lg-t th.c-b { width: 122px; } .lg-t th.c-p { width: 148px; } .lg-t th.c-sz { width: 88px; } .lg-t th.c-fee { width: 86px; }
+/* the transaction column holds the hash's first six and last four and its copy button, the publisher's its chip and
+   its copy button, both whole; the fee ("23.69 TIA" at most) and Tensile's lane ("retention window") at their widest,
+   so the namespace keeps its 99px at the page's width */
+.lg-t th.c-h { width: 96px; } .lg-t th.c-t { width: 206px; } .lg-t th.c-b { width: 126px; } .lg-t th.c-p { width: 165px; } .lg-t th.c-sz { width: 88px; } .lg-t th.c-fee { width: 86px; }
 .lg-t th.c-e { width: 128px; } .lg-t th.gap { width: 10px; } .lg-t th.tn { width: 114px; }
 .lg-t tr.row { position: relative; cursor: pointer; }
 .lg-t tr.row td { transition: background var(--dur); }
@@ -1853,7 +1854,7 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
 
 /* a table narrower than the page at its widest: the publisher's chip without the address's prefix */
 @media (max-width: 1220px) {
-  .lg-t th.c-p { width: 110px; }
+  .lg-t th.c-p { width: 106px; }
   .lg-t .lg-who .hd { display: none; }
 }
 /* narrower still: the time without its age (the day and the second stay), so the namespace keeps room for its name */
