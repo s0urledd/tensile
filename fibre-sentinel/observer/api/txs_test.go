@@ -506,10 +506,11 @@ func TestTxPageFindsATransactionEveryWay(t *testing.T) {
 	}
 	tqWant(t, "related.blob", blob, "settlement_height", nil)
 
-	// A blob payment whose publication is not on record: its payment row.
+	// A blob payment whose publication is not on record: its payment row,
+	// which is its settlement, so the fee reads settled as a blob's does.
 	g = tqTx(t, f, tqSettleNoPub, "success", failedtx.KindSettlement)
 	if got, want := string(g.keys["effect"]), tqJSON(t, map[string]any{"promise_hash": strings.Repeat("ab", 32), "namespace": ctNamespace,
-		"blob_size": 1000, "fee_paid_utia": 5000}); got != want {
+		"blob_size": 1000, "fee_paid_utia": 5000, "settled": true, "timed_out": false}); got != want {
 		t.Errorf("settlement without its publication: effect %s, want %s", got, want)
 	}
 	if got, want := string(g.keys["related"]), tqJSON(t, txRelated{Publisher: ctPublisher}); got != want {

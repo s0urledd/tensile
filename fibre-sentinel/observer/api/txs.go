@@ -505,6 +505,10 @@ func (s *Server) txSuccess(ctx context.Context, a *txAnswer, pays []txPayment) e
 				a.Effect["namespace"] = p.Namespace
 				a.Effect["blob_size"] = p.BlobSize
 				a.Effect["fee_paid_utia"] = p.AmountUtia
+				// the row is this MsgPayForFibre's own settlement, blobCharge's
+				// settled; the chain takes no timeout of a promise it settled
+				a.Effect["settled"] = true
+				a.Effect["timed_out"] = false
 				a.Related.Publisher = p.Publisher
 				break
 			}
