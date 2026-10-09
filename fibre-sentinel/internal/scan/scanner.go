@@ -1633,6 +1633,13 @@ func (s *Scanner) processBlock(ctx context.Context, h int64) int {
 	// 4) Failed transactions that carried a Fibre message: failed_txs.jsonl,
 	//    for the transaction lookup only. Nothing above reads them.
 	s.recordFailedTxs(blk, res, h)
+
+	// 5) What each successful transaction that carried a Fibre message cost:
+	//    tx_costs.jsonl, for the transaction page and the blob page only.
+	//    Nothing above reads it.
+	if txCostsOn {
+		s.recordTxCosts(blk, res, h)
+	}
 	return recorded
 }
 
