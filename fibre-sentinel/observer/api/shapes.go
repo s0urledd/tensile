@@ -354,6 +354,10 @@ type validatorReading struct {
 	// and its own times do not say when the endorsement was given. Absent when
 	// the publication is not on record.
 	SettledAt string `json:"settled_at,omitempty"`
+	// SettlementTxHash is the transaction that settled the blob, which the
+	// page's TX hash column shows as the Blobs list does. Absent with
+	// SettledAt.
+	SettlementTxHash string `json:"settlement_tx_hash,omitempty"`
 }
 
 func validatorReadings(rows []probeRow) []validatorReading {

@@ -323,6 +323,8 @@ export type ValidatorReading = {
   raw_error?: string;
   /** when the blob settled, which is when the validator endorsed it; absent from an API before it was named */
   settled_at?: string;
+  /** the transaction that settled the blob, lower-case hex; absent with settled_at, and from an API before it was named */
+  settlement_tx_hash?: string;
   /**
    * what this request counts as for the validator: served; not_served (at a full reading, its last answer when none
    * served and none was Tensile's own gap or rows of the blob not its own; at an earlier one, rows that did not come

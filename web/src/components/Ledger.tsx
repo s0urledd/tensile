@@ -265,7 +265,7 @@ export function LedgerHead({ one, escrow = false, status = false }: { one: boole
     <thead>
       <tr>
         <th className="c-h">Height</th>
-        <th className="c-t">{one ? "Time" : "Settled"} <span className="per">(UTC)</span></th>
+        <th className="c-t">{one || status ? "Time" : "Settled"} <span className="per">(UTC)</span></th>
         <th className="c-b">TX hash</th>
         <th className="c-ns">Namespace</th>
         {!one && <th className="c-p">Publisher</th>}
@@ -273,7 +273,7 @@ export function LedgerHead({ one, escrow = false, status = false }: { one: boole
         {one
           ? <th className="c-fee num" title="What each transaction moved into the escrow (+) or out of it (−): a blob's fee, a deposit, a withdrawal paid out.">Amount</th>
           : <th className="c-fee num">Fee paid</th>}
-        {status && <th className="c-st">Status</th>}
+        {status && <th className="c-st">TX status</th>}
         <th className="c-e num" title="Share of voting power whose signature on the settlement verified. A settlement needs ⅔.">Endorsed <Frac /></th>
         <th className="gap" aria-hidden="true" />
         <th className="tn" title="Tensile's own reading of each blob, once, near the end of its retention window."><span><Eye />Tensile</span></th>

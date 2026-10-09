@@ -1865,8 +1865,9 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
   .lg-t.lg-st th.c-h { width: 88px; } .lg-t.lg-st th.c-t { width: 197px; } .lg-t.lg-st th.c-b { width: 118px; } .lg-t.lg-st th.c-p { width: 157px; }
   .lg-t.lg-st th.c-sz { width: 80px; } .lg-t.lg-st th.c-fee { width: 77px; } .lg-t.lg-st th.c-st { width: 84px; } .lg-t.lg-st th.c-e { width: 104px; }
   .lg-t.lg-st .em { width: 30px; }
-  /* the dot hangs in the cell's padding (8px and its 15), so every word starts on one line under the head */
-  .lg-t.lg-st th.c-st, .lg-t.lg-st td.c-st { padding-left: 23px; }
+  /* the dot hangs in the cell's padding (8px and its 15), so every word starts on one line; the head ("TX status",
+     62.6px) starts where the dots do, the only way it stands whole in the column */
+  .lg-t.lg-st td.c-st { padding-left: 23px; }
 }
 /* narrower, as the list without the column narrows (below): the publisher's chip without the address's prefix, then the
    time without its age, each column keeping the room that list gives what it still holds */
