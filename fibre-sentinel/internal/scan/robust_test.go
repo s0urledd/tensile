@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/failedtx"
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/txcost"
 )
 
 func TestLoadPublications_TornTailIgnored(t *testing.T) {
@@ -183,16 +184,17 @@ func wholeLines(t *testing.T, path string) int {
 
 // host_history.jsonl and param_uncertainty.jsonl are repaired before the
 // first append, as publications.jsonl and payments.jsonl are at open, and
-// failed_txs.jsonl is at open too (its seen-set is read there). A crash or
-// a full disk in the middle of a write leaves a partial last line; the next
-// record used to be written straight after it, and the two came out as one
-// line the collector cannot decode and skips: a range or a registration
-// the scanner never writes again.
+// failed_txs.jsonl and tx_costs.jsonl are at open too (their seen-sets are
+// read there). A crash or a full disk in the middle of a write leaves a
+// partial last line; the next record used to be written straight after it,
+// and the two came out as one line the collector cannot decode and skips: a
+// range or a registration the scanner never writes again.
 func TestTheSideRecordsAreRepairedBeforeTheFirstAppend(t *testing.T) {
 	dir := t.TempDir()
 	unc := filepath.Join(dir, "param_uncertainty.jsonl")
 	hosts := filepath.Join(dir, "host_history.jsonl")
 	failed := filepath.Join(dir, failedtx.FileName)
+	costs := filepath.Join(dir, txcost.FileName)
 	if err := os.WriteFile(unc, []byte(`{"schema_version":1,"id":"t:check_skipped:1-2"}`+"\n"+`{"schema_version":1,"id":"t:silent_chan`), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -200,6 +202,9 @@ func TestTheSideRecordsAreRepairedBeforeTheFirstAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(failed, []byte(`{"schema_version":1,"dedupe_key":"h1:0","height":1}`+"\n"+`{"schema_version":1,"dedupe_ke`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(costs, []byte(`{"schema_version":1,"dedupe_key":"h1:1","height":1}`+"\n"+`{"schema_version":1,"dedupe_ke`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	st, err := OpenStore(dir)
@@ -216,7 +221,13 @@ func TestTheSideRecordsAreRepairedBeforeTheFirstAppend(t *testing.T) {
 	if err := st.AppendFailedTx(failedtx.Record{SchemaVersion: failedtx.SchemaVersion, DedupeKey: failedtx.Key(2, 0), Height: 2, Code: 5, Codespace: "sdk"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{unc, hosts, failed} {
+	if err := st.AppendTxCost(txcost.Record{SchemaVersion: txcost.SchemaVersion, DedupeKey: txcost.Key(2, 1), Height: 2, TxIndex: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{unc, hosts, failed, costs} {
 		if n := wholeLines(t, path); n != 2 {
 			t.Fatalf("%s: %d lines, want the whole one before and the new one", filepath.Base(path), n)
 		}

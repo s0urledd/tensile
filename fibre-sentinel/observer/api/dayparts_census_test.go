@@ -124,6 +124,8 @@ var notReadTables = map[string]bool{
 	"host_events": true, "sampling_secrets": true, "probe_confirmations": true, "endpoint_hosting": true, "hosting_sources": true,
 	// the failed transactions (migration 30): read by the transaction lookup alone
 	"failed_txs": true,
+	// migration 31: read by /v1/txs, the blob page's tx_cost and endpoint_history alone
+	"tx_costs": true, "failed_tx_msgs": true,
 }
 
 var (

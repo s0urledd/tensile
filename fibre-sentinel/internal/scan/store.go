@@ -10,6 +10,7 @@ import (
 
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/failedtx"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/txcost"
 )
 
 // Store is the scanner's durable state on disk:
@@ -19,6 +20,9 @@ import (
 //	<dir>/payments.jsonl      one Payment (escrow movement) per line, append-only
 //	<dir>/failed_txs.jsonl    one failedtx.Record (a failed tx that carried a
 //	                          Fibre message) per line, append-only
+//	<dir>/tx_costs.jsonl      one txcost.Record (what a successful tx that
+//	                          carried a Fibre message cost) per line,
+//	                          append-only
 //
 // Restart safety: publications for a block are appended and fsynced BEFORE the
 // cursor in state.json advances past that block (atomic temp+rename). A crash in
@@ -36,10 +40,18 @@ import (
 // keys above the checkpoint, the only ones a restart can append again: it is
 // loaded for the heights above state.json's last_scanned_height and pruned
 // at every SaveState, so it stays bounded whatever the file holds.
+//
+// tx_costs.jsonl is written through record.Appender like publications.jsonl
+// and payments.jsonl, and fsynced at Sync(), before the checkpoint moves: a
+// line lost before the fsync is written again by the re-scan. It is not
+// rotated (not archived), and it is opened at its first line, so a store
+// that never sees a Fibre success leaves no file. Its seen-set is bounded
+// above the checkpoint like failed_txs.jsonl's.
 type Store struct {
 	dir      string
 	pubPath  string
 	payPath  string
+	costPath string
 	statePth string
 
 	pubFile  *record.Appender
@@ -47,11 +59,16 @@ type Store struct {
 	hostFile *os.File
 	uncFile  *os.File
 	failFile *os.File
+	// costFile is tx_costs.jsonl, opened at its first append.
+	costFile *record.Appender
 	seen     map[string]bool
 	paySeen  map[string]bool
 	// failSeen keys the failed_txs.jsonl lines above the checkpoint, by
 	// dedupe key, with their height (pruned by SaveState).
 	failSeen map[string]int64
+	// costSeen keys the tx_costs.jsonl lines above the checkpoint, by
+	// dedupe key, with their height (pruned by SaveState).
+	costSeen map[string]int64
 	// uncSeen keys the param-uncertainty lines this process already wrote,
 	// by (id, resolution). A range opened and later closed writes two
 	// lines under the same id, so the id alone would swallow the closing
@@ -214,11 +231,13 @@ func OpenStore(dir string) (*Store, error) {
 		dir:      dir,
 		pubPath:  filepath.Join(dir, "publications.jsonl"),
 		payPath:  filepath.Join(dir, "payments.jsonl"),
+		costPath: filepath.Join(dir, txcost.FileName),
 		statePth: filepath.Join(dir, "state.json"),
 		seen:     map[string]bool{},
 		paySeen:  map[string]bool{},
 		uncSeen:  map[string]bool{},
 		failSeen: map[string]int64{},
+		costSeen: map[string]int64{},
 	}
 	if err := s.loadSeen(); err != nil {
 		return nil, err
@@ -227,6 +246,9 @@ func OpenStore(dir string) (*Store, error) {
 		return nil, err
 	}
 	if err := s.loadFailSeen(); err != nil {
+		return nil, err
+	}
+	if err := s.loadCostSeen(); err != nil {
 		return nil, err
 	}
 	f, err := record.OpenAppender(s.pubPath)
@@ -344,15 +366,28 @@ func (s *Store) loadPaySeen() error {
 // a torn final line is cut first, and a whole line that does not decode
 // stops the open: the checkpoint never passes a failure the record lost.
 func (s *Store) loadFailSeen() error {
+	return s.loadKeysAbove(filepath.Join(s.dir, failedtx.FileName), "failed txs", s.failSeen)
+}
+
+// loadCostSeen is loadFailSeen for tx_costs.jsonl: the keys above the
+// checkpoint, read after a torn final line is cut; a whole line that does
+// not decode stops the open, naming the file and the line.
+func (s *Store) loadCostSeen() error {
+	return s.loadKeysAbove(s.costPath, "tx costs", s.costSeen)
+}
+
+// loadKeysAbove reads into seen the dedupe key and height of every line of
+// the record file at path above the checkpoint. what names the file in the
+// note of a torn tail cut.
+func (s *Store) loadKeysAbove(path, what string, seen map[string]int64) error {
 	var floor int64
 	if st, err := s.LoadState(); err == nil && st != nil {
 		floor = st.LastScannedHeight
 	}
-	path := filepath.Join(s.dir, failedtx.FileName)
 	if cut, err := TruncateTornTail(path); err != nil {
 		return fmt.Errorf("repair %s: %w", path, err)
 	} else if cut > 0 {
-		fmt.Fprintf(os.Stderr, "failed txs: truncated %d bytes of a torn final line in %s\n", cut, path)
+		fmt.Fprintf(os.Stderr, "%s: truncated %d bytes of a torn final line in %s\n", what, cut, path)
 	}
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
@@ -379,7 +414,7 @@ func (s *Store) loadFailSeen() error {
 			return fmt.Errorf("%s line %d: %w", path, n, err)
 		}
 		if r.Height > floor {
-			s.failSeen[r.DedupeKey] = r.Height
+			seen[r.DedupeKey] = r.Height
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -542,13 +577,59 @@ func (s *Store) FailedTxSeen(key string) bool {
 	return ok
 }
 
-// Sync fsyncs the publications and payments files.
+// AppendTxCost writes what one successful Fibre transaction cost to
+// tx_costs.jsonl (skipping a key already on record above the checkpoint) in
+// a single write, under the same crash rules as AppendPublication: not
+// fsynced per call; call Sync() before advancing the cursor. The file is
+// opened at its first line. The key is marked seen only once the line is
+// written, so a failed append is written again by the retry.
+func (s *Store) AppendTxCost(r txcost.Record) error {
+	if r.DedupeKey == "" {
+		return fmt.Errorf("tx cost without a dedupe key (h=%d tx=%d)", r.Height, r.TxIndex)
+	}
+	if _, ok := s.costSeen[r.DedupeKey]; ok {
+		return nil
+	}
+	b, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("marshal tx cost %s: %w", r.DedupeKey, err)
+	}
+	if s.costFile == nil {
+		f, err := record.OpenAppender(s.costPath)
+		if err != nil {
+			return fmt.Errorf("open %s: %w", s.costPath, err)
+		}
+		s.costFile = f
+	}
+	if _, err := s.costFile.Write(append(b, '\n')); err != nil {
+		return fmt.Errorf("write tx cost: %w", err)
+	}
+	if s.costSeen == nil {
+		s.costSeen = map[string]int64{}
+	}
+	s.costSeen[r.DedupeKey] = r.Height
+	return nil
+}
+
+// TxCostSeen reports whether a cost line with this dedupe key is on record
+// above the checkpoint.
+func (s *Store) TxCostSeen(key string) bool {
+	_, ok := s.costSeen[key]
+	return ok
+}
+
+// Sync fsyncs the publications, payments and tx costs files.
 func (s *Store) Sync() error {
 	if err := s.pubFile.Sync(); err != nil {
 		return fmt.Errorf("fsync publications: %w", err)
 	}
 	if err := s.payFile.Sync(); err != nil {
 		return fmt.Errorf("fsync payments: %w", err)
+	}
+	if s.costFile != nil {
+		if err := s.costFile.Sync(); err != nil {
+			return fmt.Errorf("fsync tx costs: %w", err)
+		}
 	}
 	return nil
 }
@@ -572,11 +653,16 @@ func (s *Store) SaveState(st PersistState) error {
 		_ = d.Sync()
 		d.Close()
 	}
-	// A restart now resumes after st.LastScannedHeight: no failed tx at or
-	// below it can be appended again.
+	// A restart now resumes after st.LastScannedHeight: no failed tx and no
+	// tx cost at or below it can be appended again.
 	for k, h := range s.failSeen {
 		if h <= st.LastScannedHeight {
 			delete(s.failSeen, k)
+		}
+	}
+	for k, h := range s.costSeen {
+		if h <= st.LastScannedHeight {
+			delete(s.costSeen, k)
 		}
 	}
 	return nil
@@ -628,6 +714,11 @@ func (s *Store) Close() error {
 			first = err
 		}
 	}
+	if s.costFile != nil {
+		if err := s.costFile.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
 	return first
 }
 
@@ -641,3 +732,6 @@ func (s *Store) PublicationsPath() string { return s.pubPath }
 
 // PaymentsPath is the payments jsonl path.
 func (s *Store) PaymentsPath() string { return s.payPath }
+
+// TxCostsPath is the tx costs jsonl path.
+func (s *Store) TxCostsPath() string { return s.costPath }

@@ -179,21 +179,36 @@ func coinText(c sdk.Coin) string {
 	return c.String()
 }
 
-// anteFee reads the ante handler's fee event: the first event with
+// anteFeeEvent reads the ante handler's fee event: the first event with
 // Type == sdk.EventTypeTx ("tx") that has an attribute Key ==
-// sdk.AttributeKeyFee ("fee"). passed says one exists; fee is its value.
-func anteFee(evs []abci.Event) (passed bool, fee string) {
+// sdk.AttributeKeyFee ("fee"). found says one exists; fee is its value and
+// payer that event's sdk.AttributeKeyFeePayer ("fee_payer") value, "" when
+// absent.
+func anteFeeEvent(evs []abci.Event) (found bool, fee, payer string) {
 	for _, ev := range evs {
 		if ev.Type != sdk.EventTypeTx {
 			continue
 		}
 		for _, a := range ev.Attributes {
-			if a.Key == sdk.AttributeKeyFee {
-				return true, a.Value
+			if a.Key != sdk.AttributeKeyFee {
+				continue
 			}
+			for _, p := range ev.Attributes {
+				if p.Key == sdk.AttributeKeyFeePayer {
+					payer = p.Value
+					break
+				}
+			}
+			return true, a.Value, payer
 		}
 	}
-	return false, ""
+	return false, "", ""
+}
+
+// anteFee is anteFeeEvent without the payer: failed_txs.jsonl keeps none.
+func anteFee(evs []abci.Event) (passed bool, fee string) {
+	found, fee, _ := anteFeeEvent(evs)
+	return found, fee
 }
 
 // recordFailedTxs is step 4 of processBlock: every failed tx of the block

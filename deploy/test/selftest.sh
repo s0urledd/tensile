@@ -79,7 +79,13 @@
 #                   digest) or missing fails; a data dir without it cuts and
 #                   verifies; record_distinct counts a line written twice
 #                   once
-#   vantage pull    vantage-sync.sh: the pull resumes from the local file's
+#   transaction     tx_costs.jsonl, in a data dir and manifest of its own:
+#   costs           the cut counts its records and a copy verifies; a copy
+#                   with it altered in place (the output names it and its
+#                   digest) or missing fails; a data dir without it cuts and
+#                   verifies; record_distinct counts a line written twice
+#                   once
+#   vantage pull   vantage-sync.sh: the pull resumes from the local file's
 #                   logical end, a rotated one included, and a remote file
 #                   shorter than the record fetches nothing and fails; two
 #                   pulls at once append the new bytes once; only whole
@@ -106,7 +112,10 @@
 #                   for 10 min each fail a check of their own; so does
 #                   yesterday's export whose newest line in
 #                   exports/remote.jsonl is ok false, or that has none,
-#                   from 06:00 UTC with BACKUP_REMOTE set; a new host
+#                   from 06:00 UTC with BACKUP_REMOTE set; so does a record
+#                   file not archived yet past 64 MiB, or grown over 1 MiB
+#                   in a day from its day-old size sample, until it holds
+#                   again; a new host
 #                   with no exports directory yet completes its run; the
 #                   webhook and the bot token never reach curl's command
 #                   line
@@ -814,6 +823,48 @@ check python3 "$MANIFEST" verify "$T/fnone-copy" "$T/fmanifest-none.json" >/dev/
 fline 900 1 >> "$F/failed_txs.jsonl"
 check eq "$(record_distinct "$MANIFEST" "$F" failed_txs.jsonl dedupe_key)" "3 2"
 
+echo "== backup manifest with transaction costs"
+# tx_costs.jsonl is a record file like the others: cut, counted, copied and
+# verified. Its own data dir and manifest, so the copies above and their
+# failing cases stay as they are.
+TD="$T/tdata"; mkdir -p "$TD"
+printf '{"promise_hash":"t1","x":1}\n' > "$TD/publications.jsonl"
+printf '{"vantage":"t","promise_hash":"t1","validator_address":"v1","scheduled_at":"2026-10-09T00:00:01Z"}\n' > "$TD/measurements.jsonl"
+printf '{"last_scanned_height":1001,"last_scanned_time":"2026-10-09T00:00:06Z"}\n' > "$TD/state.json"
+tline() { # tline <height> <tx index>: a tx_costs.jsonl line as the scanner writes it
+  printf '{"schema_version":1,"dedupe_key":"h%d:%d","height":%d,"tx_index":%d,"time":"2026-10-09T00:00:05Z","tx_hash":"%064d","gas_wanted":400000,"gas_used":219118,"fee":"8000utia","fee_payer":"celestia1pub","messages":[{"index":0,"type_url":"/celestia.fibre.v1.MsgPayForFibre","signer":"celestia1pub"}],"recorded_at":"2026-10-09T00:00:06Z"}\n' \
+    "$1" "$2" "$1" "$2" "$1$2"
+}
+{ tline 1000 1; tline 1001 0; } > "$TD/tx_costs.jsonl"
+check python3 "$MANIFEST" write "$TD" "$T/tmanifest.json" >/dev/null
+check eq "$(python3 -c 'import json,sys; f=json.load(open(sys.argv[1]))["files"]["tx_costs.jsonl"]; print(f["records"], f["bytes"])' "$T/tmanifest.json")" \
+         "2 $(wc -c < "$TD/tx_costs.jsonl" | tr -d ' ')"
+tcopy() { rm -rf "$T/tcopy"; mkdir -p "$T/tcopy"; cp "$TD/publications.jsonl" "$TD/measurements.jsonl" "$TD/tx_costs.jsonl" "$TD/state.json" "$T/tcopy/"; }
+tcopy; check python3 "$MANIFEST" verify "$T/tcopy" "$T/tmanifest.json" >/dev/null
+# altered in place, same length: fails, and says which file and its digest
+tcopy; { tline 1000 1 | sed 's/"gas_used":219118/"gas_used":219119/'; tline 1001 0; } > "$T/tcopy/tx_costs.jsonl"
+check eq "$(wc -c < "$T/tcopy/tx_costs.jsonl" | tr -d ' ')" "$(wc -c < "$TD/tx_costs.jsonl" | tr -d ' ')"
+check not python3 "$MANIFEST" verify "$T/tcopy" "$T/tmanifest.json"
+python3 "$MANIFEST" verify "$T/tcopy" "$T/tmanifest.json" > "$T/tverify.out" 2>&1 || true
+tsha=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["files"]["tx_costs.jsonl"]["sha256"][:16])' "$T/tmanifest.json")
+check grep -q 'FAIL tx_costs.jsonl: sha256 differs' "$T/tverify.out"
+check grep -Eq "tx_costs\.jsonl +[0-9]+ bytes +2 records $tsha" "$T/tverify.out"
+# missing
+tcopy; rm "$T/tcopy/tx_costs.jsonl"
+check not python3 "$MANIFEST" verify "$T/tcopy" "$T/tmanifest.json"
+# a data dir without the file (no Fibre success yet) cuts and verifies, and
+# its manifest does not name it
+rm -rf "$T/tnone" "$T/tnone-copy"; mkdir -p "$T/tnone"
+cp "$TD/publications.jsonl" "$TD/measurements.jsonl" "$TD/state.json" "$T/tnone/"
+check python3 "$MANIFEST" write "$T/tnone" "$T/tmanifest-none.json" >/dev/null
+check eq "$(python3 -c 'import json,sys; print("tx_costs.jsonl" in json.load(open(sys.argv[1]))["files"])' "$T/tmanifest-none.json")" False
+cp -r "$T/tnone" "$T/tnone-copy"
+check python3 "$MANIFEST" verify "$T/tnone-copy" "$T/tmanifest-none.json" >/dev/null
+# a re-scan wrote the first line again: two records with distinct keys of
+# three lines, as the store keeps them
+tline 1000 1 >> "$TD/tx_costs.jsonl"
+check eq "$(record_distinct "$MANIFEST" "$TD" tx_costs.jsonl dedupe_key)" "3 2"
+
 echo "== vantage pull"
 # deploy/vantage-pull.sh against the fake rclone, with util-linux's flock
 # and the system's sh (vantage-sync.sh): run here so that CI runs it
@@ -1023,6 +1074,39 @@ check contains "$(lastpost)" "nothing new from vantage de-2 for 40m"
 rm -rf "$T/hw/vantages/de-2/archive"
 hwx "$p200" HEALTHWATCH_NOW="$noon" VANTAGE_PULL_NAMES="de-1 de-2" >/dev/null
 check contains "$(lastpost)" recovered
+# The record files not archived yet: the first run only samples a file's
+# size, a sample under a day old is kept, and from a day-old one a growth
+# over 1 MiB a day is archive-due until a day's growth is under it again;
+# past 64 MiB is archive-due at once, and a file shorter than its sample
+# (archived) grew nothing
+hw5="$T/hw5"; mkdir -p "$hw5"
+hw5state="$hw5/status/healthwatch.state"; hw5sizes="$hw5/status/healthwatch.sizes"
+truncate -s 1000 "$hw5/tx_costs.jsonl"
+check eq "$(hwx "$p200" HEALTHWATCH_NOW="$noon" DATA_DIR="$hw5")" 0
+check eq "$(sed -n 1p "$hw5state")" ok
+check eq "$(cat "$hw5sizes")" "tx_costs.jsonl $noon 1000 0"
+truncate -s $((1000 + 2 * 1048576)) "$hw5/tx_costs.jsonl"
+hwx "$p200" HEALTHWATCH_NOW="$((noon + 43200))" DATA_DIR="$hw5" >/dev/null
+check eq "$(sed -n 1p "$hw5state")" ok
+check eq "$(cat "$hw5sizes")" "tx_costs.jsonl $noon 1000 0"
+hwx "$p200" HEALTHWATCH_NOW="$((noon + 86400))" DATA_DIR="$hw5" >/dev/null
+check eq "$(sed -n 3p "$hw5state")" archive-due
+check contains "$(lastpost)" "tx_costs.jsonl grew 2.0 MiB in the last day, past the 1 MiB a day"
+check eq "$(cat "$hw5sizes")" "tx_costs.jsonl $((noon + 86400)) $((1000 + 2 * 1048576)) 2097152"
+hwx "$p200" HEALTHWATCH_NOW="$((noon + 90000))" DATA_DIR="$hw5" >/dev/null
+check eq "$(sed -n 3p "$hw5state")" archive-due
+truncate -s $((1000 + 2 * 1048576 + 102400)) "$hw5/tx_costs.jsonl"
+hwx "$p200" HEALTHWATCH_NOW="$((noon + 2 * 86400))" DATA_DIR="$hw5" >/dev/null
+check contains "$(lastpost)" recovered
+truncate -s $((65 * 1048576)) "$hw5/failed_txs.jsonl"
+hwx "$p200" HEALTHWATCH_NOW="$((noon + 2 * 86400 + 300))" DATA_DIR="$hw5" >/dev/null
+check eq "$(sed -n 3p "$hw5state")" archive-due
+check contains "$(lastpost)" "failed_txs.jsonl is 65.0 MiB, past the 64 MiB"
+check not contains "$(lastpost)" tx_costs.jsonl
+truncate -s 500 "$hw5/failed_txs.jsonl"
+hwx "$p200" HEALTHWATCH_NOW="$((noon + 3 * 86400 + 300))" DATA_DIR="$hw5" >/dev/null
+check contains "$(lastpost)" recovered
+rm -rf "$hw5"
 # a new host: BACKUP_REMOTE set, no copy and no exports directory yet; the
 # run completes (a find over the missing directory used to end it under
 # pipefail, before any alert or state) and finds nothing wrong

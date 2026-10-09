@@ -8,7 +8,8 @@
  * responses are real answers of the Mocha API (mocha-5), taken on 4
  * October 2026 with the Try it values below; all but the ones marked
  * `whole` are trimmed to a few fields. Nothing is added and no value is
- * changed.
+ * changed. /v1/txs/{hash} has none yet: its example is taken from a real
+ * answer once the route is deployed, as the others were.
  *
  * In descriptions and error lines, `backticks` mark a field or parameter.
  */
@@ -40,7 +41,8 @@ export type Endpoint = {
   params: Param[];
   /** the route's own error answers, beyond the ones every route shares */
   errors?: string;
-  example: string;
+  /** a real answer; absent only until one is taken, when the page shows none */
+  example?: string;
   /** the example is the whole answer, not a trimmed one */
   whole?: boolean;
   /** what the route answers with, when it is not JSON */
@@ -56,6 +58,8 @@ const HUGINN = "celestiavaloper1d2ktc37cme7ydk30ylzhamutcynhdvyet7nt3x";
 const PUBLISHER = "celestia1las83d0dt9gew3faq2mxp2gtupq5drclee9snr";
 const NAMESPACE = "00000000000000000000000000000000000000736f762d6e696b6f2d61";
 const BLOB = "36f68ba9a781754e80037357ebf485d25e471332f436596904467099cfda2417";
+// the transaction that settled BLOB
+const TX = "e1ee077529fac8d580b8359758734af3b8f3e16bb28a634e8e9a58dfd41d8370";
 
 const windowParam: Param = {
   name: "window", in: "query", type: "string", values: ["24h", "7d", "30d", "all"], default: "24h",
@@ -524,7 +528,7 @@ export const GROUPS: Group[] = [
         id: "validator",
         path: "/v1/validators/{addr}",
         summary: "One validator's service, endorsements, load and newest readings.",
-        desc: "`windows` repeats the service counts for 24h, 7d, 30d and all. `recent_probes` holds the newest 50 requests, not-probed ones left out; `attempt` 1 or 2 is a request made again after an answer that did not serve.",
+        desc: "`windows` repeats the service counts for 24h, 7d, 30d and all. `recent_probes` holds the newest 50 requests, not-probed ones left out; `attempt` 1 or 2 is a request made again after an answer that did not serve. `endpoint_history` lists its Fibre endpoint registrations on chain, newest first, the newest 50 at most, then the endpoint it had when Tensile's record began; a `failed` one was signed by its operator address and changed nothing.",
         params: [validatorAddr, windowParam, asOf],
         errors: "404 when no validator is on record at the address.",
         example: EX_VALIDATOR,
@@ -592,13 +596,23 @@ export const GROUPS: Group[] = [
         id: "blob",
         path: "/v1/blobs/{hash}",
         summary: "One blob: availability, charge, validators with rows, and readings.",
-        desc: "The blob carries `settlement_tx_hash` and `blob_version`, as on /v1/blobs. `reconstructable.status` is yes (Available), no (Unavailable), pending, not_read or unknown. Each assignment's `service` is served, not_served, in_retention_window (until the window closes; `probes` carry the reading's result once it is in) or deadline_unverified.",
+        desc: "The blob carries `settlement_tx_hash` and `blob_version`, as on /v1/blobs. `reconstructable.status` is yes (Available), no (Unavailable), pending, not_read or unknown. Each assignment's `service` is served, not_served, in_retention_window (until the window closes; `probes` carry the reading's result once it is in) or deadline_unverified. `tx_cost` is the settlement transaction's own gas and fee, when Tensile recorded them.",
         params: [
           { name: "hash", in: "path", type: "string", required: true, desc: "The blob's promise hash, 64 hex characters.", example: BLOB },
           rows,
         ],
         errors: "404 when no blob has this promise hash, not cached: asked again, a blob is found once it is recorded.",
         example: EX_BLOB,
+      },
+      {
+        id: "tx",
+        path: "/v1/txs/{hash}",
+        summary: "One Fibre transaction by its hash, successful or failed.",
+        desc: "Its `status` (success, or failed with `final` and `failure`, the code, reason and error), block, `kind`, `messages`, `cost` (gas and fee, absent before Tensile recorded them), `effect` (what it did, or for a failure asked for) and `related` (the publisher, blob or validators it touches). A success wins over a failure of the same hash; a failure that is not `final` could still land in a later block, so its answer is not cached.",
+        params: [
+          { name: "hash", in: "path", type: "string", required: true, desc: "The transaction hash: 64 hex characters, either case, with or without 0x.", example: TX },
+        ],
+        errors: "400 when `hash` is not 64 hex characters; 404 when no Fibre transaction with this hash is on record, not cached: asked again, a transaction is found once its block is read.",
       },
       {
         id: "namespaces",

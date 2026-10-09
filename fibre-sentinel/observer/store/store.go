@@ -39,7 +39,7 @@ var schemaSQL string
 // an upgraded one — baseline, then every migration — so the two end up
 // identical in shape and the migration code is exercised by every test run
 // rather than only on upgrade day.
-const SchemaVersion = 30
+const SchemaVersion = 31
 
 // migration is one numbered step above the baseline. The statements run in a
 // single transaction: SQLite supports transactional DDL, so a failed step
@@ -812,6 +812,11 @@ var migrations = []migration{
 	// failedtxs.go (failedTxsMigration): the failed Fibre transactions,
 	// read only by the transaction lookup.
 	failedTxsMigration,
+	// txcosts.go (txCostsMigration): what successful Fibre transactions
+	// cost, the accounts final failures are listed under, and the indexes
+	// the transaction page seeks by, read only by it, the blob page and the
+	// endpoint history.
+	txCostsMigration,
 }
 
 // Store wraps one SQLite database.
@@ -1323,10 +1328,14 @@ func (s *Store) SetCursor(file string, offset, line int64, now time.Time) error 
 
 // ---- meta ----
 
+// upsertMetaSQL writes one key (SetMeta, and FillFailedTxMsgs inside its own
+// transaction).
+const upsertMetaSQL = `INSERT INTO meta (key, value, updated_at) VALUES (?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+
 // SetMeta writes one key.
 func (s *Store) SetMeta(key, value string, now time.Time) error {
-	_, err := s.db.Exec(`INSERT INTO meta (key, value, updated_at) VALUES (?, ?, ?)
-		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, key, value, ts(now))
+	_, err := s.db.Exec(upsertMetaSQL, key, value, ts(now))
 	return err
 }
 

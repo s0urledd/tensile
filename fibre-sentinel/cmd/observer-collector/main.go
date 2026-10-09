@@ -27,6 +27,7 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/scan"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/status"
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/txcost"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/collect"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/correct"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/export"
@@ -239,6 +240,8 @@ func main() {
 			ParamUncertainty: *uncPath, Corrections: *corrPath,
 			// no flag of its own: the export reads it from -data-dir by this name
 			FailedTxs: filepath.Join(*dataDir, failedtx.FileName),
+			// the same
+			TxCosts: filepath.Join(*dataDir, txcost.FileName),
 		},
 		Vantage: *vantage, Logf: log.Printf, Live: live, AmendFile: amendFile, PruneTolerance: *pruneTol,
 		Corrector: corr, Retention: retention, RetentionEvery: *retEvery, Work: work,

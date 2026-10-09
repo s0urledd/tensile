@@ -108,8 +108,9 @@ func memberOf(t *testing.T, a *Archive, name string) (int, Member) {
 	return -1, Member{}
 }
 
-// failed_txs.jsonl is in every export as the observer's last file, before
-// the other vantages' heartbeats, dated by its records' time like any other
+// failed_txs.jsonl is in every export as the observer's last file but
+// tx_costs.jsonl, before the other vantages' heartbeats, dated by its
+// records' time like any other
 // record file: a line goes with its block's day, a line that reached the
 // file after its day's export goes, late, with the next, and the members of
 // consecutive exports tile the file. Each export reads back whole against
@@ -128,8 +129,9 @@ func TestBuilder_ExportsFailedTxsLastAndByTime(t *testing.T) {
 	}
 	a := readBuilt(t, dir, built[0], signer)
 	i, m := memberOf(t, a, failedTxsName)
-	if i != len(Files)-1 || a.Manifest.Files[i+1].Name != "vantages/de-1/reachability.jsonl" || len(a.Manifest.Files) != len(Files)+1 {
-		t.Fatalf("members %+v: want %s last of the observer's files, the vantage after it", a.Manifest.Files, failedTxsName)
+	if i != len(Files)-2 || a.Manifest.Files[i+1].Name != txCostsName || a.Manifest.Files[i+2].Name != "vantages/de-1/reachability.jsonl" ||
+		len(a.Manifest.Files) != len(Files)+1 {
+		t.Fatalf("members %+v: want %s last of the observer's files but %s, the vantage after them", a.Manifest.Files, failedTxsName, txCostsName)
 	}
 	want := failedTxLine(d1+"T08:00:00.123456789Z", 100) + failedTxLine(d1+"T23:59:59Z", 200)
 	if m.TimeField != "time" || m.Lines != 2 || m.LateLines != 0 || m.From != 0 || string(a.Members[failedTxsName]) != want {
@@ -248,5 +250,8 @@ func TestBackupManifestCutsTheExportedFiles(t *testing.T) {
 	}
 	if !seen[failedTxsName] {
 		t.Fatalf("RECORD_FILES does not list %s", failedTxsName)
+	}
+	if !seen["tx_costs.jsonl"] {
+		t.Fatal("RECORD_FILES does not list tx_costs.jsonl")
 	}
 }

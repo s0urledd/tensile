@@ -53,16 +53,19 @@ func rowsOf(t *testing.T, st *Store) string {
 	return strings.Join(parts, " ")
 }
 
-// Migration 30 is the last one, and SchemaVersion is its version: the
-// consecutive and upgrade tests hold it like every other.
+// Migration 30 is the failed transactions' table, wherever it stands in the
+// list: the consecutive and upgrade tests hold its place like every other.
 func TestMigration30IsTheFailedTxsTable(t *testing.T) {
-	if SchemaVersion != 30 {
-		t.Fatalf("SchemaVersion %d, want 30", SchemaVersion)
+	for _, m := range migrations {
+		if m.version != 30 {
+			continue
+		}
+		if m.note != failedTxsMigration.note || len(m.stmts) != len(failedTxsMigration.stmts) {
+			t.Fatalf("migration 30 is %s", m.note)
+		}
+		return
 	}
-	last := migrations[len(migrations)-1]
-	if last.version != 30 || last.note != failedTxsMigration.note || len(last.stmts) != len(failedTxsMigration.stmts) {
-		t.Fatalf("the last migration is %d (%s)", last.version, last.note)
-	}
+	t.Fatal("no migration 30")
 }
 
 // Migration 30 only adds a table and its index: no statement writes a row,
@@ -83,13 +86,19 @@ func TestMigration30IsPureDDL(t *testing.T) {
 	}
 }
 
-// storeWithRows is a store at version 29, as the build before this one left
-// it, holding a publication with its assignment, a reading, a payment and a
-// host event, with migration_rewrites at 2 as a store that took two
+// storeWithRows is a store at version 29, as the build before failed_txs
+// left it, holding a publication with its assignment, a reading, a payment
+// and a host event, with migration_rewrites at 2 as a store that took two
 // backfills holds it.
 func storeWithRows(t *testing.T, path string) *Store {
 	t.Helper()
-	old := openAt(t, path, 29)
+	return storeWithRowsAt(t, path, 29)
+}
+
+// storeWithRowsAt is storeWithRows at version.
+func storeWithRowsAt(t *testing.T, path string, version int) *Store {
+	t.Helper()
+	old := openAt(t, path, version)
 	p := ambiguousPublication(0x31, false)
 	p.Assignment.Validators = []scan.ValidatorAssignment{{Address: "v1", VotingPower: 7, RowCount: 2, Rows: []int{0, 1}}}
 	line, _ := json.Marshal(p)
@@ -120,7 +129,8 @@ func storeWithRows(t *testing.T, path string) *Store {
 
 // On a store with rows, migration 30 adds the table and its index, moves
 // the schema version and nothing else: migration_rewrites and every row are
-// as they were.
+// as they were. (Open takes the store on to SchemaVersion; the migrations
+// after 30 hold the same.)
 func TestMigration30OnAStoreWithRows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "observer.db")
 	old := storeWithRows(t, path)
@@ -134,7 +144,7 @@ func TestMigration30OnAStoreWithRows(t *testing.T) {
 	}
 	defer st.Close()
 	var version int
-	if err := st.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil || version != 30 {
+	if err := st.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil || version != SchemaVersion {
 		t.Fatalf("schema %d after the migration: %v", version, err)
 	}
 	if after, _ := st.Meta(MetaMigrationRewrites); after != rewritesBefore || after != "2" {
@@ -159,7 +169,8 @@ func failedTxsTableExists(t *testing.T, db *sql.DB) {
 // The way back is the one-row delete: a store whose version-30 row is
 // deleted is at 29 for every opener (the read-only one refuses it for a
 // binary at 30), keeps its table, index and rows, and migration 30 runs
-// again over them without error.
+// again over them without error (and every migration after it, up to
+// SchemaVersion).
 func TestMigration30RunsAgainAfterTheOneRowDelete(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "observer.db")
 	st, err := Open(path)
@@ -185,7 +196,7 @@ func TestMigration30RunsAgainAfterTheOneRowDelete(t *testing.T) {
 	}
 	defer st.Close()
 	var version, rows int
-	if err := st.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil || version != 30 {
+	if err := st.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil || version != SchemaVersion {
 		t.Fatalf("schema %d after the second migration: %v", version, err)
 	}
 	if err := st.db.QueryRow(`SELECT COUNT(*) FROM failed_txs`).Scan(&rows); err != nil || rows != 1 {

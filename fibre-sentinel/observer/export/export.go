@@ -73,6 +73,10 @@ var Files = []FileSpec{
 	// an export had before keeps its place; an export built before the
 	// scanner's first failure carries it empty. No figure reads it.
 	{"failed_txs.jsonl", "time"},
+	// What each successful Fibre transaction cost (internal/txcost), dated
+	// by its block. Last, so that every member an export had keeps its
+	// place; empty until the scanner's first line. No figure reads it.
+	{"tx_costs.jsonl", "time"},
 }
 
 // VantagesDir, under the data dir, holds the heartbeats of the other

@@ -122,6 +122,9 @@ RECORD_FILES = [
     "sampling-secrets.jsonl",
     "registry.jsonl",
     "runs.jsonl",
+    # what each successful Fibre transaction cost: a line is written after
+    # its tx's host event, payment and publication, so it is cut before them
+    "tx_costs.jsonl",
     "host_history.jsonl",
     "param_uncertainty.jsonl",
     # the transactions that failed in a block while carrying a Fibre

@@ -30,6 +30,7 @@ import (
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/failedtx"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/probe"
 	"github.com/plsgiveup/fibre/fibre-sentinel/internal/record"
+	"github.com/plsgiveup/fibre/fibre-sentinel/internal/txcost"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/correct"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/ingest"
 	"github.com/plsgiveup/fibre/fibre-sentinel/observer/rollup"
@@ -45,6 +46,9 @@ type Paths struct {
 	// FailedTxs is failed_txs.jsonl, the scanner's record of the failed
 	// transactions that carried a Fibre message (empty: not read).
 	FailedTxs string
+	// TxCosts is tx_costs.jsonl, the scanner's record of what each
+	// successful Fibre transaction cost (empty: not read).
+	TxCosts string
 }
 
 // Status is the part of the collector's status file (internal/status) a
@@ -169,6 +173,7 @@ func DefaultPaths(dataDir string) Paths {
 		ParamUncertainty: filepath.Join(dataDir, "param_uncertainty.jsonl"),
 		Corrections:      filepath.Join(dataDir, "corrections.jsonl"),
 		FailedTxs:        filepath.Join(dataDir, failedtx.FileName),
+		TxCosts:          filepath.Join(dataDir, txcost.FileName),
 	}
 }
 
@@ -342,6 +347,15 @@ func (c *Collector) Pass(ctx context.Context, now time.Time) []string {
 	} else if r.Inserted > 0 {
 		c.logf("host history: +%d registration(s) (read %d, line %d)", r.Inserted, r.Read, r.Line)
 	}
+	// The accounts the final failures stored before migration 31 was applied
+	// are listed under: written once per application of the migration, from
+	// the store (the failed_txs rows), never from the file. Every later pass
+	// reads two values.
+	if filled, n, err := st.FillFailedTxMsgs(now); err != nil {
+		fail("failed tx messages", err)
+	} else if filled {
+		c.logf("failed tx messages: filled %d row(s) from the stored failures", n)
+	}
 	// The failed transactions that carried a Fibre message: read by the
 	// transaction lookup alone, and by nothing this pass does after.
 	if c.Paths.FailedTxs != "" {
@@ -353,6 +367,20 @@ func (c *Collector) Pass(ctx context.Context, now time.Time) []string {
 			}
 			if r.Skipped > 0 {
 				c.logf("failed txs: WARNING skipped %d undecodable line(s); last: %s", r.Skipped, r.LastSkipped)
+			}
+		}
+	}
+	// What each successful Fibre transaction cost: read by the transaction
+	// and blob pages alone, and by nothing this pass does after.
+	if c.Paths.TxCosts != "" {
+		if r, err := ingest.TxCosts(st, c.Paths.TxCosts, now); err != nil {
+			fail("tx costs", err)
+		} else {
+			if r.Inserted > 0 {
+				c.logf("tx costs: +%d (read %d, line %d)", r.Inserted, r.Read, r.Line)
+			}
+			if r.Skipped > 0 {
+				c.logf("tx costs: WARNING skipped %d undecodable line(s); last: %s", r.Skipped, r.LastSkipped)
 			}
 		}
 	}
