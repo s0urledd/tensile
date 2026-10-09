@@ -128,10 +128,15 @@ async function box(page, sels) {
   return { x: Math.min(...rs.map((r) => r.x)), y: Math.min(...rs.map((r) => r.y)), r: Math.max(...rs.map((r) => r.r)), b: Math.max(...rs.map((r) => r.b)) };
 }
 
-/** scrolls an element near the window's top */
+/** scrolls an element to `above` px from the window's top, at once (the page's own smooth scrolling left out) */
 async function reveal(page, sel, above = 40) {
-  await page.evaluate(({ sel, above }) => { const h = document.querySelector(sel); if (h) { h.scrollIntoView({ block: "start" }); scrollBy(0, -above); } }, { sel, above });
-  await page.waitForTimeout(300);
+  await page.evaluate(({ sel, above }) => {
+    const h = document.querySelector(sel);
+    if (h) window.scrollTo({ top: h.getBoundingClientRect().top + window.scrollY - above, behavior: "instant" });
+  }, { sel, above });
+  await page.waitForTimeout(600);
+  const at = await page.evaluate((sel) => document.querySelector(sel)?.getBoundingClientRect().top ?? null, sel);
+  if (at == null || Math.abs(at - above) > 2) notes.push(`reveal ${sel}: at ${at}, wanted ${above}`);
 }
 
 /** the elements' area with room around it, from the window as it is */
@@ -280,6 +285,7 @@ const LIST = "#list .lg-t tbody tr.xf";
       await untip(v);
       await reveal(v.page, "#list .pager", 260);
       await crop(v, `pager-1440-${theme}.png`, [rowSel(23), "#list .pager"]);
+      notes.push(`1440 pager: "${await v.page.evaluate(() => document.querySelector("#list .pager .count")?.textContent.trim())}"`);
       publisher = await v.page.evaluate(() => document.querySelector("#list .lg-t tr.row:not(.xf) td.c-p .lg-who")?.getAttribute("href")?.split("addr=")[1] ?? null);
     }
     await v.ctx.close();
@@ -309,6 +315,7 @@ const LIST = "#list .lg-t tbody tr.xf";
     if (theme === "dark") {
       await reveal(v.page, "#list .pager", 300);
       await crop(v, `pager-375-${theme}.png`, [rowSel(24), "#list .pager"], 16);
+      notes.push(`375 pager: "${await v.page.evaluate(() => document.querySelector("#list .pager .count")?.textContent.trim())}"`);
     }
     await v.ctx.close();
   }
