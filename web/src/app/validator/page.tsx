@@ -325,7 +325,10 @@ function EndpointRow({ r, now, owner, onOpen }: { r: EndpointEvent; now: number;
   const href = failed && r.tx_hash ? `/blob/?tx=${r.tx_hash}` : null;
   const onRecord = r.outcome !== "before_record" && r.outcome !== "after_gap";
   const verb = EH_VERB[r.outcome];
-  const why = failed && r.reason ? (r.other_message_failed ? `Another message failed: ${r.reason}` : r.reason) : "";
+  // when the failing message was another one, the row says so and its hover gives the reason: the whole sentence does
+  // not fit beside the request and "Endpoint unchanged" at the page's width
+  const why = failed && r.reason ? (r.other_message_failed ? "Another message failed" : r.reason) : "";
+  const whyTitle = failed && r.reason ? (r.other_message_failed ? `Another message failed: ${r.reason}` : r.reason) : undefined;
   return (
     <tr className={`row eh-r${failed ? " xf" : ""}`} aria-label={failed ? `Failed endpoint registration, block ${int(r.height)}` : undefined}
       onClick={href ? (e) => openRow(e, href, onOpen) : undefined} onAuxClick={href ? (e) => openRow(e, href, onOpen) : undefined}>
@@ -340,7 +343,7 @@ function EndpointRow({ r, now, owner, onOpen }: { r: EndpointEvent; now: number;
             : r.tx_cost ? <TxCost word={verb} label={verb} cost={r.tx_cost} owner={owner} className="eh-v" />
             : <span className="eh-v">{verb}</span>}</span>
           {failed
-            ? <span className="eh-q"><span>Requested</span><span className="mono">{r.host}</span>{why && <><span className="sep">·</span><span className="eh-y" title={why}>{why}</span></>}<span className="sep">·</span><span>Endpoint unchanged</span></span>
+            ? <span className="eh-q"><span>Requested</span><span className="mono">{r.host}</span>{why && <><span className="sep">·</span><span className="eh-y" title={whyTitle}>{why}</span></>}<span className="sep">·</span><span>Endpoint unchanged</span></span>
             : r.previous_host && r.outcome !== "same"
               ? <><span className="mono eh-o">{r.previous_host}</span><span className="eh-ar" aria-label="to">→</span><b className="mono eh-n">{r.host}</b></>
               : <><b className="mono eh-n">{r.host}</b>{r.outcome === "same" && <span className="eh-q"><span className="sep">·</span><span>same address</span></span>}</>}

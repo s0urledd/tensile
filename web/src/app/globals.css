@@ -2584,7 +2584,7 @@ button.warn:focus-visible { outline-offset: 0; }
 /* ---- the endpoint history: the latest checks' own rows, one per registration. Each verb in a slot of its own, so the
    addresses after it line up; the old address quiet, the new one in the mono's weight; a failure's request never bold,
    so it never reads as the endpoint ---- */
-.eh-t th.c-t { width: 200px; } .eh-t th.c-k { width: 120px; } .eh-t th.c-x { width: 180px; }
+.eh-t th.c-t { width: 190px; } .eh-t th.c-k { width: 112px; } .eh-t th.c-x { width: 150px; }
 .lg-t.eh-t th.c-t, .lg-t.eh-t td.c-t { text-align: left; }
 .eh-t th.c-k, .eh-t td.c-k { text-align: right; padding-right: 28px; }
 .eh-t td.c-t .tm { font-weight: 500; }
@@ -2592,15 +2592,14 @@ button.warn:focus-visible { outline-offset: 0; }
 .eh-t tr.row { cursor: default; }
 .eh-t tr.row.xf { cursor: pointer; }
 .eh-t td.c-c { font-family: var(--sans); }
-.eh-c { display: flex; align-items: baseline; min-width: 0; }
+.eh-c { display: flex; align-items: center; min-width: 0; height: 20px; }
 .eh-vs { flex: none; width: 130px; }
 .eh-c > .mono, .eh-c > .eh-ar { flex: none; }
-.eh-q { display: flex; align-items: baseline; min-width: 0; }
+.eh-q { display: flex; align-items: center; min-width: 0; }
 .eh-q > * { flex: none; }
 .eh-q > .eh-y { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .eh-v { font-weight: 500; color: var(--text); }
-.eh-v.f { display: inline-flex; align-items: center; }
-.eh-v.f .dot { width: 7px; height: 7px; margin-right: 7px; }
+.eh-v.f .dot { width: 7px; height: 7px; margin-right: 7px; vertical-align: 1px; }
 .lg-t button.eh-v { appearance: none; margin: 0; padding: 0; border: 0; background: none; font: inherit; font-weight: 500; color: var(--text); cursor: pointer; text-decoration: underline dotted color-mix(in srgb, var(--text-3) 70%, transparent); text-decoration-thickness: 1px; text-underline-offset: 4px; transition: color var(--dur), text-decoration-color var(--dur); }
 .lg-t button.eh-v:hover, .lg-t button.eh-v[aria-expanded="true"] { color: var(--accent-ink); text-decoration-color: currentColor; }
 .eh-t .mono { font-size: 12.5px; letter-spacing: -.01em; }

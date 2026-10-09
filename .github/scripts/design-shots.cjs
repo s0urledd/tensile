@@ -249,7 +249,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
         await page.waitForSelector(".info-pop .txc", { timeout: 5000 }).catch(() => notes.push(`${theme}: the Deposit card did not open`));
         await page.waitForTimeout(300);
         await crop(page, `p3-card-deposit-${theme}.png`, ["#list .pb-st thead", row("#list .pb-st", 4), ".info-pop"], "The card on a successful Deposit's kind: its transaction (copyable), Gas 74,215 used of 200,000, Transaction fee Paid 4,000 utia from the bank balance", 20);
-        await page.keyboard.press("Escape");
+        await page.keyboard.press("Escape"); await page.evaluate(() => document.activeElement && document.activeElement.blur());
       }
       await ctx.close();
     }
@@ -267,7 +267,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       await page.waitForSelector(".info-pop .txc", { timeout: 5000 }).catch(() => notes.push(`${theme}: the Changed card did not open`));
       await page.waitForTimeout(300);
       await crop(page, `v2-card-changed-${theme}.png`, ["#endpoints .lg-tw", ".info-pop"], "The card on \"Changed\": Gas 54,455 used of 200,000, Transaction fee Paid 2,000 utia from the bank balance (the operator's own account)", 20);
-      await page.keyboard.press("Escape");
+      await page.keyboard.press("Escape"); await page.evaluate(() => document.activeElement && document.activeElement.blur());
       await page.mouse.move(5, 5);
       await tip(page, "#endpoints tr.xf .eh-v.f", theme);
       await crop(page, `v2-tip-failed-${theme}.png`, ["#endpoints .lg-tw", ".shot-tip"], "Hover on \"Failed\" in the Endpoint history: the failed page's own words", 20);
