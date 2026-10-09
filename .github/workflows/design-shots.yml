@@ -1,0 +1,40 @@
+name: Design shots
+
+# A read-only audit of the live site: drives the runner's Chrome straight at https://tensile.huginn.tech (no build, no
+# local server, no mocks) and uploads what it found and its shots as the run's "shots" artifact. Lives only on
+# design/** branches, which are never merged.
+
+on:
+  push:
+    branches: ["design/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: playwright-core
+        run: |
+          mkdir -p "$RUNNER_TEMP/pw" && cd "$RUNNER_TEMP/pw"
+          npm init -y >/dev/null
+          npm i --no-audit --no-fund playwright-core >/dev/null
+          echo "PW_DIR=$RUNNER_TEMP/pw" >> "$GITHUB_ENV"
+      - name: audit
+        run: node .github/scripts/design-shots.cjs shots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shots
+          path: shots
+          retention-days: 10
