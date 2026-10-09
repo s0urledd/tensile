@@ -19,8 +19,8 @@ const coins = (fee: string) =>
   fee.split(",").map((c) => c.replace(/^(\d+)(\D.*)$/, (_, n: string, d: string) => `${n.length <= 15 ? int(Number(n)) : n} ${d}`)).join(", ");
 
 /**
- * the fee in TIA, as the site writes amounts, down to the utia ("800utia" is 0.0008 TIA: tia() would print a
- * transaction fee in utia, being under 0.001 TIA); another denomination as coins() prints it
+ * the fee in TIA, as the site writes amounts, but always down to the utia ("2500utia" is 0.0025 TIA, where tia()
+ * would round it to 0.003): a transaction fee is small and paid exactly; another denomination as coins() prints it
  */
 const feeTia = (fee: string) =>
   fee.split(",").map((c) => {
