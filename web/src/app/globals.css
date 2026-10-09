@@ -1853,17 +1853,17 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
 /* ---- STUB (design/failed-blobs, never merged): a failed blob payment in the Blobs list, three variants (?fv=) ----
    a failed row's figures and its Tensile lane: a quiet dash, nothing moved, nothing to read */
 .lg-t tr.xf .na { font-weight: 400; color: var(--text-3); }
-/* A and B: a Status column of 83px after Fee paid. Today's columns hold only ~11px beyond their widest content (measured
+/* A and B: a Status column of 84px after Fee paid ("Success" 52.3px + the dot 15 + 2 x 8). Today's columns hold only ~11px beyond their widest content (measured
    in the design shots), so the room comes from (1) that slack, each column down to its widest content + its padding,
    (2) the Endorsed meter's track, 44 -> 30px, and (3) the gutters, 12 -> 8px a side (24 -> 16px between columns); the
    first column's 18px inset and Tensile's lane (10px a side, 114px) as today. Widths at the page's 1118px:
-   Height 88 (96) · Settled 197 (206) · TX hash 118 (126) · Namespace the rest, 90 (99) · Publisher 157 (165) ·
-   Blob size 80 (88) · Fee paid 77 (86) · Status 83 (new) · Endorsed 104 (128) · gap 10 · Tensile 114 */
+   Height 88 (96) · Settled 197 (206) · TX hash 118 (126) · Namespace the rest, 89 (99) · Publisher 157 (165) ·
+   Blob size 80 (88) · Fee paid 77 (86) · Status 84 (new) · Endorsed 104 (128) · gap 10 · Tensile 114 */
 .lg-t.fv-a th, .lg-t.fv-a td, .lg-t.fv-b th, .lg-t.fv-b td { padding-left: 8px; padding-right: 8px; }
 .lg-t.fv-a th:first-child, .lg-t.fv-a td:first-child, .lg-t.fv-b th:first-child, .lg-t.fv-b td:first-child { padding-left: 18px; }
 .lg-t.fv-a .gap, .lg-t.fv-b .gap { padding: 0; }
 .lg-t.fv-a .tn, .lg-t.fv-b .tn { padding-left: 10px; padding-right: 10px; }
-.lg-t.fv-a th.c-st, .lg-t.fv-b th.c-st { width: 83px; }
+.lg-t.fv-a th.c-st, .lg-t.fv-b th.c-st { width: 84px; }
 .lg-t.fv-a th.c-h, .lg-t.fv-b th.c-h { width: 88px; }
 .lg-t.fv-a th.c-t, .lg-t.fv-b th.c-t { width: 197px; }
 .lg-t.fv-a th.c-b, .lg-t.fv-b th.c-b { width: 118px; }
