@@ -106,7 +106,8 @@ func TestARecordIsWrittenAsThePinnedLine(t *testing.T) {
 	if string(b) != want {
 		t.Fatalf("line without a fee:\n got %s\nwant %s", b, want)
 	}
-	if err := json.Unmarshal(b, &back); err != nil || !reflect.DeepEqual(back, r) {
-		t.Fatalf("round trip without a fee: %+v %v", back, err)
+	var noFee Record
+	if err := json.Unmarshal(b, &noFee); err != nil || !reflect.DeepEqual(noFee, r) {
+		t.Fatalf("round trip without a fee: %+v %v", noFee, err)
 	}
 }
