@@ -234,7 +234,7 @@ export type Move = {
 };
 /**
  * What a failed row says: why (the chain's reason, when Tensile has one), and what it asked for, exact and in words
- * ("requested 1,000,000,000 TIA"; a blob payment's blob size, its namespace on hover); amount: the request alone, for
+ * ("Requested 1,000,000,000 TIA"; a blob payment's blob size, its namespace on hover); amount: the request alone, for
  * the struck alternative. Its whole row opens the failed page.
  */
 export type Fail = { reason?: string; ask: string; askTitle?: string; amount?: string; href: string; aria: string };

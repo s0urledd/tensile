@@ -333,15 +333,18 @@ function EndpointRow({ r, now, owner, onOpen }: { r: EndpointEvent; now: number;
         : r.outcome === "after_gap" ? <span className="eh-pre"><em>In a record gap</em><Warn text={`Changed while Tensile’s record had a gap, before block #${int(r.height)}. Its transaction is not on record.`} /></span>
         : r.time ? <span title={utcWord(r.time)}><span className="tm">{monthDayTime(r.time).slice(0, -3)}</span><span className="ag">{age(now - Date.parse(r.time))}</span></span> : "—"}</td>
       <td className="c-c">
-        <span className="eh-vs">{failed
-          ? <span className="eh-v f" title="This transaction failed in this block: none of its messages took effect."><i className="dot fault" aria-hidden="true" />Failed</span>
-          : r.tx_cost ? <TxCost word={verb} label={verb} cost={r.tx_cost} owner={owner} className="eh-v" />
-          : <span className="eh-v">{verb}</span>}</span>
-        {failed
-          ? <span className="eh-q">Requested <span className="mono">{r.host}</span>{why && <><span className="sep">·</span>{why}</>}<span className="sep">·</span>Endpoint unchanged</span>
-          : r.previous_host && r.outcome !== "same"
-            ? <><span className="mono eh-o">{r.previous_host}</span><span className="eh-ar" aria-label="to">→</span><b className="mono eh-n">{r.host}</b></>
-            : <><b className="mono eh-n">{r.host}</b>{r.outcome === "same" && <span className="eh-q"><span className="sep">·</span>same address</span>}</>}
+        {/* one line: the verb in its slot, then what it changed; a long reason gives way first, never "Endpoint unchanged" */}
+        <div className="eh-c">
+          <span className="eh-vs">{failed
+            ? <span className="eh-v f" title="This transaction failed in this block: none of its messages took effect."><i className="dot fault" aria-hidden="true" />Failed</span>
+            : r.tx_cost ? <TxCost word={verb} label={verb} cost={r.tx_cost} owner={owner} className="eh-v" />
+            : <span className="eh-v">{verb}</span>}</span>
+          {failed
+            ? <span className="eh-q"><span>Requested</span><span className="mono">{r.host}</span>{why && <><span className="sep">·</span><span className="eh-y" title={why}>{why}</span></>}<span className="sep">·</span><span>Endpoint unchanged</span></span>
+            : r.previous_host && r.outcome !== "same"
+              ? <><span className="mono eh-o">{r.previous_host}</span><span className="eh-ar" aria-label="to">→</span><b className="mono eh-n">{r.host}</b></>
+              : <><b className="mono eh-n">{r.host}</b>{r.outcome === "same" && <span className="eh-q"><span className="sep">·</span><span>same address</span></span>}</>}
+        </div>
       </td>
       <td className="c-k">{onRecord && r.height ? `#${int(r.height)}` : <span className="u">—</span>}</td>
       <td className="c-x">{r.tx_hash

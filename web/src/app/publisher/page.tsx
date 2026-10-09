@@ -172,7 +172,7 @@ function escrowMove(x: EscrowRow, d: Detail, idx: number): Move {
     ...base, word, qual: "", short: "", sign: "", utia: 0, tone: "",
     fail: {
       reason: x.reason,
-      ask: blob ? `${x.blob_size != null ? bytes(x.blob_size) : "—"} blob` : amount ? `requested ${amount}` : "",
+      ask: blob ? `${x.blob_size != null ? bytes(x.blob_size) : "—"} blob` : amount ? `Requested ${amount}` : "",
       askTitle: blob && x.namespace ? `Namespace ${nsDisplay(x.namespace)} · ${x.namespace}` : undefined,
       amount: blob ? undefined : amount,
       href: `/blob/?tx=${x.tx_hash ?? ""}`,

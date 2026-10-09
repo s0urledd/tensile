@@ -132,12 +132,16 @@ async function box(page, sels) {
   return { x: Math.min(...rs.map((r) => r.x)), y: Math.min(...rs.map((r) => r.y)), r: Math.max(...rs.map((r) => r.r)), b: Math.max(...rs.map((r) => r.b)) };
 }
 
+/** room around a crop: one figure for every side, or { t, r, b, l } */
+const pads = (p) => (typeof p === "number" ? { t: p, r: p, b: p, l: p } : { t: 24, r: 24, b: 24, l: 24, ...p });
+
 /** scrolls the elements into the window, their top near its top, unless they are in it already */
 async function reveal(page, sels, pad = 24) {
+  const p = pads(pad);
   const b = await box(page, sels);
   if (!b) return;
-  if (b.y - pad >= 0 && b.b + pad <= H) return;
-  await page.evaluate((dy) => scrollBy(0, dy), Math.round(b.y - pad - 8));
+  if (b.y - p.t >= 0 && b.b + p.b <= H) return;
+  await page.evaluate((dy) => scrollBy(0, dy), Math.round(b.y - p.t - 8));
   await page.waitForTimeout(200);
 }
 
@@ -150,9 +154,10 @@ async function crop(page, file, sels, shows, pad = 24) {
   if (!popped) await reveal(page, sels, pad);
   const b = await box(page, sels);
   if (!b) { notes.push(`${file}: nothing to crop (${[].concat(sels).join(", ")})`); return; }
-  const x = Math.max(0, Math.floor(b.x - pad)), y = Math.max(0, Math.floor(b.y - pad));
-  const width = Math.min(W - x, Math.ceil(b.r - b.x + 2 * pad)), height = Math.min(H - y, Math.ceil(b.b - b.y + 2 * pad));
-  if (b.b + pad > H) notes.push(`${file}: taller than the window, cut at its foot`);
+  const p = pads(pad);
+  const x = Math.max(0, Math.floor(b.x - p.l)), y = Math.max(0, Math.floor(b.y - p.t));
+  const width = Math.min(W - x, Math.ceil(b.r + p.r) - x), height = Math.min(H - y, Math.ceil(b.b + p.b) - y);
+  if (b.b + p.b > H) notes.push(`${file}: taller than the window, cut at its foot`);
   await page.screenshot({ path: path.join(out, file), animations: "disabled", clip: { x, y, width, height } });
   shots.push({ file, shows });
 }
@@ -180,7 +185,7 @@ async function tip(page, sel, theme) {
     d.textContent = t;
     Object.assign(d.style, {
       position: "fixed", left: `${Math.round(r.left + Math.min(r.width / 2, 14))}px`, top: `${Math.round(r.bottom + 18)}px`, zIndex: 99,
-      maxWidth: "380px", padding: "4px 8px", font: "12px/1.35 system-ui, -apple-system, 'Segoe UI', sans-serif",
+      maxWidth: "480px", padding: "4px 8px", font: "12px/1.35 system-ui, -apple-system, 'Segoe UI', sans-serif",
       color: dark ? "#f2f2f2" : "#1d1d1d", background: dark ? "#3b3b3b" : "#ffffff", border: `1px solid ${dark ? "#5c5c5c" : "#a0a0a0"}`,
       borderRadius: "3px", boxShadow: "0 2px 6px rgba(0,0,0,.22)", whiteSpace: "normal", pointerEvents: "none",
     });
@@ -205,18 +210,19 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
     for (const v of ["b", "a"]) {
       const { ctx, page } = await open(browser, theme);
       await go(page, `/publisher/?addr=${PUB}${v === "a" ? "&variant=a" : ""}`, "#list tr.xf");
+      // cut at a row's own line, never through the next row
       await crop(page, `p1-all-${v}-${theme}.png`, ["#list .list-head", row("#list", 8)],
         v === "b"
           ? "Publisher, All, page 1, B (recommended): the failed deposit and withdrawal request above the newest blob, the STUB failed blob payment between #1,497,140 and #1,497,108; Amount a dash, the request in words under the reason"
-          : "Publisher, All, page 1, A (alternative): the same rows, the qualifier ends at the reason and the request is struck in the Amount column, unsigned");
+          : "Publisher, All, page 1, A (alternative): the same rows, the qualifier ends at the reason and the request is struck in the Amount column, unsigned", { b: 0 });
       if (v === "b") {
         if (dk) { await top(page); await full(page, `p1-full-${theme}.png`, "Publisher page, whole (B), for context"); }
         await reveal(page, ["#list .list-head", row("#list", 5)]);
         await tip(page, `${row("#list", 2)} .xs`, theme);
-        await crop(page, `p3-tip-failed-${theme}.png`, [row("#list", 1), row("#list", 4), ".shot-tip"], "Hover on \"Failed\" in a failed row: the failed page's own words", 20);
+        await crop(page, `p3-tip-failed-${theme}.png`, ["#list thead", row("#list", 4), ".shot-tip"], "Hover on \"Failed\" in a failed row: the failed page's own words", 20);
         await untip(page);
         await tip(page, `${row("#list", 2)} td.c-fee .xd`, theme);
-        await crop(page, `p3-tip-dash-${theme}.png`, [row("#list", 1), row("#list", 4), ".shot-tip"], "Hover on the Amount dash of a failed row (B): nothing moved, the escrow is as it was", 20);
+        await crop(page, `p3-tip-dash-${theme}.png`, ["#list thead", row("#list", 4), ".shot-tip"], "Hover on the Amount dash of a failed row (B): nothing moved, the escrow is as it was", 20);
         await untip(page);
         await reveal(page, ["#list .pager"], 140);
         await tip(page, "#list .pager .count span[title]", theme);
@@ -225,7 +231,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       } else {
         await reveal(page, ["#list .list-head", row("#list", 5)]);
         await tip(page, `${row("#list", 2)} td.c-fee s`, theme);
-        await crop(page, `p3-tip-struck-${theme}.png`, [row("#list", 1), row("#list", 4), ".shot-tip"], "Hover on the struck request (A): requested, not moved", 20);
+        await crop(page, `p3-tip-struck-${theme}.png`, ["#list thead", row("#list", 4), ".shot-tip"], "Hover on the struck request (A): requested, not moved", 20);
         await untip(page);
       }
       await ctx.close();
@@ -242,7 +248,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
         await page.locator("#list .pb-st button.txw").first().click();
         await page.waitForSelector(".info-pop .txc", { timeout: 5000 }).catch(() => notes.push(`${theme}: the Deposit card did not open`));
         await page.waitForTimeout(300);
-        await crop(page, `p3-card-deposit-${theme}.png`, [row("#list .pb-st", 1), row("#list .pb-st", 4), ".info-pop"], "The card on a successful Deposit's kind: its transaction (copyable), Gas 74,215 used of 200,000, Transaction fee Paid 4,000 utia from the bank balance", 20);
+        await crop(page, `p3-card-deposit-${theme}.png`, ["#list .pb-st thead", row("#list .pb-st", 4), ".info-pop"], "The card on a successful Deposit's kind: its transaction (copyable), Gas 74,215 used of 200,000, Transaction fee Paid 4,000 utia from the bank balance", 20);
         await page.keyboard.press("Escape");
       }
       await ctx.close();
@@ -275,7 +281,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
     if (dk) {
       const { ctx, page } = await open(browser, theme);
       await go(page, `/validator/?addr=${VAL}&variant=end`, ".eh-t tbody tr");
-      await crop(page, `v1-end-${theme}.png`, ["#evidence .lg-tw", "#endpoints"], "Alternative placement: Endpoint history at the page's end, under Latest checks", 24);
+      await crop(page, `v1-end-${theme}.png`, ["#evidence tbody tr:nth-last-child(3)", "#endpoints"], "Alternative placement: Endpoint history at the page's end, under the 50 rows of Latest checks (their last three shown)", 24);
       await top(page);
       await full(page, `v1-end-full-${theme}.png`, "Validator page, whole, Endpoint history at the end (alternative), for context");
       await ctx.close();
@@ -303,7 +309,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
         other: "Blob page with a STUB fee payer: Transaction fee Paid 8,000 utia, paid by celestia1…zzzz (the whole address on hover)",
         none: "Blob page with no cost on record (anything before the deploy): Gas and Transaction fee read not recorded",
       }[cost];
-      await crop(page, `g${cost === "own" ? 1 : 2}-blob-${cost}-${theme}.png`, [".bd-mast", ".bd-top"], what);
+      await crop(page, `g${cost === "own" ? 1 : 2}-blob-${cost}-${theme}.png`, [".bd-title", ".bd-top"], what, { t: 24, b: 14 });
       if (cost === "own" && dk) { await top(page); await full(page, `g1-full-${theme}.png`, "Blob page, whole, for context"); }
       await ctx.close();
     }
@@ -312,7 +318,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
     {
       const { ctx, page } = await open(browser, theme);
       await go(page, `/blob/?tx=${FAILED_TX}`, ".bd-err");
-      await crop(page, `g3-failed-${theme}.png`, [".bd-mast", ".bd-top"], "Failed page A4BD0B18… as live: Gas 50,219 used of 200,000; Transaction fee Paid 800 utia, the format the success details share");
+      await crop(page, `g3-failed-${theme}.png`, [".bd-title", ".bd-top"], "Failed page A4BD0B18… as live: Gas 50,219 used of 200,000; Transaction fee Paid 800 utia, the format the success details share", { t: 24, b: 14 });
       if (dk) { await top(page); await full(page, `g3-full-${theme}.png`, "Failed page, whole, for context"); }
       await ctx.close();
     }
