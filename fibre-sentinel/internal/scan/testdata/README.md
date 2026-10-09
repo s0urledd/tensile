@@ -24,3 +24,23 @@ whose messages failed has the first and not the second.
 `TestARealBlockResultsAnswerIsReadWhole` serves its `result` through the
 fake RPC node and checks that the scanner reads every tx's codespace, log,
 gas and ante fee event as the answer holds them.
+
+`block_1107336.json` and `block_results_1107336.json` are the `block` and
+`block_results` answers for Mocha height 1107336, saved byte for byte from
+the same RPC on 9 October 2026:
+
+```
+curl -s "https://rpc.celestia-mocha.com/block?height=1107336"
+curl -s "https://rpc.celestia-mocha.com/block_results?height=1107336"
+```
+
+| tx | code | what it is |
+|---|---|---|
+| 0 | 0 | a successful MsgDepositToEscrow, hash `D7A03499…24CA25`: fee `326utia`, gas 74054 of 81370 |
+| 1 | 0 | a successful MsgPayForBlobs (a BlobTx) |
+
+The height is the first `tx_search` gave for `message.action =
+'/celestia.fibre.v1.MsgDepositToEscrow'`. `TestResultsNeedBlockOnAMochaBlock`
+serves both through the fake RPC node: the deposit's results carry its type
+URL as the message's `action`, which is what `ResultsNeedBlock` reads, and
+the block gives the deposit's cost line.
