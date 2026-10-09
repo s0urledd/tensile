@@ -167,12 +167,13 @@ const WIDE = new Set(["validator", "blob", "namespace", "commitment", "tx", "pub
 
 /**
  * The chain endpoints.ts's examples were taken on. Its Try it values name records of that chain: a validator, a blob,
- * its namespace and publisher, an export. On another network's site (one export serves every network) they would ask
- * for records its API does not hold, so there the newest the API itself names stand in for them.
+ * its namespace, publisher and settlement transaction, an export. On another network's site (one export serves every
+ * network) they would ask for records its API does not hold, so there the newest the API itself names stand in for
+ * them.
  */
 const EXAMPLE_CHAIN = "mocha-5";
 
-type Named = "validator" | "blob" | "namespace" | "publisher" | "export";
+type Named = "validator" | "blob" | "namespace" | "publisher" | "tx" | "export";
 type Live = Partial<Record<Named, string>>;
 const NONE_YET: Live = {};
 
@@ -182,6 +183,7 @@ function recordOf(ep: Endpoint, p: Param): Named | null {
   if (p.name === "validator" || (p.name === "addr" && p.example.startsWith("celestiavaloper1"))) return "validator";
   if (p.name === "addr" && p.example.startsWith("celestia1")) return "publisher";
   if (p.name === "hash" && ep.path.startsWith("/v1/blobs/")) return "blob";
+  if (p.name === "hash" && ep.path.startsWith("/v1/txs/")) return "tx";
   if (p.name === "namespace") return "namespace";
   if (p.name === "name" && ep.path.startsWith("/v1/exports/")) return "export";
   return null;
@@ -190,8 +192,9 @@ function recordOf(ep: Endpoint, p: Param): Named | null {
 /**
  * The records this site's API names, for the parameters of ep that name one: null on the examples' own chain (and
  * until the site has said which chain it is on), empty while they are read. The newest blob gives a blob, its
- * namespace and its publisher; the newest reading a validator (before the first one, the validator with the most
- * voting power); the newest export its digest's name. Asked only when the endpoint is opened.
+ * namespace, its publisher and the transaction that settled it; the newest reading a validator (before the first one,
+ * the validator with the most voting power); the newest export its digest's name. Asked only when the endpoint is
+ * opened.
  */
 function useLive(ep: Endpoint): Live | null {
   const { data: meta } = useApi<Meta>("/v1/meta"); // the header's stream: no request of its own
@@ -209,9 +212,9 @@ function useLive(ep: Endpoint): Live | null {
     };
     (async () => {
       const out: Live = {};
-      if (wanted.has("blob") || wanted.has("namespace") || wanted.has("publisher")) {
+      if (wanted.has("blob") || wanted.has("namespace") || wanted.has("publisher") || wanted.has("tx")) {
         const b = (await get("/v1/blobs?limit=1"))?.blobs?.[0];
-        if (b) { out.blob = b.promise_hash; out.namespace = b.namespace; out.publisher = b.publisher; }
+        if (b) { out.blob = b.promise_hash; out.namespace = b.namespace; out.publisher = b.publisher; out.tx = b.settlement_tx_hash || undefined; }
       }
       if (wanted.has("validator")) {
         const p = (await get("/v1/probes?limit=1"))?.probes?.[0];
@@ -377,8 +380,10 @@ function Body({ ep }: { ep: Endpoint }) {
       )}
       {ep.errors && <p className="api-errors"><b>Errors</b> {ticks(ep.errors)}</p>}
       <TryIt ep={ep} />
-      <h4 className="api-h4">{ep.whole ? "Example response" : "Example response, trimmed"}</h4>
-      <Code text={ep.example} format={ep.format} label={`Example response of ${ep.path}`} />
+      {ep.example && <>
+        <h4 className="api-h4">{ep.whole ? "Example response" : "Example response, trimmed"}</h4>
+        <Code text={ep.example} format={ep.format} label={`Example response of ${ep.path}`} />
+      </>}
     </>
   );
 }

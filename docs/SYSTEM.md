@@ -776,7 +776,8 @@ with, so a feed reader never sees an entry twice.
 
 The public documentation is the site's API page (`web/src/app/api`, served at `/api/`):
 every documented route in order, with its parameters, a Try it and an
-example answer (`endpoints.ts`), then what every route shares. `/v1/meta`
+example answer (`endpoints.ts`; `/v1/txs/{hash}`'s is taken from a real
+answer once the route is deployed), then what every route shares. `/v1/meta`
 and `/v1/avatars` are the site's own and are not on it. A
 response carries what some reader uses: a field nothing reads is dropped
 from the answer, never from the store (the snapshot rows keep their

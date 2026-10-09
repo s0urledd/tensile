@@ -14,6 +14,7 @@ import { lane } from "@/lib/status";
 import { CopyMark, Who } from "@/components/Ledger";
 import { unit } from "@/components/Unit";
 import { monthDayTime } from "@/components/BlobsDeck";
+import { KIND_OF, KIND_WORD } from "@/lib/txkind";
 
 /**
  * One Fibre transaction by its hash (/tx/?hash=, and /blob/?tx= for a failure), the same page whether it took effect or
@@ -27,18 +28,6 @@ import { monthDayTime } from "@/components/BlobsDeck";
 
 /** past this many messages, only the one that failed and the first this many that carry Fibre are listed */
 const LISTED = 12;
-
-/** the transaction's own kind in words, as the lists name it (the header search's too) */
-export const KIND_WORD: Record<Exclude<TxKind, "several">, string> = {
-  settlement: "Blob payment", deposit: "Deposit", withdrawal_request: "Withdrawal request", withdrawal_executed: "Withdrawal payout",
-  timeout: "Promise timeout", set_host: "Endpoint registration",
-};
-/** the kind a Fibre message's type URL is, for a record from an API before /v1/txs */
-const KIND_OF: Record<string, Exclude<TxKind, "several">> = {
-  "/celestia.fibre.v1.MsgPayForFibre": "settlement", "/celestia.fibre.v1.MsgDepositToEscrow": "deposit",
-  "/celestia.fibre.v1.MsgRequestWithdrawal": "withdrawal_request", "/celestia.fibre.v1.MsgPaymentPromiseTimeout": "timeout",
-  "/celestia.valaddr.v1.MsgSetFibreProviderInfo": "set_host",
-};
 
 /** the two cost rows' hovers, the same wherever they stand */
 export const GAS_TITLE = "The transaction's own gas: what it used of the limit it set.";
@@ -137,8 +126,10 @@ function Page({ t, HEX, meta, metaErr, at }: { t: TxAnswer; HEX: string; meta: M
   const x = t.effect;
   const r = t.related;
   const fibre = t.messages.filter(carries);
-  // the type in words; a transaction of Fibre messages of different kinds says how many it carries
-  const word = t.kind === "several" ? `${int(fibre.length)} messages` : KIND_WORD[t.kind];
+  // the type in words; a transaction of Fibre messages of different kinds says how many it carries, counted as the API
+  // kinds them: each at the top level, and each inside a MsgExec
+  const nFibre = t.messages.reduce((n, m) => n + (m.fibre ? 1 : 0) + (m.inner?.filter((i) => i.fibre).length ?? 0), 0);
+  const word = t.kind === "several" ? `${int(nFibre)} ${nFibre === 1 ? "message" : "messages"}` : KIND_WORD[t.kind];
   const typeUrl = fibre[0] ? (fibre[0].fibre ? fibre[0].type_url : fibre[0].inner?.find((i) => i.fibre)?.type_url) : undefined;
   // the account the page is about: the publisher (linked, or as the message names it), else the validator's operator
   // address
@@ -174,7 +165,9 @@ function Page({ t, HEX, meta, metaErr, at }: { t: TxAnswer; HEX: string; meta: M
         className={`tx-tn${ln.tier === "hold" ? " hold" : ln.tier === "kept" ? " ok" : ""}`}><p>{ln.title}</p></Info>}
     </>);
   }
-  if ((t.kind === "settlement" && failed) || t.kind === "timeout") {
+  // the promise, where no blob link stands for it: a failure, a timeout, and a blob payment whose publication is not on
+  // record (its payment row alone)
+  if ((t.kind === "settlement" && (failed || !r.blob)) || t.kind === "timeout") {
     if (x.promise_hash) row("ph", "Promise hash", <><span className="mono" title={x.promise_hash}>{shortMid(x.promise_hash, 10, 6)}</span><Copy text={x.promise_hash} label="the promise hash" /></>);
   }
   if (x.namespace) row("ns", "Namespace", <Link className="bd-ns" href={`/blobs/?namespace=${x.namespace}`} title={`${x.namespace} · every blob in it`}>{nsDisplay(x.namespace)}</Link>);

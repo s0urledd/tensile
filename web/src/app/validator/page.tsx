@@ -334,8 +334,13 @@ function Page() {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     router.push(href);
   }, [router]);
-  // another validator starts at the top of its own list
-  useEffect(() => { setOnlyNotServed(false); }, [addr]);
+  // another validator starts at the top of its own list, on the view its own address names: the page stays mounted when
+  // only ?addr= changes (the header search, a link from another validator's page), and kept the last one's tab. Only
+  // another validator resets it; ?tab= alone is setTab's
+  useEffect(() => {
+    setOnlyNotServed(false);
+    setTabRaw(params.get("tab") === "endpoints" ? "endpoints" : "checks");
+  }, [addr]); // eslint-disable-line react-hooks/exhaustive-deps
   const { data: meta, error: metaErr } = useApi<Meta>("/v1/meta");
   const d = useApi<Detail>(addr ? `/v1/validators/${encodeURIComponent(addr)}?window=${win}` : null);
   const notLive = !!meta?.app_version && !meta.fibre_active;

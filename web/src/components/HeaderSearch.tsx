@@ -7,7 +7,7 @@ import { blobKey } from "@/lib/blobkey";
 import { useFind } from "@/lib/blobfind";
 import { siteTarget, type SiteTarget } from "@/lib/sitefind";
 import Ident from "@/components/Ident";
-import { KIND_WORD } from "@/components/TxDetail";
+import { KIND_WORD } from "@/lib/txkind";
 
 /** the full placeholder needs about 300 px of field; a narrower one says only "Search" */
 const WORDS = "Search tx hash, blob ID or address";
@@ -214,7 +214,7 @@ export default function HeaderSearch() {
       }
       // an API without the transaction lookup: the failure the blob lookup found opens on the blob page's address
       else if (tx.missing && hit.failedTx) items = [failedItem(`/blob/?tx=${blob!.hex}`, blob!.hex, hit.failedTx)];
-      else if (tx.missing) note = <>Tensile has not indexed a blob with this hash yet, or the transaction carries no Fibre blob.</>;
+      else if (tx.missing) note = <>Tensile has no blob or Fibre transaction with this hash on record yet.</>;
       else note = <>The observer did not answer ({tx.error}). Try again in a moment.</>;
     }
     else if (hit.total === 0) note = blob?.kind === "id"
