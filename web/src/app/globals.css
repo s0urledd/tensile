@@ -1850,6 +1850,35 @@ button.pp-params[aria-expanded="true"] .pp-i { color: var(--paper); background: 
 @keyframes lg-fresh { 0% { background: color-mix(in srgb, var(--accent) 16%, var(--paper)); } 100% { background: var(--paper); } }
 @keyframes lg-fresh-tn { 0% { background: color-mix(in srgb, var(--accent) 16%, var(--paper)); } 100% { background: var(--obs-bg); } }
 
+/* ---- STUB (design/failed-blobs, never merged): a failed blob payment in the Blobs list, three variants (?fv=) ----
+   a failed row's figures and its Tensile lane: a quiet dash, nothing moved, nothing to read */
+.lg-t tr.xf .na { font-weight: 400; color: var(--text-3); }
+/* A and B: a Status column after Fee paid, its room taken from the columns' slack and the Endorsed meter's track */
+.lg-t.fv-a, .lg-t.fv-b { --st-w: 88px; }
+.lg-t.fv-a th.c-st, .lg-t.fv-b th.c-st { width: var(--st-w); }
+.lg-t.fv-a th.c-h, .lg-t.fv-b th.c-h { width: 94px; }
+.lg-t.fv-a th.c-t, .lg-t.fv-b th.c-t { width: 200px; }
+.lg-t.fv-a th.c-b, .lg-t.fv-b th.c-b { width: 125px; }
+.lg-t.fv-a th.c-p, .lg-t.fv-b th.c-p { width: 162px; }
+.lg-t.fv-a th.c-sz, .lg-t.fv-b th.c-sz { width: 86px; }
+.lg-t.fv-a th.c-fee, .lg-t.fv-b th.c-fee { width: 84px; }
+.lg-t.fv-a th.c-e, .lg-t.fv-b th.c-e { width: 108px; }
+.lg-t.fv-a th.tn, .lg-t.fv-b th.tn { width: 112px; }
+.lg-t.fv-a .em, .lg-t.fv-b .em { width: 24px; }
+/* A: the dot and the word, the dot hung in the cell's padding so every word starts on one line under the head */
+.lg-t.fv-a th.c-st, .lg-t.fv-a td.c-st { padding-left: 27px; }
+/* B: a pill, in the Tensile lane's own pill language, centred under its head */
+.lg-t.fv-b th.c-st, .lg-t.fv-b td.c-st { text-align: center; }
+.lg-t .sp { display: inline-flex; align-items: center; height: 20px; padding: 0 5px; border-radius: 999px; border: 1px solid var(--border); background: var(--wash); font-family: var(--sans); font-size: 10px; font-weight: 500; line-height: normal; color: var(--text-2); vertical-align: middle; }
+.lg-t .sp.ok { border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok-ink); }
+.lg-t .sp.f { border-color: color-mix(in srgb, var(--fault) 40%, transparent); background: color-mix(in srgb, var(--fault) 12%, transparent); color: var(--fault); }
+/* C: no new column; the failed row's size, fee and endorsement are one cell: the red dot, Failed, the reason */
+.lg-t td.c-xf { text-align: left; }
+.lg-t .xw { display: inline-flex; align-items: baseline; color: var(--text-2); }
+.lg-t .xw .dot { align-self: center; width: 7px; height: 7px; margin: 0 8px 0 0; }
+.lg-t .xw b { font-weight: 500; color: var(--text); }
+.lg-t .xw .sep { margin: 0 7px; color: var(--text-3); }
+
 /* the namespaces view */
 .lg-nss th.n-nm { width: 26%; } .lg-nss th.n-pub { width: 10%; } .lg-nss th.n-n { width: 11%; } .lg-nss th.n-sz { width: 12%; } .lg-nss th.n-24 { width: 13%; } .lg-nss th.n-first { width: 14%; }
 .lg-nss th.n-first, .lg-nss td.n-first { padding-left: 28px; }

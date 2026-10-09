@@ -475,6 +475,12 @@ export type Blob = {
   validators_with_rows: number;
   assignment_error?: string;
   reconstructable: Reconstruct | null;
+  /**
+   * STUB (design/failed-blobs, never merged): a blob payment that failed in its block, as the list would carry it: its
+   * height, time, transaction hash, namespace and publisher (from the promise), the chain's reason, and no blob fields
+   */
+  status?: "failed";
+  reason?: string;
 };
 
 /** one message of a failed transaction, in its order */

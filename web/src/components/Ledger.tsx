@@ -44,6 +44,19 @@ import { age, monthDayTime } from "@/components/BlobsDeck";
  * first, then the last page's rows, quieted, until the next one comes.
  */
 
+// ---- STUB (design/failed-blobs, a throwaway design branch that is never merged): how a failed blob payment would
+// stand in the list, in three variants switched by ?fv= (a: a Status column, dot + word; b: a Status column, pills;
+// c: no new column, the failed row's figures one cell). The failed row comes from the design-shots script's mock. ----
+export type Fv = "" | "a" | "b" | "c";
+function readFv(): Fv {
+  const v = new URLSearchParams(window.location.search).get("fv");
+  return v === "a" || v === "b" || v === "c" ? v : "";
+}
+/** a row's key: a blob's promise hash; a failed payment, which settled no blob, its transaction's hash */
+const keyOf = (b: Blob) => b.promise_hash || `tx:${b.settlement_tx_hash ?? ""}`;
+const failedTitle = (reason?: string) => (reason ? `Transaction failed · ${reason}` : "Transaction failed");
+const statusCol = (fv: Fv) => fv === "a" || fv === "b";
+
 const FAST_MS = 5000, SLOW_MS = 15000, FALLBACK_MS = 30000;
 /** no new blob for this long reads at the slow pace */
 const IDLE_AFTER_MS = 120000;
@@ -120,8 +133,8 @@ export function useLedger(path: string, live: boolean, height: number | undefine
       const page = await readPage(p);
       if (p !== pathRef.current) return;
       const before = cur.current.path === p && cur.current.loaded ? cur.current : null;
-      const known = new Set(before?.rows.map((b) => b.promise_hash));
-      const came = !!before && page.blobs.some((b) => !known.has(b.promise_hash));
+      const known = new Set(before?.rows.map(keyOf));
+      const came = !!before && page.blobs.some((b) => !known.has(keyOf(b)));
       const lastNewAt = !before ? (page.blobs[0] ? Date.parse(page.blobs[0].settlement_time) : 0) : came ? Date.now() + skewRef.current : before.lastNewAt;
       apply({ path: p, rows: page.blobs, total: page.total, loaded: true, error: null, refused: false, lastNewAt });
     } catch (e) {
@@ -177,8 +190,8 @@ type Shown = { path: string; rows: Blob[]; total: number; loaded: boolean; move:
 function take(v: Shown, f: Feed): Shown {
   if (f.path !== v.path || !v.loaded) return { path: f.path, rows: f.rows, total: f.total, loaded: f.loaded, move: null };
   if (f.rows === v.rows && f.total === v.total) return v;
-  const known = new Set(v.rows.map((b) => b.promise_hash));
-  const fresh = new Set(f.rows.filter((b) => !known.has(b.promise_hash)).map((b) => b.promise_hash));
+  const known = new Set(v.rows.map(keyOf));
+  const fresh = new Set(f.rows.filter((b) => !known.has(keyOf(b))).map(keyOf));
   return { path: f.path, rows: f.rows, total: f.total, loaded: true, move: fresh.size ? { id: (v.move?.id ?? 0) + 1, fresh } : v.move };
 }
 
@@ -229,7 +242,7 @@ export type Moves = { place: (path: string, rows: Blob[], total: number) => Plac
  * escrow's statement. The statement alone (escrow) heads what its rows hold: the kind of movement and its amount, the
  * blobs' columns left unnamed (they stay, so nothing moves when the kind changes)
  */
-export function LedgerHead({ one, escrow = false }: { one: boolean; escrow?: boolean }) {
+export function LedgerHead({ one, escrow = false, fv = "" }: { one: boolean; escrow?: boolean; fv?: Fv }) {
   if (escrow) {
     return (
       <thead>
@@ -259,6 +272,8 @@ export function LedgerHead({ one, escrow = false }: { one: boolean; escrow?: boo
         {one
           ? <th className="c-fee num" title="What each transaction moved into the escrow (+) or out of it (−): a blob's fee, a deposit, a withdrawal paid out.">Amount</th>
           : <th className="c-fee num">Fee paid</th>}
+        {/* STUB (design/failed-blobs): the transaction's outcome on chain, Success or Failed */}
+        {statusCol(fv) && <th className="c-st">Status</th>}
         <th className="c-e num" title="Share of voting power whose signature on the settlement verified. A settlement needs ⅔.">Endorsed <Frac /></th>
         <th className="gap" aria-hidden="true" />
         <th className="tn" title="Tensile's own reading of each blob, once, near the end of its retention window."><span><Eye />Tensile</span></th>
@@ -317,9 +332,55 @@ export function CopyMark({ text, label }: { text: string; label: string }) {
   );
 }
 
-type RowProps = { b: Blob; age: string | null; fresh: boolean; one: boolean; dec: number; onNs: (ns: string) => void; onOpen: (e: React.MouseEvent, href: string) => void };
+type RowProps = { b: Blob; age: string | null; fresh: boolean; one: boolean; dec: number; fv: Fv; onNs: (ns: string) => void; onOpen: (e: React.MouseEvent, href: string) => void };
+
+/**
+ * STUB (design/failed-blobs): a blob payment that failed in its block. Its height, time, transaction hash, namespace and
+ * publisher stand as a blob's; nothing it would have moved does: no blob size, no fee, no endorsement, nothing for
+ * Tensile to read. The chain's outcome is Failed, its reason on hover; the row opens the transaction's page.
+ *   a / b: in the Status column, a red dot and the word (a), or a pill (b); the figures each "—";
+ *   c: no Status column; the size, fee and endorsement cells are one cell that reads "● Failed · <reason>".
+ */
+const FailedRow = memo(function FailedRow({ b, age: ag, fresh, fv, onNs, onOpen }: RowProps) {
+  const tx = b.settlement_tx_hash?.toUpperCase() ?? "";
+  const href = `/tx/?hash=${b.settlement_tx_hash ?? ""}`;
+  const who = payer(b);
+  const name = nsDisplay(b.namespace);
+  const why = failedTitle(b.reason);
+  const dash = <span className="na">—</span>;
+  return (
+    <tr className={`row xf${fresh ? " fresh" : ""}`} data-h={keyOf(b)}
+      onClick={(e) => openRow(e, href, onOpen)} onAuxClick={(e) => openRow(e, href, onOpen)}>
+      <td className="c-h">{int(b.settlement_height)}</td>
+      <td className="c-t"><span title={utcWord(b.settlement_time)}><span className="tm">{monthDayTime(b.settlement_time)}</span>{ag && <span className="ag">{ag}</span>}</span></td>
+      <td className="c-b">
+        <Link href={href} title={`Transaction ${tx}`} aria-label={`Failed transaction ${tx.slice(0, 10)}, height ${int(b.settlement_height)}`}>{tx.slice(0, ID_ENDS)}<span className="el">…</span>{tx.slice(-TX_END)}</Link>
+        <CopyMark text={tx} label="the transaction hash" />
+        <span className="ht">#{int(b.settlement_height)}</span>
+      </td>
+      <td className="c-ns"><button type="button" className="nsb" onClick={() => onNs(b.namespace)} title={`${b.namespace} · show only this namespace`}>{name}</button></td>
+      <td className="c-p">{who ? <><Who addr={who} /><CopyMark text={who} label="the publisher's address" /></> : "—"}</td>
+      {statusCol(fv)
+        ? <>
+          <td className="c-sz num">{dash}</td>
+          <td className="c-fee num">{dash}</td>
+          <td className="c-st">{fv === "a"
+            ? <span className="st f" title={why}><i className="dot fault" />Failed</span>
+            : <span className="sp f" title={why}>Failed</span>}</td>
+          <td className="c-e num">{dash}</td>
+        </>
+        : <td className="c-xf" colSpan={3}>
+          <span className="xw" title={why}><i className="dot fault" /><b>Failed</b>{b.reason && <><span className="sep">·</span><span className="rs">{b.reason}</span></>}</span>
+        </td>}
+      <td className="gap" aria-hidden="true" />
+      <td className="tn">{dash}</td>
+      <td className="c-m"><span className="nm">{name}</span><span className="sep">·</span><span className="st f" title={why}><i className="dot fault" />Failed</span></td>
+    </tr>
+  );
+});
+
 /** one blob: the cells of the table, and the second line a phone shows under the first */
-const Row = memo(function Row({ b, age: ag, fresh, one, dec, onNs, onOpen }: RowProps) {
+const Row = memo(function Row({ b, age: ag, fresh, one, dec, fv, onNs, onOpen }: RowProps) {
   const href = `/blob/?hash=${b.promise_hash}`;
   const id = blobIdOf(b.commitment, b.blob_version ?? 0);
   // the settlement transaction, in upper case as an explorer prints it: the reference people pass around
@@ -348,6 +409,8 @@ const Row = memo(function Row({ b, age: ag, fresh, one, dec, onNs, onOpen }: Row
       <td className="c-sz num">{unit(bytes(b.blob_size))}</td>
       {/* one publisher's list is its escrow's statement: the fee went out of it */}
       <td className="c-fee num">{!b.charge ? "—" : one ? <Signed sign="−" utia={b.charge.fee_utia} dec={dec} /> : unit(tia(b.charge.fee_utia))}</td>
+      {/* STUB (design/failed-blobs): a settled blob's payment succeeded */}
+      {statusCol(fv) && <td className="c-st">{fv === "a" ? <span className="st"><i className="dot ok" />Success</span> : <span className="sp ok">Success</span>}</td>}
       <td className="c-e num">
         {share == null ? "—" : (
           <span className="en" title={`${b.attested_with_rows != null ? `${int(b.attested_with_rows)} of ${int(b.validators_with_rows)} validators holding rows endorsed it. ` : ""}A settlement needs ⅔ of voting power.`}>
@@ -369,7 +432,7 @@ const Row = memo(function Row({ b, age: ag, fresh, one, dec, onNs, onOpen }: Row
 });
 
 /** the first page's places while it loads: a page of rows, each cell's shape at its size */
-function Placeholders({ rows, one }: { rows: number; one: boolean }) {
+function Placeholders({ rows, one, fv }: { rows: number; one: boolean; fv: Fv }) {
   return (
     <>
       {Array.from({ length: rows }, (_, i) => (
@@ -381,6 +444,7 @@ function Placeholders({ rows, one }: { rows: number; one: boolean }) {
           {!one && <td className="c-p"><span className="wait">celestia ••• 9snr</span></td>}
           <td className="c-sz num"><span className="wait">16.0 MiB</span></td>
           <td className="c-fee num"><span className="wait">3.530 TIA</span></td>
+          {statusCol(fv) && <td className="c-st"><span className="wait">Success</span></td>}
           <td className="c-e num"><span className="wait">69.88%</span></td>
           <td className="gap" />
           <td className="tn" />
@@ -411,6 +475,10 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
 }) {
   const [motion, setMotion] = useState(true);
   useEffect(() => { setMotion(!reducedMotion()); }, []);
+  // STUB (design/failed-blobs): the variant, from ?fv=; the Blobs list's only, never one publisher's
+  const [fvRead, setFv] = useState<Fv>("");
+  useEffect(() => { setFv(readFv()); }, []);
+  const fv: Fv = onePublisher ? "" : fvRead;
 
   // ---- holding: while the reader is in the list, what is on screen stays ----
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -509,7 +577,7 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
   const placed = useMemo(() => (moves && shown.loaded ? moves.place(shown.path, shown.rows, shown.total) : undefined), [moves, shown]);
   const between = placed?.list;
   const items = useMemo(() => {
-    const blobs = shown.rows.map((b) => ({ b, m: null, t: Date.parse(b.settlement_time), i: moves?.rank.get(b.promise_hash) ?? -1 }));
+    const blobs = shown.rows.map((b) => ({ b, m: null, t: Date.parse(b.settlement_time), i: moves?.rank.get(keyOf(b)) ?? -1 }));
     if (!between?.length) return blobs;
     return [...blobs, ...between.map((m) => ({ b: null, m, t: Date.parse(m.time), i: m.idx }))].sort((x, y) => y.t - x.t || x.i - y.i);
   }, [shown.rows, between, moves?.rank]);
@@ -517,7 +585,7 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
   const dec = onePublisher ? decimals([...shown.rows.map((b) => b.charge?.fee_utia ?? 0), ...(between ?? []).map((m) => m.utia)]) : 3;
 
   const fresh = motion ? shown.move?.fresh : undefined;
-  const cols = onePublisher ? 9 : 10;
+  const cols = (onePublisher ? 9 : 10) + (statusCol(fv) ? 1 : 0);
   return (
     <>
       <div className="lg-wrap" ref={wrapRef}
@@ -535,15 +603,17 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
         </div>
         <div className={`lg-tw${waiting ? " is-waiting" : ""}`} aria-busy={waiting || !shown.loaded}>
           {!shown.loaded && !feed.error && <span className="sr-only">Loading…</span>}
-          <table ref={tableRef} className={`lg-t${onePublisher ? " lg-one" : ""}`}>
-            <LedgerHead one={onePublisher} />
+          <table ref={tableRef} className={`lg-t${onePublisher ? " lg-one" : ""}${fv ? ` fv-${fv}` : ""}`}>
+            <LedgerHead one={onePublisher} fv={fv} />
             <tbody ref={bodyRef}>
               {!shown.loaded && (feed.error
                 ? <tr className="lg-empty"><td colSpan={cols}>{feed.refused ? `${feed.error.charAt(0).toUpperCase()}${feed.error.slice(1)}.` : `The observer API is not answering (${feed.error}).`}</td></tr>
-                : <Placeholders rows={size} one={onePublisher} />)}
+                : <Placeholders rows={size} one={onePublisher} fv={fv} />)}
               {shown.loaded && shown.rows.length === 0 && <tr className="lg-empty"><td colSpan={cols}>{emptyText ?? <>No blob recorded{shown.path.includes("&namespace=") || (!onePublisher && shown.path.includes("&publisher=")) ? " with this filter" : ""}.</>}</td></tr>}
               {items.map(({ b, m, t }) => b
-                ? <Row key={b.promise_hash} b={b} age={now ? age(now - t) : null} fresh={!!fresh?.has(b.promise_hash)} one={onePublisher} dec={dec} onNs={onNs} onOpen={onOpen} />
+                ? b.status === "failed"
+                  ? <FailedRow key={keyOf(b)} b={b} age={now ? age(now - t) : null} fresh={!!fresh?.has(keyOf(b))} one={onePublisher} dec={dec} fv={fv} onNs={onNs} onOpen={onOpen} />
+                  : <Row key={keyOf(b)} b={b} age={now ? age(now - t) : null} fresh={!!fresh?.has(keyOf(b))} one={onePublisher} dec={dec} fv={fv} onNs={onNs} onOpen={onOpen} />
                 : <MoveRow key={m!.key} m={m!} age={now ? age(now - t) : null} dec={dec} />)}
             </tbody>
           </table>
