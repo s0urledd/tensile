@@ -270,7 +270,7 @@ async function tip(page, sel, theme, at = "pointer") {
     });
     document.body.appendChild(d);
     // a figure at a table's right edge: the tip ends under it, as a browser keeps a tooltip on the screen
-    if (at === "end") d.style.left = `${Math.round(r.right - d.offsetWidth + 4)}px`;
+    if (at === "end") { d.style.left = "0px"; const w = d.offsetWidth; d.style.left = `${Math.round(r.right - w + 4)}px`; }
   }, { sel, dark: theme === "dark", at });
 }
 /** hides what stands under a hover shot's area (the site's foot, the sections under a frame), so the crop holds only what it shows */
