@@ -1320,8 +1320,9 @@ export const UTIA = 1_000_000;
 
 /**
  * utia as TIA with the precision the size of the figure deserves: a fee is
- * 0.695 TIA, a day is 12.4 TIA, an escrow is 6,000 TIA. Never more than
- * three decimals, never a bare "0" for a non-zero amount.
+ * 0.695 TIA, a day is 12.4 TIA, an escrow is 6,000 TIA. Three decimals at most
+ * from 0.001 TIA up; below it, down to the utia (0.0008 TIA), so every amount
+ * is in TIA and none is a bare "0".
  */
 export function tia(utia: number | null | undefined, opts: { unit?: boolean } = {}): string {
   if (utia == null) return "—";
@@ -1332,7 +1333,7 @@ export function tia(utia: number | null | undefined, opts: { unit?: boolean } = 
   else if (Math.abs(v) >= 100) s = v.toFixed(1);
   else if (Math.abs(v) >= 10) s = v.toFixed(2);
   else if (Math.abs(v) >= 0.001) s = v.toFixed(3);
-  else s = `${utia} utia`;
+  else s = v.toFixed(6).replace(/\.?0+$/, "");
   return opts.unit === false ? s : `${s} TIA`;
 }
 
