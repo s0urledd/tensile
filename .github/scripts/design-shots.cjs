@@ -127,6 +127,11 @@ async function prepare() {
   ALL = [STUB_DEPOSIT, F_DEPOSIT, F_WITHDRAWAL, F_PFF, DEP_1, DEP_2, ...settled]
     .sort((a, b) => b.height - a.height || b.tx_index - a.tx_index || b.msg_index - a.msg_index);
   notes.push(`All: ${ALL.length} rows (${settled.length} live settlements, 2 real deposits, 1 STUB deposit, 3 failed)`);
+  // T1's blob carries Tensile's own reading of it, as its Blobs list row does (the live row's two fields)
+  const own = blobs.find((b) => b.promise_hash === BLOB);
+  const t1 = TXS["5da67b2a8865c75a572f5abb3070a2d3377a23baf371f705e1db1b312e21754e"].related.blob;
+  if (own) { t1.must_serve_until = own.must_serve_until; t1.reconstructable = own.reconstructable; }
+  else notes.push("T1: the blob's live row was not found: no Tensile chip");
   try {
     const v = await live(`/v1/validators/${VAL}?window=24h`);
     for (const t of Object.values(TXS)) if (t.related.validator) t.related.validator.avatar_url = v.validator.avatar_url;
@@ -246,32 +251,65 @@ async function full(page, file, shows) {
 }
 
 /**
- * the browser's own tooltip for an element's title, drawn where the browser puts it (under the pointer): a headless
- * browser paints no native tooltip, so the shot draws it in the platform's plain style
+ * the browser's own tooltip for an element's title: a headless browser paints no native tooltip, so the shot draws it
+ * in the platform's plain style. It never stands over another row (Design QA), so where it opens is chosen per shot:
+ *   right / left: beside the hovered element, inside its own row, level with the row;
+ *   rowend: inside its own row, after the row's last word (a figure in a row of facts);
+ *   above: over the hovered cell, its foot on the row's top line (the first row, over the table's head);
+ *   start / pointer: under the element, where nothing stands (the last row of a frame, the pager).
+ * What the tip covers is written to the notes, row by row, so a shot that covers another row is caught.
  */
 async function tip(page, sel, theme, at = "pointer") {
   const el = page.locator(sel).first();
   if (!(await el.count())) { notes.push(`tip: no element for ${sel}`); return; }
   await el.hover();
   await page.waitForTimeout(250);
-  await page.evaluate(({ sel, dark, at }) => {
+  const covered = await page.evaluate(({ sel, dark, at }) => {
     const e = document.querySelector(sel);
     const t = e && (e.getAttribute("title") || e.closest("[title]")?.getAttribute("title"));
-    if (!t) return;
+    if (!t) return ["no title"];
     const r = e.getBoundingClientRect();
+    // the row the element stands in: a table's row, or a row of facts (its dd, with the dt before it)
+    const tr = e.closest("tr"), dd = e.closest("dd");
+    const band = (tr || dd || e).getBoundingClientRect();
     const d = document.createElement("div");
     d.className = "shot-tip";
     d.textContent = t;
     Object.assign(d.style, {
-      position: "fixed", left: `${Math.round(at === "start" ? r.left - 4 : r.left + Math.min(r.width / 2, 14))}px`, top: `${Math.round(r.bottom + 18)}px`, zIndex: 99,
+      position: "fixed", left: "0px", top: "0px", zIndex: 99,
       maxWidth: "480px", padding: "4px 8px", font: "12px/1.35 system-ui, -apple-system, 'Segoe UI', sans-serif",
       color: dark ? "#f2f2f2" : "#1d1d1d", background: dark ? "#3b3b3b" : "#ffffff", border: `1px solid ${dark ? "#5c5c5c" : "#a0a0a0"}`,
       borderRadius: "3px", boxShadow: "0 2px 6px rgba(0,0,0,.22)", whiteSpace: "normal", pointerEvents: "none",
     });
     document.body.appendChild(d);
-    // a figure at a table's right edge: the tip ends under it, as a browser keeps a tooltip on the screen
-    if (at === "end") { d.style.left = "0px"; const w = d.offsetWidth; d.style.left = `${Math.round(r.right - w + 4)}px`; }
+    const w = d.offsetWidth, h = d.offsetHeight;
+    const mid = band.top + (band.height - h) / 2;
+    let left, top;
+    if (at === "right") { left = r.right + 10; top = mid; }
+    else if (at === "left") { left = r.left - 10 - w; top = mid; }
+    else if (at === "rowend") { const rg = document.createRange(); rg.selectNodeContents(dd || e); left = rg.getBoundingClientRect().right + 14; top = mid; }
+    else if (at === "above") { left = r.left - 4; top = band.top - 6 - h; }
+    else if (at === "start") { left = r.left - 4; top = r.bottom + 18; }
+    else { left = r.left + Math.min(r.width / 2, 14); top = r.bottom + 18; }
+    d.style.left = `${Math.round(left)}px`;
+    d.style.top = `${Math.round(top)}px`;
+    // what it covers: every visible word under it, named by where it stands
+    const tb = d.getBoundingClientRect();
+    const out = [];
+    const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      const p = n.parentElement;
+      if (!n.nodeValue.trim() || !p || d.contains(n) || getComputedStyle(p).visibility === "hidden") continue;
+      const rg = document.createRange();
+      rg.selectNodeContents(n);
+      if (![...rg.getClientRects()].some((q) => q.right > tb.left + 1 && q.left < tb.right - 1 && q.bottom > tb.top + 1 && q.top < tb.bottom - 1)) continue;
+      const own = (tr && tr.contains(n)) || (dd && (dd.contains(n) || dd.previousElementSibling?.contains(n)));
+      out.push(`${own ? "its own row" : p.closest("thead") ? "the head" : "ANOTHER ROW"} "${n.nodeValue.trim().slice(0, 40)}"`);
+    }
+    if (tb.right > innerWidth || tb.left < 0) out.push("OFF THE WINDOW");
+    return out;
   }, { sel, dark: theme === "dark", at });
+  if (covered.length) notes.push(`${theme} tip on ${sel} (${at}) covers: ${covered.join(", ")}`);
 }
 /** hides what stands under a hover shot's area (the site's foot, the sections under a frame), so the crop holds only what it shows */
 const hide = (page, sel, on = true) => page.evaluate(({ sel, on }) => document.querySelectorAll(sel).forEach((e) => { e.style.visibility = on ? "hidden" : ""; }), { sel, on });
@@ -294,14 +332,19 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       const { ctx, page } = await open(browser, theme);
       await go(page, `/publisher/?addr=${PUB}`, ".tx-t tbody tr.row:not(.sk)");
       await crop(page, `p1-all-${theme}.png`, ["#list .list-head", row("#list .tx-t", 12)],
-        "Publisher, All: one transaction table, TX hash · Type · Time (UTC) · Block · Status · Amount. The STUB deposit's +1,000.000 TIA beside the failed deposit and withdrawal request (Failed, Amount —); the STUB failed blob payment between two blob payments", { b: 0 });
+        "Publisher, All: one transaction table in five columns, TX hash · Type · Time/Block · Result · Amount. The STUB deposit's +1,000.000 TIA beside the failed deposit and withdrawal request (● Failed, Amount —); the STUB failed blob payment between two blob payments", { b: 0 });
       if (dk) await full(page, `p1-full-${theme}.png`, "Publisher page, whole, All open, for context");
-      await reveal(page, ["#list .list-head", row("#list .tx-t", 6)]);
-      await tip(page, `${row("#list .tx-t", 3)} .st.f`, theme);
-      await crop(page, `p1-tip-failed-${theme}.png`, ["#list .tx-t thead", row("#list .tx-t", 5), ".shot-tip"], "Hover on Failed: \"Failed: Insufficient funds. None of its messages took effect.\"", { t: 20, r: 20, b: 0, l: 20 });
+      // Addendum 2 (1 of 4): the Result column, Success and Failed rows mixed
+      await reveal(page, ["#list .tx-t thead", row("#list .tx-t", 6)]);
+      await crop(page, `r1-all-result-${theme}.png`, ["#list .tx-t thead", row("#list .tx-t", 6)],
+        "Addendum 2 (1 of 4), All with Result: the chain's outcome only, Success in plain words and the red ● Failed, mixed in chain order (a deposit, a failed deposit, a failed withdrawal request, a blob payment, a failed blob payment, a blob payment); no blob metric and no Tensile result in All", { t: 20, r: 20, b: 0, l: 20 });
+      // Addendum 2 (2 of 4): the hover on a Failed result, beside it in its own row
+      await tip(page, `${row("#list .tx-t", 2)} .st.f`, theme, "right");
+      await crop(page, `r2-result-hover-${theme}.png`, ["#list .tx-t thead", row("#list .tx-t", 5), ".shot-tip"],
+        "Addendum 2 (2 of 4), the hover on a Failed result: \"Transaction failed · Out of gas\", opened beside it in its own row (\"Transaction failed\" alone when Tensile has no reason); a click opens the transaction page", { t: 20, r: 20, b: 0, l: 20 });
       await untip(page);
-      await tip(page, `${row("#list .tx-t", 2)} td.c-am .xd`, theme, "end");
-      await crop(page, `p1-tip-dash-${theme}.png`, ["#list .tx-t thead", row("#list .tx-t", 5), ".shot-tip"], "Hover on a failed row's Amount dash: \"Nothing moved: the escrow is as it was.\"", { t: 20, r: 20, b: 0, l: 20 });
+      await tip(page, `${row("#list .tx-t", 3)} td.c-am .xd`, theme, "left");
+      await crop(page, `p1-tip-dash-${theme}.png`, ["#list .tx-t thead", row("#list .tx-t", 5), ".shot-tip"], "Hover on a failed row's Amount dash, beside it in its own row: \"Nothing moved: the escrow is as it was.\"", { t: 20, r: 20, b: 0, l: 20 });
       await untip(page);
       await reveal(page, ["#list .pager"], 160);
       await tip(page, "#list .pager .count span[title]", theme);
@@ -312,11 +355,12 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       await ctx.close();
     }
 
-    // ---- P2. publisher, Blobs: today's blob table, the namespace picker here only
+    // ---- P2. publisher, Blobs: today's blob table, its Tensile column, the namespace picker here only
     {
       const { ctx, page } = await open(browser, theme);
       await go(page, `/publisher/?addr=${PUB}&kind=blobs`, "#list .lg-t tbody tr.row:not(.sk)");
-      await crop(page, `p2-blobs-${theme}.png`, ["#list .list-head", row("#list .lg-t", 9)], "Publisher, Blobs: today's blob table unchanged (Blob ID, Namespace, Blob size, Amount, Endorsed, Tensile); the Namespace picker shows under Blobs only", { b: 0 });
+      await crop(page, `r3-blobs-tensile-${theme}.png`, ["#list .list-head", row("#list .lg-t", 9)],
+        "Addendum 2 (3 of 4), Blobs: today's blob table unchanged, with its eye-marked Tensile column (available / unavailable / retention window); no failed row, as a failed blob payment settled no blob (#1,497,140 is followed by #1,497,108: the failed payment at #1,497,121 is in All). The Namespace picker shows under Blobs only", { b: 0 });
       await ctx.close();
     }
 
@@ -325,7 +369,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       const { ctx, page } = await open(browser, theme);
       await go(page, `/publisher/?addr=${PUB}&kind=escrow`, ".tx-t tbody tr.row:not(.sk)");
       await page.waitForSelector(".tx-t tfoot", { timeout: 15000 }).catch(() => notes.push(`${theme} escrow: no foot`));
-      await crop(page, `p3-escrow-${theme}.png`, ["#list .list-head", "#list .lg-tw", "#list .pager"], "Publisher, Escrow: All's five columns; the failed deposit and withdrawal request (Failed, —), the two real deposits; the statement foot unchanged and closing (Deposited +1,004 · Fees paid for 109 settlements −545.195 · Escrow now 458.805 TIA)");
+      await crop(page, `p3-escrow-${theme}.png`, ["#list .list-head", "#list .lg-tw", "#list .pager"], "Publisher, Escrow: All's five columns, Result among them; the failed deposit and withdrawal request (● Failed, —), the two real deposits (Success); the statement foot unchanged and closing (Deposited +1,004 · Fees paid for 109 settlements −545.195 · Escrow now 458.805 TIA)");
       await ctx.close();
     }
 
@@ -334,14 +378,15 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       const { ctx, page } = await open(browser, theme);
       await go(page, `/validator/?addr=${VAL}&tab=endpoints`, ".eh-t tbody tr");
       await crop(page, `v1-history-${theme}.png`, [".vd-stat", "#evidence .list-head", "#evidence .vd-pager"],
-        "Validator Unity Nodes: the panels unchanged; under them the tabs Latest checks | Endpoint history 3, Endpoint history open: Time (UTC) · Block · TX hash · Action · Status · Endpoint. The MOCK failed row (Change requested · Failed · 203.0.113.10:7980 quiet), two real Changed rows (the newer marked current) and the host before Tensile's record", { t: 12 });
+        "Validator Unity Nodes: the panels unchanged; under them the tabs Latest checks | Endpoint history 3, Endpoint history open in five columns: Time/Block · TX hash · Action · Status · Endpoint. The MOCK failed row (Change requested · ● Failed · 203.0.113.10:7980 quiet), two real Changed rows (Success; the newer marked current) and the host before Tensile's record", { t: 12 });
       if (dk) await full(page, `v1-full-${theme}.png`, "Validator page, whole, Endpoint history open, for context");
       await reveal(page, ["#evidence .list-head", "#evidence .vd-pager"]);
-      await tip(page, ".eh-t tr.xf .st.f", theme);
-      await crop(page, `v1-tip-failed-${theme}.png`, ["#evidence .lg-tw", ".shot-tip"], "Hover on Failed: \"Failed: Invalid validator. The endpoint did not change.\"", { t: 8, r: 20, b: 8, l: 20 });
+      // the failed row is the first: its tips open above it, over the table's head, never over another row
+      await tip(page, ".eh-t tr.xf .st.f", theme, "above");
+      await crop(page, `v1-tip-failed-${theme}.png`, ["#evidence .lg-tw", ".shot-tip"], "Hover on Failed, opened above it: \"Transaction failed · Invalid validator\"; that the endpoint did not change is told on the transaction page", { t: 8, r: 20, b: 8, l: 20 });
       await untip(page);
-      await tip(page, ".eh-t tr.xf .rq", theme);
-      await crop(page, `v1-tip-req-${theme}.png`, ["#evidence .lg-tw", ".shot-tip"], "Hover on the requested address: \"Requested; the endpoint did not change.\"", { t: 8, r: 20, b: 8, l: 20 });
+      await tip(page, ".eh-t tr.xf .rq", theme, "above");
+      await crop(page, `v1-tip-req-${theme}.png`, ["#evidence .lg-tw", ".shot-tip"], "Hover on the requested address, opened above it: \"Requested; the endpoint did not change.\"", { t: 8, r: 20, b: 8, l: 20 });
       await untip(page);
       await ctx.close();
     }
@@ -355,23 +400,30 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
 
     // ---- T1–T6. the transaction page
     const T = [
-      ["t1-blob-payment", "5da67b2a8865c75a572f5abb3070a2d3377a23baf371f705e1db1b312e21754e", "Blob payment, success: Publisher, Blob and Namespace links, Gas 219,118 used of 400,000; Blob size, Fee paid 3.575 TIA from escrow · settled, Transaction fee 0.008 TIA; its message"],
+      ["t1-blob-payment", "5da67b2a8865c75a572f5abb3070a2d3377a23baf371f705e1db1b312e21754e", "Blob payment, success: the chain's ● Success in the mast; Publisher, the Blob link (AOGIlR…gNrd/3 →) with Tensile's eye-marked available chip beside it, Namespace, Gas 219,118 used of 400,000; Blob size, Fee paid 3.575 TIA from escrow · settled, Transaction fee 0.008 TIA; its message"],
       ["t2-deposit", "7f7e66d16ec7337c82ffc65148bf3e42bef39b2adef3f930862455494ddc3d89", "Deposit, success: Amount +1,000 TIA into the escrow; Transaction fee 0.004 TIA"],
       ["t3-withdrawal-failed", "a4bd0b1855044d09c2f84ae43f6504d9365a470810b6f67d30a6ec11d2afdb92", "Withdrawal request, failed: Requested 1,000,000,000 TIA (not bold) not withdrawn · Escrow Unchanged · Transaction fee 0.0008 TIA; the error (Insufficient funds, sdk 5, the raw log); MsgRequestWithdrawal failed"],
       ["t4-endpoint", "e59c8ec3e5538f64f442e968795dd2c1159636ecf9f90d4698317f946374adcf", "Endpoint registration, success: Validator Unity Nodes; Action Changed; Endpoint 89.40.226.146:7980 → 89.40.226.218:7980; Transaction fee 0.002 TIA"],
-      ["t5-endpoint-failed", "fb27dda8abf009db6512800b74898bc60410e1139a7fbb8f49e4ff30d3226cdb", "Endpoint registration, failed (MOCK signer): Requested 203.0.113.10:7980 (quiet) · Endpoint Unchanged, 89.40.226.218:7980 stayed registered; Invalid validator and its raw error"],
+      ["t5-endpoint-failed", "fb27dda8abf009db6512800b74898bc60410e1139a7fbb8f49e4ff30d3226cdb", "Endpoint registration, failed (MOCK signer): Action Change requested, the row's own word in Endpoint history (not bold); Requested 203.0.113.10:7980 (quiet) · Endpoint Unchanged, 89.40.226.218:7980 stayed registered; Invalid validator and its raw error"],
     ];
     for (const [name, hash, shows] of T) {
       const { ctx, page } = await open(browser, theme);
       await go(page, `/tx/?hash=${hash}`, ".tx-m tbody tr");
       await crop(page, `${name}-${theme}.png`, [".bd-title", ".tx-ms"], shows);
+      if (name === "t1-blob-payment") {
+        // Addendum 2 (4 of 4): the two results apart, by where they sit and by the eye
+        await crop(page, `r4-blob-payment-results-${theme}.png`, [".bd-title", ".tx-top"],
+          "Addendum 2 (4 of 4), a successful blob payment's page with both results: the chain's ● Success in the mast (no eye); Tensile's own result for the blob, the Blobs list's available chip with Tensile's eye, beside the blob's link (AOGIlR…gNrd/3 →, to the blob page) in the left frame", { t: 24, b: 14 });
+      }
       if (name === "t3-withdrawal-failed") {
         if (dk) await full(page, `t3-full-${theme}.png`, "Transaction page, whole (a failed withdrawal request), for context");
         await reveal(page, [".bd-title", ".tx-top"]);
-        await hide(page, ".tx-err, .tx-ms, footer");
-        await tip(page, ".tx-top .bd-figs dd:last-of-type b[title]", theme);
-        await crop(page, `t3-tip-fee-${theme}.png`, [".tx-top", ".shot-tip"], "Hover on the transaction fee's figure: the chain's own, \"800 utia\"", { t: 16, r: 20, b: 20, l: 20 });
+        await tip(page, ".tx-top .bd-figs dd:last-of-type b[title]", theme, "rowend");
+        await crop(page, `t3-tip-fee-${theme}.png`, [".tx-top", ".shot-tip"], "Hover on the transaction fee's figure, opened in its own row: the chain's own, \"800 utia\"", { t: 16, r: 20, b: 16, l: 20 });
         await untip(page);
+        // the fee is the frame's last row: the label's tip opens under the frame, where the page's next sections are
+        // hidden for the shot, so it stands over no row
+        await hide(page, ".tx-err, .tx-ms, footer");
         await tip(page, ".tx-top .bd-figs dt:last-of-type", theme, "start");
         await crop(page, `t3-tip-label-${theme}.png`, [".tx-top", ".shot-tip"], "Hover on Transaction fee: paid from the fee payer's bank balance, never the escrow; it was taken, so this transaction cannot run again", { t: 16, r: 20, b: 20, l: 20 });
         await hide(page, ".tx-err, .tx-ms, footer", false);
@@ -393,10 +445,8 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       await crop(page, `g1-blob-${theme}.png`, [".bd-title", ".bd-top"], "Blob page as round 1's: Gas 219,118 used of 400,000 under the Transaction (its hash now opens the transaction page); Fee paid 3.575 TIA from escrow · settled, and under it Transaction fee 0.008 TIA from the bank balance", { t: 24, b: 14 });
       if (dk) await full(page, `g1-full-${theme}.png`, "Blob page, whole, for context");
       await reveal(page, [".bd-title", ".bd-top"]);
-      await hide(page, ".bd-under, .bd-full, footer");
-      await tip(page, ".bd-figs dd b[title]", theme);
-      await crop(page, `g1-tip-fee-${theme}.png`, [".bd-top", ".shot-tip"], "Hover on the transaction fee's figure: \"8,000 utia\"", { t: 16, r: 20, b: 20, l: 20 });
-      await hide(page, ".bd-under, .bd-full, footer", false);
+      await tip(page, ".bd-figs dd b[title]", theme, "rowend");
+      await crop(page, `g1-tip-fee-${theme}.png`, [".bd-top", ".shot-tip"], "Hover on the transaction fee's figure, opened in its own row: \"8,000 utia\"", { t: 16, r: 20, b: 16, l: 20 });
       await untip(page);
       await ctx.close();
     }
@@ -404,6 +454,9 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
 
   await browser.close();
   server.close();
+  // the four shots the owner asked for apart (Addendum 2) lead each theme, in their order; the rest as taken
+  const rank = (s) => (s.file.endsWith("-light.png") ? 2 : 0) + (/^r\d-/.test(s.file) ? 0 : 1);
+  shots.sort((a, b) => rank(a) - rank(b));
   fs.writeFileSync(path.join(out, "shots.json"), JSON.stringify(shots, null, 1) + "\n");
   fs.writeFileSync(path.join(out, "notes.txt"), notes.join("\n") + "\n");
   console.log(fs.readdirSync(out).join("\n"));

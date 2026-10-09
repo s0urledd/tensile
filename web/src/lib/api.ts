@@ -571,7 +571,12 @@ export type TxAnswer = {
   };
   related: {
     publisher?: string;
-    blob?: { promise_hash: string; commitment: string; blob_version: number; settlement_height?: number };
+    /**
+     * the blob a blob payment settled: its page, and Tensile's own reading of it (must_serve_until and reconstructable,
+     * as a Blobs list row carries them), for the same Tensile chip as the list's
+     */
+    blob?: { promise_hash: string; commitment: string; blob_version: number; settlement_height?: number;
+      must_serve_until?: string; reconstructable?: Reconstruct | null };
     validator?: { operator_address: string; moniker?: string; avatar_url?: string };
   };
 };
@@ -591,9 +596,8 @@ export type EndpointEvent = {
   host: string;
   previous_host?: string;
   attempted?: "change" | "registration";
+  /** a failed one's reason, when Tensile has one; which message failed is on its transaction's page */
   reason?: string;
-  /** a failed one whose failing message was another message of the same transaction */
-  other_message_failed?: boolean;
 };
 
 /** the fee as the chain printed it ("800utia", coins joined by commas), with each amount's digits grouped and a space before its denomination */

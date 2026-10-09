@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type EndpointEvent, int, utcWord } from "@/lib/api";
 import { CopyMark } from "@/components/Ledger";
+import { failedTitle } from "@/components/TxTable";
 import Warn from "@/components/Warn";
 import { age, monthDayTime } from "@/components/BlobsDeck";
 import { openRow } from "@/lib/row";
@@ -11,9 +12,11 @@ import { openRow } from "@/lib/row";
 /**
  * A validator's Fibre endpoint registrations on chain, newest first, as a transaction table: when and in which block,
  * its transaction (the link to its page, and the copy mark), what it did, whether it took effect, and the endpoint, each
- * in a column of its own. The first registration reads Registered and every later one Changed; a failure reads what it
- * asked ("Change requested") with Failed beside it, and its address quiet, never bold and never marked current: it
- * changed nothing. Why it failed, and that the endpoint stayed, are on its page. The row opens its transaction's page.
+ * in a column of its own. The first registration reads Registered and every later successful one Changed; a failure
+ * reads what it asked ("Change requested") with the red "● Failed" beside it (Status holds the chain's outcome only, as
+ * a publisher's Result does: Success in plain words, the red dot its one mark), and its address quiet, never bold and
+ * never marked current: it changed nothing. Why it failed, and that the endpoint stayed, are on its page. The row opens
+ * its transaction's page.
  */
 export default function EndpointHistory({ rows, current, truncated, apiHref }: {
   rows: EndpointEvent[];
@@ -55,8 +58,6 @@ export default function EndpointHistory({ rows, current, truncated, apiHref }: {
               const attempted = r.attempted ?? (rows.slice(i + 1).some((o) => o.outcome !== "failed") ? "change" : "registration");
               const action = failed ? (attempted === "change" ? "Change requested" : "Registration requested")
                 : r.outcome === "registered" || r.outcome === "before_record" ? "Registered" : "Changed";
-              const why = r.reason ? (r.other_message_failed ? `Another message in this transaction failed: ${r.reason}.` : `Failed: ${r.reason}.`)
-                : r.other_message_failed ? "Another message in this transaction failed." : "Failed.";
               return (
                 <tr key={`${r.outcome}|${r.height ?? ""}|${r.tx_index ?? ""}|${r.host}`} className={`row${failed ? " xf" : ""}${href ? "" : " np"}`}
                   onClick={href ? (e) => openRow(e, href, onOpen) : undefined} onAuxClick={href ? (e) => openRow(e, href, onOpen) : undefined}>
@@ -73,8 +74,8 @@ export default function EndpointHistory({ rows, current, truncated, apiHref }: {
                     : <span className="na">—</span>}</td>
                   <td className="c-ac">{action}</td>
                   <td className="c-st">{failed
-                    ? <span className="st f" title={`${why} The endpoint did not change.`}><i className="dot fault" />Failed</span>
-                    : hash ? <span className="st" title="It took effect in this block."><i className="dot ok" />Success</span>
+                    ? <span className="st f" title={failedTitle(r.reason)}><i className="dot fault" />Failed</span>
+                    : hash ? <span className="st" title="It took effect in this block.">Success</span>
                     : <span className="na">—</span>}</td>
                   <td className="c-ep">{failed
                     ? <span className="mono rq" title="Requested; the endpoint did not change.">{r.host}</span>

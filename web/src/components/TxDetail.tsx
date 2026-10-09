@@ -8,6 +8,9 @@ import StatusLine from "@/components/StatusLine";
 import Copy from "@/components/Copy";
 import Warn from "@/components/Warn";
 import Avatar from "@/components/Avatar";
+import Info from "@/components/Info";
+import { Eye } from "@/components/Metrics";
+import { lane } from "@/lib/status";
 import { CopyMark, Who } from "@/components/Ledger";
 import { unit } from "@/components/Unit";
 import { monthDayTime } from "@/components/BlobsDeck";
@@ -17,6 +20,9 @@ import { monthDayTime } from "@/components/BlobsDeck";
  * failed: the blob page's mast (its title, its hash with the copy button, its status, type and block as chips), its two
  * light frames (on the left what it touches, the pages it links to, and its gas; on the right what it asked for, moved
  * and cost, ending with its fee), then, for a failure, the error as the node returned it, and its messages.
+ *
+ * Two results never mix: the mast's status chip is the chain's outcome, with no eye; a blob payment's blob carries
+ * Tensile's own result for it beside its link, the Blobs list's Tensile chip with Tensile's eye.
  */
 
 /** past this many messages, only the one that failed and the first this many that carry Fibre are listed */
@@ -141,8 +147,16 @@ function Page({ t, HEX, meta, metaErr, at }: { t: TxAnswer; HEX: string; meta: M
   if (r.validator) row("val", "Validator", <ValChip v={r.validator} />);
   else if (t.kind === "set_host" && failed) row("val", "Validator", <em>none: the signer is not a validator</em>);
   if (t.kind === "settlement" && !failed && r.blob) {
+    // the blob it settled, a link that looks like one; beside it Tensile's own result for the blob, the Blobs list's
+    // Tensile chip with Tensile's eye, so it is never read as the chain's result in the mast
     const id = blobIdOf(r.blob.commitment, r.blob.blob_version);
-    row("blob", "Blob", <Link className="bd-ns mono" href={`/blob/?hash=${r.blob.promise_hash}`} title={`Blob ID ${id}`}>{id.slice(0, 6)}…{id.slice(-6)}</Link>);
+    const b = r.blob;
+    const ln = b.must_serve_until ? lane({ must_serve_until: b.must_serve_until, reconstructable: b.reconstructable ?? null }) : null;
+    row("blob", "Blob", <>
+      <Link className="tx-go mono" href={`/blob/?hash=${b.promise_hash}`} title={`Blob ID ${id} · its blob page`}>{id.slice(0, 6)}…{id.slice(-6)}<span className="ar" aria-hidden="true">→</span></Link>
+      {ln && <Info label="Tensile" trigger={<><Eye />{ln.word}</>} title={`Tensile's own reading of this blob · ${ln.title}`}
+        className={`tx-tn${ln.tier === "hold" ? " hold" : ln.tier === "kept" ? " ok" : ""}`}><p>{ln.title}</p></Info>}
+    </>);
   }
   if ((t.kind === "settlement" && failed) || t.kind === "timeout") {
     if (x.promise_hash) row("ph", "Promise hash", <><span className="mono" title={x.promise_hash}>{shortMid(x.promise_hash, 10, 6)}</span><Copy text={x.promise_hash} label="the promise hash" /></>);
@@ -167,7 +181,7 @@ function Page({ t, HEX, meta, metaErr, at }: { t: TxAnswer; HEX: string; meta: M
       } else {
         add("fee", "Fee paid", <><b>None</b><em>nothing was charged to the escrow</em></>);
         add("blob", "Blob", r.blob?.settlement_height != null
-          ? <><Link className="bd-ns mono" href={`/blob/?hash=${r.blob.promise_hash}`}>{blobIdOf(r.blob.commitment, r.blob.blob_version).slice(0, 6)}…</Link><em>settled later, block #{int(r.blob.settlement_height)}</em></>
+          ? <><Link className="tx-go mono" href={`/blob/?hash=${r.blob.promise_hash}`}>{blobIdOf(r.blob.commitment, r.blob.blob_version).slice(0, 6)}…<span className="ar" aria-hidden="true">→</span></Link><em>settled later, block #{int(r.blob.settlement_height)}</em></>
           : <em>not settled</em>);
       }
       break;
@@ -205,6 +219,9 @@ function Page({ t, HEX, meta, metaErr, at }: { t: TxAnswer; HEX: string; meta: M
           ? <><span className="mono eh-o">{x.previous_host}</span><span className="eh-ar" aria-label="to">→</span><span className="mono eh-n">{x.host}</span></>
           : <><span className="mono eh-n">{x.host}</span>{x.action === "same" && <em>same address</em>}</>);
       } else {
+        // the row's own word in Endpoint history, what it tried; never bold, as nothing happened
+        const tried = x.attempted ?? (x.host_at_block ? "change" : "registration");
+        add("act", "Action", tried === "change" ? "Change requested" : "Registration requested");
         if (x.requested_host) add("rq", "Requested", <span className="mono rq">{x.requested_host}</span>, "Requested; the endpoint did not change.");
         add("ep", "Endpoint", <><b>Unchanged</b>{x.host_at_block && <em><span className="mono">{x.host_at_block}</span> stayed registered</em>}</>);
       }

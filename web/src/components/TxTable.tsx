@@ -12,9 +12,11 @@ import { openRow } from "@/lib/row";
 /**
  * One publisher's transactions as a transaction table (All, and Escrow): every row a transaction, in five columns that
  * each hold one kind of fact all the way down: its hash (the link to its page, and the copy mark), its type, when and in
- * which block, whether it took effect, and what it moved. A failure is "Failed" in Status and "—" in Amount: it moved
- * nothing, and what it asked for and why it failed are on its page. A payout has no transaction of its own: no hash, and
- * the row opens nothing. The whole row opens the transaction's page; the hash and the copy mark keep their own clicks.
+ * which block, its result, and what it moved. Result is the chain's outcome only, Success or Failed, never Tensile's
+ * reading of a blob (that is in Blobs, and on the transaction page). A failure is the red "● Failed" in Result and "—" in
+ * Amount: it moved nothing, and what it asked for and why it failed are on its page. A payout has no transaction of its
+ * own: no hash, and the row opens nothing. The whole row opens the transaction's page; the hash and the copy mark keep
+ * their own clicks.
  *
  * Page 1 is live: read again every 15 s, new rows sliding in from the top, or, while the reader is in the list, gathered
  * in the pill on the table's edge until a click brings them in.
@@ -32,8 +34,8 @@ const SIGN: Record<TxRow["kind"], "+" | "−" | ""> = { settlement: "−", depos
 
 const keyOf = (t: TxRow) => `${t.height}:${t.tx_index}:${t.msg_index}:${t.status}`;
 
-/** a failed row's Status hover: why, when Tensile has a reason, and that nothing of it took effect */
-export const failedTitle = (reason?: string) => reason ? `Failed: ${reason}. None of its messages took effect.` : "It failed in this block: none of its messages took effect.";
+/** a failed row's hover on "Failed", in every transaction table: that it failed and, when Tensile has one, the reason */
+export const failedTitle = (reason?: string) => reason ? `Transaction failed · ${reason}` : "Transaction failed";
 
 /** a withdrawal request's place in the queue, in words, for the hover on its amount */
 function queueWords(t: TxRow): string {
@@ -64,9 +66,10 @@ const Row = memo(function Row({ t, dec, ag, fresh, onOpen }: { t: TxRow; dec: nu
         : <span className="na" title={`Paid out by the chain at the start of block #${int(t.height)}: no transaction of its own.`}>—</span>}</td>
       <td className="c-k">{word}</td>
       <td className="c-tb"><span className="tb" title={`${utcWord(t.time)} · block #${int(t.height)}`}><span className="tm">{monthDayTime(t.time)}</span><span className="ag">{ag ?? ""}</span><span className="bk">#{int(t.height)}</span></span></td>
+      {/* the chain's outcome: Success in plain words, Failed with the red dot, the column's one mark */}
       <td className="c-st">{failed
         ? <span className="st f" title={failedTitle(t.reason)}><i className="dot fault" />Failed</span>
-        : <span className="st" title="It took effect in this block."><i className="dot ok" />Success</span>}</td>
+        : <span className="st" title="It took effect in this block.">Success</span>}</td>
       <td className="c-am num">{amount == null
         ? <span className="xd" title={failed ? "Nothing moved: the escrow is as it was." : undefined}>—</span>
         : <span title={reqNote}><Signed sign={sign} utia={amount} dec={dec} /></span>}</td>
@@ -205,7 +208,7 @@ export default function TxTable({ q, view, page, size, maxPages, onPage, live, s
                 <th className="c-x" title="The transaction's hash. Its page has the gas, the fee, the messages and, if it failed, why.">TX hash</th>
                 <th className="c-k">Type</th>
                 <th className="c-tb">Time <span className="per">(UTC)</span> · Block</th>
-                <th className="c-st" title="Whether the transaction took effect. A failed one changed nothing.">Status</th>
+                <th className="c-st" title="The chain's outcome: whether the transaction took effect. A failed one changed nothing.">Result</th>
                 <th className="c-am num" title={view === "escrow"
                   ? "What each movement put into the escrow (+) or took out of it (−). A withdrawal request moves its amount into the queue, inside the escrow. A failed one moved nothing."
                   : "What each transaction moved into the escrow (+) or out of it (−): a blob's fee, a deposit, a withdrawal paid out. A withdrawal request moves its amount into the queue, inside the escrow. A failed one moved nothing."}>Amount</th>
