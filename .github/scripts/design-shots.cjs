@@ -228,7 +228,9 @@ async function tip(page, sel, theme) {
     const e = document.querySelector(sel);
     const t = e && (e.getAttribute("title") || e.closest("[title]")?.getAttribute("title"));
     if (!t) return ["no title"];
-    const r = e.getBoundingClientRect();
+    // the element with what hangs outside its box (a status's dot)
+    const rs = [e, ...e.querySelectorAll("*")].map((x) => x.getBoundingClientRect()).filter((q) => q.width > 0);
+    const r = { left: Math.min(...rs.map((q) => q.left)), right: Math.max(...rs.map((q) => q.right)) };
     const tr = e.closest("tr");
     const band = (tr || e).getBoundingClientRect();
     const d = document.createElement("div");
@@ -392,9 +394,6 @@ const URL0 = `/publisher/?addr=${PUB}`;
       await clips(page, `p${pv} all ${theme}`);
       if (theme === "dark") await layout(page, `p${pv} all`);
       await crop(page, `p${pv}-all-${theme}.png`, ["#list .list-head", rowSel(8)]);
-      await tip(page, "#list .ptx-t tr.xf td.c-st .st.f", theme);
-      await crop(page, `p${pv}-hover-${theme}.png`, ["#list .list-head", rowSel(8), ".shot-tip"]);
-      await untip(page);
       // Blobs
       await go(page, `${URL0}&pv=${pv}&kind=blobs`, "#list .lg-t tbody tr.xf");
       await reveal(page, "#list .list-head");
@@ -408,6 +407,11 @@ const URL0 = `/publisher/?addr=${PUB}`;
       await clips(page, `p${pv} escrow ${theme}`);
       if (theme === "dark") await layout(page, `p${pv} escrow`);
       await crop(page, `p${pv}-escrow-${theme}.png`, ["#list .list-head", "#list .lg-tw", "#list .pager"]);
+      // the hover on a Failed status, in Escrow: its Payout cell (1, 2) or the frame's margin (3) holds the tip clear of
+      // every word; All's status is its last column, where Alt 1's tip has room on neither side but over its own row's dash
+      await tip(page, "#list .ptx-t tr.xf td.c-st .st.f", theme);
+      await crop(page, `p${pv}-hover-${theme}.png`, ["#list .list-head", "#list .ptx-t tbody", ".shot-tip"]);
+      await untip(page);
     }
     await ctx.close();
   }
