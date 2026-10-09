@@ -241,7 +241,7 @@ export type Moves = { place: (path: string, rows: Blob[], total: number) => Plac
  * the columns' heads; one publisher's list names no publisher, its rows are its transactions, and its fee column is the
  * escrow's statement. The statement alone (escrow) heads what its rows hold: the kind of movement and its amount, the
  * blobs' columns left unnamed (they stay, so nothing moves when the kind changes). The Blobs list's (status) names each
- * payment's outcome on chain after the fee
+ * payment's outcome on chain after the fee, as a publisher's Blobs does
  */
 export function LedgerHead({ one, escrow = false, status = false }: { one: boolean; escrow?: boolean; status?: boolean }) {
   if (escrow) {
@@ -273,7 +273,8 @@ export function LedgerHead({ one, escrow = false, status = false }: { one: boole
         {one
           ? <th className="c-fee num" title="What each transaction moved into the escrow (+) or out of it (−): a blob's fee, a deposit, a withdrawal paid out.">Amount</th>
           : <th className="c-fee num">Fee paid</th>}
-        {status && <th className="c-st">TX status</th>}
+        {/* one publisher's Blobs heads it Status, as its page's All and Escrow do (the approved Alt 3) */}
+        {status && <th className="c-st">{one ? "Status" : "TX status"}</th>}
         <th className="c-e num" title="Share of voting power whose signature on the settlement verified. A settlement needs ⅔.">Endorsed <Frac /></th>
         <th className="gap" aria-hidden="true" />
         <th className="tn" title="Tensile's own reading of each blob, once, near the end of its retention window."><span><Eye />Tensile</span></th>
