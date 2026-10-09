@@ -176,11 +176,11 @@ async function full(page, file, shows) {
  * the browser's own tooltip for an element's title, drawn where the browser puts it (under the pointer): a headless
  * browser paints no native tooltip, so the shot draws it in the platform's plain style
  */
-async function tip(page, sel, theme) {
+async function tip(page, sel, theme, at = "pointer") {
   const el = page.locator(sel).first();
   await el.hover();
   await page.waitForTimeout(250);
-  await page.evaluate(({ sel, dark }) => {
+  await page.evaluate(({ sel, dark, at }) => {
     const e = document.querySelector(sel);
     const t = e && (e.getAttribute("title") || e.closest("[title]")?.getAttribute("title"));
     if (!t) return;
@@ -189,13 +189,13 @@ async function tip(page, sel, theme) {
     d.className = "shot-tip";
     d.textContent = t;
     Object.assign(d.style, {
-      position: "fixed", left: `${Math.round(r.left + Math.min(r.width / 2, 14))}px`, top: `${Math.round(r.bottom + 18)}px`, zIndex: 99,
+      position: "fixed", left: `${Math.round(at === "start" ? r.left - 4 : r.left + Math.min(r.width / 2, 14))}px`, top: `${Math.round(r.bottom + 18)}px`, zIndex: 99,
       maxWidth: "480px", padding: "4px 8px", font: "12px/1.35 system-ui, -apple-system, 'Segoe UI', sans-serif",
       color: dark ? "#f2f2f2" : "#1d1d1d", background: dark ? "#3b3b3b" : "#ffffff", border: `1px solid ${dark ? "#5c5c5c" : "#a0a0a0"}`,
       borderRadius: "3px", boxShadow: "0 2px 6px rgba(0,0,0,.22)", whiteSpace: "normal", pointerEvents: "none",
     });
     document.body.appendChild(d);
-  }, { sel, dark: theme === "dark" });
+  }, { sel, dark: theme === "dark", at });
 }
 const untip = (page) => page.evaluate(() => document.querySelectorAll(".shot-tip").forEach((d) => d.remove()));
 
@@ -331,8 +331,8 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       const { ctx, page } = await open(browser, theme);
       await go(page, `/blob/?tx=${FAILED_TX}`, ".bd-err");
       await crop(page, `g3-failed-${theme}.png`, [".bd-title", ".bd-top"], "Failed page A4BD0B18…: Gas 50,219 used of 200,000; Transaction fee 800 utia from the bank balance, the format the success details share", { t: 24, b: 14 });
-      await tip(page, ".bd-top dt[title*=\"cannot run again\"]", theme);
-      await crop(page, `g3-tip-fee-${theme}.png`, [".bd-top dt:nth-of-type(4)", ".bd-top dd:last-of-type", ".shot-tip"], "Hover on the failed page's \"Transaction fee\": paid from the fee payer's bank balance, never the escrow; it was taken, so this transaction cannot run again", 20);
+      await tip(page, ".bd-top dt[title*=\"cannot run again\"]", theme, "start");
+      await crop(page, `g3-tip-fee-${theme}.png`, [".bd-top dt:nth-of-type(4)", ".bd-top dd:last-of-type em", ".shot-tip"], "Hover on the failed page's \"Transaction fee\": paid from the fee payer's bank balance, never the escrow; it was taken, so this transaction cannot run again", { t: 4, r: 16, b: 14, l: 12 });
       await untip(page);
       if (dk) { await top(page); await full(page, `g3-full-${theme}.png`, "Failed page, whole, for context"); }
       await ctx.close();
