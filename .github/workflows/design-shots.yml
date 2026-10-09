@@ -1,0 +1,51 @@
+name: Design shots
+
+# Builds the site of a design branch and photographs it against the live API,
+# so design rounds never build or render on anyone's own computer. Lives only
+# on design/** branches; the shots are the run's "shots" artifact.
+
+on:
+  push:
+    branches: ["design/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: npm ci
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      - name: npm test
+        working-directory: web
+        run: npm test
+      - name: build
+        working-directory: web
+        run: npm run build
+      - name: playwright-core
+        run: |
+          mkdir -p "$RUNNER_TEMP/pw" && cd "$RUNNER_TEMP/pw"
+          npm init -y >/dev/null
+          npm i --no-audit --no-fund playwright-core >/dev/null
+          echo "PW_DIR=$RUNNER_TEMP/pw" >> "$GITHUB_ENV"
+      - name: shoot
+        run: node .github/scripts/design-shots.cjs web/out shots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shots
+          path: shots
+          retention-days: 10
