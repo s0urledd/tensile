@@ -2702,7 +2702,8 @@ button.warn:focus-visible { outline-offset: 0; }
    failure's requested address quiet, never bold */
 .eh-t td.c-ac { color: var(--text); }
 .eh-t .mono { font-family: var(--mono); font-size: 12.5px; letter-spacing: -.01em; }
-.eh-t .c-ep .mono { white-space: normal; overflow-wrap: anywhere; }
+.eh-t .c-ep .mono { white-space: normal; overflow-wrap: normal; }
+.eh-t .c-ep .hp { white-space: nowrap; }
 .eh-t .eh-n { font-weight: 600; color: var(--text); }
 .lg-t .rq { font-weight: 400; color: var(--text-3); }
 .eh-t .cur { margin-left: 10px; font-family: var(--sans); font-size: var(--t-small); color: var(--text-3); }

@@ -20,6 +20,18 @@ export const endpointTxCount = (rows: EndpointEvent[]) =>
   rows.filter((r) => r.outcome === "registered" || r.outcome === "changed" || r.outcome === "same" || r.outcome === "failed").length;
 
 /**
+ * an endpoint that wraps only after a dot or a hyphen of its host name, never inside a label or its port
+ * ("celestia-testnet-fibre.itrocket.net:7980" breaks as "celestia-testnet-" "fibre.itrocket." "net:7980")
+ */
+function Host({ host }: { host: string }) {
+  const i = host.lastIndexOf(":");
+  const name = i > 0 ? host.slice(0, i) : host;
+  const parts = name.match(/[^.-]*[.-]|[^.-]+/g) ?? [name];
+  const last = parts.pop() ?? "";
+  return <>{parts.map((p, k) => <span key={k}>{p}<wbr /></span>)}<span className="hp">{last}{i > 0 ? host.slice(i) : ""}</span></>;
+}
+
+/**
  * A validator's Fibre endpoint registrations on chain, newest first, as a transaction table in six equal columns: the
  * block height, left-aligned as every table's first column is, then, each centred under its head, the time (how long
  * ago under it), its transaction (the link to its page, and the copy mark), what it did, whether it took effect, and the
@@ -99,10 +111,10 @@ export default function EndpointHistory({ rows, current, truncated }: {
                     : took ? <span className="st" title="It took effect in this block."><i className="dot ok" />Success</span>
                     : <span className="na">—</span>}</td>
                   <td className="c-ep">{failed
-                    ? <span className="mono rq" title="Requested; the endpoint did not change.">{r.host}</span>
+                    ? <span className="mono rq" title="Requested; the endpoint did not change."><Host host={r.host} /></span>
                     : i === cur
-                      ? <span className="ew"><span className="mono eh-n">{r.host}</span><span className="cur" title="The endpoint registered now.">current</span></span>
-                      : <span className="mono eh-n">{r.host}</span>}</td>
+                      ? <span className="ew"><span className="mono eh-n"><Host host={r.host} /></span><span className="cur" title="The endpoint registered now.">current</span></span>
+                      : <span className="mono eh-n"><Host host={r.host} /></span>}</td>
                 </tr>
               );
             })}
