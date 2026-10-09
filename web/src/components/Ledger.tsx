@@ -61,7 +61,7 @@ export type Feed = {
   /** when the newest row arrived, on the observer's clock (when it settled, on the first read) */
   lastNewAt: number;
   /** one publisher's list asked with_escrow=1: its escrow rows that stand among this page, and their counts */
-  escrow: Escrow | null;
+  escrow?: Escrow | null;
 };
 /**
  * the escrow rows the API placed among a page of one publisher's blobs, newest first in chain order: rows, how many are
@@ -184,11 +184,11 @@ type Shown = { path: string; rows: Blob[]; total: number; loaded: boolean; escro
 
 /** the feed onto the screen; the rows it did not show before are the move's */
 function take(v: Shown, f: Feed): Shown {
-  if (f.path !== v.path || !v.loaded) return { path: f.path, rows: f.rows, total: f.total, loaded: f.loaded, escrow: f.escrow, move: null };
-  if (f.rows === v.rows && f.total === v.total && f.escrow === v.escrow) return v;
+  if (f.path !== v.path || !v.loaded) return { path: f.path, rows: f.rows, total: f.total, loaded: f.loaded, escrow: f.escrow ?? null, move: null };
+  if (f.rows === v.rows && f.total === v.total && (f.escrow ?? null) === v.escrow) return v;
   const known = new Set(v.rows.map((b) => b.promise_hash));
   const fresh = new Set(f.rows.filter((b) => !known.has(b.promise_hash)).map((b) => b.promise_hash));
-  return { path: f.path, rows: f.rows, total: f.total, loaded: true, escrow: f.escrow, move: fresh.size ? { id: (v.move?.id ?? 0) + 1, fresh } : v.move };
+  return { path: f.path, rows: f.rows, total: f.total, loaded: true, escrow: f.escrow ?? null, move: fresh.size ? { id: (v.move?.id ?? 0) + 1, fresh } : v.move };
 }
 
 /** the publisher of a row: who paid, else who submitted it */
@@ -505,7 +505,7 @@ export default function Ledger({ feed, size, live, skew, onePublisher = false, m
   }, [feed, focusIn]);
   const hold = live && (pointerIn || focusIn || away);
 
-  const [shown, setShown] = useState<Shown>(() => ({ path: feed.path, rows: feed.rows, total: feed.total, loaded: feed.loaded, escrow: feed.escrow, move: null }));
+  const [shown, setShown] = useState<Shown>(() => ({ path: feed.path, rows: feed.rows, total: feed.total, loaded: feed.loaded, escrow: feed.escrow ?? null, move: null }));
   useEffect(() => {
     setShown((v) => {
       // a new page or filter: the rows on screen stay, quieted, until its answer (or its error) comes, so the list keeps its size
