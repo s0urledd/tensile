@@ -238,7 +238,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       await crop(page, `p3-open-failed-${theme}.png`, ["#list thead", row("#list", 5)], "Pointer on a failed row's kind (\"Withdrawal request\"): the same dotted line as a success's kind, lit on hover; it opens the failed page /blob/?tx=A4BD0B18…", { t: 20, r: 20, b: 0, l: 20 });
       await page.mouse.move(5, 5);
       await card(page, `${row("#list", 1)} button.txw`, `${theme} All deposit`);
-      await crop(page, `p3-card-all-${theme}.png`, ["#list thead", row("#list", 5), ".info-pop"], "The card on the successful deposit's kind in All (STUB): Transaction · Hash C41D9E…7B30 · Gas 74,102 used of 200,000 · Transaction fee 4,000 utia from the bank balance, beside the failed rows' dashes", 20);
+      await crop(page, `p3-card-all-${theme}.png`, ["#list thead", row("#list", 5), ".info-pop"], "The card on the successful deposit's kind in All (STUB): Transaction · Hash C41D9E…7B30 · Gas 74,102 used of 200,000 · Transaction fee 4,000 utia from the bank balance, beside the failed rows' dashes", { t: 20, r: 20, b: 0, l: 20 });
       await shut(page);
       await reveal(page, ["#list .pager"], 140);
       await tip(page, "#list .pager .count span[title]", theme);
@@ -266,7 +266,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       await go(page, `/validator/?addr=${VAL}`, ".eh-t tbody tr");
       await crop(page, `v1-history-${theme}.png`, [".vd-stat", "#endpoints", "#evidence .list-head"],
         "Validator Unity Nodes, Endpoint history between the stat panel and Latest checks (recommended): the MOCK failed row (from the real failed set-host FB27DDA8…, whose signer is no validator), its two real changes and the host before Tensile's record");
-      await crop(page, `v1-rows-${theme}.png`, ["#endpoints"], "Endpoint history alone: When · verb · old → new (or Requested · reason · Endpoint unchanged) · hash ⧉, a line each; the count is of transactions (3): the host before Tensile's record is none", 20);
+      await crop(page, `v1-rows-${theme}.png`, ["#endpoints"], "Endpoint history alone: When · verb · old → new (or Requested · reason · Endpoint unchanged) · hash ⧉, a line each, the hash right after its change; the count is of transactions (3): the host before Tensile's record is none", 20);
       if (dk) { await top(page); await full(page, `v1-full-${theme}.png`, "Validator page, whole, Endpoint history between the panel and Latest checks, for context"); }
       await reveal(page, ["#endpoints"], 60);
       await card(page, "#endpoints button.txw", `${theme} Changed`);
@@ -332,7 +332,7 @@ const row = (scope, n) => `${scope} tbody tr:nth-child(${n})`;
       await go(page, `/blob/?tx=${FAILED_TX}`, ".bd-err");
       await crop(page, `g3-failed-${theme}.png`, [".bd-title", ".bd-top"], "Failed page A4BD0B18…: Gas 50,219 used of 200,000; Transaction fee 800 utia from the bank balance, the format the success details share", { t: 24, b: 14 });
       await tip(page, ".bd-top dt[title*=\"cannot run again\"]", theme);
-      await crop(page, `g3-tip-fee-${theme}.png`, [".bd-top", ".shot-tip"], "Hover on the failed page's \"Transaction fee\": paid from the fee payer's bank balance, never the escrow; it was taken, so this transaction cannot run again", 20);
+      await crop(page, `g3-tip-fee-${theme}.png`, [".bd-top dt:nth-of-type(4)", ".bd-top dd:last-of-type", ".shot-tip"], "Hover on the failed page's \"Transaction fee\": paid from the fee payer's bank balance, never the escrow; it was taken, so this transaction cannot run again", 20);
       await untip(page);
       if (dk) { await top(page); await full(page, `g3-full-${theme}.png`, "Failed page, whole, for context"); }
       await ctx.close();

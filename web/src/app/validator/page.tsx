@@ -319,8 +319,9 @@ const EH_FAILED_TITLE = "This transaction failed in this block: none of its mess
 /**
  * One registration, on one compact line: when (its block on hover), its verb, what changed (old → new; a first one,
  * the new alone; a failed one, what it asked for, why, and that the endpoint did not change, its requested host never
- * bold, so it never reads as the endpoint), and its transaction, copyable. The verb opens the details, with the dotted
- * line every such word has: a success's card (gas and fee), a failure's page, which says them. The row opens nothing.
+ * bold, so it never reads as the endpoint), then its transaction, copyable, right after it. The verb opens the details,
+ * with the dotted line every such word has: a success's card (gas and fee), a failure's page, which says them. The row
+ * opens nothing.
  */
 function EndpointRow({ r, now, owner }: { r: EndpointEvent; now: number; owner?: string }) {
   const failed = r.outcome === "failed";
@@ -329,14 +330,14 @@ function EndpointRow({ r, now, owner }: { r: EndpointEvent; now: number; owner?:
   // not fit beside the request and "Endpoint unchanged" at the page's width
   const why = failed && r.reason ? (r.other_message_failed ? "Another message failed" : r.reason) : "";
   const whyTitle = failed && r.reason ? (r.other_message_failed ? `Another message failed: ${r.reason}` : r.reason) : undefined;
-  const onRecord = r.outcome !== "before_record" && r.outcome !== "after_gap";
   return (
     <tr className={`row eh-r${failed ? " xf" : ""}`}>
       <td className="c-t">{r.outcome === "before_record" ? <em className="eh-pre">Before Tensile’s record</em>
         : r.outcome === "after_gap" ? <span className="eh-pre"><em>In a record gap</em><Warn text={`Changed while Tensile’s record had a gap, before block #${int(r.height)}. Its transaction is not on record.`} /></span>
         : r.time ? <span title={`${utcWord(r.time)}${r.height ? ` · block #${int(r.height)}` : ""}`}><span className="tm">{monthDayTime(r.time).slice(0, -3)}</span><span className="ag">{age(now - Date.parse(r.time))}</span></span> : "—"}</td>
       <td className="c-c">
-        {/* the verb in its slot, then what it changed; a long reason gives way first, never "Endpoint unchanged" */}
+        {/* the verb in its slot, what it changed, then its transaction; a long reason gives way first, never "Endpoint
+            unchanged" or the hash */}
         <div className="eh-c">
           <span className="eh-vs">{failed
             ? <span className="eh-v f"><i className="dot fault" aria-hidden="true" />{r.tx_hash
@@ -349,12 +350,9 @@ function EndpointRow({ r, now, owner }: { r: EndpointEvent; now: number; owner?:
             : r.previous_host && r.outcome !== "same"
               ? <><span className="mono eh-o">{r.previous_host}</span><span className="eh-ar" aria-label="to">→</span><b className="mono eh-n">{r.host}</b></>
               : <><b className="mono eh-n">{r.host}</b>{r.outcome === "same" && <span className="eh-q"><span className="sep">·</span><span>same address</span></span>}</>}
+          {r.tx_hash && <span className="eh-x"><span className="mono" title={r.tx_hash.toUpperCase()}>{shortTx(r.tx_hash)}</span><CopyMark text={r.tx_hash.toUpperCase()} label="the transaction hash" /></span>}
         </div>
       </td>
-      <td className="c-x">{r.tx_hash
-        ? <><span className="mono" title={r.tx_hash.toUpperCase()}>{shortTx(r.tx_hash)}</span><CopyMark text={r.tx_hash.toUpperCase()} label="the transaction hash" /></>
-        : <span className="u" title={onRecord ? "Not on record" : undefined}>—</span>}</td>
-      <td className="c-f" />
     </tr>
   );
 }
@@ -386,8 +384,6 @@ function EndpointHistory({ rows, truncated, owner, now, apiHref }: {
             <tr>
               <th className="c-t">When <span className="per">(UTC)</span></th>
               <th className="c-c">Change</th>
-              <th className="c-x">Transaction</th>
-              <th className="c-f" aria-hidden="true" />
             </tr>
           </thead>
           <tbody>

@@ -2577,26 +2577,25 @@ button.warn:focus-visible { outline-offset: 0; }
 .vr-t .c-m .rs.quiet { color: var(--text-3); }
 .vr-t .c-m .u { margin-left: 0; }
 
-/* ---- the endpoint history: a compact listing, one hairline row per registration, a line each. Its columns are as wide
-   as what they hold (the change at its widest, never past 720px, where a long reason gives way first), so each
-   transaction stands just after its change and the room left falls at the row's end. Each verb in a slot of its own,
-   so the addresses after it line up; the old address quiet, the new one in the mono's weight; a failure's request never
-   bold, so it never reads as the endpoint. The rows open nothing: the verb does ---- */
-.lg-t.eh-t { table-layout: auto; }
+/* ---- the endpoint history: a compact listing, one hairline row per registration, a line each: when, then the verb in
+   a slot of its own, so the addresses after it line up, what changed and, right after it, its transaction. The old
+   address quiet, the new one in the mono's weight; a failure's request never bold, so it never reads as the endpoint.
+   The rows open nothing: the verb does ---- */
 .lg-t.eh-t th { padding-top: 10px; padding-bottom: 8px; }
 .lg-t.eh-t td { padding-top: 5px; padding-bottom: 5px; }
 .lg-t.eh-t th.c-t, .lg-t.eh-t td.c-t { width: 176px; text-align: left; }
-.lg-t.eh-t th.c-c, .lg-t.eh-t td.c-c, .lg-t.eh-t th.c-x, .lg-t.eh-t td.c-x { width: 1%; }
-.lg-t.eh-t td.c-c { padding-right: 28px; }
-.lg-t.eh-t th.c-f, .lg-t.eh-t td.c-f { width: auto; padding: 0; }
 .eh-t td.c-t .tm { font-weight: 500; }
 .eh-t td.c-t .ag { margin-left: 9px; font-size: var(--t-small); color: var(--text-3); }
 .eh-t tr.row { cursor: default; }
 .lg-t.eh-t tr.row:hover td { background: none; }
 .eh-t td.c-c { font-family: var(--sans); }
-.eh-c { display: flex; align-items: center; min-width: 0; max-width: 720px; height: 20px; }
-.eh-vs { flex: none; width: 120px; }
+.eh-c { display: flex; align-items: center; min-width: 0; height: 20px; }
+/* the verb a flex box of its own, so a word that opens something stands on the same line as the text after it */
+.eh-vs { flex: none; display: flex; align-items: center; width: 120px; }
 .eh-c > .mono, .eh-c > .eh-ar { flex: none; }
+/* the transaction, right after the change: its hash quieter than the new address, then its copy mark */
+.eh-x { flex: none; display: inline-flex; align-items: center; margin-left: 28px; }
+.eh-x .mono { font-weight: 500; color: var(--text-2); }
 .eh-q { display: flex; align-items: center; min-width: 0; }
 .eh-q > * { flex: none; }
 .eh-q > .eh-y { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -2616,7 +2615,6 @@ button.warn:focus-visible { outline-offset: 0; }
 .eh-pre { display: inline-flex; align-items: center; font-style: normal; color: var(--text-3); }
 .eh-pre em { font-style: normal; }
 .eh-pre button.warn { margin-left: 3px; }
-.eh-t td.c-x .mono { font-weight: 500; color: var(--text); }
 .eh-t .u { color: var(--text-3); }
 .eh-more { justify-content: flex-end; }
 .eh-more .count:empty { display: none; }
